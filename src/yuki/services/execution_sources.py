@@ -232,7 +232,7 @@ async def recover_background_source(
         _turn_record,
     )
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.scalar(
             select(PluginBackgroundTurnJobModel).where(
                 PluginBackgroundTurnJobModel.source_event_id == source.get("trigger_event_id"),
@@ -246,7 +246,7 @@ async def recover_background_source(
     context = await PluginNotificationRepository(database).load_background_context(
         record, work_id=request_id
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         presence = await session.get(PresenceModel, source.get("presence_id"))
         event = await session.get(ChatEventModel, record.source_event_id)
         conversation = await session.get(CanonicalConversationModel, conversation_id)
@@ -286,7 +286,7 @@ async def recover_automation_source(
     from yuki.automation.repository import AutomationRepository
     from yuki.runtime.work_schema_v1 import work
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         run = await session.get(AutomationRunModel, source.get("automation_run_id"))
         owner = (
             await AutomationRepository(database).get_for_run(run.id, session=session)
@@ -408,7 +408,7 @@ async def recover_self_source(
         or not source["instruction"].strip()
     ):
         raise ValueError("invalid_self_task_source")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         run = await session.get(InitiativeRunModel, source.get("initiative_run_id"))
         conversation = await session.get(CanonicalConversationModel, conversation_id)
         if (
@@ -514,7 +514,7 @@ async def recover_source(
     request_id: str,
 ) -> MessageTaskSource:
     """Shared canonical validation for a persisted message-origin work source."""
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         if source.get("origin") not in {"user_message", "autonomous_group"}:
             raise ValueError("not_a_message_task")
         conversation = await session.get(CanonicalConversationModel, conversation_id)

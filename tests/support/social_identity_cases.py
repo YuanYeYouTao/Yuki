@@ -60,7 +60,7 @@ async def social_env(database, tmp_path):
     )
     router = PresenceRouter(database, registry)
     writer = ScopedEventLedgerUnitOfWork(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         person = await ensure_person(session, "10001")
         # This shared fixture exercises the original, pre-0121 Social contracts.
         from sqlalchemy import update
@@ -77,7 +77,7 @@ async def social_env(database, tmp_path):
     from yuki.identity.canonical_repository import find_identity_binding
     from yuki.identity.person_state import observe_canonical_person
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await find_identity_binding(session, "10001")
         await observe_canonical_person(
             session,
@@ -99,7 +99,7 @@ async def social_env(database, tmp_path):
         direction="inbound",
         content="hello",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
         conversation = event.canonical_conversation_id
         account = await session.scalar(
@@ -130,7 +130,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
     env = social_env
     sent = await env.service.execute("send", {"text": "hello"}, env.context)
     other = Bot("80002")
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         second = await ensure_presence(session, other.self_id)
         event = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.id == sent["event_id"])
@@ -160,7 +160,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
 
 async def test_members_ignore_send_pause_and_try_accessible_connections(social_env):
     env = social_env
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         route = await session.get(SpaceActiveRouteModel, env.space)
         route.paused = True
         generation = route.route_generation
@@ -169,14 +169,14 @@ async def test_members_ignore_send_pause_and_try_accessible_connections(social_e
     assert result["coverage"] == "observed" and result["items"][0]["account_id"] == env.account
     assert result["items"][0]["reference"] == f"@{{account:{env.account}}}"
     assert env.bot.calls == []
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, env.space)
         assert route.paused and route.route_generation == generation
 
 
 async def test_multiple_space_bindings_require_explicit_selection(social_env):
     env = social_env
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         other = await ensure_space(session, "20002")
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == other)
@@ -190,7 +190,7 @@ async def test_multiple_space_bindings_require_explicit_selection(social_env):
 async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
     env = social_env
     sent = await env.service.execute("send", {"text": "hello"}, env.context)
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         event = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.id == sent["event_id"])
         )
@@ -214,7 +214,7 @@ async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
 
 async def test_disabled_presence_cannot_read_or_recall(social_env):
     env = social_env
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         presence = await session.get(PresenceModel, env.presence)
         presence.enabled = False
     with pytest.raises(RouteSendError, match="original_presence_unavailable"):
@@ -224,12 +224,12 @@ async def test_disabled_presence_cannot_read_or_recall(social_env):
 
 
 async def add_second_account(env):
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         other = await ensure_person(session, "10002")
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.person_id == other)
         )
-        from yuki.identity.person_identity import merge_persons
+        from tests.support.person_merge import merge_persons
 
         await merge_persons(session, other, env.person)
         return binding.id
@@ -278,7 +278,7 @@ async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(so
 async def test_group_mention_resolves_binding_without_first_item(social_env, selector):
     env = social_env
     other = await add_second_account(env)
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         second = await session.get(IdentityBindingModel, other)
         account_id = second.account_id
     if selector == "subject":
@@ -316,7 +316,7 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
         {"type": "at", "data": {"qq": "10001"}},
         {"type": "text", "data": {"text": "后"}},
     ]
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         events = list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")
@@ -338,7 +338,7 @@ async def current_speaker_mention(env):
     from yuki.services.agent_tools import ToolRuntime
     from yuki.social.agent_adapter import invoke_social
 
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
     message = replace(
         inbound("test", message_id="inbound", user_id="10001", group_id="20001"),
@@ -369,7 +369,7 @@ async def current_speaker_mention(env):
 async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     env = social_env
     binding_id = await add_second_account(env)
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         binding = await session.get(IdentityBindingModel, binding_id)
         account = binding.account_id
         from yuki.identity.db_models import CanonicalPersonModel

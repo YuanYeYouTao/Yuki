@@ -6,13 +6,13 @@ from dataclasses import replace
 
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
+from tests.support.person_merge import merge_persons
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 from tests.unit.test_work_owner_recovery import original_responses, original_scheduler
 
 from yuki.domain.messages import ChatMessage
 from yuki.identity.canonical_repository import find_identity_binding
-from yuki.identity.person_identity import merge_persons
 from yuki.llm.fake import FakeLLMProvider
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_control import WorkControl
@@ -24,7 +24,7 @@ from yuki.services.turn_transcript import TurnTranscript
 
 
 async def _facts(database, identity):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = dict(
             (await reader.execute(select(journal).where(journal.c.work_id == identity)))
             .mappings()
@@ -67,7 +67,7 @@ async def test_merge_cold_work_observes_original_paired_result_once(
     monkeypatch.setattr(state, "update", record_update)
     await harness.processor.handle(message, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     saved, receipts, budget = await _facts(database, original["id"])
     assert saved["phase"] == "paired" and original["state"] == "queued"
@@ -131,7 +131,7 @@ async def test_merge_cold_work_keeps_lost_paid_response_unknown_without_repurcha
     env, harness, chat, state, message = await _scene(database, tmp_path, provider, request_limit=1)
     await harness.processor.handle(message, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
         contract = await reader.scalar(
             select(journal.c.contract).where(journal.c.work_id == original["id"])
@@ -191,7 +191,7 @@ async def test_merge_cold_work_keeps_lost_paid_response_unknown_without_repurcha
     assert final_receipts == receipts and final_budget == budget
     assert state.snapshot()[0]["text"] == "original-snapshot"
     assert provider.requests == original_requests
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         failure = await reader.scalar(
             select(recovery.c.failure_json).where(recovery.c.work_id == original["id"])
         )

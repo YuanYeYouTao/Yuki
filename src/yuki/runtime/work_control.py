@@ -270,7 +270,7 @@ class WorkControl:
         from yuki.runtime.work_wait_schema import waits
 
         assert self.current is not None
-        async with self.repository.database.sessions() as reader:
+        async with self.repository.database.read_session() as reader:
             status = await reader.scalar(
                 select(waits.c.status).where(
                     waits.c.id == accepted.get("wait_id"),
@@ -437,7 +437,7 @@ class WorkControl:
                     )
                     from yuki.persistence.models import ChatEventModel
 
-                    async with self.repository.database.sessions() as reader:
+                    async with self.repository.database.read_session() as reader:
                         scope = await reader.get(
                             CanonicalConversationModel, self.lease.conversation_id
                         )
@@ -971,7 +971,7 @@ class WorkControl:
                     from yuki.sandbox.db_models import SandboxTaskRunModel
 
                     owned_work = descendants(self.current["id"])
-                    async with self.repository.database.sessions() as reader:
+                    async with self.repository.database.read_session() as reader:
                         owned = bool(
                             await reader.scalar(
                                 select(
@@ -1054,7 +1054,7 @@ class WorkControl:
         original = json.loads(self.current["source_json"])
         if not event_id or event_id == original.get("trigger_event_id"):
             raise ValueError("work_already_active_use_update")
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             event = await session.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.id == event_id,

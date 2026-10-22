@@ -108,7 +108,7 @@ class ControlOperatorAccess:
             raise ControlQueryError(Problem(ProblemCode.PRECONDITION_FAILED))
         principal = operator.principal(source)
         if principal.person_id is not None:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 if await session.get(CanonicalPersonModel, principal.person_id.text) is None:
                     raise ControlQueryError(Problem(ProblemCode.UNAUTHENTICATED))
         return principal

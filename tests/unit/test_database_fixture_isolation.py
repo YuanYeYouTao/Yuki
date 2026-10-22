@@ -36,7 +36,7 @@ async def test_database_copy_cannot_mutate_the_closed_readonly_template(
         expected_schema = template.execute(
             "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
         ).fetchall()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         actual_schema = (
             await reader.execute(
                 text("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")
@@ -52,13 +52,13 @@ async def test_database_copy_cannot_mutate_the_closed_readonly_template(
         assert template.execute(
             "SELECT enabled FROM persons WHERE id=?", (original[0],)
         ).fetchone() == (original[1],)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.get(CanonicalPersonModel, original[0])).enabled != bool(original[1])
 
 
 async def test_copied_database_uses_fresh_connection_foreign_key_enforcement(database):
     assert identity_write_settings().ignored_bot_users == frozenset()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(text("PRAGMA foreign_keys")) == 1
         assert await reader.scalar(text("PRAGMA journal_mode")) == "wal"
         person_id = await reader.scalar(select(CanonicalPersonModel.id).limit(1))
@@ -80,7 +80,7 @@ async def test_copied_database_uses_fresh_connection_foreign_key_enforcement(dat
             await writer.execute(insert_membership, {"person": "missing-person", "space": space_id})
     async with database.immediate_session() as writer:
         await writer.execute(insert_membership, {"person": person_id, "space": space_id})
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(
                 text(
@@ -120,7 +120,7 @@ async def test_copied_fts_triggers_follow_original_insert_edit_and_delete(databa
         await session.flush()
         fact_id = fact.id
     for search, expected in (("astronomy", True), ("geology", False)):
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 bool(
                     await reader.scalar(
@@ -177,7 +177,7 @@ async def test_copied_fts_triggers_follow_original_insert_edit_and_delete(databa
         ),
         ("memory_facts_fts", lambda word: word),
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         for table, query in searches:
             assert (
                 await reader.scalar(
@@ -196,7 +196,7 @@ async def test_copied_fts_triggers_follow_original_insert_edit_and_delete(databa
     async with database.immediate_session() as session:
         await session.execute(delete(ChatEventModel).where(ChatEventModel.id == original.event.id))
         await session.execute(delete(MemoryFactModel).where(MemoryFactModel.id == fact_id))
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         for table, query in searches:
             assert (
                 await reader.scalar(

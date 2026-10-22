@@ -282,7 +282,7 @@ class EventLedgerRepository:
         bounded_limit = limit
         if selection.maximum_events is not None:
             bounded_limit = min(limit, selection.maximum_events)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(ChatEventModel)
@@ -301,7 +301,7 @@ class EventLedgerRepository:
     ) -> EventRecord | None:
         """Return one exact locally observed event without widening its conversation scope."""
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.bot_user_id == bot_user_id,
@@ -313,13 +313,13 @@ class EventLedgerRepository:
     async def get_event(self, event_id: int) -> EventRecord | None:
         """Return one exact ledger event by its internal immutable identifier."""
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.get(ChatEventModel, event_id)
         return _event_record(row) if row is not None else None
 
     async def get_reply_event(self, event_id: int, *, conversation_id: str) -> EventRecord | None:
         """Read a resolved reply only from its canonical conversation's live messages."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.id == event_id,
@@ -334,7 +334,7 @@ class EventLedgerRepository:
         self, scope: ConversationScope, *, limit: int, message_only: bool = False
     ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
         """Read the current generation, retaining its version for dispatch validation."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             version = await _read_version(session, scope)
             if version.conversation_id is None:
@@ -352,7 +352,7 @@ class EventLedgerRepository:
         return version, tuple(_event_record(row) for row in reversed(rows))
 
     async def read_version_matches(self, version: ConversationReadVersion) -> bool:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             if (
                 await _read_version(session, version.scope, conversation_id=version.conversation_id)
                 != version
@@ -375,7 +375,7 @@ class EventLedgerRepository:
         self, scope: ConversationScope, *, after_event_id: int, limit: int = 128
     ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
         """Earliest new chat events and their generation from one read snapshot."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             version = await _read_version(session, scope)
             if version.conversation_id is None:
@@ -405,7 +405,7 @@ class EventLedgerRepository:
     ) -> tuple[EventRecord, ...]:
         """Read the newest events from the canonical Conversation behind an alias."""
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             version = await _read_version(session, scope)
             if version.conversation_id is None:
@@ -445,7 +445,7 @@ class EventLedgerRepository:
                 ChatEventModel.id > CanonicalConversationModel.starts_after_event_id,
             )
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             conversation_id = conversation_id or await _conversation_id_for_scope(session, scope)
             query = query.where(CanonicalConversationModel.id == conversation_id)
             rows = (
@@ -465,7 +465,7 @@ class EventLedgerRepository:
     ) -> tuple[EventRecord, ...]:
         """Return the bounded scope prefix preceding one ledger event id."""
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             version = await _read_version(session, scope)
             if version.conversation_id is None:
@@ -497,7 +497,7 @@ class EventLedgerRepository:
         limit: int,
         message_only: bool = False,
     ) -> tuple[EventRecord, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             version = await _read_version(session, scope)
             if version.conversation_id is None:
@@ -535,7 +535,7 @@ class EventLedgerRepository:
         the range contains no other events or replaces publication source CAS.
         A changed version returns no bodies so the caller can reject its plan.
         """
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             version = await _read_version(
                 session, expected.scope, conversation_id=expected.conversation_id
@@ -589,7 +589,7 @@ class EventLedgerRepository:
         after_event_id: int,
         through_event_id: int,
     ) -> int:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             conversation_id = await _conversation_id_for_scope(session, scope)
             if conversation_id is None:
                 return 0
@@ -606,7 +606,7 @@ class EventLedgerRepository:
             )
 
     async def maximum_scope_event_id(self, scope: ConversationScope) -> int:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             conversation_id = await _conversation_id_for_scope(session, scope)
             if conversation_id is None:
                 return 0
@@ -906,7 +906,7 @@ class EventLedgerRepository:
         from yuki.identity.db_models import PresenceModel
         from yuki.identity.ownership_interval import historical_person_ids
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             presence = (
                 await session.get(PresenceModel, event.ingress_presence_id)
                 if event.ingress_presence_id
@@ -960,7 +960,7 @@ class EventLedgerRepository:
         )
 
     async def memory_job_status(self, event_id: int) -> str | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return cast(
                 str | None,
                 await session.scalar(

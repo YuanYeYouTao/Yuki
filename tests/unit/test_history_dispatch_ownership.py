@@ -121,7 +121,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     result = await harness.processor.handle(message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 2
     repository = WorkRepository(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = await projection_record(
             session, (await session.scalars(select(PromptProjectionModel))).one()
         )
@@ -133,7 +133,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     from yuki.runtime.work_activation import current_work_control
     from yuki.runtime.work_schema_v1 import effects, work
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         identity = await session.scalar(select(work.c.id))
     item = await repository.get(identity)
     assert item["state"] == "queued" and item["model_requests"] == 2
@@ -205,7 +205,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     assert "保存工作结果" in serialized and "work_current_material" in serialized
     assert "new-unsubmitted-state" in serialized
     assert not any(message.tool_calls for message in provider.requests[2].messages)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = await projection_record(
             session, (await session.scalars(select(PromptProjectionModel))).one()
         )
@@ -220,7 +220,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     completed = await repository.get(identity)
     assert completed["state"] == "completed" and completed["model_requests"] == 4
     assert state.snapshot()[0]["text"] == "resumed-work-result"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipts = (await reader.scalars(select(effects.c.receipt_json))).all()
     assert any(
         (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "query_chat_history"
@@ -253,7 +253,7 @@ async def _pending_composition(database, tmp_path):
 
 async def test_recovery_origin_does_not_invalidate_a_new_composition(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = await projection_record(
             session, (await session.scalars(select(PromptProjectionModel))).one()
         )
@@ -266,7 +266,7 @@ async def test_recovery_origin_does_not_invalidate_a_new_composition(database, t
     )
     with validating_request(sequence):
         await composition.commit_projection()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = await projection_record(
             session, (await session.scalars(select(PromptProjectionModel))).one()
         )
@@ -289,7 +289,7 @@ async def test_recovery_origin_still_checks_source_authority(database, tmp_path)
 
 async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = await projection_record(
             reader, (await reader.scalars(select(PromptProjectionModel))).one()
         )
@@ -301,7 +301,7 @@ async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     )
     with validating_request(sequence):
         await composition.commit_projection()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = await projection_record(
             session, (await session.scalars(select(PromptProjectionModel))).one()
         )
@@ -330,7 +330,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     )
     result = await harness.processor.handle(message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 2
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = await projection_record(
             reader, (await reader.scalars(select(PromptProjectionModel))).one()
         )
@@ -343,9 +343,9 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         )
     state.update({"slot": 1, "text": "current-safe-snapshot"})
     if boundary == "deleted":
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             await writer.delete(await writer.get(ChatEventModel, original_event))
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             retired = await projection_record(
                 reader, await reader.get(PromptProjectionModel, original_key)
             )
@@ -378,7 +378,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     )
     assert "current-safe-snapshot" in current_input
     assert "original-snapshot" not in current_input
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = [
             await projection_record(reader, row)
             for row in (await reader.scalars(select(PromptProjectionModel))).all()

@@ -96,7 +96,7 @@ class ToolReceiptRepository:
         redacted = _redact_reflection_result(result_excerpt.strip())
         receipt: dict[str, Any] | None = None
         guards: list[Any] = []
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             proven_conversation = await try_live_conversation_id(session, canonical_conversation_id)
             privacy_generation = (
                 audit_source[2]
@@ -336,7 +336,7 @@ class ToolReceiptRepository:
                 .on_conflict_do_nothing(index_elements=["source_call_key"])
                 .returning(table.c.id)
             )
-            async with self._database.sessions() as session, session.begin():
+            async with self._database.immediate_session() as session:
                 inserted = await session.scalar(statement)
                 if inserted is None:
                     if key and await session.scalar(

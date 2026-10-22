@@ -57,7 +57,7 @@ async def select_protocol_recovery(
             for call in pending
             if "readonly_result_key" not in call
         )
-        async with control.repository.database.sessions() as reader:
+        async with control.repository.database.read_session() as reader:
             receipts = {
                 row.effect_key: row
                 for row in await reader.execute(

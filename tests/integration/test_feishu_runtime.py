@@ -149,7 +149,7 @@ async def test_native_private_uses_common_main_social_and_durable_duplicate(feis
     assert query == {"receive_id_type": "open_id"}
     assert body["receive_id"] == "ou_person"
     assert json.loads(body["content"]) == {"text": "Feishu reply"}
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
     assert len(rows) == 2 and rows[0].author_person_id and rows[1].author_presence_id
     assert rows[0].sender_user_id == "cli_test:ou_person"
@@ -180,7 +180,7 @@ async def test_admission_returns_before_model_finishes(feishu_env, database, mon
     await asyncio.wait_for(env.gateway.receive(update()), 2)
     await asyncio.wait_for(entered.wait(), 2)
     assert env.gateway._turns
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
         assert event is not None and event.platform_message_id == "om_1"
     # Losing an ACK while this Main is still running doesn't buy another request.
@@ -198,7 +198,7 @@ async def test_group_cold_admission_and_native_mention_keep_platform_identity(fe
     ]
     await env.gateway.receive(incoming)
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         events = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
         conversation = await session.get(
             CanonicalConversationModel, events[0].canonical_conversation_id
@@ -217,7 +217,7 @@ async def test_topics_keep_real_threads_and_share_space(feishu_env, database):
             update(f"om_{number}", group=True, thread=thread, text="!ai hello")
         )
         await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversations = list(await session.scalars(select(CanonicalConversationModel)))
     assert len(conversations) == 2
     assert {row.thread_id for row in conversations} == {"om_root_one", "om_root_two"}

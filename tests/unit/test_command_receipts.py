@@ -55,7 +55,7 @@ async def test_restart_recovers_original_intents_and_preserves_existing_outcomes
     # A new repository represents a fresh process, with no executor or manager.
     assert await CommandReceiptRepository(database).recover_interrupted_controls() == 1
     assert await CommandReceiptRepository(database).recover_interrupted_controls() == 0
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = {
             row.request_id: row for row in await session.scalars(select(ControlCommandReceiptModel))
         }

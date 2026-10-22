@@ -41,7 +41,7 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
 
     from yuki.identity.db_models import PresenceModel
 
-    async with app.database.sessions() as session:
+    async with app.database.read_session() as session:
         presences = list(await session.scalars(select(PresenceModel)))
     platforms = set(app.gateway_providers.platforms) | {presence.platform for presence in presences}
     for platform in sorted(platforms):
@@ -74,7 +74,7 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
     try:
         from sqlalchemy import text
 
-        async with app.database.sessions() as session:
+        async with app.database.read_session() as session:
             await session.execute(text("SELECT 1"))
         database_healthy = True
     except Exception:
@@ -84,7 +84,9 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
             "name": "database",
             "enabled": True,
             "running": None,
-            "healthy": database_healthy,
+            "healthy": database_healthy and app.database.writer_available,
+            "read_available": database_healthy,
+            "writer_accepting": app.database.writer_available,
             "checked_at": checked_at,
         }
     )

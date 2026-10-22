@@ -77,7 +77,7 @@ async def _seed(
         ),
         actor_user_id=await _admin(database),
     )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         original = await session.get(ChatEventModel, first.id)
         assert original is not None
         conversation_id = original.canonical_conversation_id
@@ -237,7 +237,7 @@ async def test_page_and_affected_item_boundaries_keep_other_run_untouched(
     )
     assert await repository.remaining_item_receipt_count(seed.public_id) == 0
     assert await repository.remaining_item_receipt_count(other.public_id) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(MemoryRebuildItemModel.status).where(
@@ -296,7 +296,7 @@ async def test_live_receipt_arriving_after_prepare_is_never_blindly_overwritten(
         seed.public_id, include_failed_live_jobs=include_failed
     )
     assert completed == int(expected_item == "committed")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = await session.get(MemoryRebuildItemModel, seed.item_ids[0])
         job = await session.scalar(
             select(MemoryJobModel).where(MemoryJobModel.event_id == seed.event_ids[0])
@@ -367,7 +367,7 @@ async def test_source_or_review_race_requires_fresh_preparation(
         )
         == 0
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = await session.get(MemoryRebuildItemModel, seed.item_ids[0])
         assert item is not None and item.status == "staged"
         assert await session.scalar(select(MemoryJobModel.id)) is None
@@ -387,7 +387,7 @@ async def test_successful_proposals_over_twenty_finish_original_items_across_tic
         evidence_quote="我住在杭州",
         confidence=0.9,
     )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(MemoryRebuildProposalModel)
             .where(MemoryRebuildProposalModel.run_id == seed.run_id)
@@ -408,7 +408,7 @@ async def test_successful_proposals_over_twenty_finish_original_items_across_tic
         )
     assert processed == [20, 20, 5]
     assert len(await facts.list_person("1001")) == 45
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         items = tuple(
             await session.execute(
                 select(MemoryRebuildItemModel.id, MemoryRebuildItemModel.status).where(
@@ -434,7 +434,7 @@ async def test_sweep_without_commit_rows_keeps_run_active_until_last_page(
 ) -> None:
     seed = await _seed(database, 45, proposals=rejected)
     if rejected:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryRebuildProposalModel)
                 .where(MemoryRebuildProposalModel.run_id == seed.run_id)
@@ -455,7 +455,7 @@ async def test_sweep_without_commit_rows_keeps_run_active_until_last_page(
         assert current.status is (
             MemoryRebuildRunStatus.COMPLETED if tick == 2 else MemoryRebuildRunStatus.COMMITTING
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         outcomes = tuple(
             await session.scalars(
                 select(MemoryJobModel.outcome).where(MemoryJobModel.rebuild_run_id == seed.run_id)
@@ -469,7 +469,7 @@ async def test_sweep_without_commit_rows_keeps_run_active_until_last_page(
 async def test_caller_cannot_expand_persisted_failed_job_selection(database: Database) -> None:
     seed = await _seed(database, 1, include_failed=False)
     assert await MemoryJobRepository(database).enqueue(seed.event_ids[0], "private:1001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(MemoryJobModel)
             .where(MemoryJobModel.event_id == seed.event_ids[0])
@@ -481,7 +481,7 @@ async def test_caller_cannot_expand_persisted_failed_job_selection(database: Dat
         )
         == 0
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.scalar(
             select(MemoryJobModel).where(MemoryJobModel.event_id == seed.event_ids[0])
         )

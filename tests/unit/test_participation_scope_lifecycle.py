@@ -208,7 +208,7 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
         await host.tick()
         assert host._failures == 0 and not host._observer.calls
         assert all(group is None for group in requested_groups)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(InitiativeRunModel)) == 1
     finally:
         await host.close()
@@ -278,7 +278,7 @@ async def test_disabled_scope_preserves_completed_work_and_original_feedback(dat
         ).effective_owner is AutonomyOwner.OFF
         assert await host.work.get(row["id"]) == before
         assert item.controller.state.feedback[run.run_id].outcome == "no_reply"
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(InitiativeRunModel)) == 1
     finally:
         await host.close()

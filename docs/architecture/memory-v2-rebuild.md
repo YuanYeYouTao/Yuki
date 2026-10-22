@@ -71,6 +71,8 @@ commit 按 `source occurred_at → event_id → claim_index` 串行执行，并�
 4. 按当前有效主体、来源与批准记录构造事实；
 5. 通过共享 MemoryFactService 原子写事实、证据、状态事件和 proposal 提交回执。
 
+上述正文解码、校验、指纹与来源补全在 reader 完成；提交时同一 writer 核原 proposal/item 内容、实际 selection、来源字段、当前 owner 和 live job 的缺席条件。最终 run 状态也在 writer 根据当前待处理项选择，不沿用较早的计数。
+
 CREATE 创建独立事实，不按同 key 搜索旧值、调用 consolidation 或强制合并历史；
 纠正和失效沿真实 fact ID。过期 claim 默认 skipped；`stage_invalidated` 可以保存
 带 expired 原因的历史事实。来源和回执复核防止越权或重复提交，不增加 active 容量淘汰。
@@ -145,9 +147,10 @@ selection 可用 `maximum_events` 指定本次范围的数量边界；留空时�
 清理 staging，删除以该整个人物归并集合为 canonical subject/visibility 的 proposal，取消仅针对该人物的非终态 run，
 并按真实平台与原持有时段处理其余 selection；已提交人物事实继续按现有 forgetme 规则删除。
 第三方事实目标独立于原作者，跨平台同号不扩大范围。
-整族账号时段、JSON selection 重写与 hash 在同一 WAL 读快照准备，首次 DML 后只消费本批准备的真实相关行。
-共享隐私 writer 必须传入 prepared；不扫描完整 run 目录、比较全库 catalogue token 或在写后重解析 JSON。
-SQLite 读快照竞争会整体回滚并重备纯数据库单元；不重买模型结果、不改原 run/proposal/operation ID，
+整族账号时段、JSON selection 重写与 hash 在同一 WAL 读快照准备；关闭 reader 后使用主库统一 writer。
+共享隐私 writer 必须传入 prepared，提交时核实际相关集合及原 selection/original-selection JSON，包含新匹配行；
+不比较全库 catalogue token，不在 writer 重解析 JSON。来源真实变化时保留原 staging，稍后按原 run/proposal 再准备；
+不重买模型结果、不改原 run/proposal/operation ID，
 不通过 LIKE 匹配平台 ID，也不将多个别名拆为独立提交。
 
 

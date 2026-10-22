@@ -309,7 +309,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             resolved = await router.resolve_send_for_conversation(
                 conversation_id, presence_id=second_presence, source_event_id=9
             )
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 await router.validate_prepared_send(
                     session, resolved, target_kind="person", target_id=person_id
                 )
@@ -352,7 +352,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             from yuki.services.effect_gate import ConversationEffectGate
 
             notifications = PluginNotificationRepository(database)
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 grant = await reader.scalar(select(PluginBackgroundTargetGrantModel))
                 assert grant.canonical_conversation_id == conversation_id
                 assert grant.canonical_presence_id == second_presence
@@ -360,7 +360,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             # not prove its original creator, unlike the independent Work above.
             before_job = len(provider.requests)
             assert await notifications.claim_turn() is None
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 retained = await reader.get(PluginBackgroundTurnJobModel, 1)
                 assert retained.status == "failed"
                 assert retained.last_error_category == "missing_canonical_owner"
@@ -380,7 +380,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             )
             await delivery._prepare_pending()
             assert await notifications.claim_outbox() is None
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 queued_effect = await reader.get(PluginNotificationOutboxModel, 1)
                 assert queued_effect.status == "failed"
                 assert queued_effect.source_person_id is None

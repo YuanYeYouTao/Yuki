@@ -21,7 +21,7 @@ def test_upgrade_only_retires_old_claimed_continuations(tmp_path, monkeypatch):
     command.upgrade(config, "0115")
 
     async def snapshot(database):
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             return {
                 name: [
                     dict(row)
@@ -96,7 +96,7 @@ def test_upgrade_only_retires_old_claimed_continuations(tmp_path, monkeypatch):
                     }
                 else:
                     assert after == before
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
                 assert not list(
                     await reader.scalars(

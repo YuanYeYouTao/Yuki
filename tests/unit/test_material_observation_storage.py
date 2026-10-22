@@ -391,7 +391,7 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
     async def verify():
         database = Database(url)
         try:
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 selected_rows = [
                     json.loads(row)
                     for row in await reader.scalars(
@@ -418,7 +418,7 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
                 assert [json.loads(item)["message"]["content"] for item in pure_chat] == [
                     baseline["raw_body"]
                 ]
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 assert (
                     await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0109"
                 )
@@ -743,7 +743,7 @@ def test_failed_upgrade_rolls_back_ddl_public_retirement_and_original_triggers(
     async def verify():
         database = Database(url)
         try:
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 assert (
                     await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0107"
                 )
@@ -797,14 +797,14 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
             )
         )
         original_revision = owner.prompt_source_revision
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current = await reader.get(PromptProjectionModel, VIEW)
         owner = await reader.get(CanonicalConversationModel, env.context.conversation_id)
         assert current.invalidated_reason is None
         assert owner.prompt_source_revision == original_revision
     async with database.immediate_session() as writer:
         await writer.execute(text("UPDATE chat_events SET audio_transcript='实际语音'"))
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.get(PromptProjectionModel, VIEW)
         assert (row.tail_ordinal, row.item_count, row.byte_size) == (0, 0, 2)
         installed = dict(
@@ -841,7 +841,7 @@ async def _trigger_sources(database, tmp_path, privacy_update):
         direction="inbound",
         content="unrelated real event",
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         events = (await reader.scalars(select(ChatEventModel).order_by(ChatEventModel.id))).all()
     main_event, other_event = events
     identities = []
@@ -948,7 +948,7 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
         "space_active_routes",
         "space_binding_ingest_routes",
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         owners = {
             row["id"]: dict(row)
             for row in (
@@ -1000,7 +1000,7 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
                 "payload": encode({"kind": "dynamic_snapshot", "contributions": {}}),
             },
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         after_owners = {
             row["id"]: dict(row)
             for row in (

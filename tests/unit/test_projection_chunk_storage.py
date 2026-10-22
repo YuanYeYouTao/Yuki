@@ -35,7 +35,7 @@ async def _prepare(repository, context, fragments, previous=None, *, reason=None
 
 
 async def _chunks(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return list(
             await reader.execute(
                 select(
@@ -154,7 +154,7 @@ async def test_replacement_stores_current_bytes_and_retires_old_chunks_not_prove
     assert [(epoch, ordinal) for epoch, ordinal, _ in await _chunks(database)] == [
         (current.epoch_id, 1)
     ]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         first = await reader.scalar(select(ContextSelectionModel.payload_json))
     assert "first admitted" in first and "current epoch" not in first
     assert current.items()[0]["message"]["content"] == "current epoch"

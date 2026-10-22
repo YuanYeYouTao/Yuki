@@ -291,7 +291,7 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     unknown = await _remember(
         facts, user_id="1001", memory_key="camera-unknown", content="camera unknown"
     )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         for fact, occurred in (
             (old, "2026-08-01 00:00:00.000000"),
             (inside, "2026-09-08 16:00:00.000000"),
@@ -336,7 +336,7 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     )
     documents = EmbeddingDocumentBuilder(template_version=1, max_characters=1000)
     vector = EmbeddingVector(values=(1.0, 0.0), dimensions=2)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         for fact in (old, inside, end, unknown):
             session.add(
                 MemoryEmbeddingModel(
@@ -380,7 +380,7 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
 @pytest.mark.asyncio
 async def test_missing_fts_surfaces_stable_error_instead_of_full_scan(database: Database) -> None:
     _, retriever = _retriever(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(text("DROP TABLE memory_facts_fts"))
     with pytest.raises(MemoryRetrievalError) as captured:
         await retriever.retrieve(_query("任意查询", _target("1001")))

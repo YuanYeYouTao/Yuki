@@ -124,7 +124,7 @@ async def test_native_private_main_reply_and_duplicate_keep_original_event(teleg
     sends = [params for method, params in env.wire if method == "sendMessage"]
     assert len(sends) == 1 and sends[0]["chat_id"] == "42"
     assert sends[0]["text"] == "TG reply"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
     assert len(rows) == 2 and rows[0].author_person_id and rows[1].author_presence_id
     assert rows[0].canonical_conversation_id == rows[1].canonical_conversation_id
@@ -189,7 +189,7 @@ async def test_native_group_enable_recovers_disabled_group_without_chat_or_model
     before_requests = len(env.model.requests)
     await env.gateway.receive(update(4, chat=-10042, text="/ai admin group CURRENT enable"))
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         space = await session.get(CanonicalSpaceModel, space_id)
         ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
         route = await session.get(SpaceActiveRouteModel, space_id)
@@ -230,7 +230,7 @@ async def test_group_recovery_uses_platform_person_and_current_superuser(telegra
     before_requests = len(env.model.requests)
     await env.gateway.receive(update(3, chat=-10042, text="/ai admin group current enable"))
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         space = await session.get(CanonicalSpaceModel, space_id)
         assert not space.enabled
     assert len(env.model.requests) == before_requests
@@ -240,9 +240,10 @@ async def test_group_recovery_uses_platform_person_and_current_superuser(telegra
 
 
 async def test_group_recovery_keeps_original_merged_actor(telegram_env, database):
+    from tests.support.person_merge import merge_persons
+
     from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
     from yuki.identity.canonical_repository import create_person_binding
-    from yuki.identity.person_identity import merge_persons
 
     env = telegram_env
     await env.gateway.receive(update(text="establish sender"))
@@ -268,7 +269,7 @@ async def test_group_recovery_keeps_original_merged_actor(telegram_env, database
     before_requests = len(env.model.requests)
     await env.gateway.receive(update(2, chat=-10042, text="/ai admin group current enable"))
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt = await session.scalar(
             select(ControlCommandReceiptModel).where(
                 ControlCommandReceiptModel.principal_id == original_person
@@ -287,7 +288,7 @@ async def test_edit_updates_original_event_without_model_or_new_delivery(telegra
     await drain(env)
     await env.gateway.receive(update(3, text="new", edit=True))
     await env.gateway.receive(update(2, text="older", edit=True))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
     assert len(rows) == 2 and rows[0].content == "new"
     assert len(env.model.requests) == 2
@@ -299,7 +300,7 @@ async def test_topics_keep_original_reply_destination_and_one_space(telegram_env
     for identifier, topic in ((1, 10), (2, 20)):
         await env.gateway.receive(update(identifier, chat=-10042, topic=topic, text="!ai hello"))
         await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversations = list(
             await session.scalars(
                 select(CanonicalConversationModel).where(CanonicalConversationModel.kind == "space")
@@ -324,7 +325,7 @@ async def test_forget_qq_same_number_preserves_telegram_conversation_and_work(
     env = telegram_env
     await env.gateway.receive(update(text="the number 42 is ordinary text"))
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -368,7 +369,7 @@ async def test_forget_qq_same_number_preserves_telegram_conversation_and_work(
         await repository.release(lease)
     assert qq_person != person
     assert await PeopleRepository(database).delete_person_id(qq_person)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         kept = await session.get(ChatEventModel, event.id)
         after = await session.get(CanonicalConversationModel, original_id)
     assert kept is not None and kept.author_person_id == person and "42" in kept.content
@@ -443,6 +444,6 @@ async def test_another_platform_uses_the_same_processor_and_social_contract(tele
     assert result.reason == "chat" and len(sent) == 1
     assert sent[0][0] is handle and sent[0][1].external_id == "42"
     assert sent[0][2].text == "TG reply"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(ChatEventModel)))
     assert len(rows) == 2 and rows[0].canonical_conversation_id == rows[1].canonical_conversation_id

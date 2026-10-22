@@ -178,7 +178,7 @@ async def test_one_tool_permission_revoked_mid_script_keeps_other_tools(database
 async def test_root_budget_rejection_stops_without_dispatch(database, tmp_path):
     env = await environment(database, tmp_path)
     identity = env.control.current["id"]
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(insert(budgets).values(root_id=identity, tool_limit=1))
     body, _ = await run_code(
         env,

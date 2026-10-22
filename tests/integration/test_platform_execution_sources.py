@@ -93,7 +93,7 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
     assert response.status_code == 200, response.text
     await drain(env)
     principal = await env.identity.authenticate(device["token"])
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = (await reader.scalars(select(AutomationModel))).one()
     assert results and results[0]["ok"]
     assert row.canonical_creator_person_id == row.canonical_target_person_id == person
@@ -103,7 +103,7 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
     )
     from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.get(CanonicalConversationModel, principal.conversation_id)
         presence = await reader.get(PresenceModel, row.canonical_presence_id)
     assert conversation.entry_presence_id == presence.id == row.canonical_presence_id
@@ -180,7 +180,7 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
             incoming["message"]["date"] = int(datetime.now(UTC).timestamp()) - 40
             await env.gateway.receive(incoming)
         await drain_telegram(env)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             original_ids = tuple(
                 await session.scalars(
                     select(ChatEventModel.id)
@@ -224,7 +224,7 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
             incoming["message"]["date"] = int(datetime.now(UTC).timestamp()) - 20
             await env.gateway.receive(incoming)
         await drain_telegram(env)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             next_ids = tuple(
                 await session.scalars(
                     select(ChatEventModel.id)
@@ -351,7 +351,7 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
         assert "read_personal_entry" not in contract.script_api.schemas
     else:
         assert tuple(snapshots[0].tools) == full
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         presence = await reader.get(PresenceModel, actor.presence_id)
     assert presence.enabled and presence.platform == "app"
     assert json.loads(child["source_json"])["trigger_event_id"] == actor.event_id
@@ -512,7 +512,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
     await drain_telegram(env)
     chat = env.harness.processor._chat
     chat.runtime.runner.code_mode_settings = chat._settings  # application container binding
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
         from yuki.persistence.models import ChatEventModel
 
@@ -666,14 +666,14 @@ async def test_group_migration_preserves_original_work_and_native_send(
     assert final["model_requests"] == 1 and final["tool_calls"] == 1
     from yuki.runtime.work_budget_schema import budgets
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         shared = (
             (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
             .mappings()
             .one()
         )
         assert shared["models"] == shared["tools"] == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         retained = await session.get(CanonicalConversationModel, conversation_id)
         original = await session.get(ChatEventModel, event_id)
         assert retained.space_binding_id == binding_id and retained.space_id == space
@@ -683,7 +683,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
     if origin == "self_initiative":
         from yuki.persistence.models import MemoryToolReceiptModel
 
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             receipt = (
                 await session.scalars(
                     select(MemoryToolReceiptModel).where(
@@ -698,7 +698,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         assert await executor.run(child_id) is None
         assert len(env.model.requests) == requests_before_worker + 1
         assert len([method for method, _ in env.wire if method == "sendMessage"]) == 1
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalars(
                     select(MemoryToolReceiptModel.id).where(
@@ -730,7 +730,7 @@ async def test_app_sdk_admin_grants_an_explicit_telegram_topic(
     tg.model._responder = lambda _: "only the original internal result"
     await tg.gateway.receive(update(chat=-10042, topic=10, text="!ai known topic"))
     await drain_telegram(tg)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.scalar(
             select(CanonicalConversationModel).where(CanonicalConversationModel.kind == "space")
         )

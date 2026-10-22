@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.engine import CursorResult
 
 from yuki.memory.eligibility import sql_fact_tool_evidence_predicate
@@ -18,7 +18,11 @@ from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.event_evidence import facts_with_valid_event_evidence
 from yuki.memory.quality.models import HygienePlan
 from yuki.persistence.database import Database
-from yuki.persistence.models import MemoryEmbeddingProfileModel
+from yuki.persistence.models import (
+    ChatEventModel,
+    MemoryEmbeddingProfileModel,
+    MemoryEvidenceModel,
+)
 
 _SCAN_PAGE_SIZE = 500
 
@@ -32,7 +36,7 @@ class MemoryProvenanceHygiene:
 
     async def scan(self) -> HygienePlan:
         audit = await MemoryProductionQualityAudit(self._database).run()
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             invalid_rows: list[int] = []
             last_id = 0
             while len(invalid_rows) < 500:
@@ -137,7 +141,7 @@ class MemoryProvenanceHygiene:
             raise RuntimeError("memory hygiene fingerprint changed; run scan again")
         for offset in range(0, len(current.invalid_fact_ids), 128):
             await self._invalidate_page(current.invalid_fact_ids[offset : offset + 128])
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             profile = await reader.scalar(
                 select(MemoryEmbeddingProfileModel)
                 .order_by(MemoryEmbeddingProfileModel.id.desc())
@@ -173,9 +177,7 @@ class MemoryProvenanceHygiene:
         return current
 
     async def _invalidate_page(self, fact_ids: tuple[int, ...]) -> int:
-        # A SQLite read snapshot can upgrade only if no competing commit occurred.
-        # BUSY_SNAPSHOT rolls the entire page back; rescan before retrying maintenance.
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             valid = await facts_with_valid_event_evidence(session, fact_ids)
             placeholders = ",".join(f":fact_{index}" for index in range(len(fact_ids)))
@@ -183,7 +185,8 @@ class MemoryProvenanceHygiene:
             rows = tuple(
                 await session.execute(
                     text(f"""
-                SELECT f.id, f.status, f.conflict_state, f.updated_at FROM memory_facts f
+                SELECT f.id, f.status, f.conflict_state, f.updated_at, f.scope_type
+                FROM memory_facts f
                 WHERE f.id IN ({placeholders}) AND f.source_type IN ('automatic','rebuild')
                   AND f.status!='invalidated' AND NOT EXISTS (
                     SELECT 1 FROM memory_evidence e
@@ -197,21 +200,99 @@ class MemoryProvenanceHygiene:
                 )
             )
             prepared = tuple(row for row in rows if row.id not in valid)
+            # The Python projection/normalization above stays on the reader. Keep
+            # the actual evidence membership and consumed source rows for the short commit.
+            evidence_values = tuple(
+                dict(row)
+                for row in (
+                    await session.execute(
+                        select(*MemoryEvidenceModel.__table__.columns).where(
+                            MemoryEvidenceModel.fact_id.in_(fact_ids)
+                        )
+                    )
+                ).mappings()
+            )
+            event_ids = tuple(
+                row["event_id"] for row in evidence_values if row["event_id"] is not None
+            )
+            source_values = (
+                tuple(
+                    dict(row)
+                    for row in (
+                        await session.execute(
+                            select(*ChatEventModel.__table__.columns).where(
+                                ChatEventModel.id.in_(event_ids)
+                            )
+                        )
+                    ).mappings()
+                )
+                if event_ids
+                else ()
+            )
+        async with self._database.immediate_session() as session:
+            current_ids = set(
+                await session.scalars(
+                    select(MemoryEvidenceModel.id).where(MemoryEvidenceModel.fact_id.in_(fact_ids))
+                )
+            )
+            if current_ids != {row["id"] for row in evidence_values}:
+                return 0
+            current_sources = set(
+                await session.scalars(
+                    select(ChatEventModel.id).where(ChatEventModel.id.in_(event_ids))
+                )
+            )
+            if current_sources != {row["id"] for row in source_values}:
+                return 0
+            for model, values in (
+                (MemoryEvidenceModel, evidence_values),
+                (ChatEventModel, source_values),
+            ):
+                for offset in range(0, len(values), 64):
+                    page = values[offset : offset + 64]
+                    matched = set(
+                        await session.scalars(
+                            select(model.id).where(
+                                or_(
+                                    *(
+                                        and_(
+                                            *(
+                                                getattr(model, key) == value
+                                                for key, value in row.items()
+                                            )
+                                        )
+                                        for row in page
+                                    )
+                                )
+                            )
+                        )
+                    )
+                    if matched != {row["id"] for row in page}:
+                        return 0
             now = datetime.now(UTC)
             invalidated = 0
             for row in prepared:
                 result = await session.execute(
-                    text("""
-                    UPDATE memory_facts SET status='invalidated', conflict_state='clear',
+                    text(f"""
+                    UPDATE memory_facts AS f SET status='invalidated', conflict_state='clear',
                       invalidated_reason='invalid_provenance', updated_at=:now
                     WHERE id=:fact_id AND updated_at=:old_time AND status=:from_status
-                      AND conflict_state=:from_conflict AND source_type IN ('automatic','rebuild')
+                      AND conflict_state=:from_conflict AND scope_type=:scope_type
+                      AND source_type IN ('automatic','rebuild')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM memory_evidence e
+                        JOIN memory_tool_receipts t ON t.id=e.tool_receipt_id
+                        LEFT JOIN chat_events c ON c.id=t.trigger_event_id
+                        LEFT JOIN canonical_conversations v ON v.id=c.canonical_conversation_id
+                        WHERE e.fact_id=f.id AND {sql_fact_tool_evidence_predicate()}
+                      )
                 """),
                     dict(
                         fact_id=row.id,
                         old_time=row.updated_at,
                         from_status=row.status,
                         from_conflict=row.conflict_state,
+                        scope_type=row.scope_type,
                         now=now,
                     ),
                 )
@@ -229,6 +310,7 @@ class MemoryProvenanceHygiene:
                         fact_id=row.id,
                         from_status=row.status,
                         from_conflict=row.conflict_state,
+                        scope_type=row.scope_type,
                         now=now,
                     ),
                 )
@@ -236,8 +318,7 @@ class MemoryProvenanceHygiene:
             return invalidated
 
     async def _purge_page(self, run_ids: tuple[int, ...]) -> None:
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(text("BEGIN"))
+        async with self._database.immediate_session() as session:
             placeholders = ",".join(f":run_{index}" for index in range(len(run_ids)))
             params = {f"run_{index}": value for index, value in enumerate(run_ids)}
             terminal = tuple(

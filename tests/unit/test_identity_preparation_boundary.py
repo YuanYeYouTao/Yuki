@@ -17,7 +17,7 @@ async def test_native_identity_probe_releases_preparation_connections(
     database, tmp_path, monkeypatch, entry
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         binding_id = (await find_space_binding(reader, "20001")).id
     pool = database.engine.sync_engine.pool
     checked_out = set()
@@ -88,12 +88,13 @@ async def test_native_identity_probe_releases_preparation_connections(
             "seconds": after[key]["seconds"] - before[key]["seconds"],
         }
         for key in (
-            "connection_acquisition",
+            "writer_connection_acquisition",
             "read_sql",
+            "writer_admission_wait",
             "acquire",
             "sql",
             "commit",
-            "held_lower_bound",
+            "writer_transaction",
         )
     }
     print(

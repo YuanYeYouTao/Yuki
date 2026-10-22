@@ -384,7 +384,7 @@ async def test_bounded_concurrent_reads_keep_exact_budget_and_partial_receipts(
     env.host.engine_factory = lambda *args: GroupEngine(5, False)
     identity = env.control.current["id"]
     if root_limit is not None:
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             await writer.execute(
                 insert(budgets)
                 .values(root_id=identity, tool_limit=root_limit)

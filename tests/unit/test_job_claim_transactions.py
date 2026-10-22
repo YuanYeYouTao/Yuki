@@ -34,7 +34,7 @@ async def test_claim_prepares_without_writer_and_competing_claims_are_disjoint(
     module = importlib.import_module("yuki.memory.repository")
 
     if stale_processing:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryJobModel).values(
                     status="processing", updated_at=datetime.now(UTC) - timedelta(minutes=6)
@@ -100,7 +100,7 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
     original = module.commit_job_claims
 
     async def reset_then_commit(*args):
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             source = await session.get(ChatEventModel, identity)
             values = {watermark: identity}
             await session.execute(
@@ -119,7 +119,7 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
         )
     )
     assert not claimed
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.get(MemoryJobModel, 1)
         assert job is not None and job.status == "pending"
 
@@ -151,21 +151,21 @@ async def test_memory_worker_recovers_original_job_after_repeated_provider_failu
     assert await worker.enqueue(identity, "private:1001")
     for attempts in range(1, 5):
         assert await worker.process_once() == 0
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             job = await session.get(MemoryJobModel, 1)
             assert job is not None and job.event_id == identity
             assert job.status == "pending" and job.attempts == attempts
             assert job.error_category == "LLMUnavailableError"
             assert job.next_attempt_at.replace(tzinfo=UTC) > datetime.now(UTC)
         # Advance readiness only; the next activation must reclaim the original ID.
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryJobModel)
                 .where(MemoryJobModel.id == 1)
                 .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
             )
     assert await worker.process_once() == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.get(MemoryJobModel, 1)
         assert job is not None and job.event_id == identity and job.attempts == 4
         assert job.status == "done" and job.outcome == "no_claims"

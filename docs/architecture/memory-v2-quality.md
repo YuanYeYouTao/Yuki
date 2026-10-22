@@ -20,3 +20,7 @@
 验证以真实 SQL 原子性、隐私和来源、请求协议、累计预算及原回执恢复为主。测试和 CI 不冻结工具数量、提示词措辞或经验策略。诊断不证明记忆的语义质量，healthz 不等于自然聊天验收。
 
 操作入口见 [运维](../operations/memory-quality.md)。
+
+Hygiene 每页先在 reader 渲染、规范化实际来源，进入统一 writer 后核原 evidence 成员和 source 字段，
+并重新判断 tool provenance；新证据或源变化使该页保留待下次扫描。状态变更和状态事件同页提交。
+FTS rebuild 是显式完整 SQLite 维护命令，单独使用 writer；它不伪装成普通查询或拆成逐行索引更新。

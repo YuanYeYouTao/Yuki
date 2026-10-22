@@ -6,7 +6,6 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
 from typing import Any
 
 from yuki.admin.config_service import RuntimeConfigService
@@ -118,7 +117,8 @@ class AutomationWorker:
             return await self._repository.renew_claim(
                 automation.id,
                 worker_id,
-                self._time.clock.now() + timedelta(seconds=self._settings.automation_lease_seconds),
+                lease_seconds=self._settings.automation_lease_seconds,
+                clock=self._time.clock.now,
             )
 
         try:
@@ -139,7 +139,7 @@ class AutomationWorker:
 
     async def _process(self, automation: AutomationRecord) -> None:
         try:
-            async with self._repository._database.sessions() as session:
+            async with self._repository._database.read_session() as session:
                 key, conversation_id = await bind_automation_conversation(session, automation)
                 from yuki.conversation.canonical_db_models import CanonicalConversationModel
                 from yuki.identity.db_models import PresenceModel

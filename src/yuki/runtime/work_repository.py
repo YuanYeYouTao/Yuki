@@ -143,7 +143,7 @@ class WorkRepository:
         # A busy scope or obsolete generation has no state to change. Inspect
         # them without joining the SQLite writer queue; this is only a rejection
         # fast path, never permission to acquire a lease.
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             observed = (
                 await reader.execute(
                     select(
@@ -211,7 +211,7 @@ class WorkRepository:
             raise ValueError("invalid_work_lease_duration")
         if not await self.valid(lease):
             return False
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             return (
                 await session.execute(
                     update(self._lease_table(lease))
@@ -223,7 +223,7 @@ class WorkRepository:
 
     async def lease_expiry(self, lease: WorkLease) -> float | None:
         """Read the confirmed deadline for this owner without acquiring a writer."""
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             value = await session.scalar(
                 select(self._lease_table(lease).c.lease_until).where(self._fence(lease))
             )
@@ -235,7 +235,7 @@ class WorkRepository:
         # A live lease still uses the full fence at SQL execution after waiting.
         if not await self.valid(lease):
             return
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(self._lease_table(lease))
                 .where(self._fence(lease))
@@ -243,7 +243,7 @@ class WorkRepository:
             )
 
     async def valid(self, lease: WorkLease) -> bool:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return (
                 await session.execute(
                     select(self._lease_table(lease).c.fence).where(self._fence(lease))
@@ -265,18 +265,9 @@ class WorkRepository:
             raise WorkConflict("work_activation_obsolete")
 
     async def _assert_lease(self, session: Any, lease: WorkLease) -> None:
-        # A write obtains SQLite's transaction writer reservation, preventing a
-        # cancel/acquire from interleaving between validation and the mutation.
-        row = (
-            await session.execute(
-                update(self._lease_table(lease))
-                .where(self._fence(lease))
-                .values(fence=self._lease_table(lease).c.fence)
-                .returning(self._lease_table(lease).c.fence)
-            )
-        ).first()
-        if row is None:
-            raise WorkConflict("work_activation_obsolete")
+        # The caller already owns the IMMEDIATE writer. Keep the actual fence
+        # and SQL-time expiry check without issuing a no-op locking UPDATE.
+        await self._assert_lease_readonly(session, lease)
 
     async def accept(
         self,
@@ -291,7 +282,7 @@ class WorkRepository:
         reporting: str | None = None,
         initial_state: str = "running",
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             return await self.accept_in_session(
                 session,
                 lease,
@@ -446,12 +437,15 @@ class WorkRepository:
                 or lease.work_id
             ):
                 raise WorkConflict("work_handoff_source_invalid")
-            checkpoint = json.loads(previous["checkpoint_json"])
-            checkpoint["handoff_work_id"] = row["id"]
             await session.execute(
                 update(work)
                 .where(work.c.id == handoff_from)
-                .values(checkpoint_json=encode_json(checkpoint), updated=now)
+                .values(
+                    checkpoint_json=func.json_set(
+                        work.c.checkpoint_json, "$.handoff_work_id", row["id"]
+                    ),
+                    updated=now,
+                )
             )
         return dict(row)
 
@@ -459,10 +453,19 @@ class WorkRepository:
         self, lease: WorkLease, parent_work_id: str, key: str, goal: str
     ) -> dict[str, Any]:
         """Create a business child with the original source and call identity."""
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             brief = await reader.scalar(
                 select(children.c.brief_json).where(children.c.work_id == parent_work_id)
             )
+            parent_source = (
+                await reader.execute(
+                    select(work.c.source_json).where(
+                        work.c.id == parent_work_id,
+                        work.c.conversation_id == lease.conversation_id,
+                        work.c.generation == lease.generation,
+                    )
+                )
+            ).scalar_one()
         if brief is not None:
             from yuki.runtime.subagent_repository import SubagentRepository
 
@@ -472,6 +475,7 @@ class WorkRepository:
             created = await self.get(child)
             assert created is not None
             return created
+        source = json.loads(parent_source)
         async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             parent = (
@@ -487,7 +491,8 @@ class WorkRepository:
                 .mappings()
                 .one()
             )
-            source = json.loads(parent["source_json"])
+            if parent["source_json"] != parent_source:
+                raise WorkConflict("work_parent_source_invalid")
             return await self.accept_in_session(
                 session,
                 lease,
@@ -499,7 +504,7 @@ class WorkRepository:
             )
 
     async def by_source(self, source_key: str) -> dict[str, Any] | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = (
                 (await session.execute(select(work).where(work.c.source_key == source_key)))
                 .mappings()
@@ -508,7 +513,7 @@ class WorkRepository:
             return dict(row) if row else None
 
     async def get(self, identity: str) -> dict[str, Any] | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = (
                 (await session.execute(select(work).where(work.c.id == identity)))
                 .mappings()
@@ -517,7 +522,7 @@ class WorkRepository:
             return dict(row) if row else None
 
     async def active(self, conversation_id: str, generation: int) -> list[dict[str, Any]]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (
                 (
                     await session.execute(
@@ -551,7 +556,7 @@ class WorkRepository:
             raise ValueError("invalid_work_transition")
         if reason is not None and not isinstance(reason, str):
             raise ValueError("invalid_work_reason")
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             return await self.commit_state(
                 session,
@@ -589,7 +594,7 @@ class WorkRepository:
     async def has_pending_business_inputs(
         self, lease: WorkLease, work_id: str, *, input_ids: tuple[int, ...] | None = None
     ) -> bool:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await self._assert_lease_readonly(session, lease)
             query = select(inputs.c.id).where(
                 inputs.c.work_id == work_id,
@@ -629,7 +634,7 @@ class WorkRepository:
         )
 
     async def has_owned_execution(self, lease: WorkLease, identity: str) -> bool:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await self._assert_lease_readonly(session, lease)
             return bool(await session.scalar(select(self._owned_execution_clause(identity))))
 
@@ -844,7 +849,7 @@ class WorkRepository:
         self, lease: WorkLease, identity: str, control: dict[str, Any] | None
     ) -> dict[str, Any]:
         """Persist, or retire, the one host-owned accepted lifecycle decision."""
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             return await self.set_accepted_control(session, lease, identity, control)
 
@@ -908,7 +913,7 @@ class WorkRepository:
                     ),
                     else_=replacement,
                 )
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             if models or tools:
                 from yuki.runtime.work_budget import charge
@@ -1025,7 +1030,7 @@ class WorkRepository:
     ) -> dict[str, Any]:
         """Patch bounded host-owned communication facts without changing lifecycle."""
         serialized = self.encode_communication_updates(updates)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             row = (
                 (
@@ -1063,16 +1068,23 @@ class WorkRepository:
         ready: bool = True,
         resume: tuple[WorkLease, dict[str, Any]] | None = None,
         payload: dict[str, Any] | None = None,
+        prepared_payload: str | None = None,
         session: AsyncSession | None = None,
     ) -> int:
         from yuki.runtime.execution_receipts import PROCESS_ID
 
         if not source_key or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
-        serialized = encode_json(resume[1] if resume else payload if payload is not None else {})
+        serialized = (
+            prepared_payload
+            if prepared_payload is not None
+            else encode_json(resume[1] if resume else payload if payload is not None else {})
+        )
 
         def matches(row: Any) -> bool:
-            return (payload is None or row["payload_json"] == serialized) and all(
+            return (
+                (payload is None and prepared_payload is None) or row["payload_json"] == serialized
+            ) and all(
                 row[key] == value
                 for key, value in {
                     "conversation_id": conversation_id,
@@ -1085,7 +1097,7 @@ class WorkRepository:
 
         # Explicit resume also changes the Work state and retains its writer/CAS.
         if resume is None and session is None:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 existing_row = (
                     (await reader.execute(select(inputs).where(inputs.c.source_key == source_key)))
                     .mappings()
@@ -1176,7 +1188,7 @@ class WorkRepository:
         from yuki.runtime.work_media import externalize
 
         # A retry acknowledges the original durable input, never replaces it.
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             if before_publish is None and await reader.scalar(
                 select(inputs.c.ready).where(
                     inputs.c.id == identity,
@@ -1277,7 +1289,7 @@ class WorkRepository:
         refs = references(encoded)
         if not refs:
             return tuple(ChatImage(**image) for image in encoded)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             blobs = {
                 row.sha256: bytes(row.content)
                 for row in await session.execute(
@@ -1300,7 +1312,7 @@ class WorkRepository:
         if lease.work_id and work_id not in {None, lease.work_id}:
             raise WorkConflict("worker_mail_not_owned")
         target = work_id or lease.work_id
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (
                 (
                     await session.execute(
@@ -1328,7 +1340,7 @@ class WorkRepository:
     async def stage(self, lease: WorkLease, ids: list[int], attempt_id: str) -> None:
         if not ids or len(set(ids)) != len(ids) or len(ids) > 32:
             raise ValueError("invalid_work_input_batch")
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             rows = (
                 await session.execute(
@@ -1347,7 +1359,7 @@ class WorkRepository:
                 raise WorkConflict("work_input_already_staged")
 
     async def consume(self, lease: WorkLease, attempt_id: str) -> None:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             await session.execute(
                 update(inputs)
@@ -1369,7 +1381,7 @@ class WorkRepository:
     ) -> None:
         """Hard boundary only; ordinary arrivals never revoke activation leases."""
         if session is None:
-            async with self.database.sessions() as owned, owned.begin():
+            async with self.database.immediate_session() as owned:
                 await self.cancel(conversation_id, generation=generation, session=owned)
             return
         await self.cancel_in_session(session, conversation_id, generation=generation)
@@ -1519,33 +1531,53 @@ class WorkRepository:
             )
             .exists()
         )
-        async with self.database.sessions() as reader:
-            candidate = await reader.scalar(
-                select(SandboxTaskRunModel.request_id)
-                .join(
-                    SandboxTaskContinuationModel,
-                    SandboxTaskContinuationModel.request_id == SandboxTaskRunModel.request_id,
-                )
-                .where(
-                    SandboxTaskRunModel.request_id == request_id,
-                    SandboxTaskRunModel.status == "completed",
-                    SandboxTaskRunModel.run_id.is_not(None),
-                    or_(
-                        SandboxTaskContinuationModel.state == "ready",
-                        and_(
-                            SandboxTaskContinuationModel.state == "observed",
-                            or_(
-                                SandboxTaskContinuationModel.reason == "forwarded_to_parent_work",
-                                and_(
-                                    SandboxTaskContinuationModel.reason == "original_turn_observed",
-                                    matching_input,
+        async with self.database.read_session() as reader:
+            candidate = (
+                await reader.execute(
+                    select(
+                        SandboxTaskRunModel.request_id,
+                        SandboxTaskRunModel.run_id,
+                        SandboxTaskRunModel.source_json,
+                        SandboxTaskRunModel.completion_json,
+                        SandboxTaskRunModel.source_conversation_id,
+                    )
+                    .join(
+                        SandboxTaskContinuationModel,
+                        SandboxTaskContinuationModel.request_id == SandboxTaskRunModel.request_id,
+                    )
+                    .where(
+                        SandboxTaskRunModel.request_id == request_id,
+                        SandboxTaskRunModel.status == "completed",
+                        SandboxTaskRunModel.run_id.is_not(None),
+                        or_(
+                            SandboxTaskContinuationModel.state == "ready",
+                            and_(
+                                SandboxTaskContinuationModel.state == "observed",
+                                or_(
+                                    SandboxTaskContinuationModel.reason
+                                    == "forwarded_to_parent_work",
+                                    and_(
+                                        SandboxTaskContinuationModel.reason
+                                        == "original_turn_observed",
+                                        matching_input,
+                                    ),
                                 ),
                             ),
                         ),
-                    ),
+                    )
                 )
-            )
+            ).first()
         if candidate is None:
+            return False
+        source = json.loads(candidate.source_json)
+        completion = json.loads(candidate.completion_json or "{}")
+        if (
+            not isinstance(source, dict)
+            or not isinstance(completion, dict)
+            or completion.get("run_id") != candidate.run_id
+            or completion.get("pending") is not False
+            or completion.get("status") not in {"succeeded", "failed", "cancelled"}
+        ):
             return False
         async with self.database.immediate_session() as session:
             task = await session.get(SandboxTaskRunModel, request_id)
@@ -1562,14 +1594,11 @@ class WorkRepository:
                 )
             ):
                 return False
-            source = json.loads(task.source_json)
-            completion = json.loads(task.completion_json or "{}")
             if (
-                not isinstance(source, dict)
-                or not isinstance(completion, dict)
-                or completion.get("run_id") != task.run_id
-                or completion.get("pending") is not False
-                or completion.get("status") not in {"succeeded", "failed", "cancelled"}
+                task.run_id != candidate.run_id
+                or task.source_json != candidate.source_json
+                or task.completion_json != candidate.completion_json
+                or task.source_conversation_id != candidate.source_conversation_id
             ):
                 return False
             parent_id = source.get("work_id")
@@ -1618,12 +1647,49 @@ class WorkRepository:
 
         from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
+        async with self.database.read_session() as reader:
+            prepared = (
+                await reader.execute(
+                    select(
+                        SandboxTaskRunModel.run_id,
+                        SandboxTaskRunModel.source_json,
+                        SandboxTaskRunModel.completion_json,
+                        SandboxTaskRunModel.source_conversation_id,
+                    ).where(SandboxTaskRunModel.request_id == request_id)
+                )
+            ).first()
+        if prepared is None:
+            return
+        source = json.loads(prepared.source_json)
+        completion = json.loads(prepared.completion_json or "{}")
+        payload_json = encode_json(
+            {
+                "text": json.dumps(
+                    {
+                        "kind": "sandbox_completion",
+                        "request_id": request_id,
+                        "run_id": prepared.run_id,
+                        "status": completion.get("status"),
+                        "pending": False,
+                        "exit_code": completion.get("exit_code"),
+                        "detail": "查询原 run_id 的输出与产物，不能重跑原命令。",
+                    },
+                    ensure_ascii=False,
+                )
+            }
+        )
         async with self.database.immediate_session() as session:
             task = await session.get(SandboxTaskRunModel, request_id)
             receipt = await session.get(SandboxTaskContinuationModel, request_id)
             if task is None or receipt is None or receipt.state != "ready":
                 return
-            source = json.loads(task.source_json)
+            if (
+                task.run_id != prepared.run_id
+                or task.source_json != prepared.source_json
+                or task.completion_json != prepared.completion_json
+                or task.source_conversation_id != prepared.source_conversation_id
+            ):
+                return
             if not source.get("work_id"):
                 receipt.state, receipt.reason = "blocked", "legacy_continuation_retired"
                 receipt.updated_at = datetime.now(UTC)
@@ -1641,16 +1707,6 @@ class WorkRepository:
                 or source.get("generation") != parent["generation"]
             ):
                 raise WorkConflict("work_child_source_mismatch")
-            completion = json.loads(task.completion_json or "{}")
-            payload = {
-                "kind": "sandbox_completion",
-                "request_id": request_id,
-                "run_id": task.run_id,
-                "status": completion.get("status"),
-                "pending": False,
-                "exit_code": completion.get("exit_code"),
-                "detail": "查询原 run_id 的输出与产物，不能重跑原命令。",
-            }
             await session.execute(
                 insert(inputs)
                 .values(
@@ -1660,7 +1716,7 @@ class WorkRepository:
                     work_id=parent["id"],
                     kind="completion",
                     ready=True,
-                    payload_json=encode_json({"text": json.dumps(payload, ensure_ascii=False)}),
+                    payload_json=payload_json,
                     created=time.time(),
                 )
                 .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
@@ -1710,7 +1766,7 @@ class WorkRepository:
             "artifact_id",
             "artifacts",
         )
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             if (
                 await session.scalar(
                     select(self._lease_table(lease).c.fence).where(self._fence(lease))
@@ -1787,7 +1843,7 @@ class WorkRepository:
         from yuki.persistence.models import ChatEventModel
         from yuki.persistence.repository_helpers import _event_record
 
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             rows = (
                 (
@@ -1864,7 +1920,7 @@ class WorkRepository:
         """Collect unreferenced transient media without deleting execution receipts."""
         from yuki.runtime.subagent_schema import media, media_refs
 
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             orphaned = list(
                 await reader.scalars(
                     select(media.c.sha256)
@@ -1937,7 +1993,7 @@ class WorkRepository:
                 **({"composition": composition} if composition is not None else {}),
             }
         )
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             row = (
                 await session.execute(
@@ -2005,7 +2061,7 @@ class WorkRepository:
             or not isinstance(child.get("engine_call_id"), str)
         ):
             raise WorkConflict("code_boundary_identity_conflict")
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             original = (
                 (
                     await reader.execute(
@@ -2142,7 +2198,7 @@ class WorkRepository:
 
     async def composition_children(self, identity: str, parent_key: str) -> list[dict[str, Any]]:
         """Exact parent index lookup; never a bounded display page or a text scan."""
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             rows = (
                 (
                     await reader.execute(
@@ -2175,7 +2231,7 @@ class WorkRepository:
         ]
 
     async def undispatched_intent(self, identity: str, key: str) -> bool:
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             row = (
                 (
                     await reader.execute(
@@ -2198,7 +2254,7 @@ class WorkRepository:
 
     async def validate_invocation(self, key: str, expected: dict[str, Any]) -> None:
         """The fingerprint detects changed content, never determines an effect ID."""
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             previous_json = await reader.scalar(
                 select(effects.c.receipt_json).where(effects.c.effect_key == key)
             )
@@ -2223,7 +2279,7 @@ class WorkRepository:
         ``charge=False`` is for lifecycle controls and local artifact readback.
         They still publish the same dispatch marker and original receipt.
         """
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             original = (
                 (
                     await reader.execute(
@@ -2490,7 +2546,7 @@ class WorkRepository:
         """Exact durable facts; callers must not use a presentation page as completeness."""
         result: list[dict[str, Any]] = []
         cursor = ""
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             if not await session.scalar(
                 select(self._lease_table(lease).c.fence).where(self._fence(lease))
             ):
@@ -2568,7 +2624,7 @@ class WorkRepository:
         )
         prepared: list[tuple[str, str, str]] = []
         cursor = ""
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             await self._assert_lease_readonly(reader, lease)
             if await reader.scalar(select(work.c.id).where(owned)) is None:
@@ -2660,7 +2716,7 @@ class WorkRepository:
         if state not in {"accepted", "failed", "unknown"}:
             raise ValueError("invalid_work_effect_state")
         while True:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 existing = (
                     (await reader.execute(select(effects).where(effects.c.effect_key == key)))
                     .mappings()

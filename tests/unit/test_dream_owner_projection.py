@@ -78,7 +78,7 @@ async def _scene(database, provider, *, owner):
             content=f"original memory and evidence {index}",
             group_id=None if private else "3001",
         )
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             conversation = await reader.get(
                 CanonicalConversationModel, event.canonical_conversation_id
             )
@@ -221,7 +221,7 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(
         source_characters=sum(len(row.content) for row in rows),
         output_characters=0,
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await reader.scalar(
             select(MemoryDreamClusterPreviewModel).where(
                 MemoryDreamClusterPreviewModel.public_id == preview_id
@@ -253,7 +253,7 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(
         assert await cold_service.process_cluster(cold_run, cluster) == (0, 1, True)
         assert cold_provider.requests == []
         assert (await cold_dreams.get_run(run.public_id)).model_calls == 1
-        async with cold_database.sessions() as reader:
+        async with cold_database.read_session() as reader:
             applied = await reader.get(MemoryDreamClusterPreviewModel, original_preview[0])
             assert (
                 applied.id,

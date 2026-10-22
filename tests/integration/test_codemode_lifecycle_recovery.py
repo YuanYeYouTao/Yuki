@@ -149,7 +149,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
 
         from yuki.persistence.models import ChatEventModel
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             event = await reader.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.canonical_conversation_id == env.control.lease.conversation_id,

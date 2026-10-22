@@ -18,7 +18,7 @@ from yuki.persistence.repositories import EventLedgerRepository
 
 async def _around(ledger, scope, *, event_id, before, after, message_only=False):
     # Entry resolution and the page belong to the same caller-owned snapshot.
-    async with ledger._database.sessions() as session:
+    async with ledger._database.immediate_session() as session:
         await session.execute(text("BEGIN"))
         conversation = await conversation_for_scope(session, scope)
         if conversation is None:

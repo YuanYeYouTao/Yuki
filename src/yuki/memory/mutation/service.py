@@ -9,8 +9,9 @@ import logging
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.config import Settings
@@ -88,6 +89,7 @@ from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     resolve_canonical_memory_partition_for_event,
 )
+from yuki.memory.repository import PreparedMemoryEvidence
 from yuki.memory.service import MemoryFactService
 from yuki.memory.subjects import (
     ResolvedSubject,
@@ -104,6 +106,7 @@ from yuki.persistence.models import (
     ChatEventModel,
     MembershipModel,
     MemoryEvidenceModel,
+    MemoryFactModel,
     MemoryFactRelationModel,
     MemorySelfReflectionResultModel,
     MemoryToolReceiptModel,
@@ -120,6 +123,25 @@ class DreamRecomposePlan:
     source_facts: tuple[MemoryFact, ...]
     content: str
     importance: int
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedDreamRollback:
+    operation: MemoryDreamOperationModel
+    cluster: MemoryDreamClusterModel
+    sources: tuple[MemoryDreamOperationSourceModel, ...]
+    current_sources: dict[int, MemoryFact]
+    output_ids: tuple[int, ...]
+    affected_ids: tuple[int, ...]
+    added_evidence: tuple[int, ...]
+    added_relations: tuple[int, ...]
+    evidence: PreparedMemoryEvidence
+    remaining_evidence: dict[int, tuple[Any, ...]]
+    source_values: tuple[dict[str, Any], ...]
+    operation_values: dict[str, Any]
+    cluster_values: dict[str, Any]
+    source_rows_values: tuple[dict[str, Any], ...]
+    result_rows_values: tuple[dict[str, Any], ...]
 
 
 class MemoryMutationRejected(ValueError):
@@ -152,6 +174,14 @@ class _PreparedMutation:
     idempotency_key: str
     claim_fingerprint: str
     target_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MutationSourceProof:
+    events: tuple[dict[str, Any], ...]
+    receipts: tuple[dict[str, Any], ...]
+    conversations: tuple[dict[str, Any], ...]
+    origins: tuple[tuple[str | None, str | None, object], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,12 +293,6 @@ class MemoryMutationService:
                 raise ValueError("dream source changed before commit")
             current.append(fact)
         sources = tuple(current)
-        await self.prepare_dream_evidence(
-            sources,
-            anchor_fact_id=anchor_fact_id,
-            recompose_outputs=recompose_outputs,
-            session=session,
-        )
         partition = self._dream_partition(sources[0])
         if any(
             item.kind != sources[0].kind for item in sources[1:]
@@ -662,15 +686,13 @@ class MemoryMutationService:
             changed=changed,
         )
 
-    async def rollback_dream_operation(
+    async def prepare_dream_rollback(
         self,
-        *,
         public_id: str,
+        *,
         session: AsyncSession,
-        mutation_id: str | None = None,
-    ) -> tuple[int, ...]:
-        """Rollback one unchanged Dream result through the unified mutation boundary."""
-
+    ) -> PreparedDreamRollback | None:
+        """Decode one operation and validate its original source/result receipts on a reader."""
         operation_row = (
             await session.execute(
                 select(MemoryDreamOperationModel, MemoryDreamClusterModel)
@@ -685,7 +707,7 @@ class MemoryMutationService:
             )
         ).one_or_none()
         if operation_row is None:
-            return ()
+            return None
         operation, cluster = operation_row
         source_rows = tuple(
             (
@@ -780,7 +802,7 @@ class MemoryMutationService:
             ):
                 raise RuntimeError("Dream relation reference belongs to an unrelated fact")
 
-        await self._facts.prepare_evidence_write(affected_ids, session=session)
+        evidence = await self._facts.prepare_write(affected_ids, session=session)
         removed = set(added_evidence)
         remaining_evidence = {
             fact_id: tuple(
@@ -791,6 +813,149 @@ class MemoryMutationService:
             for fact_id in affected_ids
         }
 
+        def values(row: Any) -> dict[str, Any]:
+            return {column.key: getattr(row, column.key) for column in row.__table__.columns}
+
+        source_values = tuple(
+            dict(row)
+            for row in (
+                await session.execute(
+                    select(
+                        *(
+                            getattr(MemoryFactModel, name)
+                            for name in (
+                                "id",
+                                "content",
+                                "memory_key",
+                                "category",
+                                "importance",
+                                "confidence",
+                                "source_type",
+                                "authority",
+                                "status",
+                                "conflict_state",
+                                "valid_from",
+                                "valid_until",
+                                "updated_at",
+                                "scope_type",
+                                "visibility_type",
+                                "canonical_subject_person_id",
+                                "canonical_subject_space_id",
+                                "canonical_visibility_person_id",
+                                "canonical_visibility_space_id",
+                            )
+                        )
+                    ).where(MemoryFactModel.id.in_(affected_ids))
+                )
+            ).mappings()
+        )
+        return PreparedDreamRollback(
+            operation,
+            cluster,
+            source_rows,
+            current_sources,
+            output_ids,
+            affected_ids,
+            added_evidence,
+            added_relations,
+            evidence,
+            remaining_evidence,
+            source_values,
+            values(operation),
+            {key: getattr(cluster, key) for key in ("id", "partition_key", "bot_user_id")},
+            tuple(values(row) for row in source_rows),
+            tuple(values(row) for row in result_rows),
+        )
+
+    async def rollback_dream_operation(
+        self,
+        *,
+        public_id: str,
+        prepared: PreparedDreamRollback,
+        session: AsyncSession,
+        mutation_id: str | None = None,
+    ) -> tuple[int, ...]:
+        """Commit one prepared rollback after checking current owners and dependency absence."""
+        operation, cluster, source_rows = prepared.operation, prepared.cluster, prepared.sources
+        current_sources, output_ids, affected_ids = (
+            prepared.current_sources,
+            prepared.output_ids,
+            prepared.affected_ids,
+        )
+        added_evidence, added_relations = prepared.added_evidence, prepared.added_relations
+        remaining_evidence = prepared.remaining_evidence
+        for model, rows in (
+            (MemoryDreamOperationModel, (prepared.operation_values,)),
+            (MemoryDreamClusterModel, (prepared.cluster_values,)),
+            (MemoryFactModel, prepared.source_values),
+            (MemoryDreamOperationSourceModel, prepared.source_rows_values),
+            (MemoryDreamOperationResultModel, prepared.result_rows_values),
+        ):
+            for row in rows:
+                if (
+                    await session.scalar(
+                        select(model.id).where(
+                            *(getattr(model, key) == value for key, value in row.items())
+                        )
+                    )
+                    is None
+                ):
+                    raise RuntimeError("Dream rollback preparation changed")
+        for model, expected in (
+            (MemoryDreamOperationSourceModel, prepared.source_rows_values),
+            (MemoryDreamOperationResultModel, prepared.result_rows_values),
+        ):
+            current_ids = set(
+                await session.scalars(select(model.id).where(model.operation_id == operation.id))
+            )
+            if current_ids != {row["id"] for row in expected}:
+                raise RuntimeError("Dream rollback sources changed")
+        if (
+            await session.scalar(
+                select(MemoryDreamOperationSourceModel.id)
+                .join(
+                    MemoryDreamOperationModel,
+                    MemoryDreamOperationModel.id == MemoryDreamOperationSourceModel.operation_id,
+                )
+                .where(
+                    MemoryDreamOperationSourceModel.fact_id.in_(affected_ids),
+                    MemoryDreamOperationModel.id > operation.id,
+                    MemoryDreamOperationModel.status == DreamOperationStatus.COMMITTED.value,
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise RuntimeError("Dream operation has later dependent operations")
+        if (
+            added_evidence
+            and await session.scalar(
+                select(MemoryEvidenceModel.id)
+                .where(
+                    MemoryEvidenceModel.id.in_(added_evidence),
+                    MemoryEvidenceModel.fact_id.not_in(affected_ids),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise RuntimeError("Dream evidence reference belongs to an unrelated fact")
+        if (
+            added_relations
+            and await session.scalar(
+                select(MemoryFactRelationModel.id)
+                .where(
+                    MemoryFactRelationModel.id.in_(added_relations),
+                    or_(
+                        MemoryFactRelationModel.source_fact_id.not_in(affected_ids),
+                        MemoryFactRelationModel.target_fact_id.not_in(affected_ids),
+                    ),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise RuntimeError("Dream relation reference belongs to an unrelated fact")
         fingerprint = hashlib.sha256(f"dream-rollback:{operation.id}".encode()).hexdigest()
         receipt = await self._receipts.reserve_dream(
             mutation_id=mutation_id or str(uuid.uuid4()),
@@ -865,10 +1030,22 @@ class MemoryMutationService:
                 last_confirmed_at=source.before_last_confirmed_at,
                 session=session,
             )
-        operation.status = DreamOperationStatus.ROLLED_BACK.value
-        operation.rolled_back_at = datetime.now(UTC)
-        cluster.status = "rolled_back"
-        cluster.updated_at = datetime.now(UTC)
+        await session.execute(
+            update(MemoryDreamOperationModel)
+            .where(MemoryDreamOperationModel.id == operation.id)
+            .values(
+                status=DreamOperationStatus.ROLLED_BACK.value,
+                rolled_back_at=datetime.now(UTC),
+            )
+        )
+        await session.execute(
+            update(MemoryDreamClusterModel)
+            .where(MemoryDreamClusterModel.id == cluster.id)
+            .values(
+                status="rolled_back",
+                updated_at=datetime.now(UTC),
+            )
+        )
         await self._receipts.finalize(
             receipt.id,
             applied_operation=MemoryMutationAppliedOperation.RESTORE,
@@ -888,11 +1065,6 @@ class MemoryMutationService:
         recompose_outputs: tuple[DreamRecomposePlan, ...] = (),
         session: AsyncSession,
     ) -> None:
-        await self._facts.prepare_evidence_write(
-            tuple(fact.id for fact in facts),
-            session=session,
-            targets=facts,
-        )
         anchor = next((fact for fact in facts if fact.id == anchor_fact_id), None)
         if anchor is not None:
             for source in facts:
@@ -915,8 +1087,6 @@ class MemoryMutationService:
         )
         if key in bundles:
             return bundles[key]
-        if session.info.get("memory_evidence_write_started"):
-            raise RuntimeError("Dream evidence bundle was not prepared before writing")
         rows: dict[tuple[str, int], MemoryEvidenceCreate] = {}
         for fact in facts:
             evidence_rows = await self._facts.repository.list_evidence(
@@ -1008,7 +1178,7 @@ class MemoryMutationService:
         if additional_evidence and not self._trusted_self_reflection(context):
             return self._rejected(request.operation, "evidence_bundle_requires_self_reflection")
         if additional_evidence and context.initiative_run_id is not None:
-            async with self._facts.repository.database.sessions() as session:
+            async with self._facts.repository.database.read_session() as session:
                 for evidence in additional_evidence:
                     row = (
                         await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
@@ -1073,7 +1243,7 @@ class MemoryMutationService:
             raise MemoryMutationRejected("initiative_tool_evidence_required")
         fact = await self._load_fact(request.fact_id)
         merge_fact = await self._load_fact(request.merge_fact_id)
-        async with self._facts.repository.database.sessions() as session:
+        async with self._facts.repository.database.read_session() as session:
             source = await resolve_self_origin(
                 session,
                 initiative_run_id=context.initiative_run_id,
@@ -1244,7 +1414,7 @@ class MemoryMutationService:
                 requested_operation=request.operation,
             )
         evidence_sources = (prepared.evidence, *additional_evidence)
-        async with self._facts.repository.transaction() as source_session:
+        async with self._facts.repository.database.read_session() as source_session:
             source_snapshot = await self._mutation_source_snapshot(
                 context.event, evidence_sources, session=source_session
             )
@@ -1260,6 +1430,43 @@ class MemoryMutationService:
                 ),
             )
         mutation_id = str(uuid.uuid4())
+        facts = tuple(fact for fact in (prepared.fact, prepared.merge_fact) if fact is not None)
+        targets: tuple[MemoryFact | MemoryFactCreate, ...] = facts
+        if prepared.claim is not None:
+            targets = (*targets, prepared.claim.fact)
+        replacement = None
+        if request.operation in {
+            MemoryMutationOperation.REASSIGN,
+            MemoryMutationOperation.UPDATE_METADATA,
+        }:
+            replacement = self._version_replacement(prepared)
+            targets = (*targets, replacement)
+        copies: list[
+            tuple[tuple[int, ...], MemoryFact | MemoryFactCreate, MemoryAuthority | None]
+        ] = []
+        if request.operation is MemoryMutationOperation.MERGE:
+            source = self._required_fact(prepared)
+            if prepared.merge_fact is None:
+                raise MemoryMutationRejected("merge_fact_required")
+            copies.append(((source.id,), prepared.merge_fact, None))
+        elif request.operation is MemoryMutationOperation.CORRECT:
+            source = self._required_fact(prepared)
+            assert prepared.claim is not None
+            copies.append(((source.id,), prepared.claim.fact, None))
+        elif replacement is not None:
+            source = self._required_fact(prepared)
+            copies.append(
+                (
+                    (source.id,),
+                    replacement,
+                    replacement.authority
+                    if request.operation is MemoryMutationOperation.REASSIGN
+                    else None,
+                )
+            )
+        evidence_preparation = await self._facts.prepare_write(
+            tuple(fact.id for fact in facts), targets=targets, copies=tuple(copies)
+        )
 
         async def apply(session: AsyncSession) -> MemoryMutationResult:
             duplicate = await self._receipts.find(
@@ -1298,10 +1505,7 @@ class MemoryMutationService:
             if (
                 not await _same_target_owners(session, current_owners, prepared.target_owners)
                 or current_actor != prepared.actor_person_id
-                or await self._mutation_source_snapshot(
-                    context.event, evidence_sources, session=session
-                )
-                != source_snapshot
+                or not await self._mutation_sources_current(source_snapshot, session=session)
             ):
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
             current_context = replace(
@@ -1326,24 +1530,9 @@ class MemoryMutationService:
                 prepared.merge_fact,
                 current_context,
                 actor_person_id=current_actor,
+                session=session,
             )
             current_prepared = replace(prepared, context=current_context)
-            facts = tuple(fact for fact in (prepared.fact, prepared.merge_fact) if fact is not None)
-            targets: tuple[MemoryFact | MemoryFactCreate, ...] = facts
-            if prepared.claim is not None:
-                targets = (*targets, prepared.claim.fact)
-            replacement = None
-            if request.operation in {
-                MemoryMutationOperation.REASSIGN,
-                MemoryMutationOperation.UPDATE_METADATA,
-            }:
-                replacement = self._version_replacement(prepared)
-                targets = (*targets, replacement)
-            await self._facts.prepare_evidence_write(
-                tuple(fact.id for fact in facts),
-                session=session,
-                targets=targets,
-            )
             current_facts = {
                 fact.id: fact
                 for fact in await self._facts.repository.get_facts(
@@ -1370,32 +1559,6 @@ class MemoryMutationService:
                     )
                 ):
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-            if request.operation is MemoryMutationOperation.MERGE:
-                source = self._required_fact(prepared)
-                target = prepared.merge_fact
-                if target is None:
-                    raise MemoryMutationRejected("merge_fact_required")
-                await self._facts.prepare_evidence_copy((source.id,), target, session=session)
-            elif request.operation is MemoryMutationOperation.CORRECT:
-                source = self._required_fact(prepared)
-                assert prepared.claim is not None
-                await self._facts.prepare_evidence_copy(
-                    (source.id,),
-                    prepared.claim.fact,
-                    session=session,
-                )
-            elif replacement is not None:
-                source = self._required_fact(prepared)
-                await self._facts.prepare_evidence_copy(
-                    (source.id,),
-                    replacement,
-                    session=session,
-                    authority=(
-                        replacement.authority
-                        if request.operation is MemoryMutationOperation.REASSIGN
-                        else None
-                    ),
-                )
             reserved = await self._receipts.reserve(
                 mutation_id=mutation_id,
                 idempotency_key=prepared.idempotency_key,
@@ -1463,7 +1626,8 @@ class MemoryMutationService:
             return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
 
         try:
-            result = await self._facts.repository.apply_evidence_write(apply)
+            async with self._facts.repository.write_session(evidence_preparation) as writer:
+                result = await apply(writer)
         except BaseException as exc:
             # Unknown commit acknowledgements are resolved by the original receipt.
             # Cancellation still propagates after verification; never replay the work.
@@ -1491,21 +1655,24 @@ class MemoryMutationService:
         evidence: tuple[MemoryEvidenceCreate, ...],
         *,
         session: AsyncSession,
-    ) -> tuple[object, ...]:
+    ) -> _MutationSourceProof:
         """Freeze the original source set before resolution; never rebase it on retry."""
         from yuki.memory.self_origin import resolve_self_origin
 
         event_ids = {item.event_id for item in evidence if item.event_id is not None}
         if event is not None:
             event_ids.add(event.id)
-        proof: list[object] = []
+        events: list[dict[str, Any]] = []
+        receipts: list[dict[str, Any]] = []
+        conversations: list[dict[str, Any]] = []
+        origins: list[tuple[str | None, str | None, object]] = []
         receipt_ids = {item.tool_receipt_id for item in evidence if item.tool_receipt_id}
         for receipt_id in sorted(receipt_ids):
             receipt = await session.get(MemoryToolReceiptModel, receipt_id)
             if receipt is None:
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-            proof.append(
-                tuple(getattr(receipt, column.key) for column in receipt.__table__.columns)
+            receipts.append(
+                {column.key: getattr(receipt, column.key) for column in receipt.__table__.columns}
             )
             if receipt.trigger_event_id is not None:
                 event_ids.add(receipt.trigger_event_id)
@@ -1526,7 +1693,7 @@ class MemoryMutationService:
                     or receipt.bot_user_id != origin.bot_user_id
                 ):
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-                proof.append(origin)
+                origins.append((receipt.initiative_run_id, receipt.execution_id, origin))
         conversation_ids: set[str] = set()
         for event_id in sorted(event_ids):
             row = await session.scalar(
@@ -1545,7 +1712,9 @@ class MemoryMutationService:
                 )
                 if current != replace(event, occurred_at=original_at):
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-            proof.append(current)
+            events.append(
+                {column.key: getattr(row, column.key) for column in row.__table__.columns}
+            )
             if current.canonical_conversation_id:
                 conversation_ids.add(current.canonical_conversation_id)
         for conversation_id in sorted(conversation_ids):
@@ -1564,8 +1733,57 @@ class MemoryMutationService:
             ).one_or_none()
             if scene is None:
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-            proof.append(tuple(scene))
-        return tuple(proof)
+            conversations.append(dict(scene._mapping))
+        return _MutationSourceProof(
+            tuple(events), tuple(receipts), tuple(conversations), tuple(origins)
+        )
+
+    async def _mutation_sources_current(
+        self, prepared: _MutationSourceProof, *, session: AsyncSession
+    ) -> bool:
+        """Compare original source values in SQL; body decoding was completed on the reader."""
+        from yuki.memory.self_origin import resolve_self_origin
+
+        for model, values in (
+            (ChatEventModel, prepared.events),
+            (MemoryToolReceiptModel, prepared.receipts),
+            (CanonicalConversationModel, prepared.conversations),
+        ):
+            for offset in range(0, len(values), 128):
+                page = values[offset : offset + 128]
+                matched = set(
+                    await session.scalars(
+                        select(model.id).where(
+                            or_(
+                                *(
+                                    and_(
+                                        *(
+                                            getattr(model, key) == value
+                                            for key, value in row.items()
+                                        )
+                                    )
+                                    for row in page
+                                )
+                            )
+                        )
+                    )
+                )
+                if matched != {row["id"] for row in page}:
+                    return False
+        for initiative_id, execution_id, original in prepared.origins:
+            try:
+                current = await resolve_self_origin(
+                    session,
+                    initiative_run_id=initiative_id,
+                    execution_id=execution_id,
+                    require_live=False,
+                    require_group_projection=False,
+                )
+            except MemoryPartitionResolutionError:
+                return False
+            if current != original:
+                return False
+        return True
 
     @staticmethod
     def _trusted_self_reflection(context: MemoryMutationContext) -> bool:
@@ -1634,7 +1852,7 @@ class MemoryMutationService:
         if job.event_id != event.id:
             raise ValueError("memory job claim does not own the source event")
         try:
-            async with self._facts.repository.transaction() as identity_session:
+            async with self._facts.repository.database.read_session() as identity_session:
                 target_owners = await self._facts.requested_target_owners(
                     claim.fact,
                     session=identity_session,
@@ -1683,6 +1901,7 @@ class MemoryMutationService:
             )
         claim_resolution = self._processor.resolve(claim, processing_context)
         mutation_id = str(uuid.uuid4())
+        evidence_preparation = await self._facts.prepare_write((), targets=(claim.fact,))
 
         async def apply(session: AsyncSession) -> MemoryMutationResult:
             duplicate = await self._receipts.find(
@@ -1710,17 +1929,11 @@ class MemoryMutationService:
             if (
                 not await _same_target_owners(session, current_owners, target_owners)
                 or current_actor != actor_person_id
-                or await self._mutation_source_snapshot(event, (claim.evidence,), session=session)
-                != source_snapshot
+                or not await self._mutation_sources_current(source_snapshot, session=session)
             ):
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
             if not await self._validated_claim_matches_event(claim, event, session=session):
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-            await self._facts.prepare_evidence_write(
-                (),
-                session=session,
-                targets=(claim.fact,),
-            )
             await fence_memory_job_claim(session, job)
             reserved = await self._receipts.reserve(
                 mutation_id=mutation_id,
@@ -1761,7 +1974,8 @@ class MemoryMutationService:
             return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
 
         try:
-            result = await self._facts.repository.apply_evidence_write(apply)
+            async with self._facts.repository.write_session(evidence_preparation) as writer:
+                result = await apply(writer)
         except BaseException as exc:
             # Unknown commit acknowledgements are resolved by the original receipt.
             # Cancellation still propagates after verification; never replay the work.
@@ -1842,7 +2056,7 @@ class MemoryMutationService:
         target = self._resolve_visibility(request, target, event, fact=fact)
         target = await self._subject_context.resolve_target(event, target)
         try:
-            async with self._facts.repository.transaction() as identity_session:
+            async with self._facts.repository.database.read_session() as identity_session:
                 target_owners = (
                     self._facts.persisted_target_owners(fact)
                     if request.target is None and fact is not None
@@ -2498,6 +2712,7 @@ class MemoryMutationService:
         context: MemoryMutationContext,
         *,
         actor_person_id: str | None,
+        session: AsyncSession | None = None,
     ) -> None:
         if request.review_state is not None and context.decision_actor_type not in {
             MemoryDecisionActorType.SYSTEM,
@@ -2522,7 +2737,7 @@ class MemoryMutationService:
             raise MemoryMutationRejected("expected_fact_state_mismatch")
         if (
             request.operation is not MemoryMutationOperation.REASSIGN
-            and not await self._facts.same_targets((fact, target))
+            and not await self._facts.same_targets((fact, target), session=session)
         ):
             raise MemoryMutationRejected("fact_target_mismatch")
         if request.operation is MemoryMutationOperation.REASSIGN:
@@ -2536,14 +2751,16 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("reassign_must_remain_in_current_group")
             if (
                 not context.actor_is_superuser
-                and not await self._facts.person_owns_fact(fact, actor_person_id=actor_person_id)
+                and not await self._facts.person_owns_fact(
+                    fact, actor_person_id=actor_person_id, session=session
+                )
                 and fact.authority in {MemoryAuthority.EXPLICIT, MemoryAuthority.SELF_REPORT}
             ):
                 raise MemoryMutationRejected("third_party_cannot_reassign_subject_owned_fact")
         if request.operation is MemoryMutationOperation.MERGE:
             if merge_fact is None:
                 raise MemoryMutationRejected("merge_fact_required")
-            if not await self._facts.same_targets((merge_fact, target)):
+            if not await self._facts.same_targets((merge_fact, target), session=session):
                 raise MemoryMutationRejected("merge_target_mismatch")
         elif merge_fact is not None:
             raise MemoryMutationRejected("merge_fact_id_only_valid_for_merge")
@@ -2828,7 +3045,7 @@ class MemoryMutationService:
         ):
             return False
         if session is None:
-            async with self._facts.repository.database.sessions() as owned:
+            async with self._facts.repository.database.read_session() as owned:
                 return await self._validated_claim_matches_event(claim, event, session=owned)
         try:
             owners = await self._facts.requested_target_owners(claim.fact, session=session)

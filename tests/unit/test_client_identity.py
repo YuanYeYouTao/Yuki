@@ -25,7 +25,7 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 async def code_for(database, account="1001"):
     service = client_identity_service(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, account)
     issued = await service.issue_for_operator(binding.person_id, str(uuid4()), str(uuid4()))
     return service, binding.person_id, issued
@@ -49,7 +49,7 @@ async def test_pair_is_one_time_two_devices_share_entrance_and_revocation_is_ind
     with pytest.raises(ClientError, match="unauthenticated"):
         await service.authenticate(first["token"])
     assert (await service.authenticate(second["token"])).person_id == person
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         contents = " ".join(
             str(row)
             for row in await session.execute(
@@ -93,7 +93,7 @@ async def test_account_claim_requires_ending_current_yuki_ownership(database, en
         await service.claim_account(
             issued["code"], platform="qq", account="8001", display_name="Former", message_id="link"
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         retained = await session.get(PresenceModel, presence_id)
         assert retained is not None and retained.external_account_id == "8001"
         assert retained.status == ("active" if enabled else "disabled")
@@ -107,7 +107,7 @@ async def test_account_claim_requires_ending_current_yuki_ownership(database, en
         issued["code"], platform="qq", account="8001", display_name="Former", message_id="link"
     )
     assert claimed["person_id"] == person and not claimed["merged"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(PresenceModel, presence_id)).status == "ended"
         assert (await find_identity_binding(session, "8001")).person_id == person
 
@@ -125,7 +125,7 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
             content="old person's private history",
         )
     ).event
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original = await find_identity_binding(session, "1001")
         old_binding, old_person = original.id, original.person_id
     linked = await service.claim_account(
@@ -136,7 +136,7 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
         message_id="link-request",
     )
     assert linked["merged"] and linked["person_id"] == target
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         old = await session.get(IdentityBindingModel, old_binding)
         current = await find_identity_binding(session, "1001")
         assert old.person_id == old_person and old.status == "active"
@@ -167,7 +167,7 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
             content="new person's private history",
         )
     ).event
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         entry = await session.get(CanonicalConversationModel, new_event.canonical_conversation_id)
         assert entry.person_id == old_person and entry.identity_binding_id == current.id
         assert entry.id == old_event.canonical_conversation_id
@@ -197,7 +197,7 @@ async def test_authenticated_claim_keeps_paused_person_stage_without_enabling_it
     )
     assert result["binding_id"] == binding_id and result["person_id"] == target
     assert result["merged"] is not same_owner
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         current = await find_identity_binding(session, "1001")
         assert current.id == binding_id and current.person_id == source
         assert current.status == "disabled"
@@ -225,7 +225,7 @@ async def test_same_owner_transfer_does_not_choose_one_of_multiple_presence_entr
     assert changed["binding_id"] == changed["old_binding_id"] == binding.id
     assert "conversation_id" not in changed
     assert (await service.transfer_for_operator(binding.id, person_id, issuer, request))["replay"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(
             await session.scalars(
                 select(CanonicalConversationModel).where(

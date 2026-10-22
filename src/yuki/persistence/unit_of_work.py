@@ -44,16 +44,13 @@ async def optional_session(
 ) -> AsyncIterator[AsyncSession]:
     """Yield the caller session, or open a short-lived one.
 
-    A provided session is never begun or committed here. Owned write
-    sessions open ``begin()`` so existing callers keep their transaction.
+    A provided session is never begun or committed here. Only the outer
+    owner chooses the reader or shared writer boundary.
     """
 
     if session is not None:
         yield session
         return
-    async with database.sessions() as owned:
-        if write:
-            async with owned.begin():
-                yield owned
-            return
+    boundary = database.immediate_session() if write else database.read_session()
+    async with boundary as owned:
         yield owned

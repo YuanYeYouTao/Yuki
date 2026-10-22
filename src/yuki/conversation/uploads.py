@@ -78,7 +78,7 @@ class ConversationUploads:
             principal.request_scope,
             {"sha256": sha256, "size": size, "filename": filename, "kind": kind},
         )
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             previous = await self.identity.replay(
                 session, principal.device_id, request_id, bound, principal=principal

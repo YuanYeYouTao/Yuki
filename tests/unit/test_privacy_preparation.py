@@ -61,7 +61,7 @@ async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database
             )
         )
     assert await PeopleRepository(database).delete_person("1001")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         remaining = await reader.get(ChatEventModel, event.id)
         assert remaining is not None
         segment = json.loads(remaining.segments_json)[0]["data"]
@@ -78,7 +78,7 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
     rebuilds = MemoryRebuildRepository(database)
     prepare = rebuilds.prepare_forget_people
     attempts = 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         people = dict(
             (
                 await reader.execute(
@@ -112,7 +112,7 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
     monkeypatch.setattr(rebuilds, "prepare_forget_people", race)
     assert await PeopleRepository(database, memory_rebuilds=rebuilds).delete_person("1001")
     assert attempts == races + 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         run = await reader.get(MemoryRebuildRunModel, seeded.run_id)
         selected = MemoryRebuildSelection.model_validate_json(run.selection_json)
         assert set(selected.person_ids) == {people["1002"], changing_ids[-1]}
@@ -135,7 +135,7 @@ async def test_invalid_legacy_json_rolls_back_entire_privacy_transaction(databas
         )
     with pytest.raises(json.JSONDecodeError):
         await PeopleRepository(database).delete_person("1001")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(
                 select(CanonicalPersonModel).where(
@@ -148,3 +148,79 @@ async def test_invalid_legacy_json_rolls_back_entire_privacy_transaction(databas
             )
             is not None
         )
+
+
+@pytest.mark.parametrize("change", ["event", "audit", "redaction"])
+async def test_prepared_forget_rejects_actual_new_sources_before_dml(database, change):
+    from sqlalchemy import event as sql_event
+    from sqlalchemy import text
+
+    from yuki.identity.canonical_repository import find_identity_binding
+    from yuki.persistence.people_repository import PrivacyPreparationChanged
+
+    repository = PeopleRepository(database)
+    original, _ = await seed_event(
+        EventLedgerRepository(database),
+        bot_user_id="9999",
+        platform_message_id="source-proof",
+        scope_type=ScopeType.GROUP,
+        group_id="2001",
+        sender_user_id="1002",
+        direction="inbound",
+        content="mention 1001",
+        segments=({"type": "at", "data": {"qq": "1001"}},),
+    )
+    async with database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        person = (await find_identity_binding(reader, "1001")).person_id
+        prepared = await repository.prepare_person_forget(person, session=reader)
+    if change == "event":
+        await seed_event(
+            EventLedgerRepository(database),
+            bot_user_id="9999",
+            platform_message_id="new-source",
+            scope_type=ScopeType.GROUP,
+            group_id="2001",
+            sender_user_id="1002",
+            direction="inbound",
+            content="new mention 1001",
+            segments=({"type": "at", "data": {"qq": "1001"}},),
+        )
+    elif change == "audit":
+        async with database.immediate_session() as writer:
+            writer.add(
+                AdminOperationEventModel(
+                    actor_user_id="1002",
+                    capability="test",
+                    operation="test",
+                    target_type="test",
+                    before_json='{"owner":"1001"}',
+                    after_json="null",
+                    success=True,
+                    duration_seconds=0,
+                    created_at=datetime.now(UTC),
+                )
+            )
+    else:
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(ChatEventModel)
+                .where(ChatEventModel.id == original.id)
+                .values(content="a newer actual mention of 1001")
+            )
+    writes = []
+
+    def inspect(_connection, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", inspect)
+    try:
+        with pytest.raises(PrivacyPreparationChanged):
+            async with database.immediate_session() as writer:
+                await repository.apply_person_forget(writer, prepared)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", inspect)
+    assert not writes
+    async with database.read_session() as reader:
+        assert await reader.get(CanonicalPersonModel, person) is not None

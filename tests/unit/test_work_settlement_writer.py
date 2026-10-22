@@ -388,7 +388,7 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
     assert result["ok"]
     saved = json.loads((await repository.get(identity))["checkpoint_json"])["context_note"]
     assert saved["payload"]["facts"][0]["text"] == "saved"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(
             select(ContextObservationModel.id).where(
                 ContextObservationModel.source_work_id == identity
@@ -520,7 +520,7 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
     await repository.record_effect(
         key, "unknown", {"outcome": {"uncertain": True, "executed": True}, "error": "receipt lost"}
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_effect = dict(
             (await reader.execute(select(effects).where(effects.c.effect_key == key)))
             .mappings()
@@ -541,7 +541,7 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
     assert binding["status"] == "cancelled"
     assert await waits.deliver_due(now=binding["conditions"][0]["due"] + 1) == 0
     assert await repository.get(child["id"]) == stopped_child
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(inputs.c.state).where(inputs.c.work_id == child["id"]))
             == "cancelled"
@@ -692,7 +692,7 @@ async def test_retained_work_and_pending_inputs_do_not_block_new_intents(databas
         lease, source_key="independent-128", source=source, goal="task 128"
     )
     assert replay["id"] == created[-1]["id"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(work)) == 130
         assert (
             await session.scalar(
@@ -964,7 +964,7 @@ async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(da
             update(work).where(work.c.id == identity).values(state="waiting_external")
         )
     await repository.repair_abandoned_inputs("current-process")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = {row["id"]: row for row in (await reader.execute(select(inputs))).mappings()}
         admissions = list((await reader.scalars(select(OrdinaryTurnAdmissionModel))).all())
     for input_id in repaired:
@@ -1023,7 +1023,7 @@ async def test_due_wait_after_unchanged_first_page_delivers_to_original_work(
     due = binding["conditions"][0]["due"]
     reader = WorkWaitRepository(repository)
     assert await reader.deliver_due(now=due) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         bindings = (
             (await session.execute(select(waits).order_by(waits.c.created, waits.c.id)))
             .mappings()
@@ -1125,7 +1125,7 @@ async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event_id = await reader.scalar(select(ChatEventModel.id))
     event = await EventLedgerRepository(database).get_event(event_id)
     ordinary = OrdinaryAdmissionRepository(database)
@@ -1155,7 +1155,7 @@ async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(
         await repository.prepare_input(
             input_id, {"text": "original"}, before_publish=failed_publish
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(select(inputs.c.ready).where(inputs.c.id == input_id))
     assert await ordinary.get(event_id) is None
     assert (await repository.get(identity))["state"] == "waiting_external"
@@ -1163,7 +1163,7 @@ async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(
     assert (await ordinary.get(event_id)).input_id == input_id
     assert (await repository.get(identity))["state"] == "queued"
     await repository.discard_input(input_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = (await reader.execute(select(inputs).where(inputs.c.id == input_id))).mappings().one()
         assert row["ready"] and row["state"] == "pending"
 

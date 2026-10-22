@@ -57,7 +57,7 @@ async def _original_plugin_work(
     from yuki.runtime.work_repository import WorkConflict
     from yuki.runtime.work_schema_v1 import work
 
-    async with ledger._database.sessions() as session:
+    async with ledger._database.read_session() as session:
         originals = (
             (
                 await session.execute(
@@ -266,7 +266,7 @@ async def _execute_plugin_main_turn(
             )
             from yuki.identity.person_identity import current_person_id
 
-            async with ledger._database.sessions() as session:
+            async with ledger._database.read_session() as session:
                 person = (
                     await session.get(CanonicalPersonModel, actor.person_id)
                     if actor.person_id is not None
@@ -592,7 +592,7 @@ async def resume_plugin_work(
             raise PluginPermissionError("plugin work source is unavailable")
         from yuki.identity.db_models import PresenceModel
 
-        async with ledger._database.sessions() as session:
+        async with ledger._database.read_session() as session:
             presence = await session.get(PresenceModel, event.ingress_presence_id)
         if presence is None:
             raise PluginPermissionError("plugin work source is unavailable")

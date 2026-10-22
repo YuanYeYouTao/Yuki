@@ -69,7 +69,7 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
         )
         paid_job.model_requests, paid_job.tool_calls_used = 2, 1
         paid_job.generated_text = "original generated result"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_event = await reader.get(ChatEventModel, published.source_event_id)
         original_bytes = original_event.segments_json
         original_parts = [
@@ -174,7 +174,7 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
         event.remove(database.engine.sync_engine, "before_cursor_execute", writing)
     replay = await merge()
     assert replay["replay"] and replay["person_id"] == root
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await current_person_id(reader, env.person) == root
         grants = list(
             await reader.scalars(
@@ -205,7 +205,7 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
         plugin_id="prepare-source",
         request=request.model_copy(update={"event_key": "new-B", "summary": "new authorization"}),
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event_b = await reader.get(ChatEventModel, newer.source_event_id)
         assert notifications.publication_source_person(event_b) == root
         job = await reader.scalar(
@@ -216,7 +216,7 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
         assert job.source_person_id == root
     repeated = await repository.publish(plugin_id="prepare-source", request=request)
     assert repeated.source_event_id == published.source_event_id and repeated.deduplicated
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipts = list(
             await reader.scalars(
                 select(ControlCommandReceiptModel).where(

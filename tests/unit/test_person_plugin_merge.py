@@ -6,10 +6,10 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import select
 from tests.support.canonical_identity import ensure_space
+from tests.support.person_merge import merge_persons
 
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.plugin_host.configuration_service import PluginConfigurationService
 from yuki.plugin_host.db_models import PluginConfigValueModel
 from yuki.plugin_host.ownership import PluginOwnershipError
@@ -34,7 +34,7 @@ async def setup(database):
         entrypoint="plugin:register",
         requested_permissions=(),
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await find_identity_binding(reader, "1001")
         target = await find_identity_binding(reader, "1002")
         foreign = await find_identity_binding(reader, "1003")
@@ -57,7 +57,7 @@ async def test_plugin_config_merge_retains_effective_rows_and_never_falls_back(d
             expected_version=0,
             value=value,
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         raw = list(
             await reader.scalars(
                 select(PluginConfigValueModel).where(
@@ -99,7 +99,7 @@ async def test_plugin_config_merge_retains_effective_rows_and_never_falls_back(d
             "values": {"source_key": "explicit-new-value", "conflict": "new-current-value"},
         },
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(PluginConfigValueModel, original["conflict"][0]) is None
         assert await reader.get(PluginConfigValueModel, original["source_key"][0]) is None
         from yuki.persistence.models import AdminOperationEventModel
@@ -206,3 +206,90 @@ async def test_original_plugin_session_accepts_current_same_human_but_not_foreig
     before, after = await sessions.list_messages(plugin_id=plugin, session_id=original.session_id)
     assert before.id == message.id and before.canonical_sender_person_id == source
     assert before.content == message.content and after.id == appended.id
+
+
+@pytest.mark.parametrize("change", ["new_target", "discarded_payload", "target_value"])
+async def test_merge_preparation_tracks_conflict_members_and_only_discarded_values(
+    database, change
+):
+    from sqlalchemy import event, text, update
+
+    from yuki.identity.person_identity import (
+        PersonMergePreparationChanged,
+        prepare_person_merge,
+    )
+    from yuki.identity.person_identity import (
+        merge_persons as apply_merge,
+    )
+
+    plugin, source, target, _ = await setup(database)
+    repository = PluginConfigRepository(database)
+    source_row = await repository.compare_and_set(
+        plugin_id=plugin,
+        scope_type="user",
+        scope_id=source,
+        key="source",
+        expected_version=0,
+        value={"history": "original"},
+    )
+    target_row = None
+    if change != "new_target":
+        target_row = await repository.compare_and_set(
+            plugin_id=plugin,
+            scope_type="user",
+            scope_id=target,
+            key="target",
+            expected_version=0,
+            value="old target value",
+        )
+    async with database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        prepared = await prepare_person_merge(reader, source, target)
+    if change == "new_target":
+        await repository.compare_and_set(
+            plugin_id=plugin,
+            scope_type="user",
+            scope_id=target,
+            key="target",
+            expected_version=0,
+            value="new explicit target object",
+        )
+    elif change == "discarded_payload":
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(PluginConfigValueModel)
+                .where(PluginConfigValueModel.id == source_row.id)
+                .values(value_json='{"history":"changed without version bump"}')
+            )
+    else:
+        await repository.compare_and_set(
+            plugin_id=plugin,
+            scope_type="user",
+            scope_id=target,
+            key="target",
+            expected_version=target_row.version,
+            expected_row_id=target_row.id,
+            value="latest target value",
+        )
+    writes = []
+
+    def inspect(_connection, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", inspect)
+    try:
+        if change == "target_value":
+            async with database.immediate_session() as writer:
+                assert await apply_merge(writer, source, target, prepared=prepared) == target
+            current = await repository.get(
+                plugin_id=plugin, scope_type="user", scope_id=target, key="target"
+            )
+            assert current.value == "latest target value"
+        else:
+            with pytest.raises(PersonMergePreparationChanged):
+                async with database.immediate_session() as writer:
+                    await apply_merge(writer, source, target, prepared=prepared)
+            assert not writes
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", inspect)

@@ -89,7 +89,7 @@ async def case(database, tmp_path):
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
     lease = await repo.acquire(env.context.conversation_id, 1)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     source = {
         "actor_person_id": env.person,
@@ -166,7 +166,7 @@ async def test_original_prompt_recovery_and_management_do_not_create_more_tasks(
     await case.client.execute(
         "external_agent", {"action": "cancel", "run_id": original["run_id"]}, request_id="cancel"
     )
-    async with case.db.sessions() as session:
+    async with case.db.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(SandboxTaskRunModel)) == 1
     assert not is_execution("external_agent", {"action": "respond"})
     with pytest.raises(ValueError, match="accept_work"):
@@ -315,7 +315,7 @@ async def test_lost_open_ack_recovers_original_request_and_peer_without_prompt_r
 
 async def test_get_by_original_request_recovers_confirmed_prompt_and_checks_original_owner(case):
     original = await prompt(case)
-    async with case.db.sessions() as session, session.begin():
+    async with case.db.immediate_session() as session:
         await session.execute(update(SandboxTaskRunModel).values(run_id=None))
     observed = await case.client.execute(
         "external_agent",
@@ -351,7 +351,7 @@ async def test_permission_interrupts_completion_wait_without_completing_runs(
     event = permission(first)
     if event_first:
         await case.tasks.receive_permission(event)
-    async with case.db.sessions() as session, session.begin():
+    async with case.db.immediate_session() as session:
         await session.execute(
             update(work)
             .where(work.c.id == case.control.current["id"])
@@ -368,7 +368,7 @@ async def test_permission_interrupts_completion_wait_without_completing_runs(
     )
     if not event_first:
         await case.tasks.receive_permission(event)
-    async with case.db.sessions() as session:
+    async with case.db.read_session() as session:
         row = (
             (await session.execute(select(waits).where(waits.c.id == waiting["id"])))
             .mappings()
@@ -384,7 +384,7 @@ async def test_permission_interrupts_completion_wait_without_completing_runs(
         )
         count = await session.scalar(select(func.count()).select_from(inputs))
     await case.tasks.receive_permission(event)
-    async with case.db.sessions() as session:
+    async with case.db.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(inputs)) == count
     assert (await case.tasks.by_run(first["run_id"])).status == "waiting"
 
@@ -392,12 +392,12 @@ async def test_permission_interrupts_completion_wait_without_completing_runs(
 @pytest.mark.parametrize("state", ["suspended", "waiting_user", "completed", "cancelled"])
 async def test_permission_does_not_revive_explicit_pause_or_terminal(case, state):
     original = await prompt(case)
-    async with case.db.sessions() as session, session.begin():
+    async with case.db.immediate_session() as session:
         await session.execute(
             update(work).where(work.c.id == case.control.current["id"]).values(state=state)
         )
     await case.tasks.receive_permission(permission(original))
-    async with case.db.sessions() as session:
+    async with case.db.read_session() as session:
         assert (
             await session.scalar(
                 select(work.c.state).where(work.c.id == case.control.current["id"])
@@ -429,7 +429,7 @@ async def test_callback_is_committed_before_transport_ack(case):
     assert case.client.events[0]["type"] == "permission_request"
 
     async def committed():
-        async with case.db.sessions() as session:
+        async with case.db.read_session() as session:
             assert await session.scalar(
                 select(inputs.c.id).where(inputs.c.source_key.like("acp-permission:%"))
             )
@@ -443,7 +443,7 @@ async def test_callback_is_committed_before_transport_ack(case):
 
 async def test_disabled_original_source_cannot_start_or_answer_through_read_permission(case):
     original = await prompt(case)
-    async with case.db.sessions() as session, session.begin():
+    async with case.db.immediate_session() as session:
         await session.execute(
             update(CanonicalPersonModel)
             .where(CanonicalPersonModel.id == case.source["actor_person_id"])
@@ -605,7 +605,7 @@ async def test_only_original_prompt_action_is_reconciled_as_execution(case, acti
             else {}
         ),
     )
-    async with case.db.sessions() as session:
+    async with case.db.read_session() as session:
         stored = json.loads(await session.scalar(select(effects.c.receipt_json)))
     assert stored["outcome"]["pending"] is (action != "prompt")
     assert stored["invocation"]["action"] == action

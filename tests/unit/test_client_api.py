@@ -124,7 +124,7 @@ async def test_concurrent_pair_accepts_a_code_once(personal, database):
         )
     )
     assert sorted(response.status_code for response in responses) == [200, 401]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(func.count(ClientDeviceModel.id)).where(
@@ -147,7 +147,7 @@ async def test_operator_transfer_replay_and_app_binding_refusal(personal, databa
     client = personal
     target, code = await person_and_code(client)
     device = await pair(client, code)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original = await find_identity_binding(session, "1001")
         original_id, owner = original.id, original.person_id
         app = await session.scalar(
@@ -211,7 +211,7 @@ async def test_operator_forget_works_without_platform_account_and_replays(person
     )
     assert replay.status_code == 200 and replay.json()["data"]["replay"]
     assert (await personal.get("/client/v1/me", headers=bearer(device["token"]))).status_code == 401
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.get(ClientDeviceModel, device["device_id"]) is None
 
 
@@ -257,7 +257,7 @@ async def test_lost_pair_commit_ack_is_unknown_and_code_is_still_one_time(
     assert response.status_code == 500 and response.json()["problem"]["code"] == "unknown"
     retry = await personal.post("/client/v1/pair", json={"code": code, "device_label": "retry"})
     assert retry.status_code == 401
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(func.count(ClientDeviceModel.id)).where(

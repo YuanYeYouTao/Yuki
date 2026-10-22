@@ -82,7 +82,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
     operations = Operations()
     registry = GatewayConnectionRegistry(providers=GatewayProviderCatalog((Provider(operations),)))
     router = PresenceRouter(database, registry)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         sender = await create_person_binding(
             session,
             external_account_id=native_sender,
@@ -129,7 +129,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
     appended = await uow.append_inbound(admitted.message, admitted)
     assert appended.created and appended.event.author_person_id == sender.person_id
     snapshot = next(item["data"] for item in appended.event.segments if item["type"] == "mention")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         guest = await session.scalar(
             select(AccountModel).where(
                 AccountModel.platform == "scopedchat",
@@ -171,7 +171,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
     assert operations.sent[-1][1].mentions[0].account_id == guest.id
     assert operations.sent[-1][1].mentions[0].assignment_id is None
     assert set(operations.probes) <= {handle.self_id}
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         events = list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")

@@ -169,7 +169,7 @@ async def complete_receipts(
     limit = max(1, min(limit, 256))
     if item_ids == ():
         return 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         await reader.execute(text("BEGIN"))
         run = (
             await reader.execute(

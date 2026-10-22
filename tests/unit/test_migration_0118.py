@@ -48,7 +48,7 @@ def test_upgrade_indexes_original_waiting_runs_and_preserves_all_receipts(tmp_pa
                                 updated_at=now,
                             )
                         )
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 plan = [row.detail for row in await reader.execute(text(QUERY))]
                 rows = [
                     dict(row)

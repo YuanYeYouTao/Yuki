@@ -26,7 +26,7 @@ async def stack(database):
     bot = _Bot("8000")
     registry.connect(bot, provider_id="snowluma")
     identities = client_identity_service(database, resolver._router)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         target = await find_identity_binding(session, "1001")
     code = await identities.issue_for_operator(target.person_id, str(uuid4()), str(uuid4()))
     return registry, bot, identities, target.person_id, code["code"]
@@ -41,7 +41,7 @@ async def test_first_unseen_account_links_without_new_person_ledger_or_main(data
     harness.processor._canonical_ingress = SimpleNamespace(pre_admit=forbidden)
     sender = MemorySender()
     sender.bot = bot
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         count = await session.scalar(select(func.count(CanonicalPersonModel.id)))
     incoming = _message(message_id="link-first", user_id="45454545", text=f"/ai link {code}")
     if native_at:
@@ -57,7 +57,7 @@ async def test_first_unseen_account_links_without_new_person_ledger_or_main(data
     forbidden.assert_not_awaited()
     assert not harness.provider.requests
     assert (incoming.text, incoming.mentions) == source
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(CanonicalPersonModel.id))) == count
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
         assert (await find_identity_binding(session, "45454545")).person_id == target
@@ -74,7 +74,7 @@ async def test_native_bot_address_without_argument_issues_a_real_link_code(datab
     assert handler.is_request(incoming)
     response = await handler.execute(bot, incoming)
     assert response.startswith("绑定码：")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         issued = await session.scalar(
             select(ClientLinkCodeModel).where(ClientLinkCodeModel.issuer_source == "qq")
         )
@@ -122,7 +122,7 @@ async def test_authenticated_merge_preserves_old_source_and_reused_code_writes_n
     assert await recover_source(
         database, original.canonical_conversation_id, source, request_id="old-work"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         current = await find_identity_binding(session, "1002")
         assert current.person_id == original.author_person_id
         assert await current_person_id(session, current.person_id) == target
@@ -131,7 +131,7 @@ async def test_authenticated_merge_preserves_old_source_and_reused_code_writes_n
         bot, _message(message_id="reused", user_id="1002", text=f"/ai link {code}")
     )
     assert "不可用" in response
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(IdentityBindingModel.id))) == bindings
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
 
@@ -146,7 +146,7 @@ async def test_unknown_or_disconnected_account_cannot_issue_a_code(database):
     registry.disconnect(bot)
     response = await handler.execute(bot, _message(message_id="disconnected", text="/ai link"))
     assert "身份认证" in response
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await find_identity_binding(session, "56565656") is None
 
 
@@ -161,7 +161,7 @@ async def test_connection_cannot_prove_possession_on_another_platform(database):
         ),
     )
     assert "不可用" in response
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.scalar(select(ClientLinkCodeModel))).used_at is None
         assert await find_identity_binding(session, "45454545", platform="telegram") is None
         assert await find_identity_binding(session, "45454545", platform="qq") is None

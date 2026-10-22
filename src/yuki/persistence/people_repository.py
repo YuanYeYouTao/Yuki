@@ -24,12 +24,14 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    text,
     true,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import Select
 
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.conversation.autonomy_db_models import (
@@ -203,6 +205,58 @@ class _EventRedaction:
     terms: tuple[str, ...]
 
 
+class PrivacyPreparationChanged(ValueError):
+    def __init__(self) -> None:
+        super().__init__("privacy_preparation_changed")
+
+
+@dataclass(frozen=True)
+class _PrivacySelection:
+    query: Select[Any]
+    original_json: str
+    ids: tuple[str, ...]
+
+    async def verify(self, session: AsyncSession) -> None:
+        current = self.query.subquery()
+        wanted = func.json_each(self.original_json).table_valued("value")
+        columns = tuple(current.c)
+        same = and_(
+            *(
+                column.is_(func.json_extract(wanted.c.value, f"$[{index}]"))
+                for index, column in enumerate(columns)
+            )
+        )
+        rows = tuple(
+            await session.execute(
+                select(columns[0], same)
+                .select_from(
+                    current.outerjoin(
+                        wanted, columns[0] == func.json_extract(wanted.c.value, "$[0]")
+                    )
+                )
+                .order_by(columns[0])
+            )
+        )
+        if tuple(row[0] for row in rows) != self.ids or not all(row[1] for row in rows):
+            raise PrivacyPreparationChanged()
+
+
+async def _privacy_selection(reader: AsyncSession, query: Select[Any]) -> _PrivacySelection:
+    # SQL casts match SQLite's actual stored scalar representation. Large original
+    # JSON stays a parameter; validation returns only IDs and equality results.
+    normalized = query.with_only_columns(
+        *(
+            cast(column, String).label(f"value_{index}")
+            for index, column in enumerate(query.selected_columns)
+        ),
+        maintain_column_froms=True,
+    ).distinct()
+    rows = sorted(tuple(row) for row in await reader.execute(normalized))
+    return _PrivacySelection(
+        normalized, json.dumps(rows, ensure_ascii=False), tuple(row[0] for row in rows)
+    )
+
+
 @dataclass(frozen=True)
 class PersonForgetPreparation:
     person_id: str
@@ -219,6 +273,7 @@ class PersonForgetPreparation:
     initiative_ids: tuple[str, ...]
     reflection_checkpoint_ids: tuple[int, ...]
     resource_cleanup: ResourceCleanupPreparation
+    sources: tuple[_PrivacySelection, ...]
     peer_cleanup_results: tuple[dict[str, Any], ...] | None = None
 
     @property
@@ -417,7 +472,7 @@ class PeopleRepository:
     ) -> tuple[ConversationScope, ...]:
         """Resolve every conversation whose retained projection may mention a person."""
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             if await session.get(CanonicalPersonModel, person_id) is None:
                 return ()
             person_ids = await person_family_ids(session, person_id)
@@ -537,7 +592,8 @@ class PeopleRepository:
                 space_id=space_id,
             )
 
-        await self._database.apply_snapshot_write(observe)
+        async with self._database.immediate_session() as writer:
+            await observe(writer)
 
     async def get(
         self,
@@ -549,7 +605,7 @@ class PeopleRepository:
         space_id: str | None = None,
         platform: str = "qq",
     ) -> UserProfileSnapshot | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             loaded = await load_canonical_profile(
                 session,
                 user_id=user_id,
@@ -589,7 +645,7 @@ class PeopleRepository:
         if not unique_ids:
             return {}
         if session is None:
-            async with self._database.sessions() as owned_session:
+            async with self._database.read_session() as owned_session:
                 return await self.get_many(
                     unique_ids,
                     group_id=group_id,
@@ -621,11 +677,11 @@ class PeopleRepository:
         }
 
     async def aliases(self, person_id: str | None, *, limit: int = 20) -> tuple[str, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await load_canonical_aliases(session, person_id, limit=limit)
 
     async def membership_count(self, person_id: str | None) -> int:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await load_canonical_membership_count(session, person_id)
 
     async def members_in_group(
@@ -642,7 +698,7 @@ class PeopleRepository:
         if not unique_ids:
             return frozenset()
         if session is None:
-            async with self._database.sessions() as owned_session:
+            async with self._database.read_session() as owned_session:
                 return await self.members_in_group(
                     unique_ids, group_id, person_ids=person_ids, session=owned_session
                 )
@@ -660,7 +716,7 @@ class PeopleRepository:
         normalized = name.strip()
         if not normalized:
             return ()
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await load_canonical_group_members_by_exact_name(session, normalized, group_id)
 
     async def search_group_member_names(
@@ -678,7 +734,7 @@ class PeopleRepository:
         query = normalize_person_name(name)
         if not query or limit <= 0:
             return ()
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             projections = await load_canonical_group_member_name_projections(
                 session, group_id, platform=platform, space_id=space_id
             )
@@ -707,7 +763,7 @@ class PeopleRepository:
         queries = {name: normalize_person_name(name) for name in dict.fromkeys(names)}
         if not queries:
             return {}
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             projections = await load_canonical_group_member_name_projections(
                 session, group_id, platform=platform, space_id=space_id
             )
@@ -752,7 +808,7 @@ class PeopleRepository:
         session: AsyncSession | None = None,
     ) -> PrivateUserSetting:
         if session is None:
-            async with self._database.sessions() as owned_session, owned_session.begin():
+            async with self._database.immediate_session() as owned_session:
                 return await self.set_enabled(
                     user_id,
                     enabled,
@@ -768,13 +824,13 @@ class PeopleRepository:
         session: AsyncSession | None = None,
     ) -> PrivateUserSetting | None:
         if session is None:
-            async with self._database.sessions() as owned_session:
+            async with self._database.read_session() as owned_session:
                 return await self.get_enabled(user_id, session=owned_session)
         return await load_canonical_person_enabled(session, user_id)
 
     async def delete_person(self, user_id: str, *, marker: str = "[已删除用户]") -> bool:
         """Resolve the authenticated current account once, then erase by Person ID."""
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             binding = await find_identity_binding(reader, external_id(user_id))
             if binding is None:
                 return False
@@ -792,15 +848,19 @@ class PeopleRepository:
             person_id, operation_id=operation_id or f"person-forget:{person_id}", marker=marker
         )
 
-        async def erase(session: AsyncSession) -> bool:
-            prepared = await self.prepare_person_forget(
-                person_id, marker=marker, session=session, closed_resources=external
-            )
+        while True:
+            async with self._database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                prepared = await self.prepare_person_forget(
+                    person_id, marker=marker, session=reader, closed_resources=external
+                )
             if prepared is None:
                 return False
-            return await self.apply_person_forget(session, prepared, marker=marker)
-
-        return await self._database.apply_snapshot_write(erase)
+            try:
+                async with self._database.immediate_session() as writer:
+                    return await self.apply_person_forget(writer, prepared, marker=marker)
+            except PrivacyPreparationChanged:
+                continue
 
     async def prepare_person_forget_resources(
         self, person_id: str, *, operation_id: str, marker: str = "[已删除用户]"
@@ -808,7 +868,8 @@ class PeopleRepository:
         client = self._database.sandbox_client
         if client is None:
             return None
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
             prepared = await self.prepare_person_forget(person_id, session=reader, marker=marker)
         if prepared is None or not prepared.resource_cleanup.has_peers:
             return None
@@ -1149,6 +1210,7 @@ class PeopleRepository:
                     )
                 )
             )
+            checkpoint_match = checkpoint.is_not(None) & or_(*copied_sources)
             # Old checkpoints stored rendered context without a separate event map.
             # Read only the program's original envelope, never a body/platform label.
             context = func.json_each(checkpoint, "$.payload.context_events").table_valued("value")
@@ -1160,7 +1222,7 @@ class PeopleRepository:
                 CanonicalConversationModel.id.in_(event_conversations)
             )
             owners = tuple(await reader.scalars(context_owners))
-            for run_id, rendered in await reader.execute(
+            legacy_context = (
                 select(
                     MemorySelfReflectionRunModel.id,
                     func.json_extract(context.c.value, "$.rendered"),
@@ -1178,7 +1240,8 @@ class PeopleRepository:
                         ),
                     ),
                 )
-            ):
+            )
+            for run_id, rendered in await reader.execute(legacy_context):
                 envelope = re.match(
                     r"^\[发送者:.{0,128}\|(?:person:[^|]+|presence:[^|]+|[a-z_]+)"
                     r"\|事件:#([1-9]\d*)(?=[|\]])",
@@ -1186,6 +1249,104 @@ class PeopleRepository:
                 )
                 if envelope and int(envelope[1]) in erased_context_ids:
                     reflection_checkpoint_ids.add(run_id)
+            rendered = func.json_extract(context.c.value, "$.rendered")
+            # Atomic prefix preserves the reader regex's greedy capture before
+            # restricting the captured ID to the actual erased source selection.
+            envelope_pattern = (
+                r"(?>^\[发送者:.{0,128}\|(?:person:[^|]+|presence:[^|]+|[a-z_]+)"
+                r"\|事件:#(?=[1-9]\d*(?=[|\]])))(?:"
+                + "|".join(str(identity) for identity in sorted(erased_context_ids))
+                + r")(?=[|\]])"
+            )
+            legacy_match = (
+                select(MemorySelfReflectionRunModel.id)
+                .select_from(MemorySelfReflectionRunModel)
+                .join(context, true())
+                .where(
+                    checkpoint.is_not(None),
+                    or_(
+                        MemorySelfReflectionRunModel.canonical_person_id.in_(
+                            tuple(item.person_id for item in owners if item.person_id)
+                        ),
+                        MemorySelfReflectionRunModel.canonical_space_id.in_(
+                            tuple(item.space_id for item in owners if item.space_id)
+                        ),
+                    ),
+                    rendered.regexp_match(envelope_pattern),
+                    true() if erased_context_ids else false(),
+                )
+            )
+            proof_queries = (
+                select(
+                    IdentityBindingModel.id,
+                    IdentityBindingModel.person_id,
+                    IdentityBindingModel.external_account_id,
+                    IdentityBindingModel.history_starts_at,
+                    IdentityBindingModel.ended_at,
+                    IdentityBindingModel.platform,
+                ).where(IdentityBindingModel.person_id.in_(person_ids)),
+                select(CanonicalConversationModel.id).where(
+                    CanonicalConversationModel.kind == "private",
+                    CanonicalConversationModel.person_id.in_(person_ids),
+                ),
+                select(ChatEventModel.id, ChatEventModel.canonical_conversation_id).where(
+                    or_(owned, mentions)
+                ),
+                select(
+                    ChatEventModel.id,
+                    ChatEventModel.content,
+                    ChatEventModel.visual_summary,
+                    ChatEventModel.audio_transcript,
+                    ChatEventModel.segments_json,
+                    ChatEventModel.canonical_conversation_id,
+                    ChatEventModel.author_person_id,
+                    ChatEventModel.author_kind,
+                    ChatEventModel.suppression_status,
+                    ChatEventModel.observed_at,
+                    PresenceModel.platform,
+                )
+                .outerjoin(PresenceModel, PresenceModel.id == ChatEventModel.ingress_presence_id)
+                .where(mentions, ~owned),
+                select(MemoryToolReceiptModel.id).where(
+                    select(copied_tools.c.value)
+                    .where(cast(copied_tools.c.value, Integer).in_(erased_events))
+                    .exists()
+                ),
+                select(ToolArtifactModel.handle_id).where(
+                    select(copied_artifacts.c.value)
+                    .where(cast(copied_artifacts.c.value, Integer).in_(erased_events))
+                    .exists()
+                ),
+                select(work.c.conversation_id)
+                .join(effects, effects.c.work_id == work.c.id)
+                .where(
+                    select(copied_events.c.value)
+                    .where(cast(copied_events.c.value, Integer).in_(erased_events))
+                    .exists()
+                )
+                .distinct(),
+                select(InitiativeRunModel.id).where(
+                    or_(
+                        InitiativeRunModel.conversation_id.in_(private_ids),
+                        source_erased,
+                        support_erased,
+                    )
+                ),
+                select(MemorySelfReflectionRunModel.id, checkpoint).where(
+                    or_(checkpoint_match, MemorySelfReflectionRunModel.id.in_(legacy_match))
+                ),
+                select(
+                    AdminOperationEventModel.id,
+                    AdminOperationEventModel.actor_user_id,
+                    AdminOperationEventModel.target_id,
+                    AdminOperationEventModel.conversation_key,
+                    AdminOperationEventModel.before_json,
+                    AdminOperationEventModel.after_json,
+                ).where(audit_match),
+            )
+            source_proofs = tuple(
+                [await _privacy_selection(reader, query) for query in proof_queries]
+            )
         rebuild = await self._memory_rebuilds.prepare_forget_people(
             legacy, ownership=ownership, person_id=person_id, session=session
         )
@@ -1204,6 +1365,7 @@ class PeopleRepository:
             initiative_ids=initiative_ids,
             reflection_checkpoint_ids=tuple(sorted(reflection_checkpoint_ids)),
             resource_cleanup=resources,
+            sources=source_proofs,
         )
         if closed_resources is not None:
             if (
@@ -1234,15 +1396,31 @@ class PeopleRepository:
             return False
         person_ids = await person_family_ids(session, person_id)
         if person_ids != prepared.person_ids:
-            raise ValueError("privacy_persons_changed")
+            raise PrivacyPreparationChanged()
+        for source in prepared.sources:
+            await source.verify(session)
+        try:
+            await prepared.resource_cleanup.validate(session)
+        except ValueError as exc:
+            if (
+                str(exc) != "external_agent_cleanup_source_changed"
+                or prepared.peer_cleanup_results is not None
+            ):
+                raise
+            raise PrivacyPreparationChanged() from exc
         if prepared.resource_cleanup.has_peers:
             if prepared.peer_cleanup_results is None:
                 raise ValueError("external_agent_cleanup_unconfirmed")
         ownership = prepared.ownership
         legacy = prepared.legacy_aliases
-        await self._memory_rebuilds.forget_people(
-            legacy, prepared=prepared.rebuild, session=session
-        )
+        try:
+            await self._memory_rebuilds.forget_people(
+                legacy, prepared=prepared.rebuild, session=session
+            )
+        except ValueError as exc:
+            if str(exc) != "memory_rebuild_privacy_preparation_changed":
+                raise
+            raise PrivacyPreparationChanged() from exc
         await session.execute(
             update(MemorySelfReflectionRunModel)
             .where(MemorySelfReflectionRunModel.id.in_(prepared.reflection_checkpoint_ids))
@@ -1664,7 +1842,7 @@ class GroupSettingsRepository:
         session: AsyncSession | None = None,
     ) -> GroupSetting | None:
         if session is None:
-            async with self._database.sessions() as owned_session:
+            async with self._database.read_session() as owned_session:
                 return await self.get(group_id, session=owned_session)
         return await load_canonical_group(session, group_id)
 
@@ -1676,7 +1854,7 @@ class GroupSettingsRepository:
         session: AsyncSession | None = None,
     ) -> GroupSetting:
         if session is None:
-            async with self._database.sessions() as owned_session, owned_session.begin():
+            async with self._database.immediate_session() as owned_session:
                 return await self.set_enabled(group_id, enabled, session=owned_session)
         now = datetime.now(UTC)
         return await set_canonical_space_flags(session, group_id, enabled=enabled, now=now)
@@ -1691,7 +1869,7 @@ class GroupSettingsRepository:
         """Update only the group's autonomous participation switch."""
 
         if session is None:
-            async with self._database.sessions() as owned_session, owned_session.begin():
+            async with self._database.immediate_session() as owned_session:
                 return await self.set_autonomous_enabled(
                     group_id,
                     enabled,

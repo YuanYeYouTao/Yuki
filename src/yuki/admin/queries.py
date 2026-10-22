@@ -71,7 +71,7 @@ class AdminQueries:
 
     async def person(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
         await authorize_current(self.database, principal, "identity.person.read")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(CanonicalPersonModel, identity)
             if row is None:
                 raise fail(ProblemCode.NOT_FOUND)
@@ -99,7 +99,7 @@ class AdminQueries:
 
     async def binding(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
         await authorize_current(self.database, principal, "identity.binding.read")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(IdentityBindingModel, identity)
             if row is None:
                 raise fail(ProblemCode.NOT_FOUND)
@@ -134,7 +134,7 @@ class AdminQueries:
         try:
             if len(parts) == 1:
                 parts = ["control", principal.principal_id.text, RequestId.parse(identity).text]
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 if len(parts) == 3 and parts[0] == "control":
                     actor, request = PrincipalId.parse(parts[1]), RequestId.parse(parts[2])
                     row = await session.scalar(
@@ -220,7 +220,7 @@ class AdminQueries:
         fields = metadata_fields + (
             ("payload_gzip", "payload_bytes", "payload_sha256") if content else ()
         )
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = list(
                 (
                     await session.execute(
@@ -276,7 +276,7 @@ class AdminQueries:
         self, principal: ControlPrincipal, after: str = "", limit: int = 100
     ) -> dict[str, Any]:
         await authorize_current(self.database, principal, "identity.person.read")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = list(
                 await session.scalars(
                     select(CanonicalPersonModel)
@@ -318,7 +318,7 @@ class AdminQueries:
             stmt = stmt.where(IdentityBindingModel.platform == platform)
         if external_account_id is not None:
             stmt = stmt.where(IdentityBindingModel.external_account_id == external_account_id)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = list(
                 await session.scalars(stmt.order_by(IdentityBindingModel.id).limit(limit + 1))
             )
@@ -351,7 +351,7 @@ class AdminQueries:
         self, principal: ControlPrincipal, after: str = "", limit: int = 100
     ) -> dict[str, Any]:
         await authorize_current(self.database, principal, "identity.presence.read")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = list(
                 await session.scalars(
                     select(PresenceModel)
@@ -365,7 +365,7 @@ class AdminQueries:
 
     async def presence(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
         await authorize_current(self.database, principal, "identity.presence.read")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(PresenceModel, identity)
             if row is None:
                 raise fail(ProblemCode.NOT_FOUND)
@@ -418,7 +418,7 @@ class AdminQueries:
         stmt = select(*self._work_columns()).where(work.c.id > after)
         if state is not None:
             stmt = stmt.where(work.c.state == state)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = list(
                 (await session.execute(stmt.order_by(work.c.id).limit(limit + 1))).mappings()
             )
@@ -429,7 +429,7 @@ class AdminQueries:
         from yuki.runtime.work_management import management_view
 
         await authorize_current(self.database, principal, "control.work.read")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = (
                 (await session.execute(select(*self._work_columns()).where(work.c.id == identity)))
                 .mappings()

@@ -76,7 +76,7 @@ async def test_absent_input_never_enters_runtime_or_records_a_chat(
     notify.assert_not_awaited()
     stage.assert_not_awaited()
     committed.assert_not_called()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(ChatEventModel)) == 0
         assert await reader.scalar(select(func.count()).select_from(inputs)) == 0
 
@@ -89,7 +89,7 @@ async def test_absent_qq_input_does_not_enqueue_or_interrupt_original_work(
     harness = build_harness(database, make_settings(database.url), provider)
     processor = harness.processor
     assert (await processor.handle(message(text="继续原工作"), MemorySender())).reason == "chat"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = (await reader.scalars(select(ChatEventModel))).one()
     repository = WorkRepository(database)
     lease = await repository.acquire(original.canonical_conversation_id, 1)
@@ -122,7 +122,7 @@ async def test_absent_qq_input_does_not_enqueue_or_interrupt_original_work(
         assert result.reason == "empty" and sender.calls == 0
         assert len(provider.requests) == 1
         assert await repository.get(control.current["id"]) == before
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             staged = list((await reader.execute(select(inputs))).mappings())
             if unresolved_reply:
                 assert len(staged) == 1
@@ -222,7 +222,7 @@ async def test_reference_without_body_reaches_canonical_resolution(database, int
     harness = build_harness(database, make_settings(database.url), provider)
     processor = harness.processor
     await processor.handle(message(text="原消息的真实内容"), MemorySender())
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = (await reader.scalars(select(ChatEventModel))).one()
     incoming = message(
         message_id="reference-only",
@@ -256,7 +256,7 @@ async def test_reference_without_resolvable_content_stays_silent(database, known
             message(message_id="empty-source", reply_to_message_id="not-observed"), MemorySender()
         )
         assert original_result.reason == "empty"
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             original = (await reader.scalars(select(ChatEventModel))).one()
         original_id = original.id
         reference_id = original.platform_message_id

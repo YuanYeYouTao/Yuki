@@ -75,7 +75,7 @@ async def _canonical_message(database, message):
 
 
 async def _owners(database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         people = dict(
             (
                 await session.execute(
@@ -144,13 +144,13 @@ def test_format_and_parse_only_accept_canonical_owner_ids() -> None:
 
 @pytest.mark.asyncio
 async def test_private_event_resolves_all_bindings_to_one_person(database: Database) -> None:
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         person_id = await ensure_person(session, "1101", now=_NOW)
         account = await ensure_account(session, "1102", platform=IDENTITY_PLATFORM, now=_NOW)
         await replace_assignment(
             session, account, None, await session.get(CanonicalPersonModel, person_id), now=_NOW
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         first = await resolve_memory_partition_for_event(
             session, _event(message_id="p1", peer="1101")
         )
@@ -166,7 +166,7 @@ async def test_private_event_resolves_all_bindings_to_one_person(database: Datab
 async def test_space_partition_requires_enabled_active_binding(
     database: Database, disabled
 ) -> None:
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         space_id = await ensure_space(session, "2001", now=_NOW)
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
@@ -179,12 +179,12 @@ async def test_space_partition_requires_enabled_active_binding(
         else:
             space.enabled = False
     event = _event(message_id="g1", group="2001")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         with pytest.raises(MemoryPartitionResolutionError) as disabled:
             await resolve_memory_partition_for_event(session, event)
     assert disabled.value.reason == "missing_owner"
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
         )
@@ -193,7 +193,7 @@ async def test_space_partition_requires_enabled_active_binding(
         space = await session.get(CanonicalSpaceModel, space_id)
         assert space is not None
         space.enabled = True
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         partition = await resolve_memory_partition_for_event(session, event)
     assert partition.value == f"space:{space_id}"
     assert partition.space_id == space_id
@@ -204,7 +204,7 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
     person_id = str(uuid4())
     conversation_id = str(uuid4())
     alias_id = str(uuid4())
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(text("PRAGMA defer_foreign_keys=ON"))
         session.add(
             CanonicalPersonModel(
@@ -248,7 +248,7 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
                 updated_at=_NOW,
             )
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         resolved = await resolve_memory_partition_for_event(
             session, _event(message_id="conversation-owner", peer="1103")
         )

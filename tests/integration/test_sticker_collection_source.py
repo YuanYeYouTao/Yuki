@@ -76,14 +76,14 @@ async def test_native_sticker_collection_keeps_only_the_actual_original_source(
     try:
         await asyncio.wait_for(entered.wait(), 5)
         if change == "reset":
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 conversation = await session.get(
                     CanonicalConversationModel, source.canonical_conversation_id
                 )
                 original_generation = conversation.generation
             await env.gateway.receive(telegram_update(2, text="/ai new"))
             await drain_native_turns(env)
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 conversation = await session.get(
                     CanonicalConversationModel, source.canonical_conversation_id
                 )
@@ -110,7 +110,7 @@ async def test_native_sticker_collection_keeps_only_the_actual_original_source(
         item, path = await env.media.authorized_path(event_id=source.id, attachment_index=0)
         content = env.contents["old-sticker"]
         assert path.read_bytes() == content
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             event = await session.get(ChatEventModel, source.id)
             cached = await session.get(ConversationMediaItemModel, (source.id, 0))
             assert event.author_person_id == source.author_person_id

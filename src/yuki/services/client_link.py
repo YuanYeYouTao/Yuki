@@ -1,6 +1,6 @@
 """Platform possession proof before automatic Person creation or chat admission."""
 
-from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from yuki.gateway.models import ConnectionSnapshot
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.identity.canonical_repository import find_presence
 from yuki.identity.db_models import PresenceModel
+from yuki.identity.errors import CanonicalIdentityError
 from yuki.services.policies import message_command_text
 
 
@@ -54,45 +55,58 @@ class ClientLinkCommands:
         code = parts[2].strip() if len(parts) == 3 else ""
         if len(code.split()) > 1:
             return "用法：/ai link，或 /ai link <绑定码>。"
+        request_id = str(uuid4())
         try:
-            connection = self.registry.resolve_by_handle(bot).snapshot
-            async with self.identities.database.sessions() as reader:
-                presence = await find_presence(
-                    reader, connection.external_account_id, platform=connection.platform
-                )
-                if presence is None or not presence.enabled:
-                    raise ClientError("unauthenticated")
-                if connection.presence_id is None:
-                    self.registry.bind_presence(
-                        platform=connection.platform,
-                        external_account_id=connection.external_account_id,
-                        presence_id=presence.id,
+            while True:
+                connection = self.registry.resolve_by_handle(bot).snapshot
+                async with self.identities.database.read_session() as reader:
+                    presence = await find_presence(
+                        reader, connection.external_account_id, platform=connection.platform
                     )
-                snapshot = self.registry.resolve_by_handle(bot).snapshot
-                await self._require_proof(reader, snapshot, bot, message)
-                if code:
-                    await self.identities._code(reader, code, datetime.now(UTC))
+                    if presence is None or not presence.enabled:
+                        raise ClientError("unauthenticated")
+                    if connection.presence_id is None:
+                        self.registry.bind_presence(
+                            platform=connection.platform,
+                            external_account_id=connection.external_account_id,
+                            presence_id=presence.id,
+                        )
+                    snapshot = self.registry.resolve_by_handle(bot).snapshot
+                    await self._require_proof(reader, snapshot, bot, message)
+                    if code:
+                        prepared_claim = await self.identities.prepare_account_claim(
+                            code,
+                            platform=snapshot.platform,
+                            account=message.sender.user_id,
+                            session=reader,
+                            request_id=request_id,
+                        )
 
-            async def apply(writer: AsyncSession) -> dict[str, object]:
-                await self._require_proof(writer, snapshot, bot, message)
-                if code:
-                    return await self.identities.claim_account(
-                        code,
-                        platform=snapshot.platform,
-                        account=message.sender.user_id,
-                        display_name=message.sender.nickname,
-                        message_id=message.message_id,
-                        session=writer,
-                    )
-                else:
-                    return await self.identities.issue_for_account(
-                        platform=snapshot.platform,
-                        account=message.sender.user_id,
-                        message_id=message.message_id,
-                        session=writer,
-                    )
-
-            result = await self.identities.database.apply_snapshot_write(apply)
+                try:
+                    async with self.identities.database.immediate_session() as writer:
+                        await self._require_proof(writer, snapshot, bot, message)
+                        if code:
+                            result = await self.identities.claim_account(
+                                code,
+                                platform=snapshot.platform,
+                                account=message.sender.user_id,
+                                display_name=message.sender.nickname,
+                                message_id=message.message_id,
+                                session=writer,
+                                prepared=prepared_claim,
+                            )
+                        else:
+                            result = await self.identities.issue_for_account(
+                                platform=snapshot.platform,
+                                account=message.sender.user_id,
+                                message_id=message.message_id,
+                                session=writer,
+                            )
+                except CanonicalIdentityError as exc:
+                    if exc.category != "person_merge_preparation_changed":
+                        raise
+                    continue
+                break
             if not code:
                 return f"绑定码：{result['code']}（10 分钟内有效，使用一次后失效）。"
             if result["merged"]:

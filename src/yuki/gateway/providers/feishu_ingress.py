@@ -339,7 +339,7 @@ class FeishuGateway:
         message = normalize_message(payload.get("event") or {}, self.client)
         if message is None:
             return
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             receipt = await transport_receipt(
                 session,
                 presence_id=self.presence_id,
@@ -355,7 +355,7 @@ class FeishuGateway:
                 raise PermissionError("feishu_source_conflict")
             return
         if message.group_id is not None:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 binding = await find_space_binding(
                     session, message.group_id, platform=self.client.platform
                 )

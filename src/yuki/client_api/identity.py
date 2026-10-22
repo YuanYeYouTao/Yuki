@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
@@ -35,9 +35,12 @@ from yuki.identity.canonical_repository import (
 )
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import (
+    PersonMergePreparation,
+    PersonMergePreparationChanged,
     current_person_id,
     merge_persons,
     person_family_condition,
+    prepare_person_merge,
     same_person_id,
 )
 from yuki.persistence.command_receipts import CommandReceiptRepository, aware
@@ -63,6 +66,15 @@ def request_message_key(
     if conversation_id is not None:
         return f"{external_account_id}:{conversation_id}:{request_id}"
     return f"{external_account_id}:{request_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class AccountClaimPreparation:
+    code_id: str
+    person_id: str
+    old_binding: tuple[str, str] | None
+    merge: PersonMergePreparation | None
+    request_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +119,7 @@ class ClientIdentityService:
         binding_id: str | None = None,
         conversation_id: str | None = None,
     ) -> ClientPrincipal:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             device = await session.scalar(
                 select(ClientDeviceModel).where(
                     ClientDeviceModel.token_hash == secret_hash(token),
@@ -467,7 +479,7 @@ class ClientIdentityService:
             return int(getattr(result, "rowcount", 0) or 0)
 
     async def me(self, principal: ClientPrincipal) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             principal = await self.require_principal(session, principal)
             bindings = list(
                 await session.scalars(
@@ -603,7 +615,7 @@ class ClientIdentityService:
     ) -> dict[str, Any]:
         if session is None:
             bound = fingerprint("identity.binding.transfer", binding_id, {"to_person": to_person})
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 previous = await self.replay(reader, principal_id, request_id, bound)
             if previous is not None:
                 return previous
@@ -660,6 +672,40 @@ class ClientIdentityService:
             trigger_message_id=message_id,
         )
 
+    async def prepare_account_claim(
+        self,
+        raw_code: str,
+        *,
+        platform: str,
+        account: str,
+        session: AsyncSession | None = None,
+        request_id: str | None = None,
+    ) -> AccountClaimPreparation:
+        if session is None:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                return await self.prepare_account_claim(
+                    raw_code,
+                    platform=platform,
+                    account=account,
+                    session=reader,
+                    request_id=request_id,
+                )
+        code = await self._code(session, raw_code, datetime.now(UTC))
+        presence = await find_presence(session, account, platform=platform)
+        if platform in {APP_PLATFORM, ACP_PLATFORM} or presence is not None:
+            raise ClientError("precondition_failed")
+        old = await find_identity_binding(session, account, platform=platform)
+        return AccountClaimPreparation(
+            code_id=code.id,
+            person_id=code.person_id,
+            old_binding=(old.id, old.person_id) if old is not None else None,
+            merge=await prepare_person_merge(session, old.person_id, code.person_id)
+            if old is not None
+            else None,
+            request_id=request_id or str(uuid4()),
+        )
+
     async def claim_account(
         self,
         raw_code: str,
@@ -669,35 +715,56 @@ class ClientIdentityService:
         display_name: str,
         message_id: str,
         session: AsyncSession | None = None,
+        prepared: AccountClaimPreparation | None = None,
     ) -> dict[str, Any]:
         if session is None:
-
-            async def operation(writer: AsyncSession) -> dict[str, Any]:
-                return await self.claim_account(
-                    raw_code,
-                    platform=platform,
-                    account=account,
-                    display_name=display_name,
-                    message_id=message_id,
-                    session=writer,
+            request_id = str(uuid4())
+            while True:
+                prepared = await self.prepare_account_claim(
+                    raw_code, platform=platform, account=account, request_id=request_id
                 )
-
-            return await self.database.apply_snapshot_write(operation)
+                try:
+                    async with self.database.immediate_session() as writer:
+                        return await self.claim_account(
+                            raw_code,
+                            platform=platform,
+                            account=account,
+                            display_name=display_name,
+                            message_id=message_id,
+                            session=writer,
+                            prepared=prepared,
+                        )
+                except PersonMergePreparationChanged:
+                    continue
+        if prepared is None:
+            raise ValueError("account_claim_preparation_required")
         now = datetime.now(UTC)
         code = await self._code(session, raw_code, now)
         presence = await find_presence(session, account, platform=platform)
         if platform in {APP_PLATFORM, ACP_PLATFORM} or presence is not None:
             raise ClientError("precondition_failed")
         old = await find_identity_binding(session, account, platform=platform)
+        if (code.id, code.person_id, (old.id, old.person_id) if old else None) != (
+            prepared.code_id,
+            prepared.person_id,
+            prepared.old_binding,
+        ):
+            raise PersonMergePreparationChanged()
         merged = old is not None and not await same_person_id(
             session, old.person_id, code.person_id
         )
         if old is not None:
-            apply_routes = await self.router.prepare_person_merge_routes(
+            route_preparation = await self.router.prepare_person_merge_routes(
                 session, old.person_id, code.person_id
             )
+            apply_routes = await route_preparation(session)
             await merge_persons(
-                session, old.person_id, code.person_id, now=now, actor_id=code.issuer_principal_id
+                session,
+                old.person_id,
+                code.person_id,
+                now=now,
+                actor_id=code.issuer_principal_id,
+                prepared=cast(PersonMergePreparation, prepared.merge),
             )
             apply_routes()
             binding = old
@@ -722,7 +789,7 @@ class ClientIdentityService:
             principal_id=binding.id,
             principal_kind="person",
             person_id=binding.person_id,
-            request_id=str(uuid4()),
+            request_id=prepared.request_id,
             operation="client.binding_link",
             operation_ref=binding.id,
             payload_hash=fingerprint(

@@ -164,7 +164,7 @@ class PluginBackgroundTurnWorker:
 
     async def resume_work(self, item: dict[str, Any], source: dict[str, Any]) -> None:
         """Continue a derived Work through its original external event and grant."""
-        async with self._repository._database.sessions() as reader:
+        async with self._repository._database.read_session() as reader:
             stored = await reader.scalar(
                 select(PluginBackgroundTurnJobModel).where(
                     PluginBackgroundTurnJobModel.source_event_id == source["trigger_event_id"],
@@ -229,7 +229,7 @@ class PluginBackgroundTurnWorker:
             return
         from yuki.identity.db_models import PresenceModel
 
-        async with self._repository._database.sessions() as reader:
+        async with self._repository._database.read_session() as reader:
             presence = await reader.get(PresenceModel, context.provenance_presence_id)
         if presence is None:
             raise WorkConflict("plugin_turn_presence_missing")

@@ -217,7 +217,7 @@ class MemoryRetriever:
         semantic_by_id: dict[int, AuthorizedSemanticCandidate] = {
             item.fact_id: item for item in semantic
         }
-        async with self._repository.database.sessions() as reader:
+        async with self._repository.database.read_session() as reader:
             person_roots = await current_person_ids(
                 reader,
                 (

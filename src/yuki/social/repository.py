@@ -119,7 +119,8 @@ class SocialOperationRepository:
             raise SocialError("invalid_operation")
         source_turn_id = social_source_key(source_turn_id)
         digest = payload_hash(action, target, payload, source_conversation_id)
-        async with self.database.sessions() as reader:
+        prepared_json = json.dumps(prepared, ensure_ascii=False) if prepared is not None else None
+        async with self.database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             existing = await reader.scalar(
                 select(SocialOperationModel).where(
@@ -140,7 +141,7 @@ class SocialOperationRepository:
                 if work_effect is None:
                     return self._receipt(existing)
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             target_row = await session.get(
                 CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel,
                 str(target.id),
@@ -157,9 +158,7 @@ class SocialOperationRepository:
                     action=action,
                     payload_hash=digest,
                     planned_parts=planned_parts,
-                    prepared_json=json.dumps(prepared, ensure_ascii=False)
-                    if prepared is not None
-                    else None,
+                    prepared_json=prepared_json,
                     target_kind=target.kind,
                     target_id=str(target.id),
                     status=OperationStatus.PREPARED.value,
@@ -209,6 +208,7 @@ class SocialOperationRepository:
         tool_call_id = social_call_key(tool_call_id)
         digest = payload_hash("send_message_sequence", target, payload, source_conversation_id)
         prefix = sequence_prefix(tool_call_id)
+        prepared_json = json.dumps(prepared, ensure_ascii=False) if prepared is not None else None
         async with self.database.immediate_session() as session:
             row = await session.scalar(
                 select(SocialOperationModel).where(
@@ -243,9 +243,7 @@ class SocialOperationRepository:
                     action="send_message_sequence",
                     payload_hash=digest,
                     planned_parts=len(parts),
-                    prepared_json=json.dumps(prepared, ensure_ascii=False)
-                    if prepared is not None
-                    else None,
+                    prepared_json=prepared_json,
                     target_kind=target.kind,
                     target_id=str(target.id),
                     status=OperationStatus.PREPARED.value,
@@ -405,7 +403,7 @@ class SocialOperationRepository:
         return self._receipt(row)
 
     async def get(self, operation_id: str) -> SocialReceipt:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(SocialOperationModel, operation_id)
             if row is None:
                 raise SocialError("operation_not_found")
@@ -414,7 +412,7 @@ class SocialOperationRepository:
     async def find(self, source_turn_id: str, tool_call_id: str) -> SocialReceipt | None:
         source_turn_id = social_source_key(source_turn_id)
         tool_call_id = social_call_key(tool_call_id)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.scalar(
                 select(SocialOperationModel).where(
                     SocialOperationModel.source_turn_id == source_turn_id,
@@ -428,7 +426,7 @@ class SocialOperationRepository:
         # Only live illustration dependencies need an interrupted text owner.
         # Prepare their original plan before any UPDATE acquires the writer.
         interrupted = []
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             parents = await reader.scalars(
                 select(SocialOperationModel)
                 .join(
@@ -458,7 +456,7 @@ class SocialOperationRepository:
                 )
                 if "prepared" in statuses and any(status != "prepared" for status in statuses):
                     interrupted.append((parent.id, parent.source_turn_id, keys))
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             result = await session.execute(
                 update(SocialOperationModel)
                 .where(

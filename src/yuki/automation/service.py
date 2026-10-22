@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from typing import cast
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import AdminAuditService
@@ -29,12 +29,14 @@ from yuki.automation.models import (
     AutomationStatus,
     IntervalSchedule,
     OnceSchedule,
+    Schedule,
 )
-from yuki.automation.repository import AutomationRepository
+from yuki.automation.repository import AutomationRepository, PreparedTaskDefinition
 from yuki.automation.task_spec import TaskSpec, canonical_task_hash, prepare_task
 from yuki.config import Settings
 from yuki.domain.tool_actor import ToolActor
 from yuki.identity.person_identity import current_person_id, same_person_id
+from yuki.persistence.models import AutomationModel, AutomationRunModel, AutomationVersionModel
 from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.origin import TurnOrigin
 from yuki.time.schedules import initial_run_at
@@ -43,17 +45,15 @@ from yuki.time.service import TimeContextService, validate_timezone
 logger = logging.getLogger(__name__)
 
 
-def _schedule_changed(before: AutomationRecord, after: TaskSpec) -> bool:
-    if before.schedule.model_dump(exclude={"timezone"}) != after.trigger.model_dump(
-        exclude={"timezone"}
-    ):
+def _schedule_changed(before: Schedule, before_timezone: str, after: TaskSpec) -> bool:
+    if before.model_dump(exclude={"timezone"}) != after.trigger.model_dump(exclude={"timezone"}):
         return True
     if isinstance(after.trigger, AfterSchedule | IntervalSchedule) or (
         isinstance(after.trigger, OnceSchedule) and after.trigger.local_datetime.tzinfo is not None
     ):
         return False
     return validate_timezone(
-        getattr(before.schedule, "timezone", None) or before.timezone
+        getattr(before, "timezone", None) or before_timezone
     ) != validate_timezone(cast(str, getattr(after.trigger, "timezone", None) or after.timezone))
 
 
@@ -143,8 +143,7 @@ class AutomationService:
 
     async def _commit_task(
         self,
-        task: TaskSpec,
-        authority: DelegatedAuthority,
+        definition: PreparedTaskDefinition,
         *,
         creator_person_id: str,
         now: datetime,
@@ -159,8 +158,7 @@ class AutomationService:
             row = await self._repository.publish_task(
                 automation_id,
                 creator_person_id=creator_person_id,
-                task=task,
-                authority=authority,
+                definition=definition,
                 now=now,
                 next_run_at=next_run_at,
                 session=session,
@@ -171,14 +169,13 @@ class AutomationService:
         if max_runs is not None and (type(max_runs) is not int or max_runs <= 0):
             raise ValueError("max_runs 必须是正整数")
         return await self._repository.create(
-            task,
-            authority,
+            definition,
             creator_person_id=creator_person_id,
             creation_source_key=creation_source_key,
             max_runs=max_runs,
             next_run_at=next_run_at
             if next_run_at is not None
-            else initial_run_at(task.trigger, now, cast(str, task.timezone)),
+            else initial_run_at(definition.task.trigger, now, cast(str, definition.task.timezone)),
             now=now,
             session=session,
         )
@@ -225,7 +222,7 @@ class AutomationService:
         elif actor.conversation_id is not None:
             from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
-            async with self._repository._database.sessions() as session:
+            async with self._repository._database.read_session() as session:
                 conversation = await session.get(CanonicalConversationModel, actor.conversation_id)
             if conversation is not None:
                 scene_fields = {
@@ -245,6 +242,7 @@ class AutomationService:
             principal_kind=actor.principal_kind,
             **scene_fields,
         )
+        definition = PreparedTaskDefinition.prepare(task, authority)
         async with self._repository._database.immediate_session() as session:
             current_owner, current_permission, _ = await self._creator_context(
                 actor, session=session
@@ -256,8 +254,7 @@ class AutomationService:
                 if any(getattr(authority, key) != value for key, value in current_scene.items()):
                     raise PermissionError("self_automation_scene_changed")
             row = await self._commit_task(
-                task,
-                authority,
+                definition,
                 creation_source_key=creation_identity,
                 creator_person_id=creator_person_id,
                 max_runs=max_runs,
@@ -343,16 +340,21 @@ class AutomationService:
                 }
             ),
         )
+        definition = PreparedTaskDefinition.prepare(task, authority)
+        next_run_at = initial_run_at(task.trigger, now, cast(str, task.timezone))
         async with self._repository._database.immediate_session() as session:
-            current = await self.require_manageable(existing.id, actor, session=session)
+            current = await self._manageable_row(existing.id, actor, session)
             row = await self._commit_task(
-                task,
-                authority,
+                definition,
                 automation_id=existing.id,
                 creator_person_id=owner_person_id,
                 now=now,
-                next_run_at=initial_run_at(task.trigger, now, cast(str, task.timezone))
-                if _schedule_changed(current, task)
+                next_run_at=next_run_at
+                if _schedule_changed(
+                    TypeAdapter(Schedule).validate_json(current.schedule_json),
+                    current.timezone,
+                    task,
+                )
                 else None,
                 session=session,
             )
@@ -432,25 +434,33 @@ class AutomationService:
         self,
         automation_id: int,
         actor: ToolActor,
-        *,
-        session: AsyncSession | None = None,
     ) -> AutomationRecord:
         """Allow the canonical owner or a current superuser to manage one task."""
+        async with self._repository._database.read_session() as session:
+            await self._manageable_row(automation_id, actor, session)
+            row = await self._repository.get(automation_id, session=session)
+        assert row is not None
+        return row
 
+    async def _manageable_row(
+        self,
+        automation_id: int,
+        actor: ToolActor,
+        session: AsyncSession,
+    ) -> AutomationModel:
         actor_person_id, permission, _provenance = await self._creator_context(
             actor, session=session
         )
-        row = await self._repository.get(automation_id, session=session)
+        row = await session.get(AutomationModel, automation_id)
         if row is None:
             raise ValueError("自动化任务不存在")
         if permission is not PermissionLevel.SUPERUSER:
             owner = self._canonical_owner(row)
-            async with optional_session(self._repository._database, session, write=False) as reader:
-                matches = owner == actor_person_id or (
-                    owner != "self"
-                    and actor_person_id != "self"
-                    and await same_person_id(reader, owner, actor_person_id)
-                )
+            matches = owner == actor_person_id or (
+                owner != "self"
+                and actor_person_id != "self"
+                and await same_person_id(session, owner, actor_person_id)
+            )
             if not matches:
                 raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
         return row
@@ -459,7 +469,7 @@ class AutomationService:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
         async with self._repository._database.immediate_session() as session:
-            await self.require_manageable(automation_id, actor, session=session)
+            await self._manageable_row(automation_id, actor, session)
             changed = await self._repository.set_status(
                 automation_id,
                 creator_person_id=creator_person_id,
@@ -481,9 +491,9 @@ class AutomationService:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
         now = self._time.clock.now()
+        TaskSpec.model_validate(row.script)
         async with self._repository._database.immediate_session() as session:
-            current = await self.require_manageable(automation_id, actor, session=session)
-            TaskSpec.model_validate(current.script)
+            current = await self._manageable_row(automation_id, actor, session)
             next_run = current.next_run_at or now
             changed = await self._repository.resume(
                 automation_id,
@@ -506,7 +516,7 @@ class AutomationService:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
         async with self._repository._database.immediate_session() as session:
-            await self.require_manageable(automation_id, actor, session=session)
+            await self._manageable_row(automation_id, actor, session)
             changed = await self._repository.cancel(
                 automation_id,
                 creator_person_id=creator_person_id,
@@ -526,9 +536,9 @@ class AutomationService:
     async def run_now(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
+        TaskSpec.model_validate(row.script)
         async with self._repository._database.immediate_session() as session:
-            current = await self.require_manageable(automation_id, actor, session=session)
-            TaskSpec.model_validate(current.script)
+            await self._manageable_row(automation_id, actor, session)
             changed = await self._repository.schedule_now(
                 automation_id,
                 creator_person_id=creator_person_id,
@@ -613,7 +623,24 @@ class AutomationService:
             raise PermissionError("self_automation_scene_required")
         async with optional_session(self._repository._database, session, write=False) as session:
             if actor.origin is TurnOrigin.SCHEDULED_AUTOMATION:
-                owner = await self._repository.get_for_run(actor.automation_run_id, session=session)
+                owner = (
+                    await session.execute(
+                        select(
+                            AutomationModel.creator_kind,
+                            AutomationVersionModel.canonical_presence_id,
+                            AutomationVersionModel.canonical_target_space_id,
+                        )
+                        .join(
+                            AutomationVersionModel,
+                            AutomationVersionModel.automation_id == AutomationModel.id,
+                        )
+                        .join(
+                            AutomationRunModel,
+                            AutomationRunModel.version_id == AutomationVersionModel.id,
+                        )
+                        .where(AutomationRunModel.id == actor.automation_run_id)
+                    )
+                ).one_or_none()
                 if (
                     owner is None
                     or owner.creator_kind != "self"
@@ -681,7 +708,7 @@ class AutomationService:
         owner_person_id = self._canonical_owner(row)
         from yuki.automation.context import bind_automation_conversation
 
-        async with self._repository._database.sessions() as session:
+        async with self._repository._database.read_session() as session:
             conversation_id = row.authority_snapshot.get("canonical_conversation_id")
             if conversation_id is None:
                 _, conversation_id = await bind_automation_conversation(session, row)
@@ -702,7 +729,7 @@ class AutomationService:
         )
 
     @staticmethod
-    def _canonical_owner(row: AutomationRecord) -> str:
+    def _canonical_owner(row: AutomationRecord | AutomationModel) -> str:
         if row.creator_kind == "self":
             return "self"
         if row.canonical_creator_person_id is None:

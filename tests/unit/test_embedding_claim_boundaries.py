@@ -229,7 +229,7 @@ async def test_late_original_claim_never_overwrites_reclaimed_job(database, late
         await jobs.skip(old)
     else:
         await jobs.fail(old, error_category="late", retryable=False, initial_delay_seconds=0)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored = await session.get(MemoryEmbeddingJobModel, current.id)
         assert stored.status == "processing" and stored.updated_at == current.updated_at
         assert stored.attempts == current.attempts
@@ -251,7 +251,7 @@ async def test_batch_failure_and_skip_leave_reclaimed_peer_processing(database, 
         await jobs.fail_many(
             mixed, error_category="batch_failure", retryable=False, initial_delay_seconds=0
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = {row.id: row for row in await session.scalars(select(MemoryEmbeddingJobModel))}
     assert rows[current[0].id].status == "processing"
     assert rows[current[0].id].updated_at == current[0].updated_at
@@ -320,13 +320,13 @@ async def test_retryable_embedding_failure_recovers_original_job_past_old_attemp
     )
     for attempts in range(1, 7):
         assert await worker.process_once() == 0
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             stored = await reader.get(MemoryEmbeddingJobModel, 1)
             assert stored.status == "pending" and stored.attempts == attempts
             assert stored.error_category == "unavailable"
     provider._error = None
     assert await worker.process_once() == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         stored = await reader.get(MemoryEmbeddingJobModel, 1)
         assert stored.status == "done" and stored.attempts == 7
         assert len(tuple(await reader.scalars(select(MemoryEmbeddingModel)))) == 1
@@ -367,7 +367,7 @@ async def test_embedding_loop_database_failure_and_cancellation(database, monkey
     else:
         await asyncio.wait_for(worker._run(), timeout=2)
         assert attempts == 2 and provider.document_requests == 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             stored = await reader.get(MemoryEmbeddingJobModel, 1)
             assert stored.status == "done"
 
@@ -397,7 +397,7 @@ async def test_input_mutation_after_prepare_requeues_original_claim_without_old_
 
     monkeypatch.setattr(database, "immediate_session", gate)
     assert await jobs.complete((_write(job),)) == 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         stored = await reader.get(MemoryEmbeddingJobModel, job.id)
         assert stored.status == "pending" and stored.attempts == job.attempts
         assert stored.error_category == "embedding_input_changed"

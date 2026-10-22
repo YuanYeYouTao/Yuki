@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
+from tests.support.person_merge import merge_persons
 
 from yuki.conversation.canonical_db_models import (
     ControlCommandReceiptModel,
@@ -19,7 +20,6 @@ from yuki.identity.db_models import (
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 
 
@@ -63,7 +63,7 @@ async def test_merged_disabled_source_cannot_borrow_root_for_telegram_recovery(
     before_requests = len(env.model.requests)
     await env.gateway.receive(update(3, chat=-10042, text="/ai admin group current enable"))
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not (await session.get(CanonicalSpaceModel, space_id)).enabled
         assert list(await session.scalars(select(ChatEventModel.id))) == events_before
         assert (
@@ -108,7 +108,7 @@ async def test_processor_native_telegram_can_register_first_group(telegram_env, 
     assert message is not None
     result = await env.harness.processor.handle(message, TelegramSender(env.gateway, message))
     assert result.reason == "group_recovery"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await session.scalar(
             select(SpaceBindingModel).where(
                 SpaceBindingModel.platform == "telegram",

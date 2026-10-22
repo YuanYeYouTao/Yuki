@@ -545,10 +545,10 @@ def resolve_mutation_commit(
 
     if result.uncertain:
         return None
-    if not result.ok:
-        return False
     if result.mutation_committed is not None:
         return result.mutation_committed
+    if not result.ok:
+        return False
     if descriptor.effect in {
         CapabilityEffect.READ_STATE,
         CapabilityEffect.EXTERNAL_READ,

@@ -53,7 +53,7 @@ async def test_operation_replay_is_distinct_from_equal_content_and_later_actions
     assert (await facts.get_fact(first.new_fact_id)).status is MemoryStatus.INVALIDATED
     conflict = await mutations.mutate(create_request("喜欢咖啡"), first_context)
     assert not conflict.ok and conflict.reason_code == "memory_operation_payload_conflict"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 3
 
 

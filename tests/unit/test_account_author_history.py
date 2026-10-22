@@ -59,7 +59,7 @@ async def test_first_late_event_uses_original_person_and_stage_without_new_owner
     assert admitted.author_assignment_id == old_id
     result = await uow.append_inbound(admitted.message, admitted)
     assert result.event.author_person_id == source
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.get(
             CanonicalConversationModel, result.event.canonical_conversation_id
         )
@@ -113,7 +113,7 @@ async def test_unproved_private_author_is_one_account_fact_and_payload_conflict_
     with pytest.raises(CanonicalIdentityError) as conflict:
         await uow.record_account_fact(forged, repeated)
     assert conflict.value.category == "receipt_conflict"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(func.count()).select_from(CanonicalEventReceiptModel)) == 1
         )
@@ -146,7 +146,7 @@ async def test_known_ended_stage_does_not_permanently_block_a_new_normal_person(
     assert admitted.author_assignment_id not in {new_id, None}
     event = await uow.append_inbound(admitted.message, admitted)
     assert event.event.author_person_id == admitted.author_person_id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current = await find_identity_binding(reader, "92001")
         assert current.id == admitted.author_assignment_id and current.status == "active"
 
@@ -171,7 +171,7 @@ async def test_yuki_role_replacement_deduplicates_by_stable_receiver_account(dat
     assert replay.reason == "receipt_replay" and replay.presence_id == old_presence
     reused = await uow.append_inbound(replay.message, replay)
     assert not reused.created and reused.event.id == original.event.id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(func.count()).select_from(CanonicalEventReceiptModel)) == 1
         )
@@ -193,7 +193,7 @@ async def test_current_disabled_stage_does_not_create_another_owner(database):
     )
     admitted = await resolver.pre_admit(bot, native)
     assert admitted.dropped and admitted.reason == "private_not_allowed"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await find_identity_binding(reader, "92001")
         assert original.id == new_id and original.person_id == target
         with pytest.raises(CanonicalIdentityError):

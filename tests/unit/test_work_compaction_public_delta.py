@@ -35,7 +35,7 @@ async def test_actual_main_keeps_public_delta_and_reuses_paid_response(
     session.transcript.append(ambient)
     await session.save("paired")
     original_chain = session.transcript.chain_id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = dict((await reader.execute(select(effects))).mappings().one())
 
     def respond(request):
@@ -62,7 +62,7 @@ async def test_actual_main_keeps_public_delta_and_reuses_paid_response(
             == "Verified findings. Continue original task."
         )
         assert len(provider.requests) == 1
-        await database.close()
+        await database.engine.dispose()
         restored = WorkSession(control, session.contract)
         control.session = restored
         await restored.restore(TurnTranscript((*initial[:-1], ambient, initial[-1])))
@@ -96,7 +96,7 @@ async def test_actual_main_keeps_public_delta_and_reuses_paid_response(
         assert json.dumps(wire).count(ambient.content) == 1
     finally:
         await adapter.close()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert dict((await reader.execute(select(effects))).mappings().one()) == receipt
     invoke.assert_awaited_once()
     saved = await control.repository.get(control.current["id"])

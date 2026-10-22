@@ -231,7 +231,7 @@ async def test_legacy_summary_rebuild_reads_raw_bodies_from_real_assembler(datab
     assert "必须重建的原始正文" in "\n".join(
         item.content or "" for item in captured[0].history_messages
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         head = (await reader.scalars(select(PromptProjectionModel))).one()
         assert head.rebuild_reason == "source_changed" and head.selected_summary_renderer == 2
 

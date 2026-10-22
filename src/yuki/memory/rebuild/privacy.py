@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import String, and_, delete, exists, func, or_, select, update
+from sqlalchemy import String, and_, case, delete, exists, false, func, or_, select, update
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,40 @@ class PreparedRebuildForget:
     changes: tuple[tuple[int, str, datetime, str, str, str, bool], ...]
     ownership: tuple[BindingOwnership, ...] = ()
     person_ids: tuple[str, ...] = ()
+    sources: tuple[tuple[int, str, datetime, str, str, str | None], ...] = ()
+
+
+def _selection_scope(
+    aliases: tuple[str, ...],
+    ownership: tuple[BindingOwnership, ...],
+    person_ids: tuple[str, ...],
+    conversations: Any,
+) -> tuple[Any, Any]:
+    """The original related-selection predicate, shared by discovery and commit."""
+    run = MemoryRebuildRunModel
+    erased_events = select(ChatEventModel.id).where(
+        or_(
+            ChatEventModel.author_person_id.in_(person_ids),
+            ChatEventModel.canonical_conversation_id.in_(conversations),
+        )
+    )
+    people = func.json_each(run.selection_json, "$.person_ids").table_valued("value")
+    scopes = func.json_each(run.selection_json, "$.conversation_ids").table_valued("value")
+    events = func.json_each(run.selection_json, "$.event_ids").table_valued("value")
+    original = func.json_tree(run.original_selection_json).table_valued("atom")
+    identifiers = tuple({*aliases, *person_ids, *(item.account for item in ownership)})
+    original_matches = exists(
+        select(original.c.atom).where(sql_cast(original.c.atom, String).in_(identifiers))
+    )
+    return (
+        or_(
+            exists(select(people.c.value).where(people.c.value.in_(person_ids))),
+            exists(select(scopes.c.value).where(scopes.c.value.in_(conversations))),
+            exists(select(events.c.value).where(events.c.value.in_(erased_events))),
+            original_matches,
+        ),
+        original_matches,
+    )
 
 
 async def prepare_forget(
@@ -81,11 +115,7 @@ async def prepare_forget(
         )
     )
     run = MemoryRebuildRunModel
-    people = func.json_each(run.selection_json, "$.person_ids").table_valued("value")
-    scopes = func.json_each(run.selection_json, "$.conversation_ids").table_valued("value")
-    events = func.json_each(run.selection_json, "$.event_ids").table_valued("value")
-    original = func.json_tree(run.original_selection_json).table_valued("atom")
-    identifiers = tuple({*aliases, *person_ids, *(item.account for item in ownership)})
+    related, original_matches = _selection_scope(aliases, ownership, person_ids, conversations)
     rows = (
         await session.execute(
             select(
@@ -94,23 +124,9 @@ async def prepare_forget(
                 run.updated_at,
                 run.status,
                 run.selection_json,
-                exists(
-                    select(original.c.atom).where(
-                        sql_cast(original.c.atom, String).in_(identifiers)
-                    )
-                ).label("erase_original"),
-            ).where(
-                or_(
-                    exists(select(people.c.value).where(people.c.value.in_(person_ids))),
-                    exists(select(scopes.c.value).where(scopes.c.value.in_(conversations))),
-                    exists(select(events.c.value).where(events.c.value.in_(erased_events))),
-                    exists(
-                        select(original.c.atom).where(
-                            sql_cast(original.c.atom, String).in_(identifiers)
-                        )
-                    ),
-                )
-            )
+                run.original_selection_json,
+                original_matches.label("erase_original"),
+            ).where(related)
         )
     ).all()
     selections = [
@@ -168,20 +184,52 @@ async def prepare_forget(
                 bool(row.erase_original),
             )
         )
-    return PreparedRebuildForget(aliases, tuple(changes), ownership, person_ids)
+    return PreparedRebuildForget(
+        aliases,
+        tuple(changes),
+        ownership,
+        person_ids,
+        tuple(
+            (
+                row.id,
+                row.selection_hash,
+                row.updated_at,
+                row.status,
+                row.selection_json,
+                row.original_selection_json,
+            )
+            for row in rows
+        ),
+    )
 
 
 async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -> int:
     run = MemoryRebuildRunModel
-    rows = {
-        row.id: (row.selection_hash, row.updated_at, row.status)
-        for row in await session.execute(
-            select(run.id, run.selection_hash, run.updated_at, run.status).where(
-                run.id.in_(tuple(change[0] for change in prepared.changes))
-            )
+    conversations = select(CanonicalConversationModel.id).where(
+        CanonicalConversationModel.kind == "private",
+        CanonicalConversationModel.person_id.in_(prepared.person_ids),
+    )
+    related, _ = _selection_scope(
+        prepared.aliases, prepared.ownership, prepared.person_ids, conversations
+    )
+    expected = {
+        identity: and_(
+            run.selection_hash == fingerprint,
+            run.updated_at == stamp,
+            run.status == status,
+            run.selection_json == selection,
+            run.original_selection_json == original,
         )
+        for identity, fingerprint, stamp, status, selection, original in prepared.sources
     }
-    if any(rows.get(change[0]) != change[1:4] for change in prepared.changes):
+    current = tuple(
+        await session.execute(
+            select(
+                run.id, case(expected, value=run.id, else_=False) if expected else false()
+            ).where(related)
+        )
+    )
+    if {row.id for row in current} != set(expected) or any(not row[1] for row in current):
         raise ValueError("memory_rebuild_privacy_preparation_changed")
     proposal = MemoryRebuildProposalModel
     # Original canonical targets are authoritative, including third-party claims.

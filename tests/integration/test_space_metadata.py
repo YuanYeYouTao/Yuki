@@ -55,7 +55,7 @@ async def protected_rows(database):
         "space_active_routes",
         "space_binding_ingest_routes",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return {
             name: (await session.execute(select(Base.metadata.tables[name]))).all()
             for name in names
@@ -76,7 +76,7 @@ def write_recorder(statements):
 async def test_native_space_name_preserves_original_subject_and_admission(database, platform):
     owner = await existing_group(database, platform=platform)
     before = await protected_rows(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         old_binding = await session.get(SpaceBindingModel, owner.binding)
         last_seen = old_binding.last_seen_at
     assert await observe_space_name(
@@ -85,7 +85,7 @@ async def test_native_space_name_preserves_original_subject_and_admission(databa
         space_binding_id=owner.binding,
         name=" new\n native\x00name ",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await session.get(SpaceBindingModel, owner.binding)
         space = await session.get(CanonicalSpaceModel, owner.space)
         assert binding.space_id == owner.space and binding.platform == platform
@@ -129,7 +129,7 @@ async def test_unknown_or_cross_platform_source_does_not_create_metadata(databas
         space_binding_id=str(uuid4()) if unknown == "binding" else owner.binding,
         name="not observed here",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(CanonicalSpaceModel, owner.space)).name == "original"
         assert (await session.get(CanonicalSpaceModel, other.space)).name == "original"
     assert await protected_rows(database) == before
@@ -166,7 +166,7 @@ async def test_qq_notice_uses_original_presence_without_model_member_probe_or_op
         lambda: SimpleNamespace(database=database, gateway_registry=registry),
     )
     await metadata.handle_group_name_notice(bot, group_notice())
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(CanonicalSpaceModel, owner.space)).name == "renamed"
         assert (await session.get(CanonicalSpaceModel, other_platform.space)).name == "original"
     bot.call_api.assert_not_awaited()
@@ -191,7 +191,7 @@ async def test_other_notices_or_missing_original_group_do_not_update_names(datab
     assert not await metadata.observe_group_name_notice(
         database, registry, bot, group_notice(**changes)
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(CanonicalSpaceModel, owner.space)).name == "original"
 
 
@@ -207,34 +207,34 @@ async def test_notice_cannot_borrow_another_registered_bot_presence(database):
     assert not await metadata.observe_group_name_notice(
         database, registry, other, group_notice(self_id=80002)
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(CanonicalSpaceModel, owner.space)).name == "original"
 
 
-async def test_space_metadata_reprepares_after_real_wal_snapshot_conflict(database, monkeypatch):
+async def test_space_metadata_rechecks_new_writer_after_closed_reader(database, monkeypatch):
     owner = await existing_group(database)
-    original_write = database.apply_snapshot_write
+    from contextlib import asynccontextmanager
+
+    original_read = database.read_session
     changed = False
     conflicts = []
 
     def error(context):
         conflicts.append(getattr(context.original_exception, "sqlite_errorcode", None))
 
-    async def concurrent_write(operation):
-        async def apply(session):
-            nonlocal changed
-            result = await operation(session)
-            if not changed:
-                changed = True
-                async with database.immediate_session() as writer:
-                    space = await writer.get(CanonicalSpaceModel, owner.space)
-                    space.require_mention = False
-                    space.revision += 1
-            return result
+    @asynccontextmanager
+    async def concurrent_write():
+        nonlocal changed
+        async with original_read() as reader:
+            yield reader
+        if not changed:
+            changed = True
+            async with database.immediate_session() as writer:
+                space = await writer.get(CanonicalSpaceModel, owner.space)
+                space.require_mention = False
+                space.revision += 1
 
-        return await original_write(apply)
-
-    monkeypatch.setattr(database, "apply_snapshot_write", concurrent_write)
+    monkeypatch.setattr(database, "read_session", concurrent_write)
     event.listen(database.engine.sync_engine, "handle_error", error)
     try:
         assert await observe_space_name(
@@ -245,8 +245,8 @@ async def test_space_metadata_reprepares_after_real_wal_snapshot_conflict(databa
         )
     finally:
         event.remove(database.engine.sync_engine, "handle_error", error)
-    assert 517 in conflicts
-    async with database.sessions() as session:
+    assert changed and not conflicts
+    async with database.read_session() as session:
         binding = await find_space_binding(session, "40001")
         space = await session.get(CanonicalSpaceModel, owner.space)
         assert binding.id == owner.binding and binding.space_id == owner.space

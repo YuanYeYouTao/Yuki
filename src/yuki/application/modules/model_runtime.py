@@ -85,6 +85,7 @@ class ModelRuntimeModule:
             ),
             max_concurrency=settings.global_llm_concurrency,
             self_reflection_timeout_seconds=settings.memory_self_reflection_timeout_seconds,
+            self_reflection_quiet_seconds=settings.memory_self_reflection_quiet_seconds,
         )
         self._lifecycle.register("model_runtime", close=executor.close)
         _route, chat_profile = router.route(ModelTask.CHAT_AGENT)

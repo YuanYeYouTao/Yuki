@@ -62,7 +62,7 @@ def values(row):
 async def test_transfer_erases_only_selected_person_and_source_period(database, forget_current):
     seeded = await _seed(database, 2, proposals=True)
     service, current_person, _code = await code_for(database, "1002")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         old = await find_identity_binding(session, "1001")
         old_person, old_binding = old.person_id, old.id
     old_mention = await append(database, "old period mentions 1001", account="1003", group=True)
@@ -114,7 +114,7 @@ async def test_transfer_erases_only_selected_person_and_source_period(database, 
     survivor = old_person if forget_current else current_person
     survivor_event = seeded.event_ids[0] if forget_current else current.id
     work = WorkRepository(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, survivor_event)
         snapshot = values(event)
         conversation_id = event.canonical_conversation_id
@@ -133,7 +133,7 @@ async def test_transfer_erases_only_selected_person_and_source_period(database, 
     else:
         assert await people.delete_person_id(old_person)
     assert await work.get(accepted["id"]) == work_before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert values(await session.get(ChatEventModel, survivor_event)) == snapshot
         assert (await session.get(MemoryRebuildRunModel, seeded.run_id)).selection_json == selection
         sources = set(await session.scalars(select(MemoryRebuildProposalModel.event_id)))
@@ -173,7 +173,7 @@ async def test_transfer_erases_only_selected_person_and_source_period(database, 
             )
         )[0].id == later_event.id
         assert await people.delete_person_id(later_person)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert values(await session.get(ChatEventModel, survivor_event)) == snapshot
 
 
@@ -233,7 +233,7 @@ async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(datab
     await append(database, "current owner's private message")
     from yuki.identity.canonical_repository import find_identity_binding
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current = await find_identity_binding(reader, "1001", platform="qq")
     scopes = await PeopleRepository(database).affected_conversation_scopes(current.person_id)
     assert all(scope.group_id != "2002" for scope in scopes)

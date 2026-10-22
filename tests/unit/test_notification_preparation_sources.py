@@ -33,7 +33,7 @@ async def prepare_fixture(database, tmp_path, *, private=False):
     )
     conversation_id = env.context.conversation_id
     if private:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             binding = await find_identity_binding(session, "10001")
             entry = await ensure_canonical_conversation(
                 session,
@@ -88,7 +88,7 @@ async def test_offline_original_notification_stays_pending_without_a_physical_cl
     env, repository, worker, event_id = await prepare_fixture(database, tmp_path)
     env.registry.disconnect(env.bot)
     await worker._prepare_pending()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(
             select(PluginNotificationOutboxModel).where(
                 PluginNotificationOutboxModel.source_event_id == event_id,
@@ -111,7 +111,7 @@ async def test_unprepared_notification_closes_only_its_real_unusable_source(
     if cause == "ended_private_entry":
         await transfer_account(database, "10001", "10002")
     else:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             if cause == "revoked_source":
                 person = await session.get(CanonicalPersonModel, env.person)
                 person.enabled = False
@@ -125,7 +125,7 @@ async def test_unprepared_notification_closes_only_its_real_unusable_source(
     env.registry.disconnect(env.bot)
     env.bot.calls.clear()
     await worker._prepare_pending()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(
             select(PluginNotificationOutboxModel).where(
                 PluginNotificationOutboxModel.source_event_id == event_id,

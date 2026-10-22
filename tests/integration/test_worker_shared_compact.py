@@ -48,7 +48,7 @@ async def test_worker_compact_current_uses_original_child_and_root_budget(databa
         assert saved["source_json"] == original_source
         assert saved["parent_work_id"] == original_root and saved["model_requests"] == 1
         assert (await control.repository.get(original_root))["model_requests"] == 0
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(
                     select(budgets.c.models).where(budgets.c.root_id == original_root)
@@ -63,7 +63,7 @@ async def test_worker_compact_current_uses_original_child_and_root_budget(databa
         )
         assert len(provider.requests) == 1
         assert (await control.repository.get(original_child))["model_requests"] == 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(
                     select(budgets.c.models).where(budgets.c.root_id == original_root)

@@ -175,7 +175,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         service = resolve().prompts
         if service is None:
             raise ClientError("unavailable")
-        async with resolve().identity.database.sessions() as session:
+        async with resolve().identity.database.read_session() as session:
             actor = await resolve().identity.require_device(
                 session,
                 actor.device_id,

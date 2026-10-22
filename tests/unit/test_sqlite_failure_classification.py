@@ -16,8 +16,8 @@ from yuki.runtime.work_supervisor import recover_failure
 @pytest.mark.parametrize(
     ("code", "expected", "retryable"),
     [
-        (sqlite3.SQLITE_BUSY, "sqlite_busy", True),
-        (sqlite3.SQLITE_BUSY_SNAPSHOT, "sqlite_busy", True),
+        (sqlite3.SQLITE_BUSY, "sqlite_busy", False),
+        (sqlite3.SQLITE_BUSY_SNAPSHOT, "sqlite_busy", False),
         (sqlite3.SQLITE_LOCKED, "sqlite_locked", False),
         (sqlite3.SQLITE_LOCKED_SHAREDCACHE, "sqlite_locked", False),
         (sqlite3.SQLITE_IOERR, "database_failure", False),
@@ -48,8 +48,11 @@ def test_real_wal_writer_busy_and_snapshot_conflict_are_distinct_from_locked(tmp
         with pytest.raises(sqlite3.OperationalError) as busy:
             second.execute("UPDATE evidence SET value=1 WHERE id=1")
         assert busy.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
-        assert classify_failure(busy.value).retryable
+        assert not classify_failure(busy.value).retryable
         second.rollback()
+        busy.value.add_note("database_write_phase:execute")
+        busy.value.add_note("database_rollback:confirmed")
+        assert classify_failure(busy.value).retryable
         first.rollback()
 
         first.execute("BEGIN")
@@ -60,7 +63,8 @@ def test_real_wal_writer_busy_and_snapshot_conflict_are_distinct_from_locked(tmp
             first.execute("UPDATE evidence SET value=3 WHERE id=1")
         assert snapshot.value.sqlite_errorcode == sqlite3.SQLITE_BUSY_SNAPSHOT
         assert classify_failure(snapshot.value).diagnostics == {
-            "sqlite_errorcode": sqlite3.SQLITE_BUSY_SNAPSHOT
+            "sqlite_errorcode": sqlite3.SQLITE_BUSY_SNAPSHOT,
+            "database_write_phase": None,
         }
         first.rollback()
         # Only a new transaction can see and update the current database plan.
@@ -86,7 +90,7 @@ async def test_locked_fails_original_work_without_resetting_paid_budget(database
     assert control.current["id"] == original_id
     assert control.current["state"] == "failed"
     assert control.current["model_requests"] == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = (
             await session.execute(
                 select(recovery.c.failure_json, recovery.c.not_before).where(

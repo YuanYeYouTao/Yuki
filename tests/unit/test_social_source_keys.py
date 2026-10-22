@@ -66,7 +66,7 @@ async def test_automation_source_replay_never_repeats_a_send(database, tmp_path,
     assert replay["status"] == expected.value
     sends = [call for call in env.bot.calls if call[0] == "send_group_msg"]
     assert len(sends) == (0 if interrupted else 1)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored = await session.get(SocialOperationModel, recovered.operation_id)
         assert stored.source_turn_id == social_source_key(source)
         assert stored.source_conversation_id == context.conversation_id
@@ -112,7 +112,7 @@ async def test_receipt_source_preserves_legacy_lookup_and_execution_separation(d
     assert await reloaded.find(short, "same-call") == old
     assert await reloaded.find(first_source, "same-call") == first
     assert await reloaded.find(second_source, "same-call") == second
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(SocialOperationModel)))
         assert len(rows) == 4
         assert next(row for row in rows if row.id == old.operation_id).source_turn_id == short

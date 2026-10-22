@@ -124,7 +124,7 @@ async def test_paid_checkpoint_busy_exits_on_original_cancellation_or_lost_lease
     assert persisted["tool_calls"] == (0 if phase == "response" else 1)
     from yuki.runtime.work_schema_v1 import journal
 
-    async with test_case.repository.database.sessions() as reader:
+    async with test_case.repository.database.read_session() as reader:
         record = (
             (await reader.execute(journal.select().where(journal.c.work_id == persisted["id"])))
             .mappings()
@@ -205,17 +205,15 @@ async def test_locked_or_text_without_driver_code_never_retries_paid_publication
 @pytest.mark.parametrize(
     "cleanup", ["rollback_failed:RuntimeError", "invalidation_failed:RuntimeError"]
 )
-async def test_cleanup_failure_cannot_authorize_checkpoint_retry(
+async def test_confirmed_outer_rollback_replaces_inner_cleanup_uncertainty(
     database, tmp_path, monkeypatch, cleanup
 ):
     writers = fail_publications(monkeypatch, phase="response", failures=1, cleanup=cleanup)
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
-    assert len(writers) == 1
-    assert result.work_state == "failed"
-    assert result.outcome.failure.code == "work_journal_unavailable"
-    assert not result.outcome.failure.retryable
-    assert len(test_case.provider.requests) == 1 and test_case.observed == []
+    assert len(writers) == 2
+    assert result.work_state == "queued"
+    assert len(test_case.provider.requests) == 1 and test_case.observed == ["read_fixture"]
 
 
 async def test_predispatch_busy_republishes_without_buying_an_extra_request(
@@ -274,7 +272,7 @@ async def test_real_competing_sqlite_writer_retries_only_the_received_publicatio
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", no_wait)
         competing.close()
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             await session.execute(text("PRAGMA busy_timeout=5000"))
 
 

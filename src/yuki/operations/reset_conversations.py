@@ -24,7 +24,7 @@ from yuki.persistence.models import (
 async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[str, int]:
     if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", batch_id) is None:
         raise ValueError("invalid_batch_id")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         ids = (
             await session.scalars(
                 select(CanonicalConversationModel.id).order_by(CanonicalConversationModel.id)
@@ -131,7 +131,7 @@ async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[s
                 )
             )
         summary["newly_reset"] += 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         complete = int(
             await session.scalar(
                 select(func.count())

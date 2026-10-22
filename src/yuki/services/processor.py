@@ -216,7 +216,7 @@ async def _attachment_metadata(
             )
     if not references:
         return ""
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         items = {
             (item.source_event_id, item.attachment_index): item
             for item in await reader.scalars(
@@ -346,7 +346,7 @@ class MessageProcessor:
     async def _person_is_superuser(self, person_id: str | None) -> bool:
         from yuki.identity.authority import person_is_superuser
 
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await person_is_superuser(session, person_id)
 
     def __init__(
@@ -623,47 +623,58 @@ class MessageProcessor:
         # Media capability checks run before AgentRunner. Pin at admission so a
         # hot provider switch cannot change the model between those two steps.
         with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
-            if (
-                self._client_links is not None
-                and message.platform not in LOCAL_CLIENT_PLATFORMS
-                and self._client_links.is_request(message)
+            async with (
+                self._chat._models.foreground_activity()
+                if not message.is_self_message
+                else nullcontext()
             ):
-                link_response = await self._client_links.execute(
-                    getattr(sender, "bot", None), message
-                )
-                await sender.send(OutboundMessage(text=link_response))
-                result = ProcessResult(True, sent_messages=1, reason="client_link")
-                return result
-            if self._group_recovery is not None and self._group_recovery.is_enable_request(message):
-                limited = await self._rate_limiter.check(
-                    user_id=message.sender.user_id,
-                    group_id=message.group_id,
-                    category="command",
-                )
-                if not limited.allowed:
-                    result = ProcessResult(False, reason="rate_limited")
-                    return result
-                response = await self._group_recovery.enable(getattr(sender, "bot", None), message)
-                if response is not None:
-                    await sender.send(OutboundMessage(text=response))
-                    result = ProcessResult(True, sent_messages=1, reason="group_recovery")
-                    return result
-            admitted = await self._canonical_ingress.pre_admit(
-                getattr(sender, "bot", None), message
-            )
-            if admitted.dropped:
-                result = await self._handle_ingress_drop(message, sender, admitted.reason)
-                return result
-            if admitted.author_kind == "account" and admitted.conversation_id is None:
-                await self._canonical_uow.record_account_fact(admitted.message, admitted)
-                return ProcessResult(False, reason="account_fact_recorded")
-            result = await self._handle_admitted(
-                admitted.message,
-                sender,
-                admitted=admitted,
-                on_committed=on_committed,
-            )
+                return await self._handle_input(message, sender, on_committed=on_committed)
+
+    async def _handle_input(
+        self,
+        message: InboundMessage,
+        sender: OutboundSender,
+        *,
+        on_committed: Callable[[ScopedAppendResult], None] | None,
+    ) -> ProcessResult:
+        """Keep input preparation and admission inside the foreground activity scope."""
+        if (
+            self._client_links is not None
+            and message.platform not in LOCAL_CLIENT_PLATFORMS
+            and self._client_links.is_request(message)
+        ):
+            link_response = await self._client_links.execute(getattr(sender, "bot", None), message)
+            await sender.send(OutboundMessage(text=link_response))
+            result = ProcessResult(True, sent_messages=1, reason="client_link")
             return result
+        if self._group_recovery is not None and self._group_recovery.is_enable_request(message):
+            limited = await self._rate_limiter.check(
+                user_id=message.sender.user_id,
+                group_id=message.group_id,
+                category="command",
+            )
+            if not limited.allowed:
+                result = ProcessResult(False, reason="rate_limited")
+                return result
+            response = await self._group_recovery.enable(getattr(sender, "bot", None), message)
+            if response is not None:
+                await sender.send(OutboundMessage(text=response))
+                result = ProcessResult(True, sent_messages=1, reason="group_recovery")
+                return result
+        admitted = await self._canonical_ingress.pre_admit(getattr(sender, "bot", None), message)
+        if admitted.dropped:
+            result = await self._handle_ingress_drop(message, sender, admitted.reason)
+            return result
+        if admitted.author_kind == "account" and admitted.conversation_id is None:
+            await self._canonical_uow.record_account_fact(admitted.message, admitted)
+            return ProcessResult(False, reason="account_fact_recorded")
+        result = await self._handle_admitted(
+            admitted.message,
+            sender,
+            admitted=admitted,
+            on_committed=on_committed,
+        )
+        return result
 
     async def _handle_admitted(
         self,
@@ -1221,7 +1232,7 @@ class MessageProcessor:
                     )
                 except OrdinaryAdmissionConflict:
                     continue
-                async with self.ordinary_admissions.database.sessions() as reader:
+                async with self.ordinary_admissions.database.read_session() as reader:
                     if not await self._ordinary_admission_allowed(
                         prepared, reason, reader, check_continuation=False
                     ):
@@ -1721,7 +1732,7 @@ class MessageProcessor:
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:
             return None
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await canonical_group_policy(session, group_id)
 
     async def _effective_private_policy(
@@ -1729,7 +1740,7 @@ class MessageProcessor:
     ) -> EffectivePrivatePolicy | None:
         if message.scope_type is not ScopeType.PRIVATE:
             return None
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await canonical_private_policy(
                 session, message.sender.user_id, platform=message.platform
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -43,6 +44,33 @@ from yuki.persistence.models import (
 from yuki.persistence.unit_of_work import optional_session
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedTaskDefinition:
+    """The encoded task/version and its original public values, prepared before writing."""
+
+    task: TaskSpec
+    authority: DelegatedAuthority
+    script_json: str
+    schedule_json: str
+    authority_json: str
+    script_hash: str
+    script: dict[str, Any]
+    authority_snapshot: dict[str, Any]
+
+    @classmethod
+    def prepare(cls, task: TaskSpec, authority: DelegatedAuthority) -> PreparedTaskDefinition:
+        return cls(
+            task,
+            authority,
+            task.model_dump_json(exclude_none=True),
+            task.trigger.model_dump_json(exclude_none=True),
+            authority.model_dump_json(),
+            canonical_task_hash(task),
+            task.model_dump(mode="json", exclude_none=True),
+            authority.model_dump(mode="json"),
+        )
+
+
 class AutomationRepository:
     """Own automation rows, immutable versions, runs, and leases."""
 
@@ -60,8 +88,7 @@ class AutomationRepository:
 
     async def create(
         self,
-        task: TaskSpec,
-        authority: DelegatedAuthority,
+        definition: PreparedTaskDefinition,
         *,
         creator_person_id: str,
         max_runs: int | None,
@@ -70,9 +97,10 @@ class AutomationRepository:
         creation_source_key: str | None = None,
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
-        script_json = task.model_dump_json(exclude_none=True)
-        schedule_json = task.trigger.model_dump_json(exclude_none=True)
-        authority_json = authority.model_dump_json()
+        task, authority = definition.task, definition.authority
+        script_json = definition.script_json
+        schedule_json = definition.schedule_json
+        authority_json = definition.authority_json
         timestamp = _aware_utc(now)
         transaction = (
             self._database.immediate_session()
@@ -92,7 +120,7 @@ class AutomationRepository:
                 )
                 if previous is not None:
                     initial_hash = await self.initial_script_hash(previous.id, session=active)
-                    if initial_hash != canonical_task_hash(task) or previous.max_runs != max_runs:
+                    if initial_hash != definition.script_hash or previous.max_runs != max_runs:
                         raise ValueError("automation_creation_key_conflict")
                     return _automation_record(previous)
             if creator_person_id == "self":
@@ -110,12 +138,7 @@ class AutomationRepository:
                     or authority.principal_kind != "person"
                 ):
                     raise ValueError("创建者没有对应的永久主体")
-            target_person, target_space = await _bind_canonical_send_targets(
-                active,
-                task,
-                authority,
-                now=timestamp,
-            )
+            target_person, target_space = _canonical_send_targets(task, authority)
             presence = await active.get(PresenceModel, authority.canonical_presence_id)
             if presence is None:
                 raise ValueError("automation_presence_unavailable")
@@ -128,7 +151,7 @@ class AutomationRepository:
                 timezone=task.timezone,
                 schedule_json=schedule_json,
                 script_json=script_json,
-                script_hash=canonical_task_hash(task),
+                script_hash=definition.script_hash,
                 required_capabilities_json="[]",
                 authority_snapshot_json=authority_json,
                 created_from_message_id=authority.created_from_message_id,
@@ -155,7 +178,7 @@ class AutomationRepository:
                 automation_id=row.id,
                 version=1,
                 script_json=script_json,
-                script_hash=canonical_task_hash(task),
+                script_hash=definition.script_hash,
                 authority_snapshot_json=authority_json,
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
@@ -165,7 +188,7 @@ class AutomationRepository:
             )
             active.add(version)
             await active.flush()
-            return _automation_record(row, version.id)
+            return _automation_record(row, version.id, definition=definition)
 
     async def get(
         self, automation_id: int, *, session: AsyncSession | None = None
@@ -262,7 +285,7 @@ class AutomationRepository:
                     [AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value]
                 )
             )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     query.order_by(AutomationModel.updated_at.desc()).limit(max(1, min(limit, 200)))
@@ -293,7 +316,7 @@ class AutomationRepository:
             if current
             else (AutomationModel.updated_at.desc(), AutomationModel.id.desc())
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.execute(
                     query.order_by(*order).offset(max(0, offset)).limit(max(1, min(limit, 101)))
@@ -307,7 +330,7 @@ class AutomationRepository:
         """Read one task and its creator projection in a single database query."""
 
         query = _directory_statement().where(AutomationModel.id == automation_id)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = (await session.execute(query)).one_or_none()
         if row is None:
             return None
@@ -333,7 +356,7 @@ class AutomationRepository:
                 AutomationModel.id,
             )
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             matches = []
             async for row in await session.stream(query.execution_options(yield_per=128)):
                 actual = json.loads(row[0].script_json)
@@ -365,7 +388,7 @@ class AutomationRepository:
             )
             .limit(max(1, min(limit, 200)))
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.scalars(query)).all()
         return tuple(_automation_record(row) for row in rows)
 
@@ -392,7 +415,7 @@ class AutomationRepository:
             .order_by(AutomationModel.updated_at.desc(), AutomationModel.id.desc())
             .limit(max(1, min(limit, 200)))
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.scalars(query)).all()
         return tuple(_automation_record(row) for row in rows)
 
@@ -526,12 +549,12 @@ class AutomationRepository:
         automation_id: int,
         *,
         creator_person_id: str,
-        task: TaskSpec,
-        authority: DelegatedAuthority,
+        definition: PreparedTaskDefinition,
         now: datetime,
         next_run_at: datetime | None = None,
         session: AsyncSession | None = None,
     ) -> AutomationRecord | None:
+        task, authority = definition.task, definition.authority
         timestamp = _aware_utc(now)
         async with optional_session(self._database, session, write=True) as active:
             if creator_person_id == "self":
@@ -567,32 +590,27 @@ class AutomationRepository:
                 )
                 or 0
             )
-            script_json = task.model_dump_json(exclude_none=True)
+            script_json = definition.script_json
             row.name = task.name
             row.timezone = cast(str, task.timezone)
-            row.schedule_json = task.trigger.model_dump_json(exclude_none=True)
+            row.schedule_json = definition.schedule_json
             row.script_json = script_json
-            row.script_hash = canonical_task_hash(task)
+            row.script_hash = definition.script_hash
             row.required_capabilities_json = "[]"
-            row.authority_snapshot_json = authority.model_dump_json()
+            row.authority_snapshot_json = definition.authority_json
             if next_run_at is not None:
                 row.next_run_at = next_run_at
             row.consecutive_failures = 0
             row.updated_at = timestamp
-            target_person, target_space = await _bind_canonical_send_targets(
-                active,
-                task,
-                authority,
-                now=timestamp,
-            )
+            target_person, target_space = _canonical_send_targets(task, authority)
             row.canonical_target_person_id = target_person
             row.canonical_target_space_id = target_space
             version = AutomationVersionModel(
                 automation_id=automation_id,
                 version=latest_version + 1,
                 script_json=script_json,
-                script_hash=canonical_task_hash(task),
-                authority_snapshot_json=authority.model_dump_json(),
+                script_hash=definition.script_hash,
+                authority_snapshot_json=definition.authority_json,
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
                 canonical_presence_id=row.canonical_presence_id,
@@ -601,7 +619,7 @@ class AutomationRepository:
             )
             active.add(version)
             await active.flush()
-            return _automation_record(row, version.id)
+            return _automation_record(row, version.id, definition=definition)
 
     async def claim_due(
         self,
@@ -628,7 +646,7 @@ class AutomationRepository:
                 .exists(),
             )
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             candidate_ids = (
                 await session.scalars(
                     select(AutomationModel.id)
@@ -715,7 +733,7 @@ class AutomationRepository:
         not_before: datetime | None = None,
     ) -> None:
         values: dict[str, Any] = {"claimed_by": None, "claimed_until": not_before}
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             await session.execute(
                 update(AutomationModel)
                 .where(
@@ -726,7 +744,7 @@ class AutomationRepository:
             )
 
     async def claim_expiry(self, automation_id: int, worker_id: str) -> float | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             value = await session.scalar(
                 select(AutomationModel.claimed_until).where(
                     AutomationModel.id == automation_id,
@@ -735,16 +753,24 @@ class AutomationRepository:
             )
         return _aware_utc(value).timestamp() if value is not None else None
 
-    async def renew_claim(self, automation_id: int, worker_id: str, until: datetime) -> bool:
+    async def renew_claim(
+        self,
+        automation_id: int,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        clock: Callable[[], datetime],
+    ) -> bool:
         async with self._database.immediate_session() as session:
+            now = _aware_utc(clock())
             result = await session.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
                     AutomationModel.claimed_by == worker_id,
-                    func.julianday(AutomationModel.claimed_until) > func.julianday("now"),
+                    AutomationModel.claimed_until > now,
                 )
-                .values(claimed_until=until)
+                .values(claimed_until=now + timedelta(seconds=lease_seconds))
             )
             return cast(CursorResult[Any], result).rowcount == 1
 
@@ -858,7 +884,7 @@ class AutomationRepository:
         """Close unowned original occurrences without dispatching any effects."""
         from yuki.runtime.work_schema_v1 import work
 
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             owned = (
                 select(work.c.id)
                 .where(
@@ -896,7 +922,7 @@ class AutomationRepository:
         from yuki.runtime.work_recovery_schema import invocations
         from yuki.runtime.work_schema_v1 import work
 
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             rows = (
                 (
                     await reader.execute(
@@ -980,17 +1006,48 @@ class AutomationRepository:
         summary: dict[str, Any],
         finished_at: datetime,
         worker_id: str | None = None,
-        session: AsyncSession | None = None,
     ) -> bool:
         from yuki.time.schedules import schedule_after_completion
 
         timestamp = _aware_utc(finished_at)
-        transaction = (
-            self._database.immediate_session()
-            if session is None
-            else optional_session(self._database, session, write=True)
+        summary_json = _redacted_json(summary)
+        # Occurrences retain their immutable accepted version. Read only its
+        # small schedule projection; task bodies and authority JSON stay out.
+        async with self._database.read_session() as reader:
+            accepted = (
+                await reader.execute(
+                    select(
+                        AutomationRunModel.version_id,
+                        AutomationRunModel.scheduled_for,
+                        func.coalesce(
+                            func.json_extract(AutomationVersionModel.script_json, "$.trigger"),
+                            func.json_extract(AutomationVersionModel.script_json, "$.schedule"),
+                        ).label("schedule"),
+                        func.json_extract(AutomationVersionModel.script_json, "$.timezone").label(
+                            "timezone"
+                        ),
+                        AutomationVersionModel.authority_snapshot_json.is_not(None).label(
+                            "has_authority"
+                        ),
+                    )
+                    .join(
+                        AutomationVersionModel,
+                        AutomationVersionModel.id == AutomationRunModel.version_id,
+                    )
+                    .where(AutomationRunModel.id == run_id)
+                )
+            ).one_or_none()
+        next_scheduled = (
+            schedule_after_completion(
+                TypeAdapter(Schedule).validate_json(accepted.schedule),
+                _aware_utc(accepted.scheduled_for),
+                timestamp,
+                accepted.timezone,
+            )
+            if accepted is not None and accepted.has_authority
+            else None
         )
-        async with transaction as active:
+        async with self._database.immediate_session() as active:
             run = await active.get(AutomationRunModel, run_id)
             if run is None:
                 return False
@@ -998,7 +1055,6 @@ class AutomationRepository:
             llm_calls = max(llm_calls, run.llm_calls)
             tool_calls = max(tool_calls, run.tool_calls)
             messages_sent = max(messages_sent, run.messages_sent)
-            accepted = await self.get_for_run(run.id, session=active)
             result = await active.execute(
                 update(AutomationRunModel)
                 .where(
@@ -1017,7 +1073,7 @@ class AutomationRepository:
                     tool_calls=tool_calls,
                     messages_sent=messages_sent,
                     error_category=error_category,
-                    result_summary_json=_redacted_json(summary),
+                    result_summary_json=summary_json,
                     finished_at=timestamp,
                 )
                 .returning(AutomationRunModel.id)
@@ -1045,15 +1101,7 @@ class AutomationRepository:
             if row.next_run_at is not None and _aware_utc(row.next_run_at) == _aware_utc(
                 run.scheduled_for
             ):
-                if accepted is not None:
-                    row.next_run_at = schedule_after_completion(
-                        accepted.schedule,
-                        _aware_utc(run.scheduled_for),
-                        timestamp,
-                        accepted.timezone,
-                    )
-                else:
-                    row.next_run_at = None
+                row.next_run_at = next_scheduled
                 if row.status != AutomationStatus.PAUSED.value:
                     if status is RunStatus.BLOCKED:
                         row.status = AutomationStatus.BLOCKED.value
@@ -1071,7 +1119,7 @@ class AutomationRepository:
         *,
         limit: int = 20,
     ) -> tuple[AutomationRunRecord, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(AutomationRunModel)
@@ -1083,11 +1131,11 @@ class AutomationRepository:
         return tuple(_run_record(row) for row in rows)
 
     async def latest_run_at(self) -> datetime | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await session.scalar(select(func.max(AutomationRunModel.finished_at)))
 
     async def next_due_at(self) -> datetime | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await session.scalar(
                 select(func.min(AutomationModel.next_run_at)).where(
                     AutomationModel.status == AutomationStatus.ACTIVE.value
@@ -1095,33 +1143,12 @@ class AutomationRepository:
             )
 
 
-async def _bind_canonical_send_targets(
-    session: AsyncSession,
+def _canonical_send_targets(
     task: TaskSpec,
     authority: DelegatedAuthority,
-    *,
-    now: datetime,
 ) -> tuple[str | None, str | None]:
-    target = task.delivery.target
-    if target == "self_private":
-        target_person = authority.canonical_creator_person_id
-        if target_person is None:
-            raise ValueError("发送目标没有对应的永久主体")
-        return target_person, None
-    return await _default_canonical_target(session, authority)
-
-
-async def _default_canonical_target(
-    session: AsyncSession,
-    authority: DelegatedAuthority,
-) -> tuple[str | None, str | None]:
-    """Bind non-sending automations to their canonical creation context."""
-
-    if authority.canonical_space_id:
-        target_space = authority.canonical_space_id
-        if target_space is None:
-            raise ValueError("发送目标没有对应的永久空间")
-        return None, target_space
+    if task.delivery.target != "self_private" and authority.canonical_space_id:
+        return None, authority.canonical_space_id
     target_person = authority.canonical_creator_person_id
     if target_person is None:
         raise ValueError("发送目标没有对应的永久主体")
@@ -1140,7 +1167,12 @@ async def _current_version_id(session: AsyncSession, automation_id: int) -> int 
     )
 
 
-def _automation_record(row: AutomationModel, version_id: int | None = None) -> AutomationRecord:
+def _automation_record(
+    row: AutomationModel,
+    version_id: int | None = None,
+    *,
+    definition: PreparedTaskDefinition | None = None,
+) -> AutomationRecord:
     return AutomationRecord(
         id=row.id,
         version_id=version_id,
@@ -1151,10 +1183,14 @@ def _automation_record(row: AutomationModel, version_id: int | None = None) -> A
         name=row.name,
         status=AutomationStatus(row.status),
         timezone=row.timezone,
-        script=json.loads(row.script_json),
-        schedule=TypeAdapter(Schedule).validate_json(row.schedule_json),
+        script=definition.script if definition is not None else json.loads(row.script_json),
+        schedule=definition.task.trigger
+        if definition is not None
+        else TypeAdapter(Schedule).validate_json(row.schedule_json),
         script_hash=row.script_hash,
-        authority_snapshot=json.loads(row.authority_snapshot_json),
+        authority_snapshot=definition.authority_snapshot
+        if definition is not None
+        else json.loads(row.authority_snapshot_json),
         created_from_message_id=row.created_from_message_id,
         next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
         last_run_at=_aware_utc(row.last_run_at) if row.last_run_at else None,

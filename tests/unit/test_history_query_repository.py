@@ -328,7 +328,7 @@ async def test_around_reads_permanent_neighbors_and_queries_remain_readonly(data
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", record)
     try:
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             person = await session.get(CanonicalPersonModel, rows[0].author_person_id)
             person.display_name = "must not flush"
             await ledger.query_history(session=session, conversation_id=conversation, limit=1)
@@ -349,7 +349,7 @@ async def test_cancelling_actual_sqlite_work_releases_reader_and_allows_writer(d
     started = threading.Event()
 
     async def long_query():
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             connection = await session.connection()
             raw = await connection.get_raw_connection()
             driver = raw.driver_connection
@@ -409,7 +409,7 @@ async def test_oldest_cursor_never_misses_new_event_after_deleted_maximum(databa
 
 @pytest.mark.asyncio
 async def test_merged_family_text_query_keeps_original_authors_and_separate_conversations(database):
-    from yuki.identity.person_identity import merge_persons
+    from tests.support.person_merge import merge_persons
 
     ledger = EventLedgerRepository(database)
     rows = [
@@ -426,8 +426,10 @@ async def test_merged_family_text_query_keeps_original_authors_and_separate_conv
         content="同族稀有证据",
     )
     first, middle, root = (row.author_person_id for row in rows)
-    await database.apply_snapshot_write(lambda session: merge_persons(session, first, middle))
-    await database.apply_snapshot_write(lambda session: merge_persons(session, middle, root))
+    async with database.immediate_session() as session:
+        await merge_persons(session, first, middle)
+    async with database.immediate_session() as session:
+        await merge_persons(session, middle, root)
     for person in (first, middle, root):
         page = await ledger.query_history(
             conversation_id=rows[0].canonical_conversation_id,
@@ -492,7 +494,7 @@ async def test_live_page_continuation_accepts_new_asr_without_replaying_newer_ro
     first = await ledger.query_history(conversation_id=conversation, keyword="电动车", limit=1)
     assert [row.id for row in first.events] == [newest.id]
     assert first.has_more and first.next_cursor == newest.id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.get(CanonicalConversationModel, conversation)
         generation = source.generation
     assert await ledger.set_audio_transcript(

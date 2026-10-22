@@ -150,7 +150,7 @@ class PluginAgentSessionRepository:
             PluginAgentSessionModel.plugin_id == plugin_id,
             PluginAgentSessionModel.session_id == session_id,
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(statement)
             if row is None:
                 return None
@@ -175,7 +175,7 @@ class PluginAgentSessionRepository:
             PluginAgentSessionModel.plugin_id == plugin_id,
             PluginAgentSessionModel.session_id == session_id,
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(statement)
             if row is None:
                 return None
@@ -260,7 +260,7 @@ class PluginAgentSessionRepository:
         limit: int = 100,
     ) -> tuple[PluginAgentMessageRecord, ...]:
         bounded = max(1, limit)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             parent = await session.scalar(
                 select(PluginAgentSessionModel).where(
                     PluginAgentSessionModel.plugin_id == plugin_id,
@@ -294,7 +294,7 @@ class PluginAgentSessionRepository:
         if status not in {"closed", "expired", "blocked"}:
             raise ValueError("invalid terminal plugin Agent session status")
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 update(PluginAgentSessionModel)
                 .where(
@@ -350,7 +350,7 @@ class PluginAgentSessionRepository:
             )
 
     async def delete(self, *, plugin_id: str, session_id: str) -> bool:
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 delete(PluginAgentSessionModel).where(
                     PluginAgentSessionModel.plugin_id == plugin_id,
@@ -366,7 +366,7 @@ class PluginAgentSessionRepository:
             PluginAgentSessionModel.expires_at.is_not(None),
             PluginAgentSessionModel.expires_at <= timestamp,
         )
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             identities = tuple(
                 await reader.scalars(
                     select(PluginAgentSessionModel.session_id)
@@ -390,7 +390,7 @@ class PluginAgentSessionRepository:
     async def delete_ephemeral(self) -> int:
         """Remove non-durable sessions during a host lifecycle cleanup."""
 
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 delete(PluginAgentSessionModel).where(
                     PluginAgentSessionModel.persistence == "ephemeral"

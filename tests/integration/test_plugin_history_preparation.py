@@ -8,7 +8,7 @@ from tests.integration.test_person_execution_receipts import invocation
 from tests.support.social_identity_cases import social_env
 
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.persistence import history_search
+from yuki.persistence import scoped_event_uow
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
@@ -39,7 +39,7 @@ async def test_onebot_terms_precede_writer_and_original_receipt_skips_preparatio
         services=PluginFacadeServices(ledger=EventLedgerRepository(database), social=env.service),
     )
     writer_active = ContextVar("test_writer_active", default=False)
-    original_writer, original_prepare = database.immediate_session, history_search.prepare_terms
+    original_writer, original_prepare = database.immediate_session, scoped_event_uow.prepare_terms
     prepared = []
 
     @asynccontextmanager
@@ -57,7 +57,7 @@ async def test_onebot_terms_precede_writer_and_original_receipt_skips_preparatio
         return original_prepare(content)
 
     monkeypatch.setattr(database, "immediate_session", writer)
-    monkeypatch.setattr(history_search, "prepare_terms", prepare)
+    monkeypatch.setattr(scoped_event_uow, "prepare_terms", prepare)
     params = {"group_id": event.group_id, "message": "原发送搜索正文"}
     try:
         with host.bind(source):

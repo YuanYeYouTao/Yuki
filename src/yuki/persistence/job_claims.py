@@ -29,7 +29,7 @@ async def commit_job_claims(
     accepted: set[int] = set()
     if not claims:
         return accepted
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         for claim in claims:
             statement = (
                 delete(model) if claim.values is None else update(model).values(**claim.values)

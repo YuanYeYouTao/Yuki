@@ -148,7 +148,7 @@ class TraceRecorder:
 
     async def coverage(self) -> TraceCoverage:
         try:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 generation = await session.scalar(
                     select(ExecutionTraceStateModel.privacy_generation).where(
                         ExecutionTraceStateModel.id == 1
@@ -386,21 +386,27 @@ class TraceRecorder:
         cutoff = now or datetime.now(UTC)
         deleted = 0
         while True:
-            async with self.database.sessions() as session, session.begin():
-                selected = (
-                    select(ExecutionTraceEntryModel.id)
-                    .where(ExecutionTraceEntryModel.expires_at <= cutoff)
-                    .order_by(ExecutionTraceEntryModel.expires_at, ExecutionTraceEntryModel.id)
-                    .limit(500)
+            async with self.database.read_session() as reader:
+                ids = tuple(
+                    await reader.scalars(
+                        select(ExecutionTraceEntryModel.id)
+                        .where(ExecutionTraceEntryModel.expires_at <= cutoff)
+                        .order_by(ExecutionTraceEntryModel.expires_at, ExecutionTraceEntryModel.id)
+                        .limit(500)
+                    )
                 )
+            if not ids:
+                return deleted
+            async with self.database.immediate_session() as session:
                 result = await session.execute(
                     delete(ExecutionTraceEntryModel).where(
-                        ExecutionTraceEntryModel.id.in_(selected)
+                        ExecutionTraceEntryModel.id.in_(ids),
+                        ExecutionTraceEntryModel.expires_at <= cutoff,
                     )
                 )
                 batch = int(getattr(result, "rowcount", 0) or 0)
             deleted += batch
-            if batch < 500:
+            if len(ids) < 500:
                 return deleted
             # Drain this fixed expiry window, releasing the writer between batches.
             await asyncio.sleep(0)

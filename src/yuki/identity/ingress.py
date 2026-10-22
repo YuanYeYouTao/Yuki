@@ -6,11 +6,15 @@ import logging
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    ConversationLegacyAliasModel,
+)
 from yuki.conversation.hydrate import (
     HydratedConversation,
     binding_for_scope,
@@ -123,6 +127,10 @@ def _drop(reason: str, message: InboundMessage) -> IngressPreAdmit:
     )
 
 
+class _ColdIdentityWrite(Exception):
+    """A target identity or alias is absent in the hot read snapshot."""
+
+
 class CanonicalIngressResolver:
     """Resolve every admitted OneBot event through canonical identity."""
 
@@ -140,18 +148,15 @@ class CanonicalIngressResolver:
         """Keep hot admission in one session; release it before cold probes."""
 
         started = time.perf_counter()
-        async with self._database.sessions() as session, session.begin():
-            try:
-                result = await self._admit(session, bot, message)
-            except CanonicalIdentityError as exc:
-                if exc.category != "canonical_owner_disabled":
-                    raise
-                return _drop(
-                    "private_not_allowed"
-                    if message.scope_type is ScopeType.PRIVATE
-                    else exc.category,
-                    message,
-                )
+        try:
+            result = await self._admit_local(bot, message)
+        except CanonicalIdentityError as exc:
+            if exc.category != "canonical_owner_disabled":
+                raise
+            return _drop(
+                "private_not_allowed" if message.scope_type is ScopeType.PRIVATE else exc.category,
+                message,
+            )
         initial_read_seconds = time.perf_counter() - started
         if isinstance(result, IngressPreAdmit):
             logging.getLogger(__name__).info(
@@ -180,9 +185,8 @@ class CanonicalIngressResolver:
         # Propagate uncertainty; never retry or undo that route here.
         recovery_seconds = time.perf_counter() - recovery_started
         recheck_started = time.perf_counter()
-        async with self._database.sessions() as session, session.begin():
-            admitted = await self._admit(session, bot, message, recovered=result)
-            assert isinstance(admitted, IngressPreAdmit)
+        admitted = await self._admit_local(bot, message, recovered=result)
+        assert isinstance(admitted, IngressPreAdmit)
         logging.getLogger(__name__).info(
             "ingress_preparation path=cold initial_read_seconds=%.6f recovery_seconds=%.6f "
             "recheck_seconds=%.6f outcome=%s",
@@ -193,6 +197,25 @@ class CanonicalIngressResolver:
         )
         return admitted
 
+    async def _admit_local(
+        self,
+        bot: object | None,
+        message: InboundMessage,
+        *,
+        recovered: _ColdIngressRecovery | None = None,
+    ) -> IngressPreAdmit | _ColdIngressRecovery:
+        try:
+            async with self._database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                return await self._admit(reader, bot, message, recovered=recovered)
+        except _ColdIdentityWrite:
+            # Only missing target identity/Conversation/alias needs admission.
+            # Every route/owner is resolved again from the writer's current rows.
+            async with self._database.immediate_session() as writer:
+                return await self._admit(
+                    writer, bot, message, recovered=recovered, allow_write=True
+                )
+
     async def _admit(
         self,
         session: AsyncSession,
@@ -200,6 +223,7 @@ class CanonicalIngressResolver:
         message: InboundMessage,
         *,
         recovered: _ColdIngressRecovery | None = None,
+        allow_write: bool = False,
     ) -> IngressPreAdmit | _ColdIngressRecovery:
         if bot is None:
             return _drop("no_ingress_connection", message)
@@ -418,6 +442,8 @@ class CanonicalIngressResolver:
                 ),
             )
         if author_kind == AuthorKind.PERSON.value and person_id is None:
+            if not allow_write:
+                raise _ColdIdentityWrite()
             person_id = await _ensure_person_id(
                 session,
                 overlay.sender.user_id,
@@ -480,6 +506,7 @@ class CanonicalIngressResolver:
             presence_id=presence_id,
             space_binding_id=space_binding_id,
             author_assignment_id=author.assignment_id,
+            allow_write=allow_write,
         )
         reply_to_yuki, reply_author_kind, reply_event_id = await resolve_canonical_reply(
             session,
@@ -647,6 +674,7 @@ async def _hydrate_for_message(
     presence_id: str,
     space_binding_id: str | None,
     author_assignment_id: str | None = None,
+    allow_write: bool = True,
 ) -> HydratedConversation:
     if message.scope_type is ScopeType.PRIVATE:
         if person_id is None:
@@ -665,6 +693,15 @@ async def _hydrate_for_message(
         )
         if binding is None or binding.person_id != person_id:
             raise CanonicalIdentityError("no_person")
+        if not allow_write:
+            return await _existing_hydrated(
+                session,
+                scope,
+                kind="private",
+                identity_binding_id=binding.id,
+                presence_id=presence_id,
+                thread_id=message.thread_id,
+            )
         return await ensure_canonical_conversation(
             session,
             kind="private",
@@ -683,6 +720,15 @@ async def _hydrate_for_message(
         presence_id=presence_id,
         thread_id=message.thread_id,
     )
+    if not allow_write:
+        return await _existing_hydrated(
+            session,
+            scope,
+            kind="space",
+            space_id=space_id,
+            space_binding_id=space_binding_id,
+            thread_id=message.thread_id,
+        )
     return await ensure_canonical_conversation(
         session,
         kind="space",
@@ -690,4 +736,32 @@ async def _hydrate_for_message(
         space_id=space_id,
         space_binding_id=space_binding_id,
         thread_id=message.thread_id,
+    )
+
+
+async def _existing_hydrated(
+    session: AsyncSession,
+    scope: ConversationScope,
+    **owner: Any,
+) -> HydratedConversation:
+    existing = await conversation_for_owner(session, **owner)
+    if existing is None:
+        raise _ColdIdentityWrite()
+    primary = await require_primary_alias_for_conversation(session, existing.id)
+    alias_owner = await session.scalar(
+        select(ConversationLegacyAliasModel.conversation_id).where(
+            ConversationLegacyAliasModel.scope_key == scope.key
+        )
+    )
+    if alias_owner is None:
+        raise _ColdIdentityWrite()
+    if alias_owner != existing.id and existing.kind != "private":
+        raise CanonicalIdentityError("canonical_owner_mismatch")
+    return HydratedConversation(
+        conversation_id=existing.id,
+        kind=existing.kind,
+        person_id=existing.person_id,
+        space_id=existing.space_id,
+        primary_alias=primary,
+        generation=int(existing.generation),
     )

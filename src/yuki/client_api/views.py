@@ -91,7 +91,7 @@ class ClientViews:
         ]
 
     async def home(self, principal: ClientPrincipal) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
@@ -132,7 +132,7 @@ class ClientViews:
     ) -> dict[str, Any]:
         if type(limit) is not int or limit < 1 or after < 0 or (before is not None and before < 1):
             raise ClientError("validation_error")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             conversation = await personal_conversation(session, principal.person_id, identity)
@@ -188,7 +188,7 @@ class ClientViews:
             }
 
     async def activity(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             await personal_conversation(session, principal.person_id, identity)
             return (await self._activities(session, (identity,)))[0]
@@ -248,7 +248,7 @@ class ClientViews:
         return result
 
     async def sync(self, principal: ClientPrincipal) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)

@@ -14,6 +14,7 @@ from tests.conftest import make_settings
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_runtime import update
 from tests.support.event_seed import seed_event
+from tests.support.person_merge import merge_persons
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
     _host,
@@ -33,7 +34,6 @@ from yuki.conversation.canonical_db_models import (
 from yuki.conversation.initiative_sources import source_revision
 from yuki.domain.conversations import ScopeType
 from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.services.participation_feedback import admission_unit_binding
 from yuki.services.participation_identity import actor_identity
@@ -64,7 +64,7 @@ async def append(host, original, sender, *, reply=None):
 
 
 async def merge(database, source, target):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         assert await merge_persons(session, source, target) == target
 
 
@@ -134,7 +134,7 @@ async def test_merged_new_actor_has_one_original_admission_and_cold_progress_aft
         await merge(database, a.author_person_id, b.author_person_id)
         binding_b, reason = await host.continuation_for_event(b.id)
         assert reason == "continuation" and binding_b.target_hint == b.author_person_id
-        async with database.sessions() as writer:
+        async with database.read_session() as writer:
             assert await host.continuation_current(binding_b, session=writer)
         accepted_b = host.ordinary.prepare(b, item.scene.generation, 2, binding_b, reason=reason)
         assert await host.ordinary.commit(accepted_b)
@@ -284,7 +284,7 @@ async def test_native_telegram_participation_reads_real_internal_space_configura
     incoming = update(chat=-10042)
     incoming["message"]["date"] = int(time.time()) - 40
     await env.gateway.receive(incoming)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(
             select(ChatEventModel.id).where(ChatEventModel.direction == "inbound")
         )

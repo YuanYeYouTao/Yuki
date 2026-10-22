@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event as sql_event
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _event, _service
@@ -104,7 +103,7 @@ async def test_late_initial_checkpoint_cannot_restore_forgotten_source(database,
     with pytest.raises(MemoryPartitionResolutionError, match="checkpoint_source_changed"):
         await repository.save_checkpoint(run_id, raw)
     assert await repository.load_checkpoint(run_id) is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(ChatEventModel, source.id) is None
         run = await reader.get(MemorySelfReflectionRunModel, run_id)
         assert (run.status, run.retry_state, run.attempt_count) == ("failed", "isolated", 3)
@@ -127,30 +126,32 @@ async def test_progress_checkpoint_keeps_original_cas_during_concurrent_write(
 ):
     repository, _source, run_id, raw = await checkpoint_source(database)
     await repository.save_checkpoint(run_id, raw)
-    execute = AsyncSession.execute
+    from contextlib import asynccontextmanager
+
+    immediate = database.immediate_session
     interleaved = False
     errors = []
 
-    async def concurrent_metadata(session, statement, *args, **kwargs):
+    @asynccontextmanager
+    async def concurrent_metadata():
         nonlocal interleaved
-        if not interleaved and str(statement).startswith(
-            "UPDATE memory_self_reflection_runs SET checkpoint_json="
-        ):
+        if not interleaved:
             from sqlalchemy import update
 
             interleaved = True
-            async with database.immediate_session() as writer:
+            async with immediate() as writer:
                 await writer.execute(
                     update(MemorySelfReflectionRunModel)
                     .where(MemorySelfReflectionRunModel.id == run_id)
                     .values(error_category="concurrent_metadata")
                 )
-        return await execute(session, statement, *args, **kwargs)
+        async with immediate() as writer:
+            yield writer
 
     def record_error(context):
         errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
 
-    monkeypatch.setattr(AsyncSession, "execute", concurrent_metadata)
+    monkeypatch.setattr(database, "immediate_session", concurrent_metadata)
     changed = raw + " "
     sql_event.listen(database.engine.sync_engine, "handle_error", record_error)
     try:
@@ -159,7 +160,7 @@ async def test_progress_checkpoint_keeps_original_cas_during_concurrent_write(
         sql_event.remove(database.engine.sync_engine, "handle_error", record_error)
     assert interleaved and not errors
     assert await repository.load_checkpoint(run_id) == changed
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         run = await reader.get(MemorySelfReflectionRunModel, run_id)
         assert run.error_category == "concurrent_metadata"
     with pytest.raises(MemoryPartitionResolutionError, match="checkpoint_changed"):
@@ -171,32 +172,36 @@ async def test_forget_commit_between_source_read_and_checkpoint_write_rechecks_w
     database, monkeypatch
 ):
     repository, source, run_id, raw = await checkpoint_source(database)
-    execute = AsyncSession.execute
+    from contextlib import asynccontextmanager
+
+    immediate = database.immediate_session
     erased = False
     errors = []
 
-    async def interleave(session, statement, *args, **kwargs):
+    @asynccontextmanager
+    async def interleave():
         nonlocal erased
-        if not erased and str(statement).startswith(
-            "UPDATE memory_self_reflection_runs SET checkpoint_json="
-        ):
+        if not erased:
             erased = True
+            # The privacy operation owns its own writer before checkpoint admission.
+            monkeypatch.setattr(database, "immediate_session", immediate)
             assert await PeopleRepository(database).delete_person_id(source.author_person_id)
-        return await execute(session, statement, *args, **kwargs)
+        async with immediate() as writer:
+            yield writer
 
     def record_error(context):
         errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
 
-    monkeypatch.setattr(AsyncSession, "execute", interleave)
+    monkeypatch.setattr(database, "immediate_session", interleave)
     sql_event.listen(database.engine.sync_engine, "handle_error", record_error)
     try:
         with pytest.raises(MemoryPartitionResolutionError, match="checkpoint_source_changed"):
             await repository.save_checkpoint(run_id, raw)
     finally:
         sql_event.remove(database.engine.sync_engine, "handle_error", record_error)
-    assert erased and 517 in errors
+    assert erased and not errors
     assert await repository.load_checkpoint(run_id) is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(ChatEventModel.id).where(ChatEventModel.id == source.id))
             is None

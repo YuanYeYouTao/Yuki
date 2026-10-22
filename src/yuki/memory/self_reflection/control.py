@@ -45,13 +45,13 @@ class ReflectionControlRepository:
         self.database, self.settings = database, settings
 
     async def reserve_request(self, run_id: int, attempt_kind: str = "initial") -> int:
-        now = datetime.now(UTC)
-        day = (
-            now.astimezone(ZoneInfo(self.settings.memory_self_reflection_timezone))
-            .date()
-            .isoformat()
-        )
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
+            now = datetime.now(UTC)
+            day = (
+                now.astimezone(ZoneInfo(self.settings.memory_self_reflection_timezone))
+                .date()
+                .isoformat()
+            )
             # INSERT..SELECT makes the daily limit atomic, including repairs and transport retries.
             count = (
                 select(func.count(Request.id)).where(Request.local_date == day).scalar_subquery()
@@ -76,7 +76,7 @@ class ReflectionControlRepository:
             return int(request_id)
 
     async def finish_request(self, request_id: int, status: str, tokens: int | None) -> None:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(Request)
                 .where(Request.id == request_id)
@@ -103,7 +103,7 @@ class ReflectionControlRepository:
         from yuki.memory.self_reflection.initiative import initiative_backlog
 
         initiative_tools = await initiative_backlog(self.database)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             states = (await session.scalars(select(State).where(State.pending_events > 0))).all()
             runs = (
@@ -263,44 +263,59 @@ class ReflectionControlRepository:
         source_event_id: int | None = None,
         conversation_id: str | None = None,
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        source_identity: str | None = None
+        async with self.database.read_session() as session:
             if trigger == "manual":
                 event = await session.get(ChatEventModel, source_event_id)
                 if event is None or event.canonical_conversation_id != conversation_id:
                     raise ValueError("manual reflection requires its original internal event")
+                source_identity = event.canonical_event_id
             existing = await session.scalar(select(Cycle).where(Cycle.source_key == key))
             if existing is not None:
                 return self.record(existing)
         before = await self.snapshot()
-        now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        public_id = "sr_" + uuid.uuid4().hex
+        report_json = json.dumps(
+            {
+                "before": before,
+                "bounds": {
+                    "batches": self.settings.memory_self_reflection_max_batches_per_run,
+                    "events": self.settings.memory_self_reflection_max_events,
+                    "characters": self.settings.memory_self_reflection_max_characters,
+                },
+            }
+        )
+        async with self.database.immediate_session() as session:
+            if (
+                trigger == "manual"
+                and await session.scalar(
+                    select(ChatEventModel.id).where(
+                        ChatEventModel.id == source_event_id,
+                        ChatEventModel.canonical_conversation_id == conversation_id,
+                    ChatEventModel.canonical_event_id == source_identity,
+                    )
+                )
+                is None
+            ):
+                raise ValueError("manual reflection requires its original internal event")
             await session.execute(
                 insert(Cycle)
                 .values(
-                    id="sr_" + uuid.uuid4().hex,
+                    id=public_id,
                     source_key=key,
                     trigger=trigger,
                     source_event_id=source_event_id,
                     conversation_id=conversation_id,
                     status="queued",
-                    created_at=now,
-                    report_json=json.dumps(
-                        {
-                            "before": before,
-                            "bounds": {
-                                "batches": self.settings.memory_self_reflection_max_batches_per_run,
-                                "events": self.settings.memory_self_reflection_max_events,
-                                "characters": self.settings.memory_self_reflection_max_characters,
-                            },
-                        }
-                    ),
+                    created_at=datetime.now(UTC),
+                    report_json=report_json,
                     delivery_state="pending" if trigger == "manual" else "not_required",
                 )
                 .on_conflict_do_nothing(index_elements=["source_key"])
             )
             row = await session.scalar(select(Cycle).where(Cycle.source_key == key))
             assert row is not None
-            return self.record(row)
+        return self.record(row)
 
     @staticmethod
     def record(row: Cycle) -> dict[str, Any]:
@@ -318,7 +333,7 @@ class ReflectionControlRepository:
         }
 
     async def get(self, run_id: str | None = None) -> dict[str, Any] | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             query = (
                 select(Cycle).where(Cycle.id == run_id)
                 if run_id
@@ -331,7 +346,7 @@ class ReflectionControlRepository:
             return self.record(row) if row else None
 
     async def claim(self) -> dict[str, Any] | None:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             # One serial worker; running survives process restarts and keeps its ID/budget.
             row = await session.scalar(
                 select(Cycle)
@@ -343,41 +358,45 @@ class ReflectionControlRepository:
                 return None
             row.status = "running"
             row.started_at = row.started_at or datetime.now(UTC)
-            return self.record(row)
+        return self.record(row)
 
     async def finish(self, cycle_id: str, report: dict[str, Any]) -> dict[str, Any]:
         after = await self.snapshot()
-        async with self.database.sessions() as session, session.begin():
-            row = await session.get(Cycle, cycle_id)
-            assert row is not None
-            row.status = "partial_failed" if report.get("failed_batches") else "completed"
-            row.completed_at = datetime.now(UTC)
-            row.report_json = json.dumps(
-                {
-                    **json.loads(row.report_json),
-                    **report,
-                    "after": after,
-                    "duration_seconds": (
-                        row.completed_at - utc(row.started_at or row.created_at)
-                    ).total_seconds(),
-                }
-            )
-            return self.record(row)
-
-    async def retry_due(self) -> bool:
-        async with self.database.sessions() as session:
-            return bool(
-                await session.scalar(
-                    select(Run.id)
-                    .where(Run.retry_state == "waiting", Run.next_attempt_at <= datetime.now(UTC))
-                    .limit(1)
+        async with self.database.read_session() as reader:
+            original = await reader.get(Cycle, cycle_id)
+            assert original is not None
+            report_json = json.dumps({**json.loads(original.report_json), **report, "after": after})
+            original_json = original.report_json
+            started_at = utc(original.started_at or original.created_at)
+        async with self.database.immediate_session() as writer:
+            now = datetime.now(UTC)
+            row = await writer.scalar(
+                update(Cycle)
+                .where(
+                    Cycle.id == cycle_id,
+                    Cycle.report_json == original_json,
+                    Cycle.started_at == original.started_at,
+                    Cycle.created_at == original.created_at,
                 )
+                .values(
+                    status="partial_failed" if report.get("failed_batches") else "completed",
+                    completed_at=now,
+                    report_json=func.json_set(
+                        literal(report_json),
+                        "$.duration_seconds",
+                        (now - started_at).total_seconds(),
+                    ),
+                )
+                .returning(Cycle)
             )
+            if row is None:
+                raise ValueError("reflection_cycle_changed")
+        return self.record(row)
 
     async def cycle_runs(self, cycle_id: str) -> list[dict[str, Any]]:
         from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
 
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (await session.scalars(select(Run).where(Run.cycle_id == cycle_id))).all()
             windows = {
                 row.reflection_run_id: row
@@ -414,7 +433,7 @@ class ReflectionControlRepository:
             ]
 
     async def pending_reports(self) -> list[dict[str, Any]]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(Cycle)
@@ -431,7 +450,8 @@ class ReflectionControlRepository:
 
     async def delivered(self, cycle_id: str, receipt: dict[str, Any]) -> None:
         state = receipt.get("status", "uncertain")
-        async with self.database.sessions() as session, session.begin():
+        receipt_json = json.dumps(receipt)
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(Cycle)
                 .where(Cycle.id == cycle_id)
@@ -441,12 +461,12 @@ class ReflectionControlRepository:
                     else "unknown"
                     if state in ("uncertain", "executing")
                     else "failed",
-                    delivery_receipt_json=json.dumps(receipt),
+                    delivery_receipt_json=receipt_json,
                 )
             )
 
     async def resume_batch(self, run_id: int) -> bool:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             row = await session.get(Run, run_id)
             if row is None or row.status != "failed":
                 return False

@@ -284,7 +284,7 @@ async def test_scheduler_fills_last_slot_past_busy_and_deferred_scopes(
         assert len(started) == 1
         await asyncio.gather(*started)
         assert resumed == [*(f"busy-{i}" for i in range(7)), "ready-last-slot"]
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             state = await reader.scalar(
                 select(work.c.state).where(work.c.id == "deferred-last-slot")
             )
@@ -402,7 +402,7 @@ async def test_empty_child_maintenance_ignores_already_archived_history(database
             await workers.maintain()
         costs.append(read_vm_steps(database, queries))
         previous = size
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         state = await reader.scalar(select(work.c.state).where(work.c.id == waiting_child))
         archived = await reader.scalar(
             select(children.c.archived_at).where(children.c.work_id == waiting_child)

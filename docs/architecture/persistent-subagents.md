@@ -15,9 +15,15 @@
 用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send`；
 `task_control.answer` 不在公开 action 中。Agent 提交结束决定后，原 writer 只收拢真正活动的所属执行；没有活动执行的暂停/等待子目标保留自身状态，不否决父目标完成。fail/cancel 直接复用指定子树撤权，无需先逐一取消后代或等待远端全部确认。
 
-可信 SQLite BUSY 在同 activation 持有原响应时仅重备原纯数据库发布，沿原租约与取消退出；已 durable response/paired 按原 ID 恢复，未持久且进程退出的响应不承诺找回或自动重购。LOCKED 和其他存储错误如实退出。
+只有 Database 确认未提交的 SQLite BUSY，才在同 activation 持有原响应时重备原纯数据库
+发布，沿原租约与取消退出；已 durable response/paired 按原 ID 恢复，未持久且进程退出的响应
+不承诺找回或自动重购。commit 未知、LOCKED 和其他存储错误如实退出。
 子任务状态和调用次数不是修改结果；仅列目录、读文件、
 计算摘要不能报告已删除、清理比例或释放空间。回复效果记录沿内部事件 ID 关联，身份查询在首次写入前完成。
+
+子任务结果先读取原 checkpoint 并在 writer 外编码，再由同一 Database writer 核对原 revision、
+状态、checkpoint 和父子关系；结果摘要、通知水位和父 Work 输入一起提交。归档仍先准备
+真实资源闭包，在 writer 中检查新增后代、request 与 peer 来源；外部 close 不在写事务中等待。
 
 ## 工具与授权
 

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 
@@ -41,7 +43,11 @@ from yuki.memory.partition import (
     resolve_active_person_id,
     resolve_fact_canonical_owners,
 )
-from yuki.memory.repository import MemoryFactRepository, PreparedEvidenceCopy
+from yuki.memory.repository import (
+    MemoryFactRepository,
+    PreparedEvidenceCopy,
+    PreparedMemoryEvidence,
+)
 from yuki.memory.validation import ValidatedMemoryClaim, normalize_memory_text
 from yuki.persistence.models import MemoryFactModel, MemoryFactRelationModel
 
@@ -92,6 +98,48 @@ class MemoryFactService:
     def repository(self) -> MemoryFactRepository:
         return self._repository
 
+    async def prepare_write(
+        self,
+        fact_ids: tuple[int, ...],
+        *,
+        targets: tuple[MemoryFact | MemoryFactCreate, ...] = (),
+        copies: tuple[
+            tuple[tuple[int, ...], MemoryFact | MemoryFactCreate, MemoryAuthority | None], ...
+        ] = (),
+        session: AsyncSession | None = None,
+    ) -> PreparedMemoryEvidence:
+        """Prepare real evidence/copies on a reader, keeping model and writer phases separate."""
+        if session is None:
+            async with self._repository.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                return await self.prepare_write(
+                    fact_ids, targets=targets, copies=copies, session=reader
+                )
+        prepared = await self._repository.prepare_write(fact_ids, session=session)
+        for target in (*targets, *(target for _, target, _ in copies)):
+            prepared.targets.append(
+                (target, await self.requested_target_owners(target, session=session))
+            )
+        for source_ids, target, authority in copies:
+            await self.prepare_evidence_copy(
+                source_ids, target, authority=authority, session=session
+            )
+        return prepared
+
+    @asynccontextmanager
+    async def write_session(
+        self,
+        fact_ids: tuple[int, ...],
+        *,
+        targets: tuple[MemoryFact | MemoryFactCreate, ...] = (),
+        copies: tuple[
+            tuple[tuple[int, ...], MemoryFact | MemoryFactCreate, MemoryAuthority | None], ...
+        ] = (),
+    ) -> AsyncIterator[AsyncSession]:
+        prepared = await self.prepare_write(fact_ids, targets=targets, copies=copies)
+        async with self._repository.write_session(prepared) as writer:
+            yield writer
+
     async def resolve_person_id(
         self,
         user_id: str | None = None,
@@ -102,7 +150,7 @@ class MemoryFactService:
         """Use a known canonical owner, or resolve an explicit legacy account."""
 
         if session is None:
-            async with self._repository.transaction() as owned:
+            async with self._repository.database.read_session() as owned:
                 return await self.resolve_person_id(user_id, session=owned, person_id=person_id)
         try:
             if person_id is not None:
@@ -128,7 +176,7 @@ class MemoryFactService:
         """Check current human ownership while preserving the original fact owner."""
 
         if session is None:
-            async with self._repository.transaction() as owned:
+            async with self._repository.database.read_session() as owned:
                 return await self.person_owns_fact(
                     fact,
                     actor_user_id=actor_user_id,
@@ -190,7 +238,7 @@ class MemoryFactService:
     ) -> bool:
         """Compare current ownership without changing original target/proof encodings."""
         if session is None:
-            async with self._repository.transaction() as reader:
+            async with self._repository.database.read_session() as reader:
                 return await self.same_targets(targets, session=reader)
         if len(targets) < 2:
             return True
@@ -228,13 +276,8 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> MemoryFact:
         if session is None:
-            owned_result = await self._repository.apply_evidence_write(
-                lambda owned: self.remember(
-                    fact,
-                    evidence=evidence,
-                    session=owned,
-                )
-            )
+            async with self.write_session((), targets=(fact,)) as owned:
+                owned_result = await self.remember(fact, evidence=evidence, session=owned)
             await self.schedule_embedding(owned_result.id)
             return owned_result
         content = normalize_memory_text(fact.content)
@@ -246,7 +289,6 @@ class MemoryFactService:
         prepared = fact.model_copy(
             update={"content": content, "memory_key": key, "category": category}
         )
-        await self.prepare_evidence_write((), session=session, targets=(prepared,))
         created = await self._repository.create_fact(
             prepared,
             normalized_content=normalized,
@@ -282,20 +324,15 @@ class MemoryFactService:
         """Apply one already-validated backend plan in one transaction."""
 
         if session is None:
-            result = await self._repository.apply_evidence_write(
-                lambda owned: self.apply_claim(
-                    claim,
-                    candidates=candidates,
-                    plan=plan,
-                    session=owned,
+            async with self.write_session(
+                tuple(item.fact.id for item in candidates), targets=(claim.fact,)
+            ) as owned:
+                result = await self.apply_claim(
+                    claim, candidates=candidates, plan=plan, session=owned
                 )
-            )
             if result is not None and plan.create_new_fact:
                 await self.schedule_embedding(result.id)
             return result
-        await self.prepare_evidence_write(
-            tuple(item.fact.id for item in candidates), session=session, targets=(claim.fact,)
-        )
         await self._validate_plan(claim, candidates, plan, session=session)
         evidence = claim.evidence
         existing_id = plan.existing_fact_id
@@ -364,37 +401,6 @@ class MemoryFactService:
         await self._repository.update_confirmation_metadata(
             fact_id, confirmed_at=confirmed_at, session=session
         )
-
-    async def prepare_evidence_write(
-        self,
-        fact_ids: tuple[int, ...],
-        *,
-        session: AsyncSession,
-        targets: tuple[MemoryFact | MemoryFactCreate, ...] = (),
-    ) -> None:
-        """Freeze readable sources and owners before the first write."""
-        if "memory_evidence_counts" not in session.info:
-            raise RuntimeError("memory mutation requires an explicit evidence read snapshot")
-        missing = set(fact_ids).difference(session.info["memory_evidence_rows"])
-        if missing:
-            for _ in range(2):
-                relations = (
-                    await session.execute(
-                        select(
-                            MemoryFactRelationModel.source_fact_id,
-                            MemoryFactRelationModel.target_fact_id,
-                        ).where(
-                            or_(
-                                MemoryFactRelationModel.source_fact_id.in_(tuple(missing)),
-                                MemoryFactRelationModel.target_fact_id.in_(tuple(missing)),
-                            )
-                        )
-                    )
-                ).all()
-                missing.update(i for pair in relations for i in pair)
-            await self._repository.prepare_evidence_rows(tuple(missing), session=session)
-        for target in targets:
-            await self.requested_target_owners(target, session=session)
 
     async def prepare_evidence_copy(
         self,
@@ -548,15 +554,14 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.update_explicit_person(
-                    fact_id,
-                    user_id=user_id,
-                    content=content,
-                    person_id=person_id,
-                    session=owned,
+            copy_target = await self._repository.get_fact(fact_id)
+            async with self.write_session(
+                (fact_id,),
+                copies=(((fact_id,), copy_target, None),) if copy_target is not None else (),
+            ) as owned:
+                return await self.update_explicit_person(
+                    fact_id, user_id=user_id, content=content, person_id=person_id, session=owned
                 )
-            )
         current = await self._repository.get_fact(fact_id, session=session)
         if (
             current is None
@@ -586,11 +591,10 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.invalidate_person(
+            async with self.write_session((fact_id,)) as owned:
+                return await self.invalidate_person(
                     fact_id, user_id=user_id, person_id=person_id, session=owned
                 )
-            )
         fact = await self._repository.get_fact(fact_id, session=session)
         if (
             fact is None
@@ -604,7 +608,6 @@ class MemoryFactService:
             or fact.status is MemoryStatus.INVALIDATED
         ):
             return False
-        await self.prepare_evidence_write((fact_id,), session=session)
         changed = await self._repository.transition(
             fact_id,
             status=MemoryStatus.INVALIDATED,
@@ -634,12 +637,10 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.confirm_fact(
+            async with self.write_session((fact_id,)) as owned:
+                return await self.confirm_fact(
                     fact_id, evidence, confirmed_at=confirmed_at, session=owned
                 )
-            )
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None or current.status not in {
             MemoryStatus.ACTIVE,
@@ -676,7 +677,6 @@ class MemoryFactService:
     ) -> int:
         """Append one trusted evidence window and refresh aggregate metadata once."""
 
-        await self.prepare_evidence_write((fact_id,), session=session)
         added = 0
         for item in evidence:
             added += int(await self._repository.add_evidence(fact_id, item, session=session))
@@ -724,11 +724,13 @@ class MemoryFactService:
         normalized = normalize_memory_text(content)
         if not normalized:
             raise ValueError("memory correction cannot be empty")
-        result = await self._repository.apply_evidence_write(
-            lambda session: self._correct_fact_in_session(
+        copy_target = await self._repository.get_fact(fact_id)
+        async with self.write_session(
+            (fact_id,), copies=(((fact_id,), copy_target, None),) if copy_target is not None else ()
+        ) as session:
+            result = await self._correct_fact_in_session(
                 fact_id, normalized=normalized, actor_user_id=actor_user_id, session=session
             )
-        )
         if result is not None:
             await self.schedule_embedding(result.id)
         return result
@@ -736,7 +738,6 @@ class MemoryFactService:
     async def _correct_fact_in_session(
         self, fact_id: int, *, normalized: str, actor_user_id: str, session: AsyncSession
     ) -> MemoryFact | None:
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None or current.status is not MemoryStatus.ACTIVE:
             return None
@@ -808,8 +809,14 @@ class MemoryFactService:
         """Atomically supersede one fact with a validated replacement version."""
 
         if session is None:
-            result = await self._repository.apply_evidence_write(
-                lambda owned: self.version_fact(
+            async with self.write_session(
+                (fact_id,),
+                targets=(replacement,),
+                copies=(((fact_id,), replacement, copied_evidence_authority),)
+                if copy_existing_evidence
+                else (),
+            ) as owned:
+                result = await self.version_fact(
                     fact_id,
                     replacement=replacement,
                     evidence=evidence,
@@ -820,11 +827,9 @@ class MemoryFactService:
                     confirmed_at=confirmed_at,
                     session=owned,
                 )
-            )
             if result is not None:
                 await self.schedule_embedding(result.id)
             return result
-        await self.prepare_evidence_write((fact_id,), session=session, targets=(replacement,))
         copied = (
             await self.prepare_evidence_copy(
                 (fact_id,), replacement, authority=copied_evidence_authority, session=session
@@ -892,16 +897,14 @@ class MemoryFactService:
         current: MemoryFactModel | None = None,
     ) -> bool:
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.invalidate_fact(
+            async with self.write_session((fact_id,)) as owned:
+                return await self.invalidate_fact(
                     fact_id,
                     reason=reason,
                     actor_user_id=actor_user_id,
                     evidence=evidence,
                     session=owned,
                 )
-            )
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = (
             current
             if current is not None
@@ -943,16 +946,14 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.contest_fact(
+            async with self.write_session((fact_id,)) as owned:
+                return await self.contest_fact(
                     fact_id,
                     reason_code=reason_code,
                     actor_user_id=actor_user_id,
                     evidence=evidence,
                     session=owned,
                 )
-            )
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None or current.status is not MemoryStatus.ACTIVE:
             return False
@@ -1094,19 +1095,17 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
         if session is None:
-            result = await self._repository.apply_evidence_write(
-                lambda owned: self.restore_fact(
+            async with self.write_session((fact_id,)) as owned:
+                result = await self.restore_fact(
                     fact_id,
                     actor_user_id=actor_user_id,
                     evidence=evidence,
                     confirmed_at=confirmed_at,
                     session=owned,
                 )
-            )
             if result is not None:
                 await self.schedule_embedding(result.id)
             return result
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None or current.status is not MemoryStatus.INVALIDATED:
             return None
@@ -1146,8 +1145,12 @@ class MemoryFactService:
         if source_fact_id == target_fact_id:
             raise ValueError("cannot merge a memory fact into itself")
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.merge_facts(
+            copy_target = await self._repository.get_fact(target_fact_id)
+            async with self.write_session(
+                (source_fact_id, target_fact_id),
+                copies=(((source_fact_id,), copy_target, None),) if copy_target is not None else (),
+            ) as owned:
+                return await self.merge_facts(
                     source_fact_id,
                     target_fact_id,
                     actor_user_id=actor_user_id,
@@ -1156,8 +1159,6 @@ class MemoryFactService:
                     confirmed_at=confirmed_at,
                     session=owned,
                 )
-            )
-        await self.prepare_evidence_write((source_fact_id, target_fact_id), session=session)
         source = await self._repository.get_fact(source_fact_id, session=session)
         target = await self._repository.get_fact(target_fact_id, session=session)
         if source is None or target is None:
@@ -1217,7 +1218,7 @@ class MemoryFactService:
             fact_id for fact_id in dict.fromkeys(contested_fact_ids) if fact_id != preferred_fact_id
         )
         promoted = False
-        async with self._repository.transaction(read_snapshot=True) as session:
+        async with self.write_session((preferred_fact_id, *unique_ids)) as session:
             preferred = await self._repository.get_fact(preferred_fact_id, session=session)
             if preferred is None or preferred.status not in {
                 MemoryStatus.ACTIVE,
@@ -1309,11 +1310,19 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
-            return await self._repository.apply_evidence_write(
-                lambda owned: self.delete_preference(
-                    user_id, key, person_id=person_id, session=owned
-                )
+            query = MemoryFactQuery(
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
+                kind=MemoryKind.PREFERENCE,
             )
+            rows = await self._repository.list_facts(query, memory_key=key, limit=2)
+            if not rows:
+                return False
+            async with self.write_session(tuple(row.id for row in rows)) as writer:
+                return await self.delete_preference(
+                    user_id, key, person_id=person_id, session=writer
+                )
         rows = await self._repository.list_facts(
             MemoryFactQuery(
                 scope_type=MemoryScopeType.PERSON,
@@ -1321,10 +1330,11 @@ class MemoryFactService:
                 canonical_subject_person_id=person_id,
                 kind=MemoryKind.PREFERENCE,
             ),
-            limit=None,
+            memory_key=key,
+            limit=2,
             session=session,
         )
-        matches = tuple(item for item in rows if item.memory_key == key)
+        matches = rows
         if not matches:
             return False
         if len(matches) != 1:
@@ -1360,7 +1370,6 @@ class MemoryFactService:
     ) -> MemoryFact | None:
         """Confirm a fact through the existing state machine without extra evidence."""
 
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None or current.status not in {
             MemoryStatus.ACTIVE,
@@ -1392,7 +1401,6 @@ class MemoryFactService:
         *,
         session: AsyncSession,
     ) -> MemoryFact | None:
-        await self.prepare_evidence_write((fact_id,), session=session)
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None:
             return None

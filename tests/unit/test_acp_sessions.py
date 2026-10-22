@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select, text
 from tests.support.client_identity import client_identity_service
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_works import owner
@@ -25,7 +26,6 @@ from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
@@ -35,7 +35,7 @@ admin = admin_fixture
 
 async def paired(database, account="1001"):
     identity = client_identity_service(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, account)
     code = await identity.issue_for_operator(binding.person_id, str(uuid4()), str(uuid4()))
     device = await identity.pair(code["code"], "ACP fixture")
@@ -45,7 +45,7 @@ async def paired(database, account="1001"):
 async def test_new_sessions_keep_one_binding_and_do_not_rebuild_other_context(database):
     identity, device, base = await paired(database)
     service = ClientSessions(identity)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         people = await session.scalar(select(func.count(CanonicalPersonModel.id)))
     request_id = str(uuid4())
     first, replay = await asyncio.gather(
@@ -56,7 +56,7 @@ async def test_new_sessions_keep_one_binding_and_do_not_rebuild_other_context(da
     second = await service.create(base, str(uuid4()))
     assert first["binding_id"] == second["binding_id"] != base.binding_id
     assert first["session_id"] != second["session_id"] != base.conversation_id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(CanonicalPersonModel.id))) == people
         rows = list(
             await session.scalars(
@@ -128,7 +128,7 @@ async def test_scoped_commands_share_uuid_only_inside_the_selected_conversation(
     for principal, result in zip(principals, results, strict=True):
         repeated = await identity.issue_for_device(principal, request_id)
         assert repeated["code_id"] == result["code_id"] and repeated["replay"]
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             receipt = await personal_command(
                 session,
                 principal.request_person_id,
@@ -187,7 +187,7 @@ async def test_session_revalidation_keeps_person_disable_and_binding_read_semant
         with pytest.raises(ClientError, match="precondition_failed"):
             await service.create(base, str(uuid4()))
     else:
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             with pytest.raises(ClientError, match="unauthenticated"):
                 await identity.require_principal(session, principal)
 
@@ -202,7 +202,7 @@ async def test_forget_removes_all_acp_scopes_before_their_conversations(database
         )
         await identity.issue_for_device(principal, request_id)
     assert await PeopleRepository(database).delete_person_id(base.person_id)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not list(
             await session.scalars(
                 select(ControlCommandReceiptModel).where(

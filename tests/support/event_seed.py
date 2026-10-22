@@ -32,7 +32,7 @@ from yuki.identity.db_models import PresenceModel
 from yuki.identity.receipt_compat import transport_namespace
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import _event_record
-from yuki.persistence.scoped_event_uow import ScopedAppendResult
+from yuki.persistence.scoped_event_uow import ScopedAppendResult, prepare_append
 from yuki.persistence.unit_of_work import optional_session
 
 
@@ -96,7 +96,14 @@ async def seed_scoped_event(
                 )
                 assert space is not None, "seed the original SpaceBinding first"
                 fields = {**fields, "space_binding_id": space.id}
+        prepared = await prepare_append(
+            content,
+            segments=segments,
+            external_payload=fields.get("external_payload"),
+            prepared_terms=fields.get("prepared_terms"),
+        )
         return await writer.append(
+            prepared=prepared,
             scope=scope,
             platform_message_id=platform_message_id,
             sender_user_id=sender_user_id,
@@ -254,4 +261,5 @@ async def seed_scoped_event(
 
     if session is not None:
         return await insert(session)
-    return await writer._database.apply_snapshot_write(insert)
+    async with writer._database.immediate_session() as active:
+        return await insert(active)

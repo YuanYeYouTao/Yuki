@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import aliased, load_only
 from yuki_participation.models import Effect, Feedback, Scope, SourceRef
 from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfReport
@@ -19,6 +19,7 @@ from yuki_participation.self_report import SelfReport
 from yuki.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
 from yuki.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
 from yuki.conversation.ordinary_admission import OrdinaryAdmission, OrdinaryAdmissionRepository
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
 from yuki.runtime.work_schema_v1 import journal, work
 from yuki.social.db_models import SocialOperationModel
@@ -30,6 +31,16 @@ if TYPE_CHECKING:
 
 _ACTIVE = {"accepted", "running"}
 _SEND_ACTIONS = {"send_message", "send_file_caption"}
+_SOCIAL_PROOF_FIELDS = (
+    "id",
+    "source_turn_id",
+    "tool_call_id",
+    "status",
+    "action",
+    "updated_at",
+    "target_kind",
+    "target_id",
+)
 
 
 def admission_continuation(admission: OrdinaryAdmission) -> bool | None:
@@ -68,7 +79,7 @@ async def _ordinary_bindings(
         turns[int(event_id)] = turn
     if not turns:
         return prepared
-    async with service.database.sessions() as session:
+    async with service.database.read_session() as session:
         await session.execute(text("BEGIN"))
         admissions: list[OrdinaryAdmission] = []
         ids = tuple(turns)
@@ -138,7 +149,11 @@ def _send_effect_id(key: tuple[str, str, str, str]) -> str:
     return "social:" + hashlib.sha256("\0".join(key).encode()).hexdigest()
 
 
-def _logical_social_effects(rows: list[SocialOperationModel]) -> dict[str, tuple[str, Effect]]:
+def _logical_social_effects(
+    rows: list[SocialOperationModel],
+    *,
+    proofs: dict[str, dict[str, tuple[Any, ...]]] | None = None,
+) -> dict[str, tuple[str, Effect]]:
     """A sequence and file caption share their actual parent logical send identity."""
     by_id = {row.id: row for row in rows}
     groups: dict[tuple[str, str, str, str], list[SocialOperationModel]] = {}
@@ -167,13 +182,22 @@ def _logical_social_effects(rows: list[SocialOperationModel]) -> dict[str, tuple
             actual_targets=("group",) if target_kind == "space" else (target_id,),
         )
         result[effect.effect_id] = (run_ref, effect)
+        if proofs is not None:
+            witness = min(group_rows, key=lambda row: _timestamp(row.updated_at))
+            supporting = [witness]
+            if witness.source_turn_id.startswith("social-caption:"):
+                supporting.append(by_id[witness.source_turn_id.partition(":")[2]])
+            proofs[effect.effect_id] = {
+                row.id: tuple(getattr(row, key) for key in _SOCIAL_PROOF_FIELDS)
+                for row in supporting
+            }
     return result
 
 
 async def _scope_social_rows(
     service: SemanticParticipationService, conversation_id: str
 ) -> list[SocialOperationModel]:
-    async with service.database.sessions() as session:
+    async with service.database.read_session() as session:
         return list(
             await session.scalars(
                 select(SocialOperationModel)
@@ -203,7 +227,7 @@ async def sync_scope_effects(
     effects = _logical_social_effects(current)
     ordinary = await _ordinary_bindings(service, item, current)
     initiative_ids = {run for run, _ in effects.values() if not run.startswith("social-run:")}
-    async with service.database.sessions() as session:
+    async with service.database.read_session() as session:
         valid_run_rows = (
             list(
                 await session.scalars(
@@ -234,7 +258,7 @@ async def sync_scope_effects(
     )
     valid_anchors: dict[SourceRef, bool] = {}
     if output_ids and ordinary:
-        async with service.database.sessions() as session:
+        async with service.database.read_session() as session:
             await session.execute(text("BEGIN"))
             for start in range(0, len(output_ids), 128):
                 valid_outputs.update(
@@ -320,6 +344,9 @@ class _RunFacts:
     model_refs: set[str]
     durable: list[InitiativeFeedbackModel]
     checkpoint: str | None
+    social_proofs: dict[str, dict[str, tuple[Any, ...]]] = field(default_factory=dict)
+    tool_proofs: dict[int, datetime] = field(default_factory=dict)
+    privacy_generation: int = 0
 
     def pending(self) -> tuple[str, list[str]]:
         outcome = self.run.state
@@ -354,6 +381,14 @@ async def _read_facts(
     errors: list[Exception] | None = None,
 ) -> list[_RunFacts]:
     """Exact receipts/counters in one explicit snapshot; no implicit evidence LIMIT."""
+    privacy = int(
+        await session.scalar(
+            select(ExecutionTraceStateModel.privacy_generation).where(
+                ExecutionTraceStateModel.id == 1
+            )
+        )
+        or 0
+    )
     runs = await service.repository.get_runs(ids, session=session, errors=errors)
     turns = {f"{run.conversation_id}:initiative:{run.run_id}": run.run_id for run in runs}
     tasks = (
@@ -469,9 +504,12 @@ async def _read_facts(
     for run in runs:
         try:
             task = by_source.get(f"initiative:{run.run_id}")
+            social_proofs: dict[str, dict[str, tuple[Any, ...]]] = {}
             actual = {
                 key: effect
-                for key, (_, effect) in _logical_social_effects(social_by_run[run.run_id]).items()
+                for key, (_, effect) in _logical_social_effects(
+                    social_by_run[run.run_id], proofs=social_proofs
+                ).items()
             }
             actual.update(
                 {
@@ -504,6 +542,13 @@ async def _read_facts(
                     model_refs,
                     [row for row in durable if row.run_id == run.run_id],
                     checkpoints.get(task["id"]) if task else None,
+                    social_proofs,
+                    {
+                        identity: created
+                        for identity, run_id, created in tools
+                        if run_id == run.run_id
+                    },
+                    privacy,
                 )
             )
         except (ValueError, TypeError, KeyError) as exc:
@@ -513,30 +558,170 @@ async def _read_facts(
     return result
 
 
+async def _feedback_current(
+    service: SemanticParticipationService,
+    session: AsyncSession,
+    fact: _RunFacts,
+    batch: list[str],
+    models: dict[str, int],
+    model_selection: str,
+) -> bool:
+    """Verify this page's real witnesses; later effects belong to a later page."""
+    runs = await service.repository.get_runs((fact.run.run_id,), session=session)
+    if runs != (fact.run,):
+        return False
+    privacy = int(
+        await session.scalar(
+            select(ExecutionTraceStateModel.privacy_generation).where(
+                ExecutionTraceStateModel.id == 1
+            )
+        )
+        or 0
+    )
+    if privacy != fact.privacy_generation:
+        return False
+    keys = ("id", "source_key", "state", "conversation_id", "generation", "parent_work_id")
+    current_task = (
+        (
+            await session.execute(
+                select(*(work.c[key] for key in keys)).where(
+                    work.c.source_key == f"initiative:{fact.run.run_id}"
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if (dict(current_task) if current_task is not None else None) != (
+        {key: fact.task[key] for key in keys} if fact.task is not None else None
+    ):
+        return False
+    witnesses = set(batch)
+    if fact.run.state in _ACTIVE and fact.task and fact.task["state"] == "completed":
+        if fact.actual:
+            # Outcome depends on at least one real effect, even on a page
+            # whose first 64 refs happen to contain only model charges.
+            witnesses.add(next(iter(fact.actual)))
+        else:
+            # A late confirmed receipt must not finalize a stale no_reply.
+            turn = f"{fact.run.conversation_id}:initiative:{fact.run.run_id}"
+            parent = aliased(SocialOperationModel)
+            direct = select(SocialOperationModel.id).where(
+                SocialOperationModel.source_turn_id == turn,
+                SocialOperationModel.status == "succeeded",
+                SocialOperationModel.action.in_(_SEND_ACTIONS),
+            )
+            caption = (
+                select(SocialOperationModel.id)
+                .join(
+                    parent,
+                    SocialOperationModel.source_turn_id == literal("social-caption:") + parent.id,
+                )
+                .where(
+                    parent.source_turn_id == turn,
+                    SocialOperationModel.status == "succeeded",
+                    SocialOperationModel.action.in_(_SEND_ACTIONS),
+                )
+            )
+            tool = select(MemoryToolReceiptModel.id).where(
+                MemoryToolReceiptModel.initiative_run_id == fact.run.run_id,
+                MemoryToolReceiptModel.trigger_event_id.is_(None),
+            )
+            if await session.scalar(select(or_(direct.exists(), caption.exists(), tool.exists()))):
+                return False
+    social = {
+        identity: values
+        for ref in witnesses
+        for identity, values in fact.social_proofs.get(ref, {}).items()
+    }
+    if social:
+        rows = (
+            await session.execute(
+                select(*(getattr(SocialOperationModel, key) for key in _SOCIAL_PROOF_FIELDS)).where(
+                    SocialOperationModel.id.in_(social)
+                )
+            )
+        ).all()
+        if {row.id: tuple(row) for row in rows} != social:
+            return False
+    tools = {
+        int(ref[5:]): fact.tool_proofs[int(ref[5:])] for ref in witnesses if ref.startswith("tool:")
+    }
+    if tools:
+        rows = (
+            await session.execute(
+                select(MemoryToolReceiptModel.id, MemoryToolReceiptModel.created_at).where(
+                    MemoryToolReceiptModel.id.in_(tools),
+                    MemoryToolReceiptModel.initiative_run_id == fact.run.run_id,
+                    MemoryToolReceiptModel.trigger_event_id.is_(None),
+                )
+            )
+        ).all()
+        if {identity: created for identity, created in rows} != tools:
+            return False
+    if models:
+        from yuki.runtime.work_tree import ancestors
+
+        assert fact.task is not None
+        requested = func.json_each(model_selection).table_valued("value")
+        identities = select(func.json_extract(requested.c.value, "$.id").label("id")).cte(
+            "feedback_charged_work"
+        )
+        charged: dict[str, int] = dict(
+            (
+                await session.execute(
+                    select(work.c.id, work.c.model_requests)
+                    .select_from(identities.join(work, work.c.id == identities.c.id))
+                    .where(
+                        literal(fact.task["id"]).in_(ancestors(identities.c.id, include_self=True)),
+                        work.c.conversation_id == fact.run.conversation_id,
+                        work.c.generation == fact.run.generation,
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        if any(charged.get(identity, 0) < ordinal for identity, ordinal in models.items()):
+            return False
+    return True
+
+
 async def _commit_pending(service: SemanticParticipationService, run_id: str) -> _RunFacts | None:
     # Each <=64-ref feedback page is its own atomic transaction, as before.
     # Hot producers cannot monopolize a tick; remaining refs stay in factual tables.
     for _ in range(4):
-        async with service.database.sessions() as session:
+        async with service.database.read_session() as session:
             await session.execute(text("BEGIN"))
             facts = await _read_facts(service, (run_id,), session)
-            if not facts:
-                return None
-            fact = facts[0]
-            if not fact.changed():
-                return fact
-            outcome, unseen = fact.pending()
-            batch = unseen[:64]
-            targets = tuple(
-                sorted(
-                    {
-                        fact.run.space_id if target == "group" else target
-                        for ref in batch
-                        if ref in fact.actual
-                        for target in fact.actual[ref].actual_targets
-                    }
-                )
+        if not facts:
+            return None
+        fact = facts[0]
+        outcome, unseen = fact.pending()
+        if not unseen and fact.durable and fact.durable[-1].outcome == outcome:
+            return fact
+        batch = unseen[:64]
+        targets = tuple(
+            sorted(
+                {
+                    fact.run.space_id if target == "group" else target
+                    for ref in batch
+                    if ref in fact.actual
+                    for target in fact.actual[ref].actual_targets
+                }
             )
+        )
+        models: dict[str, int] = {}
+        for ref in batch:
+            if _charged_ref(ref):
+                _, identity, ordinal = ref.split(":")
+                models[identity] = max(models.get(identity, 0), int(ordinal))
+        model_selection = json.dumps([{"id": identity} for identity in models])
+        async with service.database.immediate_session() as session:
+            if not await _feedback_current(service, session, fact, batch, models, model_selection):
+                # Reconciliation will prepare the current factual page next tick;
+                # a changed source never replays the model or external effect.
+                return None
             await service.repository.record_feedback(
                 run_id,
                 sequence=fact.run.feedback_sequence + 1,
@@ -546,8 +731,7 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
                 considered_sources=fact.run.sources,
                 session=session,
             )
-            await session.commit()
-    async with service.database.sessions() as session:
+    async with service.database.read_session() as session:
         await session.execute(text("BEGIN"))
         facts = await _read_facts(service, (run_id,), session)
         return facts[0] if facts else None
@@ -563,7 +747,7 @@ async def reconcile_page(
     failures: list[Exception] = []
     # Bound parameters and snapshot lifetime even for the active outbox's 128 entries.
     for start in range(0, len(runs), 16):
-        async with service.database.sessions() as session:
+        async with service.database.read_session() as session:
             await session.execute(text("BEGIN"))
             facts.extend(
                 await _read_facts(

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from yuki.persistence.database import Database
 from yuki.plugin_host.db_models import (
@@ -67,7 +68,7 @@ class PluginMediaArtifactStore:
             raise ValueError("media artifact TTL must be between 60 seconds and 7 days")
         safe_name = _filename(filename, mime)
         capacity = storage_mb * 1024 * 1024
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             used = int(
                 await session.scalar(
                     select(func.coalesce(func.sum(PluginMediaArtifactModel.byte_size), 0)).where(
@@ -89,8 +90,16 @@ class PluginMediaArtifactStore:
         directory = self._root / _plugin_directory(plugin_id)
         destination = directory / f"{handle_id}-{safe_name}"
         await asyncio.to_thread(_atomic_write, directory, destination, data)
+        handle = MediaArtifactHandle(
+            handle_id=handle_id,
+            content_type=mime,
+            filename=safe_name,
+            byte_size=len(data),
+            sha256=digest,
+            expires_at=expires_at,
+        )
         try:
-            async with self._database.sessions() as session, session.begin():
+            async with self._database.immediate_session() as session:
                 session.add(
                     PluginMediaArtifactModel(
                         handle_id=handle_id,
@@ -104,20 +113,27 @@ class PluginMediaArtifactStore:
                         expires_at=expires_at,
                     )
                 )
-        except Exception:
-            await asyncio.to_thread(destination.unlink, missing_ok=True)
+        except Exception as exc:
+            from yuki.persistence.database import write_failure_committed
+
+            if write_failure_committed(exc) is False:
+                await asyncio.to_thread(destination.unlink, missing_ok=True)
+            else:
+                # The writer has exited. Resolve the original registration;
+                # losing a commit acknowledgement must not create a new file.
+                try:
+                    async with self._database.read_session() as reader:
+                        registered = await reader.get(PluginMediaArtifactModel, handle_id)
+                except SQLAlchemyError:
+                    pass
+                else:
+                    if registered is not None:
+                        return handle
             raise
-        return MediaArtifactHandle(
-            handle_id=handle_id,
-            content_type=mime,
-            filename=safe_name,
-            byte_size=len(data),
-            sha256=digest,
-            expires_at=expires_at,
-        )
+        return handle
 
     async def resolve(self, *, plugin_id: str, handle_id: str) -> ResolvedMediaArtifact:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.get(PluginMediaArtifactModel, handle_id)
         if row is None or row.plugin_id != plugin_id or _aware(row.expires_at) <= datetime.now(UTC):
             raise PluginPermissionError("media artifact is missing, expired, or foreign")
@@ -158,43 +174,54 @@ class PluginMediaArtifactStore:
                 )
             ),
         )
-        async with self._database.sessions() as reader:
-            candidates = tuple(
-                await reader.scalars(select(PluginMediaArtifactModel.handle_id).where(*eligible))
-            )
-        if not candidates:
-            return 0
-        # A publication may have admitted this original handle before expiry
-        # and still be committing its outbox. Read its pending reference only
-        # after that writer settles, before unlinking outside the transaction.
-        async with self._database.immediate_session() as writer:
-            rows = (
-                await writer.execute(
-                    select(
-                        PluginMediaArtifactModel.handle_id,
-                        PluginMediaArtifactModel.storage_path,
-                    ).where(PluginMediaArtifactModel.handle_id.in_(candidates), *eligible)
+        cursor = ""
+        total = 0
+        while True:
+            async with self._database.read_session() as reader:
+                candidates = tuple(
+                    await reader.scalars(
+                        select(PluginMediaArtifactModel.handle_id)
+                        .where(*eligible, PluginMediaArtifactModel.handle_id > cursor)
+                        .order_by(PluginMediaArtifactModel.handle_id)
+                        .limit(128)
+                    )
                 )
-            ).all()
-        removed = []
-        for row in rows:
-            try:
-                await asyncio.to_thread(Path(row.storage_path).unlink, missing_ok=True)
-            except OSError as exc:
-                logger.warning("plugin_media_cleanup_failed category=%s", type(exc).__name__)
-            else:
-                removed.append(row.handle_id)
-        if not removed:
-            return 0
-        async with self._database.immediate_session() as writer:
-            deleted = tuple(
-                await writer.scalars(
-                    delete(PluginMediaArtifactModel)
-                    .where(PluginMediaArtifactModel.handle_id.in_(removed))
-                    .returning(PluginMediaArtifactModel.handle_id)
-                )
-            )
-        return len(deleted)
+            if not candidates:
+                return total
+            # An admitted publication may still be committing its outbox.
+            # Recheck the original handles after that writer settles.
+            async with self._database.immediate_session() as writer:
+                rows = (
+                    await writer.execute(
+                        select(
+                            PluginMediaArtifactModel.handle_id,
+                            PluginMediaArtifactModel.storage_path,
+                        ).where(PluginMediaArtifactModel.handle_id.in_(candidates), *eligible)
+                    )
+                ).all()
+            removed = []
+            for row in rows:
+                try:
+                    await asyncio.to_thread(Path(row.storage_path).unlink, missing_ok=True)
+                except OSError as exc:
+                    logger.warning("plugin_media_cleanup_failed category=%s", type(exc).__name__)
+                else:
+                    removed.append(row.handle_id)
+            if removed:
+                async with self._database.immediate_session() as writer:
+                    deleted = tuple(
+                        await writer.scalars(
+                            delete(PluginMediaArtifactModel)
+                            .where(PluginMediaArtifactModel.handle_id.in_(removed))
+                            .returning(PluginMediaArtifactModel.handle_id)
+                        )
+                    )
+                total += len(deleted)
+            # Failed unlinks stay registered, but must not hide later pages.
+            cursor = candidates[-1]
+            if len(candidates) < 128:
+                return total
+            await asyncio.sleep(0)
 
 
 def _matches_mime(data: bytes, mime: str) -> bool:

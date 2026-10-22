@@ -127,7 +127,7 @@ async def test_accountless_person_pairs_and_uses_acp_through_original_main_and_s
             )
             assert created.status_code == 200, created.text
             person_id = created.json()["data"]["resource_id"]
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 assert not list(
                     await reader.scalars(
                         select(IdentityBindingModel.id).where(
@@ -170,7 +170,7 @@ async def test_accountless_person_pairs_and_uses_acp_through_original_main_and_s
             me = await http.get("/client/v1/me", headers=selected(env, session))
             assert me.status_code == 200, me.text
             assert me.json()["data"]["person_id"] == person_id
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 person = await reader.get(CanonicalPersonModel, person_id)
                 assert person.merged_into_person_id is None
                 bindings = list(
@@ -232,7 +232,7 @@ async def test_two_sessions_share_original_person_and_fixed_tools_without_sharin
     assert "SECOND_SESSION_ONLY" not in str(requests[0].messages)
     app_me = await env.http.get("/client/v1/me", headers=bearer(env.device["token"]))
     app_conversation = app_me.json()["data"]["conversation_id"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not list(
             await reader.scalars(
                 select(ChatEventModel.id).where(
@@ -475,7 +475,7 @@ async def test_two_sessions_keep_same_uuid_work_inputs_in_their_original_mailbox
         principal = await env.app.client_api.identity.authenticate(
             env.device["token"], conversation_id=session["session_id"]
         )
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             mailbox = (
                 (await reader.execute(select(inputs).where(inputs.c.id == result["input_id"])))
                 .mappings()
@@ -609,7 +609,7 @@ async def test_original_acp_credentials_do_not_create_a_new_author_after_assignm
         await replace_assignment(
             writer, binding.account, binding.id, new_owner, now=datetime.now(UTC)
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before_people = await reader.scalar(select(func.count()).select_from(CanonicalPersonModel))
         event = await reader.get(ChatEventModel, original["event_id"])
         original_fact = (event.author_person_id, event.canonical_conversation_id, event.content)
@@ -624,7 +624,7 @@ async def test_original_acp_credentials_do_not_create_a_new_author_after_assignm
     )
     assert response.status_code == 401, response.text
     assert len(env.provider.requests) == calls
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(func.count()).select_from(CanonicalPersonModel))
             == before_people
@@ -661,7 +661,7 @@ async def test_acp_history_requires_confirmed_outbound_and_keeps_deleted_keyset_
     principal = await env.app.client_api.identity.authenticate(
         env.device["token"], conversation_id=session["session_id"]
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         presence = await reader.get(PresenceModel, principal.presence_id)
         scope = ConversationScope.private(
             presence.external_account_id,

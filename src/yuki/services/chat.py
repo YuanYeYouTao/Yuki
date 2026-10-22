@@ -218,7 +218,7 @@ class ChatService:
     async def _person_is_superuser(self, person_id: str | None) -> bool:
         from yuki.identity.authority import person_is_superuser
 
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await person_is_superuser(session, person_id)
 
     def __init__(
@@ -615,7 +615,7 @@ class ChatService:
             return matched
         from yuki.identity.person_identity import same_person_id
 
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             if (
                 not inbound.person_id
                 or not control.source.get("actor_person_id")
@@ -1272,7 +1272,7 @@ class ChatService:
                 from yuki.identity.db_models import CanonicalPersonModel
                 from yuki.identity.person_identity import current_person_id
 
-                async with self._ledger._database.sessions() as session:
+                async with self._ledger._database.read_session() as session:
                     original = await session.get(CanonicalPersonModel, actor.person_id)
                     root = (
                         await session.get(

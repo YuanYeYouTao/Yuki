@@ -180,7 +180,7 @@ async def test_prefetch_keeps_every_admitted_original_past_old_pending_limit(
     await asyncio.wait_for(env.entered.wait(), 5)
     env.release.set()
     await asyncio.gather(*tuple(env.media._pending))
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         items = tuple(
             await reader.scalars(
                 select(ConversationMediaItemModel).where(
@@ -204,7 +204,7 @@ async def test_cache_emoji_and_explicit_inspection_share_original(admitted_media
     assert len(env.calls) == 1
     assert asset.byte_size == len(env.data)
     assert asset.relative_path.startswith("stickers/qq/files/")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.scalar(
             select(ConversationMediaItemModel).where(
                 ConversationMediaItemModel.source_event_id == env.event.id,
@@ -253,7 +253,7 @@ async def test_old_prepared_original_cannot_publish_as_edited_attachment(admitte
         event.segments_json = '[{"type":"image","data":{"url":"https://example.test/new.png"}}]'
     await env.media._cache_event(env.event.id, None, env.message)
     assert not env.calls
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.scalar(
             select(ConversationMediaItemModel).where(
                 ConversationMediaItemModel.source_event_id == env.event.id,
@@ -389,7 +389,7 @@ async def test_collection_publishes_shared_cache_without_delivery_artifact(
     assert (env.files / saved.relative_path).read_bytes() == env.data
     assert artifact_ids(env.store) == []
     assert not any("sticker_" in statement.lower() for statement in statements)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.get(ConversationMediaItemModel, (env.event.id, 0))
         assert item.cache_status == "cached" and item.content_sha256 == saved.sha256
 
@@ -512,7 +512,7 @@ async def test_admitted_shared_copy_survives_source_erasure_without_restoring_at
     assert (env.files / saved.relative_path).read_bytes() == env.data
     metadata = env.files / "stickers" / "qq" / "index" / f"{saved.id}.json"
     assert json.loads(metadata.read_text(encoding="utf-8"))["relative_path"] == saved.relative_path
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.get(ChatEventModel, env.event.id) is None) == (change == "forget")
         assert not any(
             name.startswith("sticker_")

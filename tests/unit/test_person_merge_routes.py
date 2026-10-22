@@ -95,7 +95,7 @@ async def test_merge_keeps_live_target_or_inherits_only_available_source(
             code["code"], platform="qq", account="1001", display_name="", message_id="claim"
         )
     assert first["person_id"] == target and not first.get("replay", False)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(PersonActiveRouteModel, source) is None
         route = await reader.get(PersonActiveRouteModel, target)
         if target_state in {"live", "paused"}:
@@ -118,7 +118,7 @@ async def test_merge_keeps_live_target_or_inherits_only_available_source(
             await identities.claim_account(
                 code["code"], platform="qq", account="1001", display_name="", message_id="retry"
             )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert len(tuple(await reader.scalars(select(PersonActiveRouteModel)))) == (
             route is not None
         )

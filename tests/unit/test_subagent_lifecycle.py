@@ -83,7 +83,7 @@ async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_chi
         )
     )
     assert direct == derived == {"ok": False, "error": "subagent_admission_disabled"}
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert list(await reader.scalars(select(children.c.work_id))) == [identity]
     # The original accepted call keeps its identity after new admission closes.
     replayed = await workers.start(
@@ -121,7 +121,7 @@ async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_chi
         parent.lease, parent.current["id"], "ordinary-subgoal", "continue the business goal"
     )
     assert ordinary["parent_work_id"] == parent.current["id"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert list(await reader.scalars(select(children.c.work_id))) == [identity]
     await probe.repository.release(lease)
     await probe.repository.release(parent.lease)
@@ -384,7 +384,7 @@ async def test_foreground_manages_original_child_without_accepting_another_work(
     parent.settled = False
     parent.ending = None
     before = await probe.repository.get(identity)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         budget_before = dict(
             (
                 await reader.execute(
@@ -432,7 +432,7 @@ async def test_foreground_manages_original_child_without_accepting_another_work(
     assert await probe.repository.get(original_parent["id"]) == original_parent
     if unrelated_work:
         assert await probe.repository.get(unrelated_work["id"]) == unrelated_work
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         budget_after = dict(
             (
                 await reader.execute(
@@ -492,7 +492,7 @@ async def test_new_child_still_requires_an_actual_work_owner(database, tmp_path)
     probe.control.current = None
     with pytest.raises(ValueError, match="accept_work_before_execution"):
         await execute_subagent(probe.control, "subagent_start", {"goal": "no owner"}, "start")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert list(await reader.scalars(select(children.c.work_id))) == []
     await probe.repository.release(probe.control.lease)
 
@@ -547,7 +547,7 @@ async def test_question_and_completion_writer_order_preserves_truth(
     assert receipt["ok"] and receipt["waiting_parent"] is question_first
     row = await probe.repository.get(parent.current["id"])
     assert row["state"] == ("queued" if question_first else "completed")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         entries = list(
             await reader.scalars(select(inputs.c.id).where(inputs.c.work_id == row["id"]))
         )

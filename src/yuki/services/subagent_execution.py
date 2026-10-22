@@ -91,7 +91,7 @@ class SubagentExecution:
         """Reconcile cancellation outside the database transaction, by original run ID."""
         from yuki.sandbox.db_models import SandboxTaskRunModel
 
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             ids = list(
                 await session.scalars(
                     select(SandboxTaskRunModel.run_id)
@@ -238,7 +238,7 @@ class SubagentExecution:
                     if isinstance(recovered, MessageTaskSource):
                         from yuki.identity.authority import person_is_superuser
 
-                        async with self.repository.database.sessions() as session:
+                        async with self.repository.database.read_session() as session:
                             actor_is_superuser = await person_is_superuser(
                                 session, recovered.actor_person_id
                             )

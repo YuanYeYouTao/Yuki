@@ -42,7 +42,7 @@ class ClientMessages:
         text: str,
         references: tuple[str, ...],
     ) -> dict[str, Any] | None:
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             command = await personal_command(
                 session,
@@ -105,7 +105,7 @@ class ClientMessages:
                 f" [{part['type']}附件{index}：{part['data']['filename']}]"
                 for index, part in enumerate(media_segments)
             )
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             binding = await session.get(IdentityBindingModel, principal.binding_id)
             assert binding is not None

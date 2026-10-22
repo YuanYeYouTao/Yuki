@@ -16,6 +16,7 @@ from PIL import Image
 from sqlalchemy import select, update
 from tests.support.canonical_identity import ensure_person
 from tests.support.memory_identity import transfer_account
+from tests.support.person_merge import merge_persons
 from tests.support.social_identity_cases import Bot, social_env
 from tests.support.sticker_delivery import make_delivery, settle
 
@@ -32,7 +33,6 @@ from yuki.identity.canonical_repository import (
     create_presence,
     create_space_binding,
 )
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import current_work_control
@@ -247,7 +247,7 @@ async def test_pure_illustration_keeps_internal_reply_and_mention_without_foregr
 ):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     context = env.context
     env.bot.calls.clear()
@@ -539,7 +539,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
         assert receipt.status is (
             OperationStatus.UNCERTAIN if uncertain else OperationStatus.SUCCEEDED
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             outbound = list(
                 await session.scalars(
                     select(ChatEventModel)
@@ -559,7 +559,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
         projected = await delivery.project(env.context)
         assert projected["status"] == ("uncertain" if uncertain else "succeeded")
         assert projected["status"] == ("uncertain" if uncertain else "succeeded")
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             recovered = await EmojiIntentRepository.effect_facts(
                 session,
                 intent.id,

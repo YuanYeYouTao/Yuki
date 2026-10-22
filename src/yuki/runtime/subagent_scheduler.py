@@ -106,7 +106,7 @@ class SubagentScheduler:
                 if capacity <= 0:
                     await asyncio.sleep(1)
                     continue
-                async with self.repository.database.sessions() as session:
+                async with self.repository.database.read_session() as session:
                     ids = list(
                         await session.scalars(
                             select(children.c.work_id)

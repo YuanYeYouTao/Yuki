@@ -13,13 +13,13 @@ class SandboxContinuationRepository:
         self.database = database
 
     async def get(self, request_id: str) -> SandboxTaskContinuationModel | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return await session.get(SandboxTaskContinuationModel, request_id)
 
     async def ready(self, *, limit: int = 20) -> tuple[str, ...]:
         if not 1 <= limit <= 20:
             raise ValueError("invalid_continuation_limit")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return tuple(
                 await session.scalars(
                     select(SandboxTaskContinuationModel.request_id)
@@ -40,7 +40,7 @@ class SandboxContinuationRepository:
 
     async def rotate(self, request_id: str) -> None:
         """Busy or invalid sources cannot starve later completions in a bounded scan."""
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(SandboxTaskContinuationModel)
                 .where(

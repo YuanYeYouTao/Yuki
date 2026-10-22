@@ -66,7 +66,7 @@ async def test_legacy_image_webm_current_cache_history_share_real_original(
     attachment_tools, database, tmp_path, monkeypatch
 ):
     case = attachment_tools
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original_segments = (await session.get(ChatEventModel, case.source.id)).segments_json
     inbound, runtime, content = await prepare_old_message(case, database, tmp_path, reply=False)
     analyze = AsyncMock(side_effect=AssertionError("ordinary media never buys auxiliary Vision"))
@@ -99,7 +99,7 @@ async def test_legacy_image_webm_current_cache_history_share_real_original(
     assert workspace["mode"] == "video_frames" and workspace.images
     assert case.wire.count(("GET", "/file/botfixture-a/photos/original.png")) == 1
     assert all("fixture-b" not in path for _, path in case.wire)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, case.source.id)
         assert event.segments_json == original_segments
     analyze.assert_not_called()
@@ -109,7 +109,7 @@ async def test_legacy_image_webm_reply_uses_real_frames_and_one_original_downloa
     attachment_tools, database, tmp_path, monkeypatch
 ):
     case = attachment_tools
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original_segments = (await session.get(ChatEventModel, case.source.id)).segments_json
     inbound, _runtime, _content = await prepare_old_message(case, database, tmp_path, reply=True)
     analyze = AsyncMock(side_effect=AssertionError("reply media never buys auxiliary Vision"))
@@ -131,7 +131,7 @@ async def test_legacy_image_webm_reply_uses_real_frames_and_one_original_downloa
     assert all(frame.source_event_id == case.source.id for frame in result.images)
     assert case.wire.count(("GET", "/file/botfixture-a/photos/original.png")) == 1
     assert all("fixture-b" not in path for _, path in case.wire)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, case.source.id)
         assert event.segments_json == original_segments
     analyze.assert_not_called()

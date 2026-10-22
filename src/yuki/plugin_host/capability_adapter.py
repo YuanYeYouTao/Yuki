@@ -297,7 +297,7 @@ class PluginCapabilityAdapter:
 
         from yuki.identity.authority import person_is_superuser
 
-        async with self._installations._database.sessions() as session:
+        async with self._installations._database.read_session() as session:
             current = replace(
                 runtime,
                 actor_is_superuser=await person_is_superuser(session, runtime.actor_person_id),

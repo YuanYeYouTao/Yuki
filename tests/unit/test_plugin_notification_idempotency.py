@@ -176,7 +176,7 @@ async def _add_artifact(
 
 
 async def _state(database: Database) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...]]:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_ids = tuple(
             row.id
             for row in (
@@ -207,7 +207,7 @@ async def _state(database: Database) -> tuple[tuple[int, ...], tuple[str, ...], 
 
 
 async def _media_parts(database: Database) -> list[tuple[str, str | None]]:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return [
             (row.part_key, row.media_handle_id)
             for row in (
@@ -239,7 +239,7 @@ async def _prepare_text_delivery(repository):
 
 
 async def _count(database: Database, model: type[Any]) -> int:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return int(await session.scalar(select(func.count()).select_from(model)) or 0)
 
 
@@ -396,7 +396,7 @@ async def test_cleanup_keeps_media_accepted_by_the_original_inflight_publication
             assert await cleanup_task == 0
         assert receipt.event_created and receipt.delivery_enqueued
         assert original.local_path.read_bytes() == image.getvalue()
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.get(PluginMediaArtifactModel, handle.handle_id) is not None
     finally:
         continue_publish.set()
@@ -677,7 +677,7 @@ async def test_original_receipt_survives_actual_media_lifecycle_cleanup(
     pending = status in {"pending", "processing"}
     assert await store.cleanup() == (0 if pending else 1)
     assert await asyncio.to_thread(path.exists) == pending
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.get(PluginMediaArtifactModel, handle.handle_id) is not None) == pending
         retained = await reader.scalar(
             select(PluginNotificationOutboxModel).where(
@@ -753,7 +753,7 @@ async def test_sha_key_survives_artifact_cleanup_and_dedupes_new_handle(
         artifact = await session.get(PluginMediaArtifactModel, "cleaned-handle")
         assert artifact is not None
         await session.delete(artifact)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(
             select(PluginNotificationOutboxModel).where(
                 PluginNotificationOutboxModel.part_type == "media"
@@ -1046,7 +1046,7 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
     assert other_target.notification_id != first.notification_id
     assert other_key.notification_id != first.notification_id
     assert len(event_ids) == 3
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         first_row = await session.get(ChatEventModel, first.source_event_id)
         group_row = await session.get(ChatEventModel, other_target.source_event_id)
         other_row = await session.get(ChatEventModel, other_key.source_event_id)
@@ -1126,7 +1126,7 @@ async def test_expired_send_is_quarantined_and_late_original_receipt_is_retained
         platform_message_id="accepted",
     )
     assert await repository.claim_outbox() is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(PluginNotificationOutboxModel, claimed.id)
         assert row is not None
         assert (row.status, row.platform_message_id, row.attempts) == (

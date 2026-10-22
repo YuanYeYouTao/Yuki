@@ -206,7 +206,7 @@ async def test_main_reads_an_uploaded_file_only_after_its_explicit_tool_call(
         else:
             assert secret in str(provider.requests[1].messages)
             assert parser.await_count == 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             public = await reader.scalar(
                 select(ChatEventModel.content).where(ChatEventModel.id == committed[0].event.id)
             )

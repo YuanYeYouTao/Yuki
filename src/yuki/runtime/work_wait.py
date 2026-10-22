@@ -16,14 +16,14 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import func, literal, select, text, tuple_, update
+from sqlalchemy import String, cast, func, literal, select, text, tuple_, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.identity.db_models import PresenceModel
-from yuki.identity.person_identity import same_person_id
+from yuki.identity.person_identity import same_person_condition, same_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
@@ -115,7 +115,7 @@ class WorkWaitRepository:
         self.repository = repository
 
     async def describe(self, work_id: str) -> dict[str, Any] | None:
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             row = (
                 (
                     await session.execute(
@@ -498,7 +498,7 @@ class WorkWaitRepository:
         if kind not in {"conversation", "plugin_event"}:
             raise ValueError("invalid_wait_event_kind")
         if session is None:
-            async with self.repository.database.sessions() as observer:
+            async with self.repository.database.read_session() as observer:
                 event = await observer.get(ChatEventModel, event_id)
                 if event is None or event.canonical_conversation_id is None:
                     return None
@@ -633,7 +633,7 @@ class WorkWaitRepository:
         prepare_source: Callable[[], Awaitable[bool]] | None = None,
     ) -> WorkInputMatch | None:
         """Prepare quoted/personal replies and conversation waits in one read view."""
-        async with self.repository.database.sessions() as observer:
+        async with self.repository.database.read_session() as observer:
             await observer.execute(text("BEGIN"))
             source = (
                 await observer.execute(
@@ -698,7 +698,7 @@ class WorkWaitRepository:
         from yuki.social.db_models import SocialOperationModel
 
         if session is None:
-            async with self.repository.database.sessions() as observer:
+            async with self.repository.database.read_session() as observer:
                 event = await observer.get(ChatEventModel, event_id)
                 if event is None:
                     return None
@@ -741,49 +741,31 @@ class WorkWaitRepository:
                 not in LOCAL_CLIENT_PLATFORMS
             ):
                 return None
-            candidates = (
-                (
-                    await session.execute(
-                        select(work)
-                        .where(
-                            work.c.conversation_id == conversation.id,
-                            work.c.generation == conversation.generation,
-                            work.c.state == "waiting_user",
-                        )
-                        .order_by(work.c.updated.desc())
-                    )
-                )
-                .mappings()
-                .all()
+            actor = func.json_extract(work.c.source_json, "$.actor_person_id")
+            trigger = func.json_extract(work.c.source_json, "$.trigger_event_id")
+            query = select(work.c.id).where(
+                work.c.conversation_id == conversation.id,
+                work.c.generation == conversation.generation,
+                work.c.state == "waiting_user",
+                func.json_extract(work.c.source_json, "$.origin") == "user_message",
+                func.json_type(work.c.source_json, "$.trigger_event_id") == "integer",
+                same_person_condition(actor, event.author_person_id),
             )
-            for candidate in candidates:
-                source = json.loads(candidate["source_json"])
-                if (
-                    source.get("origin") != "user_message"
-                    or not event.author_person_id
-                    or not source.get("actor_person_id")
-                    or not await same_person_id(
-                        session, source["actor_person_id"], event.author_person_id
+            if event.reply_to_event_id is not None:
+                query = query.where(
+                    select(SocialOperationModel.id)
+                    .where(
+                        SocialOperationModel.source_conversation_id == conversation.id,
+                        SocialOperationModel.source_turn_id
+                        == literal(f"{conversation.id}:event:") + cast(trigger, String),
+                        SocialOperationModel.event_id == event.reply_to_event_id,
+                        SocialOperationModel.status == "succeeded",
                     )
-                    or not isinstance(source.get("trigger_event_id"), int)
-                ):
-                    continue
-                question = (
-                    await session.scalar(
-                        select(SocialOperationModel.id).where(
-                            SocialOperationModel.source_conversation_id == conversation.id,
-                            SocialOperationModel.source_turn_id
-                            == f"{conversation.id}:event:{source['trigger_event_id']}",
-                            SocialOperationModel.event_id == event.reply_to_event_id,
-                            SocialOperationModel.status == "succeeded",
-                        )
-                    )
-                    if event.reply_to_event_id is not None
-                    else True
+                    .exists()
                 )
-                if question is None:
-                    continue
-                source_key = f"user-reply:{event.id}:{candidate['id']}"
+            candidate_id = await session.scalar(query.order_by(work.c.updated.desc()).limit(1))
+            if candidate_id is not None:
+                source_key = f"user-reply:{event.id}:{candidate_id}"
                 await session.execute(
                     insert(inputs)
                     .values(
@@ -791,7 +773,7 @@ class WorkWaitRepository:
                         generation=conversation.generation,
                         source_key=source_key,
                         event_id=event.id,
-                        work_id=candidate["id"],
+                        work_id=candidate_id,
                         kind="message",
                         ready=False,
                         prepare_owner=PROCESS_ID,
@@ -924,21 +906,25 @@ class WorkWaitRepository:
                 .select_from(requested.join(work, work.c.id == requested.c.run_id))
                 .where(requested.c.owner_id.in_(ancestors(requested.c.run_id)))
             )
-            owned_sandbox = select(
-                requested.c.owner_id,
-                requested.c.run_id,
-                SandboxTaskRunModel.status,
-                SandboxTaskRunModel.completion_json,
-                literal(True),
-            ).select_from(
-                requested.join(
-                    SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
+            owned_sandbox = (
+                select(
+                    requested.c.owner_id,
+                    requested.c.run_id,
+                    SandboxTaskRunModel.status,
+                    SandboxTaskRunModel.completion_json,
+                    literal(True),
                 )
-            ).where(
-                requested.c.owner_id.in_(
-                    ancestors(
-                        func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
-                        include_self=True,
+                .select_from(
+                    requested.join(
+                        SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
+                    )
+                )
+                .where(
+                    requested.c.owner_id.in_(
+                        ancestors(
+                            func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
+                            include_self=True,
+                        )
                     )
                 )
             )
@@ -962,7 +948,7 @@ class WorkWaitRepository:
         observed_at = time.time() if now is None else now
         candidates: list[str] = []
         cursor: tuple[float, str] | None = None
-        async with self.repository.database.sessions() as discovery:
+        async with self.repository.database.read_session() as discovery:
             while len(candidates) < 128:
                 query = self._due_query().order_by(waits.c.created, waits.c.id).limit(128)
                 if cursor is not None:

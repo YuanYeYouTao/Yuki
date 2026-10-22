@@ -23,6 +23,12 @@ Commands run as root **inside the environment**, with `HOME=/home/yuki`. Bash, P
 
 There is no default execution deadline. Explicit `timeout_seconds=0` also disables the timer; a positive value sets the requested deadline without a software maximum. Canceling a read cancels observation only. Empty output is not completion, and a nonzero exit does not undo earlier file writes. Cursor reads identify lost output after bounded log rotation.
 
+Bot task intents, completions, permission callbacks and continuations share the main Database writer.
+They commit under the original request/run before acknowledgement; completion and parent Work input
+settle atomically. File preparation, JSON encoding and remote waits stay outside that writer. Manager
+keeps its own SQLite owner for jobs.sqlite3. Canceling observation or restarting Bot does not resubmit
+an existing Manager request.
+
 New Python, Node and system-package work uses the terminal. `run_python`, `environment_packages`, `get_code_run`, `cancel_code_run` and `terminal_write` no longer accept new calls. Original Python/APT runs remain readable by `terminal_read` with their original completion acknowledgements. An upgrade never dispatches an old unstarted APT intent or replays an installation with an unknown outcome. New package budgets, dpkg collection and automatic Docker checkpoint production are retired; existing images and original receipts remain.
 
 `environment_service` retains register/start/stop/delete/status/logs and real recovery across environment starts, using the original `restart` policy. Stop disables recovery first. Service and consecutive-failure counts are not capped. Updating a registration preserves its current original run until a real restart.

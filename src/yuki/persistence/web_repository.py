@@ -30,7 +30,7 @@ class WebSearchSourceRepository:
         cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
         if not 1 <= limit <= 128:
             raise ValueError("cleanup page must be between 1 and 128")
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             ids = tuple(
                 await session.scalars(
                     select(WebSearchRunModel.id)

@@ -112,7 +112,7 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
         PluginPermission.MEDIA_ARTIFACT_CREATE,
     )
     store = PluginMediaArtifactStore(database, tmp_path / "plugin-images")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         for plugin_id in ("example.plugin", "other.plugin"):
             if await session.get(PluginInstallationModel, plugin_id) is None:
                 session.add(
@@ -251,7 +251,7 @@ async def test_dispatch_hook_refuses_invalid_origin_despite_live_archive(
     if change == "bytes":
         original.local_path.write_bytes(b"x" * original.byte_size)
     else:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             statement = (
                 delete(PluginMediaArtifactModel)
                 if change == "delete"
@@ -277,7 +277,7 @@ async def test_archive_copy_cannot_bypass_original_plugin_source(database, tmp_p
     # An external-tool archive handle is only a private copy, not a new read grant.
     images = tuple(replace(image, tool_handle="private-archive-copy") for image in result.images)
     if change in {"delete", "expire", "digest"}:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             statement = (
                 delete(PluginMediaArtifactModel)
                 if change == "delete"

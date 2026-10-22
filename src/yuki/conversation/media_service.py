@@ -146,7 +146,7 @@ class _EventMediaGateway:
     async def resolve_media_file(
         self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             presence_id = await session.scalar(
                 select(ChatEventModel.ingress_presence_id).where(ChatEventModel.id == self.event_id)
             )
@@ -418,7 +418,7 @@ class ConversationMediaService:
             if message is not None
             else {}
         )
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             items = (
                 await session.scalars(
                     select(ConversationMediaItemModel).where(
@@ -464,7 +464,7 @@ class ConversationMediaService:
             func.json_extract(values.c.value, "$[1]"),
         )
         model = ConversationMediaItemModel
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             rows = (
                 await session.scalars(
@@ -709,7 +709,7 @@ class ConversationMediaService:
             final_name = f"{index}-{digest}{extension}"
             final = directory / final_name
             async with self._lock:
-                async with self.database.sessions() as session:
+                async with self.database.read_session() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
                     event = await session.get(ChatEventModel, event_id)
                     if event is None or event.segments_json != source_segments:
@@ -768,7 +768,7 @@ class ConversationMediaService:
             raise ConversationMediaError("attachment_source_changed")
         path = await self._cache(event_id, attachment_index, None, source=source)
         # Keep the exact observed source when publication waited for network I/O.
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, event_id)
             live = await session.get(ConversationMediaItemModel, key)
             if (
@@ -987,7 +987,7 @@ class ConversationMediaService:
 
     async def _expire_page(self, now: datetime) -> None:
         model = ConversationMediaItemModel
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             rows = tuple(
                 await reader.execute(
                     select(
@@ -1065,7 +1065,7 @@ class ConversationMediaService:
         # GC does not keep a full-cache live_paths projection. Look up only
         # exact event/name candidates; the source PK bounds this read.
         async with self._lock:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 live = (
                     tuple(
                         await reader.execute(
@@ -1133,7 +1133,7 @@ class ConversationMediaService:
             )
             from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 hashes = await reader.scalars(
                     select(
                         func.json_extract(

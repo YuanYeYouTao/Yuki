@@ -139,7 +139,7 @@ class EmojiIntentRepository:
         )
 
     async def find(self, turn_id: str, call_id: str) -> EmojiIntent | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.scalar(
                 select(SocialEmojiIntentModel).where(
                     SocialEmojiIntentModel.source_turn_id == social_source_key(turn_id),
@@ -272,7 +272,7 @@ class EmojiIntentRepository:
         return project_intent(intent, facts)
 
     async def pending(self, after: tuple[datetime, str] | None = None) -> tuple[EmojiIntent, ...]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             while True:
                 cursor = (
                     or_(

@@ -8,8 +8,13 @@ import json
 import logging
 import time
 import weakref
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+    contextmanager,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -147,6 +152,10 @@ class ModelExecutor(Protocol):
 
     def pin(self) -> AbstractContextManager[None]: ...
 
+    def foreground_activity(self) -> AbstractAsyncContextManager[None]: ...
+
+    async def wait_for_background_idle(self) -> None: ...
+
     @property
     def traces(self) -> TraceRecorder | None: ...
 
@@ -163,6 +172,7 @@ class TaskModelExecutor:
         traces: TraceRecorder | None = None,
         max_concurrency: int | None = None,
         self_reflection_timeout_seconds: float = 180.0,
+        self_reflection_quiet_seconds: float = 0.0,
     ) -> None:
         if max_concurrency is not None and max_concurrency <= 0:
             raise ValueError("max_concurrency must be positive when configured")
@@ -177,6 +187,9 @@ class TaskModelExecutor:
         self._pool_close_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._self_reflection_timeout_seconds = self_reflection_timeout_seconds
+        self._self_reflection_quiet_seconds = self_reflection_quiet_seconds
+        self._foreground_turns_active = 0
+        self._last_foreground_activity = time.monotonic()
         self._invocations = invocations
         self.traces = traces
         self._invocation_record_failures = 0
@@ -198,6 +211,53 @@ class TaskModelExecutor:
     @property
     def router(self) -> ModelRouter:
         return self._router
+
+    @asynccontextmanager
+    async def foreground_activity(self) -> AsyncIterator[None]:
+        """Keep chat preparation, tools and delivery ahead of best-effort work."""
+        async with self._priority_condition:
+            self._foreground_turns_active += 1
+            self._last_foreground_activity = time.monotonic()
+            self._cancel_best_effort_background()
+            self._priority_condition.notify_all()
+        try:
+            yield
+        finally:
+            async with self._priority_condition:
+                self._foreground_turns_active -= 1
+                self._last_foreground_activity = time.monotonic()
+                self._priority_condition.notify_all()
+
+    async def wait_for_background_idle(self) -> None:
+        """Wait for a quiet chat interval before preparing another SELF batch."""
+        async with self._priority_condition:
+            await self._wait_for_background_idle_locked()
+
+    async def _wait_for_background_idle_locked(self) -> None:
+        while True:
+            remaining = (
+                self._last_foreground_activity
+                + self._self_reflection_quiet_seconds
+                - time.monotonic()
+            )
+            if (
+                remaining <= 0
+                and self._foreground_turns_active == 0
+                and self._ordinary_active == 0
+                and self._foreground_waiting == 0
+                and self._exclusive_active == 0
+                and self._exclusive_waiting == 0
+                and self._maintenance_provider_task is None
+            ):
+                return
+            if remaining > 0:
+                try:
+                    async with asyncio.timeout(remaining):
+                        await self._priority_condition.wait()
+                except TimeoutError:
+                    pass
+            else:
+                await self._priority_condition.wait()
 
     def _runtime(self) -> tuple[ModelRouter, ModelClientPool]:
         pinned = self._pinned_runtime.get()
@@ -657,6 +717,7 @@ class TaskModelExecutor:
                 if not background:
                     self._foreground_waiting += 1
                     waiting = True
+                    self._last_foreground_activity = time.monotonic()
                     self._cancel_best_effort_background()
                 self._priority_condition.notify_all()
                 await self._priority_condition.wait_for(
@@ -679,6 +740,8 @@ class TaskModelExecutor:
             async with self._priority_condition:
                 if active:
                     self._ordinary_active -= 1
+                    if not background:
+                        self._last_foreground_activity = time.monotonic()
                 elif waiting:
                     self._foreground_waiting -= 1
                 self._priority_condition.notify_all()
@@ -728,14 +791,7 @@ class TaskModelExecutor:
     ) -> ChatResponse:
         async with self._background_slot:
             async with self._priority_condition:
-                await self._priority_condition.wait_for(
-                    lambda: (
-                        self._ordinary_active == 0
-                        and self._foreground_waiting == 0
-                        and self._exclusive_active == 0
-                        and self._exclusive_waiting == 0
-                    )
-                )
+                await self._wait_for_background_idle_locked()
                 provider_task = asyncio.create_task(
                     self._complete_provider(provider, request, background=True),
                     name="best-effort-model-provider",

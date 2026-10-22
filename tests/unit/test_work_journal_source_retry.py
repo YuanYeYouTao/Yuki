@@ -46,7 +46,7 @@ async def _session(database, initial=None):
 
 
 async def _change(database, event, nickname="changed unselected metadata"):
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == event.id)
@@ -55,7 +55,7 @@ async def _change(database, event, nickname="changed unselected metadata"):
 
 
 async def _saved(database, control):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return dict(
             (
                 await reader.execute(
@@ -99,7 +99,7 @@ async def test_real_source_mutation_cannot_retry_journal(database, change):
     control, session, selected, _unselected = await _session(database)
     before = await _saved(database, control)
     session.transcript.append(ChatMessage("assistant", "response not yet saved"))
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         if change == "selected":
             await writer.execute(
                 update(ChatEventModel)

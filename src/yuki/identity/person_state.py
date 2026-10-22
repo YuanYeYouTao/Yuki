@@ -8,7 +8,7 @@ as database ownership keys in this module.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -40,6 +40,16 @@ from yuki.persistence.models import MembershipModel, PersonAliasModel
 from yuki.persistence.repository_records import GroupSetting, PrivateUserSetting
 
 
+class ObservationChanged(CanonicalIdentityError):
+    """The original observation needs fresh database preparation, not a replayed effect."""
+
+    def __init__(self) -> None:
+        super().__init__("account_observation_changed")
+
+
+PreparedPersonObservation = Callable[[AsyncSession], Awaitable[Callable[[], None]]]
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalMemberNameProjection:
     user_id: str
@@ -56,7 +66,7 @@ async def prepare_message_account_observations(
     space_binding_id: str | None,
     now: datetime,
     assignment_id: str | None = None,
-) -> tuple[InboundMessage, Callable[[], None]]:
+) -> tuple[InboundMessage, PreparedPersonObservation]:
     """Prepare account/name facts without dirtying the admission read snapshot."""
     from yuki.identity.ownership_interval import assignments_at
 
@@ -97,19 +107,6 @@ async def prepare_message_account_observations(
         await session.get(AccountAssignmentModel, assignment_id)
         if assignment_id
         else stages.get(sender_account.id)
-    )
-    profiles = (
-        {
-            row.account_id: row
-            for row in await session.scalars(
-                select(AccountSpaceProfileModel).where(
-                    AccountSpaceProfileModel.account_id.in_(ids),
-                    AccountSpaceProfileModel.space_binding_id == space_binding_id,
-                )
-            )
-        }
-        if space_binding_id
-        else {}
     )
     moment = message.occurred_at or now
     values: list[tuple[str, str | None, str | None, str, str]] = []
@@ -187,97 +184,165 @@ async def prepare_message_account_observations(
         name = sanitize_display_name(name)
         if name:
             prepared[(account_id, stage_id, scope, name)] = kind
-    observations = {
-        (row.account_id, row.assignment_id, row.space_binding_id, row.name): row
-        for row in (
-            await session.scalars(
-                select(AccountNameObservationModel).from_statement(
-                    text(
-                        "SELECT observed.* FROM json_each(:keys) AS wanted "
-                        "CROSS JOIN account_name_observations AS observed "
-                        "WHERE observed.account_id=json_extract(wanted.value,'$[0]') "
-                        "AND coalesce(observed.assignment_id,'')=json_extract(wanted.value,'$[1]') "
-                        "AND coalesce(observed.space_binding_id,'')="
-                        "json_extract(wanted.value,'$[2]') "
-                        "AND observed.name=json_extract(wanted.value,'$[3]')"
-                    )
-                ),
-                {
-                    "keys": json.dumps(
-                        [
-                            (account_id, stage_id or "", scope or "", name)
-                            for account_id, stage_id, scope, name in prepared
-                        ]
-                    )
-                },
-            )
-            if prepared
-            else ()
-        )
+    source_ids = {native: account.id for native, account in accounts.items()}
+    new_values = {
+        account.external_account_id: {
+            "id": account.id,
+            "platform": account.platform,
+            "external_account_id": account.external_account_id,
+            "display_name": account.display_name,
+            "created_at": account.created_at,
+            "updated_at": account.updated_at,
+        }
+        for account in new_accounts
+    }
+    source_stages = {
+        identity: (stage.id, stage.kind, stage.person_id) if stage is not None else None
+        for identity, stage in stages.items()
     }
 
-    def apply() -> None:
-        session.add_all(new_accounts)
-        for key, kind in prepared.items():
-            row = observations.get(key)
-            if row is None:
-                account_id, stage_id, scope, name = key
-                session.add(
-                    AccountNameObservationModel(
-                        account_id=account_id,
-                        assignment_id=stage_id,
-                        space_binding_id=scope,
-                        name=name,
-                        kind=kind,
-                        first_seen_at=moment,
-                        last_seen_at=moment,
+    observation_keys = json.dumps(
+        [
+            (account_id, stage_id or "", scope or "", name)
+            for account_id, stage_id, scope, name in prepared
+        ]
+    )
+
+    async def bind(active: AsyncSession) -> Callable[[], None]:
+        # Preparation crosses sessions only as original IDs and values. These
+        # bounded lookups resolve the writer's own rows before its first mutation.
+        accounts = {
+            row.external_account_id: row
+            for row in await active.scalars(
+                select(AccountModel).where(
+                    AccountModel.platform == message.platform,
+                    AccountModel.external_account_id.in_(natives),
+                )
+            )
+        }
+        new_accounts = []
+        for native, identity in source_ids.items():
+            existing = accounts.get(native)
+            if native in new_values:
+                if existing is not None:
+                    raise ObservationChanged()
+                account = AccountModel(**new_values[native])
+                accounts[native] = account
+                new_accounts.append(account)
+            elif existing is None or existing.id != identity:
+                raise ObservationChanged()
+        current_stages = await assignments_at(active, ids, message.occurred_at)
+        if {
+            identity: (stage.id, stage.kind, stage.person_id) if stage is not None else None
+            for identity, stage in current_stages.items()
+        } != source_stages:
+            raise ObservationChanged()
+        sender_account = accounts[message.sender.user_id]
+        sender_stage = (
+            await active.get(AccountAssignmentModel, assignment_id)
+            if assignment_id
+            else current_stages.get(sender_account.id)
+        )
+        profiles = (
+            {
+                row.account_id: row
+                for row in await active.scalars(
+                    select(AccountSpaceProfileModel).where(
+                        AccountSpaceProfileModel.account_id.in_(ids),
+                        AccountSpaceProfileModel.space_binding_id == space_binding_id,
                     )
                 )
-            else:
-                row.first_seen_at = min(_utc(row.first_seen_at), _utc(moment))
-                row.last_seen_at = max(_utc(row.last_seen_at), _utc(moment))
-        if sender_stage is None or sender_stage.status != "ended":
-            if (
-                message.sender.nickname_known
-                and message.sender.nickname
-                and (
-                    not sender_account.display_name
-                    or _utc(moment) >= _utc(sender_account.updated_at)
+            }
+            if space_binding_id
+            else {}
+        )
+        observations = {
+            (row.account_id, row.assignment_id, row.space_binding_id, row.name): row
+            for row in (
+                await active.scalars(
+                    select(AccountNameObservationModel).from_statement(
+                        text(
+                            "SELECT observed.* FROM json_each(:keys) AS wanted "
+                            "CROSS JOIN account_name_observations AS observed "
+                            "WHERE observed.account_id=json_extract(wanted.value,'$[0]') "
+                            "AND coalesce(observed.assignment_id,'')="
+                            "json_extract(wanted.value,'$[1]') "
+                            "AND coalesce(observed.space_binding_id,'')="
+                            "json_extract(wanted.value,'$[2]') "
+                            "AND observed.name=json_extract(wanted.value,'$[3]')"
+                        )
+                    ),
+                    {"keys": observation_keys},
                 )
-            ):
-                sender_account.display_name = sanitize_display_name(message.sender.nickname)
-                sender_account.updated_at = moment
-        if space_binding_id:
-            for account in accounts.values():
-                profile = profiles.get(account.id)
-                if profile is None:
-                    session.add(
-                        AccountSpaceProfileModel(
-                            account_id=account.id,
-                            space_binding_id=space_binding_id,
-                            display_name=message.sender.group_card
-                            if (
-                                account.id == sender_account.id
-                                and message.sender.group_card_known
-                                and (sender_stage is None or sender_stage.status != "ended")
-                            )
-                            else "",
+                if prepared
+                else ()
+            )
+        }
+
+        def apply() -> None:
+            active.add_all(new_accounts)
+            for key, kind in prepared.items():
+                row = observations.get(key)
+                if row is None:
+                    account_id, stage_id, scope, name = key
+                    active.add(
+                        AccountNameObservationModel(
+                            account_id=account_id,
+                            assignment_id=stage_id,
+                            space_binding_id=scope,
+                            name=name,
+                            kind=kind,
                             first_seen_at=moment,
                             last_seen_at=moment,
                         )
                     )
                 else:
-                    if (
-                        account.id == sender_account.id
-                        and message.sender.group_card_known
-                        and (sender_stage is None or sender_stage.status != "ended")
-                        and _utc(moment) >= _utc(profile.last_seen_at)
-                    ):
-                        profile.display_name = sanitize_display_name(message.sender.group_card)
-                    profile.first_seen_at = min(_utc(profile.first_seen_at), _utc(moment))
-                    profile.last_seen_at = max(_utc(profile.last_seen_at), _utc(moment))
+                    row.first_seen_at = min(_utc(row.first_seen_at), _utc(moment))
+                    row.last_seen_at = max(_utc(row.last_seen_at), _utc(moment))
+            if sender_stage is None or sender_stage.status != "ended":
+                if (
+                    message.sender.nickname_known
+                    and message.sender.nickname
+                    and (
+                        not sender_account.display_name
+                        or _utc(moment) >= _utc(sender_account.updated_at)
+                    )
+                ):
+                    sender_account.display_name = sanitize_display_name(message.sender.nickname)
+                    sender_account.updated_at = moment
+            if space_binding_id:
+                for account in accounts.values():
+                    profile = profiles.get(account.id)
+                    if profile is None:
+                        active.add(
+                            AccountSpaceProfileModel(
+                                account_id=account.id,
+                                space_binding_id=space_binding_id,
+                                display_name=message.sender.group_card
+                                if (
+                                    account.id == sender_account.id
+                                    and message.sender.group_card_known
+                                    and (sender_stage is None or sender_stage.status != "ended")
+                                )
+                                else "",
+                                first_seen_at=moment,
+                                last_seen_at=moment,
+                            )
+                        )
+                    else:
+                        if (
+                            account.id == sender_account.id
+                            and message.sender.group_card_known
+                            and (sender_stage is None or sender_stage.status != "ended")
+                            and _utc(moment) >= _utc(profile.last_seen_at)
+                        ):
+                            profile.display_name = sanitize_display_name(message.sender.group_card)
+                        profile.first_seen_at = min(_utc(profile.first_seen_at), _utc(moment))
+                        profile.last_seen_at = max(_utc(profile.last_seen_at), _utc(moment))
 
-    return replace(message, mentions=tuple(mentions)), apply
+        return apply
+
+    return replace(message, mentions=tuple(mentions)), bind
 
 
 def _utc(value: datetime) -> datetime:
@@ -297,7 +362,7 @@ async def observe_canonical_person(
     now: datetime,
     space_id: str | None = None,
 ) -> None:
-    apply = await prepare_canonical_person_observation(
+    prepared = await prepare_canonical_person_observation(
         session,
         binding=binding,
         nickname=nickname,
@@ -332,6 +397,7 @@ async def observe_canonical_person(
             )
         )
     }
+    apply = await prepared(session)
     apply()
     if nickname_known and nickname:
         binding.account.display_name = sanitize_display_name(nickname)
@@ -387,17 +453,14 @@ async def prepare_canonical_person_observation(
     group_card_known: bool,
     now: datetime,
     space_id: str | None = None,
-) -> Callable[[], None]:
+) -> PreparedPersonObservation:
     """Read the original owners and names before the event claims its receipt."""
 
     person = await session.get(CanonicalPersonModel, binding.person_id)
     if person is None:
         raise CanonicalIdentityError("unclassified")
-    current = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
-    assert current is not None
     space_binding = None
     space = None
-    membership = None
     if group_id is not None:
         space_binding = await find_space_binding(session, group_id, platform=binding.platform)
         if space_binding is not None:
@@ -406,31 +469,67 @@ async def prepare_canonical_person_observation(
             space = await session.get(CanonicalSpaceModel, space_binding.space_id)
     elif space_id is not None:
         space = await session.get(CanonicalSpaceModel, space_id)
-    if space is not None:
-        membership = await session.get(MembershipModel, (binding.person_id, space.id))
+    original_binding = (binding.id, binding.account_id, binding.person_id)
+    original_space = space.id if space is not None else None
+    original_space_binding = space_binding.id if space_binding is not None else None
 
-    def apply() -> None:
-        if not current.display_name and nickname:
-            current.display_name = nickname[:128]
-            current.updated_at = now
-            current.revision += 1
-        binding.last_seen_at = now
-        if space is None:
-            return
-        apply_canonical_space_observation(space, space_binding, name=group_name, now=now)
-        if membership is None:
-            session.add(
-                MembershipModel(
-                    canonical_person_id=binding.person_id,
-                    canonical_space_id=space.id,
-                    first_seen_at=now,
-                    last_seen_at=now,
-                )
+    async def bind(active: AsyncSession) -> Callable[[], None]:
+        binding = await active.get(IdentityBindingModel, original_binding[0])
+        if (
+            binding is None
+            or (binding.id, binding.account_id, binding.person_id) != original_binding
+        ):
+            raise ObservationChanged()
+        person = await active.get(CanonicalPersonModel, binding.person_id)
+        if person is None:
+            raise ObservationChanged()
+        current = await active.get(CanonicalPersonModel, await current_person_id(active, person.id))
+        if current is None:
+            raise ObservationChanged()
+        space = await active.get(CanonicalSpaceModel, original_space) if original_space else None
+        space_binding = (
+            await active.get(SpaceBindingModel, original_space_binding)
+            if original_space_binding
+            else None
+        )
+        if original_space is not None and (
+            space is None
+            or (
+                original_space_binding is not None
+                and (space_binding is None or space_binding.space_id != original_space)
             )
-        else:
-            membership.last_seen_at = now
+        ):
+            raise ObservationChanged()
+        membership = (
+            await active.get(MembershipModel, (binding.person_id, original_space))
+            if original_space is not None
+            else None
+        )
 
-    return apply
+        def apply() -> None:
+            if not current.display_name and nickname:
+                current.display_name = nickname[:128]
+                current.updated_at = now
+                current.revision += 1
+            binding.last_seen_at = now
+            if space is None:
+                return
+            apply_canonical_space_observation(space, space_binding, name=group_name, now=now)
+            if membership is None:
+                active.add(
+                    MembershipModel(
+                        canonical_person_id=binding.person_id,
+                        canonical_space_id=space.id,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                )
+            else:
+                membership.last_seen_at = now
+
+        return apply
+
+    return bind
 
 
 def apply_canonical_space_observation(

@@ -219,7 +219,7 @@ class DreamWorker:
     async def _finish_cluster_failure(
         self, cluster_id: int, *, status: DreamClusterStatus, error_category: str
     ) -> None:
-        async with self._repository.database.sessions() as reader:
+        async with self._repository.database.read_session() as reader:
             current = await reader.get(MemoryDreamClusterModel, cluster_id)
             if current is None or current.status != DreamClusterStatus.PROCESSING.value:
                 return

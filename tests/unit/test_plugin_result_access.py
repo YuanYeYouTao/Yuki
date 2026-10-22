@@ -161,7 +161,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
                 assert receipt["truncated"] is True
     # Rendering cannot invalidate or repeat the already confirmed transport effect.
     assert [action for action, _ in env.bot.calls].count("send_group_msg") == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         operations = (await session.scalars(select(SocialOperationModel))).all()
         assert len(operations) == 1
         operation = operations[0]

@@ -762,7 +762,7 @@ class AgentToolService:
 
         from yuki.identity.authority import person_is_superuser
 
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             runtime = replace(
                 runtime,
                 actor_is_superuser=await person_is_superuser(session, runtime.actor_person_id),
@@ -991,11 +991,23 @@ class AgentToolService:
             except MemoryRetrievalError as exc:
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
-            except SQLAlchemyError:
+            except SQLAlchemyError as exc:
+                from yuki.persistence.database import (
+                    write_failure_committed,
+                    write_failure_phase,
+                    write_failure_retryable,
+                )
+
+                committed = write_failure_committed(exc)
                 logger.exception("agent_tool_database_failure tool=%s", name)
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(
-                    error="database_failure", detail="数据库操作失败", retryable=True
+                    error="database_failure",
+                    detail="数据库操作失败",
+                    retryable=write_failure_retryable(exc),
+                    uncertain=committed is None,
+                    mutation_committed=committed,
+                    metadata={"database_write_phase": write_failure_phase(exc)},
                 )
             except (TypeError, ValueError) as exc:
                 if name in _OBSERVED_MEMORY_READS:
@@ -1405,7 +1417,7 @@ class AgentToolService:
             return _ToolFailure("permission_denied", "当前执行没有该人物的读取授权")
         from yuki.identity.person_identity import same_person_condition
 
-        async with self._people.database.sessions() as session:
+        async with self._people.database.read_session() as session:
             membership = await session.scalar(
                 select(MembershipModel.canonical_person_id).where(
                     same_person_condition(MembershipModel.canonical_person_id, person_id),
@@ -1853,7 +1865,7 @@ class AgentToolService:
 
         if fact.canonical_subject_person_id is None:
             return False
-        async with self._people.database.sessions() as session:
+        async with self._people.database.read_session() as session:
             return await same_person_id(session, fact.canonical_subject_person_id, person_id)
 
     async def _runtime_canonical_owners(
@@ -2195,6 +2207,8 @@ class AgentToolService:
         detail: str = "",
         retryable: bool = False,
         uncertain: bool = False,
+        mutation_committed: bool | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ToolExecutionResult:
         from yuki.capabilities.media import result_images
 
@@ -2205,7 +2219,12 @@ class AgentToolService:
             public_message=detail or None,
             retryable=retryable,
             uncertain=uncertain,
-            mutation_committed=None if uncertain or error is None else False,
+            mutation_committed=mutation_committed
+            if mutation_committed is not None
+            else None
+            if uncertain or error is None
+            else False,
+            metadata=metadata,
             images=result_images(data) if error is None else (),
         )
 

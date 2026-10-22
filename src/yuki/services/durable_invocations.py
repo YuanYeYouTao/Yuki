@@ -40,7 +40,7 @@ class DurableInvocations:
             from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
             database = self.database
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 conversation = await session.get(
                     CanonicalConversationModel, runtime.canonical_conversation_id
                 )
@@ -154,7 +154,7 @@ class DurableInvocations:
             or prior_source.get("plugin_id") != requested_source.get("plugin_id")
         ):
             raise WorkConflict("plugin_work_authority_changed")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             wait_until = await session.scalar(
                 select(recovery.c.not_before).where(recovery.c.work_id == previous["id"])
             )
@@ -232,7 +232,7 @@ class DurableInvocations:
         ):
             raise WorkConflict("plugin_turn_work_source_mismatch")
         await validate()
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             wait_until = await session.scalar(
                 select(recovery.c.not_before).where(recovery.c.work_id == identity)
             )

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.autonomy_binding import (
@@ -142,7 +142,7 @@ class AutonomyRepository:
             return _binding(row)
 
     async def get_binding(self, conversation_id: str, generation: int) -> AutonomyBinding | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.get(AutonomyBindingModel, (conversation_id, generation))
             return _binding(row) if row is not None else None
 
@@ -244,6 +244,149 @@ class AutonomyRepository:
         if trigger_kind != "source" or thread_key is not None:
             payload.extend((trigger_kind, thread_key))
         payload_hash = hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+        event_checks, memory_checks = [], []
+        expected_events, expected_memories = set(), set()
+        prepared_sources_valid = True
+        if source_guard:
+            from yuki.conversation.initiative_sources import memory_revision, source_revision
+            from yuki.domain.messages import MENTION_SNAPSHOT_FIELDS
+            from yuki.persistence.models import ChatEventModel, MemoryFactModel
+
+            async with self._database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                event_ids = tuple(
+                    int(ref.source_id)
+                    for ref in source_guard
+                    if ref.kind is InitiativeSourceKind.EVENT
+                )
+                memory_ids = tuple(
+                    int(ref.source_id)
+                    for ref in source_guard
+                    if ref.kind is InitiativeSourceKind.MEMORY
+                )
+                events = (
+                    {
+                        str(row.id): row
+                        for row in await reader.scalars(
+                            select(ChatEventModel).where(ChatEventModel.id.in_(event_ids))
+                        )
+                    }
+                    if event_ids
+                    else {}
+                )
+                memories = (
+                    {
+                        str(row.id): row
+                        for row in await reader.scalars(
+                            select(MemoryFactModel).where(MemoryFactModel.id.in_(memory_ids))
+                        )
+                    }
+                    if memory_ids
+                    else {}
+                )
+                parts = func.json_each(ChatEventModel.segments_json).table_valued("value")
+                mention_values = (
+                    select(
+                        func.json_group_array(
+                            func.json_array(
+                                *(
+                                    func.json_extract(parts.c.value, f"$.data.{key}")
+                                    for key in MENTION_SNAPSHOT_FIELDS
+                                )
+                            )
+                        )
+                    )
+                    .select_from(parts)
+                    .where(
+                        func.json_extract(parts.c.value, "$.type") == "mention",
+                        func.json_type(parts.c.value, "$.data") == "object",
+                    )
+                    .correlate(ChatEventModel)
+                    .scalar_subquery()
+                )
+                event_mentions: dict[int, str] = (
+                    dict(
+                        (
+                            await reader.execute(
+                                select(ChatEventModel.id, mention_values).where(
+                                    ChatEventModel.id.in_(event_ids)
+                                )
+                            )
+                        )
+                        .tuples()
+                        .all()
+                    )
+                    if event_ids
+                    else {}
+                )
+                event_fields = (
+                    "content",
+                    "visual_summary",
+                    "audio_transcript",
+                    "author_person_id",
+                    "author_kind",
+                    "suppression_status",
+                    "canonical_conversation_id",
+                    "caused_by_event_id",
+                    "reply_to_event_id",
+                )
+                memory_fields = (
+                    "content",
+                    "status",
+                    "review_state",
+                    "authority",
+                    "scope_type",
+                    "visibility_type",
+                    "canonical_subject_person_id",
+                    "canonical_visibility_person_id",
+                    "canonical_subject_space_id",
+                    "canonical_visibility_space_id",
+                    "valid_from",
+                    "valid_until",
+                )
+                for ref in source_guard:
+                    if ref.kind is InitiativeSourceKind.EVENT:
+                        event_row = events.get(ref.source_id)
+                        if (
+                            event_row is None
+                            or event_row.canonical_conversation_id != binding.conversation_id
+                            or event_row.suppression_status not in {None, "keeper"}
+                            or str(source_revision(event_row)) != ref.revision
+                        ):
+                            prepared_sources_valid = False
+                            continue
+                        mentions = event_mentions[event_row.id]
+                        event_checks.append(
+                            and_(
+                                ChatEventModel.id == event_row.id,
+                                mention_values.is_(mentions),
+                                *(
+                                    getattr(ChatEventModel, field).is_(getattr(event_row, field))
+                                    for field in event_fields
+                                ),
+                            )
+                        )
+                        expected_events.add(event_row.id)
+                    else:
+                        memory_row = memories.get(ref.source_id)
+                        if (
+                            memory_row is None
+                            or memory_row.status != "active"
+                            or memory_row.review_state != "verified"
+                            or memory_revision(memory_row) != ref.revision
+                        ):
+                            prepared_sources_valid = False
+                            continue
+                        memory_checks.append(
+                            and_(
+                                MemoryFactModel.id == memory_row.id,
+                                *(
+                                    getattr(MemoryFactModel, field).is_(getattr(memory_row, field))
+                                    for field in memory_fields
+                                ),
+                            )
+                        )
+                        expected_memories.add(memory_row.id)
         async with self._database.immediate_session() as session:
             prior = await session.scalar(
                 select(InitiativeRunModel).where(
@@ -291,65 +434,22 @@ class AutonomyRepository:
             ):
                 return AdmissionResult("scene_unavailable")
             if source_guard:
-                # Keyed content CAS only; full semantic/lineage hydration already finished
-                # outside this short transaction.
-                from yuki.conversation.initiative_sources import (
-                    memory_revision,
-                    source_revision,
+                if not prepared_sources_valid:
+                    return AdmissionResult("source_changed")
+                current_events = (
+                    set(await session.scalars(select(ChatEventModel.id).where(or_(*event_checks))))
+                    if event_checks
+                    else set()
                 )
-                from yuki.persistence.models import ChatEventModel, MemoryFactModel
-
-                events = {
-                    str(row.id): row
-                    for row in (
-                        await session.scalars(
-                            select(ChatEventModel).where(
-                                ChatEventModel.id.in_(
-                                    [
-                                        int(ref.source_id)
-                                        for ref in source_guard
-                                        if ref.kind is InitiativeSourceKind.EVENT
-                                    ]
-                                )
-                            )
-                        )
-                    ).all()
-                }
-                memories = {
-                    str(row.id): row
-                    for row in (
-                        await session.scalars(
-                            select(MemoryFactModel).where(
-                                MemoryFactModel.id.in_(
-                                    [
-                                        int(ref.source_id)
-                                        for ref in source_guard
-                                        if ref.kind is InitiativeSourceKind.MEMORY
-                                    ]
-                                )
-                            )
-                        )
-                    ).all()
-                }
-                for ref in source_guard:
-                    if ref.kind is InitiativeSourceKind.EVENT:
-                        event_row = events.get(ref.source_id)
-                        if (
-                            event_row is None
-                            or event_row.canonical_conversation_id != binding.conversation_id
-                            or event_row.suppression_status not in {None, "keeper"}
-                            or str(source_revision(event_row)) != ref.revision
-                        ):
-                            return AdmissionResult("source_changed")
-                    else:
-                        memory_row = memories.get(ref.source_id)
-                        if (
-                            memory_row is None
-                            or memory_row.status != "active"
-                            or memory_row.review_state != "verified"
-                            or memory_revision(memory_row) != ref.revision
-                        ):
-                            return AdmissionResult("source_changed")
+                current_memories = (
+                    set(
+                        await session.scalars(select(MemoryFactModel.id).where(or_(*memory_checks)))
+                    )
+                    if memory_checks
+                    else set()
+                )
+                if current_events != expected_events or current_memories != expected_memories:
+                    return AdmissionResult("source_changed")
             if admission_allowed is not None and not await admission_allowed(session):
                 return AdmissionResult("disabled")
             row = InitiativeRunModel(
@@ -386,7 +486,7 @@ class AutonomyRepository:
 
     async def list_active(self) -> tuple[AcceptedInitiative, ...]:
         """Accepted rows are a durable outbox, reconciled against original Work source IDs."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(InitiativeRunModel)
@@ -407,7 +507,7 @@ class AutonomyRepository:
         become terminal meanwhile are revisited on the next sweep, including old
         generations. Mutable feedback timestamps never determine scan position.
         """
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             if ceiling is None:
                 ceiling = (
                     await session.scalar(
@@ -455,7 +555,7 @@ class AutonomyRepository:
         return tuple(result)
 
     async def latest_feedback(self, run_id: str) -> tuple[str, dict[str, Any], datetime] | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(
                 select(InitiativeFeedbackModel)
                 .where(
@@ -468,7 +568,7 @@ class AutonomyRepository:
 
     async def list_current_autonomous_scopes(self) -> tuple[tuple[str, int], ...]:
         """Find current group generations, including those missing a selector row."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.execute(
                     select(CanonicalConversationModel.id, CanonicalConversationModel.generation)
@@ -509,7 +609,7 @@ class AutonomyRepository:
         proposal_id: str,
     ) -> AcceptedInitiative | None:
         """Recover uncertain admission by its original key without proposing or executing again."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(
                 select(InitiativeRunModel).where(
                     InitiativeRunModel.conversation_id == conversation_id,

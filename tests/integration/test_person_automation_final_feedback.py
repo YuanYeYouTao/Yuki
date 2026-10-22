@@ -66,7 +66,7 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
     assert [action for action, _ in case.env.bot.calls if action.startswith("send_")] == [
         "send_private_msg" if delivery == "self_private" else "send_group_msg"
     ]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list((await reader.execute(select(work))).mappings())
         assert len(rows) == int(accept_work)
         if accept_work:
@@ -83,7 +83,7 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
         }
     assert await case.dispatch() == result
     assert len(case.provider.requests) == 2 and len(sent(case.env)) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current = await reader.get(SocialOperationModel, receipt["id"])
         assert {
             column.name: getattr(current, column.name)
@@ -102,7 +102,7 @@ async def test_quiet_internal_completion_needs_no_work_or_transport(
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED and result.llm_calls == 1
     assert not sent(case.env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not list(await reader.execute(select(work)))
 
 
@@ -227,7 +227,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
         if segment["type"] == "text"
     )
     assert delivered.replace("\n", "") == text
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipts = (await reader.scalars(select(SocialOperationModel))).all()
         parent = next(row for row in receipts if row.action == "send_message_sequence")
         parts = [row for row in receipts if row.action == "send_message"]
@@ -250,7 +250,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
             for row in receipts
         }
     assert await case.dispatch() == result
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipts = (await reader.scalars(select(SocialOperationModel))).all()
         assert {
             row.id: {

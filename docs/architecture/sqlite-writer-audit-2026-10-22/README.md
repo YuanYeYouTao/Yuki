@@ -61,14 +61,16 @@ AdminQueries/EventLedger等此前只作结构分类的方法，均在后两轮�
 
 ## 取证材料与复现
 
-- [surface.json](surface.json)：每文件导入、候选调用的行号、SQL头和分类信号，不运行Yuki。
-- [schema.json](schema.json)：所有migration的revision/导入/函数调用/SQL，及217处ORM/Core/SQL定义。
+- `surface.json`：脚本生成每文件导入、候选调用行号、SQL头和分类信号，不运行Yuki。
+- `schema.json`：脚本生成所有migration的revision/导入/函数调用/SQL及Schema定义。
 - [collect_surface.py](collect_surface.py)、[collect_schema.py](collect_schema.py)：只读git与AST；输出到本目录，不连接业务数据库。
 - [validation.json](validation.json)：逐轮路径无缺项、35/73/50编号无重复遗漏、任务依赖无环、97revision无缺父且head0147、文档本地链接及空白检查结果。
 
 两个取证脚本的Ruff检查和格式检查通过，重建材料时未发生Python解析错误。材料校验只检查
 审查交付的一致性；本次没有运行项目测试或性能负载，未提交、推送、合并或部署。
 
-在该worktree下使用Python3.12运行两个collect脚本即可重建静态材料。它们不证明函数真的写库，
+原1298项清单和217处定义认`c2ce7da6`源码基线；脚本随当前checkout生成材料，输出包含其HEAD。
+使用Python3.12运行两个collect脚本即可重建静态材料。生成的大JSON不随PR保存，避免重复整份
+可由Git源码重建的清单。它们不证明函数真的写库，
 不作为运行时门禁，也不强迫未来保持固定文件数量。三轮发现与最终裁决保留在本目录，旧事故
 数字仍见[当日调查](../../operations/sqlite-write-contention-20261022.zh-CN.md)。

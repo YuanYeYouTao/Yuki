@@ -139,11 +139,11 @@ class SandboxTaskRepository:
         return row
 
     async def get(self, request_id: str) -> SandboxTaskRunModel | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return await session.get(SandboxTaskRunModel, request_id)
 
     async def by_run(self, run_id: str) -> SandboxTaskRunModel | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return cast(
                 SandboxTaskRunModel | None,
                 await session.scalar(
@@ -153,7 +153,7 @@ class SandboxTaskRepository:
 
     async def checkpoint(self, request_id: str, progress: dict[str, Any]) -> None:
         payload = canonical_json(progress, limit=16384)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             changed = await session.scalar(
                 update(SandboxTaskRunModel)
                 .where(SandboxTaskRunModel.request_id == request_id)
@@ -164,7 +164,7 @@ class SandboxTaskRepository:
                 raise ValueError("sandbox_task_source_deleted")
 
     async def by_peer(self, peer_id: str) -> SandboxTaskRunModel | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return cast(
                 SandboxTaskRunModel | None,
                 await session.scalar(
@@ -179,7 +179,7 @@ class SandboxTaskRepository:
 
     async def peers(self) -> tuple[str, ...]:
         peer = func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return tuple(await session.scalars(select(peer).where(peer.is_not(None)).distinct()))
 
     async def receive_permission(self, event: dict[str, Any]) -> None:
@@ -189,19 +189,44 @@ class SandboxTaskRepository:
         from yuki.runtime.work_schema_v1 import inputs, work
         from yuki.runtime.work_wait import WorkWaitRepository
 
+        payload = encode_json(
+            {
+                "text": encode_json({"kind": "acp_permission", **event}),
+                "signal": True,
+                "external_run_id": event["run_id"],
+            }
+        )
         async with self.database.immediate_session() as session:
-            task = await session.get(SandboxTaskRunModel, event["request_id"])
+            task = (
+                await session.execute(
+                    select(
+                        SandboxTaskRunModel.run_id,
+                        SandboxTaskRunModel.source_conversation_id,
+                        func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id").label(
+                            "peer_id"
+                        ),
+                        func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").label(
+                            "work_id"
+                        ),
+                        func.json_extract(SandboxTaskRunModel.source_json, "$.generation").label(
+                            "generation"
+                        ),
+                    ).where(SandboxTaskRunModel.request_id == event["request_id"])
+                )
+            ).first()
             if task is None:
                 raise ValueError("unknown_external_agent_request")
-            progress = json.loads(task.progress_json)
-            if progress.get("peer_id") != event["peer_id"]:
+            if task.peer_id != event["peer_id"]:
                 raise ValueError("external_agent_event_peer_mismatch")
             if task.run_id not in (None, event["run_id"]):
                 raise ValueError("external_agent_event_run_mismatch")
-            task.run_id = event["run_id"]
-            source = json.loads(task.source_json)
+            await session.execute(
+                update(SandboxTaskRunModel)
+                .where(SandboxTaskRunModel.request_id == event["request_id"])
+                .values(run_id=event["run_id"])
+            )
             owner = (
-                (await session.execute(select(work).where(work.c.id == source["work_id"])))
+                (await session.execute(select(work).where(work.c.id == task.work_id)))
                 .mappings()
                 .first()
             )
@@ -212,13 +237,8 @@ class SandboxTaskRepository:
                     CanonicalConversationModel.id == task.source_conversation_id
                 )
             )
-            if generation != source["generation"] or generation != owner["generation"]:
+            if generation != task.generation or generation != owner["generation"]:
                 return
-            payload = {
-                "text": encode_json({"kind": "acp_permission", **event}),
-                "signal": True,
-                "external_run_id": event["run_id"],
-            }
             created = await session.scalar(
                 insert(inputs)
                 .values(
@@ -228,7 +248,7 @@ class SandboxTaskRepository:
                     work_id=owner["id"],
                     kind="control",
                     ready=True,
-                    payload_json=encode_json(payload),
+                    payload_json=payload,
                     created=datetime.now(UTC).timestamp(),
                 )
                 .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
@@ -242,7 +262,7 @@ class SandboxTaskRepository:
     async def bind_run(self, request_id: str, run_id: str) -> None:
         """Keep a returned/rediscovered Manager identity without changing the source."""
         run_id = str(UUID(run_id))
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             changed = await session.execute(
                 update(SandboxTaskRunModel)
                 .where(
@@ -257,7 +277,8 @@ class SandboxTaskRepository:
 
     async def reject(self, request_id: str, result: dict[str, Any]) -> None:
         """A definitive admission rejection has no execution or continuation to recover."""
-        async with self.database.sessions() as session, session.begin():
+        payload = canonical_json(result, limit=16384)
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(SandboxTaskRunModel)
                 .where(
@@ -267,7 +288,7 @@ class SandboxTaskRepository:
                 )
                 .values(
                     status="completed",
-                    completion_json=canonical_json(result, limit=16384),
+                    completion_json=payload,
                     updated_at=datetime.now(UTC),
                 )
             )
@@ -290,7 +311,7 @@ class SandboxTaskRepository:
             raise ValueError("invalid_task_completion")
         payload = canonical_json(result, limit=240000)
         request_id = event["request_id"]
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             changed = await session.execute(
                 update(SandboxTaskRunModel)
                 .where(

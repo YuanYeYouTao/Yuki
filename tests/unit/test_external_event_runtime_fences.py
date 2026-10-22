@@ -93,7 +93,7 @@ async def _seed_job(
             agent_intent="react briefly",
         ),
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, receipt.source_event_id)
         assert event is not None and event.canonical_conversation_id
         conversation_id = event.canonical_conversation_id
@@ -116,7 +116,7 @@ async def test_reclaimed_turn_attempt_rejects_old_worker_mutations(database: Dat
         attempt=first.attempts,
         error_category="stale-worker",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(PluginBackgroundTurnJobModel, first.id)
         assert row is not None
         assert row.status == "processing"
@@ -135,7 +135,7 @@ async def test_reset_source_is_terminal_before_claim(database: Database) -> None
         conversation.revision += 1
         conversation.updated_at = _NOW
     assert await repository.claim_turn() is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(select(PluginBackgroundTurnJobModel))
         assert row is not None
         assert row.status == "cancelled"
@@ -156,7 +156,7 @@ async def test_later_human_message_is_terminal_before_claim(database: Database) 
         content="human message",
     )
     assert await repository.claim_turn() is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(select(PluginBackgroundTurnJobModel))
         assert row is not None
         assert row.status == "cancelled"
@@ -218,7 +218,7 @@ async def test_finish_rechecks_generation_without_enqueuing_agent_reply(database
         tool_calls_used=0,
         model_requests=1,
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored = await session.get(PluginBackgroundTurnJobModel, job.id)
         assert stored is not None
         assert stored.status == "cancelled"

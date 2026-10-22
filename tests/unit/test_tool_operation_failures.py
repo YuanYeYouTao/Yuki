@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -19,6 +21,62 @@ from yuki.memory.service import MemoryFactService
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.sandbox.client import SandboxClient
 from yuki.services.agent_tools import AgentToolService, ToolRuntime
+
+
+@pytest.mark.parametrize(
+    ("notes", "committed", "retryable"),
+    [
+        (("database_write_phase:begin", "database_rollback:confirmed"), False, True),
+        (("database_write_phase:flush", "database_rollback:confirmed"), False, True),
+        (("database_write_phase:commit", "database_rollback:confirmed"), None, False),
+        (("database_write_phase:commit", "database_commit:confirmed"), True, False),
+        ((), None, False),
+    ],
+)
+async def test_database_tool_failure_keeps_actual_commit_and_original_phase(
+    database, notes, committed, retryable
+):
+    native = sqlite3.OperationalError("database is locked")
+    native.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    failure = OperationalError("original write", {}, native)
+    for note in notes:
+        failure.add_note(note)
+    tools = AgentToolService(
+        settings=make_settings(database.url),
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+    )
+    tools.sandbox_client = SimpleNamespace(execute=AsyncMock(side_effect=failure))
+    tools.workspace_service = tools.sandbox_client
+    runtime = ToolRuntime(
+        inbound=InboundMessage(
+            "original-trigger",
+            "message:private:normal",
+            ScopeType.PRIVATE,
+            SenderIdentity("1001"),
+            "write a file",
+            bot_user_id="8000",
+        ),
+        execution_id="original-execution",
+        conversation_id="original-conversation",
+        target_presence_id="original-presence",
+    )
+    token = current_invocation.set(ToolInvocationContext(runtime, "original-call"))
+    try:
+        result = await tools.execute("terminal_exec", "{}", runtime)
+    finally:
+        current_invocation.reset(token)
+    assert not result.ok and result.error_code == "database_failure"
+    assert result.mutation_committed is committed
+    assert result.uncertain is (committed is None)
+    assert result.retryable is retryable
+    expected_phase = next((note.split(":", 1)[1] for note in notes if "write_phase:" in note), None)
+    assert result.metadata == {"database_write_phase": expected_phase}
+    assert (
+        resolve_mutation_commit(result, SimpleNamespace(effect=CapabilityEffect.WRITE_STATE))
+        is committed
+    )
+    tools.sandbox_client.execute.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

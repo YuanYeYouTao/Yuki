@@ -275,7 +275,7 @@ async def test_main_work_delegates_to_real_manager_and_delivers_original_result(
     try:
         assert (await app.processor.handle(message, sender)).reason == "chat"
         repository = WorkRepository(database)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             waiting = dict((await reader.execute(select(work))).mappings().one())
             task = (await reader.scalars(select(SandboxTaskRunModel))).one()
         assert phase == 3 and waiting["state"] == "waiting_external"
@@ -320,7 +320,7 @@ async def test_main_work_delegates_to_real_manager_and_delivers_original_result(
         assert final["id"] == waiting["id"] and final["source_key"] == waiting["source_key"]
         assert not manager.completions.pending()["events"]
         assert manager.acp.view(peer_id)["status"] == "running"
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             saved = (await reader.scalars(select(SandboxTaskRunModel))).one()
             assert saved.run_id == original_run and saved.status == "completed"
             assert json.loads(saved.completion_json) == native["completion"]

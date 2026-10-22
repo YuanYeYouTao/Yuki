@@ -94,7 +94,7 @@ async def test_work_card_keeps_original_space_binding_after_telegram_group_migra
 
     after = await works.get(principal, accepted["id"])
     assert after == before
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         entry = await reader.get(SpaceBindingModel, original_id)
         assert entry.external_space_id == "-10042"
         current = await reader.get(CanonicalConversationModel, original.canonical_conversation_id)

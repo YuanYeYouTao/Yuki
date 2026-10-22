@@ -62,7 +62,7 @@ class GroupRecoveryService:
         if context.principal.person_id is None:
             raise PermissionError("invalid_control_principal")
         payload_hash = self._payload_hash(context, space_id, presence_id, audit, event_type)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             presence = await session.get(PresenceModel, presence_id)
             if (
                 presence is None

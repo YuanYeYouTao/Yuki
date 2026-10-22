@@ -110,7 +110,7 @@ async def test_archive_rechecks_new_active_descendant_after_discovery(
         await repo.transition(parent_lease, identity, current["revision"], "completed")
         original_child = await repo.get(identity)
         original_descendant = await repo.get(descendant)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             original_budget = dict(
                 (await reader.execute(select(budgets).where(budgets.c.root_id == root["id"])))
                 .mappings()
@@ -129,7 +129,7 @@ async def test_archive_rechecks_new_active_descendant_after_discovery(
     after = await workers.related(root["id"], identity)
     assert after["archived_at"] is None and after["result_json"] == original_receipt["result_json"]
     assert (await workers.related(identity, descendant))["archived_at"] is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             dict(
                 (await reader.execute(select(budgets).where(budgets.c.root_id == root["id"])))
@@ -147,7 +147,7 @@ async def test_large_note_completion_notifies_and_result_reads_original_checkpoi
     repo, workers, parent, lease, identity, checkpoint = await _completed_child(
         database, tmp_path, result=text
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = await reader.scalar(
             select(children.c.result_json).where(children.c.work_id == identity)
         )
@@ -364,7 +364,7 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
             await old_control.settle(pending_inputs=False)
             await repo.release(old_lease)
         await repo.release(parent_lease)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             event_id = await reader.scalar(select(ChatEventModel.id))
         async with database.immediate_session() as writer:
             generation = await bump_canonical_generation(
@@ -415,7 +415,7 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
         )
         active_lease = await workers.acquire(active)
         assert active_lease is not None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_budget = dict(
             (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
             .mappings()
@@ -441,7 +441,7 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
     assert signal["child_id"] == identity and signal["state"] == "completed"
     assert signal["text"] == receipt["text"]
     assert await repo.get(identity) == original
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             dict(
                 (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
@@ -505,7 +505,7 @@ async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_b
     assert parent.current is None and reopened["state"] == "completed"
     assert reopened["model_requests"] == 3 and reopened["tool_calls"] == 4
     assert (await repo.get(other["id"]))["state"] == "suspended"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         budget = (
             (await session.execute(select(budgets).where(budgets.c.root_id == root["id"])))
             .mappings()
@@ -558,7 +558,7 @@ async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_
     assert await WorkQueries(repo).get(parent_lease, control.source, identity) is not None
     before = await repo.get(identity)
     root_before = await repo.get(parent["id"])
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_inputs = list((await reader.execute(select(inputs))).mappings())
     with pytest.raises(ValueError, match="subagent_not_owned"):
         await execute_subagent(
@@ -569,7 +569,7 @@ async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_
         )
     assert await repo.get(identity) == before
     assert await repo.get(parent["id"]) == root_before
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert list((await reader.execute(select(inputs))).mappings()) == original_inputs
     control.source = {**source, "actor_user_id": "new-account-for-the-same-person"}
     resumed = await execute_subagent(
@@ -655,7 +655,7 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
         )
     )
     assert [item["work_id"] for item in directory["works"]] == [leaf_id]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await ancestor_work_ids(session, leaf_id) == [branch_id, root["id"]]
         assert set(await descendant_work_ids(session, root["id"])) == {branch_id, leaf_id, sibling}
     leaf_lease = await workers.acquire(leaf_id)
@@ -743,7 +743,7 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
     details = await WorkQueries(repo).get(leaf_lease, {}, leaf_id)
     assert details["parent_work_id"] == branch_id
     assert details["budget_root_id"] == root["id"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         shared_budget = (
             (await session.execute(select(budgets).where(budgets.c.root_id == root["id"])))
             .mappings()
@@ -797,7 +797,7 @@ async def test_derived_call_retrieves_terminal_child_without_new_identity_or_bud
         {"action": "complete", "call_key": "finish", "result": "original result"},
     )
     before = await repo.transition(lease, child["id"], child["revision"], "completed")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         budget_before = (
             (await session.execute(select(budgets).where(budgets.c.root_id == root["id"])))
             .mappings()
@@ -807,7 +807,7 @@ async def test_derived_call_retrieves_terminal_child_without_new_identity_or_bud
     assert replay == before
     assert replay["state"] == "completed"
     assert json.loads(replay["checkpoint_json"])["sync_result"] == "original result"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             (await session.execute(select(budgets).where(budgets.c.root_id == root["id"])))
             .mappings()
@@ -846,7 +846,7 @@ async def test_privacy_purge_removes_one_actual_tree_and_preserves_other_scope(d
     await repo.prepare_effect(other_lease, other_root["id"], "other-receipt", "tool")
     await repo.record_effect("other-receipt", "unknown", {"outcome": {"uncertain": True}})
     tables = (work, children, budgets, scope, effects)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         before = {
             table.name: list((await session.execute(select(table))).mappings()) for table in tables
         }
@@ -856,7 +856,7 @@ async def test_privacy_purge_removes_one_actual_tree_and_preserves_other_scope(d
     assert not await repo.valid(lease)
     for identity in removed_ids:
         assert await repo.get(identity) is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         after = {
             table.name: list((await session.execute(select(table))).mappings()) for table in tables
         }
@@ -1088,7 +1088,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
                 updated=time.time() - 7 * 86400,
             )
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         jobs_before = list(
             (await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings()
         )
@@ -1123,7 +1123,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         )
     original_caller = await repo.get(caller["id"])
     original_plain = await repo.get(plain["id"])
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_legacy = list(
             (await reader.execute(select(work).where(work.c.id.in_(legacy.values())))).mappings()
         )
@@ -1143,7 +1143,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         json.loads(original_caller["checkpoint_json"])["sync_result"]
         == "original synchronous result"
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             list((await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings())
             == jobs_before
@@ -1162,7 +1162,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         assert await repo.get(identity) == original
     from yuki.runtime.work_tree import ancestor_work_ids, budget_root_id
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await ancestor_work_ids(reader, leaf_id) == [branch["id"], root["id"]]
         assert await budget_root_id(reader, leaf_id) == root["id"]
         assert await budget_root_id(reader, archived_child) == archived_root["id"]
@@ -1381,7 +1381,7 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
         load_tools=AsyncMock(),
         sandbox_client=client,
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         before = list((await session.execute(select(SandboxTaskRunModel.__table__))).mappings())
     await executor.cancel_commands()
     await executor.cancel_commands()
@@ -1392,7 +1392,7 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
         ("terminal_control", run_id, f"worker-cancel:{run_id}")
         for run_id in (*unknown_runs.values(), *runs.values())
     }
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         after = list((await session.execute(select(SandboxTaskRunModel.__table__))).mappings())
     assert after == before
     result = {"run_id": runs[failed_worker], "status": "succeeded", "pending": False}
@@ -1432,7 +1432,7 @@ async def test_child_cancellation_retires_accepted_control_and_retains_real_rece
         identity,
         {"action": "complete", "call_key": "old-complete", "result": "not committed"},
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         before = [
             dict(row)
             for row in (
@@ -1459,7 +1459,7 @@ async def test_child_cancellation_retires_accepted_control_and_retains_real_rece
     assert "accepted_control" not in checkpoint
     assert checkpoint["sync_result"] == "verified before cancellation"
     assert (cancelled["model_requests"], cancelled["tool_calls"]) == (2, 3)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         after = [
             dict(row)
             for row in (

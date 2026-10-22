@@ -97,7 +97,7 @@ class ClientSessions:
             return {**result, "replay": False}
 
     async def load(self, principal: ClientPrincipal, conversation_id: str) -> dict[str, Any]:
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             current = await self.identity.require_device(
                 session,
                 principal.device_id,

@@ -126,7 +126,7 @@ def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path
                 "runtime_work_effects",
                 "runtime_automation_cursors",
             )
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 # Later migrations may append source facts; preserve every
                 # original field without treating those additions as data loss.
                 original_columns = {
@@ -138,7 +138,7 @@ def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path
                 }
 
             async def snapshot():
-                async with database.sessions() as reader:
+                async with database.read_session() as reader:
                     return {
                         name: [
                             tuple(row)
@@ -191,7 +191,7 @@ def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path
             retained = await snapshot()
             await asyncio.to_thread(command.upgrade, config, "head")
             assert await snapshot() == retained
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
                 rows = (
                     await reader.execute(

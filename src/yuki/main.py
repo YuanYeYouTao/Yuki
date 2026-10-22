@@ -62,7 +62,7 @@ def bootstrap(settings: Settings | None = None) -> None:
 
         container = get_container()
         presence_id = None
-        async with container.database.sessions() as session:
+        async with container.database.read_session() as session:
             presence = await session.scalar(
                 select(PresenceModel).where(
                     PresenceModel.platform == IDENTITY_PLATFORM,

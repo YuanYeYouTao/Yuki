@@ -72,7 +72,7 @@ async def test_derived_text_never_scans_history_in_writer(database, late_audio):
         event.remove(engine, "commit", ended)
         event.remove(engine, "rollback", ended)
     assert history_reads == 0
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         source = await session.get(ChatEventModel, result.event.id)
         if late_audio:
             checkpoint = await session.get(PromptProjectionModel, result.scope.id)
@@ -127,7 +127,7 @@ async def test_late_audio_rechecks_original_source_before_commit(database, chang
     assert await uow.set_audio_transcript(result.event.id, transcript, generation=1) is (
         change != "generation"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(
             CanonicalConversationModel, result.event.canonical_conversation_id
         )

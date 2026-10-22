@@ -104,7 +104,7 @@ def test_startup_still_rejects_changed_version_and_metadata(schema_path, change,
 async def test_runtime_connections_still_enforce_foreign_keys(schema_path):
     database = Database(f"sqlite+aiosqlite:///{schema_path}")
     try:
-        async with database.sessions() as session:
+        async with database.immediate_session() as session:
             assert await session.scalar(text("PRAGMA foreign_keys")) == 1
             with pytest.raises(IntegrityError, match="FOREIGN KEY constraint failed"):
                 await session.execute(

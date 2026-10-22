@@ -70,7 +70,7 @@ async def app_env(database, admin, tmp_path):
         )
     )
     router = PresenceRouter(database, registry)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await find_presence(session, "yuki-app", platform="app") is not None
     harness.processor._canonical_ingress = CanonicalIngressResolver(database, registry, router)
     harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
@@ -145,7 +145,7 @@ async def test_app_message_and_local_reply_stay_in_app_conversation(app_env, dat
     result = response.json()["data"]
     assert not result["replay"]
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(
             await session.scalars(
                 select(ChatEventModel)
@@ -202,7 +202,7 @@ async def test_concurrent_devices_reuse_one_message_and_one_notification(
     )
     assert replay.status_code == 200 and replay.json()["data"]["replay"]
     env.gateway.receive.assert_not_called()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(func.count(ChatEventModel.id)).where(ChatEventModel.direction == "inbound")
@@ -354,7 +354,7 @@ async def test_local_commit_ack_loss_reads_original_social_receipt(app_env, data
     )
     assert result.status_code == 200
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipts = list(await session.scalars(select(SocialOperationModel)))
         assert len(receipts) == 1 and receipts[0].status == "succeeded"
         assert receipts[0].platform_reference is None and receipts[0].event_id is not None
@@ -381,7 +381,7 @@ async def test_app_source_recovers_original_platform_and_memory_owner(app_env, d
         headers=bearer(device["token"]),
     )
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, response.json()["data"]["event_id"])
         job = await session.scalar(
             select(MemoryJobModel).where(MemoryJobModel.event_id == event.id)
@@ -415,7 +415,7 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) == "taken"
     service, target, _code = await code_for(database, "1002")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original_binding = await find_identity_binding(session, "10001")
     call = env.bot.call_api
 
@@ -436,7 +436,7 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
         env.context,
     )
     assert result["status"] == "succeeded", result
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, result["event_id"])
         conversation = await session.get(
             CanonicalConversationModel, event.canonical_conversation_id
@@ -488,7 +488,7 @@ async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_gran
     person, code = await person_and_code(env.client)
     device = await pair(env.client, code)
     principal = await env.identity.authenticate(device["token"])
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         superuser = await find_identity_binding(session, "9000")
         account, permission = await resolve_execution_identity(
             session,
@@ -497,7 +497,7 @@ async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_gran
         )
     assert account == principal.external_account_id and permission is PermissionLevel.USER
     await env.identity.transfer_for_operator(superuser.id, person, str(uuid4()), str(uuid4()))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         _, permission = await resolve_execution_identity(
             session,
             owner_id=person,
@@ -509,7 +509,7 @@ async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_gran
     async with database.immediate_session() as writer:
         owner = await writer.get(CanonicalPersonModel, person)
         owner.is_superuser = True
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         account, permission = await resolve_execution_identity(
             session,
             owner_id=person,
@@ -563,7 +563,7 @@ async def test_app_text_does_not_execute_platform_control_commands(app_env, data
     )
     assert response.status_code == 200
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(
             CanonicalConversationModel, response.json()["data"]["conversation_id"]
         )

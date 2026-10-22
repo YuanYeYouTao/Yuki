@@ -23,7 +23,7 @@ from yuki.persistence.models import RuntimeConfigOverrideModel
 
 async def _owners(database):
     # Fixture transport bindings are resolved once at this test boundary.
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         people = {}
         for external in ("10001", "10002"):
             people[external] = await reader.scalar(
@@ -189,7 +189,7 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
         baseline.setattr(runtime._repository, "read_relevant_snapshot", previous)
         expected = await runtime.snapshot(**kwargs)
     sessions, sql, resolved = [], [], []
-    original_sessions = database.sessions
+    original_sessions = database.read_session
 
     def factory(*args, **kw):
         sessions.append(1)
@@ -206,7 +206,7 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
             return await _original(*args, **kw)
 
         monkeypatch.setattr(module, name, wrapped)
-    monkeypatch.setattr(database, "sessions", factory)
+    monkeypatch.setattr(database, "read_session", factory)
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
         actual = await runtime.snapshot(**kwargs)

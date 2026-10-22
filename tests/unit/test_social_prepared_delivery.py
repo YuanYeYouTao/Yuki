@@ -25,7 +25,7 @@ async def test_known_group_route_sends_without_remote_membership_preflight(
     database, tmp_path, current_entry
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
     context = replace(
         env.context,
@@ -182,7 +182,7 @@ async def test_cancel_after_ack_and_receipt_commit_replays_without_another_send(
     assert result["status"] == "succeeded"
     assert result["delivered_text"] == args["text"]
     assert [action for action, _ in env.bot.calls] == ["send_group_msg"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.get(SocialOperationModel, result["operation_id"])
         outgoing = list(
             await reader.scalars(

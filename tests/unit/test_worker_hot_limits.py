@@ -58,7 +58,7 @@ async def test_child_obeys_hot_limit_without_resetting_original_work(
     case.provider._responder = respond
     case.clock.advance(2)
     await case.dispatch()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         child = next(
             dict(row)
             for row in (await reader.execute(select(work))).mappings()

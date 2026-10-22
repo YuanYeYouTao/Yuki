@@ -34,7 +34,7 @@ async def test_native_telegram_and_qq_same_number_write_manual_and_automatic_fac
     env.model._responder = lambda _: "收到"
     await env.gateway.receive(telegram_update(text=text))
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         telegram_binding = await reader.scalar(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == "telegram",
@@ -102,7 +102,7 @@ async def test_native_telegram_and_qq_same_number_write_manual_and_automatic_fac
             assert [item.event_id for item in await facts.list_evidence(fact.id)] == [source.id]
             all_ids.add(fact.id)
     assert len(all_ids) == 4
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list(await reader.scalars(select(MemoryJobModel)))
         assert {row.canonical_person_id for row in rows} == {qq_person, telegram_person}
         assert all(row.status == "done" for row in rows)

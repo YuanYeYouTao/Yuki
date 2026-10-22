@@ -142,7 +142,7 @@ class SQLiteMemoryFTSIndex:
         fields = (mf.id, mf.memory_key, mf.category, mf.normalized_content)
         fts = table("memory_facts_fts", column("rowid"))
         try:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 rows: list[Any] = []
                 if query.fts_expression:
                     statement = (
@@ -217,7 +217,7 @@ class SQLiteMemoryFTSIndex:
         if not query.fts_expression and not (query.like_terms and short_query_fallback_enabled):
             return ()
         try:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 try:
                     scope_sql, params = await self._scope_filter(session, target)
                 except MemoryPartitionResolutionError:
@@ -323,7 +323,7 @@ class SQLiteMemoryFTSIndex:
 
     async def health(self) -> MemoryIndexHealth:
         try:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 row = (
                     (
                         await session.execute(
@@ -357,7 +357,7 @@ class SQLiteMemoryFTSIndex:
 
     async def rebuild(self) -> MemoryIndexHealth:
         try:
-            async with self._database.sessions() as session, session.begin():
+            async with self._database.immediate_session() as session:
                 await session.execute(
                     text("INSERT INTO memory_facts_fts(memory_facts_fts) VALUES ('rebuild')")
                 )

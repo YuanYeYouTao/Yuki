@@ -80,7 +80,7 @@ async def spend_original_request(database, reflection, run_id):
 
 
 async def results(database, run_id):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return tuple(
             (row.result_kind, row.result_index, row.fact_id)
             for row in await reader.scalars(
@@ -126,7 +126,7 @@ async def test_new_checkpoint_resumes_original_items_without_model_or_budget_rep
     assert [row[:2] for row in final] == [("episode", 1), ("proposal", 1), ("proposal", 2)]
     assert len(provider.requests) == 1
     assert (await control.snapshot())["calls_today"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count(MemoryFactModel.id))) == 3
         assert await reader.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 3
     await repository.complete(batch, proposals=3, committed=3)
@@ -212,7 +212,7 @@ async def test_isolated_legacy_candidate_accept_retains_original_output_and_rece
     original = await repository.load_checkpoint(batch.run_id)
     raw = json.loads(original)
     now = datetime.now(UTC)
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         candidate = MemoryClaimCandidateModel(
             fingerprint="a" * 64,
             candidate_type="self",
@@ -269,7 +269,7 @@ async def test_isolated_legacy_candidate_accept_retains_original_output_and_rece
     saved = json.dumps(raw, ensure_ascii=False)
     digest = hashlib.sha256(saved.encode()).hexdigest()
     await repository.save_checkpoint(batch.run_id, saved, expected=original)
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         row = await writer.get(MemorySelfReflectionRunModel, batch.run_id)
         row.status, row.retry_state, row.attempt_count = "failed", "isolated", 3
         row.proposal_count, row.committed_count = 3, 1
@@ -282,7 +282,7 @@ async def test_isolated_legacy_candidate_accept_retains_original_output_and_rece
     assert await results(database, batch.run_id) == existing_results
     assert len(provider.requests) == 1
     assert (await control.snapshot())["calls_today"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.get(MemorySelfReflectionRunModel, batch.run_id)
         assert (row.status, row.retry_state, row.attempt_count) == ("failed", "isolated", 3)
         assert (row.proposal_count, row.committed_count) == (3, 1)

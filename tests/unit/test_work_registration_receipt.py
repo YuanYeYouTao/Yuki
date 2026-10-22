@@ -87,11 +87,11 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
             direction="inbound",
             content="a real later request",
         )
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             source["trigger_event_id"] = await reader.scalar(
                 select(ChatEventModel.id).where(ChatEventModel.platform_message_id == "later-input")
             )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = set(await reader.scalars(select(work.c.id)))
     result, recovered = await _restore(probe, source=source)
     receipt = json.loads(await recovered.session.journal.effect_result(original_key))
@@ -100,7 +100,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     assert recovered.handoff_work_id is None
     assert probe.observed == ["send"]
     assert len(probe.provider.requests) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert set(await reader.scalars(select(work.c.id))) == before
         fact = (
             (await reader.execute(select(effects).where(effects.c.effect_key == original_key)))
@@ -162,7 +162,7 @@ async def test_registration_and_original_receipt_roll_back_as_one_writer(
         await run(probe)
     assert saw_admitted_work is True and probe.control.current is None
     assert await probe.repository.by_source("atomic-registration") is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert list(await reader.scalars(select(effects.c.effect_key))) == []
         assert list(await reader.scalars(select(budgets.c.root_id))) == []
 
@@ -206,7 +206,7 @@ async def test_registration_commit_retains_original_paid_model_usage_before_next
         await run(probe)
     row = await probe.repository.by_source("paid-registration")
     assert row is not None and row["model_requests"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(budgets.c.models).where(budgets.c.root_id == row["id"])) == 1
         )

@@ -28,7 +28,7 @@ from yuki.tool_results.recorder import ToolReceiptRepository
 
 async def test_tool_evidence_retains_one_original_receipt_and_one_write_commit(database, tmp_path):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
     statements, commits = [], []
 
@@ -59,7 +59,7 @@ async def test_tool_evidence_retains_one_original_receipt_and_one_write_commit(d
     writes = [sql for sql in statements if sql.lstrip().upper().startswith("INSERT")]
     assert len(writes) == len(commits) == 1
     assert "memory_tool_receipts" in writes[0]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.scalar(select(MemoryToolReceiptModel))
         assert receipt.trigger_event_id == source.id
         assert receipt.canonical_space_id == env.space
@@ -138,7 +138,7 @@ async def test_child_outcome_survives_success_and_host_closing_error_once(
         else:
             with pytest.raises(type(failure)):
                 await driver._dispatch_one(_State("parent", 1), child)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list(
             await reader.scalars(
                 select(ExecutionTraceEntryModel)

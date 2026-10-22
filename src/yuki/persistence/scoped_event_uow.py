@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal
+from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +56,35 @@ from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.persistence.repository_helpers import _event_record
 from yuki.persistence.repository_records import EventRecord
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedEventPreparation:
+    terms: tuple[str, ...]
+    canonical_event_id: str
+    segments_json: str
+    external_payload_json: str | None
+
+
+async def prepare_append(
+    content: str,
+    *,
+    segments: tuple[dict[str, Any], ...] = (),
+    external_payload: dict[str, Any] | None = None,
+    prepared_terms: tuple[str, ...] | None = None,
+) -> ScopedEventPreparation:
+    return ScopedEventPreparation(
+        canonical_event_id=str(uuid4()),
+        terms=prepared_terms
+        if prepared_terms is not None
+        else await asyncio.to_thread(prepare_terms, content),
+        segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
+        external_payload_json=json.dumps(
+            external_payload, ensure_ascii=False, separators=(",", ":")
+        )
+        if external_payload is not None
+        else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +141,7 @@ class ScopedEventLedgerUnitOfWork:
         occurred_at: datetime,
         session: AsyncSession | None = None,
         prepared_terms: tuple[str, ...] | None = None,
+        prepared: ScopedEventPreparation | None = None,
     ) -> ScopedAppendResult:
         """Persist one plugin/automation event through the scoped ledger boundary."""
 
@@ -131,6 +162,7 @@ class ScopedEventLedgerUnitOfWork:
             external_target_id=external_target_id,
             session=session,
             prepared_terms=prepared_terms,
+            prepared=prepared,
         )
 
     async def append(
@@ -163,12 +195,20 @@ class ScopedEventLedgerUnitOfWork:
         space_binding_id: str | None = None,
         source_event_id: int | None = None,
         prepared_terms: tuple[str, ...] | None = None,
+        prepared: ScopedEventPreparation | None = None,
     ) -> ScopedAppendResult:
         """Record confirmed outbound or external facts using their original entry."""
         timestamp = occurred_at
         observed_at = datetime.now(UTC)
-        if prepared_terms is None:
-            prepared_terms = await asyncio.to_thread(prepare_terms, content)
+        if prepared is None:
+            if session is not None:
+                raise ValueError("scoped_event_preparation_required")
+            prepared = await prepare_append(
+                content,
+                segments=segments,
+                external_payload=external_payload,
+                prepared_terms=prepared_terms,
+            )
         append = partial(
             self._append_canonical,
             scope=scope,
@@ -197,12 +237,37 @@ class ScopedEventLedgerUnitOfWork:
             identity_binding_id=identity_binding_id,
             space_binding_id=space_binding_id,
             source_event_id=source_event_id,
-            prepared_terms=prepared_terms,
+            prepared_terms=prepared.terms,
+            prepared_segments_json=prepared.segments_json,
+            prepared_external_json=prepared.external_payload_json,
+            canonical_event_id=prepared.canonical_event_id,
         )
         if session is not None:
-            return await append(session)
-        async with self._database.immediate_session() as session:
-            return await append(session)
+            result = await append(session)
+            assert result is not None
+            return result
+        if scope.conversation_id is not None and scope.presence_id is not None:
+            async with self._database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                existing, _ = await self._find_existing_live(
+                    reader,
+                    scope=scope,
+                    presence_id=scope.presence_id,
+                    platform_message_id=platform_message_id,
+                    event_type=(external_event_type or "message")[:64],
+                    source_plugin_id=source_plugin_id,
+                    external_event_key=external_event_key,
+                    external_target_id=external_target_id,
+                    event_kind=event_kind,
+                )
+                if existing is not None:
+                    result = await append(reader, read_only=True)
+                    assert result is not None
+                    return result
+        async with self._database.immediate_session() as writer:
+            result = await append(writer)
+            assert result is not None
+            return result
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:
         normalized = summary.strip()[:6000]
@@ -222,7 +287,7 @@ class ScopedEventLedgerUnitOfWork:
     ) -> None:
         """Apply an authenticated edit to its original event, never a new turn."""
         while True:
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 original = await reader.get(ChatEventModel, event_id)
                 if (
                     original is None
@@ -386,7 +451,7 @@ class ScopedEventLedgerUnitOfWork:
         expected_source: EventRecord | None = None,
     ) -> _DerivedTextUpdate | bool:
         # Keep the conditional history scan and all rendering outside the writer.
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             row = await reader.get(ChatEventModel, event_id)
             if row is None:
@@ -755,9 +820,11 @@ class ScopedEventLedgerUnitOfWork:
         space_binding_id: str | None = None,
         source_event_id: int | None = None,
         prepared_terms: tuple[str, ...],
-    ) -> ScopedAppendResult:
-        from uuid import uuid4
-
+        prepared_segments_json: str,
+        prepared_external_json: str | None,
+        canonical_event_id: str,
+        read_only: bool = False,
+    ) -> ScopedAppendResult | None:
         from sqlalchemy.exc import IntegrityError
 
         presence = await session.get(PresenceModel, scope.presence_id)
@@ -910,7 +977,8 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 caused_by_event_id=caused_by_event_id,
             )
-        canonical_event_id = str(uuid4())
+        if read_only:
+            return None
         plugin_external = (
             event_kind == "external_event"
             or direction == "external"
@@ -983,15 +1051,11 @@ class ScopedEventLedgerUnitOfWork:
             external_source=external_source,
             external_event_key=external_event_key,
             external_event_type=external_event_type,
-            external_payload_json=(
-                json.dumps(external_payload, ensure_ascii=False, separators=(",", ":"))
-                if external_payload is not None
-                else None
-            ),
+            external_payload_json=prepared_external_json,
             external_target_id=external_target_id,
             content=content,
             visual_summary="",
-            segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
+            segments_json=prepared_segments_json,
             reply_to_message_id=reply_to_message_id,
             reply_to_event_id=reply_to_event_id,
             origin=origin[:32],

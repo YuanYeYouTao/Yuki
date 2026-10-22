@@ -60,7 +60,7 @@ async def test_main_rename_keeps_the_active_prefix_and_frozen_tool_contract(
     first_tools = deepcopy(observed[0].tools)
     manifest = chat.runtime.runner.main_contract
     original_revision = manifest.revision
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = (await reader.scalars(select(PromptProjectionModel))).one()
         original_public = row.epoch_id
     assert (
@@ -73,7 +73,7 @@ async def test_main_rename_keeps_the_active_prefix_and_frozen_tool_contract(
     assert observed[-1].tools == first_tools
     assert manifest.revision == original_revision
     assert provider.requests[0].messages == observed[0].messages
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalars(select(PromptProjectionModel))
         ).one().epoch_id == original_public

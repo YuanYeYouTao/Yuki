@@ -30,7 +30,7 @@ async def approve_background_plugin(database, *, plugin_id, bot_user_id, group_i
         find_space_binding,
     )
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         creator = await find_identity_binding(session, creator_user_id)
         assert creator is not None
         person = creator.person_id

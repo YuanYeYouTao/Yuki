@@ -455,7 +455,7 @@ async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database, mon
             )
         )
         monkeypatch.setattr(
-            database, "sessions", async_sessionmaker(connection, expire_on_commit=False)
+            database, "_sessions", async_sessionmaker(connection, expire_on_commit=False)
         )
         with capture(database) as statements:
             version, records = await ledger.read_scope_missing_history(

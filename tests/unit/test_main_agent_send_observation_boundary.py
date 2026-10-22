@@ -138,7 +138,7 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
         if interleaved_events == "outbound_and_inbound":
             assert incoming_text in _plain_text(wire[1]) and incoming_text in saved.payload_json
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             delivered = list(
                 await reader.scalars(
                     select(ChatEventModel).where(

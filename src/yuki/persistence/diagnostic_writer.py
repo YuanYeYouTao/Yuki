@@ -42,7 +42,7 @@ class DiagnosticWrite:
         return getattr(result, "rowcount", 0) != 0
 
     async def commit(self) -> bool:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             accepted = await self.execute(session)
         return accepted
 

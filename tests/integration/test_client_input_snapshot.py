@@ -58,7 +58,7 @@ async def test_work_completed_during_preparation_keeps_receipt_without_accepting
             submitted.cancel()
         await asyncio.gather(submitted, return_exceptions=True)
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(inputs)) == 0
         assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 1
         receipt = await session.scalar(

@@ -242,7 +242,7 @@ class ToolArtifactRepository:
         retention = retention_seconds if retention_seconds is not None else self._retention
         if retention <= 0:
             raise ValueError("artifact retention must be positive")
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             privacy = int(
                 await reader.scalar(
                     select(ExecutionTraceStateModel.privacy_generation).where(
@@ -260,7 +260,7 @@ class ToolArtifactRepository:
         access_json = json.dumps(source, sort_keys=True) if source else None
         await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
         async with self._storage_lock:
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 used = await reader.scalar(
                     select(func.coalesce(func.sum(ToolArtifactModel.byte_size), 0))
                 )
@@ -395,7 +395,7 @@ class ToolArtifactRepository:
             raise ValueError("artifact offset must be non-negative and limit must be positive")
         if not handle_id.isalnum() or len(handle_id) > 64:
             return None
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.get(ToolArtifactModel, handle_id)
             if row is None or row.deleting:
                 return None
@@ -456,7 +456,7 @@ class ToolArtifactRepository:
             }
         if access is not None:
             # Erasure, generation changes and GC may race the bounded file I/O.
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 current = await session.get(ToolArtifactModel, handle_id)
                 if (
                     current is None
@@ -600,7 +600,7 @@ class ToolArtifactRepository:
         # create() holds the same lock through publication and metadata commit.
         # Immutable UUID names are never reused, so an old unregistered file
         # cannot gain a new owner between this read and its physical removal.
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             registered = set(
                 await reader.scalars(
                     select(ToolArtifactModel.relative_path).where(
@@ -625,7 +625,7 @@ class ToolArtifactRepository:
                 ToolArtifactModel.deleting.is_(True),
                 and_(ToolArtifactModel.expires_at <= now, ~self._protected()),
             )
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 candidates = list(
                     await reader.scalars(
                         select(ToolArtifactModel.handle_id)

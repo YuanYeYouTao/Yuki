@@ -32,7 +32,7 @@ from yuki.services.participation_trace import TracedSemanticObserver
 
 
 async def records(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list(
             await reader.scalars(
                 select(ExecutionTraceEntryModel).order_by(ExecutionTraceEntryModel.id)

@@ -32,7 +32,7 @@ app_env = app_fixture
 
 
 async def owner(env, database, account="1001"):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, account)
     issued = await env.identity.issue_for_operator(binding.person_id, str(uuid4()), str(uuid4()))
     device = await pair(env.client, issued["code"])
@@ -118,7 +118,7 @@ async def test_input_is_one_app_event_with_atomic_ready_payload_and_no_main(
     )
     assert response.status_code == 200, response.text
     result = response.json()["data"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, result["event_id"])
         item = (
             (await session.execute(select(inputs).where(inputs.c.id == result["input_id"])))
@@ -179,7 +179,7 @@ async def test_waiting_resume_retains_session_budget_and_honors_busy_original_le
         headers=bearer(device["token"]),
     )
     assert busy.status_code == 503
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
     await original.repository.release(original.lease)
@@ -201,7 +201,7 @@ async def test_waiting_resume_retains_session_budget_and_honors_busy_original_le
         "tool_calls",
     ):
         assert current[key] == original.row[key]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.execute(
                 select(budgets.c.models, budgets.c.model_limit).where(
@@ -273,7 +273,7 @@ async def test_input_request_identity_spans_work_message_and_devices(app_env, da
         "/client/v1/messages", json=request, headers=bearer(device["token"])
     )
     assert message.status_code == 409
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 1
     assert not env.calls
 
@@ -294,7 +294,7 @@ async def test_failure_after_mailbox_insert_rolls_back_all_facts(app_env, databa
         await ClientWorks(env.identity, env.gateway).submit(
             principal, original.row["id"], str(uuid4()), "rollback this"
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
         assert (
@@ -326,7 +326,7 @@ async def test_terminal_work_preserves_failure_receipt_and_does_not_create_input
             "code": "precondition_failed",
             "state": state,
         }
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
         assert (
@@ -450,7 +450,7 @@ async def test_home_and_group_work_show_only_this_works_confirmed_question(app_e
 
 
 async def guard_for(original, database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(
             CanonicalConversationModel, original.row["conversation_id"]
         )
@@ -524,7 +524,7 @@ async def test_same_person_event_without_mailbox_proof_is_not_a_work_input(app_e
     original = await seeded(env, database, group=True, retain_lease=True)
     guard, control = await guard_for(original, database)
     principal = await env.identity.authenticate(device["token"])
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         from yuki.identity.db_models import IdentityBindingModel
 
         binding = await session.get(IdentityBindingModel, principal.binding_id)
@@ -555,7 +555,7 @@ async def test_message_request_cannot_be_reused_for_work_input(app_env, database
         headers=bearer(device["token"]),
     )
     assert response.status_code == 409 and response.json()["problem"]["code"] == "request_conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
 
 
@@ -616,7 +616,7 @@ async def test_completion_between_preparation_and_writer_creates_no_input(
         "code": "precondition_failed",
         "state": "completed",
     }
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
 
@@ -706,7 +706,7 @@ async def test_plain_app_reply_matches_own_waiting_entry_without_borrowing_qq_wa
     assert len(env.calls) == before
     assert (await qq.repository.get(app_work["id"]))["state"] == "queued"
     assert await qq.repository.get(qq.row["id"]) == qq.row
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = (
             (await session.execute(select(inputs).where(inputs.c.work_id == app_work["id"])))
             .mappings()

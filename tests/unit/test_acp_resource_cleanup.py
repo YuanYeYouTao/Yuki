@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.client_identity import client_identity_service
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 from tests.support.subagents_helpers import stack
 
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
@@ -19,7 +20,6 @@ from yuki.admin.operations.identity import IdentityOperations
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.identity import PrincipalId
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.persistence.models import AdminOperationEventModel
 from yuki.persistence.people_repository import PeopleRepository
@@ -157,7 +157,7 @@ async def test_forget_closes_original_active_or_idle_peers_before_deleting_owner
     result = await erase()
     assert result
     assert client.calls == [(("original-prompt",), client.calls[0][1], True)]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalPersonModel, original.person) is None
         assert await reader.get(SandboxTaskRunModel, original.task.request_id) is None
         assert await reader.scalar(select(work.c.id).where(work.c.id == original.work_id)) is None
@@ -179,7 +179,7 @@ async def test_forget_unknown_close_keeps_original_owner_and_same_operation(data
         with pytest.raises(ValueError, match="external_agent_cleanup_unconfirmed"):
             await erase()
     assert client.calls[0] == client.calls[1]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalPersonModel, original.person) is not None
         assert await reader.get(SandboxTaskRunModel, original.task.request_id) is not None
         assert (
@@ -222,7 +222,7 @@ async def test_forget_does_not_expand_scope_after_original_close_admission(datab
         await forget(database, original.person, entry)()
     assert len(client.calls) == 1
     assert client.calls[0][0] == ("original-prompt",)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(SandboxTaskRunModel, "original-prompt") is not None
         assert (
             await reader.scalar(select(work.c.id).where(work.c.id == original.work_id))
@@ -297,14 +297,16 @@ async def test_new_acp_after_plain_snapshot_is_seen_on_database_only_retry(
         await forget(database, original.person, entry)()
     assert attempts == 3
     assert client.calls == []
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalPersonModel, original.person) is not None
         assert await reader.get(SandboxTaskRunModel, "new-acp-prompt") is not None
         assert await reader.scalar(select(work.c.id).where(work.c.id == original.work_id))
 
 
 @pytest.mark.parametrize("entry", ["personal", "admin"])
-async def test_snapshot_retry_does_not_repeat_external_close(database, monkeypatch, entry):
+async def test_unrelated_name_write_needs_no_reprepare_or_repeat_external_close(
+    database, monkeypatch, entry
+):
     original = await privacy_case(database)
     client = CleanupClient(database)
     database.sandbox_client = client
@@ -326,7 +328,7 @@ async def test_snapshot_retry_does_not_repeat_external_close(database, monkeypat
 
     monkeypatch.setattr(PeopleRepository, "prepare_person_forget", race)
     assert await forget(database, original.person, entry)()
-    assert attempts == 3
+    assert attempts == 2
     assert len(client.calls) == 1
 
 
@@ -354,7 +356,7 @@ async def test_forget_prepares_fresh_redactions_after_external_close(database, e
     database.sandbox_client = client
     assert await forget(database, original.person, entry)()
     assert len(client.calls) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         audit = await reader.scalar(
             select(AdminOperationEventModel).where(AdminOperationEventModel.operation == "test")
         )
@@ -394,7 +396,7 @@ async def test_completion_keeps_peer_and_true_archive_closes_the_original_tree(d
     await age_tree(database, parent, child)
     await workers.maintain()
     assert client.calls[0][0] == ("child-prompt", "root-prompt")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         archived = await reader.scalar(
             select(children.c.archived_at).where(children.c.work_id == child)
         )
@@ -423,7 +425,7 @@ async def test_archive_keeps_owner_when_close_or_exact_snapshot_is_unconfirmed(
     with pytest.raises(ValueError, match="external_agent_cleanup_"):
         await workers.maintain()
     assert len(client.calls) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(children.c.archived_at).where(children.c.work_id == child))
             is None

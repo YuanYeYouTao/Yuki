@@ -229,7 +229,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
     first_result = json.loads(await recovered.session.journal.effect_result(original_key))
     assert first_result.get("uncertain", False) == (boundary == "after_t2")
     assert json.loads(await recovered.session.journal.effect_result(last_key))["ok"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         first = (
             (await reader.execute(select(effects).where(effects.c.effect_key == original_key)))
             .mappings()

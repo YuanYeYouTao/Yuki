@@ -126,3 +126,7 @@ docker compose up -d --build --no-deps bot
 
 只重建 Bot 时，QQ 网关容器与登录态无需重建。外部 API 故障不会令健康检查主动访问网络，也不会阻止 Bot
 启动；可通过 status/doctor 和不含正文的计数判断积压，再在恢复后执行 retry。
+
+所有主库写入使用共享 `immediate_session()`，在连接获取前排队；普通查询使用不自动提交的
+`read_session()`。embedding HTTP、文档 hash 和 vector 编码继续在 writer 外完成，原 claim/profile
+字段在短提交内核验，不新增逐事实远程验证。

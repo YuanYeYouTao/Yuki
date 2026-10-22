@@ -52,7 +52,7 @@ async def test_source_invalidation_updates_the_head_once_with_its_original_reaso
             await writer.execute(
                 update(ChatEventModel).where(ChatEventModel.id == identity).values(**values)
             )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         head = await reader.get(PromptProjectionModel, conversation)
         remaining = await reader.scalar(
             select(func.count()).select_from(PromptProjectionChunkModel)

@@ -48,7 +48,7 @@ async def test_duplicate_enqueue_returns_original_partition_without_waiting_for_
     jobs = MemoryJobRepository(database)
     created, original_partition = await jobs.enqueue_resolved(event.id, "ignored-input-scope")
     assert created
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = (
             (
                 await reader.execute(
@@ -66,7 +66,7 @@ async def test_duplicate_enqueue_returns_original_partition_without_waiting_for_
         assert statements and all(
             sql.lstrip().upper().startswith("SELECT") for sql, _ in statements
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         after = (
             (
                 await reader.execute(
@@ -160,7 +160,7 @@ async def _reclaim(jobs: MemoryJobRepository, monkeypatch: pytest.MonkeyPatch) -
 
 
 async def _snapshot(database: Database, job: MemoryJob) -> tuple[Any, ...]:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(MemoryJobModel, job.id)
         assert row is not None
         return (
@@ -196,7 +196,7 @@ async def test_actorless_context_is_rejected_by_queue_mutation_without_writing(
     assert not result.ok
     assert result.reason_code == "untrusted_trigger_event"
     assert await _snapshot(database, job) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         for model in (MemoryFactModel, MemoryMutationReceiptModel, MemoryClaimCandidateModel):
             assert await session.scalar(select(func.count()).select_from(model)) == 0
 
@@ -282,7 +282,7 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
         release.set()
     assert await asyncio.wait_for(running, timeout=5) == 0
     assert await _snapshot(database, current) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         for model in (MemoryFactModel, MemoryMutationReceiptModel, MemoryClaimCandidateModel):
             assert await session.scalar(select(func.count()).select_from(model)) == 0
 
@@ -326,6 +326,6 @@ async def test_reclaim_after_extraction_blocks_fact_and_receipt_without_writer_l
     assert await worker.process_once() == 0
     assert current is not None
     assert (await _snapshot(database, current))[0:3:2] == ("processing", 0)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         for model in (MemoryFactModel, MemoryMutationReceiptModel):
             assert await session.scalar(select(func.count()).select_from(model)) == 0

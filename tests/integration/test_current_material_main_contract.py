@@ -218,7 +218,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             assert joined.index("CURRENT_MATERIAL_VALUE") < joined.index(current.text)
             assert joined.endswith(current.text) and texts[-1].endswith(current.text)
             assert texts[-3] + host + texts[-1] in joined
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 saved = await projection_record(
                     reader, (await reader.scalars(select(PromptProjectionModel))).one()
                 )
@@ -273,7 +273,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             state.update({"slot": 1, "text": "CHAT_CURRENT_STATE"})
             assert (await app.processor.handle(message, sender)).reason == "chat"
             assert len(wire) == 1 and "CHAT_CURRENT_STATE" in _text(wire[0])
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 original_public = await projection_record(
                     reader, (await reader.scalars(select(PromptProjectionModel))).one()
                 )
@@ -321,14 +321,14 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert len(wire) == 2 and "SELF_CURRENT_STATE" in _text(wire[1])
             assert "CHAT_CURRENT_STATE" not in _text(wire[1])
             assert actor.instruction in _text(wire[1])
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 self_public = await projection_record(
                     reader, (await reader.scalars(select(PromptProjectionModel))).one()
                 )
                 assert self_public.view_key == scope.id and self_public.epoch_id == original_epoch
                 assert json.loads(self_public.payload_json) == original_items
 
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 current = await reader.scalar(
                     select(ChatEventModel).where(
                         ChatEventModel.platform_message_id == message.message_id
@@ -371,7 +371,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             ].status is RunStatus.SUCCEEDED
             assert len(wire) == 3 and "SCHEDULE_CURRENT_INSTRUCTION" in _text(wire[2])
             assert "SELF_CURRENT_STATE" not in _text(wire[2]) and "短记录" not in _text(wire[2])
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 schedule_public = await projection_record(
                     reader, (await reader.scalars(select(PromptProjectionModel))).one()
                 )
@@ -393,7 +393,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             } <= full.keys()
             schema = full["automation_manage"].parameters
             assert "steps" not in json.dumps(schema) and "goal" in json.dumps(schema)
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 public = "\n".join(
                     [
                         (await projection_record(reader, row)).payload_json
@@ -498,7 +498,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             assert (await app.processor.handle(message, sender)).reason == "chat"
             await app.model_invocations.writer.drain()
             repository = WorkRepository(database)
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 old_work = dict((await reader.execute(select(work))).mappings().one())
                 old_journal = dict((await reader.execute(select(journal))).mappings().one())
                 old_budget = dict((await reader.execute(select(budgets))).mappings().one())
@@ -590,7 +590,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
                 f"{main_session}:work:{old_work['id']}",
             ]
             assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 final_budget = dict((await reader.execute(select(budgets))).mappings().one())
                 retained = [
                     dict(row)
@@ -646,7 +646,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
 
     monkeypatch.setattr(chat, "_run_agent", capture_runtime)
     await harness.processor.handle(message, MemorySender())
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = await projection_record(
             reader, (await reader.scalars(select(PromptProjectionModel))).one()
         )
@@ -695,7 +695,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     public = json.loads(original[2])
     for item in public:
         assert (item["message"]["content"] in [m.content for m in actual]) is read_history
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = [
             await projection_record(reader, row)
             for row in await reader.scalars(select(PromptProjectionModel))
@@ -716,7 +716,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
         replace(message, message_id="ordinary-after-sdk", text="SDK之后的普通当前输入"),
         MemorySender(),
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         final = await projection_record(
             reader, (await reader.scalars(select(PromptProjectionModel))).one()
         )

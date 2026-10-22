@@ -63,7 +63,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
     ordinary = await ledger.get_event(ordinary.id)
     assert mentioned is not None and ordinary is not None
     if not target_active:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(IdentityBindingModel)
                 .where(IdentityBindingModel.external_account_id == "3003")
@@ -72,7 +72,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
     hydrated = await ledger.hydrate_rebuild_subjects(mentioned)
     assert hydrated.mentioned_user_ids == ("3003",)
     selection = MemoryRebuildSelection(all_events=True, third_party_mode="trusted_metadata")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "3003")
         )
@@ -93,7 +93,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
 
 
 async def _assert_only_unreferenced_event_completed(database: Database, seed) -> None:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipts = tuple(
             await session.scalars(
                 select(MemoryJobModel.event_id).where(MemoryJobModel.rebuild_run_id == seed.run_id)
@@ -111,7 +111,7 @@ async def test_disabled_mentioned_person_does_not_block_original_receipt_complet
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed, (_binding_id, person_id) = await _trusted_page(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         original_hash = await session.scalar(
             select(MemoryRebuildItemModel.source_event_hash).where(
                 MemoryRebuildItemModel.id == seed.item_ids[0]
@@ -128,7 +128,7 @@ async def test_disabled_mentioned_person_does_not_block_original_receipt_complet
         )
         == 2
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert set(
             await session.scalars(
                 select(MemoryJobModel.event_id).where(MemoryJobModel.rebuild_run_id == seed.run_id)
@@ -197,8 +197,9 @@ async def test_original_reference_survives_current_changes_but_not_real_erasure(
                             writer, person_id, "新的当前名字", now=datetime.now(UTC)
                         )
                     else:
+                        from tests.support.person_merge import merge_persons
+
                         from yuki.identity.canonical_repository import find_identity_binding
-                        from yuki.identity.person_identity import merge_persons
 
                         target = (await find_identity_binding(writer, "1002")).person_id
                         await merge_persons(writer, person_id, target)
@@ -220,7 +221,7 @@ async def test_original_reference_survives_current_changes_but_not_real_erasure(
         )
         await _assert_only_unreferenced_event_completed(database, seed)
     else:
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert set(
                 await session.scalars(
                     select(MemoryJobModel.event_id).where(
@@ -260,7 +261,7 @@ async def test_original_historical_reference_not_reclassified_when_account_react
         == 2
     )
     assert injected
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert set(
             await session.scalars(
                 select(MemoryJobModel.event_id).where(MemoryJobModel.rebuild_run_id == seed.run_id)

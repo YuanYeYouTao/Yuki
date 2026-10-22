@@ -170,7 +170,7 @@ def _dispatch(scene, boundary, *, private=True, public=True, business=True):
 
 
 async def _projection(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await projection_record(
             reader, (await reader.scalars(select(PromptProjectionModel))).one()
         )

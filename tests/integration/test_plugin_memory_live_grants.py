@@ -38,7 +38,7 @@ async def memory_scene(
         space_id=env.space,
         expected_person_id=env.person,
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
     person = await chat._memories.remember(
         MemoryFactCreate(

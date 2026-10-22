@@ -34,12 +34,12 @@ async def test_evidence_order_limit_and_counts_are_preserved(database, size):
             source_type="automatic",
         )
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ChatEventModel, source.id)
         template = {column.name: getattr(row, column.name) for column in row.__table__.columns}
     template.pop("id")
     now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         event_ids = list(
             (
                 await session.scalars(
@@ -117,7 +117,7 @@ async def test_all_owner_shapes_only_expose_authorized_chat_and_tool_sources(dat
         for i, target in enumerate(targets)
     ]
     now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         hidden = await session.get(ChatEventModel, sources[4].id)
         hidden.utterance_fingerprint = "a" * 64
         hidden.suppression_status = "duplicate"
@@ -162,7 +162,7 @@ async def test_all_owner_shapes_only_expose_authorized_chat_and_tool_sources(dat
         )
     allowed_sources = ((0, 2, 3), (2,), (2,), (0, 1, 2, 3, 5), (0,), (2,))
     for fact, allowed in zip(saved, allowed_sources, strict=True):
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             candidates = list(
                 await session.scalars(
                     select(MemoryEvidenceModel)
@@ -199,7 +199,7 @@ async def test_all_owner_shapes_only_expose_authorized_chat_and_tool_sources(dat
     assert confirmed.confidence == saved[0].confidence
     # Visibility is evaluated from current durable rows on every call. Source
     # cascade removal cannot leave a cached evidence or count projection alive.
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         erased = await session.get(ChatEventModel, sources[0].id)
         await session.delete(erased)
     remaining = await facts.list_evidence(saved[0].id)
@@ -210,7 +210,7 @@ async def test_all_owner_shapes_only_expose_authorized_chat_and_tool_sources(dat
 
 async def test_self_initiative_sources_share_sql_readability_and_do_not_borrow_events(database):
     facts, _source, _run_id, batch, fact_id = await reflection_fact(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         candidates = list(
             await session.scalars(
                 select(MemoryEvidenceModel).where(MemoryEvidenceModel.fact_id == fact_id)
@@ -218,7 +218,7 @@ async def test_self_initiative_sources_share_sql_readability_and_do_not_borrow_e
         )
         expected = [row.id for row in candidates]
     assert [row.id for row in await facts.list_evidence(fact_id)] == expected
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         receipt = await session.get(MemoryToolReceiptModel, batch.first_receipt_id)
         receipt.result_excerpt = "source was erased"
     assert await facts.list_evidence(fact_id) == ()

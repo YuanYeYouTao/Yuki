@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, nullcontext
 
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.execution_trace.recorder import TraceRecorder
@@ -79,6 +79,12 @@ class InjectedModelExecutor:
 
     def pin(self) -> AbstractContextManager[None]:
         return nullcontext()
+
+    def foreground_activity(self) -> AbstractAsyncContextManager[None]:
+        return nullcontext()
+
+    async def wait_for_background_idle(self) -> None:
+        return None
 
 
 def require_model_executor(

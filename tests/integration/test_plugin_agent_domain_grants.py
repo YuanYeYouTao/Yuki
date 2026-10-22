@@ -27,7 +27,7 @@ from yuki_plugin_sdk.permissions import PluginPermission
 async def source_host(database, tmp_path, provider, permissions):
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
     chat._tools.social_service = env.service
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
     event = await harness.ledger.get_event(event_id)
     recovered = await recover_source(
@@ -207,7 +207,7 @@ async def test_cold_retry_keeps_original_work_after_retired_name_subset_is_remov
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(
             update(work)
             .where(work.c.id == original["id"])
@@ -246,7 +246,7 @@ async def test_cold_retry_keeps_original_work_after_retired_name_subset_is_remov
         finally:
             await repository.release(lease)
     await host.close_host_resources()
-    await database.close()
+    await database.engine.dispose()
     restored = HostPluginContext(
         plugin_id=host.plugin_id,
         approved_permissions=(PluginPermission.AGENT_RUN,),

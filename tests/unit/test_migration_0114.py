@@ -63,13 +63,13 @@ def test_0114_moves_disabled_spaces_to_editable_config(tmp_path, monkeypatch):
                 """),
                     {"after_json": json.dumps({"scope_id": overridden, "value": True})},
                 )
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 audits = [
                     tuple(row)
                     for row in await reader.execute(text("SELECT * FROM admin_operation_events"))
                 ]
             await asyncio.to_thread(command.upgrade, config, "0114")
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 rows = list(await reader.scalars(select(RuntimeConfigOverrideModel)))
                 assert {row.canonical_space_id for row in rows} == {off, overridden}
                 assert all(json.loads(row.value_json) is False for row in rows)

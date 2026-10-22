@@ -142,12 +142,12 @@ async def _scene(
 
 
 async def _event(database, content):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return await reader.scalar(select(ChatEventModel).where(ChatEventModel.content == content))
 
 
 async def _work_count(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return await reader.scalar(select(func.count()).select_from(work))
 
 
@@ -165,7 +165,7 @@ async def _start_and_observe(
     if incoming is None:
         c = await _event(database, C)
     else:
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             c = await reader.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.platform_message_id == incoming.message_id,
@@ -317,7 +317,7 @@ async def test_accepted_input_does_not_reactivate_and_duplicate_real_social_send
         assert len(provider.requests) == 3
         assert len({request.request_chain_id for request in provider.requests}) == 1
         assert [message.text for message in sender.messages] == [ANSWER]
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             receipts = list(await reader.scalars(select(SocialOperationModel)))
         assert len(receipts) == 1 and receipts[0].status == "succeeded"
         assert receipts[0].source_turn_id == f"{env.context.conversation_id}:event:{a.id}"
@@ -472,7 +472,7 @@ async def test_steered_attachments_add_private_indices_without_automatic_reads(d
         assert "unread.png" in material and "quoted.txt" in material
         assert '"origin":"reply_observed"' in material
         assert len(provider.requests) == 2
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             public = list(await reader.scalars(select(PromptProjectionChunkModel.payload_json)))
         assert public and all("本轮附件索引" not in value for value in public)
         assert await _work_count(database) == 0
@@ -514,7 +514,7 @@ async def test_new_identical_input_after_last_admission_keeps_its_own_send(
         assert admissions[c.id].activation_id == admissions[a.id].activation_id
         assert admissions[d_id].activation_id != admissions[a.id].activation_id
         assert [message.text for message in sender.messages] == [ANSWER, ANSWER]
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             receipts = list(await reader.scalars(select(SocialOperationModel)))
         assert len(receipts) == 2 and all(row.status == "succeeded" for row in receipts)
         assert len({row.payload_hash for row in receipts}) == 1
@@ -671,7 +671,7 @@ async def test_work_accepted_during_original_round_keeps_real_mailbox_authorizat
             assert await harness.processor.ordinary_admissions.get(c.id) is None
         provider.release[3].set()
         await asyncio.wait_for(_wait_for_worker(worker, key), 10)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             rows = (await reader.execute(select(work))).mappings().all()
         assert len(rows) == 1 and rows[0]["id"] == work_id and rows[0]["state"] == "completed"
         admission = await harness.processor.ordinary_admissions.get(c.id)

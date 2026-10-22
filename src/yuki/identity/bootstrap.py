@@ -13,7 +13,7 @@ async def bootstrap_settings_identity(database: Database, settings: Settings) ->
     """Create canonical allow-list entries missing from the database."""
 
     now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         for group_id in settings.enabled_groups:
             if await find_space_binding(session, group_id, platform="qq") is None:
                 await create_space_binding(

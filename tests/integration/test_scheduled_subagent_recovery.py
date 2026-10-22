@@ -127,7 +127,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     case.clock.advance(2)
     first = await case.dispatch()
     assert first.status is RunStatus.RUNNING
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = [dict(row) for row in (await session.execute(select(work))).mappings()]
     parent = next(
         row
@@ -150,7 +150,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     if principal == "person":
         assert source["actor_person_id"] == case.env.person
         await case.env.router.cas_takeover_person(case.env.person)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         session.add(
             SpaceBindingModel(
                 id=str(uuid4()),
@@ -197,7 +197,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                 {**source, **changed},
                 request_id=child["id"],
             )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(SpaceBindingModel)
             .where(
@@ -214,7 +214,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     )
     assert recovered.generation == source["generation"]
     assert recovered.presence_id == source["presence_id"]
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(SpaceBindingModel)
             .where(
@@ -302,7 +302,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     assert unchanged_parent["model_requests"] == original_parent["model_requests"]
     from yuki.persistence.models import AutomationModel, AutomationRunModel
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(AutomationRunModel, case.run.id)).status == "succeeded"
         assert (await session.get(AutomationModel, case.row.id)).status == "completed"
 
@@ -378,7 +378,7 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
     assert await executor.run(identity) is None
     before = await repository.get(identity)
     assert before["state"] == "completed" and before["model_requests"] == 2
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         nested = (
             (await session.execute(select(work).where(work.c.parent_work_id == identity)))
             .mappings()
@@ -406,7 +406,7 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
     assert (await repository.get(parent["id"]))["state"] == "completed"
     assert (await repository.get(parent["id"]))["model_requests"] == 0
     assert len(provider.requests) == 4
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.get(InitiativeRunModel, source["initiative_run_id"])
         ).state == "no_reply"
@@ -496,7 +496,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
     assert issued.read_text(encoding="utf-8") == "Original response lost before publication."
     before = await repository.get(identity)
     assert before["state"] == "running" and before["model_requests"] == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(journal.c.phase).where(journal.c.work_id == identity))
             == "dispatched"
@@ -535,7 +535,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
     assert after["source_json"] == before["source_json"]
     assert after["model_requests"] == 1 and after["tool_calls"] == 0
     assert not provider.requests
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(budgets.c.models).where(budgets.c.root_id == root["id"]))
             == 1
@@ -709,7 +709,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     assert len(case.provider.requests) == 2
     assert "update_short_state" in {tool.name for tool in case.provider.requests[0].tools}
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list((await reader.execute(select(work))).mappings())
     parent = next(dict(row) for row in rows if row["parent_work_id"] is None)
     child = next(dict(row) for row in rows if row["parent_work_id"] == parent["id"])
@@ -717,7 +717,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
 
     async def capture_main(**kwargs):
         resumed_runtime.append(kwargs["source_runtime"])
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
             assert account == "" and permission is PermissionLevel.SUPERUSER
         return await case.chat.generate_origin_turn(**kwargs)
@@ -751,7 +751,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     assert final["source_json"] == child["source_json"]
     original_parent = await repository.get(parent["id"])
     assert original_parent["state"] == "completed" and original_parent["model_requests"] == 2
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
         assert account == "" and permission is PermissionLevel.USER
         assert (

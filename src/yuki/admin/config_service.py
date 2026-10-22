@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import Select, and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
@@ -71,6 +71,72 @@ class RuntimeConfigOverrideRecord:
     updated_by: str
     canonical_person_id: str | None = None
     canonical_space_id: str | None = None
+
+
+class ConfigRollbackPreparationChanged(ValueError):
+    def __init__(self) -> None:
+        super().__init__("config_rollback_preparation_changed")
+
+
+_ROLLBACK_AUDIT_FIELDS = (
+    "capability",
+    "operation",
+    "success",
+    "actor_user_id",
+    "actor_principal_id",
+    "actor_principal_kind",
+    "target_type",
+    "target_id",
+    "before_json",
+    "after_json",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigRollbackPreparation:
+    original: AdminOperationEvent | None
+    original_values: tuple[Any, ...] | None
+    lineage_scope: str | None
+    lineage_ids: tuple[int, ...]
+    lineage_json: str
+    lineage_matches: bool
+
+
+def _rollback_lineage(scope_id: str, row_id: int, version: int) -> Select[Any]:
+    audit = AdminOperationEventModel
+    moves = func.json_each(audit.after_json, "$.configuration_moves").table_valued("value")
+    selected = and_(
+        func.json_extract(moves.c.value, "$.table") == "runtime_config_overrides",
+        func.json_extract(moves.c.value, "$.id") == row_id,
+        func.json_extract(moves.c.value, "$.version") == version,
+    )
+    original_moves = (
+        select(
+            func.json_group_array(
+                func.json_object(
+                    "from",
+                    func.json_extract(moves.c.value, "$.from"),
+                    "to",
+                    func.json_extract(moves.c.value, "$.to"),
+                )
+            )
+        )
+        .select_from(moves)
+        .where(selected)
+        .correlate(audit)
+        .scalar_subquery()
+    )
+    return (
+        select(audit.id, original_moves.label("after_json"))
+        .where(
+            audit.capability == "identity.person.merge",
+            audit.success.is_(True),
+            person_family_condition(audit.target_id, scope_id),
+            func.json_type(audit.after_json, "$.configuration_moves") == "array",
+            select(moves.c.value).where(selected).correlate(audit).exists(),
+        )
+        .order_by(audit.id)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,7 +301,7 @@ class RuntimeConfigRepository:
         self, *, user_id: str | None, group_id: str | None
     ) -> tuple[tuple[RuntimeConfigOverrideRecord, ...], str | None, str | None]:
         """Resolve owners and their overrides once in this preparation's read view."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             return await self._read_relevant(session, user_id=user_id, group_id=group_id)
 
@@ -984,6 +1050,62 @@ class RuntimeConfigService:
             limit=limit,
         )
 
+    async def prepare_rollback(self, change_id: int) -> ConfigRollbackPreparation:
+        async with self._database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
+            original = await self._audit.get(change_id, session=reader)
+            values = (
+                await reader.execute(
+                    select(
+                        *(
+                            getattr(AdminOperationEventModel, field)
+                            for field in _ROLLBACK_AUDIT_FIELDS
+                        )
+                    ).where(AdminOperationEventModel.id == change_id)
+                )
+            ).one_or_none()
+            lineage_scope = None
+            moves: tuple[tuple[Any, ...], ...] = ()
+            matches = False
+            if (
+                original is not None
+                and original.success
+                and original.capability == "runtime_config"
+                and original.operation in {"set_override", "delete_override"}
+                and _state_value(original.before, "scope_type") == "user"
+                and _state_value(original.after, "row_id") is None
+            ):
+                original_scope = str(_state_value(original.before, "scope_id") or "")
+                lineage_scope = await current_person_id(reader, original_scope)
+                key = str(_state_value(original.before, "key") or original.target_id)
+                current = await self._repository.get(
+                    key=key,
+                    scope_type=ConfigScopeType.USER,
+                    scope_id=lineage_scope,
+                    session=reader,
+                )
+                if current is not None and current.scope_id != original_scope:
+                    moves = tuple(
+                        tuple(row)
+                        for row in await reader.execute(
+                            _rollback_lineage(lineage_scope, current.id, current.version)
+                        )
+                    )
+                    lineage = original_scope
+                    for _, raw in moves:
+                        for move in json.loads(raw):
+                            if move["from"] == lineage:
+                                lineage = move["to"]
+                    matches = lineage == current.scope_id
+            return ConfigRollbackPreparation(
+                original,
+                tuple(values) if values is not None else None,
+                lineage_scope,
+                tuple(row[0] for row in moves),
+                json.dumps(moves),
+                matches,
+            )
+
     async def rollback(
         self,
         change_id: int,
@@ -994,28 +1116,60 @@ class RuntimeConfigService:
         audit_ref: ControlAuditRef | None = None,
         expected_version: int | None = None,
         session: AsyncSession | None = None,
+        prepared: ConfigRollbackPreparation | None = None,
     ) -> ConfigChangeResult:
         if session is None:
-
-            async def apply(active: AsyncSession) -> ConfigChangeResult:
-                return await self.rollback(
-                    change_id,
-                    actor_user_id=actor_user_id,
-                    trigger_message_id=trigger_message_id,
-                    conversation_key=conversation_key,
-                    audit_ref=audit_ref,
-                    expected_version=expected_version,
-                    session=active,
+            while True:
+                prepared = await self.prepare_rollback(change_id)
+                try:
+                    async with self._database.immediate_session() as writer:
+                        return await self.rollback(
+                            change_id,
+                            actor_user_id=actor_user_id,
+                            trigger_message_id=trigger_message_id,
+                            conversation_key=conversation_key,
+                            audit_ref=audit_ref,
+                            expected_version=expected_version,
+                            session=writer,
+                            prepared=prepared,
+                        )
+                except ConfigRollbackPreparationChanged:
+                    continue
+        if prepared is None:
+            raise ValueError("config_rollback_preparation_required")
+        if prepared.original_values is None:
+            unchanged = (
+                await session.scalar(
+                    select(AdminOperationEventModel.id).where(
+                        AdminOperationEventModel.id == change_id
+                    )
                 )
-
-            return await self._database.apply_snapshot_write(apply)
+                is None
+            )
+        else:
+            unchanged = bool(
+                await session.scalar(
+                    select(
+                        and_(
+                            *(
+                                getattr(AdminOperationEventModel, field).is_(value)
+                                for field, value in zip(
+                                    _ROLLBACK_AUDIT_FIELDS, prepared.original_values, strict=True
+                                )
+                            )
+                        )
+                    ).where(AdminOperationEventModel.id == change_id)
+                )
+            )
+        if not unchanged:
+            raise ConfigRollbackPreparationChanged()
         started = time.perf_counter()
         actor = audit_ref or self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
         )
-        original = await self._audit.get(change_id, session=session)
+        original = prepared.original
         fallback_scope = ConfigScopeType.GLOBAL
         if (
             original is None
@@ -1128,6 +1282,7 @@ class RuntimeConfigService:
                 current,
                 after_state,
                 original_scope_id=scope_id,
+                prepared=prepared,
             ):
                 await self._audit.record(
                     actor=actor,
@@ -1735,6 +1890,7 @@ class RuntimeConfigService:
         state: object,
         *,
         original_scope_id: str,
+        prepared: ConfigRollbackPreparation,
     ) -> bool:
         if not self._matches_state(current, state):
             return False
@@ -1750,30 +1906,26 @@ class RuntimeConfigService:
             return True
         if _state_value(state, "row_id") is not None:
             return current.id == _state_value(state, "row_id")
-        # Old audit JSON predates row_id. The actual merge audit records each moved
-        # row and revision, so equal values in a different target row prove nothing.
-        lineage = original_scope_id
-        rows = await session.scalars(
-            select(AdminOperationEventModel.after_json)
-            .where(
-                AdminOperationEventModel.capability == "identity.person.merge",
-                AdminOperationEventModel.success.is_(True),
-                person_family_condition(AdminOperationEventModel.target_id, current.scope_id),
-                func.json_type(AdminOperationEventModel.after_json, "$.configuration_moves")
-                == "array",
+        if prepared.lineage_scope != current.scope_id:
+            raise ConfigRollbackPreparationChanged()
+        source = _rollback_lineage(current.scope_id, current.id, current.version).subquery()
+        wanted = func.json_each(prepared.lineage_json).table_valued("value")
+        rows = tuple(
+            await session.execute(
+                select(
+                    source.c.id, source.c.after_json.is_(func.json_extract(wanted.c.value, "$[1]"))
+                )
+                .select_from(
+                    source.outerjoin(
+                        wanted, source.c.id == func.json_extract(wanted.c.value, "$[0]")
+                    )
+                )
+                .order_by(source.c.id)
             )
-            .order_by(AdminOperationEventModel.id)
         )
-        for raw in rows:
-            for move in json.loads(raw)["configuration_moves"]:
-                if (
-                    move["table"] == "runtime_config_overrides"
-                    and move["id"] == current.id
-                    and move["version"] == current.version
-                    and move["from"] == lineage
-                ):
-                    lineage = move["to"]
-        return lineage == current.scope_id
+        if tuple(row[0] for row in rows) != prepared.lineage_ids or not all(row[1] for row in rows):
+            raise ConfigRollbackPreparationChanged()
+        return prepared.lineage_matches
 
     @staticmethod
     def _matches_state(

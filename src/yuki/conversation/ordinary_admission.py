@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -104,6 +104,7 @@ class PreparedOrdinaryAdmission:
     admission: OrdinaryAdmission
     event: EventRecord
     basis_json: str
+    segments_json: str
 
 
 class OrdinaryAdmissionRepository:
@@ -113,7 +114,7 @@ class OrdinaryAdmissionRepository:
     async def get(
         self, event_id: int, *, conversation_id: str | None = None, generation: int | None = None
     ) -> OrdinaryAdmission | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(OrdinaryTurnAdmissionModel, event_id)
             if (
                 row is None
@@ -128,7 +129,7 @@ class OrdinaryAdmissionRepository:
     ) -> set[int]:
         if not event_ids:
             return set()
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return set(
                 await session.scalars(
                     select(OrdinaryTurnAdmissionModel.event_id).where(
@@ -292,6 +293,7 @@ class OrdinaryAdmissionRepository:
             ),
             event,
             basis_json,
+            json.dumps(event.segments, ensure_ascii=False, separators=(",", ":")),
         )
 
     def publisher(
@@ -420,7 +422,11 @@ class OrdinaryAdmissionRepository:
             or e.id <= conversation.starts_after_event_id
             or current.suppression_status != "keeper"
             or any(getattr(current, name) != getattr(e, name) for name in fields)
-            or _event_record(current).segments != e.segments
+            or not await session.scalar(
+                select(
+                    func.json(ChatEventModel.segments_json) == func.json(prepared.segments_json)
+                ).where(ChatEventModel.id == e.id)
+            )
             or not await _identity_allowed(session, current, conversation)
         ):
             raise OrdinaryAdmissionConflict("ordinary_source_changed")

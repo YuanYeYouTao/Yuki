@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import ColumnElement, update
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.memory.enums import MemoryJobStatus
@@ -24,15 +24,8 @@ def memory_job_claim_conditions(job: MemoryJob) -> tuple[ColumnElement[bool], ..
 
 
 async def fence_memory_job_claim(session: AsyncSession, job: MemoryJob) -> None:
-    """Acquire the short result transaction's writer lock without renewing its claim.
-
-    Call only after identity reads and external/model work. The conditional write
-    prevents a reclaim between checking ownership and committing the result.
-    """
-    result = await session.execute(
-        update(MemoryJobModel)
-        .where(*memory_job_claim_conditions(job))
-        .values(updated_at=MemoryJobModel.updated_at)
-    )
-    if not getattr(result, "rowcount", 0):
+    """Check the original claimant in the already owned IMMEDIATE transaction."""
+    if not await session.scalar(
+        select(MemoryJobModel.id).where(*memory_job_claim_conditions(job))
+    ):
         raise MemoryJobClaimLost(f"memory job {job.id} claim lost")

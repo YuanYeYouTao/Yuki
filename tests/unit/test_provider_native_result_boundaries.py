@@ -305,7 +305,7 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
     assert len([action for action, _ in env.bot.calls if action.startswith("send_")]) == (
         0 if work_mode in {"failed", "write"} else 1
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         invocations = list(await reader.scalars(select(ModelInvocationModel).limit(5)))
         rows = list(await reader.execute(select(work.c.state, work.c.model_requests).limit(2)))
     assert len(invocations) == len(outputs)
@@ -423,7 +423,7 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
     assert len(wire) == 2 and all(payload["tools"] == wire[0]["tools"] for payload in wire)
     assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
     assert len([action for action, _ in case.env.bot.calls if action.startswith("send_")]) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = (
             await reader.execute(
                 select(
@@ -446,7 +446,7 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
         from yuki.runtime.protocol_store import ProtocolStore
         from yuki.runtime.work_schema_v1 import journal
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             record = await reader.scalar(
                 select(journal.c.payload_json).where(journal.c.work_id == saved.id).limit(1)
             )
@@ -516,7 +516,7 @@ async def test_caller_send_then_complete_result_ends_without_third_request(
     assert len(wire) == 2 and all(payload["tools"] == wire[0]["tools"] for payload in wire)
     sends = [params for action, params in case.env.bot.calls if action.startswith("send_")]
     assert len(sends) == 1 and "内部结果不外发" not in str(sends)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = (
             await reader.execute(
                 select(work.c.state, work.c.model_requests, work.c.checkpoint_json).limit(1)
@@ -993,7 +993,7 @@ async def test_runner_preserves_paid_native_boundary_without_requeue_or_local_ex
     if checkpoint_failure:
         if not missing_event:
             assert result.outcome.failure.diagnostics["checkpoint_saved"] is False
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(
                     select(journal.c.phase).where(journal.c.work_id == persisted["id"])
@@ -1206,7 +1206,7 @@ async def test_native_transport_unknown_fails_original_activation_without_automa
             assert result.outcome.failure.diagnostics["usage"]["total_tokens"] == 13
             assert result.outcome.failure.diagnostics["http_status"] == 503
             assert len(result.outcome.failure.diagnostics["body_sha256"]) == 64
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(
                 select(journal.c.phase).where(journal.c.work_id == persisted["id"])
             ) == ("paired" if failure == "authentication" else "dispatched")

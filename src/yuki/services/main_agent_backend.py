@@ -443,9 +443,7 @@ class MainAgentBackend(AgentToolBackend):
                 receipt = outcome.data
                 parts = receipt.get("parts")
                 deliveries = parts if isinstance(parts, list) else [receipt]
-                self.messages_sent += sum(
-                    part.get("status") == "succeeded" for part in deliveries
-                )
+                self.messages_sent += sum(part.get("status") == "succeeded" for part in deliveries)
                 inbound = self._runtime.inbound
                 expected = (
                     {"kind": "space", "id": inbound.space_id}

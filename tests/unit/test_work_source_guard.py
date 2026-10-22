@@ -29,7 +29,7 @@ from yuki.services.turn_transcript import TurnTranscript, validating_request
 async def _guard(database, event):
     repo = WorkRepository(database)
     lease = await repo.acquire(event.canonical_conversation_id, 1)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(CanonicalConversationModel, event.canonical_conversation_id)
         version = ConversationReadVersion(
             ConversationScope.group("8000", "2001"),
@@ -70,7 +70,7 @@ async def test_source_scans_finish_before_recheck_and_new_enrichment_remains_all
     assert sql[0] == "BEGIN"
     additional = await _event_and_route(database, ledger, content="new event")
     control.session.event_ids.append(additional.id)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == additional.id)
@@ -78,7 +78,7 @@ async def test_source_scans_finish_before_recheck_and_new_enrichment_remains_all
         )
     assert await guard.check(control)
     prior = dict(guard.additional_events)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == additional.id)
@@ -102,7 +102,7 @@ async def test_fresh_snapshot_recheck_rejects_changes_after_read_snapshot(
         if change == "cancel":
             await control.repository.cancel(source.canonical_conversation_id, generation=1)
         else:
-            async with database.sessions() as other, other.begin():
+            async with database.immediate_session() as other:
                 if change == "metadata":
                     await other.execute(
                         update(ChatEventModel)
@@ -155,7 +155,7 @@ async def test_selected_identity_mutation_and_cross_conversation_extra_are_rejec
     assert not await guard.check(control)
 
     control.session.event_ids = []
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == source.id)
@@ -167,7 +167,7 @@ async def test_selected_identity_mutation_and_cross_conversation_extra_are_rejec
 async def test_owner_mutation_before_first_check_rejects_stale_read_version(database):
     source = await _event_and_route(database, EventLedgerRepository(database))
     guard, control = await _guard(database, source)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         space = await ensure_space(session, "2990", name="other owner")
         await session.execute(
             update(CanonicalConversationModel)
@@ -191,19 +191,19 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
     }
     assert columns == set(EVENT_METADATA_COLUMNS_CURRENT) | content_columns
     source = await _event_and_route(database, EventLedgerRepository(database))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         before = await session.scalar(
             select(CanonicalConversationModel.prompt_source_revision).where(
                 CanonicalConversationModel.id == source.canonical_conversation_id
             )
         )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == source.id)
             .values(sender_nickname=ChatEventModel.sender_nickname)
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         after = await session.scalar(
             select(CanonicalConversationModel.prompt_source_revision).where(
                 CanonicalConversationModel.id == source.canonical_conversation_id
@@ -276,7 +276,7 @@ async def test_new_unselected_enrichment_reuses_the_proved_original_after_revisi
     assert await guard.check(control)
     original = guard.fingerprint
     fresh = await _event_and_route(database, ledger, content="not in the original model input")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == fresh.id)

@@ -57,7 +57,7 @@ async def test_invalid_paid_compact_survives_pairing_reopen_and_next_candidate(
     assert runtime.auxiliary_requests == [1]
     assert len(provider.requests) == 1
 
-    await database.close()
+    await database.engine.dispose()
     restored = WorkSession(control, session.contract)
     control.session = restored
     await restored.restore(TurnTranscript(initial))
@@ -85,7 +85,7 @@ async def test_invalid_paid_compact_survives_pairing_reopen_and_next_candidate(
     )
     restored.progress["context_compaction"] = deepcopy(failed)
     await restored.save("paired")
-    await database.close()
+    await database.engine.dispose()
     reopened = WorkSession(control, session.contract)
     control.session = reopened
     finish_compact = reopened.finish_context_compaction

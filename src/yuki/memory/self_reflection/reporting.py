@@ -64,7 +64,7 @@ async def deliver_report(social: SocialService, cycle: dict[str, Any]) -> dict[s
     prior = await social.receipts.find(cycle["id"], "final-report")
     if prior is not None and prior.status.value != "prepared":
         return prior.model_dump(mode="json")
-    async with social.database.sessions() as session:
+    async with social.database.read_session() as session:
         event = await session.get(ChatEventModel, cycle["source_event_id"])
         conversation = await session.get(CanonicalConversationModel, cycle["conversation_id"])
         if (

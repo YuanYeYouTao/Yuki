@@ -134,7 +134,7 @@ class PluginInstallationRepository:
         timestamp = _aware_utc(now or datetime.now(UTC))
         requested = _permissions(requested_permissions)
         requested_json = _json(list(requested))
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.get(PluginInstallationModel, plugin_id)
             if row is None:
                 row = PluginInstallationModel(
@@ -189,7 +189,7 @@ class PluginInstallationRepository:
             return _installation_record(row) if row is not None else None
 
     async def list_all(self) -> tuple[PluginInstallationRecord, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(PluginInstallationModel).order_by(PluginInstallationModel.plugin_id)
@@ -251,7 +251,7 @@ class PluginInstallationRepository:
         now: datetime | None = None,
     ) -> PluginInstallationRecord | None:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.get(PluginInstallationModel, plugin_id)
             if row is None:
                 return None
@@ -273,7 +273,7 @@ class PluginInstallationRepository:
         now: datetime | None = None,
     ) -> PluginInstallationRecord | None:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.get(PluginInstallationModel, plugin_id)
             if row is None:
                 return None
@@ -296,7 +296,7 @@ class PluginConfigRepository:
     async def same_person_scope(self, left: str, right: str) -> bool:
         from yuki.identity.person_identity import same_person_id
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await same_person_id(session, left, right)
 
     async def get(
@@ -304,7 +304,7 @@ class PluginConfigRepository:
     ) -> PluginConfigValueRecord | None:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             from yuki.plugin_host.ownership import (
                 find_config_lineage,
                 resolve_config_owners,
@@ -345,7 +345,7 @@ class PluginConfigRepository:
         key = _storage_key(key, label="config key")
         timestamp = _aware_utc(now or datetime.now(UTC))
         value_json = _json(value)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             return await self._compare_and_set_canonical(
                 session,
                 plugin_id=plugin_id,
@@ -450,7 +450,7 @@ class PluginConfigRepository:
     ) -> bool:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             from yuki.plugin_host.ownership import (
                 find_config_lineage,
                 resolve_config_owners,
@@ -509,7 +509,7 @@ class PluginStateRepository:
         namespace = _storage_key(namespace, label="state namespace")
         key = _storage_key(key, label="state key")
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(
                 select(PluginStateModel).where(
                     PluginStateModel.plugin_id == plugin_id,
@@ -546,7 +546,7 @@ class PluginStateRepository:
 
         namespace = _storage_key(namespace, label="state namespace")
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(PluginStateModel)
@@ -586,7 +586,7 @@ class PluginStateRepository:
         """Return the UTF-8 JSON payload size for one plugin's live state."""
 
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             usage = await session.scalar(
                 select(
                     func.coalesce(
@@ -719,7 +719,7 @@ class PluginStateRepository:
         )
         if expected_version is not None:
             statement = statement.where(PluginStateModel.version == expected_version)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(statement)
             deleted = bool(cast(CursorResult[Any], result).rowcount)
         if expected_version is not None and not deleted:
@@ -732,7 +732,7 @@ class PluginStateRepository:
             PluginStateModel.expires_at.is_not(None),
             PluginStateModel.expires_at <= timestamp,
         )
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             ids = tuple(
                 await reader.scalars(
                     select(PluginStateModel.id)
@@ -778,7 +778,7 @@ class PluginAuditRepository:
             detail_json=_json(_redact_audit(detail or {})),
             created_at=_aware_utc(now or datetime.now(UTC)),
         )
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             session.add(row)
             await session.flush()
             return _audit_record(row)
@@ -798,7 +798,7 @@ class PluginAuditRepository:
         statement = statement.order_by(
             PluginAuditEventModel.created_at.desc(), PluginAuditEventModel.id.desc()
         ).limit(max(1, min(limit, 1_000)))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.scalars(statement)).all()
             return tuple(_audit_record(row) for row in rows)
 

@@ -71,7 +71,9 @@ class PersistenceModule:
         settings = self._settings
         configure_identity_write_settings(settings)
         database = self._database or Database(settings.database_url)
-        self._lifecycle.register("database", close=database.close)
+        self._lifecycle.register(
+            "database", close=database.close if self._database is None else None
+        )
         runtime_config = self._runtime_config or RuntimeConfigService(
             settings=settings,
             database=database,

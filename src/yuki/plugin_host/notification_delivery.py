@@ -116,7 +116,7 @@ class PlatformNotificationTransport:
         if item.prepared is not None:
             message = prepared_transport(item.prepared["content"], message.media)
         else:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 content = await prepare_for_entry(
                     session,
                     message.text,
@@ -501,13 +501,7 @@ class PluginNotificationOutboxWorker:
             )
             return
         try:
-            await self._record_outbound(item, receipt)
-            completed = await self._repository.finish_outbox(
-                item.id,
-                attempt=item.attempts,
-                status="sent",
-                platform_message_id=receipt.message_id,
-            )
+            completed = await self._record_outbound(item, receipt)
             if not completed:
                 logger.error(
                     "notification_post_send_attempt_reclaimed plugin_id=%s part_type=%s",
@@ -549,7 +543,7 @@ class PluginNotificationOutboxWorker:
 
     async def _record_outbound(
         self, item: OutboxRecord, receipt: NotificationDeliveryReceipt
-    ) -> None:
+    ) -> bool:
         scope = ScopeType(item.target_type)
         source = await self._ledger.get_event(item.source_event_id)
         summary = source.content if source is not None else "插件外部事件通知"
@@ -604,27 +598,39 @@ class PluginNotificationOutboxWorker:
                 conversation_id=item.canonical_conversation_id,
             )
         )
-        appended = await ScopedEventLedgerUnitOfWork(self._ledger._database).append(
-            scope=identity,
-            platform_message_id=receipt.message_id,
-            sender_user_id=sender,
-            direction="outbound",
-            content=content,
-            segments=segments,
-            origin="plugin_background",
-            caused_by_event_id=item.source_event_id,
-            space_binding_id=receipt.binding_id if scope is ScopeType.GROUP else None,
-        )
-        event = appended.event
-        if event is None:
-            return
-        if event.ingress_presence_id != receipt.presence_id:
-            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
-        if (
-            item.canonical_conversation_id
-            and event.canonical_conversation_id != item.canonical_conversation_id
-        ):
-            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+        from yuki.persistence.scoped_event_uow import prepare_append
+
+        prepared_append = await prepare_append(content, segments=segments)
+        async with self._ledger._database.immediate_session() as session:
+            completed = await self._repository.finish_outbox(
+                item.id,
+                attempt=item.attempts,
+                status="sent",
+                platform_message_id=receipt.message_id,
+                session=session,
+            )
+            if not completed:
+                return False
+            appended = await ScopedEventLedgerUnitOfWork(self._ledger._database).append(
+                scope=identity,
+                platform_message_id=receipt.message_id,
+                sender_user_id=sender,
+                direction="outbound",
+                content=content,
+                segments=segments,
+                prepared=prepared_append,
+                origin="plugin_background",
+                caused_by_event_id=item.source_event_id,
+                space_binding_id=receipt.binding_id if scope is ScopeType.GROUP else None,
+                session=session,
+            )
+            event = appended.event
+            if event.ingress_presence_id != receipt.presence_id or (
+                item.canonical_conversation_id
+                and event.canonical_conversation_id != item.canonical_conversation_id
+            ):
+                raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+        return True
 
 
 class PluginPermanentDeliveryError(RuntimeError):

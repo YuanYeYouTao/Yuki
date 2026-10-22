@@ -17,7 +17,7 @@ async def test_forget_keeps_shared_sticker_files_without_gallery_provenance(
     database: Database, tmp_path
 ):
     now = datetime(2026, 10, 19, tzinfo=UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         person_id = await ensure_person(session, "1001", display_name="owner", now=now)
         other_id = await ensure_person(session, "1002", display_name="other", now=now)
     from PIL import Image
@@ -33,7 +33,7 @@ async def test_forget_keeps_shared_sticker_files_without_gallery_provenance(
 
     assert await PeopleRepository(database).delete_person("1001") is True
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert int(await session.scalar(text("PRAGMA foreign_keys")) or 0) == 1
         assert await session.get(CanonicalPersonModel, person_id) is None
         assert await session.get(CanonicalPersonModel, other_id) is not None

@@ -165,6 +165,7 @@ class Settings(BaseSettings):
     memory_self_reflection_schedule_hours: str = "4,12,20"
     memory_self_reflection_timezone: str = "Asia/Shanghai"
     memory_self_reflection_poll_seconds: float = 60.0
+    memory_self_reflection_quiet_seconds: float = Field(default=300.0, ge=0)
     memory_self_reflection_max_batches_per_run: int = Field(
         default=32,
         validation_alias=AliasChoices(

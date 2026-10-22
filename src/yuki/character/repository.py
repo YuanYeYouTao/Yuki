@@ -84,7 +84,7 @@ class CharacterRepository:
 
     async def current(self, session: AsyncSession | None = None) -> CharacterCurrent:
         if session is None:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 return await self.current(reader)
         row = await self._profile(session)
         return CharacterCurrent(row.id, row.display_name, row.revision)
@@ -111,7 +111,7 @@ class CharacterRepository:
         return result
 
     async def meta(self) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await self._profile(session)
             return {
                 "api_revision": CLIENT_API_REVISION,
@@ -127,7 +127,7 @@ class CharacterRepository:
             }
 
     async def get(self, principal: ClientPrincipal | None = None) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             owner = False
             if principal is not None:
                 current = await self.identity.require_principal(session, principal)
@@ -196,7 +196,7 @@ class CharacterRepository:
         return result
 
     async def owners(self) -> list[dict[str, Any]]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = await session.scalars(
                 select(CharacterOwnerGrantModel).order_by(
                     CharacterOwnerGrantModel.granted_at, CharacterOwnerGrantModel.person_id

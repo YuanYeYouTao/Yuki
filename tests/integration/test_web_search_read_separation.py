@@ -140,7 +140,7 @@ async def test_code_composition_calls_real_search_reader_and_social_once(
     assert {tool.name for tool in case.provider.requests[0].tools}.isdisjoint({"yuki_web_search"})
     from yuki.runtime.work_schema_v1 import effects
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = (await session.execute(select(effects))).mappings().all()
     children = [
         row
@@ -199,7 +199,7 @@ async def test_app_http_search_historical_read_and_replay_never_repeat_send(
     assert len(env.provider.requests) == 4
     web.search.assert_awaited_once()
     web.extract.assert_awaited_once()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert list(
             await session.scalars(
                 select(ChatEventModel.content).where(
@@ -282,7 +282,7 @@ async def test_main_search_then_historical_read_then_social_send(
         if message.role == "tool" and message.tool_call_id == "explicit-read"
     ]
     assert results and results[-1]["ok"] is not page_fails
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(WebSearchRunModel)) == 0
         assert await session.scalar(select(func.count()).select_from(WebSearchSourceModel)) == 0
         rows = list(await session.scalars(select(ToolArtifactModel)))
@@ -365,11 +365,11 @@ async def test_retired_source_rows_still_expire_with_cascading_sources(database,
                 )
             )
     assert await WebSearchSourceRepository(database).cleanup_expired(retention_days=7, now=now) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(WebSearchRunModel)) == 1
         assert await session.scalar(select(func.count()).select_from(WebSearchSourceModel)) == 1
     assert await PeopleRepository(database).delete_person_id(case.actor.person_id)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(WebSearchRunModel)) == 0
         assert await session.scalar(select(func.count()).select_from(WebSearchSourceModel)) == 0
 

@@ -254,7 +254,7 @@ async def test_deleted_receipt_anchor_returns_original_identity_and_allows_only_
         original = await writer.get(ChatEventModel, sent["event_id"])
         original_conversation = original.canonical_conversation_id
         await writer.delete(original)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.get(SocialOperationModel, sent["operation_id"])
         assert receipt.event_id is None
         assert receipt.original_event_id == sent["event_id"]

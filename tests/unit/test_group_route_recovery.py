@@ -116,7 +116,7 @@ async def pause(database: Database, space: str, binding: str) -> None:
 
 
 async def state(database: Database, space: str, binding: str) -> tuple[object, ...]:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         group = await session.get(CanonicalSpaceModel, space)
         ingest = await session.get(SpaceBindingIngestRouteModel, binding)
         outgoing = await session.get(SpaceActiveRouteModel, space)
@@ -210,7 +210,7 @@ async def test_superuser_on_recovers_legacy_pauses_and_commands_without_chat_sid
     assert after[3:5] == before[3:5]
     assert after[5:7] == (before[5] + 1, before[6] + 1)
     assert after[7:] == before[7:]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
         assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 1
         assert (
@@ -272,7 +272,7 @@ async def test_recovery_rejects_untrusted_or_unreachable_requests(
     sender = Sender(bot)
     await app.processor.handle(request, sender)
     assert await state(database, space, binding) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 0
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
@@ -293,7 +293,7 @@ async def test_recovery_replay_does_not_reapply_after_an_operator_pause(database
     await app.processor.handle(message(), first)
     assert "已处理" in first.messages[-1].text
     assert (await state(database, space, binding))[1:3] == (True, True)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 1
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
@@ -346,7 +346,7 @@ async def test_recovery_audit_failure_rolls_back_routes_and_enable(
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await app.processor.handle(message(), Sender(bot))
     assert await state(database, space, binding) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
         )
@@ -377,7 +377,7 @@ async def test_recovery_race_fails_closed(
     monkeypatch.setattr(app.presence_router, "group_recovery_candidate", raced)
     await app.processor.handle(message(), Sender(bot))
     assert await state(database, space, binding) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 0
 
 
@@ -440,7 +440,7 @@ NEW_GROUP = "490001"
 
 
 async def new_group_binding(database: Database) -> SpaceBindingModel | None:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return await session.scalar(
             select(SpaceBindingModel)
             .where(
@@ -489,7 +489,7 @@ async def test_superuser_on_registers_proven_new_group_atomically_and_replay_is_
     binding = await new_group_binding(database)
     assert binding is not None
     assert probes == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         space = await session.get(CanonicalSpaceModel, binding.space_id)
         ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
         outgoing = await session.get(SpaceActiveRouteModel, binding.space_id)
@@ -516,7 +516,7 @@ async def test_superuser_on_registers_proven_new_group_atomically_and_replay_is_
     assert "已处理" in sender.messages[-1].text
     replayed = await new_group_binding(database)
     assert replayed is not None and replayed.id == binding.id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
         assert ingest is not None and ingest.paused
         assert (
@@ -586,7 +586,7 @@ async def test_new_group_registration_rejects_untrusted_or_unproven_requests(
     assert await new_group_binding(database) is None
     if case == "ambiguous":
         assert "多个可用账号" in sender.messages[-1].text
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 0
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
@@ -630,14 +630,14 @@ async def test_new_group_registration_race_never_creates_or_replaces_owner(
     binding = await new_group_binding(database)
     if change == "existing_owner":
         assert binding is not None
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             space = await session.get(CanonicalSpaceModel, binding.space_id)
             assert space is not None and not space.enabled
             assert await session.get(SpaceBindingIngestRouteModel, binding.id) is None
             assert await session.get(SpaceActiveRouteModel, binding.space_id) is None
     else:
         assert binding is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(AdminOperationEventModel)) == 0
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 0
@@ -650,7 +650,7 @@ async def test_new_group_registration_audit_failure_rolls_back_identity_and_rout
 ) -> None:
     app, bot, _presence, _space, _binding = await stack(database)
     bot.groups |= {NEW_GROUP}
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         space_count = await session.scalar(select(func.count()).select_from(CanonicalSpaceModel))
 
     async def fail_audit(*args: object, **kwargs: object) -> None:
@@ -660,7 +660,7 @@ async def test_new_group_registration_audit_failure_rolls_back_identity_and_rout
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await app.processor.handle(replace(message(), group_id=NEW_GROUP), Sender(bot))
     assert await new_group_binding(database) is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(func.count()).select_from(CanonicalSpaceModel))
             == space_count
@@ -735,7 +735,7 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
     assert error.value.category == "conflict"
     unchanged = await new_group_binding(database)
     assert unchanged is not None and unchanged.id == binding.id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
         outgoing = await session.get(SpaceActiveRouteModel, binding.space_id)
         assert ingest is not None and outgoing is not None
@@ -823,7 +823,7 @@ async def test_group_recovery_depends_only_on_its_actual_platform_connection(
             assert after[1:3] == (False, False)
             assert after[3:5] == before[3:5]
             assert after[7:] == before[7:]
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 assert (
                     await session.scalar(
                         select(func.count()).select_from(ControlCommandReceiptModel)
@@ -903,7 +903,7 @@ async def test_group_recovery_ignores_changes_outside_selected_entry_facts(
         assert after[1:3] == (False, False)
         assert after[3:5] == before[3:5]
         assert after[7:] == before[7:]
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel))
                 == 1
@@ -940,7 +940,7 @@ async def test_group_recovery_rechecks_selected_presence_facts(database, monkeyp
         )
         await app.processor.handle(message(), Sender(bot))
         assert await state(database, space, binding) == before
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel))
                 == 0

@@ -168,7 +168,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         assert receipt.event_id is not None and receipt.status.value == "succeeded"
         from yuki.social.db_models import SocialOperationModel
 
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             saved = await session.get(SocialOperationModel, receipt.operation_id)
             assert saved.source_conversation_id == actor.conversation_id
             assert saved.tool_call_id == "send:1"

@@ -92,7 +92,7 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
     monkeypatch.setattr(probe.backend, "execute_call", observe_original_send)
     original_work = await probe.repository.get(control.current["id"])
     assert original_work["model_requests"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_receipts = [
             dict(row)
             for row in (
@@ -125,7 +125,7 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
         assert recovered.session.transcript.request().continuation == original_continuation
         assert "original-send" in recovered.session.paired_call_ids()
     assert await recovered.session.journal.effect_state(original_key) == "accepted"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         persisted = {
             row["effect_key"]: dict(row)
             for row in (
@@ -181,7 +181,7 @@ async def test_hot_soul_edit_keeps_lost_paid_dispatch_unknown(database, tmp_path
     assert probe.observed == []
     persisted = await probe.repository.get(control.current["id"])
     assert persisted["model_requests"] == 1 and persisted["tool_calls"] == 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(
             select(journal.c.phase).where(journal.c.work_id == control.current["id"])
         ) == "dispatched"
@@ -204,7 +204,7 @@ async def test_paired_work_new_business_activation_uses_new_soul(database, tmp_p
     activate(harness.settings, path, name="初雪", soul="原人格{{name}}", revision=1)
     await harness.processor.handle(inbound, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     saved, receipts, budget = await _facts(database, original["id"])
     assert original["state"] == "queued" and saved["phase"] == "paired"

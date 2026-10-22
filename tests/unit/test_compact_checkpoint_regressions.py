@@ -25,7 +25,7 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
     scopes = [ConversationScope.group("80001", str(20001 + index)) for index in range(view_count)]
     writer = ScopedEventLedgerUnitOfWork(database)
     for index, scope in enumerate(scopes[1:], start=1):
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await ensure_space(session, scope.group_id)
         await seed_scoped_event(
             writer,
@@ -597,7 +597,7 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
     )
     async with database.immediate_session() as writer:
         await publication(writer)
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await ensure_space(writer, "20002")
     await seed_scoped_event(
         ScopedEventLedgerUnitOfWork(database),

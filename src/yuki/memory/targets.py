@@ -53,7 +53,7 @@ class MemoryTargetResolver:
                     )
                 )
             group = inbound.scope_type is ScopeType.GROUP and space_id is not None
-            async with self._people.database.sessions() as session, session.begin():
+            async with self._people.database.read_session() as session:
                 await session.execute(text("BEGIN"))
                 candidates = list(inbound.mentioned_person_ids) if group else []
                 if group and inbound.reply_to_event_id is not None:

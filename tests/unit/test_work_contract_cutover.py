@@ -125,7 +125,7 @@ async def test_new_journal_and_invalidation_preserve_cutover_archive_and_refs(da
     current = WorkSession(control, "current-contract")
     await current.restore(TurnTranscript((ChatMessage("user", "new business material"),)))
     await current.save("paired")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(
                 select(journal.c.archived_journal_json).where(journal.c.work_id == identity)
@@ -136,7 +136,7 @@ async def test_new_journal_and_invalidation_preserve_cutover_archive_and_refs(da
             await reader.scalars(select(refs.c.sha256).where(refs.c.work_id == identity))
         )
     await current.journal.invalidate(control.lease, identity)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         frozen = (
             (await reader.execute(select(journal).where(journal.c.work_id == identity)))
             .mappings()

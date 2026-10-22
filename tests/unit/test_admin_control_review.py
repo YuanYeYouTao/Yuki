@@ -55,7 +55,7 @@ async def test_role_replay_after_merge_never_revives_revoked_root(admin, databas
     replayed = await client.post(url, json=request)
     assert replayed.status_code == 200 and replayed.json() == granted.json()
     assert not (await client.get(f"/admin/v1/persons/{source}")).json()["data"]["is_superuser"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not await person_is_superuser(session, source)
         assert not await person_is_superuser(session, target)
         original = await session.get(CanonicalPersonModel, source)
@@ -99,14 +99,19 @@ async def test_person_role_revocation_before_identity_writer_stops_new_mutation(
     assert grant.status_code == 200, grant.text
     principal = await ControlAccess(database).principal_for_person(actor)
     arrived, proceed = asyncio.Event(), asyncio.Event()
-    original = type(database).apply_snapshot_write
+    from contextlib import asynccontextmanager
 
-    async def delayed(instance, operation):
-        arrived.set()
-        await proceed.wait()
-        return await original(instance, operation)
+    original = database.immediate_session
 
-    monkeypatch.setattr(type(database), "apply_snapshot_write", delayed)
+    @asynccontextmanager
+    async def delayed():
+        if asyncio.current_task() is pending:
+            arrived.set()
+            await proceed.wait()
+        async with original() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", delayed)
     pending = asyncio.create_task(
         api.commands.identity.change_person(
             principal, victim, str(uuid4()), display_name="After revoke"
@@ -268,7 +273,7 @@ async def test_work_discovery_detail_and_cancel_use_original_revision_and_budget
     client, *_ = admin
     scene = await social_env(database, tmp_path)
     repository = WorkRepository(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         generation = await session.scalar(
             select(CanonicalConversationModel.generation).where(
                 CanonicalConversationModel.id == scene.context.conversation_id
@@ -337,7 +342,7 @@ async def test_chat_config_original_writer_and_replay_keep_usable_change_identif
         assert (
             await app.runtime_config.get_effective("context.compact_trigger_tokens")
         ).value == 23456
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             rows = list(
                 await session.scalars(
                     select(ControlCommandReceiptModel).where(
@@ -372,7 +377,7 @@ async def test_config_rollback_of_real_failed_change_returns_domain_rejection(da
             trigger_message_id="review-failed-config",
         )
         assert not failed.success
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             failed_id = await session.scalar(
                 select(AdminOperationEventModel.id).where(
                     AdminOperationEventModel.trigger_message_id == "review-failed-config"

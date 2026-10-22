@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope
@@ -16,7 +17,6 @@ from yuki.identity.canonical_repository import (
     create_space_binding,
 )
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.memory.rebuild.models import MemoryRebuildSelection
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -81,7 +81,7 @@ async def test_rebuild_internal_filters_keep_platforms_and_merged_person_facts(d
     assert await matches(person_ids=(people[0],)) == 1
     assert await matches(presence_ids=(events[0].ingress_presence_id,)) == 1
     assert await matches(conversation_ids=(events[0].canonical_conversation_id,)) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         space = await session.scalar(
             select(CanonicalConversationModel.space_id).where(
                 CanonicalConversationModel.id == events[0].canonical_conversation_id

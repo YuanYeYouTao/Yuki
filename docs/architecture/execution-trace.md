@@ -80,7 +80,8 @@ failures 报告，不能将早期的零缺口解释为全部记录已提交。
 取消 await 不等于线程退出；消费者空闲后也不保留上一条 payload。重启不恢复队列。
 取消和进程终止继续传播，不保证此时仍能记录/交还结果。业务账本、效果回执和 Work
 检查点继续走原同步持久化合同，禁止放入此诊断队列。清理复用现有维护循环，
-每批最多 500 条、批间释放写锁，排空本次到期窗口，不把每批上限变成每小时清理上限。
+先由 reader 选择到期 ID，空批不请求 writer；每批最多 500 条，在 writer 中按原 ID 和
+当前期限复核删除，批间释放写锁，排空本次到期窗口，不把每批上限变成每小时清理上限。
 隐私删除在原删除事务中清空全部可丢弃诊断，并递增诊断删除代次；正在记录的旧轮次
 通过原子代次校验，不能把旧提示词或返回重新写回；排队中的模型调用元数据也检查同一代次，
 避免重新插入删除前的关联。新轮次正常记录。
@@ -113,15 +114,13 @@ failures 报告，不能将早期的零缺口解释为全部记录已提交。
 初次上下文校验的计时不包含 Runner 首次 dispatch 内真正的 projection 发布；
 后者位于 turn_start 之后，仍按实际模型/请求与SQL诊断核对。
 
-`/healthz` 的 `sqlite_diagnostics` 记录固定分桶的 read_sql/other_sql、应用到 pool 的
-connection_acquisition（起点早于 checkout/pre_ping）、写 SQL、显式 writer 获取、首次 deferred 写入、
-真实 commit/rollback 及可观测持有下界。首次写入的驱动排队、SQLite 等待和执行无法精确拆开；
-`driver_queue_seconds`、`pool_wait_seconds` 与 `sqlite_wait_seconds` 保持未知，不能相减推算。
-holder 仅覆盖已安装钩子的 engine，不代表系统所有连接。诊断 writer 的 `queue_wait` 与 `commit_call`
-是自身队列和提交调用耗时，不能冒称数据库锁等待。计量不写 SQLite，不包含正文或参数。
-物理 close 实际完成后才确认释放；强制 queued stop 或关闭失败无法确认释放时结束观测，
-单列 `held_release_unknown` 并标记 `release_confirmed=false`，不计入确认完成桶。
-因此空 holder 列表不能证明不存在尚未确认关闭的 writer。
+`/healthz` 的 `sqlite_diagnostics` 保留 SQL 固定分桶，并由 Database owner 直接记录
+`writer_admission_wait`、`writer_connection_acquisition`、`writer_transaction`、
+`commit`、`rollback` 和 `writer_cleanup`。队列等待发生在 checkout 和 BEGIN IMMEDIATE
+之前；connection acquisition 包含 checkout/pre_ping，transaction 包含当前事务的真实执行，
+cleanup 包含回滚和关闭。这些阶段不能冒称纯 SQLite 锁等待，也不能相减推算驱动或 pool
+内部耗时。诊断写入器自身的 `queue_wait`、`commit_call` 仍只描述诊断队列。旧的 holder、
+首次 deferred 写入和持有下界推算已删除。计量只在内存中聚合，不带正文、参数或凭据。
 
 新增 `model_phases` 使用 phase_version=1：logical_call 从共享 execute 入口到结果/异常
 准备完成，success/error/cancel 使用同一单调边界；preparation、slot_wait、slot_hold、

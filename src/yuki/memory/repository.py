@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import and_, case, event, func, literal, or_, select, text, true, update
+from sqlalchemy import and_, case, func, literal, or_, select, text, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -49,6 +47,7 @@ from yuki.memory.models import (
     MemoryTemporalIntent,
 )
 from yuki.memory.partition import (
+    MemoryFactCanonicalOwners,
     MemoryPartitionResolutionError,
     resolve_active_person_id,
     resolve_active_space_id,
@@ -80,6 +79,36 @@ class PreparedEvidenceCopy:
     values: tuple[dict[str, Any], ...]
     by_source: dict[tuple[int | None, int | None], MemoryEvidenceCreate]
     created_at: datetime
+    source_ids: tuple[int, ...]
+    authority: MemoryAuthority | None
+    evidence_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMemoryEvidence:
+    """The actual readable evidence and local relationship graph used by one mutation."""
+
+    fact_ids: tuple[int, ...]
+    rows: dict[int, tuple[MemoryEvidence, ...]]
+    copies: dict[object, PreparedEvidenceCopy]
+    relation_scopes: tuple[tuple[tuple[int, ...], tuple[tuple[Any, ...], ...]], ...]
+    dream_bundles: dict[tuple[int, ...], tuple[MemoryEvidenceCreate, ...]]
+    targets: list[tuple[MemoryFact | MemoryFactCreate, MemoryFactCanonicalOwners]]
+
+
+def _evidence_values(item: MemoryEvidence) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "fact_id": item.fact_id,
+        "event_id": item.event_id,
+        "tool_receipt_id": item.tool_receipt_id,
+        "source_speaker_user_id": item.source_speaker_user_id,
+        "relation": item.relation.value,
+        "confidence": item.confidence,
+        "authority": item.authority.value,
+        "excerpt": item.excerpt,
+        "created_at": item.created_at,
+    }
 
 
 def _sql_fact_conversation_aligns(fact: Any = MemoryFactModel) -> Any:
@@ -258,7 +287,7 @@ class MemoryFactRepository:
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if not unique_ids:
             return ()
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = await self._execute_facts_with_count(
                 session,
                 [
@@ -295,8 +324,6 @@ class MemoryFactRepository:
             facts = list((await session.scalars(statement)).all())
             missing = tuple(row.id for row in facts if row.id not in counts)
             if missing:
-                if session.info.get("memory_evidence_write_started"):
-                    raise RuntimeError("memory evidence count was not prepared before writing")
                 await self.prepare_evidence_rows(missing, session=session)
             return [(row, counts[row.id]) for row in facts]
         statement = select(MemoryFactModel, readable_evidence_count_expression()).where(*conditions)
@@ -306,49 +333,145 @@ class MemoryFactRepository:
             statement = statement.limit(limit)
         return list((await session.execute(statement)).all())
 
-    @asynccontextmanager
-    async def transaction(self, *, read_snapshot: bool = False) -> AsyncIterator[AsyncSession]:
-        async with self._database.sessions() as session, session.begin():
-            connection = None
-
-            def mark_write(
-                _connection: Any,
-                _cursor: Any,
-                _statement: str,
-                _parameters: Any,
-                context: Any,
-                _executemany: bool,
-            ) -> None:
-                if (
-                    context.isinsert
-                    or context.isupdate
-                    or context.isdelete
-                    or _statement.lstrip()
-                    .upper()
-                    .startswith(("INSERT", "UPDATE", "DELETE", "REPLACE"))
-                ):
-                    session.info["memory_evidence_write_started"] = True
-
-            if read_snapshot:
-                if not self._database.url.startswith("sqlite+"):
-                    raise RuntimeError(
-                        "memory evidence preparation requires SQLite snapshot isolation"
+    async def prepare_write(
+        self, fact_ids: tuple[int, ...], *, session: AsyncSession
+    ) -> PreparedMemoryEvidence:
+        """Read the complete two-hop evidence dependency before entering the writer."""
+        identities = set(fact_ids)
+        relation = MemoryFactRelationModel
+        scopes = []
+        for _ in range(2):
+            selected = tuple(sorted(identities))
+            rows = (
+                tuple(
+                    tuple(row)
+                    for row in await session.execute(
+                        select(
+                            relation.id,
+                            relation.source_fact_id,
+                            relation.target_fact_id,
+                            relation.relation_type,
+                        )
+                        .where(
+                            or_(
+                                relation.source_fact_id.in_(selected),
+                                relation.target_fact_id.in_(selected),
+                            )
+                        )
+                        .order_by(relation.id)
                     )
-                # aiosqlite's legacy transaction mode does not BEGIN for SELECT.
-                # An explicit deferred BEGIN keeps preparation and the eventual
-                # write on one snapshot; WAL rejects stale upgrades atomically.
-                await session.execute(text("BEGIN"))
-                session.info["memory_evidence_counts"] = {}
-                session.info["memory_evidence_rows"] = {}
-                session.info["memory_evidence_additions"] = {}
-                session.info["memory_added_relation_ids"] = []
-                connection = (await session.connection()).sync_connection
-                event.listen(connection, "before_cursor_execute", mark_write)
-            try:
-                yield session
-            finally:
-                if connection is not None:
-                    event.remove(connection, "before_cursor_execute", mark_write)
+                )
+                if selected
+                else ()
+            )
+            scopes.append((selected, rows))
+            identities.update(value for row in rows for value in (row[1], row[2]))
+        await self.prepare_evidence_rows(tuple(sorted(identities)), session=session)
+        return PreparedMemoryEvidence(
+            tuple(sorted(identities)),
+            dict(session.info["memory_evidence_rows"]),
+            session.info.setdefault("memory_evidence_copies", {}),
+            tuple(scopes),
+            session.info.setdefault("memory_dream_evidence_bundles", {}),
+            [],
+        )
+
+    async def use_prepared_write(
+        self, prepared: PreparedMemoryEvidence, *, session: AsyncSession
+    ) -> None:
+        """Recheck current members and source qualification without re-rendering evidence."""
+        relation = MemoryFactRelationModel
+        for target, owners in prepared.targets:
+            if await resolve_fact_canonical_owners(session, target) != owners:
+                raise MemoryPartitionResolutionError("memory_target_changed")
+        for selected, original in prepared.relation_scopes:
+            current = (
+                tuple(
+                    tuple(row)
+                    for row in await session.execute(
+                        select(
+                            relation.id,
+                            relation.source_fact_id,
+                            relation.target_fact_id,
+                            relation.relation_type,
+                        )
+                        .where(
+                            or_(
+                                relation.source_fact_id.in_(selected),
+                                relation.target_fact_id.in_(selected),
+                            )
+                        )
+                        .order_by(relation.id)
+                    )
+                )
+                if selected
+                else ()
+            )
+            if current != original:
+                raise MemoryPartitionResolutionError("memory_relationships_changed")
+        expected = tuple(item for rows in prepared.rows.values() for item in rows)
+        actual_ids = (
+            set(
+                await session.scalars(
+                    select(MemoryEvidenceModel.id)
+                    .join(MemoryFactModel, MemoryFactModel.id == MemoryEvidenceModel.fact_id)
+                    .where(
+                        MemoryEvidenceModel.fact_id.in_(prepared.fact_ids),
+                        readable_evidence_predicate(),
+                    )
+                )
+            )
+            if prepared.fact_ids
+            else set()
+        )
+        if actual_ids != {item.id for item in expected}:
+            raise MemoryPartitionResolutionError("memory_evidence_changed")
+        for offset in range(0, len(expected), 128):
+            page = expected[offset : offset + 128]
+            matching = set(
+                await session.scalars(
+                    select(MemoryEvidenceModel.id).where(
+                        or_(
+                            *(
+                                and_(
+                                    *(
+                                        getattr(MemoryEvidenceModel, key) == value
+                                        for key, value in _evidence_values(item).items()
+                                    )
+                                )
+                                for item in page
+                            )
+                        )
+                    )
+                )
+            )
+            if matching != {item.id for item in page}:
+                raise MemoryPartitionResolutionError("memory_evidence_changed")
+        for copied in prepared.copies.values():
+            statement = self._evidence_copy_statement(
+                copied.source_ids, copied.identity, copied.authority
+            )
+            current_ids = tuple(
+                await session.scalars(statement.with_only_columns(MemoryEvidenceModel.id))
+            )
+            if current_ids != copied.evidence_ids:
+                raise MemoryPartitionResolutionError("memory_evidence_copy_changed")
+        session.info.update(
+            memory_dream_evidence_bundles=dict(prepared.dream_bundles),
+            memory_evidence_rows=dict(prepared.rows),
+            memory_evidence_counts={
+                identity: len(rows) for identity, rows in prepared.rows.items()
+            },
+            memory_evidence_copies=dict(prepared.copies),
+            memory_evidence_additions={},
+            memory_added_relation_ids=[],
+        )
+
+    @asynccontextmanager
+    async def write_session(self, prepared: PreparedMemoryEvidence) -> AsyncIterator[AsyncSession]:
+        async with self._database.immediate_session() as session:
+            await self.use_prepared_write(prepared, session=session)
+            yield session
 
     async def prepare_evidence_rows(
         self, fact_ids: tuple[int, ...], *, session: AsyncSession
@@ -360,8 +483,6 @@ class MemoryFactRepository:
         missing = tuple(dict.fromkeys(i for i in fact_ids if i not in rows_by_fact))
         if not missing:
             return
-        if session.info.get("memory_evidence_write_started"):
-            raise RuntimeError("memory evidence was not prepared before writing")
         for offset in range(0, len(missing), 256):
             page = missing[offset : offset + 256]
             rows = (
@@ -379,39 +500,6 @@ class MemoryFactRepository:
                 rows_by_fact[fact_id] = tuple(evidence)
                 counts[fact_id] = len(evidence)
 
-    async def apply_evidence_write(
-        self, operation: Callable[[AsyncSession], Awaitable[_Result]]
-    ) -> _Result:
-        """Run only a pure database mutation; post-commit work belongs to its caller."""
-        while True:
-            operation_failure: OperationalError | None = None
-            try:
-                async with self.transaction(read_snapshot=True) as session:
-                    try:
-                        result = await operation(session)
-                        # ORM callbacks may defer their first DML until commit.
-                        # Flush belongs to the pure operation, while physical
-                        # commit acknowledgement remains outside this boundary.
-                        await session.flush()
-                    except OperationalError as exc:
-                        operation_failure = exc
-                        raise
-                return result
-            except OperationalError as exc:
-                # The identical operation error survives only after the context
-                # successfully rolls back. Commit/cleanup errors prove neither
-                # a safe retry nor absence of durable effects.
-                original = exc.orig
-                if (
-                    exc is not operation_failure
-                    or original is None
-                    or ((getattr(original, "sqlite_errorcode", 0) or 0) & 0xFF) != 5
-                ):
-                    raise
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
-                    raise asyncio.CancelledError from None
-
     async def list_facts(
         self,
         query: MemoryFactQuery,
@@ -421,12 +509,13 @@ class MemoryFactRepository:
         include_quarantined: bool = False,
         order_by_id: bool = False,
         order_by_id_desc: bool = False,
+        memory_key: str | None = None,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
         if order_by_id and order_by_id_desc:
             raise ValueError("memory facts cannot use both ascending and descending id order")
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_facts(
                     query,
                     limit=limit,
@@ -434,6 +523,7 @@ class MemoryFactRepository:
                     include_quarantined=include_quarantined,
                     order_by_id=order_by_id,
                     order_by_id_desc=order_by_id_desc,
+                    memory_key=memory_key,
                     session=owned,
                 )
         conditions = [
@@ -447,6 +537,8 @@ class MemoryFactRepository:
         conditions.extend(await self._query_identity_conditions(session, query))
         if query.kind is not None:
             conditions.append(MemoryFactModel.kind == query.kind.value)
+        if memory_key is not None:
+            conditions.append(MemoryFactModel.memory_key == memory_key)
         if query.status is MemoryStatus.ACTIVE:
             conditions.append(
                 or_(
@@ -473,7 +565,7 @@ class MemoryFactRepository:
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.get_fact(fact_id, session=owned)
         rows = await self._execute_facts_with_count(
             session,
@@ -511,7 +603,7 @@ class MemoryFactRepository:
         if not unique_ids:
             return ()
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.get_active_for_target(target, unique_ids, session=owned)
         rows = await self._execute_facts_with_count(
             session,
@@ -544,7 +636,7 @@ class MemoryFactRepository:
         if not unique_ids:
             return ()
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.get_active_for_exact_target(target, unique_ids, session=owned)
         rows = await self._execute_facts_with_count(
             session,
@@ -580,7 +672,7 @@ class MemoryFactRepository:
         ):
             return None
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.find_global_self_cover(
                     fact,
                     normalized_content=normalized_content,
@@ -622,7 +714,7 @@ class MemoryFactRepository:
         """Return bounded same-target candidates; never widens an identity scope."""
 
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_conflict_candidates(
                     fact,
                     normalized_content=normalized_content,
@@ -676,7 +768,7 @@ class MemoryFactRepository:
         if not statuses or (memory_key is None and normalized_content is None):
             return ()
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_mutation_locator_candidates(
                     target,
                     memory_key=memory_key,
@@ -751,7 +843,7 @@ class MemoryFactRepository:
         limit: int,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryFact, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = await self._execute_facts_with_count(
                 session,
                 [
@@ -778,7 +870,7 @@ class MemoryFactRepository:
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if not unique_ids:
             return 0
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 update(MemoryFactModel)
                 .where(
@@ -1002,17 +1094,12 @@ class MemoryFactRepository:
             session.info["memory_added_relation_ids"].append(relation_id)
         return relation_id is not None
 
-    async def prepare_evidence_copy(
-        self,
-        source_fact_ids: tuple[int, ...],
-        *,
+    @staticmethod
+    def _evidence_copy_statement(
+        source_ids: tuple[int, ...],
         identity: tuple[object, ...],
         authority: MemoryAuthority | None,
-        session: AsyncSession,
-    ) -> PreparedEvidenceCopy:
-        """Apply both source and replacement owner predicates before the writer."""
-        if session.info.get("memory_evidence_write_started"):
-            raise RuntimeError("memory evidence copy was not prepared before writing")
+    ) -> Any:
         target = select(
             *(
                 literal(value).label(name)
@@ -1030,7 +1117,6 @@ class MemoryFactRepository:
                 )
             )
         ).cte("prepared_memory_fact")
-        source_ids = tuple(dict.fromkeys(source_fact_ids))
         copied = (
             select(
                 *(
@@ -1073,6 +1159,19 @@ class MemoryFactRepository:
                 MemoryEvidenceModel.id.desc(),
             )
         )
+        return statement
+
+    async def prepare_evidence_copy(
+        self,
+        source_fact_ids: tuple[int, ...],
+        *,
+        identity: tuple[object, ...],
+        authority: MemoryAuthority | None,
+        session: AsyncSession,
+    ) -> PreparedEvidenceCopy:
+        """Apply both source and replacement owner predicates before the writer."""
+        source_ids = tuple(dict.fromkeys(source_fact_ids))
+        statement = self._evidence_copy_statement(source_ids, identity, authority)
         rows = (await session.execute(statement)).mappings().all()
         by_source: dict[tuple[int | None, int | None], MemoryEvidenceCreate] = {}
         for row in rows:
@@ -1105,7 +1204,15 @@ class MemoryFactRepository:
             }
             for item in by_source.values()
         )
-        return PreparedEvidenceCopy(identity, values, by_source, created_at)
+        return PreparedEvidenceCopy(
+            identity,
+            values,
+            by_source,
+            created_at,
+            source_ids,
+            authority,
+            tuple(row["id"] for row in rows),
+        )
 
     async def copy_prepared_evidence(
         self,
@@ -1269,7 +1376,7 @@ class MemoryFactRepository:
         session: AsyncSession | None = None,
     ) -> tuple[MemoryEvidence, ...]:
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_evidence(fact_id, limit=limit, session=owned)
         prepared = session.info.get("memory_evidence_rows")
         if prepared is not None:
@@ -1316,7 +1423,7 @@ class MemoryFactRepository:
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFactRelation, ...]:
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_relations(fact_id, session=owned)
         rows = (
             await session.scalars(
@@ -1347,7 +1454,7 @@ class MemoryFactRepository:
         self, fact_id: int, *, session: AsyncSession | None = None
     ) -> tuple[MemoryFactStateEvent, ...]:
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_state_events(fact_id, session=owned)
         rows = (
             await session.scalars(
@@ -1400,7 +1507,7 @@ class MemoryFactRepository:
             )
         if space_id is not None:
             conditions.append(MemoryFactModel.canonical_subject_space_id == space_id)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             try:
                 if subject_user_id is not None:
                     conditions.append(
@@ -1432,7 +1539,7 @@ class MemoryFactRepository:
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.list_expired_candidates(now=now, limit=limit, session=owned)
         rows = await self._execute_facts_with_count(
             session,
@@ -1454,7 +1561,7 @@ class MemoryFactRepository:
         session: AsyncSession | None = None,
     ) -> int:
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.count_active(query, session=owned)
         conditions = [
             MemoryFactModel.scope_type == query.scope_type.value,
@@ -1632,12 +1739,13 @@ class MemoryJobRepository:
         conversation_key: str,
     ) -> tuple[bool, str]:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.read_session() as session:
             stored_key = await session.scalar(
                 select(MemoryJobModel.conversation_key).where(MemoryJobModel.event_id == event_id)
             )
             if stored_key is not None:
                 return False, stored_key
+            await session.execute(text("BEGIN"))
             event = await session.get(ChatEventModel, event_id)
             if event is None:
                 logger.warning(
@@ -1695,6 +1803,49 @@ class MemoryJobRepository:
             person_id = partition.person_id
             space_id = partition.space_id
             stored_key = partition.value[:255]
+            event_values = {
+                name: getattr(event, name)
+                for name in (
+                    "id",
+                    "canonical_event_id",
+                    "canonical_conversation_id",
+                    "author_person_id",
+                    "sender_user_id",
+                    "ingress_presence_id",
+                    "group_id",
+                    "private_peer_user_id",
+                    "scope_type",
+                )
+            }
+            author_lookup = (
+                (
+                    event.sender_user_id,
+                    presence.platform if presence is not None else "qq",
+                    event.author_person_id,
+                )
+                if event.author_person_id
+                else None
+            )
+        async with self._database.immediate_session() as session:
+            current_event_id = await session.scalar(
+                select(ChatEventModel.id).where(
+                    *(getattr(ChatEventModel, key) == value for key, value in event_values.items()),
+                    *cast(Any, self._eligibility.sql_conditions(include_failed_live_jobs=False)),
+                )
+            )
+            if current_event_id is None or await refuse_legacy_live_event(session, event):
+                return False, stored_key
+            if await resolve_memory_partition_for_event(session, event) != partition:
+                return False, stored_key
+            if author_lookup is not None:
+                try:
+                    current_author = await resolve_active_person_id(
+                        session, author_lookup[0], platform=author_lookup[1]
+                    )
+                except MemoryPartitionResolutionError:
+                    current_author = None
+                if current_author != author_lookup[2]:
+                    return False, stored_key
             statement = insert(MemoryJobModel).values(
                 event_id=event_id,
                 conversation_key=stored_key,
@@ -1743,7 +1894,7 @@ class MemoryJobRepository:
                 )
             ),
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             summary = (
                 await session.execute(
@@ -1826,7 +1977,7 @@ class MemoryJobRepository:
         now = datetime.now(UTC)
         stale = now - timedelta(minutes=5)
         prepared: list[PreparedJobClaim] = []
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(MemoryJobModel)
@@ -1967,7 +2118,7 @@ class MemoryJobRepository:
             ),
         )
         prepared: list[PreparedJobClaim] = []
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             owner_ready = (
                 await session.execute(
                     select(
@@ -2120,11 +2271,12 @@ class MemoryJobRepository:
                 raise MemoryJobClaimLost(f"memory job {job.id} claim lost")
 
         try:
-            await MemoryFactRepository(self._database).apply_evidence_write(finish)
+            async with self._database.immediate_session() as session:
+                await finish(session)
         except MemoryJobClaimLost:
             raise
         except Exception:
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 current = await reader.get(MemoryJobModel, job.id)
                 if (
                     current is not None
@@ -2138,7 +2290,7 @@ class MemoryJobRepository:
     async def fail(self, job: MemoryJob, error_category: str) -> None:
         now = datetime.now(UTC)
         attempts = job.attempts + 1
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 update(MemoryJobModel)
                 .where(*memory_job_claim_conditions(job))

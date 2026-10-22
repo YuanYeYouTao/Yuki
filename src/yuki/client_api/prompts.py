@@ -220,7 +220,7 @@ class ClientPrompts:
         from yuki.client_api.requests import ClientRequests
 
         requests = ClientRequests(self.identity, prompts=self)
-        async with self.identity.database.sessions() as reader:
+        async with self.identity.database.read_session() as reader:
             principal = await self.identity.require_principal(reader, principal)
             event = await requests.message(reader, principal, request_id)
             if event is None:

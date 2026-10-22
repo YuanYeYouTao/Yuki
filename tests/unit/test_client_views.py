@@ -99,7 +99,7 @@ async def test_snapshot_and_keysets_read_only_own_private_entries(app_env, datab
     assert [item["event_id"] for item in expanded.json()["data"]["items"]] == event_ids
     assert expanded.json()["data"]["has_more"] is False
     assert await original.repository.get(original.row["id"]) == original.row
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await find_identity_binding(session, "1001")).person_id == person
 
 
@@ -189,7 +189,7 @@ async def test_post_commit_hook_never_publishes_rollback_and_covers_session_begi
         async with database.immediate_session():
             raise RuntimeError("rollback")
     assert queue.empty()
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session():
         pass
     assert await queue.get() is True
     database.commit_hints.unsubscribe(queue)

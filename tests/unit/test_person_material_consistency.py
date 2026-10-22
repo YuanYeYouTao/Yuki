@@ -6,12 +6,12 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
+from tests.support.person_merge import merge_persons
 from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_person_plugin_merge import setup
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.memory.enums import MemoryScopeType, MemorySourceType, MemoryStatus, SelfMemoryVisibility
 from yuki.memory.models import MemoryFactCreate, MemoryFactQuery
 from yuki.memory.mutation.models import (
@@ -63,9 +63,8 @@ async def test_sdk_write_after_merge_rejects_different_row_with_equal_version(
         result = await original_get(**kwargs)
         if not merged:
             merged = True
-            await database.apply_snapshot_write(
-                lambda writer: merge_persons(writer, source, target)
-            )
+            async with database.immediate_session() as writer:
+                await merge_persons(writer, source, target)
         return result
 
     monkeypatch.setattr(repository, "get", read_then_merge)
@@ -103,7 +102,8 @@ async def test_original_scope_cas_delete_after_merge_preserves_target_equal_vers
         expected_version=0,
         value="target-explicit-choice",
     )
-    await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
     with pytest.raises(PluginVersionConflictError):
         await repository.delete(
             plugin_id=plugin,
@@ -210,7 +210,8 @@ async def test_merge_memory_duplicate_keys_remain_independent_and_fact_id_is_edi
     async with database.immediate_session() as writer:
         old_source_person = await writer.get(CanonicalPersonModel, source)
         old_source_person.enabled = False
-    await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
     for reference in (source, target):
         query = (
             MemoryFactQuery(
@@ -254,7 +255,8 @@ async def test_memory_prepare_then_same_human_merge_commits_original_actor(datab
 
     async def merge_then_commit(prepared, **kwargs):
         actors.append(prepared.actor_person_id)
-        await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+        async with database.immediate_session() as writer:
+            await merge_persons(writer, source, target)
         return await original_commit(prepared, **kwargs)
 
     monkeypatch.setattr(service, "_commit_prepared", merge_then_commit)
@@ -276,7 +278,7 @@ async def test_memory_prepare_then_same_human_merge_commits_original_actor(datab
     saved = await facts.get_fact(result.new_fact_id)
     # The prepared fact keeps its original owner; current reads use the family.
     assert saved.canonical_subject_person_id == source
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.scalar(
             select(MemoryMutationReceiptModel).where(
                 MemoryMutationReceiptModel.new_fact_id == result.new_fact_id
@@ -356,7 +358,8 @@ async def test_original_config_revision_survives_owner_move_and_new_row_never_re
 
     service = PluginConfigurationService(database, lambda _: Schema)
     document = await service.read(plugin, scope_type="user", owner_id=source)
-    await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
     assert (await service.read(plugin, scope_type="user", owner_id=source))["revision"] == document[
         "revision"
     ]
@@ -412,7 +415,8 @@ async def test_plugin_merge_selects_complete_object_and_sdk_preserves_field_meta
             expected_version=0,
             value=value,
         )
-    await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
     document = await PluginConfigurationService(database, lambda _: Schema).read(
         plugin, scope_type="user", owner_id=source
     )
@@ -449,10 +453,9 @@ async def test_merge_archived_config_is_redacted_and_person_forget_removes_its_c
             expected_version=0,
             value=value,
         )
-    await database.apply_snapshot_write(
-        lambda writer: merge_persons(writer, source, target, actor_id=foreign)
-    )
-    async with database.sessions() as reader:
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target, actor_id=foreign)
+    async with database.read_session() as reader:
         audit = await reader.scalar(
             select(AdminOperationEventModel).where(
                 AdminOperationEventModel.operation == "identity.person.merge"
@@ -466,7 +469,7 @@ async def test_merge_archived_config_is_redacted_and_person_forget_removes_its_c
         assert len(snapshots) == 2
         assert {snapshot["row"]["canonical_person_id"] for snapshot in snapshots} == {source}
     assert await PeopleRepository(database).delete_person_id(target)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         retained = await reader.get(AdminOperationEventModel, audit_id)
         assert retained is not None
         assert "PRIVATE PROFILE BODY" not in retained.before_json

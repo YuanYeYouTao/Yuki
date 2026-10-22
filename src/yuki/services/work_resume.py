@@ -160,7 +160,7 @@ class WorkResumer:
             if current and current["state"] in {"queued", "running"}:
                 control.current = current
                 if orphan or (deferred is not None and isinstance(failure, WorkConflict)):
-                    async with self.repository.database.sessions() as reader:
+                    async with self.repository.database.read_session() as reader:
                         phase = await reader.scalar(
                             select(journal.c.phase).where(journal.c.work_id == item["id"])
                         )
@@ -397,7 +397,7 @@ class WorkResumer:
                 )
                 from yuki.identity.authority import person_is_superuser
 
-                async with self.repository.database.sessions() as authority_session:
+                async with self.repository.database.read_session() as authority_session:
                     actor_is_superuser = await person_is_superuser(
                         authority_session,
                         recovered.actor_person_id,

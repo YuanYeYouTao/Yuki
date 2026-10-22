@@ -14,10 +14,10 @@ from yuki.identity.person_state import prepare_message_account_observations
 @pytest.mark.asyncio
 async def test_unknown_native_mention_records_account_without_creating_person(database):
     now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await ensure_person(session, "10001")
         await ensure_space(session, "20001")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original_count = await session.scalar(
             select(func.count()).select_from(CanonicalPersonModel)
         )
@@ -31,7 +31,7 @@ async def test_unknown_native_mention_records_account_without_creating_person(da
         mentions=(MessageMention("member", 0, 0, 8, "90002", "Unknown"),),
         segments=({"type": "at", "data": {"qq": "90002", "name": "Unknown"}},),
     )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await find_space_binding(session, "20001")
         prepared, apply = await prepare_message_account_observations(
             session, message, space_binding_id=binding.id, now=now
@@ -40,7 +40,7 @@ async def test_unknown_native_mention_records_account_without_creating_person(da
         assert prepared.mentions[0].account_id
         assert prepared.mentions[0].person_id is None
         apply()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(func.count()).select_from(CanonicalPersonModel))
             == original_count

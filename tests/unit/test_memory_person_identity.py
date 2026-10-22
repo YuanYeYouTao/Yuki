@@ -19,11 +19,15 @@ from yuki.persistence.people_repository import PeopleRepository
 
 
 async def merge_people(database, source, target):
-    from yuki.identity.person_identity import merge_persons
+    from sqlalchemy import text
 
-    return await database.apply_snapshot_write(
-        lambda session: merge_persons(session, source, target)
-    )
+    from yuki.identity.person_identity import merge_persons, prepare_person_merge
+
+    async with database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        prepared = await prepare_person_merge(reader, source, target)
+    async with database.immediate_session() as writer:
+        return await merge_persons(writer, source, target, prepared=prepared)
 
 
 async def test_forget_whole_family_preserves_original_social_receipt_and_other_person(
@@ -62,7 +66,7 @@ async def test_forget_whole_family_preserves_original_social_receipt_and_other_p
     calls = tuple(env.bot.calls)
     unbound = str(uuid4())
     now = datetime.now(UTC)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         target = (await find_identity_binding(reader, "1002")).person_id
         other = (await find_identity_binding(reader, "1003")).person_id
     async with database.immediate_session() as writer:
@@ -84,7 +88,7 @@ async def test_forget_whole_family_preserves_original_social_receipt_and_other_p
     await merge_people(database, env.person, target)
     await merge_people(database, unbound, target)
     assert await PeopleRepository(database).delete_person_id(env.person)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert all(
             [
                 await reader.get(CanonicalPersonModel, person) is None
@@ -174,7 +178,7 @@ async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references
     )
     assert await PeopleRepository(database).delete_person_id(origin.author_person_id)
     assert await tasks.get(request_id) is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(SandboxTaskContinuationModel, request_id) is None
         kept = await reader.get(ChatEventModel, reply.id)
         assert kept.content == reply.content and kept.reply_to_event_id is None
@@ -201,7 +205,7 @@ async def test_current_memory_scope_reads_merged_person_and_private_self_without
     from yuki.memory.service import MemoryFactService
     from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = (await find_identity_binding(reader, "1001")).person_id
         target = (await find_identity_binding(reader, "1002")).person_id
         other = (await find_identity_binding(reader, "1003")).person_id
@@ -284,7 +288,7 @@ async def test_paid_dream_preview_survives_person_merge_with_original_proof(data
 
     await reserve_paid_request()
     await service.preview_cluster(run.public_id, cluster.id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         preview = await reader.scalar(select(MemoryDreamClusterPreviewModel))
         original = preview.source_fingerprint, preview.proposal_json
         source = (await find_identity_binding(reader, "1001")).person_id
@@ -302,10 +306,10 @@ async def test_paid_dream_preview_survives_person_merge_with_original_proof(data
     finally:
         before_provider_request.reset(token)
     assert len(provider.requests) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         preview = await reader.get(MemoryDreamClusterPreviewModel, preview.id)
         assert (preview.source_fingerprint, preview.proposal_json) == original
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         originals = await facts.repository.get_facts(tuple(row.id for row in rows), session=reader)
     assert [row.canonical_subject_person_id for row in originals] == [
         row.canonical_subject_person_id for row in rows
@@ -313,7 +317,7 @@ async def test_paid_dream_preview_survives_person_merge_with_original_proof(data
 
 
 async def test_rebuild_keeps_original_legacy_mention_after_account_transfer(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         old_owner = (await find_identity_binding(reader, "1001")).person_id
 
     def extract(request):
@@ -356,7 +360,7 @@ async def test_rebuild_keeps_original_legacy_mention_after_account_transfer(data
     assert not event.mentioned_person_ids  # Original pre-platform ledger has transport selectors.
     from tests.support.memory_identity import transfer_account
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current_owner = (await find_identity_binding(reader, "1003")).person_id
     await transfer_account(database, "1001", "1003")
     assert (await ledger.hydrate_rebuild_subjects(event)).mentioned_person_ids == (old_owner,)
@@ -371,7 +375,7 @@ async def test_rebuild_keeps_original_legacy_mention_after_account_transfer(data
     )
     run = await service.start(run.public_id, actor_user_id=await _admin(database))
     assert await service.process_extraction_once(run) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
         assert proposal is not None
         assert proposal.canonical_subject_person_id == old_owner
@@ -387,7 +391,7 @@ async def test_rebuild_keeps_original_legacy_mention_after_account_transfer(data
     assert await service.process_commit_once(run) == 1
     from yuki.persistence.models import MemoryFactModel
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         fact = await reader.scalar(select(MemoryFactModel))
         assert fact is not None
         assert fact.canonical_subject_person_id == old_owner != current_owner
@@ -430,7 +434,7 @@ async def test_new_dream_merges_same_person_original_facts_without_rewriting_sou
             direction="inbound",
             content="我喜欢玩围棋",
         )
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             conversation = await reader.get(
                 CanonicalConversationModel, event.canonical_conversation_id
             )
@@ -525,7 +529,7 @@ async def test_new_dream_merges_same_person_original_facts_without_rewriting_sou
         True,
     )
     assert len(provider.requests) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         kept = await facts.repository.get_facts(tuple(row.id for row in originals), session=reader)
         assert [row.canonical_subject_person_id for row in kept] == [
             row.canonical_subject_person_id for row in originals
@@ -571,7 +575,7 @@ async def test_forget_target_only_keeps_other_group_self_experience_and_tool_rec
         direction="inbound",
         content="另一个人的群内请求",
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.get(CanonicalConversationModel, event.canonical_conversation_id)
         target = (await find_identity_binding(reader, "1001")).person_id
         source_row = await reader.get(ChatEventModel, event.id)
@@ -630,7 +634,7 @@ async def test_forget_target_only_keeps_other_group_self_experience_and_tool_rec
     )
     assert result.ok, result.reason_code
     assert await PeopleRepository(database).delete_person_id(target)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         run = await reader.get(InitiativeRunModel, run_id)
         assert run is not None and run.target_person_id is None and run.state == "no_reply"
         assert await reader.get(InitiativeFeedbackModel, (run_id, 1)) is not None
@@ -675,7 +679,7 @@ async def test_forget_removes_initiative_receipts_with_actually_erased_source(
         )
     erased, retained = events
     focus = retained if support_only else erased
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.get(CanonicalConversationModel, focus.canonical_conversation_id)
         source_row = await reader.get(ChatEventModel, focus.id)
         source = (
@@ -700,13 +704,13 @@ async def test_forget_removes_initiative_receipts_with_actually_erased_source(
     run_id = admission.run.run_id
     await record(database, focus, run_id)
     await autonomy.record_feedback(run_id, sequence=1, outcome="no_reply")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.scalar(
             select(MemoryToolReceiptModel).where(MemoryToolReceiptModel.initiative_run_id == run_id)
         )
         receipt_id = receipt.id
     assert await PeopleRepository(database).delete_person_id(erased.author_person_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(InitiativeRunModel, run_id) is None
         assert await reader.get(InitiativeFeedbackModel, (run_id, 1)) is None
         assert await reader.get(MemoryToolReceiptModel, receipt_id) is None

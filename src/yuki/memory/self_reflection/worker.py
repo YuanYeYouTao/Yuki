@@ -90,15 +90,10 @@ class SelfReflectionWorker:
 
     async def process_once(self, now: datetime | None = None, *, force: bool = False) -> int:
         async with self._process_lock:
-            await self._repository.scan_new_events()
             local = (now or datetime.now(UTC)).astimezone(self._timezone)
             base = f"{local.date().isoformat()}:{local.hour:02d}"
             if local.hour in self._hours or force:
                 await self.control.enqueue(trigger="scheduled", key=base)
-            elif await self.control.retry_due():
-                await self.control.enqueue(
-                    trigger="retry", key=f"retry:{int(local.timestamp() // 300)}"
-                )
             cycle = await self.control.claim()
             count = await self._process_cycle(cycle, local) if cycle else 0
             await self._deliver_reports()
@@ -111,7 +106,10 @@ class SelfReflectionWorker:
         while (
             attempted < self._settings.memory_self_reflection_max_batches_per_run
             and not self._stop.is_set()
+            and cycle["trigger"] != "retry"
+            and not any(row["error"] == "preempted" for row in rows)
         ):
+            await self._service.wait_for_quiet()
             await self._repository.scan_new_events()
             batches = await self._repository.claim_due(
                 scheduled_slot=f"{local.date().isoformat()}:{cycle['id'][3:15]}:{attempted}",
@@ -142,6 +140,8 @@ class SelfReflectionWorker:
                     batch.run_id,
                     category,
                 )
+                if category == "preempted":
+                    break
                 if isinstance(exc, ReflectionDailyLimit):
                     exhausted = True
                     break
@@ -177,7 +177,6 @@ class SelfReflectionWorker:
             if snapshot["recent_not_due"]["events"]
             else "no_actionable_backlog",
         }
-        await self._repository.scan_new_events()
         await self.control.finish(cycle["id"], report)
         await self._repository.cleanup_receipts()
         return len(completed)

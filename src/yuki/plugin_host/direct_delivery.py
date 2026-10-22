@@ -77,7 +77,7 @@ async def prepare_delivery(
         ):
             raise SocialError("idempotency_conflict")
         return repository, prior, prior.presence_id or ""
-    async with ledger._database.sessions() as session:
+    async with ledger._database.read_session() as session:
         target, presence_id, binding_id = await validate_delivery_source(
             session,
             source_conversation_id=source_conversation_id,

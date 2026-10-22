@@ -11,7 +11,7 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def references(database, event_id):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return set(
             await reader.execute(
                 select(
@@ -69,7 +69,7 @@ async def test_original_segment_pairs_are_distinct_and_follow_edit_and_forget(da
     assert await references(database, original.id) == {
         ("immutable-artifact", "replacement-version")
     }
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current = await reader.get(ChatEventModel, original.id)
         assert current.canonical_event_id == original.canonical_event_id
         assert current.author_presence_id == original.author_presence_id

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-import sqlite3
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -86,12 +86,12 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
         original_proposal_id = proposals[0].proposal_id
         original_statistics = await service.repository.statistics(run.public_id)
 
-    ready, write, busy = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    prepare = facts.prepare_evidence_write
+    ready, write, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    prepare = facts.prepare_write
 
     async def prepared(*args, **kwargs):
         result = await prepare(*args, **kwargs)
-        if "memory_evidence_counts" in kwargs["session"].info:
+        if not ready.is_set():
             ready.set()
             await write.wait()
         return result
@@ -100,9 +100,18 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
 
     def record(context):
         errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
-        busy.set()
 
-    monkeypatch.setattr(facts, "prepare_evidence_write", prepared)
+    original_writer = database.immediate_session
+
+    @asynccontextmanager
+    async def capture_writer():
+        if asyncio.current_task() is worker._task:
+            waiting.set()
+        async with original_writer() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", capture_writer)
+    monkeypatch.setattr(facts, "prepare_write", prepared)
     event.listen(database.engine.sync_engine, "handle_error", record)
     await worker.start()
     try:
@@ -115,15 +124,15 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
             await writer.execute(
                 update(MemoryFactModel).values(updated_at=MemoryFactModel.updated_at)
             )
+            waiting.clear()
             write.set()
-            await asyncio.wait_for(busy.wait(), timeout=5)
+            await asyncio.wait_for(waiting.wait(), timeout=5)
             task = worker._task
             await asyncio.wait_for(worker.close(), timeout=5)
             assert task.done() and task.cancelled()
-        assert errors[0] == sqlite3.SQLITE_BUSY
-        assert all(code in {None, sqlite3.SQLITE_BUSY} for code in errors)
+        assert errors == []
         assert provider.requests == 1
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
             assert (
                 await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
@@ -151,14 +160,14 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
             # Reuse the already obtained claim in this test process; no new extraction.
             result = await worker._process_claims(recovered, (_claim(),))
             await jobs.complete(recovered, outcome=result.outcome)
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 assert (await session.get(MemoryJobModel, identity)).status == "done"
         else:
             assert await worker.process_once() == 1
             current = await service.repository.get_run(run.public_id)
             assert current.public_id == run.public_id
             assert current.status is MemoryRebuildRunStatus.COMPLETED
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 proposal = await session.get(MemoryRebuildProposalModel, original_proposal_id)
                 assert proposal.commit_status == "committed"
         assert provider.requests == 1

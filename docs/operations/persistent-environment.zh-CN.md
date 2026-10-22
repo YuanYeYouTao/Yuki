@@ -21,6 +21,11 @@ Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人
 
 执行默认不计时；显式 `timeout_seconds=0` 也不设期限，正值使用指定期限，没有软件最大值。取消一次读取只取消观察，不停止命令。空输出不表示完成，非零退出不撤销此前文件写入；日志轮转会明确标记游标丢失。
 
+Bot 的任务意图、completion、permission 回调与 continuation 使用主库共享 writer，沿原
+request/run 提交后才 ACK；completion 与父 Work 输入仍原子结算。文件、JSON 准备和远端等待
+在 writer 外完成。Manager 的独立 jobs.sqlite3 保留自己的 SQLite owner，不接入 Bot 的主库队列；
+取消观察或 Bot 重启不会凭空取消原 Manager 执行，也不会重新提交已有请求。
+
 新 Python、Node 和系统包工作均使用终端。`run_python`、`environment_packages`、`get_code_run`、`cancel_code_run` 和 `terminal_write` 不再接受新调用。旧 Python/APT 任务仍按原运行编号由 `terminal_read` 读取、由原 completion outbox 确认。升级不会启动旧未派发 APT，也不会重放已经派发但结果未知的安装。不再新建安装预算、dpkg 收集或自动 Docker 检查点；已有检查点镜像与原回执保留。
 
 `environment_service` 保留登记、启动、停止、删除、状态、日志和真正的跨环境启动恢复，沿原 `restart` 策略执行。显式停止先禁用恢复；没有服务数量或连续失败次数封顶。修改登记保留正在运行的原执行，下次实际启动采用新内容。

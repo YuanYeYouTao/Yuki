@@ -43,7 +43,7 @@ def missing_receipt_source():
         yield session
 
     return (
-        SimpleNamespace(sessions=sessions),
+        SimpleNamespace(read_session=sessions),
         SocialContext(turn_id="receipt-read", call_id="receipt", conversation_id=source_id),
         operation,
         session,

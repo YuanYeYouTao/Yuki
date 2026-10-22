@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -170,7 +169,7 @@ class PluginNotificationRepository:
         )
 
     async def unprepared_outbox(self, *, after_id: int = 0) -> tuple[OutboxRecord, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = await session.scalars(
                 select(PluginNotificationOutboxModel)
                 .where(
@@ -202,7 +201,7 @@ class PluginNotificationRepository:
 
     async def require_unclaimed_outbox_source(self, item: OutboxRecord) -> None:
         """Check the original effect source before preparing its platform layout."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await require_queued_work_readable(session, item)
             conversation = await require_live_conversation(session, item.canonical_conversation_id)
             if conversation.identity_binding_id is not None:
@@ -259,8 +258,25 @@ class PluginNotificationRepository:
         created_by_user_id: str,
         presence_id: str | None = None,
     ) -> BackgroundTargetGrantView:
-        now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
+            person_id, space_id = await _grant_owners(
+                reader, created_by_user_id=created_by_user_id, target=target
+            )
+            prepared_conversation = await _target_conversation(reader, target)
+            prepared_presence = await _grant_presence(reader, prepared_conversation, presence_id)
+            await find_grant_lineage(
+                reader,
+                plugin_id=plugin_id,
+                target_type=target.target_type,
+                person_id=person_id,
+                space_id=space_id,
+                conversation_id=prepared_conversation.id,
+            )
+            target = target.model_copy(update={"conversation_id": prepared_conversation.id})
+            presence_id = prepared_presence.id
+        async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
             person_id, space_id = await _grant_owners(
                 session,
                 created_by_user_id=created_by_user_id,
@@ -313,7 +329,7 @@ class PluginNotificationRepository:
         target: NotificationTarget,
     ) -> bool:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             person_id, space_id = await resolve_grant_target_owners(
                 session,
                 target_type=target.target_type,
@@ -375,35 +391,30 @@ class PluginNotificationRepository:
                 if row.canonical_target_person_id
                 else CanonicalConversationModel.space_id == row.canonical_target_space_id
             )
-            bindings = (
-                await session.execute(
-                    select(waits.c.id, waits.c.conditions_json)
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == waits.c.conversation_id,
-                    )
+            condition = func.json_each(waits.c.conditions_json).table_valued("value")
+            await session.execute(
+                update(waits)
+                .where(
+                    waits.c.status == "active",
+                    waits.c.conversation_id.in_(
+                        select(CanonicalConversationModel.id).where(
+                            target_filter,
+                            CanonicalConversationModel.id == row.canonical_conversation_id,
+                        )
+                    ),
+                    select(condition.c.value)
                     .where(
-                        waits.c.status == "active",
-                        target_filter,
-                        waits.c.conversation_id == row.canonical_conversation_id,
+                        func.json_extract(condition.c.value, "$.kind") == "plugin_event",
+                        func.json_extract(condition.c.value, "$.plugin_id") == plugin_id,
                     )
+                    .exists(),
                 )
-            ).all()
-            for binding_id, encoded_conditions in bindings:
-                if any(
-                    condition.get("kind") == "plugin_event"
-                    and condition.get("plugin_id") == plugin_id
-                    for condition in json.loads(encoded_conditions)
-                ):
-                    await session.execute(
-                        update(waits)
-                        .where(waits.c.id == binding_id, waits.c.status == "active")
-                        .values(status="invalidated", updated=now.timestamp())
-                    )
+                .values(status="invalidated", updated=now.timestamp())
+            )
             return True
 
     async def list_grants(self, plugin_id: str) -> tuple[BackgroundTargetGrantView, ...]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(PluginBackgroundTargetGrantModel)
@@ -453,7 +464,7 @@ class PluginNotificationRepository:
     ) -> NotificationPublishReceipt:
         now = datetime.now(UTC)
         target = request.target
-        async with self._database.sessions() as preparation:
+        async with self._database.read_session() as preparation:
             grant = await _load_enabled_grant(preparation, plugin_id=plugin_id, target=target)
             if grant is None:
                 raise PluginPermissionError("notification target is not granted")
@@ -505,9 +516,9 @@ class PluginNotificationRepository:
                 "source_person_id": grant.canonical_created_by_person_id,
             }
 
-        from yuki.persistence.history_search import prepare_terms
+        from yuki.persistence.scoped_event_uow import prepare_append
 
-        prepared_terms = await asyncio.to_thread(prepare_terms, request.summary)
+        prepared_append = await prepare_append(request.summary, external_payload=request.payload)
         async with self._database.immediate_session() as session:
             installation = await session.get(PluginInstallationModel, plugin_id)
             if installation is None or not installation.enabled or installation.status != "running":
@@ -569,7 +580,7 @@ class PluginNotificationRepository:
                         external_payload=request.payload,
                         external_target_id=target.target_id,
                         content=request.summary,
-                        prepared_terms=prepared_terms,
+                        prepared=prepared_append,
                         occurred_at=_aware(request.occurred_at),
                         session=session,
                     )
@@ -697,7 +708,7 @@ class PluginNotificationRepository:
             (PluginNotificationOutboxModel.status == "processing")
             & (PluginNotificationOutboxModel.lease_until < now)
         )
-        async with self._database.sessions() as discovery:
+        async with self._database.read_session() as discovery:
             ids = tuple(
                 await discovery.scalars(
                     select(PluginNotificationOutboxModel.id)
@@ -761,8 +772,11 @@ class PluginNotificationRepository:
         status: str,
         platform_message_id: str | None = None,
         error_category: str | None = None,
+        session: AsyncSession | None = None,
     ) -> bool:
-        async with self._database.immediate_session() as session:
+        from yuki.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as session:
             now = datetime.now(UTC)
             row = await session.get(PluginNotificationOutboxModel, item_id)
             if not _owns_processing_attempt(row, attempt=attempt) and not (
@@ -841,7 +855,7 @@ class PluginNotificationRepository:
         to a suspended/waiting Work stays parked without spending an attempt.
         """
         now = datetime.now(UTC)
-        async with self._database.sessions() as discovery:
+        async with self._database.read_session() as discovery:
             candidate_id = await discovery.scalar(_claim_candidate(now))
         if candidate_id is None:
             return None
@@ -928,7 +942,7 @@ class PluginNotificationRepository:
             job.work_id.is_not(None),
             or_(work.c.id.is_(None), work.c.state.in_(tuple(TERMINAL))),
         )
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             identities = list(
                 await reader.scalars(
                     select(job.id).outerjoin(work, work.c.id == job.work_id).where(*conditions)
@@ -954,9 +968,9 @@ class PluginNotificationRepository:
     ) -> None:
         """Fence and renew the exact attempt immediately before each model request."""
 
-        now = datetime.now(UTC)
         category: str | None = None
         async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
             job = await session.get(PluginBackgroundTurnJobModel, job_id)
             if not _owns_processing_attempt(job, attempt=attempt):
                 category = TURN_ERROR_ATTEMPT_RECLAIMED
@@ -1106,7 +1120,7 @@ class PluginNotificationRepository:
             return True
 
     async def counts(self, plugin_id: str) -> dict[str, int]:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             outbox = (
                 await session.execute(
                     select(PluginNotificationOutboxModel.status, func.count())
@@ -1130,7 +1144,7 @@ class PluginNotificationRepository:
 
     async def turn_delivery_counts(self, job: BackgroundTurnJobRecord) -> dict[str, int]:
         """Actual outbox states, scoped to the originating job/event, not model success."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = await session.execute(
                 select(PluginNotificationOutboxModel.status, func.count())
                 .where(
@@ -1145,8 +1159,8 @@ class PluginNotificationRepository:
     async def require_outbox_ready(self, item: OutboxRecord) -> None:
         """Require the exact attempt plus live target, Conversation, and Presence."""
 
-        now = datetime.now(UTC)
         async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
             row = await session.get(PluginNotificationOutboxModel, item.id)
             if not _owns_processing_attempt(row, attempt=item.attempts):
                 raise BackgroundTurnFenceError(TURN_ERROR_ATTEMPT_RECLAIMED)
@@ -1160,10 +1174,10 @@ class PluginNotificationRepository:
 
         from yuki.conversation.hydrate import require_primary_alias_for_conversation
 
-        now = datetime.now(UTC)
         category: str | None = None
         primary_alias: str | None = None
         async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
             row = await session.get(PluginNotificationOutboxModel, item.id)
             if not _owns_processing_attempt(row, attempt=item.attempts):
                 category = TURN_ERROR_ATTEMPT_RECLAIMED
@@ -1236,7 +1250,7 @@ class PluginNotificationRepository:
     ) -> str | None:
         """Read a grant by persisted Person XOR Space. No raw QQ/group key."""
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             try:
                 grant = await _canonical_enabled_grant(
                     session,
@@ -1265,7 +1279,7 @@ class PluginNotificationRepository:
 
         category: str | None = None
         result: QueuedCanonicalContext | None = None
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             stored = await session.get(PluginBackgroundTurnJobModel, job.id)
             if work_id is not None:
@@ -1367,7 +1381,7 @@ class PluginNotificationRepository:
 
         from yuki.conversation.hydrate import ensure_legacy_alias
 
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             conversation = await require_live_conversation(session, conversation_id)
             try:
                 await ensure_legacy_alias(

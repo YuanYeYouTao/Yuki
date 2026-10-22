@@ -51,7 +51,7 @@ async def test_service_update_never_enters_processor_or_creates_chat_state(
     handle.assert_not_awaited()
     assert not env.model.requests
     assert [method for method, _params in env.wire] == ["getMe"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         for table in (ChatEventModel, CanonicalConversationModel, work, inputs):
             assert await session.scalar(select(func.count()).select_from(table)) == 0
 
@@ -101,7 +101,7 @@ async def test_service_update_with_reply_relation_does_not_replay_old_chat(
 
     handle.assert_not_awaited()
     assert not env.model.requests
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
 
 
@@ -129,7 +129,7 @@ async def test_bare_native_mention_still_reaches_main_and_original_social_receip
     assert env.model.requests
     sends = [params for method, params in env.wire if method == "sendMessage"]
     assert len(sends) == 1 and sends[0]["chat_id"] == "-10042"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
     assert len(rows) == 2
     assert rows[0].content == "@yuki_test" and rows[0].author_person_id
@@ -186,7 +186,7 @@ async def test_group_migration_keeps_original_binding_without_chat_activation(
 
     await env.gateway.receive(incoming)
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await find_space_binding(session, "-42", platform="telegram") is None
         current = await find_space_binding(session, "-10042", platform="telegram")
         assert current is not None

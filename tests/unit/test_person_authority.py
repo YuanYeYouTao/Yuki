@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from tests.conftest import make_settings
 from tests.support.canonical_identity import ensure_person
 from tests.support.client_identity import client_identity_service
+from tests.support.person_merge import merge_persons
 from tests.unit.test_memory_mutation import _context, _event, _service
 
 from yuki.admin.audit import AdminAuditService
@@ -25,7 +26,6 @@ from yuki.identity.canonical_repository import (
     forget_person_by_id,
 )
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.memory.mutation.models import MemoryMutationOperation, MemoryMutationRequest
 from yuki.memory.mutation.service import MemoryMutationRejected
 from yuki.memory.subjects import ResolvedSubject
@@ -61,7 +61,7 @@ async def person(database, *, privileged=False, enabled=True):
 
 
 async def qualified(database, identity):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return await person_is_superuser(session, identity)
 
 
@@ -138,7 +138,7 @@ async def test_old_environment_never_seeds_person_on_restart(database, monkeypat
     settings = make_settings(database.url)
     await bootstrap_settings_identity(database, settings)
     await bootstrap_settings_identity(database, settings)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await find_identity_binding(session, "unbound-old-admin-account") is None
 
 
@@ -307,14 +307,14 @@ async def test_memory_admin_original_event_replays_original_mutation(database, o
 
     first = await apply()
     assert first.ok
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt_ids = tuple(await reader.scalars(select(MemoryMutationReceiptModel.mutation_id)))
         fact_count = await reader.scalar(select(func.count()).select_from(MemoryFactModel))
     repeated = await apply()
     assert repeated.ok and repeated.deduplicated
     assert repeated.mutation_id == first.mutation_id
     assert repeated.new_fact_id == first.new_fact_id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             tuple(await reader.scalars(select(MemoryMutationReceiptModel.mutation_id)))
             == receipt_ids

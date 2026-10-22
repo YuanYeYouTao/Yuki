@@ -131,7 +131,7 @@ async def native_env(database, tmp_path):
         await gateway.receive(update(chat=-10042, text="!ai prepare native test"))
         if gateway._turns:
             await asyncio.gather(*tuple(gateway._turns))
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             event = await session.scalar(select(ChatEventModel).order_by(ChatEventModel.id))
             conversation = await session.get(
                 CanonicalConversationModel, event.canonical_conversation_id
@@ -190,7 +190,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
     await env.gateway.receive(update(2, chat=-10042, topic=17, text="!ai original topic"))
     if env.gateway._turns:
         await asyncio.gather(*tuple(env.gateway._turns))
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         source = await session.scalar(
             select(ChatEventModel)
             .where(ChatEventModel.id > env.event.id, ChatEventModel.direction == "inbound")
@@ -213,7 +213,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
     send_params = sends(env)[-1][1]
     assert send_params["message_thread_id"] == 17
     assert send_params["reply_parameters"] == {"message_id": 2}
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         event = await session.get(ChatEventModel, sent["event_id"])
         original = (
             event.content,
@@ -255,7 +255,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
         assert not other_requests
     deletes = [params for method, params, _ in env.wire if method == "deleteMessage"]
     assert deletes == [{"chat_id": "-10042", "message_id": int(original[2].rsplit(":", 1)[-1])}]
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         kept = await session.get(ChatEventModel, sent["event_id"])
         original_source = await session.get(ChatEventModel, source.id)
         topic = await session.get(CanonicalConversationModel, conversation.id)
@@ -349,7 +349,7 @@ async def test_native_timeout_is_unknown_and_same_call_never_retries(native_env)
     assert result["status"] == "uncertain"
     assert await env.service.execute("send", args, env.context) == result
     assert len(sends(env)) == 1
-    async with env.db.sessions() as reader:
+    async with env.db.read_session() as reader:
         rows = list(await reader.scalars(select(SocialOperationModel)))
     assert len(rows) == 1 and rows[0].status == "uncertain" and rows[0].event_id is None
 
@@ -358,7 +358,7 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
     database, tmp_path, monkeypatch
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         binding = await reader.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.account_id == env.account)
         )
@@ -370,7 +370,7 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
     }
     result = await env.service.execute("send", args, env.context)
     assert result["parts"][0]["status"] == result["parts"][1]["status"] == "succeeded"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         caption = await reader.get(ChatEventModel, result["parts"][1]["event_id"])
     segments = json.loads(caption.segments_json)
     mention = next(item["data"] for item in segments if item["type"] == "mention")
@@ -383,7 +383,7 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
     sent_caption = next(params for method, params in env.bot.calls if method == "send_group_msg")
     assert sent_caption["message"][0] == {"type": "at", "data": {"qq": "10001"}}
     original_segments = caption.segments_json
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         original_plans = list(
             await session.execute(
                 select(SocialOperationModel.id, SocialOperationModel.prepared_json).order_by(
@@ -410,7 +410,7 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
     assert await env.service.execute("send", args, env.context) == result
     assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         preserved = await reader.get(ChatEventModel, caption.id)
         plans = list(
             await reader.execute(
@@ -652,7 +652,7 @@ async def test_prepared_layout_replacement_cannot_dispatch_stale_child(
     assert "".join(visible(item[1]["text"]) for item in sends(env)) == args["text"]
     assert len(sends(env)) == len(old_chunks)
     assert stale_result["operation_id"] == old_id[0]
-    async with env.db.sessions() as reader:
+    async with env.db.read_session() as reader:
         original_row = await reader.get(SocialOperationModel, old_id[0])
         assert original_row is not None
 
@@ -706,7 +706,7 @@ async def test_work_unclaimed_delivery_replans_without_resetting_original_budget
         result = await env.service.execute("send", args, context)
         assert result["status"] == "succeeded"
         assert control.current["id"] == identity
-        async with env.db.sessions() as reader:
+        async with env.db.read_session() as reader:
             budget = (
                 (await reader.execute(select(budgets).where(budgets.c.root_id == identity)))
                 .mappings()
@@ -742,7 +742,7 @@ async def test_work_dispatched_plan_and_reservations_are_readonly_on_recovery(na
         result = await env.service.execute("send", args, env.context)
 
         async def persisted_facts():
-            async with env.db.sessions() as reader:
+            async with env.db.read_session() as reader:
                 operations = list(
                     await reader.scalars(
                         select(SocialOperationModel).order_by(SocialOperationModel.id)
@@ -841,7 +841,7 @@ async def test_native_t3_recovery_preserves_exact_media_and_caption_facts(
         current_work_control.reset(work_token)
     try:
         # No T3 recording: restore from the actual T2 intent and bound Social facts.
-        async with env.db.sessions() as reader:
+        async with env.db.read_session() as reader:
             state = await reader.scalar(
                 select(effects.c.state).where(effects.c.effect_key == context.call_id)
             )
@@ -1058,7 +1058,7 @@ async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
     database, tmp_path, caption
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -1074,7 +1074,7 @@ async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
         env.context,
     )
     assert result["status"] == "succeeded"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         events = list(
             await reader.scalars(
                 select(ChatEventModel)

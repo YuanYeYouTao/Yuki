@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -74,22 +73,24 @@ class ResourceCleanupPreparation:
             if work_ids is None
             else func.json_extract(task.source_json, "$.work_id").in_(work_ids)
         )
-        tasks = []
-        for row in await session.scalars(select(task).where(task_scope).order_by(task.request_id)):
-            progress = json.loads(row.progress_json)
-            acp = progress if progress.get("kind") == "acp_prompt" else {}
-            tasks.append(
-                TaskResourceSource(
-                    row.request_id,
-                    row.source_conversation_id,
-                    row.source_json,
-                    row.run_id,
-                    acp.get("kind"),
-                    acp.get("resource_request_id"),
-                    acp.get("peer_id"),
-                    acp.get("session_id"),
+        acp = func.json_extract(task.progress_json, "$.kind") == "acp_prompt"
+        tasks = tuple(
+            TaskResourceSource(*row)
+            for row in await session.execute(
+                select(
+                    task.request_id,
+                    task.source_conversation_id,
+                    task.source_json,
+                    task.run_id,
+                    *(
+                        case((acp, func.json_extract(task.progress_json, f"$.{key}")), else_=None)
+                        for key in ("kind", "resource_request_id", "peer_id", "session_id")
+                    ),
                 )
+                .where(task_scope)
+                .order_by(task.request_id)
             )
+        )
         work_scope = (
             work.c.conversation_id.in_(conversation_ids)
             if work_ids is None
@@ -129,7 +130,15 @@ class ResourceCleanupPreparation:
                 .order_by(conversation.id)
             )
         )
-        return cls(scopes, work_ids, tuple(tasks), work_sources, conversation_sources)
+        return cls(scopes, work_ids, tasks, work_sources, conversation_sources)
+
+    async def validate(self, session: AsyncSession) -> None:
+        """Recheck exact current closure/identities using narrow SQL projections."""
+        self.verify(
+            await self.prepare(
+                session, conversation_ids=self.conversation_ids, work_ids=self.work_ids
+            )
+        )
 
     def verify(self, current: ResourceCleanupPreparation) -> None:
         if (

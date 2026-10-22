@@ -114,9 +114,9 @@ class ModelInvocationRepository:
                 lambda: self._prepare_write(frozen, privacy_generation),
             )
             return None
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await stamp_conversation_correlation(session, row, canonical_conversation_id)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             session.add(row)
             await session.flush()
             return self._record(row)
@@ -143,7 +143,7 @@ class ModelInvocationRepository:
         statement = self._stats_statement()
         if task is not None:
             statement = statement.where(ModelInvocationModel.task == task.value)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = (await session.execute(statement)).one()
         return self._stats(row)
 
@@ -151,7 +151,7 @@ class ModelInvocationRepository:
         statement = self._stats_statement(ModelInvocationModel.task).group_by(
             ModelInvocationModel.task
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.execute(statement)).all()
         return {project_model_task(str(row[0])): self._stats(row[1:]) for row in rows}
 
@@ -159,7 +159,7 @@ class ModelInvocationRepository:
         statement = self._stats_statement(ModelInvocationModel.profile_id).group_by(
             ModelInvocationModel.profile_id
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.execute(statement)).all()
         return {str(row[0]): self._stats(row[1:]) for row in rows}
 
@@ -170,7 +170,7 @@ class ModelInvocationRepository:
         statement = self._stats_statement(
             ModelInvocationModel.task, ModelInvocationModel.profile_id
         ).group_by(ModelInvocationModel.task, ModelInvocationModel.profile_id)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.execute(statement)).all()
         by_task: dict[str, list[Sequence[Any]]] = {}
         by_profile: dict[str, list[Sequence[Any]]] = {}
@@ -197,7 +197,7 @@ class ModelInvocationRepository:
             .order_by(ModelInvocationModel.created_at.desc(), ModelInvocationModel.id.desc())
             .limit(limit)
         )
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.scalars(statement)).all()
         return tuple(self._record(row) for row in rows)
 

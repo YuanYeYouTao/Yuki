@@ -33,7 +33,7 @@ class ClientFiles:
         self, principal: ClientPrincipal, references: tuple[str, ...]
     ) -> tuple[tuple[dict[str, Any], ...], tuple[MessageAttachment, ...]]:
         segments, attachments = [], []
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             for index, identity in enumerate(references):
                 item = await owned_upload(session, principal.person_id, identity)
@@ -61,7 +61,7 @@ class ClientFiles:
         return tuple(segments), tuple(attachments)
 
     async def _authorized(self, principal: ClientPrincipal, identity: str, version: str) -> None:
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             exact_events = select(ChatEventArtifactRefModel.event_id).where(

@@ -30,7 +30,7 @@ from yuki.social.db_models import SocialOperationModel
 
 
 async def principal_for(env, database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         person = (await find_identity_binding(reader, "1001")).person_id
     code = await env.identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
     paired = await env.client.post(
@@ -112,7 +112,7 @@ async def test_personal_reads_do_not_hydrate_every_unrelated_work(app_env, datab
                 assert {item["state"] for item in result["works"]} == {"completed"}
         costs.append(len(reads))
         current_size = size
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             dict(
                 (await reader.execute(select(work).where(work.c.id == original["id"])))
@@ -157,7 +157,7 @@ async def test_exact_artifact_authorization_does_not_scan_unrelated_private_hist
             ),
         )
     ).event
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.get(ChatEventModel, source.id)
         template = {
             column.name: getattr(event, column.name)
@@ -185,7 +185,7 @@ async def test_exact_artifact_authorization_does_not_scan_unrelated_private_hist
         assert body == b"immutable original artifact"
         costs.append(read_vm_steps(database, reads))
         previous = size
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.get(ChatEventModel, source.id)
         assert event.author_person_id == source.author_person_id
         assert event.canonical_conversation_id == principal.conversation_id

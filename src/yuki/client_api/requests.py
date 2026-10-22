@@ -117,7 +117,7 @@ class ClientRequests:
         running = (
             self.prompts.is_running(principal, request_id) if self.prompts is not None else False
         )
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             command = await personal_command(
                 session,
@@ -260,6 +260,6 @@ class ClientRequests:
             }
         # A live activation can finish after the first SQLite snapshot began.
         # Read its confirmed sends in a fresh snapshot after observing its exit.
-        async with self.identity.database.sessions() as reader:
+        async with self.identity.database.read_session() as reader:
             result_ids = list(await reader.scalars(result_query))
         return {**facts, "result_event_ids": result_ids}

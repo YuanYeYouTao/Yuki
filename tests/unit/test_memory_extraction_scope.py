@@ -138,7 +138,7 @@ async def test_worker_still_creates_person_person_group_and_group_from_original_
     )
     assert await worker.enqueue(event.id, event.scope.key)
     assert await worker.process_once() == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         facts = (await reader.scalars(select(MemoryFactModel))).all()
         assert {fact.scope_type for fact in facts} == {"person", "person_group", "group"}
         job = await reader.scalar(select(MemoryJobModel).where(MemoryJobModel.event_id == event.id))
@@ -160,7 +160,7 @@ async def test_worker_preserves_old_candidates_and_outcome_without_new_self_writ
     await jobs.complete(old_job, outcome=MemoryRebuildJobOutcome.CANDIDATES_STAGED)
     now = datetime.now(UTC)
     # A real pre-retirement row format, not an invocation of the retired producer.
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         candidate = MemoryClaimCandidateModel(
             fingerprint="a" * 64,
             candidate_type="self",
@@ -188,7 +188,7 @@ async def test_worker_preserves_old_candidates_and_outcome_without_new_self_writ
                 candidate_id=candidate_id, event_id=original.id, created_at=now
             )
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = (await reader.execute(select(MemoryClaimCandidateModel.__table__))).all()
         evidence_before = (
             await reader.execute(select(MemoryClaimCandidateEvidenceModel.__table__))
@@ -211,7 +211,7 @@ async def test_worker_preserves_old_candidates_and_outcome_without_new_self_writ
     assert await worker.enqueue(event.id, event.scope.key)
     assert await worker.process_once() == (0 if self_attempt else 1)
     assert len(provider.requests) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.execute(select(MemoryClaimCandidateModel.__table__))).all() == before
         assert (
             await reader.execute(select(MemoryClaimCandidateEvidenceModel.__table__))

@@ -50,7 +50,7 @@ class ConversationCommands:
 
     async def status(self, identity: ConversationScope, conversation_key: str) -> str:
         scope = await self._conversation_scopes.get(identity)
-        async with self._people._database.sessions() as session:
+        async with self._people._database.read_session() as session:
             checkpoint = (
                 await session.scalar(
                     current_checkpoint_query(scope.id).options(

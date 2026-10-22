@@ -145,7 +145,7 @@ async def test_code_history_parent_and_real_backend_archive_keep_sources(
     outcome = json.loads(rows[outer.identity.operation_id]["receipt_json"])["outcome"]
     assert set(outcome["source_event_ids"]) == set(sources)
     assert outcome["source_privacy_generation"] == 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         artifact = await reader.get(ToolArtifactModel, result["result_ref"])
         assert artifact.work_id == env.control.current["id"]
         assert artifact.effect_key == outer.identity.operation_id
@@ -225,7 +225,7 @@ current = await yuki_query_chat_history({'view': 'search', 'keyword': 'source-al
     outcome = json.loads(rows[outer.identity.operation_id]["receipt_json"])["outcome"]
     assert outcome["source_event_ids"] == [sources[0]]
     assert outcome["source_privacy_generation"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         artifact = await reader.get(ToolArtifactModel, result["result_ref"])
         access = json.loads(artifact.access_json)
         assert access["source_event_ids"] == [sources[0]]
@@ -270,7 +270,7 @@ async def test_old_code_body_cannot_publish_after_privacy_change_but_real_send_s
         if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "send"
     ]
     assert len(sent) == 1 and sent[0]["delivered_message"] is True
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         operation = await reader.scalar(
             select(SocialOperationModel).where(SocialOperationModel.action == "send_message")
         )

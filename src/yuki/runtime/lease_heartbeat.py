@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from sqlalchemy.exc import OperationalError
 
+from yuki.persistence.database import write_failure_retryable
 from yuki.runtime.work_repository import WorkConflict
 
 logger = logging.getLogger(__name__)
@@ -43,8 +43,7 @@ async def lease_heartbeat(
                     async with asyncio.timeout(remaining):
                         valid = await renew()
                 except OperationalError as exc:
-                    code = getattr(exc.orig, "sqlite_errorcode", None)
-                    if not isinstance(code, int) or code & 255 != sqlite3.SQLITE_BUSY:
+                    if not write_failure_retryable(exc):
                         raise WorkConflict("work_heartbeat_renew_failed") from exc
                     remaining = deadline - clock()
                     if remaining <= 0:

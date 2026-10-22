@@ -25,7 +25,7 @@ async def observe_space_name(
     if not observed:
         return False
 
-    async def apply(session: AsyncSession) -> bool:
+    async def apply(session: AsyncSession, *, write: bool = True) -> bool:
         row = (
             await session.execute(
                 select(SpaceBindingModel, CanonicalSpaceModel)
@@ -43,6 +43,8 @@ async def observe_space_name(
         binding, space = row
         if binding.display_name == observed and space.name == observed:
             return False
+        if not write:
+            return True
         now = datetime.now(UTC)
         if binding.display_name != observed:
             binding.display_name = observed
@@ -54,4 +56,8 @@ async def observe_space_name(
             space.revision += 1
         return True
 
-    return await database.apply_snapshot_write(apply)
+    async with database.read_session() as reader:
+        if not await apply(reader, write=False):
+            return False
+    async with database.immediate_session() as writer:
+        return await apply(writer)

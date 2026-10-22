@@ -44,7 +44,7 @@ async def test_missing_terminal_receipt_remains_unknown_without_replaying_main(a
     original = await submit(env, device, request_id)
     await drain(env)
     assert len(env.calls) == 2
-    async with env.identity.database.sessions() as reader:
+    async with env.identity.database.read_session() as reader:
         assert await personal_command(reader, principal.request_person_id, request_id) is None
 
     # A cold reader has no original in-process owner or durable terminal fact.
@@ -164,7 +164,7 @@ async def test_revoked_device_cannot_cancel_an_accepted_prompt(app_env, monkeypa
         await drain(env)
 
     # Revocation blocks new API actions; the already finished execution keeps its receipt.
-    async with env.identity.database.sessions() as reader:
+    async with env.identity.database.read_session() as reader:
         from yuki.client_api.requests import personal_command
 
         receipt = await personal_command(reader, principal.request_person_id, request_id)

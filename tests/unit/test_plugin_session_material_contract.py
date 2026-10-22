@@ -130,7 +130,7 @@ async def test_pause_after_model_response_keeps_paid_assistant(
     monkeypatch.setattr(env.provider, "complete", pause_after_response)
     result = await env.facade.run(env.request)
     assert result.text == "known complete output" and result.model_requests == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         messages = tuple(
             await session.scalars(
                 select(PluginAgentMessageModel)

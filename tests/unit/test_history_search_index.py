@@ -18,7 +18,7 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def indexed(database, conversation_id, keyword):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return tuple(
             await reader.scalars(
                 text("SELECT rowid FROM chat_history_fts WHERE chat_history_fts MATCH :match"),
@@ -178,7 +178,7 @@ async def test_asr_stale_preparation_cannot_restore_forgotten_content(
     import yuki.persistence.scoped_event_uow as module
 
     writer = ScopedEventLedgerUnitOfWork(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         forgotten_person = (await find_identity_binding(reader, "1001")).person_id
     content = forgotten_person if mention_only else "旧正文"
     result = await seed_scoped_event(

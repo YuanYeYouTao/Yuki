@@ -107,13 +107,9 @@ class MemoryMaintenanceWorker:
         if not rows:
             return 0
 
-        async def invalidate(owned: AsyncSession) -> int:
-            await self._facts.prepare_evidence_write(
-                tuple(candidate.id for candidate in rows), session=owned, targets=rows
-            )
-            return await self._invalidate_candidates(rows, now=now, session=owned)
-
-        changed = await self._facts.repository.apply_evidence_write(invalidate)
+        prepared = await self._facts.prepare_write(tuple(candidate.id for candidate in rows))
+        async with self._facts.repository.write_session(prepared) as writer:
+            changed = await self._invalidate_candidates(rows, now=now, session=writer)
         self.metrics.record_maintenance_success(now)
         return changed
 

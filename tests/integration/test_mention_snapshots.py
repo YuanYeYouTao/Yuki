@@ -311,7 +311,7 @@ async def test_missing_name_uses_local_source_display_only_without_claiming_old_
     assert admitted.message.text == "@Agent"
     assert admitted.message.mentions_bot
     assert admitted.message.mentions[0].person_id is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(CanonicalPersonModel.id).where(

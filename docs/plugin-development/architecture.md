@@ -56,6 +56,14 @@ plugin.toml
 
 所有 Facade 都是能力边界，不是 Repository 的别名；插件永远不能获得 SQLAlchemy Session。
 
+Host 的主库写入共用 Database 的 FIFO writer。插件回调、验证器、网络、分词和文件准备在
+writer 外完成；writer 内按当前原始来源、批准、版本及回执做短提交。读取独立持有 reader，
+不因查询自动 flush 或 commit；需要原子提交的 Host 服务显式共享当前 writer session。
+
+通知正常发送后的内部出站事件与原 outbox attempt 的 sent 状态同事务提交。平台已确认、
+数据库结果未知时保留原消息号与 uncertain，不重新发送。媒体句柄登记异常先核实原 handle；
+只有确认未提交才删除准备文件，未知且暂时查不到登记时保留文件并传播原错误。
+
 独立会话创建、追加和重置在首次 DML 前解析 canonical owner 与实际消息发送者；返回 DTO 直接保留内部 Person/Space，不通过 QQ 绑定投影重建所有者。SELF 或无 Person 的插件计算保留真实 group/plugin 作用域，不伪造人类发送者。
 追加的序号分配与消息写入仍在同一短事务内；身份拒绝不会消耗序号。
 插件 KV 的 CAS 同样先核验所有权并准备展示字段，再按原版本条件写入。

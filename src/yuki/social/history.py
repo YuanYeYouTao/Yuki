@@ -44,7 +44,7 @@ async def read_history(
     runtime = (
         runtime if runtime is not None else invocation.runtime if invocation is not None else None
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         await session.execute(text("BEGIN"))
         source = await session.get(CanonicalConversationModel, context.conversation_id)
         if source is None:

@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import event, select
 from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.memory_identity import transfer_account
+from tests.support.person_merge import merge_persons
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
@@ -23,7 +24,6 @@ from yuki.identity.db_models import (
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
 
 
@@ -31,7 +31,7 @@ from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAlias
 async def ingress(database):
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         presence = await ensure_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -53,7 +53,7 @@ async def admitted(ingress, message_id, *, user="1001", name="Event nickname", c
 
 
 async def observation(database, person_id, space_id):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         person = await session.get(CanonicalPersonModel, person_id)
         accounts = (
             await session.execute(
@@ -153,7 +153,7 @@ async def test_first_message_fills_empty_person_name_without_following_platform_
     assert state["membership"] is not None
     assert state["account_profiles"][0][1] == "Event card"
     assert state["space"][0] == state["group"][0] == "Event group title"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ChatEventModel, original.event.id)
         assert row.author_person_id == person_id
         assert row.sender_nickname == "First name"
@@ -186,14 +186,14 @@ async def test_external_bot_title_is_local_metadata_without_a_person_or_membersh
     )
     incoming = await resolver.pre_admit(bot, message)
     assert not incoming.dropped and incoming.person_id is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         persons = tuple(await session.scalars(select(CanonicalPersonModel.id)))
     await uow.append_inbound(incoming.message, incoming)
     following = await resolver.pre_admit(
         bot, replace(message, message_id="external-empty-title", group_name="")
     )
     await uow.append_inbound(following.message, following)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert tuple(await session.scalars(select(CanonicalPersonModel.id))) == persons
         assert not list(await session.scalars(select(MembershipModel)))
         space = await session.get(CanonicalSpaceModel, incoming.space_id)
@@ -264,7 +264,7 @@ async def test_merge_during_read_reprepares_current_name_but_keeps_original_acto
 ):
     incoming = await admitted(ingress, "merge-profile")
     _, _, uow = ingress
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         target = (await find_identity_binding(session, "1002")).person_id
     entered, release = await pause_observation(monkeypatch)
     pending = asyncio.create_task(uow.append_inbound(incoming.message, incoming))
@@ -274,11 +274,12 @@ async def test_merge_during_read_reprepares_current_name_but_keeps_original_acto
         async def merge(session):
             return await merge_persons(session, incoming.person_id, target)
 
-        await database.apply_snapshot_write(merge)
+        async with database.immediate_session() as writer:
+            await merge(writer)
     finally:
         release.set()
     result = await asyncio.wait_for(pending, 10)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(CanonicalPersonModel, target)).display_name == "test-1002"
         assert (await find_identity_binding(session, "1001")).person_id == incoming.person_id
         row = await session.get(ChatEventModel, result.event.id)
@@ -303,7 +304,7 @@ async def test_transfer_during_read_cannot_write_late_observation_to_new_person(
         await asyncio.wait_for(entered.wait(), 10)
         transferred = await transfer_account(database, "1001")
         current = await observation(database, incoming.person_id, incoming.space_id)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             new_person_name = (
                 await session.get(CanonicalPersonModel, transferred["person_id"])
             ).display_name
@@ -311,7 +312,7 @@ async def test_transfer_during_read_cannot_write_late_observation_to_new_person(
         release.set()
     result = await asyncio.wait_for(pending, 10)
     assert result.created
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         events = list(await session.scalars(select(ChatEventModel)))
         assert len(events) == 1
         row = events[0]
@@ -375,7 +376,7 @@ async def test_failure_rolls_back_original_receipt_event_and_observation(
     finally:
         set_identity_failpoint(None)
     assert await observation(database, incoming.person_id, incoming.space_id) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not list(await session.scalars(select(ChatEventModel)))
         assert not list(await session.scalars(select(CanonicalEventReceiptModel)))
 
@@ -385,12 +386,17 @@ async def test_caller_session_owns_event_and_observation_commit(database, ingres
     _, _, uow = ingress
     before = await observation(database, incoming.person_id, incoming.space_id)
 
+    prepared = await uow.prepare_inbound(incoming.message, incoming, origin="work_input")
+
     async def caller(session):
-        await uow.append_inbound(incoming.message, incoming, session=session, origin="work_input")
+        await uow.append_inbound(
+            incoming.message, incoming, session=session, origin="work_input", prepared=prepared
+        )
         raise RuntimeError("caller rollback")
 
     with pytest.raises(RuntimeError, match="caller rollback"):
-        await database.apply_snapshot_write(caller)
+        async with database.immediate_session() as writer:
+            await caller(writer)
     assert await observation(database, incoming.person_id, incoming.space_id) == before
     assert (await uow.append_inbound(incoming.message, incoming)).created
 
@@ -404,7 +410,7 @@ async def test_person_observation_reads_precede_first_database_write(database, i
     def inspect(_connection, _cursor, statement, *_args):
         nonlocal writing
         sql = statement.strip().lower()
-        if sql.startswith(("insert", "update", "delete", "begin immediate")):
+        if sql.startswith(("insert", "update", "delete")):
             writing = True
         if (
             writing

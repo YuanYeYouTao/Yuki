@@ -97,7 +97,7 @@ class ControlAccess:
         self._database = database
 
     async def principal_for_person(self, person_id: str | None) -> ControlPrincipal:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             person = await session.get(CanonicalPersonModel, person_id) if person_id else None
             if person is None or not person.enabled:
                 raise ControlPrincipalLookupError()
@@ -140,7 +140,7 @@ class ControlAccess:
         token = user_id.strip()
         if not token:
             raise ControlPrincipalLookupError()
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             binding = await _identity_binding(session, token, platform=platform)
             if binding is None or binding.status != "active":
                 raise ControlPrincipalLookupError()
@@ -163,7 +163,7 @@ class ControlAccess:
         )
 
     async def person_target(self, person_id: str) -> PersonControlTarget:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             person = await session.get(CanonicalPersonModel, person_id)
             if person is None:
                 raise ValueError("没有找到该 Person。")
@@ -177,7 +177,7 @@ class ControlAccess:
         )
 
     async def space_target(self, space_id: str) -> SpaceControlTarget:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             space = await session.get(CanonicalSpaceModel, space_id)
             if space is None:
                 raise ValueError("没有找到该 Space。")
@@ -189,7 +189,7 @@ class ControlAccess:
         token = group_id.strip()
         if not token:
             raise ValueError("storage_group_id is required")
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             binding = await _space_binding(session, token, platform=platform)
         space_id = SpaceId.parse(binding.space_id) if binding is not None else None
         return SpaceControlTarget(space_id=space_id, storage_group_id=token)

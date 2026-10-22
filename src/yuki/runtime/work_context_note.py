@@ -51,7 +51,7 @@ async def validate_note(
         *(getattr(control.session, "public_event_ids", ()) if control.session is not None else ()),
     }
     handles = []
-    async with control.repository.database.sessions() as reader:
+    async with control.repository.database.read_session() as reader:
         await reader.execute(text("BEGIN"))
         if control.context_access is not None and (
             source.get("principal_kind", "person") != control.context_access.principal_kind
@@ -162,7 +162,7 @@ async def visible_context_note(control: WorkControl) -> dict[str, Any] | None:
         if key != "actor_person_id"
     ):
         return None
-    async with control.repository.database.sessions() as reader:
+    async with control.repository.database.read_session() as reader:
         for person_id in (
             source.get("actor_person_id", ""),
             saved.get("access", {}).get("actor_person_id", ""),

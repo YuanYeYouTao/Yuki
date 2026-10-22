@@ -194,7 +194,7 @@ class SubjectContextBuilder:
         """Keep the event's owner and resolve transport selectors at its real ingress."""
         if self._database is None:
             return target
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             conversation = (
                 await session.get(CanonicalConversationModel, event.canonical_conversation_id)
                 if event.canonical_conversation_id
@@ -259,7 +259,7 @@ class SubjectContextBuilder:
                 for part in event.segments
             )
         ):
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 presence = await session.get(PresenceModel, event.ingress_presence_id)
                 if presence is not None:
                     from yuki.identity.ownership_interval import historical_person_ids
@@ -286,7 +286,7 @@ class SubjectContextBuilder:
                     )
         context = SubjectResolver.context(event)
         if self._database is not None and event.author_person_id:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 roots = await current_person_ids(session, (event.author_person_id,))
                 if event.author_person_id in roots:
                     context = replace(
@@ -294,7 +294,7 @@ class SubjectContextBuilder:
                         speaker_person_ids=await person_family_ids(session, event.author_person_id),
                     )
         if self._database is not None and event.reply_to_event_id is not None:
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 reply = await session.get(ChatEventModel, event.reply_to_event_id)
                 reply_person_id = reply.author_person_id if reply is not None else None
             context = replace(
@@ -356,7 +356,7 @@ class SubjectContextBuilder:
                 value.subject_user_id for value in subjects.values() if value.subject_user_id
             )
         )
-        async with self._people.database.sessions() as session:
+        async with self._people.database.read_session() as session:
             presence = (
                 await session.get(PresenceModel, event.ingress_presence_id)
                 if event.ingress_presence_id

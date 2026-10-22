@@ -337,7 +337,7 @@ class SocialService:
             or selected.get("conversation_id")
         ):
             return None
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             platform = await session.scalar(
                 select(AccountModel.platform)
                 .select_from(IdentityBindingModel)
@@ -352,7 +352,7 @@ class SocialService:
             return None
         target = await self.target("person", selected, context)
         await self.check_target(target)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             bindings = list(
                 await session.scalars(
                     select(IdentityBindingModel)
@@ -375,7 +375,7 @@ class SocialService:
     async def contacts(
         self, kind: str, query: str = "", *, exact: bool = False
     ) -> list[dict[str, str]]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             if kind == "person":
                 known = (
                     select(ChatEventModel.id)
@@ -469,7 +469,7 @@ class SocialService:
             raw = str(args["target_id"])
         target = SocialTarget.model_validate({"kind": kind, "id": raw})
         if kind == "person":
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 raw = await current_person_id(session, str(target.id))
             target = target.model_copy(update={"id": UUID(raw)})
         if validate:
@@ -508,7 +508,7 @@ class SocialService:
     async def _group_directory(
         self, target: SocialTarget, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             binding_id = args.get("binding_id")
             conversation_id = args.get("conversation_id") or context.conversation_id
             conversation = await session.get(CanonicalConversationModel, conversation_id)
@@ -619,7 +619,7 @@ class SocialService:
 
     async def route(self, target: SocialTarget) -> ResolvedSend:
         # PresenceRouter may provision a missing route; explicit social operations must not.
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             model = PersonActiveRouteModel if target.kind == "person" else SpaceActiveRouteModel
             route = cast(
                 PersonActiveRouteModel | SpaceActiveRouteModel | None,
@@ -632,7 +632,7 @@ class SocialService:
             if target.kind == "person"
             else await self.router.resolve_send_for_space(str(target.id))
         )
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             binding_model = IdentityBindingModel if target.kind == "person" else SpaceBindingModel
             binding = cast(
                 IdentityBindingModel | SpaceBindingModel | None,
@@ -645,7 +645,7 @@ class SocialService:
     async def send_route(
         self, target: SocialTarget, context: SocialContext, binding_id: str | None = None
     ) -> ResolvedSend:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             source = await session.get(CanonicalConversationModel, context.conversation_id)
             event = (
                 await session.get(ChatEventModel, context.trigger_event_id)
@@ -748,7 +748,7 @@ class SocialService:
     async def reply_reference(
         self, event_id: int, target: SocialTarget, route: ResolvedSend, context: SocialContext
     ) -> str:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, event_id)
         if (
             event is None
@@ -761,7 +761,7 @@ class SocialService:
             or event.scope_type != ("group" if target.kind == "space" else "private")
         ):
             raise SocialError("reply_event_unavailable")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             presence = await session.get(PresenceModel, event.ingress_presence_id)
         if presence is None or presence.platform != route.platform:
             raise SocialError("reply_event_unavailable")
@@ -956,7 +956,7 @@ class SocialService:
     async def _sequence_result(
         self, parent: SocialReceipt, context: SocialContext
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             result = await self.receipts.delivery_facts(
                 session,
@@ -1033,7 +1033,7 @@ class SocialService:
                     dict(item)
                     for item in await self.contacts(kind, str(args.get("display_name", "")))
                 ]
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 selected_ids = [item["target_id"] for item in items]
                 bindings_by_target: dict[str, list[dict[str, str]]] = {
                     target_id: [] for target_id in selected_ids
@@ -1112,7 +1112,7 @@ class SocialService:
                 )
                 if selected_entry != context.conversation_id:
                     route = replace(route, kind=target.kind)
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     selected_conversation = await reader.get(
                         CanonicalConversationModel, selected_entry
                     )
@@ -1146,7 +1146,7 @@ class SocialService:
 
                 prepared = PreparedContent(prepared_transport(context.prepared_content))
             else:
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     prepared = await prepare_for_entry(
                         reader,
                         message.text,
@@ -1514,9 +1514,11 @@ class SocialService:
                     raise SocialError("unknown_transport_effect")
             confirmed = True
             appended = None
-            from yuki.persistence.history_search import prepare_terms
+            from yuki.persistence.scoped_event_uow import prepare_append
 
-            prepared_terms = await asyncio.to_thread(prepare_terms, content or "")
+            prepared_append = await prepare_append(
+                content or "", segments=ledger_segments if ledger_segments is not None else ()
+            )
             with model_detail("social_settlement"):
                 async with self.database.immediate_session() as session:
                     from yuki.social.confirmed_content import content_sources_retained
@@ -1556,7 +1558,7 @@ class SocialService:
                             sender_user_id=route.sender_account_id,
                             direction="outbound",
                             content=content,
-                            prepared_terms=prepared_terms,
+                            prepared=prepared_append,
                             segments=ledger_segments if ledger_segments is not None else (),
                             origin=context.origin,
                             caused_by_event_id=context.caused_by_event_id,
@@ -1592,7 +1594,7 @@ class SocialService:
                     return persisted
             try:
                 with model_detail("social_settlement"):
-                    async with self.database.sessions() as session, session.begin():
+                    async with self.database.immediate_session() as session:
                         completed = await self.receipts.finish(
                             operation_id,
                             status=OperationStatus.SUCCEEDED
@@ -1633,7 +1635,7 @@ class SocialService:
                 prior.action, prior.target, args, context.conversation_id
             ):
                 raise SocialError("idempotency_conflict")
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 dispatched = await session.scalar(
                     select(SocialOperationModel.id)
                     .where(
@@ -1722,7 +1724,7 @@ class SocialService:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
         try:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 event = await session.get(ChatEventModel, receipt.event_id)
                 if (
                     event is None
@@ -1769,7 +1771,7 @@ class SocialService:
     async def _recall(self, args: dict[str, Any], context: SocialContext) -> dict[str, Any]:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, int(args["event_id"]))
             if (
                 event is None

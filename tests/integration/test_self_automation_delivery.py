@@ -162,7 +162,7 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
         responses["read_memory"]["data"]["memory"]["content"]
         == calls[1 + int(accept_work)][1]["new_content"]
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         mutation = await session.scalar(select(MemoryMutationReceiptModel))
         receipt = await session.scalar(
             select(MemoryToolReceiptModel).where(
@@ -204,7 +204,7 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
     requests = len(case.provider.requests)
     assert await case.dispatch() == result
     assert len(case.provider.requests) == requests and not sent(case.env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         after = await session.get(MemoryMutationReceiptModel, mutation.id)
         assert {
             column.name: getattr(after, column.name)
@@ -315,7 +315,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
         assert actual.inbound is None and actual.require_actor().principal_kind == "self"
         assert actual.sandbox_source["parent_execution_id"] == root
         assert actual.execution_id.startswith(f"plugin:{host.plugin_id}:execution:{root}:")
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             receipts = list(
                 await session.scalars(
                     select(MemoryToolReceiptModel).where(
@@ -369,7 +369,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             execution_id=receipt.execution_id,
             tool_call_id=receipt.tool_call_id,
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(
                     select(func.count(MemoryToolReceiptModel.id)).where(
@@ -430,7 +430,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     case.clock.advance(61)
     original_run = await case.dispatch()
     assert original_run.status is RunStatus.SUCCEEDED
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = [dict(row) for row in (await session.execute(select(work))).mappings()]
     child = next(row for row in rows if row["parent_work_id"] is not None)
     source = json.loads(child["source_json"])
@@ -518,7 +518,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     assert actor.person_id is None and actor.event_id is None and actor.user_id == ""
     assert responses["memory_change"]["data"]["ok"]
     assert responses["read_memory"]["data"]["memory"]["content"] == write["new_content"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt = await session.scalar(
             select(MemoryToolReceiptModel).where(
                 MemoryToolReceiptModel.tool_name == "get_group_members"
@@ -570,7 +570,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
             fact_ids=(mutation.new_fact_id,),
         )
     ] == [mutation.new_fact_id]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         current = await session.get(MemoryMutationReceiptModel, mutation.id)
         assert current.decision_actor_id == receipt.execution_id == child["id"]
     assert len(case.provider.requests) == before and not sent(case.env)

@@ -122,7 +122,7 @@ class PluginConfigurationService:
         self, plugin_id: str, *, scope_type: str = "global", owner_id: str | None = None
     ) -> dict[str, Any]:
         schema = self._require_schema(plugin_id)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             revision, rows, _, owner_id = await self._read(session, plugin_id, scope_type, owner_id)
             try:
@@ -207,4 +207,5 @@ class PluginConfigurationService:
             await session.flush()
             return self._revision(plugin_id, scope_type, installation, saved_rows)
 
-        return await self._database.apply_snapshot_write(write)
+        async with self._database.immediate_session() as session:
+            return await write(session)

@@ -18,7 +18,7 @@ from yuki.persistence.models import ChatEventModel, MemorySelfReflectionCycleMod
 @pytest.mark.parametrize("failure", ["source_missing", "target_disabled"])
 async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp_path, failure):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         good = await reader.scalar(select(ChatEventModel))
     bad = await seed_scoped_event(
         env.service.writer,
@@ -65,7 +65,7 @@ async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp
     )
     worker.social = env.service
     await worker._deliver_reports()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         failed = list(
             await reader.scalars(
                 select(MemorySelfReflectionCycleModel).where(
@@ -75,7 +75,7 @@ async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp
         )
         assert len(failed) == 5 and all(row.delivery_state == "failed" for row in failed)
     await worker._deliver_reports()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.get(MemorySelfReflectionCycleModel, "report-5")
         ).delivery_state == "delivered"
@@ -95,7 +95,7 @@ async def test_delivery_error_preserves_receipt_created_during_preparation(
     from yuki.social.models import SocialError
 
     await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
     prior = SimpleNamespace(
         status=SimpleNamespace(value=status),

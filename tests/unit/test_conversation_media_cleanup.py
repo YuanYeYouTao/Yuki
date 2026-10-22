@@ -69,7 +69,7 @@ async def test_cleanup_retains_later_pages_and_eventually_removes_expired_files(
     service, source, directory = await _cache(database, tmp_path, 260)
     try:
         await service.cleanup()
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             rows = tuple(await reader.scalars(select(ConversationMediaItemModel)))
         assert 0 < sum(row.cache_status == "expired" for row in rows) < len(rows)
         assert all(
@@ -82,7 +82,7 @@ async def test_cleanup_retains_later_pages_and_eventually_removes_expired_files(
                 service.root.rglob("*.png")
             ):
                 await service.cleanup()
-                async with database.sessions() as reader:
+                async with database.read_session() as reader:
                     rows = tuple(await reader.scalars(select(ConversationMediaItemModel)))
         assert await EventLedgerRepository(database).get_event(source.id) is not None
     finally:
@@ -122,7 +122,7 @@ async def test_expiry_discovery_rechecks_updated_lifetime_before_metadata_and_gc
     monkeypatch.setattr(media_service, "update", update_and_mark)
     await service.cleanup()
     assert injected and (directory / "0-cached.png").is_file()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.get(ConversationMediaItemModel, (source.id, 0))
         assert item.cache_status == "cached" and item.cache_name == "0-cached.png"
     await service.close()
@@ -147,7 +147,7 @@ async def test_blocked_gc_filesystem_keeps_event_loop_responsive_and_publish_loc
     try:
         assert await asyncio.to_thread(started.wait, 2)
         # No filesystem call owns this loop: a real SQLite reader still runs.
-        async with asyncio.timeout(0.5), database.sessions() as reader:
+        async with asyncio.timeout(0.5), database.read_session() as reader:
             assert await reader.scalar(select(ConversationMediaItemModel.cache_status)) == "expired"
         assert service._lock.locked()
         cleanup.cancel()

@@ -47,7 +47,7 @@ async def replay_expired(database, monkeypatch, activation):
         PluginNotificationOutboxModel.__table__,
         PluginBackgroundTurnJobModel.__table__,
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.scalar(
             select(PluginStateModel).where(PluginStateModel.plugin_id == "github-monitor")
         )
@@ -97,7 +97,7 @@ async def replay_expired(database, monkeypatch, activation):
     assert receipt.deduplicated and not receipt.event_created
     assert receipt.notification_id == delivery["notification_id"]
     assert receipt.source_event_id == delivery["source_event_id"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         for table in tables:
             assert [dict(item) for item in (await reader.execute(select(table))).mappings()] == (
                 original[table.name]

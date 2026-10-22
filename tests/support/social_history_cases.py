@@ -124,7 +124,7 @@ async def history_agent_loop(
         action in {"get_friend_msg_history", "get_group_msg_history", "get_forward_msg"}
         for action, _ in env.bot.calls
     )
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         assert not await session.scalar(
             select(ChatEventModel.id).where(ChatEventModel.platform_message_id.in_(("50", "51")))
         )

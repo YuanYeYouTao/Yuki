@@ -212,7 +212,7 @@ class EmojiDeliveryService:
         return await self._project(intent)
 
     async def _project(self, intent: EmojiIntent) -> dict[str, Any]:
-        async with self.social.database.sessions() as session:
+        async with self.social.database.read_session() as session:
             await session.execute(text("BEGIN"))
             return await self.intents.project(session, intent)
 
@@ -259,7 +259,7 @@ class EmojiDeliveryService:
 
     async def _run_intent(self, intent: EmojiIntent) -> None:
         async def resume() -> None:
-            async with self.social.database.sessions() as session:
+            async with self.social.database.read_session() as session:
                 current = await self.intents.get(intent.id, session=session)
             if not current.closed:
                 await self._deliver(current)
@@ -305,7 +305,7 @@ class EmojiDeliveryService:
                 if facts["status"] != "accepted":
                     await self.intents.close(intent.id)
                     return
-            async with self.social.database.sessions() as session:
+            async with self.social.database.read_session() as session:
                 await validate_source(session, intent.source)
             if intent.selected is None:
                 try:

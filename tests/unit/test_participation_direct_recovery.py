@@ -57,7 +57,7 @@ async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
             assert restored.controller.legacy_source_allowed(
                 restored.controller.state.events[f"event:{event.id}"]
             )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(select(inputs.c.state).where(inputs.c.event_id == pending.id))
                 == "pending"

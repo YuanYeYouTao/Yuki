@@ -336,7 +336,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
         group_id="3001",
     )
     now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         canonical_space_id = (await find_space_binding(session, "3001")).space_id
         assert canonical_space_id is not None
         receipt = MemoryToolReceiptModel(
@@ -400,7 +400,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     assert evidence[0].event_id is None
     assert evidence[0].tool_receipt_id == receipt_id
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         linked = await session.get(MemoryToolReceiptModel, receipt_id)
         assert linked is not None
         linked.expires_at = now - timedelta(seconds=1)
@@ -421,7 +421,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
         )
 
     assert await SelfReflectionRepository(database).cleanup_receipts() == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.get(MemoryToolReceiptModel, receipt_id) is not None
     assert (await facts.list_evidence(result.new_fact_id))[0].tool_receipt_id == receipt_id
 
@@ -610,7 +610,7 @@ async def test_self_create_is_atomic_receipted_and_deduplicated(database: Databa
     assert len(rows) == 1
     assert rows[0].content == "现在住在上海"
     assert rows[0].authority is MemoryAuthority.EXPLICIT
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt_count = int(
             await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) or 0
         )
@@ -697,7 +697,7 @@ async def test_bot_event_cannot_become_user_memory_evidence(database: Database) 
 
     assert not result.ok
     assert result.reason_code == "untrusted_trigger_event"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             int(
                 await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
@@ -768,7 +768,7 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
     ).model_payload()
     if not has_event_id:
         assert response["error_code"] == "trigger_event_not_found"
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
                 == 0
@@ -1035,7 +1035,7 @@ async def test_receipt_failure_rolls_back_fact(
         )
 
     assert await facts.list_person("1001", limit=20) == ()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             int(
                 await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
@@ -1145,7 +1145,7 @@ async def test_contested_claim_is_enqueued_after_commit(database: Database) -> N
         ),
     )
     assert result is not None and result.status is MemoryStatus.CONTESTED
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.scalar(
             select(MemoryEmbeddingJobModel).where(MemoryEmbeddingJobModel.fact_id == result.id)
         )
@@ -1431,7 +1431,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     )
     # An old shared group outside the current scene still participates, while
     # an unrelated person cannot enter the no-target search.
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await ensure_space(session, "3003")
         await ensure_space(session, "3004")
         await ensure_person(session, "4004")
@@ -1560,7 +1560,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     # A historical canonical owner remains searchable after its transport Binding ends.
     from yuki.identity.db_models import IdentityBindingModel
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(IdentityBindingModel)
             .where(IdentityBindingModel.external_account_id == "4004")
@@ -1784,7 +1784,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert historical_group["ok"]
     assert {row["fact_id"] for row in historical_group["data"]["memories"]} == {group_only_fact.id}
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         old_space = (await find_space_binding(session, "3001")).space_id
         await session.execute(
             update(CanonicalSpaceModel)
@@ -1856,7 +1856,7 @@ async def test_deterministic_memory_admin_uses_unified_mutation_receipt(
     )
 
     assert row.content == "我喜欢天文"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt = await session.scalar(select(MemoryMutationReceiptModel))
     assert receipt is not None
     assert receipt.trigger_event_id == event.id

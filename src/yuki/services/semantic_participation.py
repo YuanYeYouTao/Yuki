@@ -351,7 +351,7 @@ class SemanticParticipationService:
                 self._dirty_overflows += 1
 
     async def _scene(self, conversation_id: str) -> Scene | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = (
                 await session.execute(
                     select(
@@ -428,7 +428,7 @@ class SemanticParticipationService:
         keys = tuple(self._sessions)
         if not keys:
             return
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             generations = dict(
                 (
                     await session.execute(
@@ -710,7 +710,7 @@ class SemanticParticipationService:
                 ),
                 UTC,
             )
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 bucket = func.strftime("%Y-%m-%d %H", ChatEventModel.occurred_at)
                 aggregates = (
                     await session.execute(
@@ -751,7 +751,7 @@ class SemanticParticipationService:
         }
         recovered: set[int] = set()
         if source_keys:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 admitted = (
                     await session.execute(
                         select(work.c.source_key, work.c.source_json).where(
@@ -865,7 +865,7 @@ class SemanticParticipationService:
         if not refs:
             return {}
         if session is None:
-            async with self.database.sessions() as owned:
+            async with self.database.read_session() as owned:
                 await owned.execute(text("BEGIN"))
                 return await self._sources_current(item, refs, session=owned)
         identities: dict[str, set[int]] = {"event": set(), "memory": set()}
@@ -1186,7 +1186,7 @@ class SemanticParticipationService:
                 outcome="interrupted",
             )
             return
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             presence = await session.get(PresenceModel, run.presence_id)
             conversation = await session.get(CanonicalConversationModel, run.conversation_id)
             bindings = (
