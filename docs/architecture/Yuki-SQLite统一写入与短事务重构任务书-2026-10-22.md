@@ -513,8 +513,8 @@ SDK facade的错误类别、`lease_heartbeat`、`work_session._save`和Work fail
 保留同一个真实阶段。旧循环仅看BUSY code或cleanup note不足以确认没有提交；不能把unknown
 洗成`retryable=True/database_failure`让模型或客户端重新派发原效果。尤其`agent_tools`的旧
 `_result`默认`uncertain=False`，会进一步生成`mutation_committed=False`；backend的
-`resolve_mutation_commit`先看uncertain，再对not ok直接判False。unknown必须沿typed outcome
-保留uncertain=True与commit=None，
+`resolve_mutation_commit`先看uncertain，再保留明确的`mutation_committed`，其后才对not ok判False。
+unknown必须沿typed outcome保留uncertain=True与commit=None，
 不能只把retryable改成False却仍宣称确定未写入。`record_effect`的原receipt
 bytes CAS循环与SQLite异常重试不同，保其迟到事实，不要求新的活lease。
 

@@ -3,7 +3,9 @@
 源码起点：`c2ce7da66ab54efe192993b9615df48266a62137`。分支
 `codex/sqlite-writer-runtime-20261023`。完整范围认[任务书](../architecture/Yuki-SQLite统一写入与短事务重构任务书-2026-10-22.md)。
 
-状态：产品实现、R1/R2 全范围复审与修复完成，准备固定源码做性能对照及 R3。未提PR、未合并、未部署。
+状态：产品实现与 R1/R2/R3 全范围复审完成，最终产品快照为 `d23a487d`。
+最终全仓 Ruff、mypy 与依赖锁检查通过；固定源码性能确认、Linux 全量与 CI 尚在进行。
+未合并、未部署。任务逐项落点见[交付对照](sqlite-writer-acceptance-20261023.md)，测量见[性能报告](sqlite-writer-performance-20261023.md)。
 
 ## 分工
 
@@ -20,6 +22,8 @@
 Database拥有FIFO准入，writer在checkout/BEGIN之前等待；read_session不排队、不自动commit，
 只对自己创建的reader关闭autoflush。optional_session复用供给session，owned write进入统一入口。
 正常连接池继续复用，业务仍在原协程执行。公开sessions别名、apply_snapshot_write、Memory apply_evidence_write及其first-write重试机制已删除。
+SQLite checkout 不再逐次执行 pre_ping；实际 acquisition 由 owned reader/writer 持有，取消时等原 driver 收尾。
+不是给读取排队，也不在每次读前加新的业务 BEGIN。原显式一致读保留。
 
 aiosqlite 0.22.1的stop返回实际worker退出future，SQLAlchemy强制退出会丢掉该future。
 SQLiteConnection保留同一次close-and-stop完成，公共writer等其结束；正常写不关闭连接。
@@ -35,21 +39,21 @@ retryable查询。未知不因BUSY代码变成未提交。根commit成功且owne
 
 ## 已执行的公共验证
 
-`tests/unit/test_database_writer.py --confcutdir=tests/unit`：14项通过，文件WAL真实worker
-barrier覆盖FIFO/排队取消、并行读、autoflush、根提交hint、BEGIN/SQL/自动flush/flush/commit
-取消及重复取消、BEGIN外部BUSY、commit确认丢失、不同文件独立和正常连接复用。
-另覆盖rollback失败后等待真实物理关闭、物理关闭失败停止准入、shutdown重复取消；不代表项目全量通过。
+最终公共 owner 组共 47 passed：database_writer、database_acquisition_cancellation、schema_guard_startup、
+diagnostic_writer、offline_database_owners、database_lifecycle_ownership、automation_unknown_commit。
+文件 WAL 与真实线程 barrier 覆盖 FIFO/排队取消、并行读、autoflush、根提交 hint、连接取得/BEGIN/SQL/
+flush/commit/rollback/物理关闭的取消及重复取消、外部 BUSY、commit ACK 丢失、连接复用和应用资源所有权。
+最终局部 eager 调度改动也在该组内；A 独立复读并补跑 4 项既有取消/ACK 回归通过。
 
-全仓Ruff及mypy src --platform linux通过（648个源码文件；Windows原生平台缺POSIX接口，目标运行平台为Linux）。C首批147项定向回归
-及B/A各自结果见其报告；不累计为尚未运行的全仓验收。
+最终 `ruff check .`、`mypy src --platform linux`（646 source files）、`uv lock --check --offline`、
+`git diff --check` 均通过。R3 最后删除的两个文件是无消费者的 GroupAdminService 和合入 Memory 的泛型
+job_claim helper。此前逐域验证见各报告，重叠用例不累计为一轮全仓结果。
 
 ## 剩余交付
 
-- 实现后全范围复审，继续修发现的语义缺口和多余机制；全仓旧factory已迁，legacy产品入口已删。
-- 公共关闭/rollback与driver关闭失败验证和已发现的fixture/API迁移已完成；继续全域交叉检查调用尾部。
-- Schema及现行合同一致性、同负载基线/新实现性能对照。
-- 实现完成后至少三轮全范围交叉复审；修正实际发现后再查，不以次数替代覆盖。
-- 全局质量/真实行为验证、提交和PR；CI/合并/部署分别报告，本次只授权提PR。
+- 固定最终源码完成普通聊天、CPU2 与后台混跑确认，追加实际受限内存组；保留已完成的全部 48 轮结果。
+- Linux 全量 unit/integration 与真实 Native CodeMode 由现有 PR CI 执行，最终结果单独记录。
+- 汇总最终证据并完成 PR；本次交付到 PR，合并和部署另行执行。
 
 ## 实现后的三轮复审
 
@@ -60,7 +64,7 @@ barrier覆盖FIFO/排队取消、并行读、autoflush、根提交hint、BEGIN/S
 | --- | --- | --- | --- | --- |
 | R1 | [C 审查](sqlite-writer-review-r1-c-20261023.md) | [A 审查](sqlite-writer-review-r1-a-20261023.md) | [B 审查](sqlite-writer-review-r1-b-20261023.md) | [root 审查](sqlite-writer-review-r1-root-20261023.md) |
 | R2 | [B 审查](sqlite-writer-review-r2-b-20261023.md) | [root 审查](sqlite-writer-review-r2-root-20261023.md) | [A 审查](sqlite-writer-review-r2-a-20261023.md) | [C 审查](sqlite-writer-review-r2-c-20261023.md) |
-| R3 | 待执行 | 待执行 | 待执行 | 待执行 |
+| R3 | [A 审查](sqlite-writer-review-r3-a-20261023.md) | [C 审查](sqlite-writer-review-r3-c-20261023.md) | [root 与 supplemental](sqlite-writer-review-r3-root-20261023.md) | [B 审查](sqlite-writer-review-r3-b-20261023.md) |
 
 R1 期间全量 Windows unit 分段检查与 integration 发现的问题、实际修复和复验见各报告，不将分段数字
 相加称作一次全绿。本机 WSL Debian 已准备独立 Python 3.12 环境，Windows 缺 fcntl 的三份媒体回归
