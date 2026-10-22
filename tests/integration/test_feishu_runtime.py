@@ -12,6 +12,7 @@ from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from websockets.asyncio.server import serve
 
+from yuki.application.lifecycle import LifecycleRegistry
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.gateway.providers import builtin_provider_catalog
@@ -326,3 +327,110 @@ async def test_real_websocket_reconnect_updates_registry_for_original_presence(
         assert not env.model.requests
         await env.gateway.close()
         assert not env.registry.has_any_active(platform="feishu")
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["socket_error", "socket_and_client_error", "socket_cancel", "repeated_cancel"]
+)
+async def test_gateway_shutdown_joins_admitted_turn_before_database_close(
+    feishu_env, database, monkeypatch, failure_kind
+):
+    env = feishu_env
+    env.harness.settings.runtime_work_enabled = True
+    entered, settling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    interrupted = asyncio.Event()
+
+    async def pending_model(_request):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # The already admitted Main still owns its original cancellation
+            # settlement. A repeated shutdown cancellation must not cut it off.
+            settling.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                interrupted.set()
+                raise
+            assert database.writer_available
+            raise
+
+    monkeypatch.setattr(env.model, "_complete", pending_model)
+    await asyncio.wait_for(env.gateway.receive(update("om_shutdown")), 3)
+    await asyncio.wait_for(entered.wait(), 3)
+    turns = tuple(env.gateway._turns)
+    assert len(turns) == 1
+    async with database.read_session() as reader:
+        source = await reader.scalar(
+            select(ChatEventModel).where(ChatEventModel.platform_message_id == "om_shutdown")
+        )
+        assert source is not None
+
+    failure = (
+        OSError("original websocket close failed")
+        if failure_kind in {"socket_error", "socket_and_client_error"}
+        else asyncio.CancelledError("original websocket close cancelled")
+        if failure_kind == "socket_cancel"
+        else None
+    )
+    env.gateway._websocket._connection = SimpleNamespace(close=AsyncMock(side_effect=failure))
+    cleanup_error = RuntimeError("original client cleanup failed")
+    client_close = AsyncMock(
+        side_effect=[cleanup_error, None] if failure_kind == "socket_and_client_error" else None
+    )
+    monkeypatch.setattr(env.client, "close", client_close)
+    close_order = []
+    original_close = database.close
+
+    async def close_database():
+        close_order.append(all(turn.done() for turn in turns))
+        await original_close()
+
+    lifecycle = LifecycleRegistry()
+    lifecycle.register("database", close=close_database)
+    lifecycle.register("feishu_gateway", close=env.gateway.close)
+    await lifecycle.start()
+    closing = asyncio.create_task(lifecycle.close())
+    settling_wait = asyncio.create_task(settling.wait())
+    try:
+        await asyncio.wait_for(
+            asyncio.wait((closing, settling_wait), return_when=asyncio.FIRST_COMPLETED), 3
+        )
+        assert settling.is_set(), "socket close failure bypassed the original admitted turn"
+        assert not closing.done() and not close_order and database.writer_available
+        if failure_kind == "repeated_cancel":
+            closing.cancel("first shutdown cancellation")
+            await asyncio.sleep(0)
+            closing.cancel("second shutdown cancellation")
+            await asyncio.sleep(0)
+            assert not interrupted.is_set()
+            assert not closing.done() and not close_order and database.writer_available
+        release.set()
+        if failure_kind in {"socket_error", "socket_and_client_error"}:
+            with pytest.raises(ExceptionGroup) as raised:
+                await closing
+            assert raised.value.exceptions == (failure,)
+            if failure_kind == "socket_and_client_error":
+                assert failure.__cause__ is cleanup_error
+        else:
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await closing
+            expected = (
+                "original websocket close cancelled"
+                if failure_kind == "socket_cancel"
+                else "first shutdown cancellation"
+            )
+            assert raised.value.args == (expected,)
+        assert close_order == [True] and not database.writer_available
+        assert all(turn.done() for turn in turns)
+        assert not env.registry.has_any_active(platform="feishu")
+        client_close.assert_awaited_once()
+    finally:
+        release.set()
+        settling_wait.cancel()
+        for turn in turns:
+            if not turn.done():
+                turn.cancel()
+        await asyncio.gather(*turns, settling_wait, return_exceptions=True)
+        await asyncio.gather(closing, return_exceptions=True)

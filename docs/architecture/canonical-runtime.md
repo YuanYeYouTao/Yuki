@@ -182,6 +182,11 @@ Presence ID 有界读取并在写事务前完成实时成员核验，要求唯�
 GatewayConnection 只存在于进程内 Registry。Registry 保存 Provider、Presence、连接句柄、能力、
 健康状态和 ConnectionGeneration；连接对象、token、Cookie 和 QQ 登录数据不进入数据库。
 
+ASGI 应用先等待 NoneBot 停止适配器并收拢其连接、断连回调，再关闭 Container 和数据库。
+回调中的路由对账在应用仍持有数据库时完成，正常运行期间断连继续执行相同对账。
+应用持有的数据库实例锁在这些资源关闭后释放。Telegram、飞书与 App/ACP
+由 Container 的既有反向关闭顺序收拢各自入站任务，随后才释放数据库依赖。
+
 Yuki 不再支持 NapCat，当前内置 SnowLuma QQ/OneBot v11、原生 Telegram、飞书/Lark 与进程内 App Provider。既有 GatewayProvider、
 GatewayConnectionProfile、Catalog、Registry 和 ProviderOneBotAdapter 继续承载可替换网关，
 provider 标识仍是通用字符串，不把业务核心改成品牌专用逻辑：
