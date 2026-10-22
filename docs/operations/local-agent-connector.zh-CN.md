@@ -124,4 +124,6 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 
 也可显式指定 `YUKI_CODEX_SOCKET`／`YUKI_CODEX_ENDPOINT` 和结果文件 `YUKI_REAL_CODEX_REPORT`。不设置原 owner 时，由官方 proxy 解析当前 profile；测试不会启动或重启 daemon。
 
-该测试运行真正的 Connector／journal／CodexDriver，经隔离 HTTPS／WSS 和临时业务库，在唯一临时目录中新建自己的原生任务，写入并读回探针文件，核对工具进度、终态与原 Work 私有回执。它只清退自己的原生会话，不触碰用户已有线程；需要原生审批或用户输入时明确报告，不擅自改变审批设置。使用真实模型会产生其正常调用费用。测试成功仍须分别记录版本、文件证据、原回执与原生清退结果，不代表生产服务器或真实 QQ 投递已经上线。
+需要核验原生审批回传时可另设 `$env:YUKI_REAL_CODEX_APPROVE_ISOLATED = "1"`。这只授权测试构造的两条完整 PowerShell 命令：在该唯一临时目录写入带本轮随机标记的 `probe.txt`，再读回同一文件。测试核对原生请求的 cwd、单条 commandActions 完整命令和可用的普通 `accept`，使用服务器内部问题 ID 经公开 `respond` 回答；不选 execpolicy amendment，不改原用户策略，其他命令、目录、审批和用户问题一律保留失败。
+
+该测试运行真正的 Connector／journal／CodexDriver，经隔离 HTTPS／WSS 和临时业务库，在唯一临时目录中新建自己的原生任务，写入并读回探针文件，核对工具进度、终态与原 Work 私有回执。它只清退自己的原生会话，不触碰用户已有线程；没有上述显式授权时，原生审批仍会明确报告并停止测试。使用真实模型会产生其正常调用费用。测试成功仍须分别记录版本、文件证据、原回执与原生清退结果，不代表生产服务器或真实 QQ 投递已经上线。

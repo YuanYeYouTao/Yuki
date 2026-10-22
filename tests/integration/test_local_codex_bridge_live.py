@@ -24,6 +24,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def isolated_command_approval(request, cwd, expected_commands):
+    """Authorize only this test's exact commands, never an amended exec policy."""
+    actions = request.get("commandActions")
+    return (
+        isinstance(request.get("cwd"), str)
+        and Path(request["cwd"]).resolve() == cwd.resolve()
+        and isinstance(actions, list)
+        and len(actions) == 1
+        and isinstance(actions[0], dict)
+        and actions[0].get("command") in expected_commands
+        and "accept" in request.get("availableDecisions", [])
+    )
+
+
 async def test_real_connector_codex_owner_file_tools_and_original_work(
     bridge, tmp_path, monkeypatch
 ):
@@ -47,6 +61,17 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
     cwd.mkdir()
     marker = f"YUKI_LOCAL_AGENT_BRIDGE_{uuid4().hex}"
     target = cwd / "probe.txt"
+    quoted_target = "'" + target.as_posix().replace("'", "''") + "'"
+    write_command = (
+        f"[System.IO.File]::WriteAllText({quoted_target}, '{marker}', "
+        "[System.Text.UTF8Encoding]::new($false))"
+    )
+    read_command = (
+        f"[System.IO.File]::ReadAllText({quoted_target}, [System.Text.UTF8Encoding]::new($false))"
+    )
+    expected_commands = {write_command, read_command}
+    approve_isolated = os.environ.get("YUKI_REAL_CODEX_APPROVE_ISOLATED") == "1"
+    approved = set()
     monkeypatch.setenv("SSL_CERT_FILE", str(bridge.ca_file))
     monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,::1")
     monkeypatch.setenv("no_proxy", "localhost,127.0.0.1,::1")
@@ -91,8 +116,12 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
                         "instance_id": instance,
                         "prompt": (
                             f"This is an isolated integration test. Work only in {cwd}. "
-                            f"Create probe.txt containing exactly {marker}, with no newline. "
-                            "Read that file back through a tool to verify it. "
+                            "Use the PowerShell terminal to run exactly these two commands, "
+                            "as two separate tool calls with this working directory. "
+                            "Copy each command verbatim; do not combine, alter or prepend "
+                            "another command, and do not use apply_patch.\n"
+                            f"First command:\n{write_command}\n"
+                            f"Second command:\n{read_command}\n"
                             "Do not edit or inspect files outside this directory, "
                             "access the network, "
                             "or change any running service. "
@@ -125,13 +154,34 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
                                 .order_by(AgentEventModel.id)
                             )
                         )
-                    questions = [
-                        event.kind for event in events if event.kind in {"permission", "question"}
-                    ]
-                    assert not questions, (
-                        "Native owner requires an original permission/user answer; this test "
-                        "does not silently approve it or change the user's approval policy"
-                    )
+                    for event in events:
+                        if event.kind not in {"permission", "question"} or event.id in approved:
+                            continue
+                        question = json.loads(event.payload_json).get("payload", {})
+                        assert (
+                            approve_isolated
+                            and event.kind == "permission"
+                            and question.get("native_method")
+                            == "item/commandExecution/requestApproval"
+                            and isolated_command_approval(
+                                question.get("native_request", {}), cwd, expected_commands
+                            )
+                        ), (
+                            "Native question is outside this test's explicit exact-command grant; "
+                            "no approval or global policy change was submitted"
+                        )
+                        response = await bridge.service.execute(
+                            {
+                                "action": "respond",
+                                "operation_id": operation_id,
+                                "permission_id": str(event.id),
+                                "response": {"decision": "accept"},
+                            },
+                            f"test-approval:{operation_id}:{event.id}",
+                            bridge.source,
+                        )
+                        assert response.get("response_submitted") or response.get("admitted")
+                        approved.add(event.id)
                     if task.status == "completed":
                         break
                     await asyncio.sleep(0.02)
@@ -149,6 +199,18 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
                 in {"commandExecution", "fileChange"}
                 for event in payloads
             ), "A real tool/file milestone must traverse the connector, TLS and server writer"
+            commands_seen = [
+                event.get("payload", {}).get("item", {}).get("command")
+                for event in payloads
+                if event.get("payload", {}).get("item", {}).get("type") == "commandExecution"
+            ]
+            assert all(
+                any(
+                    expected in (actual if isinstance(actual, str) else " ".join(actual or []))
+                    for actual in commands_seen
+                )
+                for expected in expected_commands
+            ), "Both exact write and read commands must have real native tool receipts"
             assert all(
                 event.get("execution_id") in (None, operation.native_execution_id)
                 for event in payloads
@@ -189,6 +251,7 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
                 "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 "completion_forwarded_to_original_work": True,
                 "cache_usage": "unknown",
+                "isolated_approvals": sorted(approved),
             }
             destination = Path(
                 os.environ.get("YUKI_REAL_CODEX_REPORT", tmp_path / "live-result.json")
