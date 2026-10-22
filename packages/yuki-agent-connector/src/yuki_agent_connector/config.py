@@ -19,7 +19,7 @@ from platformdirs import user_data_path
 
 def private_path(path: Path, *, directory: bool = False) -> None:
     """Private files on POSIX, an explicit current-user ACL on Windows."""
-    if os.name == "nt":
+    if sys.platform == "win32":
         result = subprocess.run(
             ["whoami", "/user", "/fo", "csv", "/nh"],
             capture_output=True,
