@@ -1,5 +1,6 @@
 """Internal resource identity, original operations, and durable important facts."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from yuki.external_agents.repository import (
     session_key,
 )
 from yuki.external_agents.service import ExternalAgentService
-from yuki.external_agents.transport import DeviceConnection
+from yuki.external_agents.transport import DeviceConnection, DeviceOffline
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
@@ -89,6 +90,20 @@ async def prepare(env, identity="original-operation", **changes):
     return await env.repository.prepare(**parameters)
 
 
+async def connect(env, connection, *, profiles=("profile",)):
+    await env.service.connect(
+        env.device["device_id"],
+        connection,
+        {
+            "protocol_version": 1,
+            "instances": [
+                {"id": local_id, "driver": "codex", "capabilities": ["get", "steer"]}
+                for local_id in profiles
+            ],
+        },
+    )
+
+
 def event(identity="event-one", *, operation="original-operation", **changes):
     result = {
         "event_id": identity,
@@ -135,6 +150,7 @@ async def test_original_operation_key_preserves_unknown_and_rejects_changed_inte
         {"action": "get", "operation_id": original.id}, "read-original", native.source
     )
     assert view["status"] == "unknown" and view["uncertain"] and view["pending"]
+    assert view["admitted"] is False
     assert not view["device_online"]
 
 
@@ -241,7 +257,7 @@ async def test_permission_uses_internal_event_id_and_resolves_exact_native_quest
             pass
 
     connection = DeviceConnection(native.device["device_id"], Socket())
-    await native.service.connections.attach(connection)
+    await connect(native, connection)
     with pytest.raises(ValueError, match="permission_id_required"):
         await native.service.execute(
             {
@@ -267,6 +283,30 @@ async def test_permission_uses_internal_event_id_and_resolves_exact_native_quest
     assert commands[0]["arguments"]["permission_id"] == "native-question"
     assert commands[0]["arguments"]["native_request_id"] == "native-question"
     assert result["run_id"] is None
+    replay = await native.service.execute(
+        {
+            "action": "respond",
+            "operation_id": operation.id,
+            "permission_id": permission_id,
+            "decision": "allow",
+        },
+        "answer-original-question",
+        native.source,
+    )
+    assert replay["operation_id"] == result["operation_id"] and len(commands) == 1
+    other, _ = await prepare(native, identity="another-original-operation")
+    with pytest.raises(ValueError, match="external_agent_question_not_found"):
+        await native.service.execute(
+            {
+                "action": "respond",
+                "operation_id": other.id,
+                "permission_id": permission_id,
+                "decision": "allow",
+            },
+            "cross-operation-question",
+            native.source,
+        )
+    assert len(commands) == 1
 
 
 async def test_work_feedback_and_native_execution_keep_distinct_original_ids(database, case):
@@ -340,7 +380,7 @@ async def test_dispatch_disconnect_keeps_original_operation_unknown_without_new_
             pass
 
     connection = DeviceConnection(native.device["device_id"], Socket())
-    await native.service.connections.attach(connection)
+    await connect(native, connection)
     arguments = {
         "action": "steer",
         "instance_id": native.instance,
@@ -349,9 +389,227 @@ async def test_dispatch_disconnect_keeps_original_operation_unknown_without_new_
     }
     result = await native.service.execute(arguments, "uncertain-original", native.source)
     assert result["pending"] and result["uncertain"] and result["status"] == "unknown"
+    assert result["admitted"] is False
     replay = await native.service.execute(arguments, "uncertain-original", native.source)
     assert replay["operation_id"] == result["operation_id"]
     assert len(commands) == 1
     async with database.sessions() as session:
         assert await session.scalar(select(func.count()).select_from(AgentOperationModel)) == 1
         assert await session.scalar(select(func.count()).select_from(work)) == 0
+
+
+async def test_removed_profile_is_unavailable_while_its_original_receipt_remains_readable(native):
+    class Socket:
+        async def send_json(self, _command):
+            raise AssertionError("removed native instance must not receive a new command")
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    original_connection = DeviceConnection(native.device["device_id"], Socket())
+    await connect(native, original_connection, profiles=("profile", "removed"))
+    removed_instance = instance_key(native.device["device_id"], "removed")
+    removed_session = (
+        await native.repository.remember_sessions(removed_instance, native.actor, ["native-thread"])
+    )["native-thread"]
+    operation, _ = await prepare(
+        native,
+        instance_id=removed_instance,
+        session_id=removed_session,
+        identity="removed-profile-operation",
+    )
+    await native.repository.response(
+        operation.id,
+        {
+            "status": "completed",
+            "pending": False,
+            "session_id": "native-thread",
+            "execution_id": "native-turn",
+        },
+    )
+    replacement = DeviceConnection(native.device["device_id"], Socket())
+    await connect(native, replacement)
+    directory = await native.service.catalog(native.actor)
+    instances = {row["id"]: row for row in directory["instances"]}
+    assert instances[native.instance]["online"]
+    assert removed_instance not in instances or not instances[removed_instance]["online"]
+    with pytest.raises(DeviceOffline, match="instance_unavailable"):
+        await native.service.execute(
+            {"action": "get", "session_id": removed_session}, "new-removed-read", native.source
+        )
+    original = await native.service.execute(
+        {"action": "get", "operation_id": operation.id}, "read-removed-receipt", native.source
+    )
+    assert original["status"] == "completed" and not original["pending"]
+
+
+@pytest.mark.parametrize("detach_succeeds", [True, False])
+async def test_detach_settles_only_supervision_and_does_not_cancel_native(
+    database, case, detach_succeeds
+):
+    env = await register_device(database, case.source["actor_person_id"])
+    env.service = ExternalAgentService(database, case.tasks)
+    env.session = (
+        await env.repository.remember_sessions(env.instance, env.actor, ["native-thread"])
+    )["native-thread"]
+    commands = []
+
+    class Socket:
+        async def send_json(self, command):
+            commands.append(command)
+            if command["action"] == "watch":
+                result = {
+                    "status": "running",
+                    "pending": True,
+                    "admitted": True,
+                    "executed": True,
+                    "session_id": "native-thread",
+                    "execution_id": "native-turn",
+                }
+            else:
+                assert command["action"] == "detach"
+                result = (
+                    {"status": "detached", "pending": False, "admitted": True, "executed": True}
+                    if detach_succeeds
+                    else {
+                        "status": "failed",
+                        "pending": False,
+                        "executed": False,
+                        "error": {"code": "request_not_found"},
+                    }
+                )
+            connection.respond({"id": command["id"], "result": result})
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    connection = DeviceConnection(env.device["device_id"], Socket())
+    await connect(env, connection)
+    source = {"actor_person_id": env.actor}
+    watching = await env.service.execute(
+        {"action": "watch", "session_id": env.session}, "observe-existing", source
+    )
+    assert watching["ownership"] == "observe" and watching["pending"]
+    await env.service.execute(
+        {"action": "detach", "operation_id": watching["operation_id"]}, "end-supervision", source
+    )
+    original = await env.repository.operation(watching["operation_id"], env.actor)
+    assert (original.detached_at is not None) is detach_succeeds
+    async with database.sessions() as session:
+        task = await session.get(SandboxTaskRunModel, original.id)
+        assert (task.status == "completed") is detach_succeeds
+        if detach_succeeds:
+            assert json.loads(task.completion_json)["native_status"] == "detached"
+    assert [command["action"] for command in commands] == ["watch", "detach"]
+    assert original.native_execution_id == "native-turn"
+
+
+async def test_late_admission_and_terminal_replay_cannot_undo_original_completion(database, case):
+    env = await register_device(database, case.source["actor_person_id"])
+    env.source = {
+        **case.source,
+        "work_id": case.control.current["id"],
+        "conversation_id": case.control.lease.conversation_id,
+    }
+    env.session = (
+        await env.repository.remember_sessions(env.instance, env.actor, ["native-thread"])
+    )["native-thread"]
+    env.service = ExternalAgentService(database, case.tasks)
+    operation, _ = await prepare(
+        env,
+        action="prompt",
+        arguments={"action": "prompt", "prompt": "test"},
+        lease=case.control.lease,
+    )
+    terminal = event(
+        "original-terminal", kind="completed", payload={"status": "completed", "text": "done"}
+    )
+    await env.repository.receive_events(env.device["device_id"], [terminal])
+    await env.repository.response(
+        operation.id,
+        {
+            "status": "running",
+            "pending": True,
+            "session_id": "native-thread",
+            "execution_id": "native-turn",
+        },
+    )
+    await case.control.repository.cancel(case.control.lease.conversation_id)
+    await env.repository.receive_events(
+        env.device["device_id"],
+        [
+            terminal,
+            event("late-progress"),
+            event("late-question", kind="question", payload={"native_request_id": "expired"}),
+        ],
+    )
+    current = await env.repository.operation(operation.id, env.actor)
+    assert json.loads(current.result_json)["status"] == "completed"
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(select(work.c.state).where(work.c.id == operation.work_id))
+            == "cancelled"
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SandboxTaskContinuationModel)
+                .where(SandboxTaskContinuationModel.request_id == operation.id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(inputs)
+                .where(inputs.c.work_id == operation.work_id)
+            )
+            == 0
+        )
+    assert len(await env.repository.event_page(operation.id, 0)) == 3
+
+
+async def test_revocation_during_intent_preparation_cannot_dispatch_on_an_old_connection(
+    database, native, monkeypatch
+):
+    commands = []
+
+    class Socket:
+        async def send_json(self, command):
+            commands.append(command)
+            connection.respond(
+                {"id": command["id"], "result": {"admitted": True, "status": "running"}}
+            )
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    connection = DeviceConnection(native.device["device_id"], Socket())
+    await connect(native, connection)
+    preparing, proceed = asyncio.Event(), asyncio.Event()
+    prepare_operation = native.service.repository.prepare
+
+    async def blocked_prepare(**arguments):
+        preparing.set()
+        await proceed.wait()
+        return await prepare_operation(**arguments)
+
+    monkeypatch.setattr(native.service.repository, "prepare", blocked_prepare)
+    execution_id = await native.repository.remember_execution(native.session, "native-turn")
+    execution = asyncio.create_task(
+        native.service.execute(
+            {"action": "steer", "execution_id": execution_id, "prompt": "continue"},
+            "revoked-before-dispatch",
+            native.source,
+        )
+    )
+    await preparing.wait()
+    async with database.immediate_session() as session:
+        device = await session.get(ClientDeviceModel, native.device["device_id"])
+        device.revoked_at = datetime.now(UTC)
+    proceed.set()
+    outcome = (await asyncio.gather(execution, return_exceptions=True))[0]
+    assert commands == []
+    assert isinstance(outcome, ClientError) or (
+        isinstance(outcome, dict) and outcome.get("admitted") is not True
+    )
