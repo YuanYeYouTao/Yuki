@@ -38,6 +38,14 @@ def isolated_command_approval(request, cwd, expected_commands):
     )
 
 
+def successful_isolated_command(item, cwd):
+    return (
+        item.get("status") == "completed"
+        and item.get("exitCode") == 0
+        and Path(item["cwd"]).resolve() == cwd.resolve()
+    )
+
+
 async def test_real_connector_codex_owner_file_tools_and_original_work(
     bridge, tmp_path, monkeypatch
 ):
@@ -199,18 +207,23 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
                 in {"commandExecution", "fileChange"}
                 for event in payloads
             ), "A real tool/file milestone must traverse the connector, TLS and server writer"
-            commands_seen = [
-                event.get("payload", {}).get("item", {}).get("command")
+            command_receipts = [
+                event["payload"]["item"]
                 for event in payloads
                 if event.get("payload", {}).get("item", {}).get("type") == "commandExecution"
             ]
+            successful_commands = [
+                item["command"]
+                for item in command_receipts
+                if successful_isolated_command(item, cwd)
+            ]
             assert all(
                 any(
-                    expected in (actual if isinstance(actual, str) else " ".join(actual or []))
-                    for actual in commands_seen
+                    method in command and target.as_posix() in command.replace("\\", "/")
+                    for command in successful_commands
                 )
-                for expected in expected_commands
-            ), "Both exact write and read commands must have real native tool receipts"
+                for method in ("[System.IO.File]::WriteAllText(", "[System.IO.File]::ReadAllText(")
+            ), "Both probe operations must have successful native receipts in the isolated cwd"
             assert all(
                 event.get("execution_id") in (None, operation.native_execution_id)
                 for event in payloads
@@ -247,6 +260,10 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
                     payload.get("payload", {}).get("item", {}).get("type")
                     in {"commandExecution", "fileChange"}
                     for payload in payloads
+                ),
+                "successful_command_receipts": len(successful_commands),
+                "failed_command_receipts": sum(
+                    item.get("status") == "failed" for item in command_receipts
                 ),
                 "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 "completion_forwarded_to_original_work": True,
