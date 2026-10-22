@@ -188,7 +188,7 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
         assert grants[0].canonical_created_by_person_id == root and grants[0].enabled
         original_event = await reader.get(ChatEventModel, published.source_event_id)
         assert original_event.segments_json == original_bytes
-        assert notifications.publication_source_person(original_event) == env.person
+        assert notifications._publication_data(original_event)["source_person_id"] == env.person
         assert [
             row_values(row)
             for row in await reader.scalars(
@@ -207,7 +207,7 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
     )
     async with database.read_session() as reader:
         event_b = await reader.get(ChatEventModel, newer.source_event_id)
-        assert notifications.publication_source_person(event_b) == root
+        assert notifications._publication_data(event_b)["source_person_id"] == root
         job = await reader.scalar(
             select(PluginBackgroundTurnJobModel).where(
                 PluginBackgroundTurnJobModel.source_event_id == newer.source_event_id
