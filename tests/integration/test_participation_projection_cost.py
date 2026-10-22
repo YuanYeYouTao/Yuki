@@ -86,7 +86,25 @@ async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(d
             "aliases": ["林舟", "阿舟"],
         }
         assert requests[1]["state"]["focus"] == payload["focus"]
-        assert requests[0]["questions"] == requests[1]["questions"]
+        assert requests[0]["questions"].keys() == requests[1]["questions"].keys()
+        for dimension in requests[0]["questions"]:
+            assert (
+                requests[0]["questions"][dimension]["criteria"].keys()
+                == requests[1]["questions"][dimension]["criteria"].keys()
+            )
+        for request, current_name, old_name in (
+            (requests[0], "阿澪", "林舟"),
+            (requests[1], "林舟", "阿澪"),
+        ):
+            for dimension in (
+                "interaction_mark",
+                "information_state",
+                "floor_state",
+                "boundary_scope",
+            ):
+                instructions = request["questions"][dimension]["instructions"]
+                assert current_name in instructions and old_name not in instructions
+            assert "{{name}}" not in json.dumps(request["questions"], ensure_ascii=False)
         main = ChatEventPromptRenderer((row,)).reference_message(
             row, current_event_id=row.id, current_content=body
         )

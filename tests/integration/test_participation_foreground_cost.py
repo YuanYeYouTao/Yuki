@@ -50,7 +50,11 @@ async def test_warm_binding_and_hint_keep_original_source_and_saved_quiet(
         snapshot = SimpleNamespace(
             conversation_id=item.scene.conversation_id, generation=item.scene.generation
         )
-        runtime = SimpleNamespace(turn_snapshot=snapshot, effective_trigger_event_id=source.id)
+        runtime = SimpleNamespace(
+            turn_snapshot=snapshot,
+            effective_trigger_event_id=source.id,
+            visible_event_ids=frozenset(),
+        )
         prepared_runtime = await host.app.runtime_config.snapshot(group_id=item.scene.space_id)
         samples = {"binding": [], "hint": []}
         for sequence in range(1, 6):
@@ -100,7 +104,7 @@ async def test_warm_binding_and_hint_keep_original_source_and_saved_quiet(
             restored.controller.state.host_checkpoint["participation_v1"]
         )
         assert recovered.units == checkpoint.units
-        assert tuple(restored.observation.queue.pending) == (original.ref.event_id,)
+        assert not restored.observation.queue.pending
         assert host._observer.calls == []
     finally:
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", count_sql)

@@ -246,9 +246,9 @@ async def test_selected_same_main_input_survives_late_participation_exit(
         await host._save(item)
         classify = host.continuation_for_event
 
-        async def classify_real(event_id, *, check_budget=True):
-            result = await classify(event_id, check_budget=check_budget)
-            classified.append((event_id, check_budget, result))
+        async def classify_real(event_id):
+            result = await classify(event_id)
+            classified.append((event_id, result))
             return result
 
         monkeypatch.setattr(host, "continuation_for_event", classify_real)
@@ -283,15 +283,13 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                 assert prepared.admission.reason == "continuation"
                 assert (
                     sum(
-                        event_id == selected_id and not budget and found is not None
-                        for event_id, budget, found in classified
+                        event_id == selected_id and found is not None
+                        for event_id, found in classified
                     )
                     >= 2
                 )
                 binding = prepared.admission.binding
-                assert binding is not None and await host.continuation_current(
-                    binding, check_budget=False
-                )
+                assert binding is not None and await host.continuation_current(binding)
                 if late_exit == "quiet":
                     current_unit = admission_unit_binding(admitted_a)
                     assert item.controller.observe_unit_hint(
@@ -324,7 +322,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                         }
                     )
                     assert item.controller.apply_semantic_observation(observation)
-                assert not await host.continuation_current(binding, check_budget=False)
+                assert not await host.continuation_current(binding)
                 flipped = True
             return await publish(
                 repository,
@@ -374,7 +372,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
             direction="inbound",
             content="synthetic later unselected input",
         )
-        assert await host.continuation_for_event(later.event.id, check_budget=False) is None
+        assert await host.continuation_for_event(later.event.id) is None
         assert await host.ordinary.get(later.event.id) is None
         assert await host.ordinary.get(a_id) == admitted_a
     finally:

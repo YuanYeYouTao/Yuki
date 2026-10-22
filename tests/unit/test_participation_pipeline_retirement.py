@@ -88,9 +88,9 @@ async def test_committed_fast_input_recovers_once_and_still_gets_background_obse
         await host.close()
 
 
-@pytest.mark.parametrize("state,active", [("stay", True), ("quiet", False), ("closed", False)])
-async def test_observer_activity_uses_live_participation_not_retained_unit_count(
-    database, tmp_path, monkeypatch, state, active
+@pytest.mark.parametrize("state", ["stay", "quiet", "closed"])
+async def test_observer_uses_one_schedule_without_purchasing_state_change_observations(
+    database, tmp_path, monkeypatch, state
 ):
     host, item, a, _original, _unit = await _relationship(
         database, tmp_path, engage="quiet" if state == "quiet" else "stay"
@@ -112,7 +112,8 @@ async def test_observer_activity_uses_live_participation_not_retained_unit_count
         monkeypatch.setattr(item.observation, "evaluate_due", evaluate)
         monkeypatch.setattr(item.controller, "advance", lambda *_args, **_kwargs: None)
         await host._advance_scene(item)
-        assert evaluate.await_args.kwargs["active"] is active
+        assert evaluate.await_count == 1
+        assert "active" not in evaluate.await_args.kwargs
         if state == "quiet":
             # Keep the report queryable for later snapshots/corrections.
             assert any(
@@ -177,9 +178,6 @@ async def test_selected_original_activation_preserves_qualification_after_review
     database, tmp_path, exit_reason
 ):
     host, item, _a, original, unit = await _relationship(database, tmp_path)
-    item.controller.parameters = item.controller.parameters.model_copy(
-        update={"continuation_review_span": 1}
-    )
     provider = FakeLLMProvider()
     processor = build_harness(
         database,
@@ -188,9 +186,11 @@ async def test_selected_original_activation_preserves_qualification_after_review
     ).processor
     processor.set_participation(host)
     try:
-        for content in ("synthetic selected B", "synthetic selected C"):
+        admitted_refs = []
+        for index in range(6):
+            content = f"synthetic selected continuation {index}"
             event = await _event_and_route(database, host.app.ledger, content=content)
-            binding, reason = await host.continuation_for_event(event.id, check_budget=False)
+            binding, reason = await host.continuation_for_event(event.id)
             incoming = host.ordinary.prepare(
                 event, item.scene.generation, 2, binding, reason=reason
             )
@@ -208,6 +208,7 @@ async def test_selected_original_activation_preserves_qualification_after_review
                     admission_allowed=selected_allowed,
                 )
             await host.on_ordinary_admitted(binding, await host.ordinary.get(event.id))
+            admitted_refs.append(item.controller.state.events[f"event:{event.id}"].ref)
             assert (
                 await host.ordinary.get(event.id)
             ).activation_id == original.admission.activation_id
@@ -215,11 +216,10 @@ async def test_selected_original_activation_preserves_qualification_after_review
         checkpoint = ParticipationCheckpoint.model_validate(
             item.controller.state.host_checkpoint["participation_v1"]
         )
-        assert next(iter(checkpoint.units.values())).fast_sequence == 2
+        assert next(iter(checkpoint.units.values())).continuation_refs == tuple(admitted_refs)
         d = await _event_and_route(database, host.app.ledger, content="synthetic queued D")
-        assert await host.continuation_for_event(d.id) is None
-        binding, reason = await host.continuation_for_event(d.id, check_budget=False)
-        assert await host.continuation_current(binding, check_budget=False)
+        binding, reason = await host.continuation_for_event(d.id)
+        assert await host.continuation_current(binding)
         incoming = host.ordinary.prepare(d, item.scene.generation, 3, binding, reason=reason)
 
         async def selected_allowed(writer):
@@ -273,7 +273,6 @@ async def test_selected_original_activation_preserves_qualification_after_review
         later = await _event_and_route(
             database, host.app.ledger, content="synthetic unselected after exit"
         )
-        assert await host.continuation_for_event(later.id, check_budget=False) is None
         assert await host.continuation_for_event(later.id) is None
         assert not provider.requests
     finally:

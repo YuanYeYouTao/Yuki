@@ -251,22 +251,26 @@ class SemanticParticipationService:
         return await binding_for_event(self, event_id, record=record, runtime=runtime)
 
     async def continuation_for_event(
-        self, event_id: int, *, check_budget: bool = True
+        self, event_id: int
     ) -> tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None:
         from yuki.services.participation_ordinary import continuation_for_event
 
-        return await continuation_for_event(self, event_id, check_budget=check_budget)
+        return await continuation_for_event(self, event_id)
 
     async def continuation_current(
         self,
         binding: OrdinaryParticipationBinding,
         *,
-        check_budget: bool = True,
         session: AsyncSession | None = None,
     ) -> bool:
         from yuki.services.participation_ordinary import continuation_current
 
-        return await continuation_current(self, binding, check_budget=check_budget, session=session)
+        return await continuation_current(self, binding, session=session)
+
+    async def runtime_context(self, runtime: ToolRuntime) -> dict[str, Any] | None:
+        from yuki.services.participation_ordinary import runtime_context
+
+        return await runtime_context(self, runtime)
 
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
@@ -848,7 +852,7 @@ class SemanticParticipationService:
                     event, now, actor_identity=identity
                 ).needs_observation
             ):
-                item.observation.request_observation(event.ref)
+                item.observation.request_observation(event.ref, actor_identity=identity)
         return runtime
 
     async def _source_current(self, item: _Session, ref: SourceRef) -> bool:
@@ -902,9 +906,11 @@ class SemanticParticipationService:
             and versions.get(ref.event_id) == [ref.revision, digests[ref.event_id]]
             for ref in refs
         }
-        for ref, current in valid.items():
-            if not current:
-                item.controller.observe_source_change(ref)
+        invalid = tuple(ref for ref, current in valid.items() if not current)
+        if invalid:
+            current_identity = await prepare_actor_identity(self, item, session=session)
+            for ref in invalid:
+                item.controller.observe_source_change(ref, actor_identity=current_identity)
         return valid
 
     async def _validate_boundaries(self, item: _Session) -> None:
@@ -1404,12 +1410,6 @@ class SemanticParticipationService:
             )
             await item.observation.evaluate_due(
                 time.time(),
-                active=any(
-                    not unit.closed and unit.engage != "quiet"
-                    for unit in item.controller.participating_units(
-                        time.time(), actor_identity=identity
-                    )
-                ),
                 actor_identity=identity,
             )
             # A real source may change while Jev is in flight. Stops have no

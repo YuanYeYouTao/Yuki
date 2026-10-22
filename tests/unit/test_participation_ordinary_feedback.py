@@ -89,6 +89,7 @@ async def test_ordinary_silence_is_one_main_request_without_send_or_work(databas
     chat, provider, tool_runtime, runtime, backend = await ordinary_backend(
         database, content, callback=callback
     )
+    runtime = replace(runtime, visible_event_ids=frozenset({1}))
     result = await chat.runtime.runner.run(
         (ChatMessage("system", "固定说明"), ChatMessage("user", "继续这段交流")),
         runtime,
@@ -103,7 +104,9 @@ async def test_ordinary_silence_is_one_main_request_without_send_or_work(databas
     else:
         callback.assert_awaited_once()
         seen_runtime, sequence, response, delta = callback.await_args.args
-        assert seen_runtime is tool_runtime and sequence == 1
+        assert seen_runtime == replace(tool_runtime, visible_event_ids=frozenset({1}))
+        assert seen_runtime.effective_trigger_event_id == tool_runtime.effective_trigger_event_id
+        assert sequence == 1
         assert response.provider_request_id == "response-1" and delta.engage == engage
 
 
@@ -233,7 +236,7 @@ async def test_confirmed_ordinary_group_send_binds_original_unit_and_replays_onc
 
 
 @pytest.mark.parametrize("engage", ["quiet", "stay"])
-async def test_actual_host_observes_no_send_hint_and_only_quiet_rechecks_original_focus(
+async def test_actual_host_observes_no_send_hint_without_purchasing_state_change_review(
     database, tmp_path, engage
 ):
     host, item, event, _, _ = await ordinary_expression(database, tmp_path, send=False)
@@ -273,17 +276,12 @@ async def test_actual_host_observes_no_send_hint_and_only_quiet_rechecks_origina
         assert unit.hint_basis == (item.controller.state.events[f"event:{event.id}"].ref,)
         assert not checkpoint.expressions and not item.controller.state.effects
         assert not item.controller.state.proposals and not item.controller.state.feedback
-        assert tuple(item.observation.queue.pending) == (
-            (f"event:{event.id}",) if engage == "quiet" else ()
-        )
-        if engage == "quiet":
-            # The real _save persists the existing observer queue separately
-            # from consumed admission. Reloading cannot discard this correction.
-            host._sessions.clear()
-            item = await host._session(await host._scene(event.canonical_conversation_id))
-            assert tuple(item.observation.queue.pending) == (f"event:{event.id}",)
-            assert item.controller.state.consumed[f"event:{event.id}"] == unit.input_ref.revision
-        item.observation.queue.pending.clear()
+        assert not item.observation.queue.pending
+        assert not host._observer.calls
+        host._sessions.clear()
+        item = await host._session(await host._scene(event.canonical_conversation_id))
+        assert not item.observation.queue.pending
+        assert item.controller.state.consumed[f"event:{event.id}"] == unit.input_ref.revision
         # A repeated physical response is not a fresh hint or correction demand.
         from yuki_participation.self_report import SelfDelta
 

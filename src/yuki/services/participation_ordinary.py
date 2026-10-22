@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from yuki_participation.controller import original_actor
 from yuki_participation.models import CandidateKind, ScopedEvent, SourceRef
-from yuki_participation.participation import ParticipationUnit, UnitBinding, UnitParticipation
+from yuki_participation.participation import (
+    ParticipationCheckpoint,
+    ParticipationUnit,
+    UnitBinding,
+    UnitParticipation,
+)
 from yuki_participation.self_report import SelfDelta, SelfReport
 
 from yuki.conversation.initiative_sources import source_revision
@@ -281,16 +286,14 @@ async def binding_for_event(
 
 
 async def continuation_for_event(
-    service: SemanticParticipationService, event_id: int, *, check_budget: bool = True
+    service: SemanticParticipationService, event_id: int
 ) -> tuple[OrdinaryParticipationBinding, ImplicitReason] | None:
     """Classify an implicit source: a verified invitation first, then a matched unit."""
     async with event_scope(service, event_id) as found:
         if found is None:
             return None
         row, item, event, identity = found
-        view = item.controller.participation_view(
-            event, time.time(), check_budget=check_budget, actor_identity=identity
-        )
+        view = item.controller.participation_view(event, time.time(), actor_identity=identity)
         if not view.source_valid:
             return None
         invited = invitation_unit(item, event, actor_identity=identity)
@@ -310,7 +313,6 @@ async def continuation_current(
     service: SemanticParticipationService,
     binding: OrdinaryParticipationBinding,
     *,
-    check_budget: bool = True,
     session: AsyncSession | None = None,
 ) -> bool:
     """Read the current derived eligibility at the original admission boundary."""
@@ -326,6 +328,14 @@ async def continuation_current(
         binding.source_revision,
     ]:
         return False
+    identity = await actor_identity(service, item, (event.author,), session=session)
+    invited = invitation_unit(item, event, actor_identity=identity)
+    if (
+        invited is not None
+        and invited.thread == binding.unit_key
+        and identity(invited.target) == identity(binding.target_hint)
+    ):
+        return True
     return item.controller.continuation_current(
         event.ref,
         UnitBinding(
@@ -337,8 +347,7 @@ async def continuation_current(
             ),
         ),
         time.time(),
-        check_budget=check_budget,
-        actor_identity=await actor_identity(service, item, (event.author,), session=session),
+        actor_identity=identity,
     )
 
 
@@ -356,6 +365,115 @@ async def on_ordinary_admitted(
             return
         _, item, _, _, _ = found
         await service._save(item)
+
+
+async def runtime_context(
+    service: SemanticParticipationService, runtime: ToolRuntime
+) -> dict[str, Any] | None:
+    """Read applied facts for the original admission, without hydration or an observer lock."""
+    conversation = runtime.effective_conversation_id
+    event_id = runtime.effective_trigger_event_id
+    if conversation is None or event_id is None:
+        return None
+    snapshot = runtime.turn_snapshot
+    if snapshot is not None and (conversation, snapshot.generation) not in service._sessions:
+        return None
+    if (
+        runtime.runtime_config is not None
+        and not runtime.runtime_config.conversation_policy().semantic_participation_enabled
+    ):
+        return None
+    admission = await service.ordinary.get(
+        event_id,
+        conversation_id=conversation,
+        generation=snapshot.generation if snapshot is not None else None,
+    )
+    if admission is None or admission.binding is None:
+        return None
+    item = service._sessions.get((admission.conversation_id, admission.generation))
+    if item is None:
+        return None
+    identity = await actor_identity(service, item, (admission.actor_person_id,))
+    binding = admission.binding
+    checkpoint = ParticipationCheckpoint.model_validate(
+        item.controller.state.host_checkpoint.get("participation_v1", {})
+    )
+    reports: list[dict[str, Any]] = []
+    for unit in checkpoint.units.values():
+        if (
+            unit.binding.unit.thread != binding.unit_key
+            or identity(unit.binding.unit.target) != identity(binding.target_hint)
+            or not item.controller._binding_valid(unit.binding, checkpoint)
+            or not item.controller._unit_interpretation_valid(unit)
+        ):
+            continue
+        facts: dict[str, Any] = {"actor_person_id": unit.binding.actor}
+        hint = unit.hint
+        if hint is not None and all(
+            item.controller._unit_ref_valid(ref, unit) for ref in unit.hint_basis
+        ):
+            facts["self_intent"] = {
+                "engage": hint.delta.engage,
+                "source": hint.source.model_dump(mode="json") if hint.source else None,
+                "basis": [ref.model_dump(mode="json") for ref in unit.hint_basis],
+                "source_at": hint.at,
+                "sequence": hint.sequence,
+            }
+        review = unit.review
+        if review is not None and all(
+            item.controller._unit_ref_valid(ref, unit) for ref in review.basis
+        ):
+            facts["semantic_review"] = {
+                "interaction": review.interaction.choice if review.interaction else None,
+                "floor": review.floor.choice if review.floor else None,
+                "source": review.source.model_dump(mode="json"),
+                "source_at": review.at,
+                "source_order": review.source_order,
+                "sequence": review.sequence,
+            }
+            observation = item.controller.state.observations.get(review.source.event_id)
+            if (
+                observation is not None
+                and observation.observation_id == review.observation_id
+                and observation.snapshot.sequence == review.sequence
+            ):
+                boundary_scope = observation.answers.get("boundary_scope")
+                if boundary_scope is not None:
+                    facts["semantic_review"]["boundary_scope"] = boundary_scope.choice
+        if len(facts) > 1:
+            reports.append(facts)
+    boundaries = []
+    for boundary in item.controller.state.boundaries.values():
+        if (
+            boundary.released_by is not None
+            or boundary.thread != binding.unit_key
+            or (
+                not boundary.group_wide
+                and identity(boundary.target) != identity(binding.target_hint)
+            )
+        ):
+            continue
+        stop: dict[str, Any] = {
+            "source": boundary.source.model_dump(mode="json"),
+            "actor_person_id": boundary.author,
+            "scope": "group_thread" if boundary.group_wide else "target_thread",
+            "interaction": "ask_yuki_stop" if boundary.explicit_stop else "close_topic",
+        }
+        source = item.controller.state.seen.get(boundary.source.event_id)
+        if source is not None and source.revision == boundary.source.revision:
+            stop.update(source_at=source.at, source_order=source.source_order)
+        boundaries.append(stop)
+    if not reports and not boundaries:
+        return None
+    context: dict[str, Any] = {
+        "thread": binding.unit_key,
+        "target_person_id": binding.target_hint,
+    }
+    if reports:
+        context["reports"] = reports
+    if boundaries:
+        context["boundaries"] = boundaries
+    return context
 
 
 async def observe_main_response(
@@ -389,28 +507,37 @@ async def observe_main_response(
             source=event.ref,
             delta=delta,
         )
-        prior = next(
-            (
-                u.engage
-                for u in item.controller.participating_units(time.time(), actor_identity=identity)
-                if u.unit.thread == unit.unit.thread
-                and identity(u.unit.target) == identity(unit.unit.target)
-            ),
-            None,
-        )
-        if item.controller.observe_unit_hint(unit, report):
-            if delta.engage == "quiet" and prior != "quiet" and item.observation is not None:
-                interpreted = item.controller.state.observations.get(event.ref.event_id)
-                if (
-                    interpreted is None
-                    or interpreted.snapshot.focus != event.ref
-                    or not all(
-                        (
-                            await service._sources_current(item, interpreted.snapshot.context)
-                        ).values()
-                    )
-                ):
-                    item.observation.request_observation(event.ref)
+        if delta.engage == "quiet" and runtime.visible_event_ids:
+            checkpoint = ParticipationCheckpoint.model_validate(
+                item.controller.state.host_checkpoint.get("participation_v1", {})
+            )
+            continuations = {
+                ref.event_id: ref
+                for current in checkpoint.units.values()
+                if current.binding.unit.thread == unit.unit.thread
+                and identity(current.binding.actor) == identity(admission.actor_person_id)
+                and identity(current.binding.unit.target) == identity(unit.unit.target)
+                for ref in current.continuation_refs
+            }
+            refs = {
+                event_id: continuations[f"event:{event_id}"]
+                for event_id in runtime.visible_event_ids
+                if f"event:{event_id}" in continuations
+            }
+            observed = await service.ordinary.current_admissions(
+                admission.conversation_id, admission.generation, tuple(refs)
+            )
+            covered = tuple(
+                refs[source.event_id]
+                for source in observed
+                if source.activation_id == admission.activation_id
+                and identity(source.actor_person_id) == identity(admission.actor_person_id)
+                and source.binding is not None
+                and source.binding.unit_key == unit.unit.thread
+                and identity(source.binding.target_hint) == identity(unit.unit.target)
+            )
+            unit = unit.model_copy(update={"basis": tuple(dict.fromkeys((*unit.basis, *covered)))})
+        if item.controller.observe_unit_hint(unit, report, actor_identity=identity):
             await service._save(item)
 
 

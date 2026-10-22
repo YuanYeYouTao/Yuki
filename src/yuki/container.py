@@ -499,6 +499,7 @@ class ApplicationContainer:
 
         self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
         self.chat.observe_main_response = self.semantic_participation.observe_main_response
+        self.chat.participation_runtime_context = self.semantic_participation.runtime_context
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,

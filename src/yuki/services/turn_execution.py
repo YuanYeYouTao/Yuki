@@ -816,50 +816,61 @@ class TurnExecution:
             raise failure
         return None
 
-    async def _finalize_initial_layout(self) -> None:
+    async def _participation_context(self, request_index: int) -> dict[str, Any] | None:
+        control = self.runtime.work_control
+        session = control.session if control is not None else None
+        if (
+            self.tools is None
+            or self.state.provider_pause_replay
+            or (request_index == 0 and session is not None and session.exact_recovery)
+        ):
+            return None
+        return await self.tools.participation_context(self.runtime)
+
+    @staticmethod
+    def _runtime_message(state: dict[str, Any]) -> ChatMessage:
+        return ChatMessage(
+            role="user",
+            content="\n\n<runtime_context>\n"
+            + json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+            + "\n</runtime_context>\n\n",
+        )
+
+    async def _finalize_initial_layout(self) -> bool:
         """Freeze Host initialization only after restore/rebase and first steer."""
         if self._initial_layout_finalized:
-            return
+            return False
         self._initial_layout_finalized = True
         control = self.runtime.work_control
         session = control.session if control is not None else None
         if session is not None and session.uses_recovery_transcript:
-            return
+            return False
         transcript = self.state.transcript
         initial = self.initial_messages
         sequence = transcript.request()
         if not initial or sequence.continuation is not None:
-            return
+            return False
         if sequence.messages[: len(initial)] != initial:
-            return
+            return False
         extras = sequence.messages[len(initial) :]
         input_ids = {id(message) for message in self._initial_inputs}
         host = tuple(message for message in extras if id(message) not in input_ids)
         # These are exact Host-appended initialization blocks, not text-label
         # detection. Opaque/protocol entries can only belong to an old chain.
         if any(message.tool_calls or message.role in {"assistant", "tool"} for message in host):
-            return
+            return False
         host = tuple(
             replace(message, content="\n\n" + (message.content or "") + "\n\n") for message in host
         )
-        hosts = (
-            (
-                ChatMessage(
-                    role="user",
-                    content="\n\n<runtime_context>\n"
-                    + json.dumps(
-                        await control.runtime_state(), ensure_ascii=False, separators=(",", ":")
-                    )
-                    + "\n</runtime_context>\n\n",
-                ),
-                *host,
-            )
-            if control is not None
-            else host
-        )
+        state = await control.runtime_state() if control is not None else {}
+        participation = await self._participation_context(0)
+        if participation:
+            state["participation"] = participation
+        hosts = (self._runtime_message(state), *host) if state else host
         current_inputs = tuple(self._initial_inputs)
         transcript.finalize_initial(initial, hosts, current_inputs)
         self.initial_messages = (*initial[:-1], *hosts, initial[-1], *current_inputs)
+        return True
 
     async def prepare_request(
         self,
@@ -868,7 +879,12 @@ class TurnExecution:
         web_mode: WebMode,
     ) -> _PreparedRequest | End | LoopSignal:
         """Prepare capacity/compaction before the original request admission."""
-        await self._finalize_initial_layout()
+        if not await self._finalize_initial_layout():
+            participation = await self._participation_context(request_index)
+            if participation:
+                self.state.transcript.append(
+                    self._runtime_message({"participation": participation})
+                )
         sequence = self.state.transcript.request()
         if self.state.control is not None and self.state.control.session is not None:
             sequence = replace(
@@ -1342,7 +1358,10 @@ class TurnExecution:
         self.state.response_status = response.status
         self.state.continuation_native_tools = native_definitions
         if self.tools is not None:
-            await self.tools.observe_response(response, self.runtime)
+            await self.tools.observe_response(
+                response,
+                replace(self.runtime, visible_event_ids=frozenset(self.state.observed_event_ids)),
+            )
         if response.continuation is not None:
             self.state.transcript.accept(response.continuation)
         self.state.provider_pause_replay = response.incomplete_reason == "pause_turn"
@@ -1424,7 +1443,7 @@ class TurnExecution:
             self.state.transcript.append(
                 ChatMessage(
                     role="system",
-                    content="有新的输入到达，请先处理再继续。",
+                    content="收到新的输入，请结合原目标处理后继续。",
                 )
             )
             return Continue()

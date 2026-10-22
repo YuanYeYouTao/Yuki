@@ -265,7 +265,7 @@ class OrdinaryParticipationService(Protocol):
     ) -> OrdinaryParticipationBinding | None: ...
 
     async def continuation_for_event(
-        self, event_id: int, *, check_budget: bool = True
+        self, event_id: int
     ) -> (
         tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None
     ): ...
@@ -274,7 +274,6 @@ class OrdinaryParticipationService(Protocol):
         self,
         binding: OrdinaryParticipationBinding,
         *,
-        check_budget: bool = True,
         session: AsyncSession | None = None,
     ) -> bool: ...
 
@@ -495,10 +494,17 @@ class MessageProcessor:
             if reason == "group_open":
                 if group_policy.require_mention:
                     return ProcessResult(False, reason="group_open_closed")
-                if binding is None and self._participation is not None:
+                if runtime.conversation_policy().semantic_participation_enabled:
                     with turn_detail("participation_binding"):
-                        binding = await self._participation.binding_for_event(event_id)
-            elif reason == "continuation":
+                        found = (
+                            await self._participation.continuation_for_event(event_id)
+                            if self._participation is not None
+                            else None
+                        )
+                    if found is None:
+                        return ProcessResult(False, reason="ordinary_continuation_closed")
+                    binding, reason = found
+            elif reason in {"continuation", "semantic_invitation"}:
                 with turn_detail("participation_binding"):
                     found = (
                         await self._participation.continuation_for_event(event_id)
@@ -958,15 +964,14 @@ class MessageProcessor:
                 )
                 if original.reason != "ordinary_deferred":
                     return original
-                if deferred_open:
+                if (
+                    deferred_open
+                    and not runtime_snapshot.conversation_policy().semantic_participation_enabled
+                ):
                     return await self._defer_ordinary(observed, None, "group_open")
                 if self._participation is not None:
-                    # Registration can feed the existing ordinary activation;
-                    # a new worker activation checks the span again at promotion.
                     with turn_detail("participation_binding"):
-                        found = await self._participation.continuation_for_event(
-                            record.id, check_budget=False
-                        )
+                        found = await self._participation.continuation_for_event(record.id)
                     if found is not None:
                         implicit_binding, implicit = found
                         return await self._defer_ordinary(observed, implicit_binding, implicit)
@@ -1111,17 +1116,24 @@ class MessageProcessor:
         )
         if space is None:
             return False
-        keys: tuple[str, ...] = ("conversation.auto_reply_enabled",)
-        if reason != "group_open":
-            keys += ("conversation.semantic_participation_enabled",)
+        keys = (
+            "conversation.auto_reply_enabled",
+            "conversation.semantic_participation_enabled",
+        )
         values = await self._runtime_config.inspect_configs(
             keys, scope=MemoryConfigScope(space_id=space.id), session=session
         )
+        effective = {value.effective.key: value.effective.value for value in values}
+        semantic_enabled = effective["conversation.semantic_participation_enabled"]
         return (
-            all(value.effective.value for value in values)
-            and (reason != "group_open" or not space.require_mention)
+            bool(effective["conversation.auto_reply_enabled"])
             and (
-                reason != "continuation"
+                (not semantic_enabled and not space.require_mention)
+                if reason == "group_open"
+                else bool(semantic_enabled)
+            )
+            and (
+                reason not in {"continuation", "semantic_invitation"}
                 or not check_continuation
                 or (
                     prepared.admission.binding is not None
@@ -1178,12 +1190,10 @@ class MessageProcessor:
                 ):
                     continue
                 binding = observed.binding
-                if reason == "continuation":
+                if reason in {"continuation", "semantic_invitation"}:
                     with turn_detail("participation_binding"):
                         found = (
-                            await self._participation.continuation_for_event(
-                                event_id, check_budget=False
-                            )
+                            await self._participation.continuation_for_event(event_id)
                             if self._participation is not None
                             else None
                         )
@@ -1199,7 +1209,7 @@ class MessageProcessor:
                             if self._participation is not None
                             else None
                         )
-                if reason == "continuation" and binding is None:
+                if reason in {"continuation", "semantic_invitation"} and binding is None:
                     continue
                 try:
                     prepared = self.ordinary_admissions.prepare(

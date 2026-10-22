@@ -497,7 +497,11 @@ class WorkControl:
                 else f"[Work input_id={item['id']} event_id={item['event_id']} 已在当前聊天展示；"
                 "关联原输入并按需回答，不重复原文]"
                 if already_visible
-                else f"[新增输入 event_id={item['event_id']}；保持原任务，按内容补充或回答]\n{text}"
+                else (
+                    f"[新增输入 event_id={item['event_id']}；"
+                    "结合原目标吸收补充并继续处理，按实际需要答复或更新进展]\n"
+                    f"{text}"
+                )
             )
             if size + len(content.encode()) > 8192 and selected:
                 break

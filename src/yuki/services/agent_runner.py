@@ -181,6 +181,10 @@ class AgentToolBackend(CoordinatedToolBackend, Protocol):
     async def observe_response(self, response: ChatResponse, runtime: AgentRuntime) -> None:
         pass
 
+    async def participation_context(self, runtime: AgentRuntime) -> dict[str, Any] | None:
+        """Read participation facts for this activation's original discussion."""
+        return None
+
 
 class AgentRunner:
     """Execute a provider-neutral bounded tool loop without fabricating inbound events."""
