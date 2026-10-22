@@ -499,7 +499,8 @@ async def test_detach_settles_only_supervision_and_does_not_cancel_native(
         task = await session.get(SandboxTaskRunModel, original.id)
         assert (task.status == "completed") is detach_succeeds
         if detach_succeeds:
-            assert json.loads(task.completion_json)["native_status"] == "detached"
+            assert json.loads(task.completion_json)["native_status"] == "running"
+            assert json.loads(task.completion_json)["operation_status"] == "detached"
     assert [command["action"] for command in commands] == ["watch", "detach"]
     assert original.native_execution_id == "native-turn"
 

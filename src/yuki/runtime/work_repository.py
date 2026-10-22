@@ -1650,7 +1650,12 @@ class WorkRepository:
                 "kind": "sandbox_completion",
                 "request_id": request_id,
                 "run_id": task.run_id,
-                "status": completion.get("status"),
+                "status": completion.get("operation_status", completion.get("status")),
+                **{
+                    name: completion[name]
+                    for name in ("operation_status", "native_status", "native_pending")
+                    if name in completion
+                },
                 "pending": False,
                 "exit_code": completion.get("exit_code"),
                 "detail": "查询原 run_id 的输出与产物，不能重跑原命令。",
