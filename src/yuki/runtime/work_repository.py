@@ -1647,18 +1647,28 @@ class WorkRepository:
                 raise WorkConflict("work_child_source_mismatch")
             completion = json.loads(task.completion_json or "{}")
             payload = {
-                "kind": "sandbox_completion",
+                "kind": "external_agent_completion"
+                if completion.get("kind") == "external_agent"
+                else "sandbox_completion",
                 "request_id": request_id,
                 "run_id": task.run_id,
                 "status": completion.get("operation_status", completion.get("status")),
                 **{
                     name: completion[name]
-                    for name in ("operation_status", "native_status", "native_pending")
+                    for name in (
+                        "operation_status",
+                        "native_status",
+                        "native_pending",
+                        "operation_id",
+                        "instance_id",
+                        "session_id",
+                        "execution_id",
+                    )
                     if name in completion
                 },
                 "pending": False,
                 "exit_code": completion.get("exit_code"),
-                "detail": "查询原 run_id 的输出与产物，不能重跑原命令。",
+                "detail": "通过原工具查询原 run_id 或 request_id 的回执与产物，不能重跑原操作。",
             }
             await session.execute(
                 insert(inputs)

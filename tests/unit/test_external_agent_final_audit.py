@@ -10,6 +10,7 @@ from tests.unit.test_external_agent_repository import native as native_fixture
 from tests.unit.test_external_agent_work import case as work_case
 
 from yuki.capabilities.results import ToolExecutionResult
+from yuki.external_agents.repository import execution_key
 from yuki.external_agents.service import ExternalAgentService
 from yuki.external_agents.transport import DeviceConnection
 from yuki.runtime.effect_outcomes import execution_evidence, execution_finished
@@ -66,7 +67,13 @@ async def test_native_cancellation_is_reportable_to_its_active_work(database, ca
         payload = await session.scalar(
             select(inputs.c.payload_json).where(inputs.c.source_key == f"completion:{operation.id}")
         )
-        assert json.loads(json.loads(payload)["text"])["status"] == "cancelled"
+        received = json.loads(json.loads(payload)["text"])
+        assert received["status"] == "cancelled"
+        assert received["kind"] == "external_agent_completion"
+        assert received["operation_id"] == operation.id
+        assert received["instance_id"] == env.instance
+        assert received["session_id"] == env.session
+        assert received["execution_id"] == execution_key(env.session, "native-turn")
 
 
 async def test_get_internal_execution_reads_its_original_turn_without_creating_work(

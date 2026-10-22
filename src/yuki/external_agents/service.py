@@ -47,6 +47,8 @@ class ExternalAgentService:
     ) -> None:
         if hello.get("protocol_version") != 1 or not isinstance(hello.get("instances"), list):
             raise ValueError("unsupported_connector_protocol")
+        if hello.get("device_id", device_id) != device_id:
+            raise ValueError("external_agent_device_mismatch")
         await self.repository.register(device_id, hello["instances"])
         connection.instances = {
             item["id"] for item in hello["instances"] if item.get("status") != "unavailable"
@@ -61,6 +63,14 @@ class ExternalAgentService:
         if instance.local_id not in connection.instances:
             raise DeviceOffline("instance_unavailable")
         return connection
+
+    async def _instance(
+        self, identity: str, actor: str, device_id: str | None
+    ) -> AgentInstanceModel:
+        instance = await self.repository.instance(identity, actor)
+        if device_id not in (None, instance.device_id):
+            raise ValueError("external_agent_target_mismatch")
+        return instance
 
     async def catalog(self, actor: str, device_id: str | None = None) -> dict[str, Any]:
         instances = []
@@ -138,7 +148,7 @@ class ExternalAgentService:
         identity = args.get("instance_id")
         if not isinstance(identity, str):
             return await self.catalog(actor, args.get("device_id"))
-        instance = await self.repository.instance(identity, actor)
+        instance = await self._instance(identity, actor, args.get("device_id"))
         try:
             connection = await self._connection(instance)
         except DeviceOffline:
@@ -167,6 +177,8 @@ class ExternalAgentService:
     async def _get(self, args: dict[str, Any], request_id: str, actor: str) -> dict[str, Any]:
         operation = await self._operation_target(args, actor, include_request=True)
         if operation is not None:
+            if args.get("device_id") is not None:
+                await self._instance(operation.instance_id, actor, args["device_id"])
             if args.get("instance_id") not in (None, operation.instance_id) or args.get(
                 "session_id"
             ) not in (None, operation.session_id):
@@ -202,9 +214,13 @@ class ExternalAgentService:
                         view["device_online"] = False
                     else:
                         # Absence of a journal result never authorizes another dispatch.
-                        if not result.get("error") and result.get("status") != "unknown":
+                        status = result.get("status")
+                        if isinstance(status, str) and status not in {"unknown", "not_found"}:
                             operation = await self.repository.response(operation.id, result)
                             view = await self._view(operation)
+                        else:
+                            view["uncertain"] = True
+                            view["reconciliation_status"] = status or "query_failed"
             events = await self.repository.event_page(operation.id, args.get("cursor", 0))
             return {
                 **view,
@@ -226,7 +242,7 @@ class ExternalAgentService:
         resource = await self.repository.native_session(session_id, actor)
         if args.get("instance_id") not in (None, resource.instance_id):
             raise ValueError("external_agent_target_mismatch")
-        instance = await self.repository.instance(resource.instance_id, actor)
+        instance = await self._instance(resource.instance_id, actor, args.get("device_id"))
         connection = await self._connection(instance)
         result = await connection.request(
             {
@@ -353,7 +369,7 @@ class ExternalAgentService:
             raise ValueError("external_agent_target_mismatch")
         if not isinstance(instance_id, str):
             raise ValueError("instance_id_required")
-        instance = await self.repository.instance(instance_id, actor)
+        instance = await self._instance(instance_id, actor, args.get("device_id"))
         if action in {"steer", "cancel"} and owned is None and execution is None:
             raise ValueError("operation_id_or_execution_id_required")
         if action in {"detach", "respond"} and owned is None:

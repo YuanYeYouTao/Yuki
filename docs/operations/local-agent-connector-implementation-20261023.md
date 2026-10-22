@@ -38,6 +38,7 @@ Work/generation 终态和原清退入口负责收拢所属关系；不为 QQ Bin
 - 真实 HTTPS/WSS + SQLite + Work 集成覆盖配对、身份、目录分页、重要事件提交后 ACK、原问题回答、断线、原操作查询、精确目标和迟到回执。测试对端明确为协议替身，不用它冒充真实模型。
 - 0147 → 0148 四项真实迁移回归通过：旧 chat 凭据仍可用；已付请求/预算/原回执不变；设备命名空间与实际 FK 约束成立；启动不扫业务表，缺必要新结构会拒绝。
 - 主项目 Ruff 与 Linux 目标的完整 mypy 通过。后者在 Windows 执行类型检查，不等同 Linux 实机验收。
+- 最终原 journal 恢复、内部资源引用和 Work 投影补修后，受影响回归 172 passed、4 POSIX skipped；查不到原操作仍为 unknown，真实失败回执能恢复，原执行/设备 ID 不因查询或通知丢失。
 - 新链及受影响身份、Work、角色、工具与生命周期的定向回归 96 项通过；排队后来源失效的真实竞争回归另 1 项通过。后续 detach 消费者补修仍单独验其影响。
 - Windows 扩展全库测试截至首次停止为 2425 passed、13 skipped、93 deselected、5 failed；五项失败均在原有 `test_shared_inbound_media` 调用 Linux `fcntl`，此分支不改该模块或伪造其文件锁。Linux CI 与剩余用例另核，不称全库已绿。
 
@@ -75,3 +76,5 @@ Desktop 在独立分支 `codex/local-agent-connector-20261023`、基线 `cff3073
 ## 合流记录
 
 另一会话正在处理 SQLite writer 排队。此分支不改 `Database` 的 writer 机制，只复用现有短事务和 snapshot writer；唯一新增数据库实例属性用于服务注入。当前仍需在对方 PR 出现后核迁移 head、公共接口和真实竞争回归，不凭“不太可能冲突”当成已验收。
+
+本次已提交 [Yuki PR #497](https://github.com/YuanYeYouTao/Yuki/pull/497) 和 [Desktop PR #3](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/3)。Desktop 五平台完整 CI 已通过；连接器三系统 CI 的测试、构建与独立安装通过。主项目 checks 通过，完整 unit/integration/Native CodeMode 与后续 head 的状态以 PR 当前检查为准，不使用旧 head 的绿色结果代替新提交。

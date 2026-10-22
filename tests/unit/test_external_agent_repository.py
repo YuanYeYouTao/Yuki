@@ -154,6 +154,70 @@ async def test_original_operation_key_preserves_unknown_and_rejects_changed_inte
     assert not view["device_online"]
 
 
+@pytest.mark.parametrize("missing", [True, False])
+async def test_original_journal_query_distinguishes_missing_from_confirmed_failure(native, missing):
+    original, _ = await prepare(native)
+
+    class Socket:
+        async def send_json(self, command):
+            connection.respond(
+                {
+                    "id": command["id"],
+                    "result": {"status": "not_found"}
+                    if missing
+                    else {
+                        "status": "failed",
+                        "pending": False,
+                        "admitted": False,
+                        "error": {"code": "native_rejected"},
+                    },
+                }
+            )
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    connection = DeviceConnection(native.device["device_id"], Socket())
+    await connect(native, connection)
+    result = await native.service.execute(
+        {"action": "get", "operation_id": original.id}, "reconcile-original", native.source
+    )
+    assert result["status"] == ("unknown" if missing else "failed")
+    assert result["pending"] is missing and result["uncertain"] is missing
+    if missing:
+        assert (await native.repository.operation(original.id, native.actor)).result_json is None
+    else:
+        assert result["error"] == "native_rejected" and not result["admitted"]
+
+
+@pytest.mark.parametrize("action", ["list", "get", "steer"])
+async def test_conflicting_device_reference_never_redirects_a_native_resource(native, action):
+    args = {
+        "action": action,
+        "device_id": str(uuid4()),
+        "instance_id": native.instance,
+    }
+    if action == "get":
+        args["session_id"] = native.session
+    elif action == "steer":
+        args["execution_id"] = await native.repository.remember_execution(
+            native.session, "native-turn"
+        )
+    with pytest.raises(ValueError, match="external_agent_target_mismatch"):
+        await native.service.execute(args, "conflicting-device", native.source)
+
+
+async def test_connector_cannot_mix_another_credential_with_its_original_device_namespace(native):
+    connection = DeviceConnection(native.device["device_id"], SimpleNamespace())
+    with pytest.raises(ValueError, match="external_agent_device_mismatch"):
+        await native.service.connect(
+            native.device["device_id"],
+            connection,
+            {"protocol_version": 1, "device_id": str(uuid4()), "instances": []},
+        )
+    assert not native.service.connections.online(native.device["device_id"])
+
+
 async def test_revoke_blocks_native_access_but_preserves_original_receipts(database, native):
     operation, _ = await prepare(native)
     await native.repository.response(

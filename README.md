@@ -29,6 +29,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent。她通过 QQ、Telegram�
 ## 4.0 这一版
 
 - **从 QQ 走向多平台和个人客户端。** QQ、Telegram、飞书、Lark、App API 与 ACP 服务共用身份、记忆、工具和任务。飞书和 Lark 使用企业自建应用的长连接，支持单聊、群聊和话题，接入方式见[配置说明](docs/operations/feishu.zh-CN.md)。个人设备可以配对、发送附件、接收事件、查看任务，并向已有任务补充信息；桌面项目 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 单独维护。旧管理 WebUI 已退出，管理使用 CLI 和 `/ai admin`。
+- **连接自己电脑上的编码 Agent。** 独立[本机连接器](docs/operations/local-agent-connector.zh-CN.md)让服务器上的 Yuki 查询和监督本人授权的 Codex、Claude Code 或 ACP Agent，进度和问题交回原任务。Codex 接既有 daemon，Claude 使用官方 SDK 的新建或明确恢复；三种驱动的实测边界见[实施记录](docs/operations/local-agent-connector-implementation-20261023.md)。
 - **把人物和账号分开。** 同一个人可以关联多个账号，也可以没有平台账号。同人合并、账号转交、暂停和解绑分别处理；改昵称或换账号不会把旧消息、记忆和任务改归别人。超级管理员资格属于人物。
 - **让终端承担日常工作。** 普通文件、项目和依赖直接由持久终端操作，支持交互输入、后台执行、查询和取消。direct 与可选 Code Mode 使用同一套工具和执行后端。
 - **长任务继续沿原记录推进。** Work 保存目标、父子关系、模型请求、工具执行与交付记录。新消息可以补充当前工作；重启后查询原执行，接着处理已经发生的结果。Main Compact 整理长会话和执行上下文，沿用当前模型。

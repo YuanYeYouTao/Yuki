@@ -356,7 +356,17 @@ class AgentRepository:
             "request_id": row.id,
             "operation_id": row.id,
             "run_id": row.run_id,
+            "instance_id": row.instance_id,
             "session_id": row.session_id,
+            "execution_id": (
+                execution_key(row.session_id, row.native_execution_id)
+                if row.session_id and row.native_execution_id
+                else None
+            ),
+            "native_reference": {
+                "session_id": payload.get("session_id"),
+                "execution_id": row.native_execution_id,
+            },
             "status": status,
             "native_status": payload.get("native_status", native_status),
             "pending": False,
