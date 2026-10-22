@@ -76,3 +76,18 @@ SQL Engine events 看不到 native pre_ping 或隐式 BEGIN；新旧 acknowledge
 最终源码全仓 Ruff、mypy（646 source files）、lock、diff 检查通过，97 个冻结 revision 无 diff，head 仍 0147。
 剩余是固定源码性能确认、Linux 全量/Native CI 与 PR 交付。当前没有合并、Release、镜像或部署。
 最终交付逐项对照见[验收对照](sqlite-writer-acceptance-20261023.md)。
+
+## 全量 CI 后的复验
+
+首次 Linux CI 的 Native CodeMode 93 passed，unit 3546 passed / 6 failed，integration 831 passed / 2 failed。
+两份 integration 测试仍调用旧 continuation 接口，改用现有 reader 准备与当前 writer 匹配后，相关 23 项通过。
+两项 notification 并发测试的真实 barrier 已在正确 reader 边界，失败只来自末尾断言调用已删除 helper；
+断言改读当前 production publication 数据路径，原 grant/source/segment bytes/paid/receipt 断言全部保留，相关 6 项通过。
+
+另外四个参数的 Rebuild SQL 数量回归暴露了一个实际冗余：准备期 `_read_batch` 查询 MemoryJob receipt 后，
+caller 丢弃它，writer 又读取一次。已删除准备期 receipt 查询，将共享的两组 metadata 读取命名为 `_read_items`，
+回执只在原 writer 的 run/selection 核对之后读取一次；source/trusted/item 与首 DML 前的证明保持。
+测试的每页 `SELECT <= 10` 未放宽，四个并发注入 hook 仅迁名，receipt finalization/trusted/privacy 三文件
+35 passed，单模块 mypy、Ruff/format 通过。B 独立复读实际顺序与原 paid/live receipt 归属，未发现语义缺口。
+
+这些是全量暴露后的修正和定向复验，最终合流源码仍须完整 CI；没有把上述分段数字合成一次全绿。
