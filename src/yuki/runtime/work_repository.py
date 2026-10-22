@@ -614,6 +614,10 @@ class WorkRepository:
                 func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").in_(owned),
                 SandboxTaskRunModel.status == "waiting",
                 SandboxTaskRunModel.run_id.is_not(None),
+                func.coalesce(
+                    func.json_extract(SandboxTaskRunModel.progress_json, "$.ownership"), "owned"
+                )
+                != "observe",
             )
             .exists(),
             select(children.c.work_id)

@@ -24,13 +24,26 @@ class TaskResourceSource:
     resource_request_id: str | None
     peer_id: str | None
     session_id: str | None
+    operation_id: str | None = None
+    action: str | None = None
+    execution_id: str | None = None
+    instance_id: str | None = None
 
     def matches(self, current: TaskResourceSource) -> bool:
-        if (self.request_id, self.conversation_id, self.source_json, self.kind) != (
+        if (
+            self.request_id,
+            self.conversation_id,
+            self.source_json,
+            self.kind,
+            self.operation_id,
+            self.action,
+        ) != (
             current.request_id,
             current.conversation_id,
             current.source_json,
             current.kind,
+            current.operation_id,
+            current.action,
         ) or self.resource_request_id != current.resource_request_id:
             return False
         # A returned identity fills in the same original request, not a new run.
@@ -40,6 +53,8 @@ class TaskResourceSource:
                 (self.run_id, current.run_id),
                 (self.peer_id, current.peer_id),
                 (self.session_id, current.session_id),
+                (self.execution_id, current.execution_id),
+                (self.instance_id, current.instance_id),
             )
         )
 
@@ -57,8 +72,8 @@ class ResourceCleanupPreparation:
         return tuple(task.request_id for task in self.tasks)
 
     @property
-    def has_peers(self) -> bool:
-        return any(task.kind == "acp_prompt" for task in self.tasks)
+    def has_external_resources(self) -> bool:
+        return any(task.kind in {"external_agent", "acp_prompt"} for task in self.tasks)
 
     @classmethod
     async def prepare(
@@ -77,17 +92,21 @@ class ResourceCleanupPreparation:
         tasks = []
         for row in await session.scalars(select(task).where(task_scope).order_by(task.request_id)):
             progress = json.loads(row.progress_json)
-            acp = progress if progress.get("kind") == "acp_prompt" else {}
+            external = progress if progress.get("kind") in {"external_agent", "acp_prompt"} else {}
             tasks.append(
                 TaskResourceSource(
                     row.request_id,
                     row.source_conversation_id,
                     row.source_json,
                     row.run_id,
-                    acp.get("kind"),
-                    acp.get("resource_request_id"),
-                    acp.get("peer_id"),
-                    acp.get("session_id"),
+                    external.get("kind"),
+                    external.get("resource_request_id"),
+                    external.get("peer_id"),
+                    external.get("session_id"),
+                    external.get("operation_id"),
+                    external.get("action"),
+                    external.get("execution_id"),
+                    external.get("instance_id"),
                 )
             )
         work_scope = (

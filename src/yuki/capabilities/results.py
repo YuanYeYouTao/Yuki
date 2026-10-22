@@ -334,7 +334,10 @@ def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:
     ):
         return {}
     body = result.data
-    if result.tool_name == "external_agent" and body.get("kind") != "acp_prompt":
+    if result.tool_name == "external_agent" and body.get("kind") not in {
+        "external_agent",
+        "acp_prompt",
+    }:
         return {}
     if isinstance(body.get("completion"), dict):
         body = body["completion"]
@@ -343,6 +346,10 @@ def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:
         for key in (
             "run_id",
             "peer_id",
+            "device_id",
+            "instance_id",
+            "operation_id",
+            "execution_id",
             "session_id",
             "status",
             "pending",
@@ -376,7 +383,7 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
 
     if (
         result.provider_id != "core"
-        or result.tool_name not in SANDBOX_TOOLS | WORKSPACE_TOOLS
+        or result.tool_name not in SANDBOX_TOOLS | WORKSPACE_TOOLS | {"external_agent"}
         or not isinstance(result.data, dict)
     ):
         return {}
@@ -386,6 +393,10 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
         for key in (
             "run_id",
             "peer_id",
+            "device_id",
+            "instance_id",
+            "operation_id",
+            "execution_id",
             "session_id",
             "permission_requests",
             "status",

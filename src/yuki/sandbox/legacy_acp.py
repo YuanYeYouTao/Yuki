@@ -1,4 +1,4 @@
-"""ACP resources and prompt receipts in the original Manager job store."""
+"""Original server ACP receipts and precise retirement, without new Agent admission."""
 
 from __future__ import annotations
 
@@ -11,8 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from yuki.sandbox.acp_config import load_agents
-from yuki.sandbox.acp_peer import atomic_json, operation_key, post_request, read_events, read_json
+from yuki.sandbox.legacy_acp_protocol import (
+    atomic_json,
+    operation_key,
+    post_request,
+    read_events,
+    read_json,
+)
 from yuki.sandbox.manager import TERMINAL, identifier
 
 if TYPE_CHECKING:
@@ -21,10 +26,9 @@ if TYPE_CHECKING:
 ACP_KINDS = frozenset({"acp_peer", "acp_prompt", "acp_control"})
 
 
-class ACPResources:
-    def __init__(self, manager: PersistentManager, config: Path | None) -> None:
+class LegacyACPResources:
+    def __init__(self, manager: PersistentManager) -> None:
         self.manager = manager
-        self.agents = load_agents(config)
 
     def row(self, identity: str) -> sqlite3.Row:
         row = self.manager.db.execute(
@@ -192,48 +196,6 @@ class ACPResources:
             "next_cursor": next_cursor,
             "has_more": page["has_more"] and (end is None or next_cursor < end),
         }
-
-    def peer_open(self, args: dict[str, Any], request_id: str) -> dict[str, Any]:
-        if args.get("peer_id"):
-            if self.kind(args["peer_id"]) != "acp_peer":
-                raise ValueError("acp_peer_not_found")
-            return self.view(args["peer_id"])
-        agent_id = args["agent_id"]
-        previous = self.manager.db.execute(
-            "SELECT id,payload_hash FROM jobs WHERE request_id=?", (request_id,)
-        ).fetchone()
-        if previous:
-            if previous["payload_hash"] == "" and self.kind(previous["id"]) == "acp_peer":
-                return self.view(previous["id"])
-            identity, _ = self._create("acp_peer_open", args, request_id, "acp_peer")
-            return self.query(identity)
-        if agent_id not in self.agents:
-            raise ValueError("acp_agent_not_configured")
-        if not self.manager.ready:
-            raise ValueError("environment_unavailable")
-        identity, _ = self._create(
-            "acp_peer_open", args, request_id, "acp_peer", payload=self.agents[agent_id].spec()
-        )
-        self.manager.queue.put_nowait(identity)
-        return self.query(identity)
-
-    def prompt_submit(self, args: dict[str, Any], request_id: str) -> dict[str, Any]:
-        previous = self.manager.db.execute(
-            "SELECT id FROM jobs WHERE request_id=?", (request_id,)
-        ).fetchone()
-        if previous:
-            identity, _ = self._create("acp_prompt_submit", args, request_id, "acp_prompt")
-            return self.query(identity)
-        peer = self.row(args["peer_id"])
-        if peer["kind"] != "acp_peer":
-            raise ValueError("acp_peer_not_found")
-        if peer["state"] in TERMINAL or json.loads(peer["result"]).get("closing"):
-            raise ValueError("acp_peer_closed")
-        if not isinstance(args.get("prompt"), str):
-            raise ValueError("invalid_acp_prompt")
-        identity, _ = self._create("acp_prompt_submit", args, request_id, "acp_prompt")
-        self.refresh()
-        return self.query(identity)
 
     def _request(self, row: sqlite3.Row) -> dict[str, Any]:
         args = json.loads(row["payload"])
@@ -426,34 +388,6 @@ class ACPResources:
         return {"peer_id": peer_id, **page}
 
     async def handle(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
-        try:
-            return await self._handle(method, args, request_id)
-        except (ValueError, KeyError, TypeError) as exc:
-            if (
-                method in {"acp_peer_open", "acp_prompt_submit"}
-                and not self.manager.db.execute(
-                    "SELECT 1 FROM jobs WHERE request_id=?", (request_id,)
-                ).fetchone()
-            ):
-                return {
-                    "error": str(exc) if isinstance(exc, ValueError) else "invalid_arguments",
-                    "executed": False,
-                    "retryable": False,
-                }
-            raise
-
-    async def _handle(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
-        if method == "acp_agents":
-            return {
-                "agents": [
-                    {"id": agent.id, "description": agent.description}
-                    for agent in self.agents.values()
-                ]
-            }
-        if method == "acp_peer_open":
-            return self.peer_open(args, request_id)
-        if method == "acp_prompt_submit":
-            return self.prompt_submit(args, request_id)
         if method == "acp_peer_events":
             return self.events(args)
         if method in {"acp_permission_reply", "acp_prompt_cancel", "acp_peer_close"}:

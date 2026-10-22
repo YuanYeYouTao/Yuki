@@ -101,12 +101,12 @@ def execution_evidence(
     control: dict[str, Any] | None = None
     if tool == "external_agent" and isinstance(args, dict):
         control = (
-            body.get("permission_response")
+            body.get("permission_response", body)
             if args.get("action") == "respond"
             else body.get("close")
             if args.get("action") == "close"
             else body
-            if args.get("action") == "cancel"
+            if args.get("action") in {"cancel", "detach", "steer", "respond", "watch"}
             else None
         )
     admitted = isinstance(control, dict) and (
@@ -199,6 +199,11 @@ def execution_evidence(
         "delivered_message": delivered_message,
         "delivery_target": body.get("target") if delivered or delivered_message else None,
         "run_id": body.get("run_id"),
+        **{
+            name: body[name]
+            for name in ("operation_id", "device_id", "instance_id", "session_id", "execution_id")
+            if isinstance(body.get(name), str)
+        },
         **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
         **(
             {"resource_request_id": body["resource_request_id"]}

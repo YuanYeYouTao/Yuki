@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterable
-from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -39,15 +37,11 @@ class SandboxClient:
         request_id: str,
         source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if name == "external_agent":
-            from yuki.sandbox.external_agents import execute
-
-            return await execute(self, args, request_id, source)
         execution = is_execution(name, args)
         message = (
             json.dumps({"method": name, "args": args, "request_id": request_id}).encode() + b"\n"
         )
-        if not name.startswith("acp_") and len(message) > 262144:
+        if len(message) > 262144:
             return {"error": "request_too_large", "retryable": False}
         if execution and self.tasks is not None:
             if source is None:
@@ -88,7 +82,7 @@ class SandboxClient:
                     submitted = True
                     writer.write(message)
                     await writer.drain()
-                    from yuki.sandbox.acp_peer import read_protocol_line
+                    from yuki.sandbox.protocol import read_protocol_line
 
                     response = await read_protocol_line(reader)
                     result = json.loads(response)
@@ -167,7 +161,7 @@ class SandboxClient:
             return
         row = (
             await self.tasks.get(request_id)
-            if name in {"terminal_exec", "external_agent"}
+            if name == "terminal_exec"
             else await self.tasks.by_run(str(result.get("run_id")))
         )
         if row is None:
@@ -183,35 +177,3 @@ class SandboxClient:
         if receipts is not None and control is not None and control.current is not None:
             if json.loads(row.source_json).get("work_id") == control.current["id"]:
                 receipts.staged[row.request_id] = self.tasks
-
-    async def close_peers_for_requests(
-        self, request_ids: Iterable[str], operation_id: str, *, purge: bool = True
-    ) -> list[dict[str, Any]]:
-        """Hand precise original resource revocations to Manager before deleting their anchors."""
-        if self.tasks is None:
-            raise ValueError("external_agent_cleanup_unconfirmed")
-        closed: dict[str, dict[str, Any]] = {}
-        for request_id in request_ids:
-            row = await self.tasks.get(request_id)
-            if row is None:
-                continue
-            progress = json.loads(row.progress_json)
-            if progress.get("kind") != "acp_prompt":
-                continue
-            resource = progress.get("resource_request_id", f"{request_id}:peer")
-            peer_id = progress.get("peer_id")
-            identity = peer_id or resource
-            if identity in closed:
-                continue
-            result = await self.execute(
-                "acp_peer_close",
-                {
-                    **({"peer_id": peer_id} if peer_id else {"resource_request_id": resource}),
-                    "purge": purge,
-                },
-                request_id=sha256(f"{operation_id}:{identity}".encode()).hexdigest(),
-            )
-            if result.get("admitted") is not True:
-                raise ValueError("external_agent_cleanup_unconfirmed")
-            closed[identity] = result
-        return list(closed.values())

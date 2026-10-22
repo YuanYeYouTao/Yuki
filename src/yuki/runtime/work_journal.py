@@ -631,6 +631,7 @@ class WorkJournal:
                         {
                             "ok": True,
                             "data": {
+                                **json.loads(task.progress_json),
                                 **completion,
                                 "run_id": task.run_id,
                                 "request_id": request_id,
@@ -643,7 +644,7 @@ class WorkJournal:
                 )
             if task is not None:
                 progress = json.loads(task.progress_json)
-                if progress.get("kind") == "acp_prompt":
+                if progress.get("kind") in {"external_agent", "acp_prompt"}:
                     return recorded_result(
                         json.dumps(
                             {
@@ -652,16 +653,23 @@ class WorkJournal:
                                     "error": "execution_outcome_unknown",
                                     "uncertain": True,
                                     "request_id": request_id,
-                                    "resource_request_id": progress["resource_request_id"],
-                                    **(
-                                        {"peer_id": progress["peer_id"]}
-                                        if "peer_id" in progress
-                                        else {}
-                                    ),
+                                    **{
+                                        name: progress[name]
+                                        for name in (
+                                            "kind",
+                                            "operation_id",
+                                            "instance_id",
+                                            "session_id",
+                                            "execution_id",
+                                            "resource_request_id",
+                                            "peer_id",
+                                        )
+                                        if name in progress
+                                    },
                                 },
                                 "replay_forbidden": True,
                                 "detail": (
-                                    "查询原资源和请求；peer 会话不是 prompt 执行，不重发未知调用。"
+                                    "查询原资源和操作；会话不等于某次执行，不重发未知调用。"
                                 ),
                             },
                             ensure_ascii=False,

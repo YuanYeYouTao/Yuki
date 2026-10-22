@@ -108,8 +108,8 @@ class CleanupClient:
         self.database, self.callback, self.fail = database, callback, fail
         self.calls = []
 
-    async def close_peers_for_requests(self, requests, operation_id, *, purge):
-        self.calls.append((tuple(requests), operation_id, purge))
+    async def cleanup_tasks(self, tasks, operation_id, *, purge):
+        self.calls.append((tuple(task.request_id for task in tasks), operation_id, purge))
         # A second connection can acquire the writer while the external ACK waits.
         async with self.database.immediate_session() as writer:
             await writer.execute(
@@ -152,7 +152,7 @@ async def test_forget_closes_original_active_or_idle_peers_before_deleting_owner
 ):
     original = await privacy_case(database, status=status)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     erase = forget(database, original.person, entry)
     result = await erase()
     assert result
@@ -173,7 +173,7 @@ async def test_forget_closes_original_active_or_idle_peers_before_deleting_owner
 async def test_forget_unknown_close_keeps_original_owner_and_same_operation(database, entry):
     original = await privacy_case(database)
     client = CleanupClient(database, fail=True)
-    database.sandbox_client = client
+    database.external_agents = client
     erase = forget(database, original.person, entry)
     for _ in range(2):
         with pytest.raises(ValueError, match="external_agent_cleanup_unconfirmed"):
@@ -217,7 +217,7 @@ async def test_forget_does_not_expand_scope_after_original_close_admission(datab
                     await merge_persons(writer, original.person, other)
 
     client = CleanupClient(database, race)
-    database.sandbox_client = client
+    database.external_agents = client
     with pytest.raises(ValueError, match=r"cleanup_source_changed|privacy_persons_changed"):
         await forget(database, original.person, entry)()
     assert len(client.calls) == 1
@@ -258,14 +258,14 @@ async def test_forget_accepts_same_request_identity_fill_and_real_progress(datab
             terminal = await writer.get(SandboxTaskRunModel, "ordinary-terminal")
             terminal.progress_json = '{"kind":"terminal_progress","output":"ordinary output"}'
 
-    database.sandbox_client = CleanupClient(database, progress)
+    database.external_agents = CleanupClient(database, progress)
     assert await PeopleRepository(database).delete_person_id(original.person)
 
 
 async def test_plain_terminal_forget_does_not_require_manager_cleanup(database):
     original = await privacy_case(database, acp=False)
     client = CleanupClient(database, fail=True)
-    database.sandbox_client = client
+    database.external_agents = client
     assert await PeopleRepository(database).delete_person_id(original.person)
     assert not client.calls
 
@@ -276,7 +276,7 @@ async def test_new_acp_after_plain_snapshot_is_seen_on_database_only_retry(
 ):
     original = await privacy_case(database, acp=False)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     prepare = PeopleRepository.prepare_person_forget
     attempts = 0
 
@@ -307,7 +307,7 @@ async def test_new_acp_after_plain_snapshot_is_seen_on_database_only_retry(
 async def test_snapshot_retry_does_not_repeat_external_close(database, monkeypatch, entry):
     original = await privacy_case(database)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     prepare = PeopleRepository.prepare_person_forget
     attempts = 0
 
@@ -351,7 +351,7 @@ async def test_forget_prepares_fresh_redactions_after_external_close(database, e
             )
 
     client = CleanupClient(database, append_private_reference)
-    database.sandbox_client = client
+    database.external_agents = client
     assert await forget(database, original.person, entry)()
     assert len(client.calls) == 1
     async with database.sessions() as reader:
@@ -388,7 +388,7 @@ async def age_tree(database, parent, child):
 async def test_completion_keeps_peer_and_true_archive_closes_the_original_tree(database, tmp_path):
     _, workers, parent, child = await archive_case(database, tmp_path)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     await workers.maintain()
     assert client.calls == []
     await age_tree(database, parent, child)
@@ -419,7 +419,7 @@ async def test_archive_keeps_owner_when_close_or_exact_snapshot_is_unconfirmed(
                 )
 
     client = CleanupClient(database, race, fail=change == "unknown")
-    database.sandbox_client = client
+    database.external_agents = client
     with pytest.raises(ValueError, match="external_agent_cleanup_"):
         await workers.maintain()
     assert len(client.calls) == 1

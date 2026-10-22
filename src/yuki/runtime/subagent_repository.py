@@ -286,12 +286,12 @@ class SubagentRepository:
             original_roots = await roots_for_archive(session, original_expired, root_ids)
             original_ids = tuple(sorted({*original_expired, *original_roots}))
             resources = await ResourceCleanupPreparation.prepare(session, work_ids=original_ids)
-        if resources.has_peers:
-            client = self.database.sandbox_client
+        if resources.has_external_resources:
+            client = self.database.external_agents
             if client is None:
                 raise ValueError("external_agent_cleanup_unconfirmed")
-            await client.close_peers_for_requests(
-                resources.request_ids, f"work-archive:{','.join(original_ids)}", purge=True
+            await client.cleanup_tasks(
+                resources.tasks, f"work-archive:{','.join(original_ids)}", purge=True
             )
         async with self.database.immediate_session() as session:
             prepared_query = expired_query(root_ids)
@@ -311,11 +311,11 @@ class SubagentRepository:
             current = await ResourceCleanupPreparation.prepare(
                 session, work_ids=tuple(archived_work_ids)
             )
-            if resources.has_peers:
+            if resources.has_external_resources:
                 if tuple(sorted(set(archived_work_ids))) != original_ids:
                     raise ValueError("external_agent_cleanup_source_changed")
                 resources.verify(current)
-            elif current.has_peers:
+            elif current.has_external_resources:
                 raise ValueError("external_agent_cleanup_source_changed")
             # Result receipts retain summaries, artifact references and per-worker accounting.
             await session.execute(
