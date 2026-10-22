@@ -95,6 +95,7 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     personal = commands.add_parser("client").add_subparsers(dest="client_action", required=True)
     pair = personal.add_parser("pair")
     pair.add_argument("--person", required=True)
+    pair.add_argument("--purpose", choices=("chat", "connector"), default="chat")
     _mutation(pair, revision=False)
     revoke = personal.add_parser("revoke")
     revoke.add_argument("id")
@@ -223,7 +224,8 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                 if args.client_action == "pair"
                 else f"devices/{args.id}/revoke"
             )
-            data = await identity_mutation(client, path, request_id=args.request_id)
+            fields = {"purpose": args.purpose} if args.client_action == "pair" else {}
+            data = await identity_mutation(client, path, request_id=args.request_id, **fields)
         elif kind == "model":
             if args.model_action == "show":
                 data = await read(client, "models")

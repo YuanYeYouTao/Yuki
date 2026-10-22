@@ -1,4 +1,4 @@
-"""Personal chat credentials, separate from operators and device executors."""
+"""Purpose-bound personal credentials, independent of chat and device transports."""
 
 from datetime import datetime
 
@@ -20,6 +20,7 @@ class ClientDeviceModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     person_id: Mapped[str] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    purpose: Mapped[str] = mapped_column(String(16), default="chat", server_default="chat")
     label: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -31,6 +32,7 @@ class ClientLinkCodeModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    purpose: Mapped[str] = mapped_column(String(16), default="chat", server_default="chat")
     person_id: Mapped[str] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"))
     issuer_principal_id: Mapped[str] = mapped_column(String(36))
     issuer_source: Mapped[str] = mapped_column(String(32))

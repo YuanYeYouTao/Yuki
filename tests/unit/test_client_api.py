@@ -215,18 +215,34 @@ async def test_operator_forget_works_without_platform_account_and_replays(person
         assert await session.get(ClientDeviceModel, device["device_id"]) is None
 
 
-async def test_busy_rolls_back_pair_and_does_not_consume_code(personal, database):
+async def test_pair_waits_for_actual_writer_without_consuming_code_twice(personal, database):
     import sqlite3
 
+    from sqlalchemy import event
+
     person, code = await person_and_code(personal)
+    writing = asyncio.Event()
+
+    def before_write(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE")):
+            writing.set()
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", before_write)
     with sqlite3.connect(database.url.removeprefix("sqlite+aiosqlite:///")) as blocker:
         blocker.execute("BEGIN IMMEDIATE")
-        response = await personal.post(
-            "/client/v1/pair", json={"code": code, "device_label": "busy"}
+        request = asyncio.create_task(
+            personal.post("/client/v1/pair", json={"code": code, "device_label": "busy"})
         )
-        assert response.status_code == 503 and response.json()["problem"]["code"] == "unavailable"
-        blocker.rollback()
-    device = await pair(personal, code)
+        try:
+            await writing.wait()
+            blocker.rollback()
+            response = await request
+        finally:
+            event.remove(database.engine.sync_engine, "before_cursor_execute", before_write)
+    assert response.status_code == 200, response.text
+    device = response.json()["data"]
+    reused = await personal.post("/client/v1/pair", json={"code": code, "device_label": "retry"})
+    assert reused.status_code == 401
     assert (await personal.get("/client/v1/me", headers=bearer(device["token"]))).json()["data"][
         "person_id"
     ] == person
@@ -238,19 +254,20 @@ async def test_lost_pair_commit_ack_is_unknown_and_code_is_still_one_time(
     import sqlite3
 
     from sqlalchemy.exc import OperationalError
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSessionTransaction
 
     person, code = await person_and_code(personal)
-    commit = AsyncSession.commit
+    transaction_exit = AsyncSessionTransaction.__aexit__
 
-    async def lost_ack(session):
-        await commit(session)
-        raise OperationalError(
-            "COMMIT", {}, sqlite3.OperationalError("lost commit acknowledgement")
-        )
+    async def lost_ack(transaction, exc_type, exc, traceback):
+        await transaction_exit(transaction, exc_type, exc, traceback)
+        if not transaction.nested and exc_type is None:
+            raise OperationalError(
+                "COMMIT", {}, sqlite3.OperationalError("lost commit acknowledgement")
+            )
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(AsyncSession, "commit", lost_ack)
+        scoped.setattr(AsyncSessionTransaction, "__aexit__", lost_ack)
         response = await personal.post(
             "/client/v1/pair", json={"code": code, "device_label": "lost"}
         )
