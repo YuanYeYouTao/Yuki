@@ -2,7 +2,7 @@
 
 日期：2026-10-23（UTC+8）。源码基线：main c2ce7da66ab54efe192993b9615df48266a62137。
 
-**状态：已获授权实施，本地实现与终审中。** 服务器设备服务、独立连接器、三种原生驱动和 Desktop 薄入口已落地；各项验证、真实原生实测与仍缺样的范围见[实施记录](../operations/local-agent-connector-implementation-20261023.md)。尚未合并、部署或公开发行，不把本地协议回归当作生产验收。
+**状态：本地实现及四方向终审已完成，已提交 Yuki PR #497 与 Desktop PR #3。** 服务器设备服务、独立连接器、三种原生驱动和 Desktop 薄入口已落地；完整 CI、真实原生实测与仍缺样的范围见[实施记录](../operations/local-agent-connector-implementation-20261023.md)。尚未合并、部署或公开发行，不把本地协议回归当作生产验收。
 
 遵守[开发约束](development-contract.md)、[主 Agent](main-agent-runtime.md)、[固定工具合同](tool-kernel.md)、[个人 API](client-api.md)、[持久环境](../operations/persistent-environment.zh-CN.md)和[插件架构](../plugin-development/architecture.md)。本文保留本次重构边界与任务矩阵；现行能力由模块文档承接，计划、实现和验收分别记录。
 

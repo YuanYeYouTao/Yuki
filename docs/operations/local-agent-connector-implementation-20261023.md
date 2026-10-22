@@ -52,11 +52,11 @@ Work/generation 终态和原清退入口负责收拢所属关系；不为 QQ Bin
 
 首轮在真实审批处按预定拒绝自动放行；第二轮实际执行成功，但验收误要求 pwsh 包装后的命令包含原始未转义字符串。修正为核真实成功写/读回执及目标路径后，最终完整链通过。没有放宽正式审批的精确命令匹配。
 
-原始最终报告位于本轮临时文件 `yuki-local-agent-bridge-live-20261023.json`，不是部署文件。上游缓存 usage 未提供，仍记 unknown；不由事件数量、字节或本地耗时声称缓存收益。
+原始最终报告位于本轮临时文件 `yuki-local-agent-bridge-live-20261023.json`，不是部署文件。该报告未含缓存 usage，仍记 unknown；不能据此推断上游没有缓存统计，也不由事件数量、字节或本地耗时声称缓存收益。
 
 ### 独立包与 Desktop
 
-连接器 28 项协议回归通过，使用真实 stdio ACP 对端、官方 Claude SDK 协议解析和可控 Codex WebSocket；与付费模型验收分开。独立 wheel 已在干净环境安装 39 项锁定依赖，CLI 和三驱动可导入，没有安装 Bot 包。Windows 与 Linux 目标的包级 mypy、Ruff 通过。
+连接器 29 项协议回归通过，使用真实 stdio ACP 对端、官方 Claude SDK 协议解析和可控 Codex WebSocket；与付费模型验收分开。独立 wheel 已在干净环境安装 39 项锁定依赖，CLI 和三驱动可导入，没有安装 Bot 包。Windows 与 Linux 目标的包级 mypy、Ruff 通过。启动进度只含必要原生引用，不重复上传原 prompt 或整份 turn。
 
 最后一轮 detach 全消费者补修后，9 项终审与 147 项既有 Work 回执/等待/查询回归通过，4 项 POSIX 场景在 Windows 跳过。监督关系的 detached 状态与 native 最后事实经过 completed_children、原 effect 对账和 owned_run 等待唤醒仍保留，不能被简化成原生 succeeded。
 
@@ -78,3 +78,5 @@ Desktop 在独立分支 `codex/local-agent-connector-20261023`、基线 `cff3073
 另一会话正在处理 SQLite writer 排队。此分支不改 `Database` 的 writer 机制，只复用现有短事务和 snapshot writer；唯一新增数据库实例属性用于服务注入。当前仍需在对方 PR 出现后核迁移 head、公共接口和真实竞争回归，不凭“不太可能冲突”当成已验收。
 
 本次已提交 [Yuki PR #497](https://github.com/YuanYeYouTao/Yuki/pull/497) 和 [Desktop PR #3](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/3)。Desktop 五平台完整 CI 已通过；连接器三系统 CI 的测试、构建与独立安装通过。主项目 checks 通过，完整 unit/integration/Native CodeMode 与后续 head 的状态以 PR 当前检查为准，不使用旧 head 的绿色结果代替新提交。
+
+核心源码 `a88513e6` 的 Linux 集成测试为 823 passed、1 skipped；真实 Native CodeMode 为 93 passed，含实际 launcher/AppArmor 隔离验证。之后 `e5e20a76` 仅收敛本机启动事件载荷，其三系统连接器与 checks 通过；主单测及新 head 重复全量流水线仍分别核对。Windows 补充余项为 1139 passed、108 skipped、5 failed：四项依赖 Linux fcntl，一项预览文件路径过长；后者使用唯一短临时路径重跑通过，没有改产品媒体实现。各组存在重叠，不相加冒充去重总数。
