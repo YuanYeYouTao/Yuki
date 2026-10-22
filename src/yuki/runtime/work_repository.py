@@ -1712,6 +1712,9 @@ class WorkRepository:
         completion_fields = (
             "run_id",
             "status",
+            "operation_status",
+            "native_status",
+            "native_pending",
             "pending",
             "uncertain",
             "exit_code",
@@ -1778,9 +1781,23 @@ class WorkRepository:
                         "pending": False,
                         **{
                             key: value[key]
-                            for key in ("status", "exit_code", "error", "artifact_id", "artifacts")
+                            for key in (
+                                "status",
+                                "operation_status",
+                                "native_status",
+                                "native_pending",
+                                "exit_code",
+                                "error",
+                                "artifact_id",
+                                "artifacts",
+                            )
                             if key in value
                         },
+                        **(
+                            {"status": "detached"}
+                            if value.get("operation_status") == "detached"
+                            else {}
+                        ),
                     }
                 )
             return results

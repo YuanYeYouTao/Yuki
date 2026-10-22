@@ -9,9 +9,12 @@ from tests.unit.test_external_agent_repository import connect, event, prepare, r
 from tests.unit.test_external_agent_repository import native as native_fixture
 from tests.unit.test_external_agent_work import case as work_case
 
+from yuki.capabilities.results import ToolExecutionResult
 from yuki.external_agents.service import ExternalAgentService
 from yuki.external_agents.transport import DeviceConnection
-from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.runtime.effect_outcomes import execution_evidence, execution_finished
+from yuki.runtime.work_schema_v1 import effects, inputs, work
+from yuki.runtime.work_wait import WorkWaitRepository
 from yuki.sandbox.continuation_worker import SandboxContinuationWorker
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
@@ -157,6 +160,41 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         source,
     )
     owner = case.control.current["id"]
+    repository, lease = case.control.repository, case.control.lease
+    effect_key = f"original-{action}-effect"
+    await repository.prepare_effect(
+        lease,
+        owner,
+        effect_key,
+        "tool",
+        invocation={"version": 1, "tool_id": "external_agent", "action": action, "revision": 0},
+    )
+    await repository.record_effect(
+        effect_key,
+        "accepted",
+        {
+            "outcome": execution_evidence(
+                ToolExecutionResult(
+                    ok=True, provider_id="core", tool_name="external_agent", data=original
+                ),
+                tool="external_agent",
+                side_effecting=True,
+                arguments=json.dumps({"action": action}),
+            )
+        },
+    )
+    waits = WorkWaitRepository(repository)
+    await waits.register(
+        lease,
+        work_id=owner,
+        source=case.source,
+        call_key=f"wait-original-{action}",
+        mode="any",
+        conditions=[{"kind": "owned_run", "run_id": original["run_id"]}],
+        deadline_at=None,
+    )
+    current = await repository.get(owner)
+    await repository.transition(lease, owner, current["revision"], "waiting_external")
     assert await case.control.repository.has_owned_execution(case.control.lease, owner)
     await env.service.execute(
         {"action": "detach", "operation_id": original["operation_id"]}, f"detach-{action}", source
@@ -172,6 +210,26 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
     if action == "queue":
         assert result["queued_submission_id"] == "native-queue-item"
     assert [command["action"] for command in commands] == [action, "detach"]
+    await case.control.reconcile_completed_children()
+    async with database.sessions() as session:
+        receipt = json.loads(
+            await session.scalar(
+                select(effects.c.receipt_json).where(effects.c.effect_key == effect_key)
+            )
+        )
+    outcome = receipt["outcome"]
+    assert outcome["status"] == outcome["operation_status"] == "detached"
+    assert outcome["native_status"] == native_status and outcome["native_pending"] is True
+    assert outcome["pending"] is False and execution_finished(outcome)
+    assert outcome["tool"] == "external_agent" and outcome["action"] == action
+    assert outcome["side_effecting"] is True
+    assert await waits.deliver_due() == 1
+    binding = await waits.describe(owner)
+    matched = binding["conditions"][0]["matched"]
+    assert binding["status"] == "delivered" and (await repository.get(owner))["state"] == "queued"
+    assert matched["status"] == matched["operation_status"] == "detached"
+    assert matched["native_status"] == native_status and matched["native_pending"] is True
+    assert await waits.deliver_due() == 0
     await SandboxContinuationWorker(case.control.repository).drain_once()
     async with database.sessions() as session:
         task = await session.get(SandboxTaskRunModel, original["operation_id"])
@@ -184,6 +242,11 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         signal = json.loads(json.loads(payload)["text"])
         assert signal["status"] == "detached"
         assert signal["native_status"] == native_status and signal["native_pending"] is True
+        wait_payload = await session.scalar(
+            select(inputs.c.payload_json).where(inputs.c.source_key == f"wait:{binding['wait_id']}")
+        )
+        wait_signal = json.loads(json.loads(wait_payload)["text"])
+        assert wait_signal["conditions"][0]["matched"] == matched
 
 
 async def test_unavailable_hello_keeps_failure_fact_without_dispatching_to_missing_driver(native):

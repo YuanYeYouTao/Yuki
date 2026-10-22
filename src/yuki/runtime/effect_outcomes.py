@@ -38,15 +38,17 @@ current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
 
 
 def execution_finished(evidence: dict[str, Any]) -> bool:
-    """Only an explicit terminal receipt can settle an original execution.
+    """Only an explicit terminal receipt can settle the original owned relation.
 
     A successful read can observe a failed process. Conversely, a failed read
     with no status says nothing about whether that process has finished.
+    Detached ends delegation or supervision; native_pending remains the separate
+    last observation of the native execution, not proof that it has finished.
     """
-    status = evidence.get("status")
+    status = evidence.get("operation_status", evidence.get("status"))
     return (
         isinstance(status, str)
-        and status in {"completed", "succeeded", "failed", "cancelled"}
+        and status in {"completed", "succeeded", "failed", "cancelled", "detached"}
         and not evidence.get("pending")
         and not evidence.get("uncertain")
     )
@@ -203,6 +205,11 @@ def execution_evidence(
             name: body[name]
             for name in ("operation_id", "device_id", "instance_id", "session_id", "execution_id")
             if isinstance(body.get(name), str)
+        },
+        **{
+            name: body[name]
+            for name in ("operation_status", "native_status", "native_pending")
+            if name in body
         },
         **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
         **(

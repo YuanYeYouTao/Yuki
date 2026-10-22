@@ -837,7 +837,7 @@ class WorkWaitRepository:
     def _observe_due(
         binding: Any,
         conditions: list[dict[str, Any]],
-        states: dict[tuple[str, str], str],
+        states: dict[tuple[str, str], dict[str, Any]],
         now: float,
     ) -> tuple[list[dict[str, Any]], str] | None:
         if (
@@ -862,18 +862,19 @@ class WorkWaitRepository:
                 changed = True
             elif condition["kind"] == "owned_run":
                 state = states.get((binding["work_id"], condition["run_id"]))
-                if state in {
+                if state is not None and state["status"] in {
                     "completed",
                     "succeeded",
                     "failed",
                     "cancelled",
+                    "detached",
                     "uncertain",
                     "unknown",
                 }:
                     condition["matched"] = {
                         "kind": "owned_run",
                         "run_id": condition["run_id"],
-                        "status": state,
+                        **state,
                     }
                     changed = True
         done = (
@@ -904,7 +905,7 @@ class WorkWaitRepository:
             for condition in conditions[row["id"]]
             if condition["kind"] == "owned_run" and condition["matched"] is None
         }
-        states: dict[tuple[str, str], str] = {}
+        states: dict[tuple[str, str], dict[str, Any]] = {}
         if requested_pairs:
             records = func.json_each(
                 encode_json([{"owner": owner, "run": run} for owner, run in requested_pairs])
@@ -924,35 +925,50 @@ class WorkWaitRepository:
                 .select_from(requested.join(work, work.c.id == requested.c.run_id))
                 .where(requested.c.owner_id.in_(ancestors(requested.c.run_id)))
             )
-            owned_sandbox = select(
-                requested.c.owner_id,
-                requested.c.run_id,
-                SandboxTaskRunModel.status,
-                SandboxTaskRunModel.completion_json,
-                literal(True),
-            ).select_from(
-                requested.join(
-                    SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
+            owned_sandbox = (
+                select(
+                    requested.c.owner_id,
+                    requested.c.run_id,
+                    SandboxTaskRunModel.status,
+                    SandboxTaskRunModel.completion_json,
+                    literal(True),
                 )
-            ).where(
-                requested.c.owner_id.in_(
-                    ancestors(
-                        func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
-                        include_self=True,
+                .select_from(
+                    requested.join(
+                        SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
+                    )
+                )
+                .where(
+                    requested.c.owner_id.in_(
+                        ancestors(
+                            func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
+                            include_self=True,
+                        )
                     )
                 )
             )
             rows = (await session.execute(owned_work.union_all(owned_sandbox))).all()
             work_states = {
-                (owner, run): state for owner, run, state, _, sandbox in rows if not sandbox
+                (owner, run): {"status": state}
+                for owner, run, state, _, sandbox in rows
+                if not sandbox
             }
             states.update(work_states)
             for owner, run, state, completion, sandbox in rows:
                 if not sandbox or (owner, run) in work_states:
                     continue
                 if state == "completed" and completion:
-                    state = json.loads(completion).get("status", state)
-                states[owner, run] = state
+                    receipt = json.loads(completion)
+                    states[owner, run] = {
+                        "status": receipt.get("operation_status", receipt.get("status", state)),
+                        **{
+                            name: receipt[name]
+                            for name in ("operation_status", "native_status", "native_pending")
+                            if name in receipt
+                        },
+                    }
+                else:
+                    states[owner, run] = {"status": state}
         return [
             (row, cls._observe_due(row, conditions[row["id"]], states, now)) for row in bindings
         ]
