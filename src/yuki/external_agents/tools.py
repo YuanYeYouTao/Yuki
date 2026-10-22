@@ -15,6 +15,8 @@ def external_agent_tools() -> tuple[ChatTool, ...]:
             description=(
                 "调用本人已授权电脑上的原生 Agent。list 查看设备、实例和会话的实际能力；"
                 "get 读取原资源、操作、状态和历史，无需接纳 Work。"
+                "cursor 续读服务器重要事件；native_cursor 续读原生目录，"
+                "include_history 明确读取原生历史。"
                 "watch 将已有执行纳入当前 Work 监督；"
                 "prompt 提交新输入，queue 明确排入原生队列，均沿当前 Work 保存原操作。"
                 "steer 给指定活跃执行追加要求；respond 回答原问题；cancel 精确取消原操作；"
@@ -56,6 +58,8 @@ def external_agent_tools() -> tuple[ChatTool, ...]:
                         )
                     },
                     "resume": {"type": "boolean"},
+                    "native_cursor": text,
+                    "include_history": {"type": "boolean"},
                     "response": {"type": "object", "additionalProperties": True},
                     "outcome": {"type": "string", "enum": ["cancelled"]},
                     "cursor": {"type": "integer", "minimum": 0},
