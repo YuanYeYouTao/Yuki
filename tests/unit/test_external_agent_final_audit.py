@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from sqlalchemy import event as sql_events
 from sqlalchemy import func, select
 from tests.unit.test_external_agent_repository import connect, event, prepare, register_device
 from tests.unit.test_external_agent_repository import native as native_fixture
@@ -183,3 +184,185 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         signal = json.loads(json.loads(payload)["text"])
         assert signal["status"] == "detached"
         assert signal["native_status"] == native_status and signal["native_pending"] is True
+
+
+async def test_unavailable_hello_keeps_failure_fact_without_dispatching_to_missing_driver(native):
+    original, _ = await prepare(native)
+    commands = []
+
+    class Socket:
+        async def send_json(self, command):
+            commands.append(command)
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    connection = DeviceConnection(native.device["device_id"], Socket())
+    await native.service.connect(
+        native.device["device_id"],
+        connection,
+        {
+            "protocol_version": 1,
+            "instances": [
+                {
+                    "id": "profile",
+                    "label": "local Codex",
+                    "driver": "codex",
+                    "capabilities": [],
+                    "status": "unavailable",
+                    "error_type": "FileNotFoundError",
+                }
+            ],
+        },
+    )
+    catalog = await native.service.catalog(native.actor)
+    assert catalog["devices"][0]["online"] is True
+    profile = catalog["instances"][0]
+    assert profile["online"] is False
+    assert profile["status"] == "unavailable" and profile["error_type"] == "FileNotFoundError"
+    assert profile["capabilities"] == []
+    result = await native.service.execute(
+        {"action": "steer", "operation_id": original.id, "text": "continue"},
+        "not-dispatched-to-missing-driver",
+        native.source,
+    )
+    assert result["error"] == "device_offline" and result["executed"] is False
+    assert commands == []
+    with pytest.raises(ValueError, match="external_agent_not_found"):
+        await native.repository.operation("not-dispatched-to-missing-driver", native.actor)
+
+
+@pytest.mark.parametrize(
+    "action,cancel_status", [("queue", "cancelled"), ("prompt", "cancel_submitted")]
+)
+async def test_exact_queue_cancel_settles_but_submitted_interrupt_waits_for_native_terminal(
+    database, case, action, cancel_status
+):
+    env = await register_device(database, case.source["actor_person_id"])
+    env.service = ExternalAgentService(database, case.tasks)
+    env.session = (
+        await env.repository.remember_sessions(env.instance, env.actor, ["native-thread"])
+    )["native-thread"]
+    commands = []
+
+    class Socket:
+        async def send_json(self, command):
+            commands.append(command)
+            if command["action"] == action:
+                result = {
+                    "status": "queued" if action == "queue" else "running",
+                    "pending": True,
+                    "admitted": True,
+                    "session_id": "native-thread",
+                    **(
+                        {"queued_submission_id": "native-queue-item"}
+                        if action == "queue"
+                        else {"execution_id": "native-turn"}
+                    ),
+                }
+            else:
+                assert command["action"] == "cancel"
+                assert command["arguments"]["operation_id"] == f"original-{action}"
+                if action == "queue":
+                    assert command["arguments"]["queued_submission_id"] == "native-queue-item"
+                else:
+                    assert command["execution_id"] == "native-turn"
+                result = {"status": cancel_status, "pending": False, "admitted": True}
+            connection.respond({"id": command["id"], "result": result})
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    connection = DeviceConnection(env.device["device_id"], Socket())
+    await connect(env, connection)
+    source = {"actor_person_id": env.actor}
+    original = await env.service.execute(
+        {"action": action, "session_id": env.session, "prompt": "run tests"},
+        f"original-{action}",
+        source,
+    )
+    await env.service.execute(
+        {"action": "cancel", "operation_id": original["operation_id"]},
+        f"cancel-{action}",
+        source,
+    )
+    owner = case.control.current["id"]
+    async with database.sessions() as session:
+        task = await session.get(SandboxTaskRunModel, original["operation_id"])
+        assert task.status == ("completed" if action == "queue" else "waiting")
+        if action == "queue":
+            completion = json.loads(task.completion_json)
+            assert completion["status"] == "cancelled" and completion["pending"] is False
+        else:
+            assert await session.get(SandboxTaskContinuationModel, original["operation_id"]) is None
+    assert await case.control.repository.has_owned_execution(case.control.lease, owner) is (
+        action == "prompt"
+    )
+    if action == "prompt":
+        await env.repository.receive_events(
+            env.device["device_id"],
+            [
+                event(
+                    "actual-native-terminal",
+                    operation=original["operation_id"],
+                    kind="completed",
+                    payload={"status": "completed"},
+                )
+            ],
+        )
+    await SandboxContinuationWorker(case.control.repository).drain_once()
+    async with database.sessions() as session:
+        payloads = list(
+            await session.scalars(
+                select(inputs.c.payload_json).where(
+                    inputs.c.source_key == f"completion:{original['operation_id']}"
+                )
+            )
+        )
+        assert len(payloads) == 1
+        assert json.loads(json.loads(payloads[0])["text"])["status"] == (
+            "cancelled" if action == "queue" else "succeeded"
+        )
+    assert [command["action"] for command in commands] == [action, "cancel"]
+
+
+async def test_unchanged_pending_journal_reads_never_acquire_sqlite_writer(database, native):
+    original, _ = await prepare(native)
+    pending = {
+        "status": "running",
+        "pending": True,
+        "admitted": True,
+        "session_id": "native-thread",
+        "execution_id": "native-turn",
+    }
+    await native.repository.response(original.id, pending)
+
+    class Socket:
+        async def send_json(self, command):
+            assert command["action"] == "get"
+            assert command["arguments"] == {"operation_id": original.id}
+            connection.respond({"id": command["id"], "result": pending})
+
+        async def close(self, code=1000, reason=None):
+            pass
+
+    connection = DeviceConnection(native.device["device_id"], Socket())
+    await connect(native, connection)
+    writes = []
+
+    def record_write(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith(("BEGIN IMMEDIATE", "INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    sql_events.listen(database.engine.sync_engine, "before_cursor_execute", record_write)
+    try:
+        for number in range(3):
+            result = await native.service.execute(
+                {"action": "get", "operation_id": original.id},
+                f"observe-same-pending-{number}",
+                native.source,
+            )
+            assert result["status"] == "running" and result["pending"] is True
+    finally:
+        sql_events.remove(database.engine.sync_engine, "before_cursor_execute", record_write)
+    assert writes == []
