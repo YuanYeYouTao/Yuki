@@ -9,8 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -22,7 +21,6 @@ from yuki.workspace.store import WorkspaceError
 class FileWorkspace:
     def __init__(self, root: Path) -> None:
         self.root = root.absolute()
-        self.lock = threading.RLock()
 
     def root_fd(self) -> int:
         """Check every component, including user-writable ancestors of work/outputs."""
@@ -104,17 +102,32 @@ class FileWorkspace:
             raise WorkspaceError("file_changed_during_read")
         return digest.hexdigest(), after
 
-    def write(self, path: str, data: bytes, expected_version: str | None = None) -> dict[str, Any]:
-        with self.lock, self.parent(path, mkdir=True) as (parent, name):
-            try:
-                with self.open_file(path) as fd:
-                    actual, _ = self.fingerprint(fd)
-            except FileNotFoundError:
-                actual = "missing"
-            if (actual != "missing" and expected_version != actual) or (
-                actual == "missing" and expected_version not in {None, "missing"}
-            ):
-                raise WorkspaceError("version_conflict")
+    def write(self, path: str, data: bytes) -> dict[str, Any]:
+        return self._write(path, (data,))
+
+    def copy(
+        self, path: str, source_fd: int, *, expected_version: str | None = None
+    ) -> dict[str, Any]:
+        os.lseek(source_fd, 0, os.SEEK_SET)
+        return self._write(
+            path,
+            iter(lambda: os.read(source_fd, 65536), b""),
+            source_fd=source_fd,
+            expected_version=expected_version,
+        )
+
+    def _write(
+        self,
+        path: str,
+        chunks: Iterable[bytes],
+        *,
+        source_fd: int | None = None,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
+        before = os.fstat(source_fd) if source_fd is not None else None
+        digest = hashlib.sha256()
+        size = 0
+        with self.parent(path, mkdir=True) as (parent, name):
             temporary = ".yuki-write-" + uuid4().hex
             fd = os.open(
                 temporary,
@@ -124,19 +137,25 @@ class FileWorkspace:
             )
             try:
                 with os.fdopen(fd, "wb") as stream:
-                    stream.write(data)
+                    for chunk in chunks:
+                        stream.write(chunk)
+                        digest.update(chunk)
+                        size += len(chunk)
+                    if source_fd is not None and before is not None:
+                        after = os.fstat(source_fd)
+                        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                            after.st_size,
+                            after.st_mtime_ns,
+                            after.st_ctime_ns,
+                        ) or size != after.st_size:
+                            raise WorkspaceError("file_changed_during_read")
+                    version = digest.hexdigest()
+                    if expected_version is not None and version != expected_version:
+                        raise WorkspaceError("version_conflict")
                     stream.flush()
                     os.fsync(stream.fileno())
                     if os.geteuid() == 0:
                         os.fchown(stream.fileno(), 10001, 10001)
-                # Recheck after staging: terminal edits during a slow write conflict.
-                try:
-                    with self.open_file(path) as current:
-                        latest, _ = self.fingerprint(current)
-                except FileNotFoundError:
-                    latest = "missing"
-                if latest != actual:
-                    raise WorkspaceError("version_conflict")
                 os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
                 os.fsync(parent)
             finally:
@@ -146,6 +165,6 @@ class FileWorkspace:
                     pass
         return {
             "path": "/workspace/" + "/".join(self.parts(path)),
-            "version": hashlib.sha256(data).hexdigest(),
-            "size": len(data),
+            "version": version,
+            "size": size,
         }

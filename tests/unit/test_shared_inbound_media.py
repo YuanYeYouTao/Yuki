@@ -1,9 +1,9 @@
 """One admitted original feeds cache, Main pixels and emoji without coupling outcomes."""
 
 import asyncio
+import hashlib
 import io
 import json
-import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +29,7 @@ from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolutionError, MediaResolver, PreparedAttachment
 from yuki.vision.models import MediaReference
 from yuki.workspace.service import WorkspaceService
+from yuki.workspace.store import WorkspaceError
 
 
 @pytest.fixture
@@ -90,29 +91,47 @@ async def admitted_media(database, tmp_path):
         )
         message = media.prepare_message(message, None, source_segments=event.segments)
         workspace = WorkspaceService(env.store)
+        workspace.conversation_media = media
         files = tmp_path / "manager-workspace"
+        copies = {}
 
         async def manager_execute(name, arguments, *, request_id):
-            if name == "workspace_checkout":
-                metadata, content = env.store.read_bytes(arguments["artifact_id"])
+            if name == "workspace_copy_result":
+                previous = copies.get(request_id)
+                if previous is None:
+                    return {"found": False}
+                bound, result = previous
+                if any(arguments[key] != bound[key] for key in ("source_key", "destination")):
+                    return {"error": "idempotency_conflict"}
+                return {"found": True, "result": result}
+            if name == "workspace_copy":
+                source = media.root.parent / arguments["path"].removeprefix("/inputs/media-cache/")
+                content = await asyncio.to_thread(source.read_bytes)
+                digest = hashlib.sha256(content).hexdigest()
+                assert arguments["expected_version"] == digest
                 path = files / arguments["destination"]
                 await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(path.write_bytes, content)
-                return {
+                result = {
                     "path": "/workspace/" + arguments["destination"],
-                    "version": metadata["sha256"],
+                    "version": digest,
+                    "size": len(content),
                 }
+                copies[request_id] = arguments, result
+                return result
             assert name == "sticker_index"
             return await asyncio.to_thread(StickerIndex(files).execute, arguments)
 
         workspace.sandbox = SimpleNamespace(execute=manager_execute)
-        emoji = EmojiLibrary(workspace, source_valid=media.source_current)
+        emoji = EmojiLibrary(workspace)
         try:
             yield SimpleNamespace(
                 media=media,
                 message=message,
                 emoji=emoji,
                 files=files,
+                workspace=workspace,
+                store=env.store,
                 data=data,
                 event=event,
                 calls=calls,
@@ -243,6 +262,16 @@ async def test_old_prepared_original_cannot_publish_as_edited_attachment(admitte
     assert item.cache_status == "uncached"
 
 
+async def test_stale_collection_does_not_download_an_edited_source(admitted_media, database):
+    env = admitted_media
+    async with database.immediate_session() as writer:
+        event = await writer.get(ChatEventModel, env.event.id)
+        event.segments_json = '[{"type":"image","data":{"url":"https://example.test/new.png"}}]'
+    env.release.set()
+    assert await env.emoji.collect_message(env.message, source_event_id=env.event.id) == ()
+    assert not env.calls and not env.files.exists()
+
+
 async def test_same_locator_in_new_message_does_not_share_original(admitted_media):
     env = admitted_media
     other = env.media.prepare_message(
@@ -342,7 +371,9 @@ async def test_collection_rechecks_original_source_after_download_wait(
     assert not env.files.exists()
 
 
-async def test_shared_collection_only_reads_main_database(admitted_media, database):
+async def test_collection_publishes_shared_cache_without_delivery_artifact(
+    admitted_media, database
+):
     env = admitted_media
     statements = []
 
@@ -356,43 +387,46 @@ async def test_shared_collection_only_reads_main_database(admitted_media, databa
     finally:
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
     assert (env.files / saved.relative_path).read_bytes() == env.data
-    assert len(statements) == 1 and statements[0].lstrip().upper().startswith("SELECT")
+    assert env.store.list()["items"] == []
+    assert not any("sticker_" in statement.lower() for statement in statements)
+    async with database.sessions() as reader:
+        item = await reader.get(ConversationMediaItemModel, (env.event.id, 0))
+        assert item.cache_status == "cached" and item.content_sha256 == saved.sha256
 
 
-async def test_repeated_cancel_waits_for_actual_snapshot_thread(admitted_media, monkeypatch):
+async def test_completed_save_replays_before_source_and_preserves_later_user_edit(admitted_media):
     env = admitted_media
-    workspace = env.emoji.workspace
-    started, release = asyncio.Event(), threading.Event()
-    loop = asyncio.get_running_loop()
-    original_snapshot = workspace.store.snapshot
-
-    def snapshot(*args, **kwargs):
-        loop.call_soon_threadsafe(started.set)
-        assert release.wait(5)
-        return original_snapshot(*args, **kwargs)
-
-    monkeypatch.setattr(workspace.store, "snapshot", snapshot)
-    task = asyncio.create_task(
-        workspace.import_content(
-            env.data,
-            "selected.png",
-            request_id="cancelled-import",
-            artifact_id="f5faf70f-7b2b-41ce-9580-80c4c0f7bd09",
-            source_key="selected-original",
-        )
+    env.release.set()
+    args = {"event_id": env.event.id, "attachment_index": 0, "destination": "selected.png"}
+    first = await env.workspace.execute(
+        "save_conversation_attachment_to_workspace", args, request_id="original-save"
     )
-    try:
-        await asyncio.wait_for(started.wait(), 5)
-        task.cancel()
-        await asyncio.sleep(0)
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-    finally:
-        release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
-    assert workspace.store.read_bytes("f5faf70f-7b2b-41ce-9580-80c4c0f7bd09")[1] == env.data
+    _item, original = await env.media.authorized_path(event_id=env.event.id, attachment_index=0)
+    original.unlink()
+    selected = env.files / "selected.png"
+    selected.write_bytes(b"edited later")
+    second = await env.workspace.execute(
+        "save_conversation_attachment_to_workspace", args, request_id="original-save"
+    )
+    assert second == first and selected.read_bytes() == b"edited later"
+    assert env.store.list()["items"] == [] and len(env.calls) == 1
+
+
+@pytest.mark.parametrize("field", ["event_id", "destination"])
+async def test_original_save_request_cannot_be_reused_for_a_different_copy(admitted_media, field):
+    env = admitted_media
+    env.release.set()
+    args = {"event_id": env.event.id, "attachment_index": 0, "destination": "selected.png"}
+    await env.workspace.execute(
+        "save_conversation_attachment_to_workspace", args, request_id="original-save"
+    )
+    changed = {**args, field: env.event.id + 1 if field == "event_id" else "another.png"}
+    with pytest.raises(WorkspaceError, match="idempotency_conflict"):
+        await env.workspace.execute(
+            "save_conversation_attachment_to_workspace", changed, request_id="original-save"
+        )
+    assert (env.files / "selected.png").read_bytes() == env.data
+    assert not (env.files / "another.png").exists() and len(env.calls) == 1
 
 
 @pytest.mark.parametrize("change", ["forget", "reset"])
@@ -401,14 +435,14 @@ async def test_admitted_shared_copy_survives_source_erasure_without_restoring_at
 ):
     env = admitted_media
     entered, release = asyncio.Event(), asyncio.Event()
-    original_import = env.emoji.workspace.import_content
+    original_copy = env.emoji.workspace.copy_from_cache
 
-    async def paused_import(*args, **kwargs):
+    async def paused_copy(*args, **kwargs):
         entered.set()
         await release.wait()
-        return await original_import(*args, **kwargs)
+        return await original_copy(*args, **kwargs)
 
-    monkeypatch.setattr(env.emoji.workspace, "import_content", paused_import)
+    monkeypatch.setattr(env.emoji.workspace, "copy_from_cache", paused_copy)
     env.release.set()
     collecting = asyncio.create_task(
         env.emoji.collect_message(env.message, source_event_id=env.event.id)

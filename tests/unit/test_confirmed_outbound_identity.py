@@ -137,7 +137,7 @@ async def test_inflight_confirmed_send_retains_original_presence(
         return await original_call(action, **params)
 
     monkeypatch.setattr(env.bot, "call_api", original_ack)
-    sent = await env.service.execute("send_message", {"text": "原发送确认"}, env.context)
+    sent = await env.service.execute("send", {"text": "原发送确认"}, env.context)
     assert sent["status"] == "succeeded"
     async with database.sessions() as reader:
         row = await reader.get(ChatEventModel, sent["event_id"])
@@ -151,7 +151,7 @@ async def test_inflight_confirmed_send_retains_original_presence(
 @pytest.mark.parametrize("owner", ["ended", "person", "yuki"])
 async def test_existing_receipt_keeps_its_original_buggy_author_bytes(database, tmp_path, owner):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "已入账原文"}, env.context)
+    sent = await env.service.execute("send", {"text": "已入账原文"}, env.context)
     async with database.immediate_session() as writer:
         # An already accepted fact from the retired writer, before this fix.
         await writer.execute(
@@ -379,7 +379,7 @@ async def test_original_outbound_receipt_still_rejects_a_different_explicit_time
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "原时间事实"}, env.context)
+    sent = await env.service.execute("send", {"text": "原时间事实"}, env.context)
     async with database.sessions() as reader:
         original = await reader.get(ChatEventModel, sent["event_id"])
     with pytest.raises(CanonicalIdentityError) as conflict:

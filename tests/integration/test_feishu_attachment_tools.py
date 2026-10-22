@@ -169,17 +169,26 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
         store = WorkspaceStore(tmp_path / "artifacts")
         workspace = WorkspaceService(store)
         workspace.conversation_media = media
-        checkouts = []
+        copies = []
 
-        async def checkout(method, args, *, request_id):
-            assert method == "workspace_checkout"
-            metadata, content = store.read_bytes(args["artifact_id"])
-            path = tmp_path / metadata["name"]
+        async def copy(method, args, *, request_id):
+            if method == "workspace_copy_result":
+                return {"found": False}
+            assert method == "workspace_copy"
+            original = media.root.parent / args["path"].removeprefix("/inputs/media-cache/")
+            content = original.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            assert digest == args["expected_version"]
+            path = tmp_path / args["destination"]
             path.write_bytes(content)
-            checkouts.append(path)
-            return {"path": "/workspace/" + metadata["name"], "version": metadata["sha256"]}
+            copies.append(path)
+            return {
+                "path": "/workspace/" + args["destination"],
+                "version": digest,
+                "size": len(content),
+            }
 
-        workspace.sandbox = SimpleNamespace(execute=checkout)
+        workspace.sandbox = SimpleNamespace(execute=copy)
         try:
             if cached:
                 await media.authorized_path(event_id=source.id, attachment_index=0)
@@ -195,7 +204,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
             if offline and not cached:
                 with pytest.raises(WorkspaceError, match="resource_unavailable"):
                     await workspace.execute(tool, arguments, runtime=runtime, request_id=tool)
-                assert downloads == checkouts == []
+                assert downloads == copies == []
                 return
             result = await workspace.execute(tool, arguments, runtime=runtime, request_id=tool)
             assert downloads == ([] if cached else ["Bearer token-cli_a"])
@@ -203,9 +212,9 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
             if tool == "inspect_conversation_attachment":
                 assert result.images and result["sha256"] == hashlib.sha256(picture).hexdigest()
             else:
-                assert result["file_imported"] is True
-                assert checkouts[0].read_bytes() == picture
-                assert store.read_bytes(result["artifact_id"])[1] == picture
+                assert result["version"] == hashlib.sha256(picture).hexdigest()
+                assert copies[0].read_bytes() == picture
+                assert store.list()["items"] == []
         finally:
             await media.close()
             await resolver.close()

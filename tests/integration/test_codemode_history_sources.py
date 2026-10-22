@@ -243,7 +243,7 @@ async def test_old_code_body_cannot_publish_after_privacy_change_but_real_send_s
     calls = [
         ("yuki_query_chat_history", {"view": "search", "keyword": "source-alpha"}),
         ("yuki_query_chat_history", {"view": "search", "keyword": "source-beta"}),
-        ("yuki_send_message", {"text": "already delivered"}),
+        ("yuki_send", {"text": "already delivered"}),
     ]
     env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)
     env.host.result_limit = 24000
@@ -267,7 +267,7 @@ async def test_old_code_body_cannot_publish_after_privacy_change_but_real_send_s
     sent = [
         json.loads(row["receipt_json"])["outcome"]
         for row in rows.values()
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "send_message"
+        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "send"
     ]
     assert len(sent) == 1 and sent[0]["delivered_message"] is True
     async with database.sessions() as reader:

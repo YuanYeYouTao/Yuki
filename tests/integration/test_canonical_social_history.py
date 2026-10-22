@@ -78,7 +78,7 @@ async def test_same_person_multiple_entries_query_together_without_merging_sourc
 
 async def test_receipt_and_delegated_history_keep_actual_source_grants(database, tmp_path):
     env = await social_env(database, tmp_path)
-    receipt = await env.service.execute("send_message", {"text": "confirmed"}, env.context)
+    receipt = await env.service.execute("send", {"text": "confirmed"}, env.context)
     private = await private_entry(env, "80001", "private-entry")
     context = replace(env.context, conversation_id=private.canonical_conversation_id)
     env.bot.calls.clear()
@@ -128,7 +128,7 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
 
 async def test_permanent_group_history_survives_new_context_window(database, tmp_path):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "after reset"}, env.context)
+    sent = await env.service.execute("send", {"text": "after reset"}, env.context)
     async with database.immediate_session() as session:
         source = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")

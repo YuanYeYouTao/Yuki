@@ -73,7 +73,7 @@ async def send(env, text, *, call_id="send", **arguments):
     token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id=call_id))
     try:
         return await invoke_social(
-            env.service, "send_message", {"text": text, **arguments}, runtime
+            env.service, "send", {"text": text, **arguments}, runtime
         )
     finally:
         current_invocation.reset(token)

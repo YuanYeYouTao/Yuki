@@ -64,7 +64,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         database, tmp_path / "results", retention_seconds=60, max_artifact_bytes=100000
     )
     calls = [
-        ("send_message", {"text": "local child delivery"}),
+        ("send", {"text": "local child delivery"}),
         (
             "memory_change",
             {
@@ -163,7 +163,7 @@ async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
     parent_before = await repository.get(parent["id"])
     calls = (
         ("task_control", {"action": "complete", "result": "verified child result"}),
-        ("send_message", {"text": "actual tail delivery"}),
+        ("send", {"text": "actual tail delivery"}),
         ("subagent_control", {"action": "message", "text": "original detailed report"}),
         ("subagent_start", {"goal": "independent nested step"}),
     )

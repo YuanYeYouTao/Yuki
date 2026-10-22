@@ -184,7 +184,7 @@ async def test_sdk_settles_ended_requests_and_keeps_delivery_before_failure(
                 content="",
                 latency_seconds=0,
                 tool_calls=(
-                    ToolCall("sent", ToolFunction("send_message", '{"text":"Partial result"}')),
+                    ToolCall("sent", ToolFunction("send", '{"text":"Partial result"}')),
                 ),
             )
         return "" if failure else "Private final without a Social message."
@@ -349,7 +349,7 @@ async def test_standard_stdio_answer_resumes_original_work_and_controls_its_outp
     env.provider._responder = scripted(
         [
             ("task_control", {"action": "accept", "goal": "Return the city result"}),
-            ("send_message", {"text": "Which city?"}),
+            ("send", {"text": "Which city?"}),
             ("task_control", {"action": "need_input", "reason": "Need the city"}),
         ]
     )
@@ -396,7 +396,7 @@ async def test_standard_stdio_answer_resumes_original_work_and_controls_its_outp
             else:
                 env.provider._responder = scripted(
                     [
-                        ("send_message", {"text": "Taipei result"}),
+                        ("send", {"text": "Taipei result"}),
                         ("task_control", {"action": "complete", "result": "City task completed"}),
                     ]
                 )
@@ -419,7 +419,7 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
     env.provider._responder = scripted(
         [
             ("task_control", {"action": "accept", "goal": "Continue the original city task"}),
-            ("send_message", {"text": "Which city before restart?"}),
+            ("send", {"text": "Which city before restart?"}),
             ("task_control", {"action": "need_input", "reason": "Need the city"}),
         ]
     )
@@ -465,7 +465,7 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
     provider = FakeLLMProvider(
         scripted(
             [
-                ("send_message", {"text": "Taipei result after restart"}),
+                ("send", {"text": "Taipei result after restart"}),
                 ("task_control", {"action": "complete", "result": "Original city task completed"}),
             ]
         )
@@ -601,7 +601,7 @@ async def test_acp_uses_fixed_common_tools_and_explicit_person_routing(acp_runti
     )
     assert original["conversation_id"] == base.conversation_id and original["platform"] == "app"
     result = await env.app.social_service.execute(
-        "send_message",
+        "send",
         {"target": {"kind": "person", "target_id": principal.person_id}, "text": "choose entry"},
         SocialContext(
             str(uuid4()),
@@ -646,7 +646,7 @@ async def test_stdio_replay_of_failed_turn_flushes_original_confirmed_output(acp
                 latency_seconds=0,
                 tool_calls=(
                     ToolCall(
-                        "partial", ToolFunction("send_message", '{"text":"Original partial"}')
+                        "partial", ToolFunction("send", '{"text":"Original partial"}')
                     ),
                 ),
             ),

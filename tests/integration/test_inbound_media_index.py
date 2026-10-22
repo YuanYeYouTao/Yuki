@@ -212,9 +212,6 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
             assert len(sources) == 1 and sources[0].attachment_index == 0
             assert json.loads(sources[0].source_snapshot_json)["data"]["file"] == "new-observed-id"
             assert sources[0].cache_name is None and sources[0].cache_status == "uncached"
-            assert not await service.source_current(
-                events[0].id, sources[0].segment_index, events[0].segments_json
-            )
             selected = await workspace.execute(
                 "inspect_conversation_attachment",
                 {"event_id": events[0].id, "attachment_index": 0, "question": "读取新的引用原件"},

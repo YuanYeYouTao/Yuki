@@ -52,7 +52,7 @@ async def execute(calls, backend, *, sequence=1):
 
 async def test_equal_argument_sends_have_two_original_operations():
     backend = IdentityBackend()
-    calls = tuple(ToolCall(i, ToolFunction("send_message", '{"text":"same"}')) for i in ("a", "b"))
+    calls = tuple(ToolCall(i, ToolFunction("send", '{"text":"same"}')) for i in ("a", "b"))
     result = await execute(calls, backend)
     assert result.executed_count == 2
     assert [i.identity.operation_id for i in backend.started] == ["chain:1:a", "chain:1:b"]
@@ -60,7 +60,7 @@ async def test_equal_argument_sends_have_two_original_operations():
 
 async def test_cross_response_call_id_reuse_is_distinct():
     backend = IdentityBackend()
-    calls = (ToolCall("call_0", ToolFunction("send_message", "{}")),)
+    calls = (ToolCall("call_0", ToolFunction("send", "{}")),)
     await execute(calls, backend, sequence=1)
     await execute(calls, backend, sequence=2)
     assert [i.identity.operation_id for i in backend.started] == [
@@ -72,8 +72,8 @@ async def test_cross_response_call_id_reuse_is_distinct():
 async def test_duplicate_response_ids_are_rejected_before_dispatch():
     backend = IdentityBackend()
     calls = (
-        ToolCall("same", ToolFunction("send_message", "{}")),
-        ToolCall("same", ToolFunction("send_message", '{"text":"different"}')),
+        ToolCall("same", ToolFunction("send", "{}")),
+        ToolCall("same", ToolFunction("send", '{"text":"different"}')),
     )
     result = await execute(calls, backend)
     assert not backend.started
@@ -93,6 +93,29 @@ async def test_read_completion_order_does_not_change_identity_or_result_order():
         "chain:1:slow",
         "chain:1:fast",
     ]
+
+
+async def test_send_finishes_before_the_next_read_stretch_even_if_backend_marks_it_safe():
+    class PermissiveBackend(IdentityBackend):
+        def parallel_safe(self, name, runtime):
+            return True
+
+        async def execute_call(self, invocation):
+            if invocation.call.function.name == "read":
+                assert "delivery" in self.completed
+            return await super().execute_call(invocation)
+
+    backend = PermissiveBackend()
+    result = await execute(
+        (
+            ToolCall("delivery", ToolFunction("send", '{"text":"original"}')),
+            ToolCall("slow", ToolFunction("read", "{}")),
+            ToolCall("fast", ToolFunction("read", "{}")),
+        ),
+        backend,
+    )
+    assert result.executed_count == 3
+    assert backend.completed == ["delivery", "fast", "slow"]
 
 
 def test_original_work_journal_key_is_preserved():

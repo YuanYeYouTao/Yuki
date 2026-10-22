@@ -40,7 +40,7 @@ async def serve(root: Path, database_url: str, port: int, suppress_hints: bool) 
     scripted = iter(
         (
             ("task_control", {"action": "accept", "goal": "persist original result"}),
-            ("send_message", {"text": "persistent reply"}),
+            ("send", {"text": "persistent reply"}),
             ("task_control", {"action": "complete", "result": "original result complete"}),
         )
     )

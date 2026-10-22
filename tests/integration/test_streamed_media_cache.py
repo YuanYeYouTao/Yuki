@@ -92,7 +92,8 @@ async def test_prefetch_and_immediate_inspect_save_share_the_actual_stream(
         assert not inspect.done() and not save.done()
         body.release.set()
         _, inspected, saved = await asyncio.gather(prefetch, inspect, save)
-        assert inspected.images and saved["file_imported"]
+        assert inspected.images and saved["version"] == inspected["sha256"]
+        assert saved["size"] == body.size and case.store.list()["items"] == []
         assert requests == ["getFile", "original"] and body.closed
         item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
         assert path.stat().st_size == body.size

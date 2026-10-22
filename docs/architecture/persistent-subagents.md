@@ -12,7 +12,7 @@
 上限。子目标、父子关系和 cwd 作为 brief 资料；实际来源与权限由 Host 绑定，模型不能
 通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不以新脚本重做已提交子调用。
 
-用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send_message`；
+用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send`；
 `task_control.answer` 不在公开 action 中。Agent 提交结束决定后，原 writer 只收拢真正活动的所属执行；没有活动执行的暂停/等待子目标保留自身状态，不否决父目标完成。fail/cancel 直接复用指定子树撤权，无需先逐一取消后代或等待远端全部确认。
 
 可信 SQLite BUSY 在同 activation 持有原响应时仅重备原纯数据库发布，沿原租约与取消退出；已 durable response/paired 按原 ID 恢复，未持久且进程退出的响应不承诺找回或自动重购。LOCKED 和其他存储错误如实退出。
@@ -33,7 +33,7 @@
 自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
 目标、能力批准和权限。固定 Main 合同不再声明 raw OneBot 管理入口；独立批准的插件 QQ 扩展只在真实 QQ 传输边界执行。
 主、子 Agent 在同一会话交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
-子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台；需要对外交付时仍显式调用 `send_message`。
+子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台；需要对外交付时仍显式调用 `send`。
 
 后台执行沿原内部 Conversation、Person/Space、Presence、event/run 和 Work 租约核验。
 断开连接、同 Presence 重连或活动发送路由变化不终止纯内部执行；真正发送时才解析、核验

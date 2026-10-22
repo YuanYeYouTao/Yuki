@@ -126,7 +126,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                 "accept",
             ),
             call(
-                "send_message",
+                "send",
                 {
                     "artifact_id": artifact["artifact_id"],
                     "attachment_kind": "file",
@@ -233,7 +233,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                     "resend-accept",
                 ),
                 call(
-                    "send_message",
+                    "send",
                     {
                         "artifact_id": artifact["artifact_id"],
                         "attachment_kind": "file",
@@ -477,11 +477,11 @@ async def test_retired_work_report_is_rejected_without_new_social_effect(databas
         "work_report": {"kind": "retired", "reply_to_event_ids": [999999]},
     }
     with pytest.raises(SocialError, match="invalid_message_arguments"):
-        await env.service.execute("send_message", original, env.context)
+        await env.service.execute("send", original, env.context)
     assert env.bot.calls == original_calls
     async with database.sessions() as reader:
         assert not list(await reader.scalars(select(SocialOperationModel)))
-    schema = next(t for t in social_tool_definitions() if t.name == "send_message").parameters
+    schema = next(t for t in social_tool_definitions() if t.name == "send").parameters
     assert "work_report" not in schema["properties"]
 
 
@@ -528,7 +528,7 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
                 0,
                 tool_calls=(
                     tool(
-                        "send_message",
+                        "send",
                         {
                             "artifact_id": artifact["artifact_id"],
                             "attachment_kind": "file",
@@ -542,7 +542,7 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
                 "",
                 0,
                 tool_calls=(
-                    tool("send_message", {"text": "文件已送达，原附言尚未确认。"}, "explanation"),
+                    tool("send", {"text": "文件已送达，原附言尚未确认。"}, "explanation"),
                     tool("task_control", {"action": "complete"}, "complete"),
                 ),
             ),
@@ -577,7 +577,7 @@ async def test_direct_send_then_complete_executes_remaining_original_calls(
     database, tmp_path, send_status
 ):
     calls = (
-        tool("send_message", {"text": "原调用说明"}, "send"),
+        tool("send", {"text": "原调用说明"}, "send"),
         tool("task_control", {"action": "complete", "result": "部分成果保留"}, "complete"),
         tool("write_fixture", {}, "after-complete"),
     )
@@ -586,7 +586,7 @@ async def test_direct_send_then_complete_executes_remaining_original_calls(
     )
     result = await run(test_case)
     assert result.work_state == "completed" and result.text == "部分成果保留"
-    assert test_case.observed == ["send_message", "write_fixture"]
+    assert test_case.observed == ["send", "write_fixture"]
     assert len(test_case.provider.requests) == 1
     await test_case.control.settle(pending_inputs=False)
     persisted = await test_case.repository.get(test_case.control.current["id"])
@@ -600,7 +600,7 @@ async def test_direct_send_then_complete_executes_remaining_original_calls(
     assert set(pairs) == {call.id for call in calls}
     assert pairs["after-complete"]["ok"] is True
     facts = await test_case.control.effect_evidence()
-    send_fact = next(fact for fact in facts if fact["tool"] == "send_message")
+    send_fact = next(fact for fact in facts if fact["tool"] == "send")
     assert send_fact["uncertain"] is (send_status == "uncertain")
 
 
@@ -610,7 +610,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
 ):
     calls = (
         tool("memory_change", {}, "remember"),
-        tool("send_message", {"text": "执行后说明"}, "send"),
+        tool("send", {"text": "执行后说明"}, "send"),
     )
     test_case = await case(
         database, tmp_path, [ChatResponse("", 0, tool_calls=calls), ChatResponse("", 0)]
@@ -628,7 +628,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
     elif mode == "disabled":
         test_case.runtime = replace(test_case.runtime, work_control=None)
     result = await run(test_case)
-    assert test_case.observed == ["memory_change", "send_message"]
+    assert test_case.observed == ["memory_change", "send"]
     assert result.text == "" and len(test_case.provider.requests) == 2
 
 
@@ -639,7 +639,7 @@ async def test_mixed_code_resource_yield_stops_later_calls_in_original_batch(
 
     calls = (
         tool("execute_code", {"code": "# resource pause"}, "original-code"),
-        tool("send_message", {"text": "not reached"}, "later-send"),
+        tool("send", {"text": "not reached"}, "later-send"),
     )
     test_case = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     test_case.runtime = replace(

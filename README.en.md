@@ -61,6 +61,8 @@ The evaluation began on October 20, 2026 at fixed revision `313b6b9b`, before th
 | Tasks and automation | Check progress, add instructions, wait for events, schedule work and manage parent-child tasks |
 | Cross-platform communication | Find observed contacts, send text and files, mention accounts and read authorized history |
 
+Text, images, files and stickers use the single `send` tool. A workspace path is frozen internally for delivery, without a separate model publication call. Attachment saving and sticker collection copy directly to their final files without permanent intermediary snapshots. Recovery keeps the original delivery receipts and frozen bytes, including partial or unknown outcomes.
+
 Supported model protocols include Chat Completions, Responses, Claude Messages and Gemini GenerateContent. Profiles select model connections, reasoning settings, search and task routes.
 
 The agent retrieves memory when needed. Extraction, SELF reflection and Dream can each use a different model. Long-term facts, short-term notes, conversation history and working files are stored separately. See [Memory scope](docs/architecture/memory-v2.md).

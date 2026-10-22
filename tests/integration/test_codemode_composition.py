@@ -55,7 +55,7 @@ a = await yuki_lookup({'q': 'a'})
 b, c, d = await asyncio.gather(
     yuki_lookup({'q': 'b'}), yuki_search_chat_history({'q': 'c'}), yuki_lookup({'q': 'd'}))
 w = await yuki_workspace_write({'path': 'x', 'text': a['data']['q']})
-s = await yuki_send_message({'text': 'done'})
+s = await yuki_send({'text': 'done'})
 e = await yuki_lookup({'q': 'e'})
 [a['status'], b['ok'], c['ok'], d['ok'], w['status'], s['status'], e['data']['q']]
 """
@@ -65,7 +65,7 @@ e = await yuki_lookup({'q': 'e'})
     names = [name for name, _ in env.domain.log]
     # The parallel stretch may complete in any order, but stays between its barriers.
     assert names[0] == "lookup" and set(names[1:4]) == {"lookup", "search_chat_history"}
-    assert names[4:] == ["workspace_write", "send_message", "lookup"]
+    assert names[4:] == ["workspace_write", "send", "lookup"]
     assert env.domain.peak <= 2  # C01: bounded by the Host, not by the script.
     rows, tools, root = await effect_rows(database, env.control.current["id"])
     # B01: composition is not a business call; each real child is admitted once.
@@ -77,21 +77,21 @@ async def test_two_equal_argument_sends_are_two_original_operations(database, tm
     env = await environment(database, tmp_path)
     body, _ = await run_code(
         env,
-        "a = await yuki_send_message({'text': 'same'})\n"
-        "b = await yuki_send_message({'text': 'same'})\n"
+        "a = await yuki_send({'text': 'same'})\n"
+        "b = await yuki_send({'text': 'same'})\n"
         "[a['operation_id'], b['operation_id']]",
     )
     first, second = body["result"]
     assert first != second  # D01: identity is the Host ordinal, never the arguments.
-    assert env.domain.log == [("send_message", {"text": "same"})] * 2
+    assert env.domain.log == [("send", {"text": "same"})] * 2
 
 
 async def test_reentry_of_the_same_outer_call_returns_original_receipt(database, tmp_path):
     env = await environment(database, tmp_path)
-    body, outer = await run_code(env, "await yuki_send_message({'text': 'once'})")
+    body, outer = await run_code(env, "await yuki_send({'text': 'once'})")
     again = json.loads(await CodeModeDriver(env.host, outer).run())
     assert again == body
-    assert env.domain.log == [("send_message", {"text": "once"})]
+    assert env.domain.log == [("send", {"text": "once"})]
     _, tools, _ = await effect_rows(database, env.control.current["id"])
     assert tools == 1  # B02: reading the original receipt is not a new admission.
 
@@ -100,17 +100,17 @@ async def test_returned_unknown_child_allows_independent_call_without_replaying_
     database, tmp_path
 ):
     env = await environment(database, tmp_path)
-    env.domain.replies["send_message"] = {"ok": False, "uncertain": True, "error": "timeout"}
+    env.domain.replies["send"] = {"ok": False, "uncertain": True, "error": "timeout"}
     body, outer = await run_code(
         env,
-        "s = await yuki_send_message({'text': 'x'})\n"
-        "await yuki_send_message({'text': 'after-unknown'})\n",
+        "s = await yuki_send({'text': 'x'})\n"
+        "await yuki_send({'text': 'after-unknown'})\n",
     )
     assert body["status"] == "completed"
     assert [item["status"] for item in body["operations"]] == ["unknown", "unknown"]
     assert env.domain.log == [
-        ("send_message", {"text": "x"}),
-        ("send_message", {"text": "after-unknown"}),
+        ("send", {"text": "x"}),
+        ("send", {"text": "after-unknown"}),
     ]
     rows, _, _ = await effect_rows(database, env.control.current["id"])
     assert all(
@@ -132,12 +132,12 @@ async def test_single_tool_denial_allows_independently_authorized_tail(database,
         "    r = await yuki_workspace_write({'path': 'p'})\n"
         "except Exception:\n"
         "    pass\n"
-        "s = await yuki_send_message({'text': 'separate permitted effect'})\n"
+        "s = await yuki_send({'text': 'separate permitted effect'})\n"
         "[r['ok'], r['error']['code'], s['ok']]",
     )
     assert body["status"] == "completed"
     assert body["result"] == [False, "capability_no_longer_authorized", True]
-    assert env.domain.log == [("send_message", {"text": "separate permitted effect"})]
+    assert env.domain.log == [("send", {"text": "separate permitted effect"})]
 
 
 async def test_ordinary_business_failure_is_a_receipt_the_script_handles(database, tmp_path):
@@ -156,21 +156,21 @@ async def test_one_tool_permission_revoked_mid_script_keeps_other_tools(database
 
     async def revoke_after_first(name, arguments):
         if env.domain.log:
-            env.domain.denied.add("send_message")
+            env.domain.denied.add("send")
         return await original(name, arguments)
 
     env.host.execute_business = build_host(env.owner, revoke_after_first).host.execute_business
     body, _ = await run_code(
         env,
-        "await yuki_send_message({'text': 'one'})\n"
-        "a = await yuki_send_message({'text': 'two'})\n"
-        "b = await yuki_send_message({'text': 'three'})\n"
+        "await yuki_send({'text': 'one'})\n"
+        "a = await yuki_send({'text': 'two'})\n"
+        "b = await yuki_send({'text': 'three'})\n"
         "r = await yuki_lookup({'q': 'still authorized'})\n"
         "[a['ok'], b['ok'], r['ok']]",
     )
     assert body["status"] == "completed" and body["result"] == [False, False, True]
     assert env.domain.log == [
-        ("send_message", {"text": "one"}),
+        ("send", {"text": "one"}),
         ("lookup", {"q": "still authorized"}),
     ]
 
@@ -223,7 +223,7 @@ async def test_wrapper_misuse_is_a_script_error_not_a_business_call(database, tm
 async def test_script_cannot_name_an_undeclared_or_host_path(database, tmp_path):
     env = await environment(database, tmp_path)
     for probe in (
-        "__yuki_invoke('send_message', {})",
+        "__yuki_invoke('send', {})",
         "yuki_execute_code({'code': '1'})",
         "host.call('db.execute')",
     ):

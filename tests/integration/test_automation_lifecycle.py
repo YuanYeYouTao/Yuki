@@ -196,7 +196,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
                 "accept-original",
                 ToolFunction("task_control", '{"action":"accept","goal":"原工作"}'),
             ),
-            ToolCall("send-original", ToolFunction("send_message", '{"text":"原先已发送"}')),
+            ToolCall("send-original", ToolFunction("send", '{"text":"原先已发送"}')),
             ToolCall(
                 "wait-original",
                 ToolFunction(
@@ -244,7 +244,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
                 tool_calls=(
                     ToolCall("read-current", ToolFunction("time_get_current", "{}")),
                     ToolCall(
-                        "send-current", ToolFunction("send_message", '{"text":"当前代际的新发生"}')
+                        "send-current", ToolFunction("send", '{"text":"当前代际的新发生"}')
                     ),
                 ),
             ),
@@ -354,7 +354,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
         if step["id"] == "sent":
             operations.extend(
                 (
-                    ("send_message", {"text": "ORIGINAL_CONFIRMED_FIRST_RESULT"}),
+                    ("send", {"text": "ORIGINAL_CONFIRMED_FIRST_RESULT"}),
                     ("task_control", {"action": "complete", "result": "first finished"}),
                 )
             )

@@ -202,7 +202,7 @@ async def test_reading_a_successful_receipt_is_independent_of_space_send_qualifi
     database, tmp_path, paused, selector
 ):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "confirmed original"}, env.context)
+    sent = await env.service.execute("send", {"text": "confirmed original"}, env.context)
     if paused:
         async with database.immediate_session() as writer:
             (await writer.get(CanonicalSpaceModel, env.space)).enabled = False
@@ -222,7 +222,7 @@ async def test_reading_a_successful_receipt_is_independent_of_space_send_qualifi
 @pytest.mark.parametrize("paused", [False, True])
 async def test_other_source_cannot_read_a_successful_operation_receipt(database, tmp_path, paused):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "original"}, env.context)
+    sent = await env.service.execute("send", {"text": "original"}, env.context)
     if paused:
         async with database.immediate_session() as writer:
             (await writer.get(CanonicalSpaceModel, env.space)).enabled = False

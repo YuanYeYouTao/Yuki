@@ -128,9 +128,9 @@ async def test_operation_anchor_and_permanent_history_survive_new_context_window
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    first = await env.service.execute("send_message", {"text": "original effect"}, env.context)
+    first = await env.service.execute("send", {"text": "original effect"}, env.context)
     second = await env.service.execute(
-        "send_message", {"text": "another effect"}, replace(env.context, call_id="second")
+        "send", {"text": "another effect"}, replace(env.context, call_id="second")
     )
     async with database.immediate_session() as writer:
         conversation = await writer.get(CanonicalConversationModel, env.context.conversation_id)
@@ -249,7 +249,7 @@ async def test_deleted_receipt_anchor_returns_original_identity_and_allows_only_
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "old confirmed body"}, env.context)
+    sent = await env.service.execute("send", {"text": "old confirmed body"}, env.context)
     async with database.immediate_session() as writer:
         original = await writer.get(ChatEventModel, sent["event_id"])
         original_conversation = original.canonical_conversation_id
@@ -293,9 +293,9 @@ async def test_operation_search_and_paging_keep_query_semantics_separate_from_re
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    first = await env.service.execute("send_message", {"text": "original anchor"}, env.context)
+    first = await env.service.execute("send", {"text": "original anchor"}, env.context)
     second = await env.service.execute(
-        "send_message", {"text": "new current"}, replace(env.context, call_id="other")
+        "send", {"text": "new current"}, replace(env.context, call_id="other")
     )
     target = {"operation_id": first["operation_id"]}
     empty = await env.service.execute(

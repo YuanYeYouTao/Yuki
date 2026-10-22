@@ -163,10 +163,10 @@ async def test_app_to_qq_uses_explicit_binding_original_source_and_receipt(
         "target": {"kind": "person", "target_id": person, "binding_id": binding.id},
         "text": "explicit other entry",
     }
-    result = await env.social.execute("send_message", args, context)
+    result = await env.social.execute("send", args, context)
     assert result["status"] == ("succeeded" if receipt else "uncertain")
     calls = bot.call_api.await_count
-    assert await env.social.execute("send_message", args, context) == result
+    assert await env.social.execute("send", args, context) == result
     assert bot.call_api.await_count == calls == 1
     async with database.sessions() as session:
         operation = await session.get(SocialOperationModel, result["operation_id"])
@@ -176,7 +176,7 @@ async def test_app_to_qq_uses_explicit_binding_original_source_and_receipt(
             target = await session.get(CanonicalConversationModel, event.canonical_conversation_id)
             assert target.identity_binding_id == binding.id and target.id != context.conversation_id
     current = await env.social.execute(
-        "send_message", {"text": "same entry reply"}, replace(context, call_id="current")
+        "send", {"text": "same entry reply"}, replace(context, call_id="current")
     )
     assert current["status"] == "succeeded" and bot.call_api.await_count == calls
 
@@ -190,7 +190,7 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
         other = await find_identity_binding(session, "1002")
         own = await find_identity_binding(session, "1001")
     refused = await env.social.execute(
-        "send_message",
+        "send",
         {"target": {"kind": "person", "target_id": other.person_id}, "text": "do not guess route"},
         context,
     )
@@ -199,7 +199,7 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
     } == {other.id}
     with pytest.raises(RouteSendError, match="binding_unavailable"):
         await env.social.execute(
-            "send_message",
+            "send",
             {
                 "target": {"kind": "person", "target_id": other.person_id, "binding_id": own.id},
                 "text": "wrong owner",
@@ -256,7 +256,7 @@ async def test_cross_entry_file_caption_retains_selected_binding(app_env, databa
     env.gateway.registry.connect(bot, provider_id="snowluma", presence_id=presence.id)
     snapshot = snapshot_bytes(env.store, "result.txt", b"original file")
     result = await env.social.execute(
-        "send_message",
+        "send",
         {
             "target": {"kind": "person", "target_id": person, "binding_id": binding.id},
             "artifact_id": snapshot["artifact_id"],
@@ -291,7 +291,7 @@ async def test_explicit_self_target_from_app_requires_binding_and_lists_candidat
     context = await app_context(env, device)
     before = len(env.calls)
     refused = await env.social.execute(
-        "send_message",
+        "send",
         {"target": {"kind": "person", "target_id": person}, "text": "choose my other entry"},
         context,
     )

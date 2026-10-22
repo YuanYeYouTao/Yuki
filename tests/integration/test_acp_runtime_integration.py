@@ -43,7 +43,7 @@ def sent_reply(request):
         tool_calls=(
             ToolCall(
                 str(uuid4()),
-                ToolFunction("send_message", json.dumps({"text": "Confirmed ACP reply"})),
+                ToolFunction("send", json.dumps({"text": "Confirmed ACP reply"})),
             ),
         ),
     )
@@ -370,7 +370,7 @@ async def test_original_work_waits_and_resumes_with_confirmed_delivery_in_same_s
     env.provider._responder = calls(
         [
             ("task_control", {"action": "accept", "goal": "Keep this original ACP Work"}),
-            ("send_message", {"text": "Which city should I use?"}),
+            ("send", {"text": "Which city should I use?"}),
             ("task_control", {"action": "need_input", "reason": "The city is still missing"}),
         ]
     )
@@ -397,7 +397,7 @@ async def test_original_work_waits_and_resumes_with_confirmed_delivery_in_same_s
     assert queued["state"] == "queued"
     env.provider._responder = calls(
         [
-            ("send_message", {"text": "Taipei result from the original ACP Work"}),
+            ("send", {"text": "Taipei result from the original ACP Work"}),
             ("task_control", {"action": "complete", "result": "Original work is complete"}),
         ]
     )
@@ -513,7 +513,7 @@ async def test_cancel_rechecks_work_committed_before_the_original_main_returns(
     admitted = []
     scripted_calls = iter(
         [
-            ("send_message", {"text": "Confirmed before Work acceptance"}),
+            ("send", {"text": "Confirmed before Work acceptance"}),
             ("task_control", {"action": "accept", "goal": "Cancel this newly admitted Work"}),
         ]
     )

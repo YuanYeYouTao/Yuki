@@ -722,7 +722,7 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
 
     definitions = chat._tools.definitions(runtime)
     names = {tool.name for tool in definitions}
-    assert "send_message" in names
+    assert "send" in names
     assert "decline_reply" not in names
 
 

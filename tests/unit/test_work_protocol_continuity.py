@@ -920,7 +920,7 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
     await first.restore(
         TurnTranscript((ChatMessage("system", "DeepSeek"), task)),
     )
-    call = ToolCall("sequence-call", ToolFunction("send_message", '{"text":"four parts"}'))
+    call = ToolCall("sequence-call", ToolFunction("send", '{"text":"four parts"}'))
     effect_key = first.call_key(call.id)
     assert await control.repository.prepare_effect(
         control.lease, control.current["id"], effect_key, "tool"

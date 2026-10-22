@@ -53,7 +53,7 @@ async def manual_library(database, tmp_path):
     index.catalog("qq", "stickers/qq/files/manual.png", tags=["happy"])
     index.rebuild()
     assert env.store.list()["items"] == []
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     intent = await first.intents.find(env.context.turn_id, env.context.call_id)
     try:
         yield SimpleNamespace(
@@ -176,6 +176,6 @@ async def test_manager_restart_publication_unknown_is_never_failed_or_replayed(
     assert result["error"] == "file_mutation_unknown_read_current_version"
     assert not physical and case.env.store.list()["items"] == []
     assert await case.second.intents.pending() == ()
-    replay = await case.env.service.execute("send_message", ARGS, case.env.context)
+    replay = await case.env.service.execute("send", ARGS, case.env.context)
     assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "unknown"
     assert sum(method.startswith("send_") for method, _ in case.env.bot.calls) == 1

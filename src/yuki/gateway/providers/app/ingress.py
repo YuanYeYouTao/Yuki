@@ -56,7 +56,7 @@ class AppSender:
     async def send(self, message: OutboundMessage) -> LocalDeliveryReceipt:
         self.sequence += 1
         result = await self.social.execute(
-            "send_message",
+            "send",
             {"text": message.text},
             SocialContext(
                 f"{self.binding.platform}:{self.binding.id}:"

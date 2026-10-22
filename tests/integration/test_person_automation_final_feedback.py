@@ -37,7 +37,7 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
             if delivery == "self_private":
                 arguments["target"] = {"kind": "person", "target_id": case.env.person}
             calls.append(
-                ToolCall("explicit-send", ToolFunction("send_message", json.dumps(arguments)))
+                ToolCall("explicit-send", ToolFunction("send", json.dumps(arguments)))
             )
             return ChatResponse("", 0, tool_calls=tuple(calls))
         if accept_work:
@@ -131,7 +131,7 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
             name, arguments = "find_contacts", {"kind": "person", "target_id": case.env.person}
         elif index == 1:
             assert responses[-1]["data"]["target_id"] == case.env.person
-            name, arguments = "send_message", {"text": "SCHEDULED_SHARED_SOCIAL"}
+            name, arguments = "send", {"text": "SCHEDULED_SHARED_SOCIAL"}
         elif index == 2:
             name, arguments = (
                 "query_chat_history",
@@ -161,7 +161,7 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
     assert sum(action == "delete_msg" for action, _ in case.env.bot.calls) == 1
     assert {name for name, _ in contexts} >= {
         "find_contacts",
-        "send_message",
+        "send",
         "query_chat_history",
         "recall_own_message",
     }
@@ -199,7 +199,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
                 ToolCall(
                     "long-send",
                     ToolFunction(
-                        "send_message",
+                        "send",
                         json.dumps(
                             {
                                 "text": text,

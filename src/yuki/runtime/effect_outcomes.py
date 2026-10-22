@@ -80,7 +80,7 @@ def execution_evidence(
                 if isinstance(item.get("artifact_id"), str):
                     artifacts.append(item["artifact_id"])
                 if (
-                    tool == "send_message"
+                    tool in {"send", "send_message"}
                     and item.get("status") == "succeeded"
                     and type(item.get("event_id")) is int
                 ):
@@ -116,61 +116,70 @@ def execution_evidence(
     delivered: list[str] = []
     caption_delivered = False
     delivered_message = False
-    if tool == "send_message" and isinstance(args, dict):
-        if isinstance(args.get("artifact_id"), str):
-            receipt = body.get("file", body)
-            parts = body.get("parts", ())
-            if isinstance(parts, list):
-                receipt = next(
-                    (
-                        part
-                        for part in parts
-                        if isinstance(part, dict)
-                        and part.get("artifact_id") == args["artifact_id"]
-                        and part.get("status") == "succeeded"
-                    ),
-                    receipt,
+    if tool in {"send", "send_message"} and isinstance(args, dict):
+        parts = body.get("parts")
+        steps = (
+            parts
+            if isinstance(parts, list)
+            else [body["file"], body["caption"]]
+            if isinstance(body.get("file"), dict) and isinstance(body.get("caption"), dict)
+            else [body]
+        )
+        delivered = list(
+            dict.fromkeys(
+                step["artifact_id"]
+                for step in steps
+                if isinstance(step, dict)
+                and isinstance(step.get("artifact_id"), str)
+                and step.get("status") == "succeeded"
+            )
+        )
+        artifacts.extend(delivered)
+        text_steps = [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and (
+                step.get("text_planned") is True
+                or (
+                    step.get("delivered_text_available") is True
+                    and bool(step.get("delivered_text"))
                 )
-            if isinstance(receipt, dict) and receipt.get("status") == "succeeded":
+            )
+        ]
+        caption_delivered = bool(text_steps) and all(
+            step.get("status") == "succeeded" and step.get("delivered_text_available") is True
+            for step in text_steps
+        )
+        if tool == "send_message":
+            # Read historical evidence in its original shape; never an executable alias.
+            original_file = body.get("file", body)
+            if (
+                isinstance(args.get("artifact_id"), str)
+                and isinstance(original_file, dict)
+                and original_file.get("status") == "succeeded"
+                and args["artifact_id"] not in delivered
+            ):
                 delivered.append(args["artifact_id"])
                 artifacts.append(args["artifact_id"])
-                caption = body.get("caption")
+            if not text_steps:
+                original_caption = body.get("caption")
                 caption_delivered = bool(
-                    isinstance(args.get("text"), str)
-                    and args["text"].strip()
-                    and (
-                        (isinstance(caption, dict) and caption.get("status") == "succeeded")
-                        or (
-                            body.get("status") == "succeeded"
-                            and (
-                                (
-                                    body.get("delivered_text_available") is True
-                                    and bool(body.get("delivered_text"))
-                                )
-                                or (
-                                    isinstance(parts, list)
-                                    and any(
-                                        isinstance(part, dict)
-                                        and part.get("delivered_text_available") is True
-                                        and bool(part.get("delivered_text"))
-                                        for part in parts
-                                    )
-                                )
-                            )
-                        )
-                        or (
-                            args.get("attachment_kind") == "image"
-                            and body.get("status") == "succeeded"
-                        )
+                    (
+                        isinstance(original_caption, dict)
+                        and original_caption.get("status") == "succeeded"
+                    )
+                    or (
+                        args.get("attachment_kind") == "image" and body.get("status") == "succeeded"
                     )
                 )
         delivered_message = bool(
             isinstance(args.get("text"), str)
             and args["text"].strip()
             and (
-                caption_delivered
-                if args.get("attachment_kind") == "file"
-                else body.get("status") == "succeeded"
+                body.get("status") == "succeeded"
+                if tool == "send_message" and not args.get("attachment_kind")
+                else caption_delivered
             )
         )
     raw_status = "admitted" if admitted else effect_body.get("status")

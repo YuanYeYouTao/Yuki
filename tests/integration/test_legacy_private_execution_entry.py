@@ -317,7 +317,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                 assert conversation.entry_presence_id == original_presence
             inbound = recovered.inbound(await harness.ledger.get_event(9))
             sent = await social.execute(
-                "send_message",
+                "send",
                 {"text": "old original effect"},
                 SocialContext(
                     "legacy-work-tail",

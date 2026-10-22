@@ -27,7 +27,7 @@ _RESIDENT_YUKI_TOOLS = (
         {
             "find_contacts",
             "query_chat_history",
-            "send_message",
+            "send",
             "get_group_members",
             "recall_own_message",
             "inspect_conversation_attachment",
@@ -57,7 +57,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         for name in WORKSPACE_TOOLS
     },
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "send_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
+    "send": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "recall_own_message": (
         "social.recall",
@@ -98,7 +98,7 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "memory_change": ("记住", "忘记", "纠正记忆", "保存记忆"),
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
     "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
-    "send_message": ("发消息", "回复", "表情", "引用这条"),
+    "send": ("发消息", "回复", "发文件", "发图片", "表情", "引用这条"),
     "read_tool_artifact": ("读取工具结果", "artifact"),
 }
 
@@ -145,7 +145,7 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "上网",
     ),
     "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
-    "send_message": ("发消息", "回复", "表情", "来张图"),
+    "send": ("发消息", "回复", "发文件", "发送文件", "发图片", "表情", "来张图"),
 }
 
 

@@ -540,6 +540,7 @@ class SocialOperationRepository:
             }
 
         result = receipt(parent)
+        prepared = json.loads(parent.prepared_json) if parent.prepared_json is not None else None
         operations = {parent.id: parent}
         parts = [receipt(parent, detailed=origin is not None)]
         complete_plan = True
@@ -572,6 +573,10 @@ class SocialOperationRepository:
                 sent_messages=sum(part["status"] == "succeeded" for part in parts),
                 parts=parts,
             )
+        elif prepared is not None and "parts" in prepared:
+            # Current direct sends freeze their complete one-part transport plan.
+            # A Work reservation describes ownership, not another caption send.
+            pass
         elif planned_file_parts is not None:
             result["file"] = parts[0]
             if planned_file_parts > 1:
@@ -586,12 +591,25 @@ class SocialOperationRepository:
                     )
                 )
                 result["caption"] = receipt(caption, detailed=origin is not None)
+                result["caption"]["text_planned"] = True
                 parts.append(result["caption"])
                 if caption is not None:
                     operations[caption.id] = caption
         elif parent.action == "send_message":
             # An unplanned legacy file/caption cannot prove whole-call success.
             complete_plan = False
+        if prepared is not None and ("parts" in prepared or "message" in prepared):
+            layouts = prepared.get("parts") or [prepared["message"]]
+            attachment = prepared.get("artifact")
+            # Historical file/caption receipts have a separate caption operation,
+            # rather than the current parent's complete transport plan.
+            planned_receipts = parts if parent.action == "send_message_sequence" else parts[:1]
+            for part, layout in zip(planned_receipts, layouts, strict=True):
+                part["text_planned"] = bool(layout["text"])
+                if layout["media"] and attachment is not None:
+                    part.update(attachment)
+            if attachment is not None:
+                result.update(attachment)
         event_ids = [part["event_id"] for part in parts if part.get("event_id") is not None]
         selected_events = func.json_each(json.dumps(event_ids)).table_valued("value")
         anchors = (
@@ -663,8 +681,6 @@ class SocialOperationRepository:
                     part.update(artifact_id=data["artifact_id"], attachment_kind=item["type"])
         if parent.action == "send_message":
             result.update(parts[0])
-            if parts[0].get("artifact_id") and "file" not in result:
-                result["file"] = parts[0]
         result["status"] = (
             "succeeded"
             if complete_plan and all(p["status"] == "succeeded" for p in parts)

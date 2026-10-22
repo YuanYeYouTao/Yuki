@@ -389,7 +389,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
                 "automation_manage",
                 "task_control",
                 "update_short_state",
-                "send_message",
+                "send",
             } <= full.keys()
             schema = full["automation_manage"].parameters
             assert "steps" not in json.dumps(schema) and "goal" in json.dumps(schema)
@@ -437,7 +437,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
                 {
                     "functionCall": {
                         "id": "original-send",
-                        "name": "send_message",
+                        "name": "send",
                         "args": {"text": "ORIGINAL_SENT_RESULT"},
                     },
                     "thoughtSignature": "original-paid-send-signature",
@@ -567,7 +567,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             ]
             assert [(call["id"], call["name"]) for call in calls] == [
                 ("original-accept", "task_control"),
-                ("original-send", "send_message"),
+                ("original-send", "send"),
                 ("original-read", "time_get_current"),
             ]
             assert [(response["id"], response["name"]) for response in responses] == [

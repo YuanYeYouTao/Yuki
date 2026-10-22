@@ -111,7 +111,7 @@ async def test_invalid_soft_checkpoint_preserves_recovery_request_and_does_not_e
 ):
     control, session, initial = await _session(database, tmp_path)
     session.transcript.append(ChatMessage("assistant", "A completed finding. " * 15000))
-    invalid_call = ToolCall("not-executed", ToolFunction("send_message", '{"text":"wrong"}'))
+    invalid_call = ToolCall("not-executed", ToolFunction("send", '{"text":"wrong"}'))
     responses = {
         "tool_call": ChatResponse(content="", latency_seconds=0, tool_calls=(invalid_call,)),
         "incomplete": ChatResponse(

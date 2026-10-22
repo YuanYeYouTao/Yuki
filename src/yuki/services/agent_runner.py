@@ -665,7 +665,7 @@ class AgentRunner:
             if name in WORK_CONTROL_NAMES:
                 return ChildClass("control", False, False)
             side = self._is_side_effecting(tools, call, runtime)
-            if name == "send_message":
+            if name == "send":
                 return ChildClass("send", False, True)
             parallel = (not side) and bool(tools.parallel_safe(name, runtime))
             return ChildClass("write" if side else "read", parallel, side)

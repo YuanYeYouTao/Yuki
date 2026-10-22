@@ -57,7 +57,7 @@ async def telegram_env(database, tmp_path):
         return ChatResponse(
             "",
             0,
-            tool_calls=(ToolCall("send", ToolFunction("send_message", '{"text":"TG reply"}')),),
+            tool_calls=(ToolCall("send", ToolFunction("send", '{"text":"TG reply"}')),),
         )
 
     model = FakeLLMProvider(respond)

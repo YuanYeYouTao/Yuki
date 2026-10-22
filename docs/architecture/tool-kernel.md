@@ -39,7 +39,7 @@ Runner 请求只使用固定合同；后端刷新执行目录，不再生成按�
 本地 `$ref` 按 schema 自身资源作用域解析，标准本地 Registry 不提供远程检索。
 `examples`、`const` 等普通 JSON 资料不被当作 schema 或提升成根 `$defs`。
 
-`send_message` schema 4 的正文在原位置写 `@名字`，也可在 `@` 后留横向空白。
+`send` schema 5 的正文在原位置写 `@名字`，也可在 `@` 后留横向空白。
 名称取最长实际命中，同一 Account 的历史观察只算一个收件账号。真同名默认选择目标
 Conversation 中最近真实发言的账号，按原消息时间及内部事件 ID 排序；均无记录时按
 Account ID 稳定选择。指定账号可使用目录提供的 `@{account:UUID}`，不另传提及数组。
@@ -85,7 +85,7 @@ flowchart LR
 
 同一模型响应中符合 `parallel_safe` 的读取可并行；修改、发送和不确定效果按现有
 执行围栏处理，工具结果按原 call 顺序追加。每段模型/工具限额与根任务累计预算分别
-执行，分段或重启不重新发放根预算。模型最终正文不自动投递，发送走 `send_message`。
+执行，分段或重启不重新发放根预算。模型最终正文不自动投递，发送走 `send`。
 
 结果预算器保留必要 ID、URL、状态与错误，较大的完整结果可保存为 artifact。
 `mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
@@ -247,9 +247,9 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 保留原请求、来源与已计预算，不盲目重派该调用；其他独立操作不受历史未知全局阻断。
 原请求的可信终态晚到时，按原 `request_id` 与 `effect_key` 核对所属来源后补齐执行事实，
 无需重新提交。终态子任务的晚到回执只结算已发执行，不复活任务或重新授予预算。
-`workspace_checkout` 以原请求参数计算幂等摘要，在重新选择路径之前读取原回执。
-旧版本按解析后路径计算的摘要继续用于读取历史回执；文件写入后确认中断仍返回原未知结果，
-不因文件已存在而更换路径重做。
+附件保存与表情收藏共用私有 `workspace_copy`，直接从只读媒体缓存复制到最终文件。
+执行前查询原请求回执；原复制成功后不再检查源或覆盖用户后续修改，确认中断保留原未知。
+普通文件覆盖不要求目标 CAS。旧 checkout 与导入迁移入口退役，原持久回执不重写。
 
 超大完整结果复用工具 artifact 文件存储，单对象最多 64 MiB、总登记容量默认 512 MiB。
 活动 Work 及仍活动 root 的 child 结果不受显示缓存 TTL 清理；终态至少保留七天，
@@ -291,7 +291,7 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 generation、FrozenFragments 或 Main session；平台离线、旧路由与上下文重置不代替授权拒绝读取。
 分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
 
-send_message 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
+send 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
 省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
 在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
 SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。

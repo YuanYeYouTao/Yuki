@@ -94,8 +94,6 @@ class PersistentManager:
             "es (name TEXT PRIMARY KEY, spec TEXT NOT NULL,"
             "enabled INTEGER NOT NULL DEFAULT 0, run_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,"
             "next_start REAL NOT NULL DEFAULT 0);"
-            "CREATE TABLE IF NOT EXISTS workspace_migrations (artifact_id TEXT PRIMARY KEY,"
-            "path TEXT NOT NULL, sha256 TEXT NOT NULL);"
             "CREATE TABLE IF NOT EXISTS environment_mutations (request_id TEXT PRIMARY KEY,"
             "digest TEXT NOT NULL, result TEXT NOT NULL);"
         )
@@ -655,11 +653,7 @@ class PersistentManager:
 
     def cancel_process(self, identity: str) -> None:
         directory = FileWorkspace(self.runtime_root)
-        try:
-            directory.write(f"{identity}/state/cancel", b"cancel", expected_version=None)
-        except WorkspaceError as exc:
-            if str(exc) != "version_conflict":
-                raise
+        directory.write(f"{identity}/state/cancel", b"cancel")
 
     async def control(self, identity: str, action: str, text: str = "") -> dict[str, Any]:
         identity = identifier(identity)
@@ -758,24 +752,10 @@ class PersistentManager:
                     "path": path,
                     "version": snapshot["sha256"],
                 }
-        if method == "workspace_checkout":
-            metadata, content = self.store.read_bytes(args["artifact_id"])
-            if args.get("destination"):
-                try:
-                    with self.files.open_file(path) as fd:
-                        actual, _ = self.files.fingerprint(fd)
-                    if actual == metadata["sha256"]:
-                        return {
-                            "path": "/workspace/" + "/".join(self.files.parts(path)),
-                            "version": actual,
-                            "size": metadata["size"],
-                            "artifact_id": metadata["artifact_id"],
-                        }
-                except FileNotFoundError:
-                    pass
-            return self.files.write(path, content, expected_version=version) | {
-                "artifact_id": metadata["artifact_id"]
-            }
+        if method == "workspace_copy":
+            files, relative, _prefix = self._media_source(path)
+            with files.open_file(relative) as fd:
+                return self.files.copy(args["destination"], fd, expected_version=version)
         raise ValueError("unknown_workspace_method")
 
     def _start_file(self, operation: Any) -> asyncio.Task[dict[str, Any]]:
@@ -856,9 +836,28 @@ class PersistentManager:
     async def file_request(
         self, method: str, args: dict[str, Any], request_id: str
     ) -> dict[str, Any]:
-        if method not in {"workspace_publish", "workspace_checkout"} or not isinstance(
-            request_id, str
-        ):
+        if method == "workspace_copy_result":
+            existing = self._file_requests.get(request_id)
+            if existing is not None and not existing[1].done():
+                await self._wait_file(existing[1])
+            async with self.file_lock:
+                row = self.db.execute(
+                    "SELECT result FROM environment_mutations WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    return {"found": False}
+                stored = json.loads(row["result"])
+                if (stored.get("source_key"), stored.get("destination")) != (
+                    args["source_key"],
+                    args["destination"],
+                ):
+                    return {"error": "idempotency_conflict"}
+                return {
+                    "found": True,
+                    "result": {**stored["result"], "external_untrusted": True},
+                    "external_untrusted": True,
+                }
+        if method not in {"workspace_publish", "workspace_copy"} or not isinstance(request_id, str):
             return await self._owned_file(self._file_request(method, args, request_id))
         digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
         existing = self._file_requests.get(request_id)
@@ -878,7 +877,7 @@ class PersistentManager:
             "workspace_media_read",
             "workspace_media_validate",
             "workspace_publish",
-            "workspace_checkout",
+            "workspace_copy",
         }:
             return {"error": "unknown_method"}
         read = method in {
@@ -889,70 +888,36 @@ class PersistentManager:
             args = dict(args)
             digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
             if not read:
-                if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
+                if not isinstance(request_id, str) or not request_id:
                     raise ValueError("invalid_request_id")
                 row = self.db.execute(
                     "SELECT * FROM environment_mutations WHERE request_id=?", (request_id,)
                 ).fetchone()
                 if row:
-                    if row["digest"] != digest and method == "workspace_checkout":
-                        # Old receipts hashed the resolved path. Read those original
-                        # results even when an interrupted write changed file existence.
-                        artifact_id = identifier(args.get("artifact_id"))
-                        name = args.get("name", artifact_id)
-                        legacy_paths = [name, f"imported/{artifact_id}/{name}"]
-                        mapped = self.db.execute(
-                            "SELECT path FROM workspace_migrations WHERE artifact_id=?",
-                            (artifact_id,),
-                        ).fetchone()
-                        if mapped:
-                            legacy_paths.append(mapped[0])
-                        for path in legacy_paths:
-                            legacy_digest = hashlib.sha256(
-                                json.dumps([method, args | {"path": path}], sort_keys=True).encode()
-                            ).hexdigest()
-                            if row["digest"] == legacy_digest:
-                                digest = legacy_digest
-                                break
-                    return (
-                        {**json.loads(row["result"]), "external_untrusted": True}
-                        if row["digest"] == digest
-                        else {"error": "idempotency_conflict"}
-                    )
-            if method == "workspace_checkout":
-                artifact_id = identifier(args.get("artifact_id"))
-                if args.get("destination") is not None:
-                    self.files.parts(args["destination"])
-                    args["path"] = args["destination"]
-                else:
-                    mapped = self.db.execute(
-                        "SELECT path FROM workspace_migrations WHERE artifact_id=?", (artifact_id,)
-                    ).fetchone()
-                    if mapped:
-                        args["path"] = mapped[0]
-                    else:
-                        name = args.get("name", artifact_id)
-                        self.files.parts(name)
-                        try:
-                            with self.files.open_file(name):
-                                pass
-                        except FileNotFoundError:
-                            args["path"] = name
-                        else:
-                            args["path"] = f"imported/{artifact_id}/{name}"
+                    if row["digest"] != digest:
+                        return {"error": "idempotency_conflict"}
+                    result = json.loads(row["result"])
+                    if method == "workspace_copy":
+                        result = result["result"]
+                    return {**result, "external_untrusted": True}
             if not read:
+                pending = {
+                    "error": "file_mutation_unknown_read_current_version",
+                    "retryable": False,
+                }
+                if method == "workspace_copy":
+                    pending = {
+                        "source_key": args["source_key"],
+                        "destination": args["destination"],
+                        "result": pending,
+                    }
                 with self.db:
                     self.db.execute(
                         "INSERT INTO environment_mutations VALUES (?,?,?)",
                         (
                             request_id,
                             digest,
-                            json.dumps(
-                                {
-                                    "error": "file_mutation_unknown_read_current_version",
-                                    "retryable": False,
-                                }
-                            ),
+                            json.dumps(pending),
                         ),
                     )
         try:
@@ -962,17 +927,19 @@ class PersistentManager:
             if isinstance(exc, OSError) and exc.errno in {28, 122}:
                 result = {"error": "workspace_full", **self.disk_status()}
         if not read:
+            stored = result
+            if method == "workspace_copy":
+                stored = {
+                    "source_key": args["source_key"],
+                    "destination": args["destination"],
+                    "result": result,
+                }
             async with self.file_lock:
                 with self.db:
                     self.db.execute(
                         "UPDATE environment_mutations SET result=? WHERE request_id=?",
-                        (json.dumps(result), request_id),
+                        (json.dumps(stored), request_id),
                     )
-                    if method == "workspace_checkout" and not result.get("error"):
-                        self.db.execute(
-                            "INSERT OR REPLACE INTO workspace_migrations VALUES (?,?,?)",
-                            (args["artifact_id"], args["path"], result["version"]),
-                        )
         return {**result, "external_untrusted": True}
 
     def disk_status(self) -> dict[str, Any]:
@@ -1117,7 +1084,8 @@ class PersistentManager:
                 "workspace_media_read",
                 "workspace_media_validate",
                 "workspace_publish",
-                "workspace_checkout",
+                "workspace_copy",
+                "workspace_copy_result",
             }:
                 return await self.file_request(method, args, request.get("request_id", ""))
             if method == "environment_status":
@@ -1295,58 +1263,3 @@ class PersistentManager:
             self.db.close()
         if cancelled:
             raise asyncio.CancelledError
-
-    def migrate_files(self) -> dict[str, Any]:
-        """Idempotent offline migration; never overwrites a terminal's existing content."""
-        self.files.root.mkdir(parents=True, exist_ok=True)
-        self.store.cleanup()
-        cursor = ""
-        records = []
-        while True:
-            page = self.store.list(cursor=cursor, limit=100)
-            for item in page["items"]:
-                identity = item["artifact_id"]
-                metadata, content = self.store.read_bytes(identity)
-                previous = self.db.execute(
-                    "SELECT * FROM workspace_migrations WHERE artifact_id=?", (identity,)
-                ).fetchone()
-                path = previous["path"] if previous else metadata["name"]
-                if not previous and path in {"manifest.json", "by-id", "imported"}:
-                    path = f"imported/{identity}/{path}"
-                if not previous:
-                    try:
-                        with self.files.open_file(path):
-                            pass
-                    except FileNotFoundError:
-                        pass
-                    else:
-                        path = f"imported/{identity}/{metadata['name']}"
-                    written = self.files.write(path, content)
-                    if written["version"] != metadata["sha256"]:
-                        raise WorkspaceError("migration_checksum_failed")
-                    with self.db:
-                        self.db.execute(
-                            "INSERT INTO workspace_migrations VALUES (?,?,?)",
-                            (identity, path, metadata["sha256"]),
-                        )
-                alias = f"by-id/{identity}"
-                try:
-                    with self.files.open_file(alias) as fd:
-                        alias_version, _ = self.files.fingerprint(fd)
-                except FileNotFoundError:
-                    alias_version = self.files.write(alias, content)["version"]
-                if alias_version != metadata["sha256"]:
-                    raise WorkspaceError("legacy_alias_checksum_failed")
-                records.append(
-                    {**metadata, "path": f"/workspace/{path}", "legacy_path": f"/workspace/{alias}"}
-                )
-            cursor = page["next_cursor"]
-            if not cursor:
-                break
-        try:
-            with self.files.open_file("manifest.json") as fd:
-                version, _ = self.files.fingerprint(fd)
-        except FileNotFoundError:
-            version = None
-        self.files.write("manifest.json", json.dumps(records, ensure_ascii=False).encode(), version)
-        return {"migrated": len(records), "verified": True}

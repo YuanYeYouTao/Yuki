@@ -2507,7 +2507,7 @@ async def _send_social(
                 await asyncio.to_thread(snapshot)
         try:
             if result is None:
-                result = await social.execute("send_message", args, context)
+                result = await social.execute("send", args, context)
         except SocialError as exc:
             prior = await social.receipts.find(state.identity, call_id)
             if str(exc) != "idempotency_conflict" or prior is None:

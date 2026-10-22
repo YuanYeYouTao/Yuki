@@ -108,7 +108,7 @@ async def set_work(database, task, **values):
         await session.execute(update(work).where(work.c.id == task["id"]).values(**values))
 
 
-async def social(database, run, call, *, turn=None, action="send_message", seconds=0):
+async def social(database, run, call, *, turn=None, action="send", seconds=0):
     at = datetime.now(UTC) + timedelta(seconds=seconds)
     row = SocialOperationModel(
         id=str(uuid4()),

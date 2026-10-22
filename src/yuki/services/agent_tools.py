@@ -905,8 +905,6 @@ class AgentToolService:
                                     if social_result.get("error") == "binding_required"
                                     else "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if social_result.get("error") == "presence_ambiguous"
-                                    else "文件已发送成功，附带文字未确认发送；不要重发文件"
-                                    if social_result.get("error") == "file_sent_caption_unconfirmed"
                                     else "部分分条已确认发送；不要重发已成功的分条"
                                     if sent_parts
                                     else "发送结果未知，不要重发；请根据回执说明情况"
@@ -941,7 +939,7 @@ class AgentToolService:
                                 "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
                             ),
                             "invalid_message_arguments": (
-                                "检查 text、artifact_id 和 attachment_kind；"
+                                "检查 text、path 或 artifact_id，以及 attachment_kind；"
                                 "文件必须指定 file 类型。"
                                 "已生成的工作区文件仍保留"
                             ),

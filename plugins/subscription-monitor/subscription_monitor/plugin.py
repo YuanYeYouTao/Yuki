@@ -27,7 +27,7 @@ monitor add <id> <feed-url> <group:群号|private:QQ号> [判断条件]
 monitor set <完整订阅 JSON>
 monitor pause <id> | resume <id> | remove <id>
 set 支持 judge_template=any_update/release/reset_time、judge_prompt、include_any、exclude_any。
-首次默认只建立基线；通知交给主 Agent，只有 send_message 回执才能证明已发送。"""
+首次默认只建立基线；通知交给主 Agent，只有 send 回执才能证明已发送。"""
 
 
 class CommandArguments(StrictModel):

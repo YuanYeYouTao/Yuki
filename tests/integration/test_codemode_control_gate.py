@@ -89,7 +89,7 @@ async def test_lifecycle_proposal_keeps_tools_calculation_and_cleanup(
         "await yuki_lookup({'q': 1})\n"
         f"c = await yuki_task_control({args!r})\n"
         "try:\n"
-        "    s = await yuki_send_message({'text': 'after control'})\n"
+        "    s = await yuki_send({'text': 'after control'})\n"
         "    value = 6 * 7\n"
         "finally:\n"
         "    await yuki_workspace_write({'path': 'cleanup'})\n"
@@ -99,7 +99,7 @@ async def test_lifecycle_proposal_keeps_tools_calculation_and_cleanup(
     assert body["status"] == "completed" and body["result"] == [True, True, 42]
     assert body["stdout"] == "cleanup complete\n"
     assert env.control.ending == ending
-    assert [name for name, _ in env.domain.log] == ["lookup", "send_message", "workspace_write"]
+    assert [name for name, _ in env.domain.log] == ["lookup", "send", "workspace_write"]
     _, tools, _ = await effect_rows(database, env.control.current["id"])
     assert tools == 3  # Lifecycle control does not use the business allowance.
 
@@ -118,22 +118,22 @@ async def test_send_terminal_control_and_write_are_paired_in_original_order(
     database, tmp_path, status, action, ending
 ):
     env = await environment(database, tmp_path)
-    env.domain.replies["send_message"] = {"ok": status == "succeeded", "data": {"status": status}}
+    env.domain.replies["send"] = {"ok": status == "succeeded", "data": {"status": status}}
     body, _ = await run_code(
         env,
         "import asyncio\n"
-        "await asyncio.gather(yuki_send_message({'text': 'before complete'}), "
+        "await asyncio.gather(yuki_send({'text': 'before complete'}), "
         f"yuki_task_control({{'action': {action!r}}}), "
         "yuki_workspace_write({'path': 'never'}))",
     )
     assert env.control.ending == ending
     if action == "complete":
         assert body["status"] == "completed"
-        assert [name for name, _ in env.domain.log] == ["send_message", "workspace_write"]
+        assert [name for name, _ in env.domain.log] == ["send", "workspace_write"]
         assert body["operations"][-1]["status"] == "succeeded"
     else:
         assert body["stop_reason"] == "admission_closed"
-        assert [name for name, _ in env.domain.log] == ["send_message"]
+        assert [name for name, _ in env.domain.log] == ["send"]
         assert body["operations"][-1]["status"] == "not_executed"
     await env.control.settle(pending_inputs=False)
     assert env.control.current["state"] == ending
@@ -154,12 +154,12 @@ async def test_control_waits_for_peers_to_settle_then_runs_alone(database, tmp_p
         "import asyncio\n"
         "r, c = await asyncio.gather(yuki_lookup({'q': 1}),"
         " yuki_task_control({'action': 'need_input', 'reason': 'x'}))\n"
-        "await yuki_send_message({'text': 'after need_input'})\n",
+        "await yuki_send({'text': 'after need_input'})\n",
     )
     # The read settles before the control barrier; the valid tail then continues.
     assert order == [("control", ["lookup"])]
     assert body["status"] == "completed"
-    assert [name for name, _ in env.domain.log] == ["lookup", "send_message"]
+    assert [name for name, _ in env.domain.log] == ["lookup", "send"]
 
 
 async def test_query_controls_keep_original_paging_and_continue(database, tmp_path):
@@ -179,12 +179,12 @@ async def test_memory_write_receipt_allows_later_send_in_same_program(database, 
     body, _ = await run_code(
         env,
         "m = await yuki_memory_change({'op': 'remember'})\n"
-        "await yuki_send_message({'text': 'unobserved'})\n",
+        "await yuki_send({'text': 'unobserved'})\n",
     )
     assert body["status"] == "completed"
     assert env.domain.log == [
         ("memory_change", {"op": "remember"}),
-        ("send_message", {"text": "unobserved"}),
+        ("send", {"text": "unobserved"}),
     ]
 
 
@@ -194,11 +194,11 @@ async def test_memory_and_send_in_one_step_follow_original_order(database, tmp_p
         env,
         "import asyncio\n"
         "m, s = await asyncio.gather(yuki_memory_change({'op': 'r'}),"
-        " yuki_send_message({'text': 'x'}))\n",
+        " yuki_send({'text': 'x'}))\n",
     )
     assert body["status"] == "completed"
-    assert [name for name, _ in env.domain.log] == ["memory_change", "send_message"]
-    send = next(op for op in body["operations"] if op["tool"] == "send_message")
+    assert [name for name, _ in env.domain.log] == ["memory_change", "send"]
+    send = next(op for op in body["operations"] if op["tool"] == "send")
     assert send["status"] == "succeeded"
 
 
@@ -208,12 +208,12 @@ async def test_memory_after_another_side_effect_runs_and_returns_original_receip
     env = await environment(database, tmp_path)
     body, _ = await run_code(
         env,
-        "await yuki_send_message({'text': 'first'})\n"
+        "await yuki_send({'text': 'first'})\n"
         "m = await yuki_memory_change({'op': 'r'})\n"
         "m['ok']",
     )
     assert body["status"] == "completed" and body["result"] is True
-    assert [name for name, _ in env.domain.log] == ["send_message", "memory_change"]
+    assert [name for name, _ in env.domain.log] == ["send", "memory_change"]
 
 
 async def test_new_input_settles_partial_and_stops(database, tmp_path, monkeypatch):
@@ -288,7 +288,7 @@ async def test_hard_kill_mid_script_resumes_without_redispatch(database, tmp_pat
 @pytest.mark.parametrize("uncertain", [True, False])
 async def test_code_host_closing_uses_typed_child_fact_not_display(database, tmp_path, uncertain):
     env = await environment(database, tmp_path)
-    env.domain.replies["send_message"] = {
+    env.domain.replies["send"] = {
         "ok": not uncertain,
         "uncertain": uncertain,
         "mutation_committed": not uncertain,
@@ -302,7 +302,7 @@ async def test_code_host_closing_uses_typed_child_fact_not_display(database, tmp
     env.host.execute_business = misleading_display
     body, _ = await run_code(
         env,
-        "await yuki_send_message({'text': 'first'})\nawait yuki_send_message({'text': 'second'})",
+        "await yuki_send({'text': 'first'})\nawait yuki_send({'text': 'second'})",
     )
     assert len(env.domain.log) == 2
     assert body["operations"][0]["status"] == ("unknown" if uncertain else "succeeded")
@@ -316,8 +316,8 @@ async def test_unknown_memory_receipt_is_preserved_and_does_not_veto_complete(da
         env,
         "await yuki_memory_change({'op': 'remember'})\n"
         "await yuki_task_control({'action': 'complete'})\n"
-        "await yuki_send_message({'text': 'after complete'})",
+        "await yuki_send({'text': 'after complete'})",
     )
     assert body["status"] == "completed" and body["ok"] is True
     assert body["operations"][0]["status"] == "unknown"
-    assert [name for name, _ in env.domain.log] == ["memory_change", "send_message"]
+    assert [name for name, _ in env.domain.log] == ["memory_change", "send"]

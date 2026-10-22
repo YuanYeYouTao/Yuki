@@ -59,7 +59,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 ## 公共工具
 
-`send_message` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。
+`send` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。
 
 `query_chat_history` 读取当前获准的已入账永久账本，不受 `/ai new` 上下文起点或 App/ACP 来源门槛限制。recent 默认当前 Conversation，search 未给 target 时检索所有获准入口；Person/Space/Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原 Conversation。结果保每条 conversation_id/platform/scope/thread_id，并给可读会话名的 sources 目录，不拼接自动上下文。原 operation 可读取其真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_group_members` 返回已观察人物，`coverage=observed` 不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
 
@@ -83,7 +83,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 
 | 工具 | Telegram 路径与范围 |
 | --- | --- |
-| `send_message` | 原生文字、图片和文件；真实提及、内部事件引用、topic 与 caption 由适配器转换，每次派发保原回执。 |
+| `send` | 原生文字、图片和文件；真实提及、内部事件引用、topic 与 caption 由适配器转换，每次派发保原回执。 |
 | `recall_own_message` | 内部出站事件定位原发送 Presence，再执行 `deleteMessage`，当前主动账号不能替代原账号。 |
 | `query_chat_history` | 授权内部事件账本；已观察范围，不查询 Telegram 服务器完整历史。 |
 | `find_contacts` / `get_group_members` | 内部人物、群与已观察成员目录；不冒充 TG 完整成员列表。 |
@@ -98,7 +98,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 
 入站正文、原生提及、引用、附件和话题投影到共同 `InboundMessage`，经同一 Processor 和 canonical 入账。平台确认等待入账或明确忽略，不等待模型回答。重投读取原事件，不重新启动 Main；当前只订阅 `im.message.receive_v1`，未接入官方消息编辑推送，不承诺自动更新已观察历史。人物关联沿原 AccountAssignment，应用范围的原生 ID 不直接充当跨平台 Person ID。
 
-文字、图片和文件继续由 `send_message` 交付；原生布局和引用由 Provider 转换，消息派发与部分结果保留原 Social 回执。普通图片与已有图库配图继续使用共同媒体路径。飞书原生贴纸保留类型与平台标识，普通资源接口无法取得其字节，因此不进入入站表情自动收藏。卡片交互、文档、日历、表格和群管理不在本轮聊天入口范围内。
+文字、图片和文件继续由 `send` 交付；原生布局和引用由 Provider 转换，消息派发与部分结果保留原 Social 回执。普通图片与已有图库配图继续使用共同媒体路径。飞书原生贴纸保留类型与平台标识，普通资源接口无法取得其字节，因此不进入入站表情自动收藏。卡片交互、文档、日历、表格和群管理不在本轮聊天入口范围内。
 
 私聊、群和话题沿原入口分别保存历史。话题的共同 `thread_id` 保存原 root 消息 ID（`om_...`），供原生 reply endpoint 使用；平台话题 ID（`omt_...`）、root 和 parent 原值保留在 `feishu_thread` segment，不将 `omt_...` 当作消息 ID 调用 reply。普通引用不另建话题。
 

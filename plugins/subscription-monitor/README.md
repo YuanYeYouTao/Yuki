@@ -2,7 +2,7 @@
 
 与 GitHub Monitor 一样，这是通过 Yuki 4.0 / Plugin API 7.0 运行的轮询插件。
 它读取 RSS 2、Atom、JSON Feed 1/1.1，为每条订阅保存增量状态，并把新动态和判断条件
-交给 Yuki 的统一主 Agent。主 Agent 决定是否通过 `send_message` 通知当前目标。
+交给 Yuki 的统一主 Agent。主 Agent 决定是否通过 `send` 通知当前目标。
 
 本插件不直接发送新闻正文或卡片、不调用独立判断模型、不注册动态提示词片段。
 `judge_prompt` 是订阅条件，不是替换 Yuki 人格的 system prompt。主 Agent 的工具、
@@ -110,7 +110,7 @@ Host 当前的主 Agent 唤醒输入只包含最多 1,200 字符的摘要和 1,0
 Host 已接纳的主 Agent 轮次仍由原 job/event 和现有授权继续管理，不伪装成已撤回。
 
 `status` 展示基线、待接纳数、累计接纳/规则过滤、上次成功与错误类型，以及 Host 队列统计。
-“已接纳”只证明 Host 收到了事件；是否真正发信以主 Agent 的 `send_message` 回执为准。
+“已接纳”只证明 Host 收到了事件；是否真正发信以主 Agent 的 `send` 回执为准。
 普通管理命令回执不属于订阅动态的自主通知。
 
 ## 验证
@@ -128,7 +128,7 @@ uv run yuki plugin test plugins/subscription-monitor
 
 Subscription Monitor polls public RSS, Atom and JSON Feed sources using the existing Yuki SDK.
 Optional keyword filters run locally. Matching events and per-subscription conditions wake the
-normal Main Agent, which owns all visible notifications through `send_message`. There is no
+normal Main Agent, which owns all visible notifications through `send`. There is no
 separate judge model or direct delivery path. The first fetch creates a silent baseline by default;
 pending requests survive restart and reuse Host notification idempotency. Copy the plugin directory,
 approve its manifest, then manage subscriptions with the `monitor` administrator command.

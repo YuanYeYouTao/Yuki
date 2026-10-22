@@ -232,7 +232,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
 async def _pending_composition(database, tmp_path):
     provider = FakeLLMProvider()
     provider._responder = lambda request: (
-        _tool("send_message", {"text": "确认。"}, "send")
+        _tool("send", {"text": "确认。"}, "send")
         if len(provider.requests) == 1
         else "已发送。"
     )
@@ -316,7 +316,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
 ):
     provider = FakeLLMProvider()
     provider._responder = lambda request: (
-        _tool("send_message", {"text": "确认。"}, f"send-{len(provider.requests)}")
+        _tool("send", {"text": "确认。"}, f"send-{len(provider.requests)}")
         if len(provider.requests) % 2
         else "已发送。"
     )

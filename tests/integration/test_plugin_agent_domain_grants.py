@@ -17,7 +17,10 @@ from yuki.runtime.work_repository import WorkConflict, WorkRepository
 from yuki.runtime.work_schema_v1 import work
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.execution_sources import recover_source
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.social.tools import social_tool_definitions
 from yuki.web.models import WebMode, WebSearchResponse, WebSearchSource
+from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -110,11 +113,11 @@ async def test_main_approved_send_uses_original_receipt_and_live_revocation(data
 
     def respond(request):
         if len(provider.requests) == 1:
-            return _tool("send_message", {"text": "One original approved message"}, "first")
+            return _tool("send", {"text": "One original approved message"}, "first")
         if len(provider.requests) == 2:
             receipts.append(json.loads(request.messages[-1].content))
             host._approved_permissions = frozenset({PluginPermission.AGENT_RUN})
-            return _tool("send_message", {"text": "revoked message"}, "revoked")
+            return _tool("send", {"text": "revoked message"}, "revoked")
         receipts.append(json.loads(request.messages[-1].content))
         return _tool("task_control", {"action": "complete", "result": "done"}, "finish")
 
@@ -131,6 +134,40 @@ async def test_main_approved_send_uses_original_receipt_and_live_revocation(data
         assert [name for name, _ in env.bot.calls].count("send_group_msg") == 1
         assert await WorkRepository(database).get(result.data["work_id"]) == original
         assert len(provider.requests) == 3
+    finally:
+        await host.close_host_resources()
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_path_send_uses_existing_live_media_grant(database, tmp_path, approved):
+    from yuki.capabilities.models import CapabilityTrustSource
+    from yuki.capabilities.provider import ChatToolCapabilityProvider
+
+    permission = (
+        PluginPermission.MESSAGE_MEDIA_SEND if approved else PluginPermission.MESSAGE_GROUP_SEND
+    )
+    provider = FakeLLMProvider()
+    env, _, chat, source, host = await source_host(
+        database, tmp_path, provider, (permission,)
+    )
+    backend = MainAgentBackend(chat, source, plugin_host=host)
+    descriptor = next(
+        item
+        for item in ChatToolCapabilityProvider(
+            social_tool_definitions(), source=CapabilityTrustSource.CORE
+        ).descriptors()
+        if item.model_name == "send"
+    )
+    arguments = {"path": "/workspace/report.pdf", "attachment_kind": "file"}
+    platform_calls = list(env.bot.calls)
+    try:
+        if approved:
+            await backend._require_plugin_domain(descriptor, arguments)
+            host._approved_permissions = frozenset({PluginPermission.AGENT_RUN})
+        with pytest.raises(PluginPermissionError):
+            await backend._require_plugin_domain(descriptor, arguments)
+        assert not provider.requests
+        assert env.bot.calls == platform_calls
     finally:
         await host.close_host_resources()
 
@@ -440,7 +477,7 @@ async def test_main_recall_needs_existing_send_approval_and_original_social_rece
     permissions = (PluginPermission.MESSAGE_GROUP_SEND,) if send_approved else ()
     env, _, _, source, host = await source_host(database, tmp_path, provider, permissions)
     original = await env.service.execute(
-        "send_message", {"text": "One real original message"}, env.context
+        "send", {"text": "One real original message"}, env.context
     )
     assert original["status"] == "succeeded"
     replies = []

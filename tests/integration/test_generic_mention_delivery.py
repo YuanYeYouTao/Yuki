@@ -147,7 +147,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
         inbound=admitted.message,
         trigger_event_id=appended.event.id,
     )
-    natural = await social.execute("send_message", {"text": "前😀@Guest，@Ice看看！后文"}, context)
+    natural = await social.execute("send", {"text": "前😀@Guest，@Ice看看！后文"}, context)
     assert natural["status"] == "succeeded"
     original_native_targets = [
         item.external_id for _, part in operations.sent for item in part.mentions
@@ -160,12 +160,12 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
     )
     before, plans = len(operations.sent), operations.plans
     assert (
-        await social.execute("send_message", {"text": "前😀@Guest，@Ice看看！后文"}, context)
+        await social.execute("send", {"text": "前😀@Guest，@Ice看看！后文"}, context)
         == natural
     )
     assert len(operations.sent) == before and operations.plans == plans
     exact = await social.execute(
-        "send_message", {"text": f"@{{account:{guest.id}}}"}, replace(context, call_id="exact")
+        "send", {"text": f"@{{account:{guest.id}}}"}, replace(context, call_id="exact")
     )
     assert exact["status"] == "succeeded"
     assert operations.sent[-1][1].mentions[0].account_id == guest.id

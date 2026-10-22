@@ -250,7 +250,7 @@ async def test_main_work_delegates_to_real_manager_and_delivers_original_result(
         elif phase == 5:
             assert "EXTERNAL_AGENT_ORIGINAL_RESULT" in str(request.messages)
             name, args = (
-                "send_message",
+                "send",
                 {"text": "External result was read through its original receipt."},
             )
         elif phase == 6:

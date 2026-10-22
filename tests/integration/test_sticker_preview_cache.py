@@ -45,9 +45,11 @@ async def inspect(case, identifier):
 async def test_cache_inspection_and_optional_caption_share_real_preview(attachment_tools, tmp_path):
     case = attachment_tools
     inbound = original(case, preview=True)
-    bridge = DirectoryBridge(tmp_path / "shared-workspace", case.store)
+    bridge = DirectoryBridge(
+        tmp_path / "shared-workspace", case.store, cache_root=case.media.root.parent
+    )
     case.workspace.sandbox = bridge
-    library = EmojiLibrary(case.workspace, source_valid=case.media.source_current)
+    library = EmojiLibrary(case.workspace)
     provider = attach_caption_provider(library)
     try:
         _, assets = await asyncio.gather(
@@ -134,9 +136,11 @@ async def test_failed_preview_does_not_fail_original_or_permanent_collection(
         return await resolve(file, kind, max_download_bytes=max_download_bytes)
 
     monkeypatch.setattr(case.original_client, "resolve_media_file", fail_preview)
-    bridge = DirectoryBridge(tmp_path / "shared-workspace", case.store)
+    bridge = DirectoryBridge(
+        tmp_path / "shared-workspace", case.store, cache_root=case.media.root.parent
+    )
     case.workspace.sandbox = bridge
-    library = EmojiLibrary(case.workspace, source_valid=case.media.source_current)
+    library = EmojiLibrary(case.workspace)
     provider = attach_caption_provider(library)
     try:
         _, assets = await asyncio.gather(
@@ -225,9 +229,12 @@ async def test_captioned_sticker_cache_and_collection_share_parent_preview(
     )
     assert inbound.attachments[0].segment_index == 1
     workspace = WorkspaceService(WorkspaceStore(tmp_path / "permanent-artifacts"))
-    bridge = DirectoryBridge(tmp_path / "shared-workspace", workspace.store)
+    workspace.conversation_media = reader.service
+    bridge = DirectoryBridge(
+        tmp_path / "shared-workspace", workspace.store, cache_root=reader.service.root.parent
+    )
     workspace.sandbox = bridge
-    library = EmojiLibrary(workspace, source_valid=reader.service.source_current)
+    library = EmojiLibrary(workspace)
     provider = attach_caption_provider(library)
     try:
         _, assets = await asyncio.gather(

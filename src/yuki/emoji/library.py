@@ -9,6 +9,8 @@ from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from yuki.admin.models import VisionRuntimeConfig
+from yuki.conversation.media_index import indexed_media_segments
+from yuki.conversation.media_service import ConversationMediaError
 from yuki.domain.messages import InboundMessage, MessageAttachment
 from yuki.emoji.media import extension, inspect_content
 from yuki.emoji.models import EmojiAsset
@@ -37,12 +39,11 @@ class EmojiLibrary:
         self,
         workspace: WorkspaceService,
         *,
-        source_valid: Callable[[int, int, str], Awaitable[bool]] | None = None,
         preprocessor: ImagePreprocessor | None = None,
         provider: VisionProvider | None = None,
         vision_runtime: Callable[[], Awaitable[VisionRuntimeConfig]] | None = None,
     ) -> None:
-        self.workspace, self.source_valid = workspace, source_valid
+        self.workspace = workspace
         self.preprocessor, self.provider = preprocessor, provider
         self.vision_runtime = vision_runtime
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -84,6 +85,13 @@ class EmojiLibrary:
     async def collect_message(
         self, message: InboundMessage, *, source_event_id: int
     ) -> tuple[EmojiAsset, ...]:
+        media = self.workspace.conversation_media
+        if media is None:
+            raise WorkspaceError("event_attachment_unavailable")
+        indices = {
+            position: index
+            for index, position, _kind, _data in indexed_media_segments(message.segments)
+        }
         results = []
         for attachment in message.attachments:
             if (
@@ -93,42 +101,48 @@ class EmojiLibrary:
             ):
                 continue
             try:
-                path, _ = await attachment.prepared_media.source()
+                index = indices[attachment.segment_index]
+                item, path = await media.authorized_path(
+                    event_id=source_event_id,
+                    attachment_index=index,
+                    expected_source_segments=attachment.prepared_media.source_segments,
+                )
                 content = await _media_io(path.read_bytes)
                 facts = await _media_io(inspect_content, content)
-                if self.source_valid is None or not await self.source_valid(
-                    source_event_id,
-                    attachment.segment_index,
-                    attachment.prepared_media.source_segments,
-                ):
-                    continue
+                if facts["sha256"] != item.content_sha256:
+                    raise WorkspaceError("attachment_source_changed")
                 results.append(
-                    await self.store_content(
-                        content,
+                    await self.store_cached(
+                        "/inputs/media-cache/v1/" + path.relative_to(media.root).as_posix(),
+                        facts=facts,
+                        content=content,
                         platform=message.platform,
                         is_sticker=True,
                         request_id=f"sticker:{source_event_id}:{attachment.segment_index}:{facts['sha256']}",
+                        source_key=f"attachment:{source_event_id}:{index}",
                         tags=(attachment.summary.strip(),)
                         if attachment.summary and attachment.summary.strip()
                         else (),
                         preview=attachment.preview,
                     )
                 )
-            except (OSError, ValueError, WorkspaceError) as exc:
+            except (ConversationMediaError, OSError, ValueError, WorkspaceError) as exc:
                 logger.warning("sticker_collection_failed category=%s", type(exc).__name__)
         return tuple(results)
 
-    async def store_content(
+    async def store_cached(
         self,
-        content: bytes,
+        path: str,
         *,
+        facts: dict[str, Any],
+        content: bytes,
         platform: str,
+        source_key: str,
         is_sticker: bool = False,
         request_id: str | None = None,
         tags: tuple[str, ...] = (),
         preview: MessageAttachment | None = None,
     ) -> EmojiAsset:
-        facts = await _media_io(inspect_content, content)
         digest = facts["sha256"]
         previous = await self._index("lookup", platform=platform, digest=digest)
         if previous["asset"] is not None:
@@ -140,33 +154,16 @@ class EmojiLibrary:
                     is_sticker=True,
                 )
             return EmojiAsset.model_validate(previous["asset"])
-        operation = request_id or f"sticker-import:{uuid4()}"
+        operation = request_id or f"sticker-copy:{uuid4()}"
         name = f"{digest}.{extension(facts['image_format'])}"
         destination = f"stickers/{platform}/files/{name}"
-        metadata = await self.workspace.import_content(
-            content,
-            destination,
+        metadata = await self.workspace.copy_from_cache(
+            path=path,
+            destination=destination,
             request_id=operation,
-            artifact_id=snapshot_identity(platform, digest),
-            source_key=f"sticker:{platform}:{digest}",
-            name=name,
+            expected_version=digest,
+            source_key=source_key,
         )
-        if metadata.get("file_error") == "version_conflict":
-            # Preserve a real terminal replacement and import this new original separately.
-            destination = (
-                f"stickers/{platform}/files/{digest}-{uuid5(NAMESPACE_URL, operation)}."
-                f"{extension(facts['image_format'])}"
-            )
-            metadata = await self.workspace.import_content(
-                content,
-                destination,
-                request_id=operation + ":original",
-                artifact_id=snapshot_identity(platform, digest),
-                source_key=f"sticker:{platform}:{digest}",
-                name=name,
-            )
-        if not metadata.get("file_imported"):
-            raise WorkspaceError(str(metadata.get("file_error", "sticker_import_failed")))
         result = await self._index(
             "catalog",
             platform=platform,
@@ -210,19 +207,14 @@ class EmojiLibrary:
         if metadata is None:
             if asset.relative_path is None:
                 raise WorkspaceError("sticker_file_missing")
-            metadata = await self._manager().execute(
-                "workspace_publish",
-                {
-                    "path": asset.relative_path,
-                    "expected_version": asset.sha256,
-                    "name": f"{asset.sha256}.{extension(asset.image_format)}",
-                    "artifact_id": identity,
-                    "source_key": f"sticker:{asset.platform}:{asset.sha256}",
-                },
+            metadata = await self.workspace.publish_for_send(
+                path=asset.relative_path,
+                expected_version=asset.sha256,
+                name=f"{asset.sha256}.{extension(asset.image_format)}",
+                artifact_id=identity,
+                source_key=f"sticker:{asset.platform}:{asset.sha256}",
                 request_id=f"sticker-publish:{request_id}",
             )
-            if metadata.get("error"):
-                raise WorkspaceError(str(metadata["error"]))
         return {
             **metadata,
             "mime_type": asset.mime_type,

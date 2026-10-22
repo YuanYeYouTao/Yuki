@@ -30,7 +30,7 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
         tool("task_control", {"action": "complete", "result": "原结果"}, "original-complete"),
         tool("write_fixture", {"step": 1}, "original-write"),
         tool("task_control", {"action": "get"}, "original-status"),
-        tool("send_message", {"text": "原已付报告"}, "original-send"),
+        tool("send", {"text": "原已付报告"}, "original-send"),
     )
     continuation = ProviderContinuation(
         "gemini",
@@ -114,7 +114,7 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
     )
     assert result.work_state == "completed" and result.text == "原结果"
     assert probe.provider.requests == [original_request]
-    assert probe.observed == ["write_fixture", "send_message"]
+    assert probe.observed == ["write_fixture", "send"]
     assert len(sent_from) == 1 and sent_from[0][0] == original_chain
     send_request = sent_from[0][1]
     assert "初雪" in send_request.messages[0].content

@@ -230,7 +230,7 @@ async def test_local_artifact_pins_original_snapshot_and_download_authorization(
         artifact_id=str(uuid5(NAMESPACE_URL, "yuki:published:original-version")) if named else None,
     )
     result = await env.social.execute(
-        "send_message",
+        "send",
         {"artifact_id": original["artifact_id"], "attachment_kind": "file", "text": "result"},
         context,
     )

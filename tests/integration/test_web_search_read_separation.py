@@ -94,7 +94,7 @@ async def test_code_composition_calls_real_search_reader_and_social_once(
     calls = [
         ("yuki_web_search", {"query": "research"}),
         ("yuki_read_webpage", {"url": old_url}),
-        ("yuki_send_message", {"text": "保留搜索结果并完成交付。"}),
+        ("yuki_send", {"text": "保留搜索结果并完成交付。"}),
     ]
     _enable_fake_code(case.chat, case.settings, calls, monkeypatch)
     script = "\n".join(f"await {name}({args!r})" for name, args in calls)
@@ -146,7 +146,7 @@ async def test_code_composition_calls_real_search_reader_and_social_once(
         row
         for row in rows
         if json.loads(row["receipt_json"]).get("outcome", {}).get("tool")
-        in {"web_search", "read_webpage", "send_message"}
+        in {"web_search", "read_webpage", "send"}
     ]
     assert len(children) == 3 and all(row["state"] in {"accepted", "failed"} for row in children)
     assert sum(row["kind"] == "code_composition" for row in rows) == 1
@@ -176,7 +176,7 @@ async def test_app_http_search_historical_read_and_replay_never_repeat_send(
             )
         elif index == 3:
             call = ToolCall(
-                "original-send", ToolFunction("send_message", '{"text":"App research delivered"}')
+                "original-send", ToolFunction("send", '{"text":"App research delivered"}')
             )
         else:
             return "完成。"
@@ -261,7 +261,7 @@ async def test_main_search_then_historical_read_then_social_send(
             )
         elif index == 3:
             call = ToolCall(
-                "original-send", ToolFunction("send_message", '{"text":"已保留搜索结果。"}')
+                "original-send", ToolFunction("send", '{"text":"已保留搜索结果。"}')
             )
         else:
             return "完成。"

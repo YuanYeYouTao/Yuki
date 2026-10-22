@@ -76,7 +76,7 @@ async def test_pending_code_interleave(
                 "compose-1",
             )
         if n == 3:
-            return _tool("send_message", {"text": "ordinary response"}, "ordinary-send")
+            return _tool("send", {"text": "ordinary response"}, "ordinary-send")
         if n == 6:
             return _tool(
                 "task_control",

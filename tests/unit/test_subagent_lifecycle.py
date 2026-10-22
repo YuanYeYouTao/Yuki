@@ -158,13 +158,13 @@ async def test_worker_complete_keeps_mail_delivery_grandchild_and_finish_receipt
             "report",
         ),
         tool("subagent_start", {"goal": "independent nested step"}, "spawn-grandchild"),
-        tool("send_message", {"text": "group deliverable"}, "delivery"),
+        tool("send", {"text": "group deliverable"}, "delivery"),
     )
     probe, parent, workers, identity = await worker_case(database, tmp_path, calls)
     await run(probe)
     paired = receipts(probe.control)
     assert all(paired[call.id]["ok"] for call in calls)
-    assert probe.observed == ["send_message"]
+    assert probe.observed == ["send"]
     nested = await probe.repository.get(paired["spawn-grandchild"]["child_id"])
     assert nested["parent_work_id"] == identity and nested["state"] == "queued"
     await probe.control.settle(pending_inputs=False)

@@ -48,7 +48,11 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
         database=database,
     )
     await app.character.initialize("Feishu fixture")
-    bridge = LocalDirectoryBridge(tmp_path / "manager-workspace", app.workspace_service.store)
+    bridge = LocalDirectoryBridge(
+        tmp_path / "manager-workspace",
+        app.workspace_service.store,
+        cache_root=app.conversation_media.root.parent,
+    )
 
     async def manager_read_or_file(method, arguments, *, request_id, **_kwargs):
         if method == "list_code_completions":

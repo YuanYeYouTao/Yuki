@@ -158,7 +158,7 @@ async def test_delivery_diagnostic_requires_original_confirmed_receipt_and_event
     database, tmp_path, valid
 ):
     env = await social_env(database, tmp_path)
-    sent = await env.service.execute("send_message", {"text": "confirmed"}, env.context)
+    sent = await env.service.execute("send", {"text": "confirmed"}, env.context)
     async with database.sessions() as reader:
         source = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")

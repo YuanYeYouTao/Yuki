@@ -49,7 +49,7 @@ async def invoke_social(
             raise SocialError(exc.category) from exc
         except ValidationError as exc:
             raise SocialError("invalid_message_arguments") from exc
-    if name == "send_message" and runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
+    if name == "send" and runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
         invocation = current_invocation.get()

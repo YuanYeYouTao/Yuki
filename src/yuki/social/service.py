@@ -9,7 +9,7 @@ import random
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import or_, select, text, true
 from sqlalchemy.exc import SQLAlchemyError
@@ -74,6 +74,7 @@ from yuki.workspace.store import WorkspaceStore
 
 if TYPE_CHECKING:
     from yuki.emoji.delivery import EmojiDeliveryService
+    from yuki.workspace.service import WorkspaceService
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,22 @@ def _mentioned_accounts(messages: Iterable[dict[str, Any]]) -> list[dict[str, st
     return list(accounts.values())
 
 
+def _attachment_snapshot(segments: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    return next(
+        (
+            {**item["data"], "attachment_kind": item["type"]}
+            for item in segments
+            if item["type"] in {"file", "image"} and item["data"].get("artifact_id")
+        ),
+        None,
+    )
+
+
+def _prepared_parts(prepared: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Read the original physical plan, including pre-vector direct receipts."""
+    return tuple(prepared["parts"]) if "parts" in prepared else (prepared["message"],)
+
+
 class SocialService:
     def __init__(
         self, database: Database, router: PresenceRouter, writer: ScopedEventLedgerUnitOfWork
@@ -141,6 +158,7 @@ class SocialService:
         self.receipts = SocialOperationRepository(database)
         self.runtime_config: RuntimeConfigService | None = None
         self.workspace: WorkspaceStore | None = None
+        self.workspace_service: WorkspaceService | None = None
         self.emoji_delivery: EmojiDeliveryService | None = None
 
     async def _validate_person_context(
@@ -263,11 +281,50 @@ class SocialService:
         if isinstance(canonical.get("text"), str) and canonical["text"].strip() == "NO_REPLY":
             raise SocialError("control_token_not_message")
         if not canonical.get("text") and not any(
-            canonical.get(key) for key in ("artifact_id", "emoji")
+            canonical.get(key) for key in ("artifact_id", "path", "emoji")
         ):
             raise SocialError("empty_message_after_sanitization")
         message_arguments["text"] = canonical.get("text", "")
         return canonical, SocialMessage.model_validate(message_arguments)
+
+    async def _path_artifact(
+        self,
+        message: SocialMessage,
+        args: dict[str, Any],
+        context: SocialContext,
+        target: SocialTarget,
+        prior: SocialReceipt | None,
+    ) -> UUID:
+        if prior is not None and prior.prepared is not None:
+            frozen = prior.prepared.get("artifact")
+            if frozen is not None:
+                return UUID(frozen["artifact_id"])
+        if self.workspace_service is None:
+            raise SocialError("artifact_transport_unavailable")
+        from yuki.workspace.store import WorkspaceError
+
+        identity = str(
+            uuid5(
+                NAMESPACE_URL,
+                json.dumps(
+                    ["yuki:send", context.conversation_id, context.turn_id, context.call_id],
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        try:
+            metadata = await self.workspace_service.publish_for_send(
+                path=cast(str, message.path),
+                request_id=f"send-publish:{identity}",
+                artifact_id=identity,
+                source_key="send:"
+                + payload_hash("send_message", target, args, context.conversation_id),
+                name=message.name,
+                expected_version=message.expected_version,
+            )
+        except WorkspaceError as exc:
+            raise SocialError(str(exc)) from exc
+        return UUID(metadata["artifact_id"])
 
     async def _binding_choice(
         self, args: dict[str, Any], context: SocialContext
@@ -725,9 +782,14 @@ class SocialService:
         snapshot = context.runtime_snapshot
         if snapshot is None and self.runtime_config is not None:
             snapshot = await self.runtime_config.snapshot()
-        if prior is not None and prior.prepared and "parts" in prior.prepared:
+        if (
+            prior is not None
+            and prior.prepared
+            and ("parts" in prior.prepared or "message" in prior.prepared)
+        ):
             planned = tuple(
-                prepared_transport(value, message.media) for value in prior.prepared["parts"]
+                prepared_transport(value, message.media)
+                for value in _prepared_parts(prior.prepared)
             )
         else:
             layout: tuple[TransportMessage, ...] = (message,)
@@ -740,7 +802,14 @@ class SocialService:
         def arguments(part: TransportMessage, index: int) -> dict[str, Any]:
             value = dict(args, text=part.text)
             if part.media is None:
-                for field in ("artifact_id", "attachment_kind", "emoji"):
+                for field in (
+                    "artifact_id",
+                    "path",
+                    "name",
+                    "expected_version",
+                    "attachment_kind",
+                    "emoji",
+                ):
                     value.pop(field, None)
             if part.reply_reference is None:
                 value.pop("reply_to_event_id", None)
@@ -837,6 +906,7 @@ class SocialService:
                 "message": transport_payload(message),
                 "parts": [transport_payload(part) for part in planned],
                 "route": self._route_payload(route),
+                "artifact": _attachment_snapshot(ledger),
             },
             work_effect=capture if context.parent_operation_id is None else None,
         )
@@ -878,15 +948,13 @@ class SocialService:
                 if args.get("emoji") and self.emoji_delivery is not None:
                     self.emoji_delivery.wake()
                 raise
-        result = await self._sequence_result(
-            parent, context, file=args.get("attachment_kind") == "file"
-        )
+        result = await self._sequence_result(parent, context)
         if illustration is not None:
             result["emoji"] = illustration
         return result
 
     async def _sequence_result(
-        self, parent: SocialReceipt, context: SocialContext, *, file: bool = False
+        self, parent: SocialReceipt, context: SocialContext
     ) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
@@ -915,15 +983,6 @@ class SocialService:
             result["error"] = last.get("error_category") or (
                 "delivery_uncertain" if result["status"] == "uncertain" else "delivery_failed"
             )
-        if file and result.get("parts"):
-            # Aliases describe the original effects; they never dispatch another send.
-            parts = result["parts"]
-            result["file"] = parts[0]
-            result["caption"] = (
-                parts[1] if len(parts) == 2 else {"status": result["status"], "parts": parts[1:]}
-            )
-            if parts[0]["status"] == "succeeded" and result["status"] != "succeeded":
-                result["error"] = "file_sent_caption_unconfirmed"
         return result
 
     async def execute(
@@ -932,7 +991,7 @@ class SocialService:
         from yuki.social.source_keys import social_call_key
 
         context = replace(context, call_id=social_call_key(context.call_id))
-        if name == "send_message":
+        if name == "send":
             with model_detail("social_preparation"):
                 args, message = self._canonical_send_arguments(args)
                 prior = await self.receipts.find(context.turn_id, context.call_id)
@@ -957,7 +1016,7 @@ class SocialService:
                 if choice is not None:
                     return choice
         await self._validate_self_context(context)
-        if name not in {"send_message", "query_chat_history"}:
+        if name not in {"send", "query_chat_history"}:
             await self._validate_person_context(context)
         if name == "query_chat_history":
             from yuki.social.history import read_history
@@ -1018,7 +1077,7 @@ class SocialService:
             )
         if name == "recall_own_message":
             return await self._recall(args, context)
-        if name == "send_message":
+        if name == "send":
             selected = args.get("target") or {}
             if not isinstance(selected, dict):
                 raise SocialError("invalid_message_arguments")
@@ -1077,7 +1136,11 @@ class SocialService:
             if prior is not None and prior.prepared is not None:
                 from yuki.social.content import PreparedContent
 
-                prepared = PreparedContent(prepared_transport(prior.prepared["message"]))
+                prepared = PreparedContent(
+                    prepared_transport(
+                        prior.prepared.get("message") or _prepared_parts(prior.prepared)[0]
+                    )
+                )
             elif context.prepared_content is not None:
                 from yuki.social.content import PreparedContent
 
@@ -1135,6 +1198,14 @@ class SocialService:
                     else "failed",
                     "emoji": illustration,
                 }
+            if message.path is not None:
+                message = message.model_copy(
+                    update={
+                        "artifact_id": await self._path_artifact(
+                            message, args, context, target, prior
+                        )
+                    }
+                )
             if message.artifact_id is not None:
                 if self.workspace is None:
                     raise SocialError("artifact_transport_unavailable")
@@ -1251,15 +1322,18 @@ class SocialService:
                 payload=args,
                 work_effect=capture if context.parent_operation_id is None else None,
                 prepared={
-                    "message": transport_payload(params["message"]),
+                    "parts": [transport_payload(params["message"])],
                     "route": self._route_payload(route),
+                    "artifact": _attachment_snapshot(ledger_segments or ()),
                 }
                 if action == "send"
                 else None,
             )
         if action == "send" and receipt.prepared is not None:
             params = {
-                "message": prepared_transport(receipt.prepared["message"], params["message"].media)
+                "message": prepared_transport(
+                    _prepared_parts(receipt.prepared)[0], params["message"].media
+                )
             }
         if receipt.status is not OperationStatus.PREPARED:
             await self._record_work_delivery(receipt)
@@ -1358,7 +1432,7 @@ class SocialService:
                     await reserve(
                         work_control,
                         receipt.operation_id,
-                        "artifact" if args.get("artifact_id") else "message",
+                        "artifact" if params["message"].media is not None else "message",
                         reservation,
                         session=session,
                     )
@@ -1575,9 +1649,7 @@ class SocialService:
                     .limit(1)
                 )
             if dispatched is not None or prior.status is not OperationStatus.PREPARED:
-                return await self._sequence_result(
-                    prior, context, file=args.get("attachment_kind") == "file"
-                )
+                return await self._sequence_result(prior, context)
             return None
         if prior is None or prior.status is OperationStatus.PREPARED:
             return None
@@ -1624,13 +1696,21 @@ class SocialService:
         """Read the persisted internal event anchor; never infer it from transport data."""
         result = receipt.model_dump(mode="json")
         result.pop("platform_reference", None)
+        if receipt.prepared is not None and receipt.prepared.get("artifact"):
+            result.update(receipt.prepared["artifact"])
+        if receipt.prepared is not None and (
+            "parts" in receipt.prepared or "message" in receipt.prepared
+        ):
+            result["text_planned"] = bool(_prepared_parts(receipt.prepared)[0]["text"])
         if receipt.status is not OperationStatus.SUCCEEDED or receipt.action not in {
             "send_message",
             "send_file_caption",
         }:
             return result
-        if receipt.prepared is not None:
-            accounts = _mentioned_accounts((receipt.prepared["message"],))
+        if receipt.prepared is not None and (
+            "parts" in receipt.prepared or "message" in receipt.prepared
+        ):
+            accounts = _mentioned_accounts(_prepared_parts(receipt.prepared))
             if accounts:
                 result["mentioned_accounts"] = accounts
         result["delivered_text_available"] = False

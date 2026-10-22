@@ -143,7 +143,7 @@ async def test_code_child_uses_main_script_api_and_fixed_direct_tools(database, 
     contract = chat.runtime.runner.main_contract
     assert executor.script_api is contract.script_api
     assert executor.definitions == await contract.definitions()
-    assert {"send_message", "subagent_start", "subagent_control", "update_short_state"} <= set(
+    assert {"send", "subagent_start", "subagent_control", "update_short_state"} <= set(
         executor.script_api.schemas
     )
 
@@ -197,7 +197,7 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
         if count == 1:
             return _tool("subagent_start", {"goal": "keep original plugin authority"}, "spawn")
         if count == 3:
-            return _tool("send_message", {"text": "this source did not grant sending"}, "ungranted")
+            return _tool("send", {"text": "this source did not grant sending"}, "ungranted")
         if count == 4:
             results.append(json.loads(request.messages[-1].content))
             return _tool(

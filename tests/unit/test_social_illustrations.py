@@ -18,6 +18,7 @@ from tests.support.social_identity_cases import add_second_account, social_env
 from tests.support.sticker_delivery import DirectoryBridge, make_delivery, settle
 from tests.support.work_runner_helpers import case, run, tool
 from tests.support.workspace_snapshots import snapshot_bytes
+from tests.unit.test_sticker_library import store_content
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatResponse
@@ -61,7 +62,7 @@ async def test_text_returns_while_selection_never_finishes(database, tmp_path):
     library.release.clear()
     await delivery.start()
     try:
-        result = await asyncio.wait_for(env.service.execute("send_message", ARGS, env.context), 3)
+        result = await asyncio.wait_for(env.service.execute("send", ARGS, env.context), 3)
         await asyncio.wait_for(library.entered.wait(), 3)
         assert result["status"] == "succeeded" and result["delivered_text"] == ARGS["text"]
         assert result["emoji"]["status"] == "accepted"
@@ -114,7 +115,7 @@ async def test_qq_library_sticker_reaches_native_small_sticker_payload_only(
         target = {"target": {"kind": "person", "target_id": env.person}}
     await delivery.start()
     try:
-        text = await env.service.execute("send_message", {**ARGS, **target}, env.context)
+        text = await env.service.execute("send", {**ARGS, **target}, env.context)
         illustrated = await settle(delivery, env.context)
         assert text["status"] == illustrated["status"] == "succeeded"
         wire = sends(env)
@@ -151,7 +152,7 @@ async def test_qq_library_sticker_reaches_native_small_sticker_payload_only(
         artifact = snapshot_bytes(env.store, "ordinary.png", library.content)
         for kind in ("image", "file"):
             result = await env.service.execute(
-                "send_message",
+                "send",
                 {**target, "artifact_id": artifact["artifact_id"], "attachment_kind": kind},
                 replace(env.context, call_id=f"ordinary-{kind}"),
             )
@@ -209,8 +210,8 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
     for platform in ("qq", "telegram"):
         if not matching_library and platform == target_platform:
             continue
-        assets[platform] = await library.store_content(
-            fixture.content, platform=platform, tags=("开心",), is_sticker=True
+        assets[platform] = await store_content(
+            library, fixture.content, platform=platform, tags=("开心",), is_sticker=True
         )
     delivery = EmojiDeliveryService(env.service, library)
     env.service.emoji_delivery = delivery
@@ -220,7 +221,7 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
     arguments = {**ARGS, "target": target}
     await delivery.start()
     try:
-        result = await env.service.execute("send_message", arguments, env.context)
+        result = await env.service.execute("send", arguments, env.context)
         assert result["status"] == "succeeded"
         illustrated = await settle(delivery, env.context)
         intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
@@ -249,7 +250,7 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
 
 async def test_unavailable_and_empty_library_do_not_block_text(database, tmp_path):
     env = await social_env(database, tmp_path)
-    unavailable = await env.service.execute("send_message", ARGS, env.context)
+    unavailable = await env.service.execute("send", ARGS, env.context)
     assert unavailable["status"] == "succeeded"
     assert unavailable["emoji"]["status"] == "not_accepted"
     delivery, library = make_delivery(env)
@@ -257,7 +258,7 @@ async def test_unavailable_and_empty_library_do_not_block_text(database, tmp_pat
     context = replace(env.context, call_id="empty-library")
     await delivery.start()
     try:
-        result = await env.service.execute("send_message", ARGS, context)
+        result = await env.service.execute("send", ARGS, context)
         assert result["status"] == "succeeded"
         completed = await settle(delivery, context)
         assert completed["error"] == "emoji_no_candidate"
@@ -270,15 +271,15 @@ async def test_pure_illustration_is_accepted_without_fake_text_receipt(database,
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
     arguments = {"emoji": {"goal": "开心" * 800, "emotion": "高兴" * 200}}
-    result = await env.service.execute("send_message", arguments, env.context)
+    result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "accepted"
     assert sends(env) == []
     assert await env.service.receipts.find(env.context.turn_id, env.context.call_id) is None
     original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     assert original.intent == arguments["emoji"]
-    assert await env.service.execute("send_message", arguments, env.context) == result
+    assert await env.service.execute("send", arguments, env.context) == result
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute("send_message", {"emoji": {"goal": "另一张"}}, env.context)
+        await env.service.execute("send", {"emoji": {"goal": "另一张"}}, env.context)
     await delivery.start()
     try:
         assert (await settle(delivery, env.context))["status"] == "succeeded"
@@ -291,7 +292,7 @@ async def test_original_replay_and_concurrent_acceptance_send_once(database, tmp
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
     results = await asyncio.gather(
-        *(env.service.execute("send_message", ARGS, env.context) for _ in range(4))
+        *(env.service.execute("send", ARGS, env.context) for _ in range(4))
     )
     assert any(result["emoji"]["status"] == "accepted" for result in results)
     async with database.sessions() as session:
@@ -299,7 +300,7 @@ async def test_original_replay_and_concurrent_acceptance_send_once(database, tmp
     await delivery.start()
     try:
         assert (await settle(delivery, env.context))["status"] == "succeeded"
-        replay = await env.service.execute("send_message", ARGS, env.context)
+        replay = await env.service.execute("send", ARGS, env.context)
         assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "succeeded"
         assert len(sends(env)) == 2 and library.select_calls == 1
     finally:
@@ -327,7 +328,7 @@ async def test_legacy_finished_request_does_not_gain_new_illustration(database, 
         await env.service.receipts.finish(
             old.operation_id, status=OperationStatus.SUCCEEDED, session=session
         )
-    result = await env.service.execute("send_message", ARGS, env.context)
+    result = await env.service.execute("send", ARGS, env.context)
     assert result["status"] == "succeeded" and "emoji" not in result
     assert await delivery.project(env.context) is None and sends(env) == []
 
@@ -336,7 +337,7 @@ async def test_legacy_finished_request_does_not_gain_new_illustration(database, 
 async def test_restart_recovers_original_selection_input(database, tmp_path, selected):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     if selected:
         await delivery.intents.select(intent.id, library.asset.model_dump(mode="json"))
@@ -354,7 +355,7 @@ async def test_restart_recovers_original_selection_input(database, tmp_path, sel
 async def test_claimed_unknown_media_is_never_resent_after_restart(database, tmp_path):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     await delivery.intents.select(intent.id, library.asset.model_dump(mode="json"))
     artifact = await library.publish(library.asset, request_id=intent.id)
@@ -394,7 +395,7 @@ async def accept_work(env):
     control.current = accepted
     token = current_work_control.set(control)
     try:
-        result = await env.service.execute("send_message", ARGS, env.context)
+        result = await env.service.execute("send", ARGS, env.context)
     finally:
         current_work_control.reset(token)
     return repository, lease, accepted, result
@@ -468,7 +469,7 @@ async def test_later_main_failure_does_not_revoke_an_accepted_illustration(datab
         assert (
             await env.service.receipts.get(text["operation_id"])
         ).status is OperationStatus.SUCCEEDED
-        replay = await env.service.execute("send_message", ARGS, env.context)
+        replay = await env.service.execute("send", ARGS, env.context)
         assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "succeeded"
         assert len(sends(env)) == 2
     finally:
@@ -491,7 +492,7 @@ async def test_worker_failure_that_revokes_child_epoch_stops_its_pending_image(d
     control.current = child
     token = current_work_control.set(control)
     try:
-        text = await env.service.execute("send_message", ARGS, env.context)
+        text = await env.service.execute("send", ARGS, env.context)
     finally:
         current_work_control.reset(token)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
@@ -528,7 +529,7 @@ async def test_illustration_preserves_explicit_account_among_same_person_same_pr
         **ARGS,
         "target": {"kind": "person", "target_id": env.person, "binding_id": binding_b},
     }
-    text = await env.service.execute("send_message", arguments, env.context)
+    text = await env.service.execute("send", arguments, env.context)
     assert text["status"] == "succeeded"
     original = env.service.send_route
 
@@ -595,7 +596,7 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
         database,
         tmp_path,
         [
-            ChatResponse("", 0, tool_calls=(tool("send_message", arguments, "illustration-send"),)),
+            ChatResponse("", 0, tool_calls=(tool("send", arguments, "illustration-send"),)),
             ChatResponse("", 0, tool_calls=(tool("task_control", {"action": "complete"}),)),
         ],
     )
@@ -622,7 +623,7 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
             try:
                 recovered = json.loads(
                     await WorkJournal(fixture.repository).effect_result(
-                        invocation.identity.operation_id, original_tool="send_message"
+                        invocation.identity.operation_id, original_tool="send"
                     )
                 )
             finally:
@@ -659,7 +660,7 @@ async def test_database_discovery_failure_does_not_kill_pending_delivery(
 ):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     original = delivery.intents.pending
     attempts = 0
 
@@ -687,7 +688,7 @@ async def test_person_merge_preserves_accepted_original_target(database, tmp_pat
     await env.router.cas_takeover_person(env.person)
     delivery, _ = make_delivery(env)
     arguments = {**ARGS, "target": {"kind": "person", "target_id": env.person}}
-    await env.service.execute("send_message", arguments, env.context)
+    await env.service.execute("send", arguments, env.context)
     async with database.immediate_session() as session:
         new_root = await ensure_person(session, "10002")
         await merge_persons(session, env.person, new_root)
@@ -742,9 +743,9 @@ async def test_pure_illustration_admission_acknowledgement_loss_is_not_rejection
 
     monkeypatch.setattr(delivery, "admit", lose_acknowledgement)
     arguments = {"emoji": ARGS["emoji"]}
-    first = await env.service.execute("send_message", arguments, env.context)
+    first = await env.service.execute("send", arguments, env.context)
     assert first["status"] == "unknown" and first["emoji"]["status"] == "unknown"
-    replay = await env.service.execute("send_message", arguments, env.context)
+    replay = await env.service.execute("send", arguments, env.context)
     assert replay["emoji"]["status"] == "accepted" and len(sends(env)) == 0
     await delivery.start()
     try:
@@ -778,7 +779,7 @@ async def test_deferred_effect_keeps_real_actor_source_and_presence(database, tm
         space_id=env.space,
     )
     context = replace(env.context, actor=actor, trigger_event_id=event_id, presence_id=env.presence)
-    result = await env.service.execute("send_message", ARGS, context)
+    result = await env.service.execute("send", ARGS, context)
     assert result["status"] == "succeeded" and result["emoji"]["status"] == "accepted"
     async with database.immediate_session() as session:
         intent = await session.scalar(select(SocialEmojiIntentModel))

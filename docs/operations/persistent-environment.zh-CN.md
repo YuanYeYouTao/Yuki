@@ -4,7 +4,7 @@
 
 Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
 
-所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在 2 GiB HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用原 `workspace_inspect` / `workspace_publish` 的 `/inputs/media-cache/...` 路径选读或发布；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
+所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在 2 GiB HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用`workspace_inspect` 选读或 `send(path="/inputs/media-cache/...")` 发送；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
 
 ## 运行时与工具
 
@@ -25,7 +25,7 @@ Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人
 
 `environment_service` 保留登记、启动、停止、删除、状态、日志和真正的跨环境启动恢复，沿原 `restart` 策略执行。显式停止先禁用恢复；没有服务数量或连续失败次数封顶。修改登记保留正在运行的原执行，下次实际启动采用新内容。
 
-普通文件读写、搜索、目录、修改和删除使用终端。八项普通 `workspace_*` CRUD、公开 artifact 目录/文本分页/删除及普通覆盖 CAS 全链退出，不保留新调用别名。`workspace_inspect` 仍把指定媒体交给模型，`workspace_publish` 固化不可变 artifact 并通过统一发送工具交付。会话附件提升、私有工具 artifact 和真实媒体桥保留；终端可经共享只读挂载读取临时媒体原件，Bot 私有 artifact 索引不挂载。已发布版本不随后续文件修改变化。
+普通文件读写、搜索、目录、修改和删除使用终端。八项普通 `workspace_*` CRUD、公开 artifact 目录/文本分页/删除及普通覆盖 CAS 全链退出，不保留新调用别名。`workspace_inspect` 仍把指定媒体交给模型；`send(path=..., attachment_kind=...)` 内部固化不可变 artifact 并交付，模型侧不再提供发布工具。收藏与附件保存直接从只读缓存流式复制到最终文件，不留下永久中转快照。会话附件提升、私有工具 artifact 和真实媒体桥保留；终端可经共享只读挂载读取临时媒体原件，Bot 私有 artifact 索引不挂载。已发布版本不随后续文件修改变化。
 
 artifact manifest 使用独立 SQLite。文件准备、SHA256 和 fsync 在写事务外完成；短写事务核验真实 revision/不可变事实并提交 metadata。读取先安全打开原文件 FD，再释放读取事务并校验内容。发布异常只回收私有 pending 文件；结果未知时不删除已 rename 的 blob，留给按真实引用工作的原 GC。普通发布不设 200 MiB、512 MiB 或对象数量经验门槛；模型媒体与平台传输仍受其真实容量限制。
 
@@ -54,6 +54,30 @@ Docker 自定义 bridge 的 `127.0.0.11` loopback DNS 无法由 gVisor 访问，
 所有 Main 入口、自动化和子 Agent 使用固定能力合同。工具目录不修改已提交声明，环境管理员能力不扩大人物、发送、委托或插件领域授权。可选 Code Mode 的 Monty 仍是无文件系统/网络的编排环境，不能当作持久终端别名。
 
 ## 安装、升级与回退
+
+### 媒体直拷与统一发送升级
+
+本次 Bot 与 Manager 须配套更新：模型只调用 `send`，Manager 保留私有发布并新增直接复制，旧 checkout 和导入迁移不再接受新调用。保留原 Manager 数据库、`environment_mutations`、HOME、图库、工作目录和已发布 artifact；已有任务、付费协议和真实回执不改名、不重放。工具合同切换形成合法新链，不修改已提交的工具声明或承诺复用旧前缀缓存。
+
+源码的图库指引已更新；已有 `/workspace/stickers/AGENT.md` 是用户文件，升级时只将其中失效的模型工具名改为 `send`、Code 投影名改为 `yuki_send`，保留其余正文。不要用仓库整份文件覆盖用户指引，不批量改旧 TaskSpec 或通知的原参数。
+
+旧中转快照清退使用 [离线脚本](../../scripts/retire_media_snapshots.py)。它不停止服务，也不提供常驻 GC；在完整停写副本上审计，或在 Bot、Manager 与环境终端均停写的窗口执行。主业务库、Manager 数据库、artifact 根、普通工作目录和私有协议资料须来自同一部署：
+
+```sh
+python scripts/retire_media_snapshots.py \
+  --workspace /copy/bot/workspace \
+  --home-workspace /copy/sandbox/home/workspace \
+  --database /copy/bot/data/qq_ai_bot.db \
+  --manager-database /copy/sandbox/jobs.sqlite3 \
+  --protocol-root /copy/bot/data/work-protocol \
+  --tool-artifacts /copy/bot/data/tool_artifacts > media-snapshot-audit.json
+```
+
+这些是示例路径，Manager 数据库取实际配置，不能猜文件名；`protocol-root` 是业务数据库父目录下的 `work-protocol`，`tool-artifacts` 是 Bot 进程当前工作目录的 `data/tool_artifacts`，均不能指到普通 artifact 根。独立插件或额外持久引用用重复的 `--extra-database`、`--extra-reference-root` 传入实际材料。
+
+默认只输出候选、真实引用、同字节普通文件与保留原因。显式 `--apply` 会重新扫描，再清退确证无引用、且普通文件仍有相同字节的 `sticker:`/`attachment:` 中转快照；图库原图、JSON 和原 `environment_mutations` 保留。Social 成功或未知、实际发布、Work/Client/插件与私有已付资料中的引用都会保留快照；材料缺失不宣布无引用。不承诺回收全部候选，分别记录候选与删除数量。这是显式升级操作，本轮开发未执行生产清退。
+
+### Manager 安装
 
 配置安装器不安装宿主 Manager。Linux Docker 宿主须有 Python 3.12、已验证的 runsc、环境镜像、bridge/防火墙和挂载好的家目录/运行记录文件系统。Docker Desktop 或 Bot healthy 不证明这些依赖可用。
 

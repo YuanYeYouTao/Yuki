@@ -55,7 +55,7 @@ async def _reply_environment(database, tmp_path):
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("reply", ToolFunction("send_message", json.dumps({"text": "收到"}))),
+                    ToolCall("reply", ToolFunction("send", json.dumps({"text": "收到"}))),
                 ),
             )
         return "NO_REPLY"

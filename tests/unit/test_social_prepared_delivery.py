@@ -34,7 +34,7 @@ async def test_known_group_route_sends_without_remote_membership_preflight(
     )
     env.bot.missing.add(env.bot.self_id)
     env.bot.calls.clear()
-    result = await env.service.execute("send_message", {"text": "actual delivery"}, context)
+    result = await env.service.execute("send", {"text": "actual delivery"}, context)
     assert result["status"] == "succeeded"
     assert [action for action, _ in env.bot.calls] == ["send_group_msg"]
     # Multi-candidate discovery still evaluates reachability; send does not invent a fallback.
@@ -52,7 +52,7 @@ async def test_sequence_replay_batches_reads_and_retains_origin_privacy(database
             runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20)),
         )
         args = {"text": "\n".join(f"part {index}" for index in range(count))}
-        sent = await env.service.execute("send_message", args, context)
+        sent = await env.service.execute("send", args, context)
         assert sent["status"] == "succeeded" and sent["sent_messages"] == count
         statements = []
 
@@ -63,7 +63,7 @@ async def test_sequence_replay_batches_reads_and_retains_origin_privacy(database
 
         event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
         try:
-            replay = await env.service.execute("send_message", args, context)
+            replay = await env.service.execute("send", args, context)
         finally:
             event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
         assert replay == sent
@@ -73,7 +73,7 @@ async def test_sequence_replay_batches_reads_and_retains_origin_privacy(database
         ]
         # A different source cannot expose the original content, even though success remains fact.
         isolated = await env.service.execute(
-            "send_message", args, replace(context, origin="another_source")
+            "send", args, replace(context, origin="another_source")
         )
         assert isolated["status"] == "succeeded"
         assert all(not part["delivered_text_available"] for part in isolated["parts"])
@@ -96,7 +96,7 @@ async def test_sequence_keeps_configured_delay_between_confirmed_parts(
 
     sleeper = AsyncMock(side_effect=delay)
     monkeypatch.setattr("yuki.social.service.asyncio.sleep", sleeper)
-    result = await env.service.execute("send_message", {"text": "first\nsecond\nthird"}, context)
+    result = await env.service.execute("send", {"text": "first\nsecond\nthird"}, context)
     assert result["status"] == "succeeded"
     assert sends_at_sleep == [1, 2]
 
@@ -116,7 +116,7 @@ async def test_sequence_layout_is_frozen_from_one_configuration(database, tmp_pa
 
     monkeypatch.setattr(env.service.receipts, "prepare_sequence", prepare)
     args = {"text": "first\nsecond"}
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert [part["delivered_text"] for part in result["parts"]] == ["first", "second"]
     assert [part["text"] for part in layouts[0]["parts"]] == ["first", "second"]
     assert layouts[0]["message"]["text"] == args["text"]
@@ -143,7 +143,7 @@ async def test_unmigrated_old_sequence_payload_cannot_acquire_a_new_plan(databas
     from yuki.social.models import SocialError
 
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute("send_message", args, context)
+        await env.service.execute("send", args, context)
     current = await env.service.receipts.get(parent.operation_id)
     assert current.payload_hash == payload_hash(
         "send_message_sequence",
@@ -177,8 +177,8 @@ async def test_cancel_after_ack_and_receipt_commit_replays_without_another_send(
     monkeypatch.setattr(AsyncSession, "commit", cancel_after_commit)
     args = {"text": "confirmed before cancellation"}
     with pytest.raises(asyncio.CancelledError):
-        await env.service.execute("send_message", args, env.context)
-    result = await env.service.execute("send_message", args, env.context)
+        await env.service.execute("send", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded"
     assert result["delivered_text"] == args["text"]
     assert [action for action, _ in env.bot.calls] == ["send_group_msg"]
@@ -199,7 +199,7 @@ async def test_delivery_timings_separate_platform_wait_from_claim_and_settlement
     metrics = {}
     token = current_metrics.set(metrics)
     try:
-        result = await env.service.execute("send_message", {"text": "timed delivery"}, env.context)
+        result = await env.service.execute("send", {"text": "timed delivery"}, env.context)
     finally:
         current_metrics.reset(token)
     assert result["status"] == "succeeded"

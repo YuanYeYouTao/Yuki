@@ -60,7 +60,7 @@ async def feishu_env(database, tmp_path):
         return ChatResponse(
             "",
             0,
-            tool_calls=(ToolCall("send", ToolFunction("send_message", '{"text":"Feishu reply"}')),),
+            tool_calls=(ToolCall("send", ToolFunction("send", '{"text":"Feishu reply"}')),),
         )
 
     model = FakeLLMProvider(respond)

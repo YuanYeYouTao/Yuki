@@ -55,6 +55,7 @@ async def test_save_original_then_terminal_update_collects_without_inspection(
         "",
         tmp_path / "home",
         testing=True,
+        media_cache=case.media.root.parent,
     )
     manager.files.root.mkdir(parents=True, exist_ok=True)
     case.workspace.sandbox = SimpleNamespace(execute=manager.file_request)
@@ -94,7 +95,8 @@ async def test_save_original_then_terminal_update_collects_without_inspection(
             runtime=case.runtime,
             request_id="main-collect-original",
         )
-        assert saved["file_imported"]
+        assert saved["version"]
+        assert case.store.list()["items"] == []
         original = manager.files.root / destination
         assert original.read_bytes() == case.original_bytes
         assert not (manager.files.root / "stickers/telegram/index").exists()

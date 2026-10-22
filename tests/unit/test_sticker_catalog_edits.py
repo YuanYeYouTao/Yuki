@@ -8,6 +8,7 @@ import threading
 import pytest
 from PIL import Image
 from tests.unit.test_sticker_library import library as library
+from tests.unit.test_sticker_library import store_content
 
 from yuki.emoji.sticker_index import StickerIndex
 from yuki.services.media_resolver import _media_io
@@ -78,7 +79,7 @@ async def test_cache_deleted_between_ready_and_query_rebuilds_from_actual_files(
     value, bridge = library
     output = io.BytesIO()
     Image.new("RGB", (8, 8), "green").save(output, format="PNG")
-    asset = await value.store_content(output.getvalue(), platform="qq", tags=("selected",))
+    asset = await store_content(value, output.getvalue(), platform="qq", tags=("selected",))
     await value.rebuild()
     original_ready = StickerIndex.ready
     removed = False

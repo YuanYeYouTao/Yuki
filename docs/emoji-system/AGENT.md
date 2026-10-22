@@ -38,4 +38,4 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace \
 
 ## 日常配图
 
-用 `send_message` 的 `emoji.goal` 描述想表达的情绪或含义；有文字就先发文字，选图由后台处理。也可以只传 `emoji` 发纯表情。表情承接语气，无需逐项念出图中文字或标签。
+用 `send` 的 `emoji.goal` 描述想表达的情绪或含义；有文字就先发文字，选图由后台处理。也可以只传 `emoji` 发纯表情。表情承接语气，无需逐项念出图中文字或标签。

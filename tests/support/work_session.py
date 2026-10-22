@@ -24,7 +24,7 @@ async def invoke_tool(
     """Execute ``invoke`` as the original Host invocation of ``call`` in ``session``.
 
     ``child_ordinal`` makes it a Code composition child of ``call``'s operation,
-    the real path on which even ``send_message`` keeps the pending/unresolved fences.
+    the real path on which even ``send`` keeps the pending/unresolved fences.
     """
     control = session.control
     if invocation is None:

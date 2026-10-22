@@ -114,7 +114,7 @@ class InvocationService:
             raise ValueError("invocation_journal_identity_conflict")
         # Direct sends retain the original boundary for responding to steer.
         allow_pending = call.function.name in WORK_CONTROL_NAMES or (
-            call.function.name == "send_message" and identity.parent_operation_id is None
+            call.function.name == "send" and identity.parent_operation_id is None
         )
         journal = session.journal
         # The original Host operation, including a composition child's identity.
@@ -139,7 +139,7 @@ class InvocationService:
                 capture.outcome = outcome
             return json.dumps(outcome.model_payload(), ensure_ascii=False)
 
-        if call.function.name == "send_message" and control.current is not None:
+        if call.function.name == "send" and control.current is not None:
             original_intent = await control.repository.undispatched_intent(
                 control.current["id"], key
             )

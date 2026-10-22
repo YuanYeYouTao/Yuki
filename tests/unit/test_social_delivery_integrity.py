@@ -50,11 +50,11 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
     for index, response in enumerate(invalid):
         gateway.return_value = response
         context = replace(env.context, call_id=f"invalid-{index}")
-        result = await env.service.execute("send_message", {"text": "不确定"}, context)
+        result = await env.service.execute("send", {"text": "不确定"}, context)
         assert result["status"] == "uncertain"
         assert "delivered_text" not in result
         count = gateway.await_count
-        assert await env.service.execute("send_message", {"text": "不确定"}, context) == result
+        assert await env.service.execute("send", {"text": "不确定"}, context) == result
         assert gateway.await_count == count
     async with database.sessions() as session:
         assert not list(
@@ -66,7 +66,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
         gateway.return_value = response
         context = replace(env.context, call_id=f"valid-{index}")
         result = await env.service.execute(
-            "send_message",
+            "send",
             {"text": "#62052>真实正文"},
             context,
         )
@@ -80,14 +80,14 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
             assert event.content == "#62052>真实正文"
         count = gateway.await_count
         assert (
-            await env.service.execute("send_message", {"text": "#62052>真实正文"}, context)
+            await env.service.execute("send", {"text": "#62052>真实正文"}, context)
             == result
         )
         assert gateway.await_count == count
     artifact = snapshot_bytes(env.store, "receipt.txt", b"test")
     gateway.return_value = {}
     uploaded = await env.service.execute(
-        "send_message",
+        "send",
         {"artifact_id": artifact["artifact_id"], "attachment_kind": "file"},
         replace(env.context, call_id="upload-no-message-id"),
     )
@@ -101,7 +101,7 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
 ):
     env = await social_env(database, tmp_path)
     args = {"text": "#62052>真实正文"}
-    receipt = await env.service.execute("send_message", args, env.context)
+    receipt = await env.service.execute("send", args, env.context)
     async with database.sessions() as session:
         actual = await session.get(ChatEventModel, receipt["event_id"])
         timestamp = actual.occurred_at
@@ -130,18 +130,18 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
             other = await session.get(ChatEventModel, unrelated.event.id)
             other.platform_message_id = actual.platform_message_id
         unrelated_ids.append(unrelated.event.id)
-    assert await env.service.execute("send_message", args, env.context) == receipt
+    assert await env.service.execute("send", args, env.context) == receipt
     async with database.sessions.begin() as session:
         actual = await session.get(ChatEventModel, receipt["event_id"])
         actual.platform_message_id = "transport-metadata-changed"
         actual.occurred_at = datetime(2020, 1, 1, tzinfo=UTC)
     # Neither transport reference nor timestamps are used to locate the event.
-    assert await env.service.execute("send_message", args, env.context) == receipt
+    assert await env.service.execute("send", args, env.context) == receipt
     for event_id in unrelated_ids:
         async with database.sessions.begin() as session:
             stored = await session.get(SocialOperationModel, receipt["operation_id"])
             stored.event_id = event_id
-        projected = await env.service.execute("send_message", args, env.context)
+        projected = await env.service.execute("send", args, env.context)
         assert projected["status"] == "succeeded" and projected["delivered_text_available"] is False
         assert "delivered_text" not in projected
     # Missing or incorrectly bound historical data is not reconstructed from raw args.
@@ -150,7 +150,7 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         stored.event_id = receipt["event_id"]
         actual = await session.get(ChatEventModel, receipt["event_id"])
         actual.origin = "unrelated_source"
-    projected = await env.service.execute("send_message", args, env.context)
+    projected = await env.service.execute("send", args, env.context)
     assert projected["status"] == "succeeded" and "delivered_text" not in projected
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
 
@@ -161,13 +161,13 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
 ):
     env = await social_env(database, tmp_path)
     args = {"text": "#62052>真实正文"}
-    receipt = await env.service.execute("send_message", args, env.context)
+    receipt = await env.service.execute("send", args, env.context)
     event_id = receipt["event_id"]
     async with database.sessions.begin() as session:
         stored = await session.get(SocialOperationModel, receipt["operation_id"])
         stored.event_id = None
     # The matching historical event still exists, but must never be reverse-looked up.
-    old = await env.service.execute("send_message", args, env.context)
+    old = await env.service.execute("send", args, env.context)
     assert old["status"] == "succeeded" and old["event_id"] is None
     assert old["delivered_text_available"] is False and "delivered_text" not in old
     async with database.sessions.begin() as session:
@@ -175,7 +175,7 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
         stored.event_id = event_id
     async with database.sessions.begin() as session:
         await session.execute(delete(ChatEventModel).where(ChatEventModel.id == event_id))
-    deleted = await env.service.execute("send_message", args, env.context)
+    deleted = await env.service.execute("send", args, env.context)
     assert deleted == old
     async with database.sessions() as session:
         stored = await session.get(SocialOperationModel, receipt["operation_id"])
@@ -276,17 +276,17 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                 ToolInvocationContext(runtime, call_id=f"{target_kind}-{media}")
             )
             try:
-                result = await invoke_social(env.service, "send_message", args, runtime)
+                result = await invoke_social(env.service, "send", args, runtime)
                 assert result["status"] == "succeeded"
                 assert result["delivered_text"] == "#62052>Yuki已收到"
                 assert env.bot.calls[-1][0] == f"send_{target_kind}_msg"
                 count = len(env.bot.calls)
-                assert await invoke_social(env.service, "send_message", args, runtime) == result
+                assert await invoke_social(env.service, "send", args, runtime) == result
                 assert len(env.bot.calls) == count
                 with pytest.raises(SocialError, match="permission_denied"):
                     await invoke_social(
                         env.service,
-                        "send_message",
+                        "send",
                         {
                             **args,
                             "target": {
@@ -329,7 +329,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     try:
         for index in range(15):
             receipt = await env.service.execute(
-                "send_message",
+                "send",
                 {"text": f"step-{index}"},
                 replace(env.context, call_id=f"step-{index}"),
             )
@@ -339,12 +339,12 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
             call_id="split",
             runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 10)),
         )
-        result = await env.service.execute("send_message", {"text": "第十六条\n第十七条"}, context)
+        result = await env.service.execute("send", {"text": "第十六条\n第十七条"}, context)
         assert result["status"] == "succeeded" and result["sent_messages"] == 2
         assert control.current["sent_messages"] == 17
         assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 17
         assert (
-            await env.service.execute("send_message", {"text": "第十六条\n第十七条"}, context)
+            await env.service.execute("send", {"text": "第十六条\n第十七条"}, context)
             == result
         )
         assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 17
@@ -371,7 +371,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
         ),
     )
     quoted = await env.service.execute(
-        "send_message",
+        "send",
         {"text": "first second", "reply_to_event_id": source_event.event.id},
         quoted_context,
     )
@@ -400,7 +400,7 @@ async def test_deferred_illustration_keeps_selected_target(database, tmp_path, t
         "text": "sent",
         "emoji": {"goal": "开心"},
     }
-    result = await env.service.execute("send_message", arguments, env.context)
+    result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "succeeded" and result["emoji"]["status"] == "accepted"
     intent = (await delivery.intents.pending())[0]
     assert str(intent.target.id) == selected_id and intent.target.kind == target_kind

@@ -60,7 +60,7 @@ async def prepare_resumable_work(env, *, queue_input=True):
         assert accepted.status_code == 200, accepted.text
     env.provider._responder = scripted(
         [
-            ("send_message", {"text": "Already claimed ACP result"}),
+            ("send", {"text": "Already claimed ACP result"}),
             ("task_control", {"action": "complete", "result": "Done"}),
         ]
     )

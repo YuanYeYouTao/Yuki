@@ -32,10 +32,10 @@ async def test_explicit_group_send_does_not_require_autonomous_participation(
         )
     if not enabled:
         with pytest.raises(SocialError, match="space_not_allowed"):
-            await env.service.execute("send_message", {"text": "explicit report"}, env.context)
+            await env.service.execute("send", {"text": "explicit report"}, env.context)
         assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
     else:
-        result = await env.service.execute("send_message", {"text": "explicit report"}, env.context)
+        result = await env.service.execute("send", {"text": "explicit report"}, env.context)
         assert result["status"] == "succeeded"
         assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
 

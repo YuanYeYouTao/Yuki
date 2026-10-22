@@ -48,7 +48,7 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
     fixed_tools = (
         *work_control_tools(),
         *subagent_tools(),
-        ChatTool("send_message", "send", {"type": "object"}),
+        ChatTool("send", "send", {"type": "object"}),
         ChatTool("read_fixture", "read", {"type": "object"}),
         ChatTool("write_fixture", "write", {"type": "object"}),
     )
@@ -64,7 +64,7 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
             name = invocation.call.function.name
             arguments = invocation.call.function.arguments
             observed.append(name)
-            if name == "send_message":
+            if name == "send":
                 target = json.loads(arguments).get("target", {"kind": "space", "id": env.space})
                 return json.dumps(
                     {

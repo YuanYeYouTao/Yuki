@@ -474,7 +474,7 @@ async def test_forget_during_dispatch_keeps_only_the_original_transport_fact(
             trigger_event_id=event.id,
             person_refs={"current_speaker": env.person},
         )
-        result = await env.service.execute("send_message", {"text": "private content"}, context)
+        result = await env.service.execute("send", {"text": "private content"}, context)
         operation_id = result["operation_id"]
     receipt = await env.service.receipts.get(operation_id)
     assert receipt.status is (OperationStatus.SUCCEEDED if confirmed else OperationStatus.UNCERTAIN)

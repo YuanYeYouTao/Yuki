@@ -87,9 +87,9 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
         actor=actor,
     )
     arguments = {"text": f"@{{account:{env.account}}} hello"}
-    sent = await env.service.execute("send_message", arguments, context)
+    sent = await env.service.execute("send", arguments, context)
     assert sent["status"] == "succeeded"
-    assert await env.service.execute("send_message", arguments, context) == sent
+    assert await env.service.execute("send", arguments, context) == sent
     sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
     assert len(sends) == 1 and sends[0]["message"][0]["type"] == "at"
     operation = sent["operation_id"]
@@ -109,7 +109,7 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
     assert recalled["status"] == "succeeded"
     assert await env.router.cas_takeover_person(env.person) == "taken"
     private = await env.service.execute(
-        "send_message",
+        "send",
         {"target": {"kind": "person", "target_id": env.person}, "text": "explicit target"},
         replace(context, call_id="explicit-private"),
     )

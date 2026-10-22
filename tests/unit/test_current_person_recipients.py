@@ -116,11 +116,11 @@ async def test_private_send_receipt_and_recall_preserve_original_entry_after_mer
         person_refs={"current_speaker": env.person},
     )
     args = {"text": "original private text"}
-    original = await env.service.execute("send_message", args, context)
+    original = await env.service.execute("send", args, context)
     assert original["status"] == "succeeded"
     await merge_disabled_recipient(database, env.person, root)
     delivered = await env.service.execute(
-        "send_message", {"text": "same human"}, replace(context, call_id="current-person")
+        "send", {"text": "same human"}, replace(context, call_id="current-person")
     )
     assert delivered["status"] == "succeeded"
     assert delivered["target"]["id"] == str(UUID(root))
