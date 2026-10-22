@@ -127,3 +127,5 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 需要核验原生审批回传时可另设 `$env:YUKI_REAL_CODEX_APPROVE_ISOLATED = "1"`。这只授权测试构造的两条完整 PowerShell 命令：在该唯一临时目录写入带本轮随机标记的 `probe.txt`，再读回同一文件。测试核对原生请求的 cwd、单条 commandActions 完整命令和可用的普通 `accept`，使用服务器内部问题 ID 经公开 `respond` 回答；不选 execpolicy amendment，不改原用户策略，其他命令、目录、审批和用户问题一律保留失败。
 
 该测试运行真正的 Connector／journal／CodexDriver，经隔离 HTTPS／WSS 和临时业务库，在唯一临时目录中新建自己的原生任务，写入并读回探针文件，核对工具进度、终态与原 Work 私有回执。它只清退自己的原生会话，不触碰用户已有线程；没有上述显式授权时，原生审批仍会明确报告并停止测试。使用真实模型会产生其正常调用费用。测试成功仍须分别记录版本、文件证据、原回执与原生清退结果，不代表生产服务器或真实 QQ 投递已经上线。
+
+2026-10-23 在 Windows 上以 `codex-cli 0.163.0` 和连接器 `0.1.0` 完成一次真实模型全链路验收：原生审批经内部问题 ID 回答，隔离目录写入和读回各有一条成功命令回执，最终标记与文件内容一致，原执行终态进入原 Work 的 continuation；测试通过，耗时 34.98 秒。9 条重要事件中含 3 条工具回执，其中首次沙盒执行失败、随后精确授权后的写入与读回成功，失败事实仍保留。该次缓存字段未提供，记录为 unknown。测试只归档自己的新原生会话，未停止用户 daemon；这份记录不涵盖生产上线、真实 QQ 投递、Claude 付费执行或其他 OS 的实机服务验收。
