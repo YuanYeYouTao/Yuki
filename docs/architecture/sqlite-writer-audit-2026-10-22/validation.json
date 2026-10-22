@@ -1,0 +1,97 @@
+{
+  "baseline": "c2ce7da66ab54efe192993b9615df48266a62137",
+  "kind": "audit-material validation; not product-test or runtime verification",
+  "inventory_files": 1298,
+  "source_files": 647,
+  "coverage": {
+    "R1-A": {
+      "report": "review-a.md",
+      "paths": 239,
+      "expected": 239,
+      "missing": []
+    },
+    "R1-B": {
+      "report": "review-b.md",
+      "paths": 87,
+      "expected": 87,
+      "missing": []
+    },
+    "R1-C": {
+      "report": "review-c.md",
+      "paths": 211,
+      "expected": 211,
+      "missing": []
+    },
+    "R2-A": {
+      "report": "round-2-a.md",
+      "paths": 239,
+      "expected": 239,
+      "missing": []
+    },
+    "R2-B": {
+      "report": "round-2-b.md",
+      "paths": 87,
+      "expected": 87,
+      "missing": []
+    },
+    "R2-C": {
+      "report": "round-2-c.md",
+      "paths": 211,
+      "expected": 211,
+      "missing": []
+    },
+    "R3-A": {
+      "report": "round-3-a.md",
+      "paths": 239,
+      "expected": 239,
+      "missing": []
+    },
+    "R3-B": {
+      "report": "round-3-b.md",
+      "paths": 87,
+      "expected": 87,
+      "missing": []
+    },
+    "R3-C": {
+      "report": "round-3-c.md",
+      "paths": 211,
+      "expected": 211,
+      "missing": []
+    },
+    "D-cumulative": {
+      "report": "review-d.md",
+      "paths": 110,
+      "expected": 110,
+      "missing": []
+    }
+  },
+  "numbering": {
+    "U": {
+      "rows": 35,
+      "unique": 35
+    },
+    "W": {
+      "rows": 73,
+      "unique": 73
+    },
+    "V": {
+      "rows": 50,
+      "unique": 50
+    }
+  },
+  "work_dependencies": {
+    "tasks": 73,
+    "acyclic": true
+  },
+  "migration_revisions": 97,
+  "migration_heads": [
+    "0147"
+  ],
+  "missing_migration_parents": [],
+  "parse_errors": [],
+  "missing_local_document_links": [],
+  "trailing_whitespace": [],
+  "project_tests_executed": false,
+  "paid_model_calls": false,
+  "production_changes": false
+}
