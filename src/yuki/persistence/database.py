@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -165,11 +166,13 @@ class Database:
     async def read_session(self) -> AsyncIterator[AsyncSession]:
         """Own a reader without auto-commit; caller-owned sessions keep their mode."""
         session = self._sessions(autoflush=False)
+        connection: AsyncConnection | None = None
         driver: SQLiteConnection | None = None
         cancellation: asyncio.CancelledError | None = None
         failure: BaseException | None = None
         try:
-            connection, cancellation = await _complete(session.connection())
+            acquired, cancellation = await _complete(session.connection())
+            connection = acquired
             owned_driver = cast(
                 "Connection", connection.sync_connection
             ).connection.driver_connection
@@ -186,6 +189,11 @@ class Database:
             try:
                 if driver is not None and driver.physical_exit is not None:
                     _, cancelled = await _complete(session.invalidate())
+                    cancellation = cancellation or cancelled
+                if connection is not None:
+                    # Close the active root before Session detaches it, so the
+                    # pool recognizes its completed rollback instead of repeating it.
+                    _, cancelled = await _complete(connection.close())
                     cancellation = cancellation or cancelled
                 _, cancelled = await _complete(session.close())
                 cancellation = cancellation or cancelled
