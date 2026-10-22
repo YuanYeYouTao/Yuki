@@ -57,6 +57,8 @@ class PersistentManager:
         name: str = "yuki-environment",
         media_cache: Path | None = None,
     ) -> None:
+        if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
+            raise ValueError("invalid_environment_name")
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
         self.resolv_conf = resolv_conf.resolve() if resolv_conf is not None else None
@@ -64,20 +66,8 @@ class PersistentManager:
         self._waiters: dict[str, set[asyncio.Event]] = {}
         self.ready = False
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.root / "jobs.sqlite3")
-        self.db.row_factory = sqlite3.Row
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, "
-            "request_id TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, "
-            "payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, "
-            "created REAL NOT NULL)"
-        )
-        self.completions = CompletionOutbox(self.db)
-        self.db.commit()
         self.home = home.resolve()
         self.runtime, self.testing = runtime, testing
-        if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
-            raise ValueError("invalid_environment_name")
         self.name = name
         self.files = FileWorkspace(self.home / "workspace")
         self.media_cache = FileWorkspace(media_cache.resolve()) if media_cache is not None else None
@@ -85,19 +75,6 @@ class PersistentManager:
         self.runtime_root = self.root / "environment-jobs"
         self.runtime_root.mkdir(mode=0o755, exist_ok=True)
         self.runtime_root.chmod(0o755)
-        self.db.executescript(
-            "CREATE TABLE IF NOT EXISTS environment_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, "
-            "session_id TEXT, container_id TEXT, dispatched INTEGER NOT NULL DEFAULT 0);"
-            "CREATE TABLE IF NOT EXISTS environment_state"
-            " (key TEXT PRIMARY KEY,value TEXT NOT NULL);"
-            "CREATE TABLE IF NOT EXISTS environment_servic"
-            "es (name TEXT PRIMARY KEY, spec TEXT NOT NULL,"
-            "enabled INTEGER NOT NULL DEFAULT 0, run_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,"
-            "next_start REAL NOT NULL DEFAULT 0);"
-            "CREATE TABLE IF NOT EXISTS environment_mutations (request_id TEXT PRIMARY KEY,"
-            "digest TEXT NOT NULL, result TEXT NOT NULL);"
-        )
-        self.db.commit()
         self.execd: Execd | None = None
         self.container_id = ""
         self.connections: dict[str, Any] = {}
@@ -109,6 +86,35 @@ class PersistentManager:
         self.last_prune = 0.0
         self.last_layer_check = 0.0
         self.acp = ACPResources(self, acp_config)
+        self.db = sqlite3.connect(self.root / "jobs.sqlite3")
+        try:
+            self.db.row_factory = sqlite3.Row
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, "
+                "request_id TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, "
+                "payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, "
+                "created REAL NOT NULL)"
+            )
+            self.completions = CompletionOutbox(self.db)
+            self.db.commit()
+            self.db.executescript(
+                "CREATE TABLE IF NOT EXISTS environment_jobs "
+                "(id TEXT PRIMARY KEY, kind TEXT NOT NULL, "
+                "session_id TEXT, container_id TEXT, dispatched INTEGER NOT NULL DEFAULT 0);"
+                "CREATE TABLE IF NOT EXISTS environment_state"
+                " (key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+                "CREATE TABLE IF NOT EXISTS environment_servic"
+                "es (name TEXT PRIMARY KEY, spec TEXT NOT NULL,"
+                "enabled INTEGER NOT NULL DEFAULT 0, run_id TEXT, "
+                "attempts INTEGER NOT NULL DEFAULT 0,"
+                "next_start REAL NOT NULL DEFAULT 0);"
+                "CREATE TABLE IF NOT EXISTS environment_mutations (request_id TEXT PRIMARY KEY,"
+                "digest TEXT NOT NULL, result TEXT NOT NULL);"
+            )
+            self.db.commit()
+        except BaseException:
+            self.db.close()
+            raise
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
         proc = await asyncio.create_subprocess_exec(

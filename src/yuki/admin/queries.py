@@ -134,9 +134,14 @@ class AdminQueries:
         try:
             if len(parts) == 1:
                 parts = ["control", principal.principal_id.text, RequestId.parse(identity).text]
+            if len(parts) == 3 and parts[0] == "control":
+                actor, request = PrincipalId.parse(parts[1]), RequestId.parse(parts[2])
+            elif len(parts) == 2 and parts[0] in {"rebuild", "dream"}:
+                public_id = RequestId.parse(parts[1]).text
+            else:
+                raise ValueError("invalid operation ID")
             async with self.database.read_session() as session:
                 if len(parts) == 3 and parts[0] == "control":
-                    actor, request = PrincipalId.parse(parts[1]), RequestId.parse(parts[2])
                     row = await session.scalar(
                         select(ControlCommandReceiptModel).where(
                             ControlCommandReceiptModel.principal_id == actor.text,
@@ -150,8 +155,7 @@ class AdminQueries:
                             "result_resource_id": row.result_resource_id,
                             "result_revision": row.result_revision,
                         }
-                elif len(parts) == 2 and parts[0] in {"rebuild", "dream"}:
-                    public_id = RequestId.parse(parts[1]).text
+                else:
                     model = MemoryRebuildRunModel if parts[0] == "rebuild" else MemoryDreamRunModel
                     run = (
                         await session.execute(
@@ -175,8 +179,6 @@ class AdminQueries:
                                 error_category=run.error_category,
                             )
                         )
-                else:
-                    raise ValueError("invalid operation ID")
         except ValueError:
             raise fail(ProblemCode.VALIDATION_ERROR) from None
         raise fail(ProblemCode.NOT_FOUND)

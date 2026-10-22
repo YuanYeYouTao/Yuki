@@ -23,9 +23,7 @@ from yuki.services.concurrency import ConcurrencyManager
 
 
 @pytest.mark.parametrize("kind", ["memory", "memory_batch"])
-async def test_memory_claim_lease_starts_after_waiting_for_the_writer(
-    database, monkeypatch, kind
-):
+async def test_memory_claim_lease_starts_after_waiting_for_the_writer(database, monkeypatch, kind):
     identity = await append_user_event(database, message_id="queued-claim-clock")
     repository = MemoryJobRepository(database)
     assert await repository.enqueue(identity, "private:1001")

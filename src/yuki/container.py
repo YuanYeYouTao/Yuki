@@ -389,7 +389,6 @@ class ApplicationContainer:
             memory_embeddings=self.memory_embeddings,
             memory_audit=self.memory_audit,
             memory_maintenance=self.memory_maintenance_worker,
-            groups=self.groups,
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
             memory_self_reflection=self.memory_self_reflection_worker,
@@ -399,7 +398,6 @@ class ApplicationContainer:
         self.admin_audit = admin.audit
         self.memory_admin = admin.memories
         self.preference_admin = admin.preferences
-        self.group_admin = admin.groups
         self.config_admin = admin.config
         self.automation_module = AutomationModule(
             settings=settings,

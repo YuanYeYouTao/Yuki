@@ -615,13 +615,11 @@ class ChatService:
             return matched
         from yuki.identity.person_identity import same_person_id
 
+        if not inbound.person_id or not control.source.get("actor_person_id"):
+            return matched
         async with self._ledger._database.read_session() as session:
-            if (
-                not inbound.person_id
-                or not control.source.get("actor_person_id")
-                or not await same_person_id(
-                    session, control.source["actor_person_id"], inbound.person_id
-                )
+            if not await same_person_id(
+                session, control.source["actor_person_id"], inbound.person_id
             ):
                 return matched
         from yuki.runtime.work_repository import WorkCapacityError

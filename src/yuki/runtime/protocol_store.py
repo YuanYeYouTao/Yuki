@@ -404,18 +404,19 @@ class ProtocolStore:
             published = False
             try:
                 digests = tuple(sorted(self.prepared_refs))
-                await _finish_thread(self._verify_prepared, digests)
                 owned: set[str] = set()
-                async with self.database.read_session() as reader:
-                    for offset in range(0, len(digests), 256):
-                        owned.update(
-                            await reader.scalars(
-                                select(refs.c.sha256).where(
-                                    refs.c.work_id == work_id,
-                                    refs.c.sha256.in_(digests[offset : offset + 256]),
+                if digests:
+                    await _finish_thread(self._verify_prepared, digests)
+                    async with self.database.read_session() as reader:
+                        for offset in range(0, len(digests), 256):
+                            owned.update(
+                                await reader.scalars(
+                                    select(refs.c.sha256).where(
+                                        refs.c.work_id == work_id,
+                                        refs.c.sha256.in_(digests[offset : offset + 256]),
+                                    )
                                 )
                             )
-                        )
                 yield tuple(
                     {
                         "sha256": digest,

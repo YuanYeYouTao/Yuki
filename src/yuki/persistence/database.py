@@ -76,7 +76,11 @@ def write_failure_retryable(error: BaseException) -> bool:
 
 async def _complete[T](operation: Awaitable[T]) -> tuple[T, asyncio.CancelledError | None]:
     """Finish this one driver/session operation, remembering caller cancellation."""
-    pending = asyncio.ensure_future(operation)
+    async def run_operation() -> T:
+        return await operation
+
+    # Cached checkout and empty flush/close can finish without a loop round trip.
+    pending = asyncio.eager_task_factory(asyncio.get_running_loop(), run_operation())
     cancellation = None
     while not pending.done():
         try:

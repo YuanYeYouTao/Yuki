@@ -56,14 +56,18 @@ class MemoryReadScopeResolver:
         ),
     ) -> AuthorizedMemoryScope:
         """Resolve only the caller and scene; owners are filtered by canonical SQL."""
-        async with self._database.read_session() as session:
-            person_id = await self._person(session, requester) if requester else None
-            family = await person_family_ids(session, person_id) if person_id else ()
-            space_id = (
-                await self._space(session, current_space_id)
-                if current_space_id is not None
-                else None
-            )
+        person_id: str | None = None
+        family: tuple[str, ...] = ()
+        space_id: str | None = None
+        if requester or current_space_id is not None:
+            async with self._database.read_session() as session:
+                person_id = await self._person(session, requester) if requester else None
+                family = await person_family_ids(session, person_id) if person_id else ()
+                space_id = (
+                    await self._space(session, current_space_id)
+                    if current_space_id is not None
+                    else None
+                )
         return AuthorizedMemoryScope(
             requester_person_id=person_id,
             requester_family_ids=family,

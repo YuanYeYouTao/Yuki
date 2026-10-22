@@ -63,6 +63,9 @@ async def test_onebot_terms_precede_writer_and_original_receipt_skips_preparatio
         with host.bind(source):
             first = await host.onebot.call_mutating_action("send_group_msg", params)
         assert first.ok and prepared == ["原发送搜索正文"]
+        async with database.immediate_session() as session:
+            person = await session.get(CanonicalPersonModel, event.author_person_id)
+            person.is_superuser = False
         with host.bind(source):
             replay = await host.onebot.call_mutating_action("send_group_msg", params)
         assert replay.data["operation_id"] == first.data["operation_id"]

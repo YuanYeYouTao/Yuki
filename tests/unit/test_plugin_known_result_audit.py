@@ -1,6 +1,7 @@
 """Known plugin results outlive optional audit failures; dispatch failures do not."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,6 +20,8 @@ from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, Pl
 from yuki.plugin_host.repository import PluginAuditRepository, PluginInstallationRepository
 from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_tools import ToolRuntime
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.repository import SocialOperationRepository
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import RetryPolicy, RiskClass, StrictModel
@@ -219,3 +222,72 @@ async def test_onebot_mutation_requires_real_administrator(database, onebot_call
             "set_group_whole_ban", {"group_id": env.event.group_id, "enable": True}
         )
     env.gateway.call_api.assert_not_awaited()
+
+
+async def test_onebot_privileged_send_rechecks_role_after_writer_wait(
+    database, onebot_call, monkeypatch
+):
+    env = onebot_call
+    env.gateway.call_api.return_value = {"message_id": "must-not-send"}
+    prepared = asyncio.Event()
+    resume = asyncio.Event()
+    queued = asyncio.Event()
+    prepare = SocialOperationRepository.prepare
+    claim = SocialOperationRepository.claim
+    claims = []
+
+    async def prepare_then_wait(repository, **kwargs):
+        receipt = await prepare(repository, **kwargs)
+        prepared.set()
+        await resume.wait()
+        return receipt
+
+    async def record_claim(repository, *args, **kwargs):
+        claims.append(args[0])
+        return await claim(repository, *args, **kwargs)
+
+    monkeypatch.setattr(SocialOperationRepository, "prepare", prepare_then_wait)
+    monkeypatch.setattr(SocialOperationRepository, "claim", record_claim)
+
+    async def send():
+        with env.host.bind(env.invocation):
+            return await env.host.onebot.call_mutating_action(
+                "send_group_msg", {"group_id": env.event.group_id, "message": "original"}
+            )
+
+    task = asyncio.create_task(send())
+    try:
+        await asyncio.wait_for(prepared.wait(), timeout=5)
+        writer = database.immediate_session
+
+        @asynccontextmanager
+        async def observe_claim_wait():
+            if asyncio.current_task() is task:
+                queued.set()
+            async with writer() as session:
+                yield session
+
+        monkeypatch.setattr(database, "immediate_session", observe_claim_wait)
+        async with writer() as session:
+            person = await session.get(CanonicalPersonModel, env.event.author_person_id)
+            person.is_superuser = False
+            resume.set()
+            await asyncio.wait_for(queued.wait(), timeout=5)
+            assert not task.done()
+            env.gateway.call_api.assert_not_awaited()
+        with pytest.raises(PluginPermissionError, match="administrator"):
+            await task
+    finally:
+        resume.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert claims == []
+    env.gateway.call_api.assert_not_awaited()
+    async with database.read_session() as session:
+        receipts = (await session.scalars(select(SocialOperationModel))).all()
+        outbound = await session.scalar(
+            select(ChatEventModel.id).where(ChatEventModel.direction == "outbound")
+        )
+    assert len(receipts) == 1 and receipts[0].status == "prepared"
+    assert outbound is None

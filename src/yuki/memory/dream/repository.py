@@ -334,25 +334,27 @@ class DreamRepository:
         ).where(MemoryFactModel.id.in_(fact_ids))
 
     async def person_roots(self, facts: tuple[Any, ...]) -> dict[str, str]:
-        async with self.database.read_session() as reader:
-            return await current_person_ids(
-                reader,
-                (
-                    person
-                    for fact in facts
-                    for person in (
-                        fact.canonical_subject_person_id,
-                        fact.canonical_visibility_person_id,
-                    )
-                    if person is not None
-                ),
+        identities = tuple(
+            person
+            for fact in facts
+            for person in (
+                fact.canonical_subject_person_id,
+                fact.canonical_visibility_person_id,
             )
+            if person is not None
+        )
+        if not identities:
+            return {}
+        async with self.database.read_session() as reader:
+            return await current_person_ids(reader, identities)
 
     async def prepare_clusters(
         self, clusters: tuple[DreamClusterSpec, ...]
     ) -> tuple[PreparedDreamCluster, ...]:
         # No ORM DTO construction or readable-evidence work is needed for ownership.
         identities = tuple(sorted({identity for spec in clusters for identity in spec[4]}))
+        if not identities:
+            return prepare_clusters_from_facts(clusters, (), person_roots={})
         rows: list[Any] = []
         async with self.database.read_session() as reader:
             for offset in range(0, len(identities), 512):

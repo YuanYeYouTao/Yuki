@@ -17,12 +17,8 @@ from yuki.memory.mutation.service import MemoryMutationService
 from yuki.memory.self_reflection.worker import SelfReflectionWorker
 from yuki.memory.service import MemoryFactService
 from yuki.persistence.database import Database
-from yuki.persistence.repositories import (
-    EventLedgerRepository,
-    GroupSettingsRepository,
-)
+from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.admin.config_admin import ConfigAdminService
-from yuki.services.admin.group_admin import GroupAdminService
 from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.admin.preference_admin import PreferenceAdminService
 
@@ -32,7 +28,6 @@ class AdminBundle:
     audit: AdminAuditService
     memories: MemoryAdminService
     preferences: PreferenceAdminService
-    groups: GroupAdminService
     config: ConfigAdminService
 
 
@@ -49,7 +44,6 @@ class AdminModule:
         memory_embeddings: MemoryEmbeddingRuntime,
         memory_audit: MemoryAuditService,
         memory_maintenance: MemoryMaintenanceWorker,
-        groups: GroupSettingsRepository,
         memory_mutations: MemoryMutationService,
         ledger: EventLedgerRepository,
         memory_self_reflection: SelfReflectionWorker,
@@ -64,7 +58,6 @@ class AdminModule:
         self._memory_embeddings = memory_embeddings
         self._memory_audit = memory_audit
         self._memory_maintenance = memory_maintenance
-        self._groups = groups
         self._memory_mutations = memory_mutations
         self._ledger = ledger
         self._memory_self_reflection = memory_self_reflection
@@ -88,15 +81,10 @@ class AdminModule:
             dream=self._memory_dream,
         )
         preferences = PreferenceAdminService(memory_mutations=memories)
-        groups = GroupAdminService(
-            groups=self._groups,
-            audit=audit,
-        )
         config = ConfigAdminService(self._runtime_config)
         return AdminBundle(
             audit,
             memories,
             preferences,
-            groups,
             config,
         )

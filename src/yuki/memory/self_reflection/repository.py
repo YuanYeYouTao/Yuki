@@ -131,6 +131,8 @@ def _prepare_event_sources(
 async def _events_current(session: AsyncSession, query: Any, sources: _EventSources) -> bool:
     """Prove the exact selected set and every raw field in one fixed-shape query."""
     selected = query.with_only_columns(ChatEventModel.id).cte("reflection_selected")
+    if not sources.count:
+        return bool(await session.scalar(select(~select(selected.c.id).exists())))
     expected = func.json_each(sources.data).table_valued("value")
     # A correlated PK lookup visits each prepared event once. Joining the JSON
     # table from the event side would rescan it for every row in a large tail.
@@ -1291,8 +1293,8 @@ class SelfReflectionRepository:
         while True:
             source_rows: tuple[ChatEventModel, ...] = ()
             receipts: dict[int, MemoryToolReceiptModel] = {}
-            async with self._database.read_session() as reader:
-                if expected is None:
+            if expected is None:
+                async with self._database.read_session() as reader:
                     event_query = select(ChatEventModel).where(
                         ChatEventModel.id.in_(tuple(event.id for event in event_map.values())),
                         keeper_event_clause(),

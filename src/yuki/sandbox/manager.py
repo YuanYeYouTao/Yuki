@@ -56,34 +56,41 @@ async def main() -> None:
         acp_config=args.acp_config,
         media_cache=args.media_cache,
     )
-    await manager.recover()
-    args.socket.parent.mkdir(parents=True, exist_ok=True)
-    if args.socket.exists():
-        if not stat.S_ISSOCK(args.socket.lstat().st_mode):
-            raise ValueError("unsafe_socket")
-        args.socket.unlink()
-    serve_unix = getattr(asyncio, "start_unix_server", None)
-    if serve_unix is None:
-        raise RuntimeError("unix_socket_required")
-    server = await serve_unix(manager.serve, str(args.socket), limit=262144)
-    args.socket.chmod(0o660)
-    worker = asyncio.create_task(manager.worker())
-    task = asyncio.current_task()
-    assert task is not None
-    worker.add_done_callback(lambda completed: task.cancel() if not completed.cancelled() else None)
-    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     try:
-        async with server:
-            await server.serve_forever()
-    except asyncio.CancelledError:
-        pass
+        await manager.recover()
+        args.socket.parent.mkdir(parents=True, exist_ok=True)
+        if args.socket.exists():
+            if not stat.S_ISSOCK(args.socket.lstat().st_mode):
+                raise ValueError("unsafe_socket")
+            args.socket.unlink()
+        serve_unix = getattr(asyncio, "start_unix_server", None)
+        if serve_unix is None:
+            raise RuntimeError("unix_socket_required")
+        server = await serve_unix(manager.serve, str(args.socket), limit=262144)
+        worker = asyncio.create_task(manager.worker())
+        try:
+            try:
+                args.socket.chmod(0o660)
+                task = asyncio.current_task()
+                assert task is not None
+                worker.add_done_callback(
+                    lambda completed: task.cancel() if not completed.cancelled() else None
+                )
+                asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
+                await server.serve_forever()
+            finally:
+                server.close()
+                await server.wait_closed()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            failure = worker.exception() if worker.done() and not worker.cancelled() else None
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            if failure is not None:
+                raise RuntimeError("sandbox_worker_failed") from failure
     finally:
-        failure = worker.exception() if worker.done() and not worker.cancelled() else None
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
         await manager.close()
-        if failure is not None:
-            raise RuntimeError("sandbox_worker_failed") from failure
 
 
 if __name__ == "__main__":

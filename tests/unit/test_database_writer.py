@@ -376,3 +376,41 @@ async def test_shutdown_waits_for_actual_pool_close_under_repeated_cancel(physic
     with pytest.raises(RuntimeError, match="database_writer_unavailable"):
         async with database.immediate_session():
             pytest.fail("closed resource admitted a writer")
+
+
+async def test_reader_cancel_retains_original_error_when_physical_close_fails(physical_db):
+    database, control = physical_db
+    entered, release = threading.Event(), threading.Event()
+
+    def pause():
+        entered.set()
+        assert release.wait(5)
+        return 0
+
+    async with database.read_session() as reader:
+        driver = (await (await reader.connection()).get_raw_connection()).driver_connection
+        await driver.create_function("pause_reader", 0, pause)
+    control.block = control.fail = True
+
+    async def reading():
+        async with database.read_session() as reader:
+            await reader.scalar(text("SELECT pause_reader()"))
+
+    task = asyncio.create_task(reading())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(entered.wait), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        await asyncio.wait_for(asyncio.to_thread(control.entered.wait), 5)
+        assert not task.done()
+        control.release.set()
+        with pytest.raises(asyncio.CancelledError) as failed:
+            await task
+        assert any(note.startswith("invalidation_failed:") for note in failed.value.__notes__)
+        assert not database.writer_available
+    finally:
+        release.set()
+        control.release.set()
+        await asyncio.gather(task, return_exceptions=True)

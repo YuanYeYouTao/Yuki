@@ -742,7 +742,9 @@ class HostPluginContext:
             return None
         return invocation
 
-    async def _require_privileged(self, invocation: PluginInvocation) -> None:
+    async def _require_privileged(
+        self, invocation: PluginInvocation, *, session: AsyncSession | None = None
+    ) -> None:
         direct_user_event = (
             invocation.inbound is not None and invocation.source_event_id is not None
         )
@@ -752,7 +754,7 @@ class HostPluginContext:
             and invocation.actor.person_id == invocation.actor_person_id
             and invocation.actor.execution_id
         )
-        if not await self._is_real_superuser(invocation) or not (
+        if not await self._is_real_superuser(invocation, session=session) or not (
             direct_user_event or delegated_task
         ):
             raise PluginPermissionError(
@@ -2603,6 +2605,8 @@ async def _send_onebot(
         claimed = False
         if receipt.status is OperationStatus.PREPARED:
             async with ledger._database.immediate_session() as session:
+                if privileged:
+                    await host._require_privileged(invocation, session=session)
                 target, current_presence, current_binding = await validate_delivery_source(
                     session,
                     source_conversation_id=invocation.conversation_id,

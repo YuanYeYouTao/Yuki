@@ -227,9 +227,10 @@ async def sync_scope_effects(
     effects = _logical_social_effects(current)
     ordinary = await _ordinary_bindings(service, item, current)
     initiative_ids = {run for run, _ in effects.values() if not run.startswith("social-run:")}
-    async with service.database.read_session() as session:
-        valid_run_rows = (
-            list(
+    valid_run_rows = []
+    if initiative_ids:
+        async with service.database.read_session() as session:
+            valid_run_rows = list(
                 await session.scalars(
                     select(InitiativeRunModel).where(
                         InitiativeRunModel.id.in_(initiative_ids),
@@ -238,9 +239,6 @@ async def sync_scope_effects(
                     )
                 )
             )
-            if initiative_ids
-            else []
-        )
     valid_runs = {run.id for run in valid_run_rows}
     semantic_runs = {run.id for run in valid_run_rows if run.owner == "semantic"}
     run_threads = {run.id: run.thread_key for run in valid_run_rows if run.thread_key}

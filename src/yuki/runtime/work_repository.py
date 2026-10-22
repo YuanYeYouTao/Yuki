@@ -1196,15 +1196,16 @@ class WorkRepository:
         from yuki.runtime.work_media import externalize
 
         # A retry acknowledges the original durable input, never replaces it.
-        async with self.database.read_session() as reader:
-            if before_publish is None and await reader.scalar(
-                select(inputs.c.ready).where(
-                    inputs.c.id == identity,
-                    inputs.c.state.in_(("pending", "staged", "consumed")),
-                    inputs.c.ready.is_(True),
-                )
-            ):
-                return True
+        if before_publish is None:
+            async with self.database.read_session() as reader:
+                if await reader.scalar(
+                    select(inputs.c.ready).where(
+                        inputs.c.id == identity,
+                        inputs.c.state.in_(("pending", "staged", "consumed")),
+                        inputs.c.ready.is_(True),
+                    )
+                ):
+                    return True
         blobs: dict[str, bytes] = {}
         prepared = externalize({**payload, "images": [asdict(image) for image in images]}, blobs)
         serialized = encode_json(prepared)

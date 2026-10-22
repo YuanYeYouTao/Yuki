@@ -10,12 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import add_audit_event
+from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
+from yuki.admin.authority.targets import SpaceControlTarget
 from yuki.admin.models import ControlAuditRef
 from yuki.conversation.canonical_db_models import (
     ControlCommandReceiptModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
+from yuki.domain.control import DecisionContext
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.authority import person_is_superuser
 from yuki.identity.canonical_repository import (
@@ -31,7 +34,8 @@ from yuki.identity.db_models import (
 from yuki.identity.routing import PresenceRouter, RouteSendError
 from yuki.persistence.database import Database
 from yuki.services.admin.control_auth import require_capability
-from yuki.services.admin.group_admin import SpaceAdminContext
+
+type SpaceAdminContext = DecisionContext[ControlPrincipal, PrincipalSource, SpaceControlTarget]
 
 
 class GroupRecoveryService:
