@@ -2,7 +2,8 @@
 
 从 #498 的 `8bd062b7` 开始，在独立 worktree 合入 #494 原提交
 `54b7f194b519a06ae354f4a6b91f97c6981e35df`。保留原 PR 的祖先，不重写它的分支。
-本记录先覆盖 #494；#497 在这一笔完成后顺序接入。合流、本地验证、远端 CI、合并和部署分别记录。
+随后顺序合入 #497 原提交 `4d64b7055fa0ee364a08286bba954d455c0b0577`，保留两项 PR
+和 #498 的全部祖先。合流、本地验证、远端 CI、合并和部署分别记录。
 
 ## #494 与 SQLite 改动的整合
 
@@ -32,8 +33,9 @@ Social service。不能只解决冲突标记：自动合入的新增读路径、
 `ix_conversations_identity_binding(identity_binding_id, id)`、
 `ix_conversations_space_binding(space_binding_id, id)`；每项只索引对应归属列非 NULL 的行。
 升级回归逐表比较原行、原结构与外键，并分别检查 Space、个人 Binding、群 Binding 的 scope/display
-查询计划。#497 的独立新迁移也暂用 0148，后续顺序接入时须将其排到 0149，保留这三项索引和
-外部 Agent DDL，最终只有一个 migration head；这里尚未把该步骤记为完成。
+查询计划。#497 的新迁移已排到 `0149`，接在 `0148` 后；三项来源索引、电脑凭据 purpose、
+原生资源和操作/事件回执全部保留，只有一个 migration head。原 SQLite 冻结报告中的 97 个
+revision 和 `0147` 是当时的快照，不把后续两项有效迁移删回旧 head。
 
 ## 验证记录
 
@@ -53,3 +55,52 @@ QQ→TG 查阅→原 QQ 发送、CodeMode 假 worker、统一 `send` 和旧已�
 
 上述都是本地定向验证，未运行模型或真实平台发送；最终组合全量与 native worker 仍由合流 PR
 的 CI 验证。旧 PR 的绿色 CI 不代表组合后的兼容性。
+
+## #497 与 SQLite、历史查询的整合
+
+- Main manifest 升到 `31`，同时保留 #494 的来源目录/schema 和 #497 的固定 `external_agent`
+  声明。原已付请求、执行 ID、工具配对和冻结协议保持原件；新能力不替旧请求重做声明。
+- 新领域只读改用 `read_session()`，实际写入沿 `immediate_session()`。没有恢复裸 factory 或
+  通用快照升级重试。传输、原生 RPC 与大正文编码在 writer 外；writer 核当前人物、原 lease、
+  资源身份、pending 类型及完整 wait 来源，重要事件、原任务回执、Work 输入与 signal 同笔提交。
+- 当前 JSON 的固定字段更新使用 SQLite `json_set`，保留 null、数组和布尔值；不使用会删除
+  null 键的 Merge Patch。permission 继续采用原 `INSERT RETURNING` 的内部整数事件 ID。
+  SQLite 仍需处理这些 JSON，不能将删掉 Python 历史解码解释成没有 CPU 成本。
+- detach 结束所属或监督关系，`native_status/native_pending` 仍描述原生执行。新 Work 输入、
+  effect、原 journal 恢复和 wait 沿原 ID 保留这两层事实，未知查询不重新派发原任务。
+- 隐私与归档保留 #498 的原来源和 closure/phantom 证明。旧 Host ACP 的清理仍需要原 close
+  接纳回执；缺连接、未知和拒绝沿原未确认错误退出，原 `request_id + ':peer'` 定位保留。
+  这项检查没有扩成必须停止用户电脑 daemon 或等待原生取消完成的新条件。
+- 连接器初始化纳入已有关闭边界，中途取消会关闭已启动和正在初始化的自有进程。服务器先
+  断开所有原 RPC，再关闭传输、join 原清理生产者，原数据库异常继续可见；生命周期在主运行时
+  和维护停止后、数据库关闭前收口，不关闭用户 Codex daemon。
+- 旧服务器 ACP 的新建入口、配置和 SDK 已删除，原 receipt 查询/精确退出路径保留。Manager
+  连接初始化失败关闭回归继续覆盖实际 SQLite owner，退役 ACP 配置参数的测试一并删除。
+- 运维文档补充已有 SSH 的 loopback 隧道：本机 HTTP/WS 由 SSH 加密远程一段，公网直连仍用
+  HTTPS/WSS。未增加公开端口或地址特例；本地安装、配对、上线由后续真实回执分别记录。
+
+本地结果：server/Work/身份/HTTP/0149 组合 97 passed；Fake bridge、旧 ACP receipt 和隐私清理
+55 passed；大正文/JSON 类型与整批回滚 2 passed；关闭与传输 6 passed（其中 5 项属于前面的
+97 项），补充 shutdown 原提交 ACK 丢失 1 passed。Manager 启动/构造关闭 7 passed。
+独立连接器完整包共 33 passed，包括实际 CP936／CP1252 CLI 输出和 Windows 私有 ACL 子进程隐藏。
+补充原 Work settlement/owner recovery/子任务 checkpoint/lifecycle 四个文件共 148 passed，
+覆盖普通 Work 与新外部执行共用的原恢复、wait 和结束边界。
+初始化取消使用两个真实自有子进程先红后绿，关闭故障也先红后绿；提交 ACK 测试实际完成原
+SQLite commit 后抛出原异常，核 phase/unknown、原 producer 结束和已写入结果。
+
+Bot 全部 640 个源码文件按 Linux 目标 mypy 通过，独立连接器 12 个源码文件也通过 strict mypy。
+尚未运行组合后的全仓测试、远端 CI、真实模型或平台消息；上述组别有复跑和重叠，不将它们
+相加冒充全局验收。
+
+## Desktop 薄入口的组合核查
+
+另行只读核查 Desktop [#3](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/3)，head 为
+`ece6efd2d8cfdc8f40719a762e5c43abb4d16eb3`（base `cff30738`）。11 个变更路径沿薄 CLI/IPC
+入口接入，凭据和原生 owner 留在连接器，Client API 6 与 `/agents/v1` 各认原用途。
+当次五个平台构建检查均成功且对应此 head；这与本地安装和配对分别记录。
+
+实际 Desktop `runConnector` → 本次 CLI 的 UTF-8、CP936、CP1252 三组进程探针均保留原中文
+label。已修 machine JSON 在 Windows 管道中的编码差异，并隐藏 ACL 查询子进程；三项新增
+回归先红后绿。探针只读取隔离 fake 配置/status，没有安装真实 Desktop、启动用户服务、
+driver、模型或登录流程。Desktop 已由主执行流程独立合并为 `72c6cbf3`；本机安装、配对与
+实际服务验收尚未执行。

@@ -23,13 +23,26 @@ class TaskResourceSource:
     resource_request_id: str | None
     peer_id: str | None
     session_id: str | None
+    operation_id: str | None = None
+    action: str | None = None
+    execution_id: str | None = None
+    instance_id: str | None = None
 
     def matches(self, current: TaskResourceSource) -> bool:
-        if (self.request_id, self.conversation_id, self.source_json, self.kind) != (
+        if (
+            self.request_id,
+            self.conversation_id,
+            self.source_json,
+            self.kind,
+            self.operation_id,
+            self.action,
+        ) != (
             current.request_id,
             current.conversation_id,
             current.source_json,
             current.kind,
+            current.operation_id,
+            current.action,
         ) or self.resource_request_id != current.resource_request_id:
             return False
         # A returned identity fills in the same original request, not a new run.
@@ -39,6 +52,8 @@ class TaskResourceSource:
                 (self.run_id, current.run_id),
                 (self.peer_id, current.peer_id),
                 (self.session_id, current.session_id),
+                (self.execution_id, current.execution_id),
+                (self.instance_id, current.instance_id),
             )
         )
 
@@ -56,8 +71,8 @@ class ResourceCleanupPreparation:
         return tuple(task.request_id for task in self.tasks)
 
     @property
-    def has_peers(self) -> bool:
-        return any(task.kind == "acp_prompt" for task in self.tasks)
+    def has_external_resources(self) -> bool:
+        return any(task.kind in {"external_agent", "acp_prompt"} for task in self.tasks)
 
     @classmethod
     async def prepare(
@@ -73,7 +88,9 @@ class ResourceCleanupPreparation:
             if work_ids is None
             else func.json_extract(task.source_json, "$.work_id").in_(work_ids)
         )
-        acp = func.json_extract(task.progress_json, "$.kind") == "acp_prompt"
+        external = func.json_extract(task.progress_json, "$.kind").in_(
+            ("external_agent", "acp_prompt")
+        )
         tasks = tuple(
             TaskResourceSource(*row)
             for row in await session.execute(
@@ -83,8 +100,20 @@ class ResourceCleanupPreparation:
                     task.source_json,
                     task.run_id,
                     *(
-                        case((acp, func.json_extract(task.progress_json, f"$.{key}")), else_=None)
-                        for key in ("kind", "resource_request_id", "peer_id", "session_id")
+                        case(
+                            (external, func.json_extract(task.progress_json, f"$.{key}")),
+                            else_=None,
+                        )
+                        for key in (
+                            "kind",
+                            "resource_request_id",
+                            "peer_id",
+                            "session_id",
+                            "operation_id",
+                            "action",
+                            "execution_id",
+                            "instance_id",
+                        )
                     ),
                 )
                 .where(task_scope)

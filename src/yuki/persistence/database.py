@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
 
     from yuki.admin.models import WorkStorageRuntimeConfig
+    from yuki.external_agents.service import ExternalAgentService
     from yuki.persistence.sqlite_diagnostics import SQLiteDiagnostics
     from yuki.sandbox.client import SandboxClient
 
@@ -76,6 +77,7 @@ def write_failure_retryable(error: BaseException) -> bool:
 
 async def _complete[T](operation: Awaitable[T]) -> tuple[T, asyncio.CancelledError | None]:
     """Finish this one driver/session operation, remembering caller cancellation."""
+
     async def run_operation() -> T:
         return await operation
 
@@ -106,6 +108,7 @@ class Database:
         self.url = url
         self.subagents_enabled = False
         self.sandbox_client: SandboxClient | None = None
+        self.external_agents: ExternalAgentService | None = None
         self.work_result_store: Any = None
         self.protocol_storage_policy: Callable[[], Awaitable[WorkStorageRuntimeConfig]] | None = (
             None

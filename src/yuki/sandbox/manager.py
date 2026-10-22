@@ -39,9 +39,6 @@ async def main() -> None:
     parser.add_argument(
         "--media-cache", type=Path, default=os.environ.get("YUKI_MANAGER_MEDIA_CACHE") or None
     )
-    parser.add_argument(
-        "--acp-config", type=Path, default=os.environ.get("YUKI_MANAGER_ACP_CONFIG")
-    )
     args = parser.parse_args()
     from yuki.sandbox.persistent import PersistentManager
 
@@ -53,7 +50,6 @@ async def main() -> None:
         args.proxy,
         args.persistent_home,
         resolv_conf=args.resolv_conf,
-        acp_config=args.acp_config,
         media_cache=args.media_cache,
     )
     try:

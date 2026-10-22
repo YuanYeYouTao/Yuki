@@ -796,16 +796,16 @@ class PeopleRepository:
     async def prepare_person_forget_resources(
         self, person_id: str, *, operation_id: str, marker: str = "[已删除用户]"
     ) -> PersonForgetPreparation | None:
-        client = self._database.sandbox_client
+        client = self._database.external_agents
         if client is None:
             return None
         async with self._database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             prepared = await self.prepare_person_forget(person_id, session=reader, marker=marker)
-        if prepared is None or not prepared.resource_cleanup.has_peers:
+        if prepared is None or not prepared.resource_cleanup.has_external_resources:
             return None
-        receipts = await client.close_peers_for_requests(
-            prepared.sandbox_request_ids, operation_id, purge=True
+        receipts = await client.cleanup_tasks(
+            prepared.resource_cleanup.tasks, operation_id, purge=True
         )
         return replace(prepared, peer_cleanup_results=tuple(receipts))
 
@@ -1339,7 +1339,7 @@ class PeopleRepository:
             ):
                 raise
             raise PrivacyPreparationChanged() from exc
-        if prepared.resource_cleanup.has_peers:
+        if prepared.resource_cleanup.has_external_resources:
             if prepared.peer_cleanup_results is None:
                 raise ValueError("external_agent_cleanup_unconfirmed")
         ownership = prepared.ownership

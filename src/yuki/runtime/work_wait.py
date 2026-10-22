@@ -981,7 +981,7 @@ class WorkWaitRepository:
     def _observe_due(
         binding: Any,
         conditions: list[dict[str, Any]],
-        states: dict[tuple[str, str], str],
+        states: dict[tuple[str, str], dict[str, Any]],
         now: float,
     ) -> tuple[list[dict[str, Any]], str] | None:
         if (
@@ -1006,18 +1006,19 @@ class WorkWaitRepository:
                 changed = True
             elif condition["kind"] == "owned_run":
                 state = states.get((binding["work_id"], condition["run_id"]))
-                if state in {
+                if state is not None and state["status"] in {
                     "completed",
                     "succeeded",
                     "failed",
                     "cancelled",
+                    "detached",
                     "uncertain",
                     "unknown",
                 }:
                     condition["matched"] = {
                         "kind": "owned_run",
                         "run_id": condition["run_id"],
-                        "status": state,
+                        **state,
                     }
                     changed = True
         done = (
@@ -1086,14 +1087,25 @@ class WorkWaitRepository:
         return owned_work.union_all(owned_sandbox)
 
     @staticmethod
-    def _run_states(rows: Any) -> dict[tuple[str, str], str]:
-        states = {(owner, run): state for owner, run, state, _, sandbox in rows if not sandbox}
+    def _run_states(rows: Any) -> dict[tuple[str, str], dict[str, Any]]:
+        states = {
+            (owner, run): {"status": state} for owner, run, state, _, sandbox in rows if not sandbox
+        }
         for owner, run, state, completion, sandbox in rows:
             if not sandbox or (owner, run) in states:
                 continue
             if state == "completed" and completion:
-                state = json.loads(completion).get("status", state)
-            states[owner, run] = state
+                receipt = json.loads(completion)
+                states[owner, run] = {
+                    "status": receipt.get("operation_status", receipt.get("status", state)),
+                    **{
+                        name: receipt[name]
+                        for name in ("operation_status", "native_status", "native_pending")
+                        if name in receipt
+                    },
+                }
+            else:
+                states[owner, run] = {"status": state}
         return states
 
     @staticmethod
@@ -1136,7 +1148,7 @@ class WorkWaitRepository:
         prepared: dict[str, dict[str, Any]] = {}
         decoded: dict[str, list[dict[str, Any]]] = {}
         selected_runs: dict[tuple[str, str, bool], Any] = {}
-        selected_states: dict[tuple[str, str], str] = {}
+        selected_states: dict[tuple[str, str], dict[str, Any]] = {}
         cursor: tuple[float, str] | None = None
         async with self.repository.database.read_session() as reader:
             while len(prepared) < 128:

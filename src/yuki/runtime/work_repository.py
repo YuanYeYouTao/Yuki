@@ -624,6 +624,10 @@ class WorkRepository:
                 func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").in_(owned),
                 SandboxTaskRunModel.status == "waiting",
                 SandboxTaskRunModel.run_id.is_not(None),
+                func.coalesce(
+                    func.json_extract(SandboxTaskRunModel.progress_json, "$.ownership"), "owned"
+                )
+                != "observe",
             )
             .exists(),
             select(children.c.work_id)
@@ -1675,13 +1679,30 @@ class WorkRepository:
             {
                 "text": json.dumps(
                     {
-                        "kind": "sandbox_completion",
+                        "kind": "external_agent_completion"
+                        if completion.get("kind") == "external_agent"
+                        else "sandbox_completion",
                         "request_id": request_id,
                         "run_id": prepared.run_id,
-                        "status": completion.get("status"),
+                        "status": completion.get("operation_status", completion.get("status")),
+                        **{
+                            name: completion[name]
+                            for name in (
+                                "operation_status",
+                                "native_status",
+                                "native_pending",
+                                "operation_id",
+                                "instance_id",
+                                "session_id",
+                                "execution_id",
+                            )
+                            if name in completion
+                        },
                         "pending": False,
                         "exit_code": completion.get("exit_code"),
-                        "detail": "查询原 run_id 的输出与产物，不能重跑原命令。",
+                        "detail": (
+                            "通过原工具查询原 run_id 或 request_id 的回执与产物，不能重跑原操作。"
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -1768,6 +1789,9 @@ class WorkRepository:
         completion_fields = (
             "run_id",
             "status",
+            "operation_status",
+            "native_status",
+            "native_pending",
             "pending",
             "uncertain",
             "exit_code",
@@ -1834,9 +1858,23 @@ class WorkRepository:
                         "pending": False,
                         **{
                             key: value[key]
-                            for key in ("status", "exit_code", "error", "artifact_id", "artifacts")
+                            for key in (
+                                "status",
+                                "operation_status",
+                                "native_status",
+                                "native_pending",
+                                "exit_code",
+                                "error",
+                                "artifact_id",
+                                "artifacts",
+                            )
                             if key in value
                         },
+                        **(
+                            {"status": "detached"}
+                            if value.get("operation_status") == "detached"
+                            else {}
+                        ),
                     }
                 )
             return results
@@ -2615,8 +2653,8 @@ class WorkRepository:
         request_id: str | None = None,
     ) -> None:
         """Use an owned run receipt; preserve every original invocation and its mutating role."""
+        from yuki.capabilities.executions import is_execution
         from yuki.runtime.effect_outcomes import execution_finished
-        from yuki.sandbox.environment_tools import is_execution
 
         if not execution_finished(outcome) or outcome.get("run_id") != run_id:
             return

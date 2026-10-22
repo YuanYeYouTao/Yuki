@@ -108,7 +108,8 @@ class MainAgentContract:
                         # 28: permanent cross-entry history with explicit source labels.
                         # 29: unified send tool; publication stays an internal delivery step.
                         # 30: source filters and paged conversation entry discovery.
-                        "version": 30,
+                        # 31: device-owned native sessions and the unified external Agent contract.
+                        "version": 31,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

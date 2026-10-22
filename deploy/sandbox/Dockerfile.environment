@@ -19,11 +19,10 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && ln -s /home/yuki/workspace /workspace \
     && ln -s /home/yuki/work /work && ln -s /home/yuki/inputs /inputs
-RUN pip install --no-cache-dir Pillow openpyxl pypdf agent-client-protocol==0.12.1
+RUN pip install --no-cache-dir Pillow openpyxl pypdf
 COPY --from=execd /execd /opt/opensandbox/execd
 COPY --from=execd /source/LICENSE /usr/share/licenses/opensandbox/LICENSE
 COPY src/yuki/sandbox/environment_supervisor.py /opt/yuki-runtime/supervisor.py
-COPY src/yuki/sandbox/acp_peer.py /opt/yuki-runtime/acp_peer.py
 COPY src/yuki/emoji/sticker_index.py /opt/yuki-runtime/sticker_index.py
 COPY src/yuki/emoji/media.py /opt/yuki-runtime/media.py
 ENV HOME=/home/yuki \

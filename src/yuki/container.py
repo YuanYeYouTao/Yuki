@@ -261,6 +261,11 @@ class ApplicationContainer:
         )
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
         self.database.sandbox_client = self.sandbox_client
+        from yuki.external_agents.service import ExternalAgentService
+
+        self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
+        self.database.external_agents = self.external_agents
+        self.agent_tools.external_agent_service = self.external_agents
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client
@@ -852,6 +857,7 @@ class ApplicationContainer:
         self.lifecycle.register(
             "social_recovery", start=self.social_service.receipts.recover_interrupted
         )
+        self.lifecycle.register("external_agents", close=self.external_agents.close)
         self.lifecycle.register(
             "workspace", start=self.workspace_service.start, close=self.workspace_service.close
         )

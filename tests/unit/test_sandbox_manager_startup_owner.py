@@ -124,7 +124,7 @@ async def test_manager_startup_failure_closes_its_real_job_store(
             await owner.close()
 
 
-@pytest.mark.parametrize("failure_stage", ["name", "acp_config", "schema"])
+@pytest.mark.parametrize("failure_stage", ["name", "schema"])
 def test_manager_failed_constructor_releases_only_its_job_connection(
     tmp_path, monkeypatch, failure_stage
 ):
@@ -147,8 +147,6 @@ def test_manager_failed_constructor_releases_only_its_job_connection(
         return connect(path, *args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", open_database)
-    config = tmp_path / "invalid.toml"
-    config.write_text("[agents", encoding="utf-8")
     with pytest.raises((ValueError, sqlite3.OperationalError)):
         persistent.PersistentManager(
             tmp_path / "jobs",
@@ -158,7 +156,6 @@ def test_manager_failed_constructor_releases_only_its_job_connection(
             "",
             tmp_path / "home",
             name="invalid" if failure_stage == "name" else "yuki-environment",
-            acp_config=config if failure_stage == "acp_config" else None,
         )
     for connection in opened:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):

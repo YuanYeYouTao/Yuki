@@ -324,9 +324,9 @@ class WorkControl:
             return
         # Run receipts resolve original effects; no result is copied from a child
         # checkpoint into a second authority list.
+        from yuki.capabilities.executions import is_execution
         from yuki.capabilities.results import normalize_legacy_result
         from yuki.runtime.effect_outcomes import execution_evidence
-        from yuki.sandbox.environment_tools import is_execution
 
         evidence = await self.repository.effect_evidence(
             self.lease,

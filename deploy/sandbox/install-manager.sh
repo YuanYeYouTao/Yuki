@@ -15,7 +15,6 @@ while [ "$#" -gt 0 ]; do
 done
 test "$(id -u)" = 0
 test -f /opt/yuki-sandbox/src/yuki/sandbox/manager.py
-test -f /opt/yuki-sandbox/src/yuki/sandbox/acp_peer.py
 python3 -c 'import sys; assert sys.version_info >= (3,12)'
 test -x /opt/yuki-sandbox/venv/bin/python
 /opt/yuki-sandbox/venv/bin/python -c 'import websockets; assert websockets.__version__ == "15.0.1"'

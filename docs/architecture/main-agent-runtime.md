@@ -408,21 +408,15 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 ## 预算、等待与异常
 
-外部 Agent 的 ACP peer 与单次 prompt 分开管理。`external_agent.prompt` 沿原 Work 的调用键登记
-SandboxTaskRun，重启和确认丢失查询原请求，不新建 peer 或重发未知 prompt。Main 可用
-原 request_id 在未取得 run_id 时查询；若仅查回原 peer，结果作为 peer_resource 保留，
-不作为 prompt 完成回执，也不自动接续尚未确认的原调用。同一 Work 可用
-peer_id 续用原会话；空闲 peer 不阻止工作完成，显式关闭、真实归档或隐私清退才回收。
-真实权限请求先写原 Work 私有输入再 ACK；它可打断 any/all 的 owned_run 等待，唤醒原因是
-requires_action，不把未完成 run 标为完成，也不复活 suspended、waiting_user 或终态 Work。
-回答权限时核原来源当前授权，普通权限不一律转交用户审批。逻辑取消先撤销原 Work 子树；
-原生取消请求已接纳与远端执行真正停止分别记录。输出及工具更新由原 prompt 可靠事件分页
-读取，stopReason 不代替正文或任务效果；共享文件与外部服务自有历史也不冒称已自动擦除。
+外部 Agent 由 ExternalAgent 服务管理授权和原操作关联，经用户电脑主动建立的设备通道连接原生 Codex、Claude 或通用 ACP 驱动。原生会话归用户／设备／实例，Work 只拥有自己提交的操作或监督关系。list／get 无需接纳 Work；prompt／queue／watch 保存原 Work 关联；steer／respond／cancel／detach 按当前人物授权操作原资源，不要求另接纳 Work。
 
-Yuki 对 external_agent 的每次工具调用仍计入原 Work 工具预算；只把 prompt 视为新执行，查询、
-权限回答及关闭不生成另一项执行。ACP 一次 prompt 可以包含多轮模型与工具调用，稳定协议
-未统一保证其内部请求次数、usage 与缓存明细。仅记录实际报告的字段，缺失保持未知，
-不把一次 prompt 伪计为一次外部真实模型请求，也不因缺少 usage 阻断正常工作。
+prompt／queue 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操作，再在 writer 外派发。run_id 是原 Work 等待引用，execution_id 是原生执行映射的内部 ID，二者不混用；native thread／turn／permission ID 留在适配器映射中。watch 使用 ownership=observe，只接收事实，不作为所属执行阻止 Work 完成。结束监督只 detach，不关闭用户 session、daemon 或兄弟执行。真正属于 Work 的未完成操作在来源撤销／终态时精确取消；取消接纳与原生终态回执分开。
+
+重要进度、权限和用户问题先进入原 Work 私有输入与原回执，再确认设备事件。沿原等待／恢复链接入，不逐 token 激活 Main，不复活终态或已撤权 Work。回答绑定原问题和原执行，普通已授权操作不一律升级为人工批准。跨入口查询认原 Person 授权，不拼接 Conversation 历史。外部输出是待核对材料，交付继续通过 send／Social。
+
+每次 external_agent 调用计入原 Work 工具预算；prompt／queue 登记新输入操作，steer 和查询不冒充新模型执行。原生内部轮数、usage、cache 只记实际报告字段，缺失保持未知。原生完整上下文和工具留在原生 Agent，Yuki 只接收必要进度、问题与结果引用。
+
+旧服务器 ACP 不再接纳新 peer 或 prompt；legacy reader 仅保原 request／run／peer／cursor／permission／completion 的查询、原活动精准取消和结算，不作为后备设备 runtime。确认丢失查原 ID，unknown 不重发；历史回执不改名、不清空，也不声称擦除供应商或用户电脑上的资料。
 
 自动化创建在最终短 writer 中复核永久创建者、当前权限与 SELF 场景；
 同 creation key 读取原创建版本，不重新校验已经过去的首次日期。普通 create/update/pause/resume/cancel/run_now

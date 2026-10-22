@@ -34,6 +34,7 @@ from yuki.client_api.models import (
     character_changes,
 )
 from yuki.domain.identity import RequestId
+from yuki.identity.credentials import CredentialPurpose
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
 from yuki_plugin_sdk.observation import PluginObservationRequest
@@ -112,6 +113,10 @@ class IdentityRequest(BaseModel):
 
 class TransferBody(IdentityRequest):
     to_person: UUID4
+
+
+class PairCodeBody(IdentityRequest):
+    purpose: CredentialPurpose = "chat"
 
 
 class RenameBody(IdentityRequest):
@@ -435,11 +440,11 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return {"data": await resolve().queries.binding(actor, str(identity))}
 
     @router.post("/persons/{identity}/client-pair")
-    async def client_pair(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+    async def client_pair(identity: UUID4, body: PairCodeBody, actor: Actor) -> Any:
         authorize(actor, "identity.client.pair")
         return {
             "data": await resolve().identities.issue_for_operator(
-                str(identity), actor.principal_id.text, str(body.request_id)
+                str(identity), actor.principal_id.text, str(body.request_id), purpose=body.purpose
             )
         }
 

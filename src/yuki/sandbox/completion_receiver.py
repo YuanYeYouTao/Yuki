@@ -59,6 +59,9 @@ class CompletionReceiver:
             await asyncio.sleep(delay)
 
     async def drain_once(self) -> int:
+        external = self.tasks.database.external_agents
+        if external is not None:
+            await external.reconcile()
         failure: Exception | None = None
         try:
             await self.drain_peer_events()
@@ -106,6 +109,8 @@ class CompletionReceiver:
         return received
 
     async def drain_peer_events(self) -> None:
+        # Only original, still-active server peers use the historical reader.
+        # New native agents deliver important progress directly over device WSS.
         failure: Exception | None = None
         for peer_id in await self.tasks.peers():
             try:

@@ -33,6 +33,7 @@ from yuki.client_api.sessions import ClientSessions
 from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
+from yuki.identity.credentials import CredentialPurpose
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,10 @@ class PairBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: SecretStr
     device_label: str = Field(min_length=1, max_length=128)
+
+
+class LinkCodeBody(PersonalRequest):
+    purpose: CredentialPurpose = "chat"
 
 
 class MessageBody(BaseModel):
@@ -305,10 +310,12 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         return {"data": await resolve().identity.me(actor)}
 
     @router.post("/link-codes")
-    async def link_code(actor: Actor, body: PersonalRequest | None = None) -> Any:
+    async def link_code(actor: Actor, body: LinkCodeBody | None = None) -> Any:
         return {
             "data": await resolve().identity.issue_for_device(
-                actor, str(body.request_id) if body else str(uuid4())
+                actor,
+                str(body.request_id) if body else str(uuid4()),
+                purpose=body.purpose if body else "chat",
             )
         }
 

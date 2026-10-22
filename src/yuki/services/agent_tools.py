@@ -19,6 +19,7 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from yuki.automation.models import TurnOrigin
+from yuki.capabilities.executions import is_execution
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
@@ -62,7 +63,7 @@ from yuki.persistence.repositories import (
     EventLedgerRepository,
 )
 from yuki.runtime.errors import InvalidTurnContextError
-from yuki.sandbox.environment_tools import SANDBOX_TOOLS, is_execution
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state
@@ -449,6 +450,7 @@ class AgentToolService:
         self.short_state: Any = None
         self.workspace_service: Any = None
         self.sandbox_client: Any = None
+        self.external_agent_service: Any = None
 
     @staticmethod
     def _work_source() -> dict[str, str]:
@@ -764,6 +766,7 @@ class AgentToolService:
                     ),
                 )
             )
+        from yuki.external_agents.tools import external_agent_tools
         from yuki.sandbox.client import sandbox_tools
         from yuki.social.tools import social_tool_definitions
         from yuki.workspace.service import workspace_tools
@@ -772,6 +775,7 @@ class AgentToolService:
             *tools,
             *social_tool_definitions(),
             *workspace_tools(),
+            *external_agent_tools(),
             *sandbox_tools(),
         )
 
@@ -806,14 +810,24 @@ class AgentToolService:
             try:
                 from yuki.social.tools import SOCIAL_TOOL_NAMES
 
-                if name in SANDBOX_TOOLS:
+                if name in SANDBOX_TOOLS or name == "external_agent":
                     from yuki.capabilities.invocation import current_invocation
 
                     invocation = current_invocation.get()
                     if runtime.tools_closed:
-                        return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
-                    if self.sandbox_client is None or invocation is None:
-                        return self._result(error="sandbox_unavailable", detail="沙箱未连接")
+                        return self._result(error="permission_denied", detail="本轮未授权执行操作")
+                    client = (
+                        self.external_agent_service
+                        if name == "external_agent"
+                        else self.sandbox_client
+                    )
+                    if client is None or invocation is None:
+                        return self._result(
+                            error="external_agent_unavailable"
+                            if name == "external_agent"
+                            else "sandbox_unavailable",
+                            detail="执行服务未连接",
+                        )
                     from hashlib import sha256
 
                     request_id = sha256(
@@ -828,18 +842,15 @@ class AgentToolService:
                     work_control = current_work_control.get()
                     if work_control is not None and work_control.session is not None:
                         request_id = sha256(invocation.call_id.encode()).hexdigest()
-                    result = await self.sandbox_client.execute(
-                        name,
-                        arguments,
-                        request_id=request_id,
-                        source={**runtime.sandbox_source, **self._work_source()}
+                    source = (
+                        {**runtime.sandbox_source, **self._work_source()}
                         if runtime.sandbox_source
-                        and (is_execution(name, arguments) or name == "external_agent")
                         else {
                             **self._work_source(),
                             "conversation_id": runtime.effective_conversation_id,
                             "origin": runtime.origin.value,
                             "actor_is_superuser": runtime.actor_is_superuser,
+                            "actor_person_id": runtime.actor_person_id,
                             "actor_user_id": runtime.actor_user_id,
                             "bot_user_id": runtime.effective_bot_user_id,
                             "presence_id": runtime.effective_presence_id,
@@ -849,16 +860,26 @@ class AgentToolService:
                             "trigger_event_id": runtime.effective_trigger_event_id,
                             "parent_execution_id": runtime.effective_execution_id,
                         }
-                        if is_execution(name, arguments) or name == "external_agent"
-                        else None,
                     )
+                    source["actor_person_id"] = runtime.actor_person_id
+                    if name == "external_agent":
+                        result = await client.execute(
+                            arguments, request_id=request_id, source=source
+                        )
+                    else:
+                        result = await client.execute(
+                            name,
+                            arguments,
+                            request_id=request_id,
+                            source=source if is_execution(name, arguments) else None,
+                        )
                     if result.get("error"):
                         return self._result(
                             data=result,
                             error=str(result["error"]),
-                            detail="沙箱提交结果未确认；核对原执行回执，不能重新提交。"
+                            detail="操作结果未确认；核对原执行回执，不能重新提交。"
                             if result.get("uncertain")
-                            else "沙箱操作未完成",
+                            else "执行操作未完成",
                             uncertain=bool(result.get("uncertain")),
                         )
                     return self._result(data=result)
