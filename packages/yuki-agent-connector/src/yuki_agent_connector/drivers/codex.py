@@ -442,7 +442,10 @@ class CodexDriver:
                 error=original.get("error"),
             )
         elif method == "item/started" and item.get("type") == "userMessage":
-            payload.update(status="running", native=item)
+            payload.update(
+                status="running",
+                native={key: item[key] for key in ("id", "type", "clientId") if key in item},
+            )
         elif method == "item/completed":
             item = params.get("item", {})
             # Reasoning is neither a milestone nor a public report.
@@ -458,8 +461,20 @@ class CodexDriver:
             payload.update(item=item_view(item))
             if "text" in item:
                 payload["text"] = item["text"]
+        elif method == "turn/started":
+            original = params["turn"]
+            payload.update(
+                status="running",
+                native={
+                    "threadId": session,
+                    "turn": {
+                        key: original[key]
+                        for key in ("id", "status", "startedAt")
+                        if key in original
+                    },
+                },
+            )
         elif method in {
-            "turn/started",
             "turn/plan/updated",
             "turn/diff/updated",
             "serverRequest/resolved",

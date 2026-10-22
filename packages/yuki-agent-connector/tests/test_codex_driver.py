@@ -489,3 +489,77 @@ async def test_unbound_watch_recovery_keeps_gap_unknown_without_adopting_current
     assert events[0][1]["payload"]["status"] == "unknown"
     assert events[0][1]["payload"]["stream_gap"] is True
     assert not driver.watches and not driver.turn_operations
+
+
+@pytest.mark.asyncio
+async def test_start_progress_preserves_identity_without_native_items_or_repeated_prompt(
+    tmp_path: Path,
+) -> None:
+    events: list[dict[str, Any]] = []
+
+    async def emit(kind: str, value: dict[str, Any]) -> None:
+        events.append(value)
+
+    driver = CodexDriver(Instance("c", "codex", "c", "unused", cwd=str(tmp_path)), emit)
+    driver.turn_operations["original-turn"] = "original-operation"
+    await driver._notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "session",
+                "unneeded": "PRIVATE_PARAMS",
+                "turn": {
+                    "id": "original-turn",
+                    "status": "inProgress",
+                    "startedAt": 123,
+                    "items": [
+                        {"type": "reasoning", "encryptedContent": "PRIVATE_SIGNATURE"},
+                        {
+                            "type": "userMessage",
+                            "content": [{"type": "text", "text": "PRIVATE_PROMPT"}],
+                        },
+                    ],
+                },
+            },
+        }
+    )
+    assert events[0]["payload"]["native"] == {
+        "threadId": "session",
+        "turn": {"id": "original-turn", "status": "inProgress", "startedAt": 123},
+    }
+    driver.queue_operations["queued-operation"] = "queued-submission"
+    await driver._notification(
+        {
+            "method": "item/started",
+            "params": {
+                "threadId": "session",
+                "turnId": "queued-turn",
+                "item": {
+                    "id": "native-user-item",
+                    "type": "userMessage",
+                    "clientId": "queued-operation",
+                    "content": [{"type": "text", "text": "PRIVATE_REPEATED_PROMPT"}],
+                },
+            },
+        }
+    )
+    assert events[1]["payload"]["native"] == {
+        "id": "native-user-item",
+        "type": "userMessage",
+        "clientId": "queued-operation",
+    }
+    assert events[1]["operation_id"] == "queued-operation"
+    assert driver.turn_operations["queued-turn"] == "queued-operation"
+    assert "queued-operation" not in driver.queue_operations
+    assert "PRIVATE_" not in json.dumps(events)
+    await driver._notification(
+        {
+            "method": "turn/diff/updated",
+            "params": {
+                "threadId": "session",
+                "turnId": "original-turn",
+                "diff": "necessary diff",
+            },
+        }
+    )
+    assert events[-1]["payload"]["diff"] == "necessary diff"
