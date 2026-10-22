@@ -47,3 +47,15 @@ sources 不覆盖事件原作者的 Person/Account/Presence；来源跟踪包含
 跨 QQ/Telegram/Feishu 和多话题正反向分页均保原来源；人物合并与账号转移不改原作者。
 Windows 测试使用本地 fixture 与假模型，生产自然流量和 Native Code Mode 留待各自实际运行记录。
 Main 固定工具合同更新为28，沿原指纹边界接续新链；原已付请求与回执不改写。
+
+### CI 后续修正
+
+[首轮 CI](https://github.com/YuanYeYouTao/Yuki/actions/runs/39724558250) 的静态检查、Integration
+和 Native CodeMode 通过；Unit 为3268通过、3失败。两处测试仍冻结已删除的 `view` 必填或
+`starts_after_event_id` 参数，现改为实际验证缺省 recent 和重置后永久历史仍可读取。
+第三处 SSE 测试把 SOUL 保存的多阶段提示当作一次操作一条最终通知；回归改用明确的事件同步，
+覆盖文件已写、完成激活和撤权的顺序，继续核对激活 hash、撤权后隐藏 SOUL、GET 403 与实际快照。
+全仓1275个 Python 文件及间接 kwargs 排查未发现显式历史读取旧参数的其他残留。
+三处失败所在模块与永久历史相关回归联合62项通过，Ruff、修改文件格式及 diff 检查通过。
+SSE 旧断言在固定合法时序下可复现失败；新版测试保留完整撤权保证。本次仅修测试和记录，
+不恢复已删除的产品限制；新 CI 按本次推送重新运行。

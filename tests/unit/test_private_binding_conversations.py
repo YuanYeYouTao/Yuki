@@ -150,7 +150,6 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
         assert await ledger.read_version_matches(version)
         page = await ledger.query_history(
             conversation_id=state.id,
-            starts_after_event_id=state.starts_after_event_id,
             keyword="needle",
             order="oldest",
         )
@@ -175,6 +174,8 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
         await bump_canonical_generation(session, state.id, event_id=event.id, force=True)
     assert (await repository.get(first)).generation == 1
     assert (await repository.get(second)).generation == 2
+    page = await ledger.query_history(conversation_id=state.id, keyword="needle", order="oldest")
+    assert [row.id for row in page.events] == expected
     assert await ledger.list_scope_recent(second, limit=20) == ()
     assert [row.id for row in await ledger.list_scope_recent(first, limit=20)] == [original.id]
 

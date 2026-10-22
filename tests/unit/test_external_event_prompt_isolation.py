@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from jsonschema import Draft202012Validator
 from tests.conftest import build_harness, make_settings
 
 from yuki.automation.models import TurnOrigin
@@ -746,7 +747,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
     frozen = await contract.definitions()
     declared = next(item for item in frozen if item.name == "query_chat_history")
-    assert declared.parameters["required"] == ["view"]
+    Draft202012Validator(declared.parameters).validate({})
     assert "around" in declared.parameters["properties"]["view"]["enum"]
     assert "platform_message_id" not in declared.parameters["properties"]
     event = (
@@ -777,9 +778,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
             "80001", "20001", conversation_id=event.canonical_conversation_id
         ),
     )
-    recent = (
-        await tools.execute("query_chat_history", '{"view":"recent", "limit":1}', runtime)
-    ).model_payload()
+    recent = (await tools.execute("query_chat_history", '{"limit":1}', runtime)).model_payload()
     assert recent["ok"] and len(recent["data"]["events"]) == 1
     assert recent["data"]["events"][0]["id"] == event.id
     invalid = (
