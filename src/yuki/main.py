@@ -118,6 +118,9 @@ def bootstrap(settings: Settings | None = None) -> None:
     from yuki.client_api.http import attach_client_api
 
     attach_client_api(driver.server_app, lambda: get_container().client_api)
+    from yuki.external_agents.http import attach_external_agent_api
+
+    attach_external_agent_api(driver.server_app, lambda: get_container().external_agents)
     if app_settings.onebot_access_token:
         nonebot.load_plugin("yuki.plugins.ai_chat")
 

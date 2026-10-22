@@ -93,11 +93,7 @@ class SandboxTaskRepository:
         ):
             raise ValueError("invalid_task_event_anchor")
         source_json = canonical_json(source, limit=65536)
-        serialized = (
-            json.dumps(arguments, sort_keys=True, ensure_ascii=False, allow_nan=False)
-            if arguments.get("tool") == "external_agent"
-            else canonical_json(arguments, limit=262144)
-        )
+        serialized = canonical_json(arguments, limit=262144)
         digest = hashlib.sha256(serialized.encode()).hexdigest()
         now = datetime.now(UTC)
         row = SandboxTaskRunModel(
@@ -180,7 +176,13 @@ class SandboxTaskRepository:
     async def peers(self) -> tuple[str, ...]:
         peer = func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id")
         async with self.database.sessions() as session:
-            return tuple(await session.scalars(select(peer).where(peer.is_not(None)).distinct()))
+            return tuple(
+                await session.scalars(
+                    select(peer)
+                    .where(peer.is_not(None), SandboxTaskRunModel.status == "waiting")
+                    .distinct()
+                )
+            )
 
     async def receive_permission(self, event: dict[str, Any]) -> None:
         """Commit the original callback and wait delivery before acknowledging its cursor."""

@@ -15,6 +15,7 @@ from yuki.character.db_models import CharacterOwnerGrantModel, CharacterProfileM
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.client_api.version import CLIENT_API_REVISION
+from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import (
     current_person_id,
     person_enabled_condition,
@@ -222,7 +223,10 @@ class CharacterRepository:
             if old is not None:
                 return old
             if granted:
-                await self.identity._person(session, person_id)
+                try:
+                    await require_person(session, person_id)
+                except ClientError:
+                    raise ClientError("not_found") from None
             root = await current_person_id(session, person_id)
             now = datetime.now(UTC)
             family = list(
