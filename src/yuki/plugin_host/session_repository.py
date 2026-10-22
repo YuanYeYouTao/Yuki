@@ -250,7 +250,7 @@ class PluginAgentSessionRepository:
             )
             session.add(row)
             await session.flush()
-            return _message_record(row)
+        return _message_record(row)
 
     async def list_messages(
         self,

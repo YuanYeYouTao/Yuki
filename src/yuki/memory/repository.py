@@ -324,8 +324,26 @@ class MemoryFactRepository:
                 statement = statement.limit(limit)
             facts = list((await session.scalars(statement)).all())
             missing = tuple(row.id for row in facts if row.id not in counts)
-            if missing:
-                await self.prepare_evidence_rows(missing, session=session)
+            for offset in range(0, len(missing), 256):
+                page = missing[offset : offset + 256]
+                current = dict(
+                    (
+                        await session.execute(
+                            select(MemoryEvidenceModel.fact_id, func.count())
+                            .join(
+                                MemoryFactModel, MemoryFactModel.id == MemoryEvidenceModel.fact_id
+                            )
+                            .where(
+                                MemoryEvidenceModel.fact_id.in_(page),
+                                readable_evidence_predicate(),
+                            )
+                            .group_by(MemoryEvidenceModel.fact_id)
+                        )
+                    )
+                    .tuples()
+                    .all()
+                )
+                counts.update((identity, current.get(identity, 0)) for identity in page)
             return [(row, counts[row.id]) for row in facts]
         statement = select(MemoryFactModel, readable_evidence_count_expression()).where(*conditions)
         if order_by:
@@ -1422,7 +1440,6 @@ class MemoryFactRepository:
                 return await self.list_evidence(fact_id, limit=limit, session=owned)
         prepared = session.info.get("memory_evidence_rows")
         if prepared is not None:
-            await self.prepare_evidence_rows((fact_id,), session=session)
             additions = session.info["memory_evidence_additions"].get(fact_id, ())
             if not additions:
                 cached_rows = cast(tuple[MemoryEvidence, ...], prepared[fact_id])

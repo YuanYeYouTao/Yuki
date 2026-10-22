@@ -71,7 +71,13 @@ from yuki.plugin_host.ownership import (
     stamp_grant_owners,
 )
 from yuki.runtime.work_recovery_schema import recovery
-from yuki.runtime.work_repository import TERMINAL, WorkConflict, WorkLease, WorkRepository
+from yuki.runtime.work_repository import (
+    TERMINAL,
+    WorkConflict,
+    WorkLease,
+    WorkRepository,
+    encode_json,
+)
 from yuki.runtime.work_schema_v1 import scope, work
 from yuki.runtime.work_wait import WorkWaitRepository
 from yuki.runtime.work_wait_schema import waits
@@ -216,10 +222,18 @@ class PluginNotificationRepository:
         """Freeze layout on the original intent before claiming any physical part."""
         encoded = tuple(canonical_json(part) for part in parts)
         async with self._database.immediate_session() as session:
-            row = await session.get(PluginNotificationOutboxModel, item.id)
-            if row is None or row.status != "pending":
+            found = (
+                await session.execute(
+                    select(
+                        PluginNotificationOutboxModel,
+                        func.json_type(PluginNotificationOutboxModel.prepared_json, "$.message"),
+                    ).where(PluginNotificationOutboxModel.id == item.id)
+                )
+            ).first()
+            if found is None or found[0].status != "pending":
                 return
-            if row.prepared_json is not None and "message" in json.loads(row.prepared_json):
+            row, message_type = found
+            if message_type is not None:
                 return
             await require_queued_work_readable(session, row)
             if row.text != item.text or row.media_handle_id != item.media_handle_id:
@@ -531,7 +545,9 @@ class PluginNotificationRepository:
             from yuki.persistence.scoped_event_uow import prepare_append
 
             prepared_append = await prepare_append(
-                request.summary, external_payload=request.payload
+                request.summary,
+                segments=({"type": "yuki_context", "data": source_data},),
+                external_payload=request.payload,
             )
             async with self._database.immediate_session() as session:
                 if prepared_waits is not None and not await waiting.event_waits_current(
@@ -576,147 +592,128 @@ class PluginNotificationRepository:
                     conversation_id=scope.conversation_id,
                 )
                 if existing is not None:
-                    notification_id = str(_publication_data(existing)["notification_id"])
-                    receipt = await _existing_event_receipt(
-                        session,
-                        plugin_id=plugin_id,
-                        event=existing,
+                    continue  # Read the original winner outside this empty writer.
+                await _resolve_request_media(
+                    session,
+                    plugin_id=plugin_id,
+                    handle_ids=request.media_handles,
+                    now=datetime.now(UTC),
+                )
+                try:
+                    appended = await self._scoped_events.append_external(
+                        scope=scope,
+                        platform_message_id=f"external2-{notification_id}",
+                        source_plugin_id=plugin_id,
+                        external_source=request.external_source,
+                        external_event_key=request.event_key,
+                        external_event_type=request.event_type,
+                        external_payload=request.payload,
+                        external_target_id=target.target_id,
+                        content=request.summary,
+                        prepared=prepared_append,
+                        occurred_at=_aware(request.occurred_at),
+                        session=session,
+                    )
+                except CanonicalIdentityError as exc:
+                    if exc.category == "receipt_conflict":
+                        raise
+                    raise plugin_ownership_error(exc) from None
+                created = await session.get(ChatEventModel, appended.event.id)
+                if created is None:
+                    raise RuntimeError("scoped external event could not be reloaded")
+                _require_system_external(created)
+                if appended.created:
+                    created.external_resume_wait = request.resume_waiting_work
+                if not appended.created:
+                    receipt = None
+                else:
+                    delivery_enqueued = False
+                    resumed_wait = False
+                    if prepared_waits is not None:
+                        resumed_wait = (
+                            await waiting.apply_event(
+                                session,
+                                event_id=created.id,
+                                kind="plugin_event",
+                                prepared=prepared_waits,
+                            )
+                        ) is not None
+                    for index, handle_id, sha256 in media:
+                        delivery_enqueued |= await _ensure_outbox_part(
+                            session,
+                            notification_id=notification_id,
+                            part_key=media_part_key(index=index, sha256=sha256),
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            grant=grant,
+                            event=created,
+                            part_type="media",
+                            text="",
+                            media_handle_id=handle_id,
+                            now=now,
+                        )
+                    if request.text:
+                        delivery_enqueued |= await _ensure_outbox_part(
+                            session,
+                            notification_id=notification_id,
+                            part_key="text",
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            grant=grant,
+                            event=created,
+                            part_type="text",
+                            text=request.text,
+                            media_handle_id=None,
+                            now=now,
+                        )
+                    job_created = False
+                    if request.ask_agent:
+                        job = PluginBackgroundTurnJobModel(
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            target_type=grant.target_type,
+                            target_id=target.target_id,
+                            bot_user_id=grant.bot_user_id,
+                            agent_intent=request.agent_intent,
+                            status="cancelled" if resumed_wait else "pending",
+                            attempts=0,
+                            max_attempts=3,
+                            next_attempt_at=now,
+                            lease_until=None,
+                            generated_text="",
+                            tool_calls_used=0,
+                            model_requests=0,
+                            last_error_category=None,
+                            created_at=now,
+                            updated_at=now,
+                            completed_at=now if resumed_wait else None,
+                        )
+                        await _stamp_publication_child(
+                            session,
+                            job,
+                            grant=grant,
+                            event=created,
+                        )
+                        session.add(job)
+                        await session.flush()
+                        job_created = not resumed_wait
+                    receipt = NotificationPublishReceipt(
                         notification_id=notification_id,
+                        source_event_id=created.id,
+                        event_created=True,
+                        delivery_enqueued=delivery_enqueued,
+                        agent_turn_enqueued=job_created,
+                        deduplicated=False,
+                    )
+            if receipt is None:
+                async with self._database.read_session() as reader:
+                    receipt = await _existing_event_receipt(
+                        reader,
+                        plugin_id=plugin_id,
+                        event=created,
+                        notification_id=str(_publication_data(created)["notification_id"]),
                         request=request,
                     )
-                else:
-                    await _resolve_request_media(
-                        session,
-                        plugin_id=plugin_id,
-                        handle_ids=request.media_handles,
-                        now=datetime.now(UTC),
-                    )
-                    try:
-                        appended = await self._scoped_events.append_external(
-                            scope=scope,
-                            platform_message_id=f"external2-{notification_id}",
-                            source_plugin_id=plugin_id,
-                            external_source=request.external_source,
-                            external_event_key=request.event_key,
-                            external_event_type=request.event_type,
-                            external_payload=request.payload,
-                            external_target_id=target.target_id,
-                            content=request.summary,
-                            prepared=prepared_append,
-                            occurred_at=_aware(request.occurred_at),
-                            session=session,
-                        )
-                    except CanonicalIdentityError as exc:
-                        if exc.category == "receipt_conflict":
-                            raise
-                        raise plugin_ownership_error(exc) from None
-                    created = await session.get(ChatEventModel, appended.event.id)
-                    if created is None:
-                        raise RuntimeError("scoped external event could not be reloaded")
-                    _require_system_external(created)
-                    if appended.created:
-                        created.external_resume_wait = request.resume_waiting_work
-                        segments = json.loads(created.segments_json)
-                        metadata = next(
-                            (
-                                part["data"]
-                                for part in segments
-                                if part.get("type") == "yuki_context"
-                            ),
-                            None,
-                        )
-                        if metadata is None:
-                            segments.append({"type": "yuki_context", "data": source_data})
-                        else:
-                            metadata.update(source_data)
-                        created.segments_json = canonical_json(segments)
-                    if not appended.created:
-                        receipt = await _existing_event_receipt(
-                            session,
-                            plugin_id=plugin_id,
-                            event=created,
-                            notification_id=notification_id,
-                            request=request,
-                        )
-                    else:
-                        delivery_enqueued = False
-                        resumed_wait = False
-                        if prepared_waits is not None:
-                            resumed_wait = (
-                                await waiting.apply_event(
-                                    session,
-                                    event_id=created.id,
-                                    kind="plugin_event",
-                                    prepared=prepared_waits,
-                                )
-                            ) is not None
-                        for index, handle_id, sha256 in media:
-                            delivery_enqueued |= await _ensure_outbox_part(
-                                session,
-                                notification_id=notification_id,
-                                part_key=media_part_key(index=index, sha256=sha256),
-                                source_event_id=created.id,
-                                plugin_id=plugin_id,
-                                grant=grant,
-                                event=created,
-                                part_type="media",
-                                text="",
-                                media_handle_id=handle_id,
-                                now=now,
-                            )
-                        if request.text:
-                            delivery_enqueued |= await _ensure_outbox_part(
-                                session,
-                                notification_id=notification_id,
-                                part_key="text",
-                                source_event_id=created.id,
-                                plugin_id=plugin_id,
-                                grant=grant,
-                                event=created,
-                                part_type="text",
-                                text=request.text,
-                                media_handle_id=None,
-                                now=now,
-                            )
-                        job_created = False
-                        if request.ask_agent:
-                            job = PluginBackgroundTurnJobModel(
-                                source_event_id=created.id,
-                                plugin_id=plugin_id,
-                                target_type=grant.target_type,
-                                target_id=target.target_id,
-                                bot_user_id=grant.bot_user_id,
-                                agent_intent=request.agent_intent,
-                                status="cancelled" if resumed_wait else "pending",
-                                attempts=0,
-                                max_attempts=3,
-                                next_attempt_at=now,
-                                lease_until=None,
-                                generated_text="",
-                                tool_calls_used=0,
-                                model_requests=0,
-                                last_error_category=None,
-                                created_at=now,
-                                updated_at=now,
-                                completed_at=now if resumed_wait else None,
-                            )
-                            await _stamp_publication_child(
-                                session,
-                                job,
-                                grant=grant,
-                                event=created,
-                            )
-                            session.add(job)
-                            await session.flush()
-                            job_created = not resumed_wait
-                        receipt = NotificationPublishReceipt(
-                            notification_id=notification_id,
-                            source_event_id=created.id,
-                            event_created=True,
-                            delivery_enqueued=delivery_enqueued,
-                            agent_turn_enqueued=job_created,
-                            deduplicated=False,
-                        )
             return receipt
 
     async def claim_outbox(
@@ -789,7 +786,7 @@ class PluginNotificationRepository:
                 row.last_error_category = queued_work_error_category(exc, row)
                 row.lease_until = None
                 return None
-            return _outbox_record(row)
+        return _outbox_record(row)
 
     async def finish_outbox(
         self,
@@ -1610,6 +1607,7 @@ async def admit_background_turn_work(
 
     category: str | None = None
     admitted: dict[str, Any] | None = None
+    source_json = encode_json(source)
     async with database.immediate_session() as session:
         now = datetime.now(UTC)
         job = await session.get(PluginBackgroundTurnJobModel, job_id)
@@ -1636,6 +1634,7 @@ async def admit_background_turn_work(
                     lease,
                     source_key=source_key,
                     source=source,
+                    prepared_source_json=source_json,
                     goal=goal,
                 )
                 if job.work_id is not None and job.work_id != admitted["id"]:
@@ -1897,12 +1896,6 @@ def _publication_data(event: ChatEventModel) -> dict[str, Any]:
         if segment.get("type") == "yuki_context" and "publication" in segment.get("data", {}):
             return dict(segment["data"])
     raise _receipt_conflict()
-
-
-def publication_source_person(event: ChatEventModel) -> str | None:
-    """Original accepted publication actor, independent of later grant changes."""
-    value = _publication_data(event)["source_person_id"]
-    return str(value) if value is not None else None
 
 
 def publication_manifest(event: ChatEventModel) -> PublicationManifest:

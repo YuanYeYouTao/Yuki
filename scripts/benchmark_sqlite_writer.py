@@ -19,6 +19,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -42,6 +43,64 @@ def distribution(values: list[float]) -> dict[str, float | int]:
 def reader(database):
     # The same script runs against the frozen old public session API.
     return database.read_session() if hasattr(database, "read_session") else database.sessions()
+
+
+def cpu_affinity(cores: int | None) -> dict[str, object]:
+    """Set an optional real process limit, retaining the OS's allowed CPU set."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.GetProcessAffinityMask.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+        )
+        kernel.GetProcessAffinityMask.restype = wintypes.BOOL
+        kernel.SetProcessAffinityMask.argtypes = (wintypes.HANDLE, ctypes.c_size_t)
+        kernel.SetProcessAffinityMask.restype = wintypes.BOOL
+        process = kernel.GetCurrentProcess()
+
+        def get_affinity():
+            process_mask, system_mask = ctypes.c_size_t(), ctypes.c_size_t()
+            if not kernel.GetProcessAffinityMask(
+                process, ctypes.byref(process_mask), ctypes.byref(system_mask)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return [
+                index
+                for index in range(process_mask.value.bit_length())
+                if process_mask.value & (1 << index)
+            ]
+
+        def set_affinity(selected):
+            mask = sum(1 << index for index in selected)
+            if not kernel.SetProcessAffinityMask(process, mask):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    else:
+
+        def get_affinity():
+            return sorted(os.sched_getaffinity(0))
+
+        def set_affinity(selected):
+            os.sched_setaffinity(0, selected)
+
+    allowed = get_affinity()
+    if cores is not None:
+        if not 1 <= cores <= len(allowed):
+            raise ValueError(f"--cpu-cores must be between 1 and {len(allowed)}, got {cores}")
+        set_affinity(allowed[:cores])
+    actual = get_affinity()
+    return {
+        "requested_cpu_cores": cores,
+        "host_logical_cpu_count": os.cpu_count(),
+        "allowed_before": allowed,
+        "actual_affinity": actual,
+        "actual_logical_cpu_count": len(actual),
+    }
 
 
 def checkout_metadata(checkout):
@@ -635,7 +694,12 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
     from yuki.memory.self_reflection.repository import SelfReflectionRepository
     from yuki.memory.self_reflection.service import _CHECKPOINT, ReflectionCheckpoint
     from yuki.persistence.database import Database
-    from yuki.persistence.models import ChatEventModel, MemorySelfReflectionRunModel
+    from yuki.persistence.models import (
+        ChatEventModel,
+        MemorySelfReflectionRunModel,
+        MemorySelfReflectionStateModel,
+    )
+    from yuki.runtime.work_activation import current_work_control
     from yuki.runtime.work_schema_v1 import effects, inputs, work
     from yuki.social.db_models import SocialOperationModel
 
@@ -716,6 +780,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
             "scenario": args.scenario,
             **await asyncio.to_thread(checkout_metadata, checkout),
             "python": sys.version,
+            "cpu": args.cpu_metadata,
             "dataset": "synthetic logical fixture; setup and post-run verification are untimed",
             "model_transport": "fixed FakeLLMProvider and in-memory platform; no real requests",
         }
@@ -725,7 +790,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
             if args.scenario == "tail":
                 mutations, _, _, _ = await seed(database)
                 await repository.scan_new_events()
-                await _event(
+                first = await _event(
                     mutations._ledger,
                     message_id="first",
                     sender_user_id="1001",
@@ -741,13 +806,16 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                     max_events=1,
                     max_characters=16000,
                 )
+                tail = []
                 for index in range(args.tail):
-                    await _event(
-                        mutations._ledger,
-                        message_id=f"tail-{index}",
-                        sender_user_id="1001",
-                        content=f"source {index}: " + "conversation material " * 80,
-                        group_id="3001",
+                    tail.append(
+                        await _event(
+                            mutations._ledger,
+                            message_id=f"tail-{index}",
+                            sender_user_id="1001",
+                            content=f"source {index}: " + "conversation material " * 80,
+                            group_id="3001",
+                        )
                     )
                 await repository.scan_new_events()
                 async with immediate() as writer:
@@ -764,16 +832,47 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                 cpu_elapsed = time.process_time() - cpu_started
                 measuring = False
                 assert recovered == 1
+                async with reader(database) as snapshot:
+                    saved = await snapshot.get(MemorySelfReflectionRunModel, batch.run_id)
+                    state = await snapshot.get(MemorySelfReflectionStateModel, batch.state.id)
+                    assert saved.status == "completed"
+                    assert saved.proposal_count == saved.committed_count == 0
+                    assert saved.checkpoint_json is None
+                    assert saved.first_event_id == saved.last_event_id == first.id
+                    assert state.last_event_id == first.id
+                    assert state.latest_event_id == (tail[-1].id if tail else first.id)
+                    assert state.pending_events == len(tail)
+                    assert state.pending_characters == sum(
+                        len(row.evidence_content) for row in tail
+                    )
+                    assert (state.pending_since is not None) == bool(tail)
                 result.update(
                     tail_events=args.tail,
                     recovery_ms=elapsed * 1000,
                     process_cpu_seconds=cpu_elapsed,
+                    tail_verified={
+                        "original_run_id": batch.run_id,
+                        "completed_first_event_id": saved.first_event_id,
+                        "completed_last_event_id": saved.last_event_id,
+                        "cursor_event_id": state.last_event_id,
+                        "latest_event_id": state.latest_event_id,
+                        "pending_events": state.pending_events,
+                        "pending_characters": state.pending_characters,
+                        "checkpoint_cleared": saved.checkpoint_json is None,
+                    },
                 )
             else:
+                model_observed_at = {}
+                request_call_keys = {}
+                receipt_completed_at = {}
 
                 def respond(request):
+                    model_observed_at[id(request)] = time.perf_counter()
                     if request.messages[-1].role == "tool":
                         return "NO_REPLY"
+                    control = current_work_control.get()
+                    assert control is not None and control.session is not None
+                    request_call_keys[id(request)] = control.session.call_key("fixed-send")
                     return ChatResponse(
                         content="",
                         latency_seconds=0,
@@ -794,6 +893,15 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                     per_group_requests_per_minute=100000,
                     global_llm_concurrency=16,
                 )
+                dispatch_claimed = app.social_service._dispatch_claimed
+
+                async def observed_dispatch(*arguments, **options):
+                    receipt = await dispatch_claimed(*arguments, **options)
+                    if receipt.status == "succeeded":
+                        receipt_completed_at.setdefault(receipt.operation_id, time.perf_counter())
+                    return receipt
+
+                app.social_service._dispatch_claimed = observed_dispatch
                 await app._freeze_main_manifest()
                 await repository.scan_new_events()
                 # Warm the same real Main entry before measuring arrivals.
@@ -842,6 +950,9 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                         "reflection_arrivals": args.background,
                         "work_renew_arrivals": args.background,
                     }
+                # Model and trace diagnostics share this real disposable writer.
+                # Exclude pending warmup/setup work before opening the timed window.
+                await app.model_invocations.writer.drain()
                 waits.clear()
                 scopes.clear()
                 acquired_to_end.clear()
@@ -855,16 +966,23 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                 domain_completion: list[float] = []
                 renew_latencies: list[float] = []
                 loop_lag: list[float] = []
-                stop_probe = asyncio.Event()
+                stop_probe = threading.Event()
                 started = time.perf_counter()
                 cpu_started = time.process_time()
                 measuring = True
 
-                async def loop_probe():
-                    while not stop_probe.is_set():
-                        due = time.perf_counter() + 0.01
-                        await asyncio.sleep(0.01)
-                        loop_lag.append(max(0, time.perf_counter() - due))
+                loop = asyncio.get_running_loop()
+
+                def record_lag(posted):
+                    if not stop_probe.is_set():
+                        loop_lag.append(time.perf_counter() - posted)
+
+                def loop_probe():
+                    # Windows asyncio timers can wake before perf_counter's due
+                    # time. Measure actual callback dispatch from a sleeping
+                    # thread, with the same 20 Hz observer in both checkouts.
+                    while not stop_probe.wait(0.05):
+                        loop.call_soon_threadsafe(record_lag, time.perf_counter())
 
                 async def chat(index):
                     due = started + index * args.interval
@@ -876,7 +994,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                             replace(
                                 message,
                                 message_id=f"measured-{index}",
-                                text=f"CURRENT_CHAT_INSTRUCTION arrival {index}",
+                                text=f"CURRENT_CHAT_INSTRUCTION arrival {index:08d}",
                             ),
                             sender,
                         )
@@ -966,7 +1084,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                     jobs += [renew(index) for index in range(args.background)]
                 if domain_run is not None:
                     jobs.append(domain())
-                probe = asyncio.create_task(loop_probe())
+                probe = asyncio.create_task(asyncio.to_thread(loop_probe))
                 try:
                     await asyncio.gather(*jobs)
                     # The real Main may merge arrivals into an existing Work. Join
@@ -987,6 +1105,9 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                             break
                         await app.work_scheduler.drain_once()
                     assert not pending, pending
+                    # Include the actual timed requests' deferred diagnostics in
+                    # total work/SQL/CPU; individual handle calls retain their scope.
+                    await app.model_invocations.writer.drain()
                     elapsed = time.perf_counter() - started
                     cpu_elapsed = time.process_time() - cpu_started
                 finally:
@@ -1103,6 +1224,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                                     SocialOperationModel.event_id,
                                     SocialOperationModel.platform_reference,
                                     SocialOperationModel.source_turn_id,
+                                    SocialOperationModel.tool_call_id,
                                 ).where(SocialOperationModel.event_id.in_(sent))
                             )
                         )
@@ -1124,6 +1246,8 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                             saved = await snapshot.get(MemorySelfReflectionRunModel, item["run_id"])
                             assert saved.status == "completed"
                 coverage = []
+                first_observations = {}
+                first_confirmed_receipts = {}
                 for request in provider.requests:
                     if request.messages[-1].role == "tool":
                         continue
@@ -1138,19 +1262,39 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                     ]
                     if not seen:
                         continue
-                    trigger = max(seen, key=lambda row: row["id"])
-                    source_turn = f"{trigger['canonical_conversation_id']}:event:{trigger['id']}"
+                    observed = model_observed_at[id(request)]
+                    for row in seen:
+                        first_observations[row["id"]] = min(
+                            first_observations.get(row["id"], observed), observed
+                        )
                     delivered = [
                         row["id"]
                         for row in receipts
-                        if row["source_turn_id"] == source_turn and row["status"] == "succeeded"
+                        if row["tool_call_id"] == request_call_keys[id(request)]
+                        and row["status"] == "succeeded"
+                        and receipt_completed_at[row["id"]] >= observed
                     ]
+                    completed = min(
+                        (receipt_completed_at[identity] for identity in delivered), default=None
+                    )
+                    if completed is not None:
+                        for row in seen:
+                            first_confirmed_receipts[row["id"]] = min(
+                                first_confirmed_receipts.get(row["id"], completed), completed
+                            )
                     coverage.append(
                         {
                             "request_chain_id": request.request_chain_id,
+                            "tool_call_key": request_call_keys[id(request)],
                             "source_event_ids": [row["id"] for row in seen],
-                            "trigger_event_id": trigger["id"],
+                            "receipt_source_turn_ids": [
+                                row["source_turn_id"] for row in receipts if row["id"] in delivered
+                            ],
                             "social_receipt_ids": delivered,
+                            "model_observed_seconds": observed - started,
+                            "successful_receipt_observed_seconds": completed - started
+                            if completed is not None
+                            else None,
                         }
                     )
                 covered = {
@@ -1163,6 +1307,31 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                 if not workload_errors:
                     assert covered == {row["id"] for row in incoming}, (covered, incoming)
                     assert producer_count == 0
+                input_completion = []
+                for row in sorted(incoming, key=lambda row: row["id"]):
+                    index = int(row["platform_message_id"].removeprefix("measured-"))
+                    due = started + index * args.interval
+                    observed = first_observations.get(row["id"])
+                    completed = first_confirmed_receipts.get(row["id"])
+                    input_completion.append(
+                        {
+                            "event_id": row["id"],
+                            "index": index,
+                            "scheduled_arrival_seconds": due - started,
+                            "first_model_observation_seconds": observed - started
+                            if observed is not None
+                            else None,
+                            "confirmed_receipt_seconds": completed - started
+                            if completed is not None
+                            else None,
+                            "scheduled_arrival_to_model_ms": (observed - due) * 1000
+                            if observed is not None
+                            else None,
+                            "scheduled_arrival_to_confirmed_receipt_ms": (completed - due) * 1000
+                            if completed is not None
+                            else None,
+                        }
+                    )
                 result.update(
                     messages=args.messages,
                     background_jobs=len(background_latencies),
@@ -1176,7 +1345,39 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                         "consumed and original producers joined. This is not one reply per arrival."
                     ),
                     handler=distribution(latencies),
+                    handler_semantics=(
+                        "processor.handle entry to return; merged inputs can return before "
+                        "their producer finishes"
+                    ),
                     arrival_to_exit=distribution(completions),
+                    arrival_to_exit_semantics=(
+                        "original scheduled arrival to processor.handle return, including late "
+                        "coroutine dispatch"
+                    ),
+                    scheduled_arrival_to_model_observation=distribution(
+                        [
+                            item["scheduled_arrival_to_model_ms"] / 1000
+                            for item in input_completion
+                            if item["scheduled_arrival_to_model_ms"] is not None
+                        ]
+                    ),
+                    scheduled_arrival_to_confirmed_receipt=distribution(
+                        [
+                            item["scheduled_arrival_to_confirmed_receipt_ms"] / 1000
+                            for item in input_completion
+                            if item["scheduled_arrival_to_confirmed_receipt_ms"] is not None
+                        ]
+                    ),
+                    receipt_completion_semantics=(
+                        "perf_counter observed when original Social._dispatch_claimed returns a "
+                        "successful receipt after its actual ledger/receipt commit; matched to "
+                        "a model request that observed the input before that completion. "
+                        "Latency starts at original scheduled arrival, never a DB created_at."
+                    ),
+                    elapsed_semantics=(
+                        "scheduled load start through input drain and shared diagnostic writer "
+                        "drain; post-run verification excluded"
+                    ),
                     background=distribution(background_latencies),
                     reflection_receipts=reflection_receipts,
                     verified_inbound=len(incoming),
@@ -1190,6 +1391,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                         "handler_results": handler_results,
                         "completed_input_observations": len(covered),
                         "model_source_receipts": coverage,
+                        "per_input_completion": input_completion,
                         "active_original_producers": producer_count,
                         "admissions": [dict(row) for row in admissions],
                         "inputs": [dict(row) for row in input_rows],
@@ -1200,7 +1402,12 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                     domain_handler=distribution(domain_latencies),
                     domain_arrival_to_exit=distribution(domain_completion),
                     work_renew=distribution(renew_latencies),
-                    event_loop_lag=distribution(loop_lag),
+                    sampled_callback_dispatch_delay=distribution(loop_lag),
+                    callback_probe_semantics=(
+                        "20 Hz sleeping thread posts callbacks; perf_counter measures post to "
+                        "event-loop dispatch. Sampled delays do not measure continuous maximum "
+                        "stall or time when the observer cannot acquire the GIL."
+                    ),
                     process_cpu_seconds=cpu_elapsed,
                     domain_delay_seconds=args.domain_delay if domain_run else None,
                 )
@@ -1257,7 +1464,9 @@ if __name__ == "__main__":
     parser.add_argument("--family", type=int, default=4)
     parser.add_argument("--payload-chars", type=int, default=4096)
     parser.add_argument("--domain-delay", type=float, default=0.05)
+    parser.add_argument("--cpu-cores", type=int, default=None)
     arguments = parser.parse_args()
+    arguments.cpu_metadata = cpu_affinity(arguments.cpu_cores)
     report = asyncio.run(main(arguments))
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(

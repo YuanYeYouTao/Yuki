@@ -123,21 +123,20 @@ async def account_id(env, native, platform="qq"):
 
 
 async def observe(env, binding_id, name, *, group="20001"):
-    from yuki.identity.person_state import observe_canonical_person
+    from tests.support.account_observations import apply_observations, profile_message
 
-    async with env.db.immediate_session() as session:
+    async with env.db.read_session() as session:
         binding = await session.get(IdentityBindingModel, binding_id)
-        await observe_canonical_person(
-            session,
-            binding=binding,
+    await apply_observations(
+        env.db,
+        profile_message(
+            user_id=binding.external_account_id,
             nickname=name,
             group_id=group,
             group_card=name,
-            group_name="",
-            nickname_known=True,
-            group_card_known=True,
-            now=datetime.now(UTC),
-        )
+            platform=binding.platform,
+        ),
+    )
 
 
 @pytest.mark.parametrize("account", ["10001", "10002"])

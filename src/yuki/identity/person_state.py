@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.domain.messages import InboundMessage, sanitize_display_name
 from yuki.identity.canonical_repository import (
@@ -349,149 +350,48 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-async def observe_canonical_person(
-    session: AsyncSession,
+def prepare_canonical_person_observation(
     *,
     binding: IdentityBindingModel,
     nickname: str,
-    group_id: str | None,
-    group_card: str,
     group_name: str,
-    nickname_known: bool,
-    group_card_known: bool,
     now: datetime,
     space_id: str | None = None,
-) -> None:
-    prepared = await prepare_canonical_person_observation(
-        session,
-        binding=binding,
-        nickname=nickname,
-        group_id=group_id,
-        group_card=group_card,
-        group_name=group_name,
-        nickname_known=nickname_known,
-        group_card_known=group_card_known,
-        now=now,
-        space_id=space_id,
-    )
-    space_binding = (
-        await find_space_binding(session, group_id, platform=binding.platform) if group_id else None
-    )
-    profile = (
-        await session.get(AccountSpaceProfileModel, (binding.account_id, space_binding.id))
-        if space_binding
-        else None
-    )
-    names = {
-        (row.space_binding_id, row.name): row
-        for row in await session.scalars(
-            select(AccountNameObservationModel).where(
-                AccountNameObservationModel.account_id == binding.account_id,
-                AccountNameObservationModel.assignment_id == binding.id,
-                AccountNameObservationModel.space_binding_id.is_(None)
-                | (
-                    AccountNameObservationModel.space_binding_id == space_binding.id
-                    if space_binding
-                    else False
-                ),
-            )
-        )
-    }
-    apply = await prepared(session)
-    apply()
-    if nickname_known and nickname:
-        binding.account.display_name = sanitize_display_name(nickname)
-        binding.account.updated_at = now
-    if space_binding:
-        if profile is None:
-            session.add(
-                AccountSpaceProfileModel(
-                    account_id=binding.account_id,
-                    space_binding_id=space_binding.id,
-                    display_name=group_card if group_card_known else "",
-                    first_seen_at=now,
-                    last_seen_at=now,
-                )
-            )
-        else:
-            if group_card_known:
-                profile.display_name = sanitize_display_name(group_card)
-            profile.last_seen_at = now
-    for name, scope, kind in (
-        (nickname, None, "nickname"),
-        (group_card, space_binding.id if space_binding else None, "group_card"),
-    ):
-        name = sanitize_display_name(name)
-        if not name or (kind == "group_card" and space_binding is None):
-            continue
-        row = names.get((scope, name))
-        if row is None:
-            session.add(
-                AccountNameObservationModel(
-                    account_id=binding.account_id,
-                    assignment_id=binding.id,
-                    space_binding_id=scope,
-                    name=name,
-                    kind=kind,
-                    first_seen_at=now,
-                    last_seen_at=now,
-                )
-            )
-        else:
-            row.last_seen_at = now
-
-
-async def prepare_canonical_person_observation(
-    session: AsyncSession,
-    *,
-    binding: IdentityBindingModel,
-    nickname: str,
-    group_id: str | None,
-    group_card: str,
-    group_name: str,
-    nickname_known: bool,
-    group_card_known: bool,
-    now: datetime,
-    space_id: str | None = None,
+    space_binding_id: str | None = None,
 ) -> PreparedPersonObservation:
-    """Read the original owners and names before the event claims its receipt."""
-
-    person = await session.get(CanonicalPersonModel, binding.person_id)
-    if person is None:
-        raise CanonicalIdentityError("unclassified")
-    space_binding = None
-    space = None
-    if group_id is not None:
-        space_binding = await find_space_binding(session, group_id, platform=binding.platform)
-        if space_binding is not None:
-            if space_id is not None and space_binding.space_id != space_id:
-                raise CanonicalIdentityError("canonical_owner_mismatch")
-            space = await session.get(CanonicalSpaceModel, space_binding.space_id)
-    elif space_id is not None:
-        space = await session.get(CanonicalSpaceModel, space_id)
+    """Freeze original admitted IDs; bind their current owners once before mutation."""
     original_binding = (binding.id, binding.account_id, binding.person_id)
-    original_space = space.id if space is not None else None
-    original_space_binding = space_binding.id if space_binding is not None else None
+    original_space, original_space_binding = space_id, space_binding_id
 
     async def bind(active: AsyncSession) -> Callable[[], None]:
-        binding = await active.get(IdentityBindingModel, original_binding[0])
-        if (
-            binding is None
-            or (binding.id, binding.account_id, binding.person_id) != original_binding
-        ):
+        person, root = aliased(CanonicalPersonModel), aliased(CanonicalPersonModel)
+        found = (
+            await active.execute(
+                select(
+                    IdentityBindingModel,
+                    root,
+                    CanonicalSpaceModel,
+                    SpaceBindingModel,
+                    MembershipModel,
+                )
+                .join(person, person.id == IdentityBindingModel.person_id)
+                .join(root, root.id == func.coalesce(person.merged_into_person_id, person.id))
+                .outerjoin(CanonicalSpaceModel, CanonicalSpaceModel.id == original_space)
+                .outerjoin(SpaceBindingModel, SpaceBindingModel.id == original_space_binding)
+                .outerjoin(
+                    MembershipModel,
+                    (MembershipModel.canonical_person_id == person.id)
+                    & (MembershipModel.canonical_space_id == original_space),
+                )
+                .where(IdentityBindingModel.id == original_binding[0])
+                .execution_options(populate_existing=True)
+            )
+        ).one_or_none()
+        if found is None:
             raise ObservationChanged()
-        person = await active.get(CanonicalPersonModel, binding.person_id)
-        if person is None:
+        binding, current, space, space_binding, membership = found
+        if (binding.id, binding.account_id, binding.person_id) != original_binding:
             raise ObservationChanged()
-        current = await active.get(CanonicalPersonModel, await current_person_id(active, person.id))
-        if current is None:
-            raise ObservationChanged()
-        space = await active.get(CanonicalSpaceModel, original_space) if original_space else None
-        space_binding = (
-            await active.get(SpaceBindingModel, original_space_binding)
-            if original_space_binding
-            else None
-        )
         if original_space is not None and (
             space is None
             or (
@@ -500,11 +400,6 @@ async def prepare_canonical_person_observation(
             )
         ):
             raise ObservationChanged()
-        membership = (
-            await active.get(MembershipModel, (binding.person_id, original_space))
-            if original_space is not None
-            else None
-        )
 
         def apply() -> None:
             if not current.display_name and nickname:

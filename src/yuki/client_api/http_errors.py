@@ -17,7 +17,7 @@ from yuki.persistence.database import (
 
 
 def unknown_write_response(exc: BaseException) -> JSONResponse | None:
-    if write_failure_phase(exc) is not None and write_failure_committed(exc) is None:
+    if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
         return JSONResponse({"problem": {"code": "unknown"}}, status_code=500)
     return None
 

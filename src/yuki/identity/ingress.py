@@ -46,7 +46,7 @@ from yuki.identity.receipt_compat import (
     transport_receipt,
 )
 from yuki.identity.routing import PresenceRouter
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed, write_failure_phase
 from yuki.persistence.models import ChatEventModel
 
 _KEEPER_STATUS = "keeper"
@@ -151,7 +151,9 @@ class CanonicalIngressResolver:
         try:
             result = await self._admit_local(bot, message)
         except CanonicalIdentityError as exc:
-            if exc.category != "canonical_owner_disabled":
+            if exc.category != "canonical_owner_disabled" or (
+                write_failure_phase(exc) is not None and write_failure_committed(exc) is not False
+            ):
                 raise
             return _drop(
                 "private_not_allowed" if message.scope_type is ScopeType.PRIVATE else exc.category,

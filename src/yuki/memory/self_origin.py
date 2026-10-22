@@ -94,7 +94,17 @@ async def resolve_self_origin(
     require_group_projection: bool = True,
 ) -> SelfMemoryOrigin:
     if initiative_run_id is not None:
-        run = await session.get(InitiativeRunModel, initiative_run_id)
+        run = (
+            await session.execute(
+                select(
+                    InitiativeRunModel.conversation_id,
+                    InitiativeRunModel.space_id,
+                    InitiativeRunModel.presence_id,
+                    InitiativeRunModel.generation,
+                    InitiativeRunModel.created_at,
+                ).where(InitiativeRunModel.id == initiative_run_id)
+            )
+        ).one_or_none()
         if run is None:
             raise MemoryPartitionResolutionError("initiative_source_missing")
         conversation_id, space_id, presence_id = run.conversation_id, run.space_id, run.presence_id

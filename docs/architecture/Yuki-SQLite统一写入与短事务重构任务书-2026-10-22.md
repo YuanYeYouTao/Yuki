@@ -539,9 +539,10 @@ database_command的writer/savepoint内。将原audit与相关谱系准备放在�
 整个rollback套IMMEDIATE后宣称短写，也不用全局配置版本或新journal代替其真实来源。
 
 管理侧也按实际组合迁移：GroupAdmin._set_enabled在AdminAudit.transaction内用同session改行
-和记audit；PreferenceAdmin的事实变更、后置audit目前是两个阶段，分别收口。不要在外层
-writer调用整个公开Memory/Admin服务，再由里面另开writer；有原子组合的链路传同session，
-不把当前两个阶段写成已经同笔提交，也不借统一准入扩大成另一项全管理流程改造。
+和记audit。实施起点的PreferenceAdmin与MemoryAdmin部分分支在领域回执提交后另写audit；
+R2确认这些后置记录没有现行读取合同，已删除，沿原Memory mutation回执查询事实和结果。
+保留fallback分支原有事实+audit同session组合，以及config/automation/control审计。不要在外层
+writer调用整个公开Memory/Admin服务，再由里面另开writer；有原子组合的链路传同session。
 
 W42/W43的`delete_preference`当前按人物读全部preference再用Python筛key。实施时按原
 target/kind/key直接查询歧义判断所需候选，不把全人物正文扫描机械搬进IMMEDIATE。

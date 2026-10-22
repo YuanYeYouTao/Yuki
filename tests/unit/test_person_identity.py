@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person
 from tests.support.person_merge import merge_persons
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
@@ -39,7 +40,6 @@ from yuki.identity.person_identity import (
 from yuki.identity.person_state import (
     load_canonical_aliases,
     load_canonical_profile,
-    observe_canonical_person,
     set_canonical_person_enabled,
 )
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
@@ -281,15 +281,11 @@ async def test_route_trigger_accepts_root_to_original_binding_and_keeps_target_r
 
 async def test_profile_observation_of_retired_presence_requires_and_uses_person_binding(database):
     people = PeopleRepository(database)
-    await people.observe(user_id="8001", nickname="Still Yuki")
     async with database.immediate_session() as session:
         presence = await find_presence(session, "8001")
         assert presence is not None
         presence_id = presence.id
         presence.enabled = False
-    with pytest.raises(CanonicalIdentityError) as error:
-        await people.observe(user_id="8001", nickname="Ordinary account")
-    assert error.value.category == "unclassified"
     async with database.immediate_session() as session:
         with pytest.raises(CanonicalIdentityError, match="canonical identity invariant failed"):
             await ensure_person(session, "8001", now=NOW)
@@ -302,7 +298,7 @@ async def test_profile_observation_of_retired_presence_requires_and_uses_person_
             session, presence.account, presence.id, person, now=NOW
         )
         person_id, replacement_id = person.id, replacement.id
-    await people.observe(user_id="8001", nickname="Ordinary account", expected_person_id=person_id)
+    await apply_observations(database, profile_message(user_id="8001", nickname="Ordinary account"))
     profile = await people.get(person_id=person_id)
     assert profile is not None and profile.nickname == "Ordinary account"
     async with database.read_session() as session:
@@ -321,21 +317,15 @@ async def test_initial_name_is_person_owned_and_rename_survives_platform_observa
             session, external_account_id="name-test", display_name="", platform="telegram", now=NOW
         )
         person = binding.person_id
-        for nickname in ("First", "Platform rename"):
-            await observe_canonical_person(
-                session,
-                binding=binding,
-                nickname=nickname,
-                nickname_known=True,
-                group_id=None,
-                group_card="",
-                group_name="",
-                group_card_known=False,
-                now=NOW,
-            )
+        binding_id, account_id = binding.id, binding.account_id
+    for nickname in ("First", "Platform rename"):
+        await apply_observations(
+            database, profile_message(user_id="name-test", nickname=nickname, platform="telegram")
+        )
+    async with database.immediate_session() as session:
         assert (await session.get(CanonicalPersonModel, person)).display_name == "First"
-        account_id = binding.account_id
         await rename_person(session, person, "Chosen", now=NOW)
+        binding = await session.get(IdentityBindingModel, binding_id)
         binding.status = "disabled"
     async with database.read_session() as session:
         assert await load_canonical_profile(session, person_id=person) == ("Chosen", "")

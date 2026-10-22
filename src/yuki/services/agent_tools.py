@@ -382,6 +382,29 @@ def _object_schema(
     }
 
 
+def database_failure_result(
+    error: BaseException, *, provider_id: str = "", tool_name: str = ""
+) -> ToolExecutionResult:
+    from yuki.persistence.database import (
+        write_failure_committed,
+        write_failure_phase,
+        write_failure_retryable,
+    )
+
+    committed = write_failure_committed(error)
+    return ToolExecutionResult(
+        ok=False,
+        error_code="database_failure",
+        public_message="数据库操作失败",
+        retryable=write_failure_retryable(error),
+        uncertain=committed is None,
+        mutation_committed=committed,
+        provider_id=provider_id,
+        tool_name=tool_name,
+        metadata={"database_write_phase": write_failure_phase(error)},
+    )
+
+
 class AgentToolService:
     """Define and execute tools without granting authority through prompt text."""
 
@@ -1039,23 +1062,9 @@ class AgentToolService:
         name: str,
         runtime: ToolRuntime,
     ) -> ToolExecutionResult:
-        from yuki.persistence.database import (
-            write_failure_committed,
-            write_failure_phase,
-            write_failure_retryable,
-        )
-
-        committed = write_failure_committed(error)
         logger.exception("agent_tool_database_failure tool=%s", name)
         await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
-        return self._result(
-            error="database_failure",
-            detail="数据库操作失败",
-            retryable=write_failure_retryable(error),
-            uncertain=committed is None,
-            mutation_committed=committed,
-            metadata={"database_write_phase": write_failure_phase(error)},
-        )
+        return database_failure_result(error)
 
     def _my_capabilities(
         self, arguments: dict[str, Any], runtime: ToolRuntime

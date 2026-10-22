@@ -48,16 +48,13 @@ from yuki.domain.audio import parse_transcripts, serialize_transcripts
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.identity.canonical_repository import (
-    AccountRole,
     bindings_for_person,
     external_id,
-    find_assignment,
     find_identity_binding,
     forget_person_by_id,
     trip,
 )
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
-from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.ownership_interval import BindingOwnership
 from yuki.identity.person_identity import person_family_ids
 from yuki.identity.person_state import (
@@ -70,11 +67,9 @@ from yuki.identity.person_state import (
     load_canonical_person_enabled,
     load_canonical_profile,
     load_canonical_profiles,
-    observe_canonical_person,
     set_canonical_person_enabled,
     set_canonical_space_flags,
 )
-from yuki.identity.write_settings import identity_write_settings
 from yuki.memory.dream.db_models import MemoryDreamClusterModel
 from yuki.memory.rebuild.privacy import PreparedRebuildForget
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
@@ -427,26 +422,6 @@ def _score_group_member_identities(
     )
 
 
-async def _observe_role(
-    session: AsyncSession,
-    user_id: str,
-    *,
-    is_bot: bool,
-    binding: IdentityBindingModel | None = None,
-    platform: str = "qq",
-) -> tuple[AccountRole, IdentityBindingModel | None]:
-    settings = identity_write_settings()
-    external = external_id(user_id)
-    if is_bot or (platform == "qq" and external in settings.ignored_bot_users):
-        return "external_bot", None
-    if binding is None:
-        assignment = await find_assignment(session, external, platform=platform)
-        if isinstance(assignment, PresenceModel) and assignment.enabled:
-            return "yuki_self", None
-        binding = assignment if isinstance(assignment, IdentityBindingModel) else None
-    return "human", binding
-
-
 class PeopleRepository:
     """Keep one global person and exact per-group memberships."""
 
@@ -544,56 +519,6 @@ class PeopleRepository:
                 continue
             scopes[scope.key] = scope
         return tuple(scopes[key] for key in sorted(scopes))
-
-    async def observe(
-        self,
-        *,
-        user_id: str,
-        nickname: str,
-        group_id: str | None = None,
-        group_card: str = "",
-        group_name: str = "",
-        nickname_known: bool = True,
-        group_card_known: bool = True,
-        is_bot: bool = False,
-        expected_person_id: str | None = None,
-        platform: str = "qq",
-        space_id: str | None = None,
-    ) -> None:
-        """Update current values and retain historical aliases."""
-
-        now = datetime.now(UTC)
-
-        async def observe(session: AsyncSession) -> None:
-            current_binding = None
-            if expected_person_id is not None:
-                current_binding = await find_identity_binding(
-                    session, external_id(user_id), platform=platform
-                )
-                if current_binding is None or current_binding.person_id != expected_person_id:
-                    raise CanonicalIdentityError("canonical_owner_mismatch")
-            role, current_binding = await _observe_role(
-                session, user_id, is_bot=is_bot, binding=current_binding, platform=platform
-            )
-            if role != "human":
-                return
-            if current_binding is None:
-                raise CanonicalIdentityError("unclassified")
-            await observe_canonical_person(
-                session,
-                binding=current_binding,
-                nickname=nickname if nickname_known else "",
-                group_id=group_id,
-                group_card=group_card,
-                group_name=group_name,
-                nickname_known=nickname_known,
-                group_card_known=group_card_known,
-                now=now,
-                space_id=space_id,
-            )
-
-        async with self._database.immediate_session() as writer:
-            await observe(writer)
 
     async def get(
         self,

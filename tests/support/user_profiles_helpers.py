@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 
 from yuki.domain.conversations import ScopeType
@@ -25,11 +26,14 @@ async def observe_members(
             await ensure_person(session, user_id, now=datetime(2026, 8, 24, tzinfo=UTC))
     people = PeopleRepository(database)
     for user_id in user_ids:
-        await people.observe(
-            user_id=user_id,
-            nickname=f"name-{user_id}",
-            group_id=group_id,
-            group_card=f"card-{user_id}",
+        await apply_observations(
+            database,
+            profile_message(
+                user_id=user_id,
+                nickname=f"name-{user_id}",
+                group_id=group_id,
+                group_card=f"card-{user_id}",
+            ),
         )
     return people
 

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import make_settings
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.event_seed import seed_event
 
@@ -1321,12 +1322,12 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     service, facts, ledger, _processor = _service(database)
     del service
     people = PeopleRepository(database)
-    await people.observe(user_id="1001", nickname="请求者", group_id="3001")
-    await people.observe(
-        user_id="2002",
-        nickname="Diana",
-        group_id="3001",
-        group_card="Diana",
+    await apply_observations(
+        database, profile_message(user_id="1001", nickname="请求者", group_id="3001")
+    )
+    await apply_observations(
+        database,
+        profile_message(user_id="2002", nickname="Diana", group_id="3001", group_card="Diana"),
     )
     current_group_event = await _event(
         ledger,
@@ -1436,9 +1437,15 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         await ensure_space(session, "3004")
         await ensure_person(session, "4004")
         await ensure_person(session, "5005")
-    await people.observe(user_id="1001", nickname="请求者", group_id="3003")
-    await people.observe(user_id="4004", nickname="旧群友", group_id="3003")
-    await people.observe(user_id="5005", nickname="陌生人", group_id="3004")
+    await apply_observations(
+        database, profile_message(user_id="1001", nickname="请求者", group_id="3003")
+    )
+    await apply_observations(
+        database, profile_message(user_id="4004", nickname="旧群友", group_id="3003")
+    )
+    await apply_observations(
+        database, profile_message(user_id="5005", nickname="陌生人", group_id="3004")
+    )
     historical_fact = await facts.remember(
         MemoryFactCreate(
             scope_type=MemoryScopeType.PERSON,
@@ -1750,7 +1757,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     # Origin labels do not revoke a retained real actor; the common query plane
     # still applies the same person and scope read authorization.
     assert background["ok"]
-    await people.observe(user_id="2003", nickname="间接关系", group_id="3002")
+    await apply_observations(
+        database, profile_message(user_id="2003", nickname="间接关系", group_id="3002")
+    )
     people_ids, space_ids = await _owners(database)
     indirect = (
         await tools.execute(

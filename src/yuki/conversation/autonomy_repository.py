@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -41,17 +40,6 @@ from yuki.persistence.unit_of_work import optional_session
 
 _ACTIVE = ("accepted", "running")
 _OUTCOMES = frozenset({"running", "completed", "no_reply", "interrupted", "failed"})
-
-
-@asynccontextmanager
-async def _feedback_session(
-    database: Database, session: AsyncSession | None
-) -> AsyncIterator[AsyncSession]:
-    if session is not None:
-        yield session
-    else:
-        async with database.immediate_session() as owned:
-            yield owned
 
 
 class AutonomyConflict(ValueError):
@@ -663,7 +651,7 @@ class AutonomyRepository:
                 effect_refs=effect_refs,
                 considered_sources=considered_sources,
             )
-        async with _feedback_session(self._database, session) as session:
+        async with optional_session(self._database, session, write=True) as session:
             if not await session.scalar(select(prepared.source)):
                 raise AutonomyConflict("initiative_feedback_source_changed")
             row = await session.scalar(
@@ -764,18 +752,3 @@ class AutonomyRepository:
             func.json(row.support_refs_json) == func.json(_json(run.support_refs)),
         )
         return PreparedInitiativeFeedback(run, payload, source.exists())
-
-    @staticmethod
-    async def feedback_run_current(
-        prepared: PreparedInitiativeFeedback, *, session: AsyncSession
-    ) -> bool:
-        row, run = InitiativeRunModel, prepared.run
-        return bool(
-            await session.scalar(
-                select(prepared.source).where(
-                    row.id == run.run_id,
-                    row.state == run.state,
-                    row.feedback_sequence == run.feedback_sequence,
-                )
-            )
-        )

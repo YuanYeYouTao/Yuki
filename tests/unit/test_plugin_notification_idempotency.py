@@ -1194,3 +1194,32 @@ async def test_original_raw_target_publication_returns_same_receipt_after_canoni
         await repository.publish(plugin_id=_PLUGIN_ID, request=_request(text="different body"))
     assert conflict.value.category == "receipt_conflict"
     assert await _state(database) == before
+
+
+async def test_publication_and_outbox_decode_original_bodies_outside_writer(database, monkeypatch):
+    repository = await _install(database)
+    original_loads = notification_repository_module.json.loads
+    original_outbox = notification_repository_module._outbox_record
+    marker = "original-large-publication-body"
+
+    def decode(value, *args, **kwargs):
+        if isinstance(value, str) and marker in value:
+            assert not database._writer.locked(), "original bodies are decoded outside the writer"
+        return original_loads(value, *args, **kwargs)
+
+    def outbox(row):
+        assert not database._writer.locked(), "claim returns the original plan after root commit"
+        return original_outbox(row)
+
+    monkeypatch.setattr(notification_repository_module.json, "loads", decode)
+    monkeypatch.setattr(notification_repository_module, "_outbox_record", outbox)
+    request = _request(payload={"original": marker * 400})
+    first = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    repeated = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert repeated.deduplicated and repeated.source_event_id == first.source_event_id
+    (item,) = await repository.unprepared_outbox()
+    parts = ({"message": {"text": marker * 300, "media": None}},)
+    await repository.prepare_outbox(item, parts)
+    await repository.prepare_outbox(item, parts)
+    claimed = await repository.claim_outbox()
+    assert claimed.prepared["message"]["text"] == marker * 300

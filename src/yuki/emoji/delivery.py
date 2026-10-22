@@ -18,6 +18,7 @@ from yuki.domain.tool_actor import ToolActor
 from yuki.emoji.models import EmojiAsset
 from yuki.gateway.social import TransportMessage, prepared_transport, transport_payload
 from yuki.identity.person_identity import same_person_id
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.worker_recovery import recover_database_loop
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.subagent_schema import children
@@ -361,6 +362,11 @@ class EmojiDeliveryService:
                 except (asyncio.CancelledError, SQLAlchemyError):
                     raise
                 except Exception as exc:
+                    if write_failure_phase(exc) is not None and (
+                        write_failure_committed(exc) is not False
+                        or not isinstance(exc, (SocialError, WorkspaceError))
+                    ):
+                        raise
                     intent = await self.intents.close(
                         intent.id,
                         str(exc)
@@ -394,6 +400,11 @@ class EmojiDeliveryService:
             # original dispatch CAS and never repeats an unknown network effect.
             raise
         except Exception as exc:
+            if write_failure_phase(exc) is not None and (
+                write_failure_committed(exc) is not False
+                or not isinstance(exc, (SocialError, WorkspaceError))
+            ):
+                raise
             logger.warning("social_illustration_failed category=%s", type(exc).__name__)
             await self.intents.close(
                 intent.id,

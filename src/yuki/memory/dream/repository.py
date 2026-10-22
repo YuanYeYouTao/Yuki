@@ -724,7 +724,7 @@ class DreamRepository:
             row.error_category = None
             row.updated_at = now
             await session.flush()
-            return self._cluster(row)
+        return self._cluster(row)
 
     async def reserve_model_call(
         self,
@@ -814,44 +814,36 @@ class DreamRepository:
             )
             if row is None:
                 return None
-            pending = int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(MemoryDreamClusterModel)
-                    .where(
-                        MemoryDreamClusterModel.run_id == row.id,
-                        MemoryDreamClusterModel.status.in_(
-                            (
-                                DreamClusterStatus.PENDING.value,
-                                DreamClusterStatus.PROCESSING.value,
+            cluster = MemoryDreamClusterModel
+            pending, failed = (
+                await session.execute(
+                    select(
+                        func.count().filter(
+                            cluster.status.in_(
+                                (
+                                    DreamClusterStatus.PENDING.value,
+                                    DreamClusterStatus.PROCESSING.value,
+                                )
                             )
                         ),
-                    )
-                )
-                or 0
-            )
-            if pending:
-                return self._run(row)
-            failed = int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(MemoryDreamClusterModel)
-                    .where(
-                        MemoryDreamClusterModel.run_id == row.id,
-                        MemoryDreamClusterModel.status.in_(
-                            (DreamClusterStatus.FAILED.value, DreamClusterStatus.STALE.value)
+                        func.count().filter(
+                            cluster.status.in_(
+                                (DreamClusterStatus.FAILED.value, DreamClusterStatus.STALE.value)
+                            )
                         ),
-                    )
+                    ).where(cluster.run_id == row.id)
                 )
-                or 0
-            )
-            row.status = (
-                DreamRunStatus.PARTIAL_FAILED.value if failed else DreamRunStatus.COMPLETED.value
-            )
-            row.completed_at = now
-            row.updated_at = now
-            await session.flush()
-            return self._run(row)
+            ).one()
+            if not pending:
+                row.status = (
+                    DreamRunStatus.PARTIAL_FAILED.value
+                    if failed
+                    else DreamRunStatus.COMPLETED.value
+                )
+                row.completed_at = now
+                row.updated_at = now
+                await session.flush()
+        return self._run(row)
 
     async def cancel(self, public_id: str, *, session: AsyncSession | None = None) -> bool:
         now = datetime.now(UTC)

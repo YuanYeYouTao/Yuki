@@ -248,3 +248,55 @@ async def test_delivery_timings_separate_platform_wait_from_claim_and_settlement
         "social_settlement_seconds",
     } <= metrics.keys()
     assert all(value >= 0 for value in metrics.values())
+
+
+async def test_failed_work_delivery_rolls_back_normal_settlement_without_resending(
+    database, tmp_path, monkeypatch
+):
+    from tests.support.work_runner_helpers import case
+
+    import yuki.runtime.delivery_intents as delivery_intents
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_recovery_schema import deliveries
+
+    probe = await case(database, tmp_path, [])
+    env = probe.env
+    original = delivery_intents.record
+    attempts = 0
+
+    async def fail_first_record(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("work receipt unavailable after the acknowledged send")
+        await original(*args, **kwargs)
+
+    monkeypatch.setattr(delivery_intents, "record", fail_first_record)
+    env.bot.calls.clear()
+    token = current_work_control.set(probe.control)
+    try:
+        args = {"text": "one acknowledged transport effect"}
+        result = await env.service.execute("send", args, env.context)
+        assert result["status"] == "succeeded"
+        assert attempts == 2
+        async with database.read_session() as reader:
+            outgoing = list(
+                await reader.scalars(
+                    select(ChatEventModel.id).where(ChatEventModel.direction == "outbound")
+                )
+            )
+            receipt = await reader.get(SocialOperationModel, result["operation_id"])
+            delivery = (
+                (await reader.execute(select(deliveries).where(deliveries.c.id == receipt.id)))
+                .mappings()
+                .one()
+            )
+        # The first normal ledger/Social/Work transaction rolled back as one unit.
+        # Reconciliation retains the actual send receipt without inventing its lost ledger row.
+        assert outgoing == [] and receipt.event_id is None
+        assert delivery["state"] == "accepted"
+        assert await env.service.execute("send", args, env.context) == result
+        assert [action for action, _ in env.bot.calls] == ["send_group_msg"]
+    finally:
+        current_work_control.reset(token)
+        await probe.repository.release(probe.control.lease)

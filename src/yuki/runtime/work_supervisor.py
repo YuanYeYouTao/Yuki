@@ -72,6 +72,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
     await control.refresh_effects()
     assert control.current is not None
     identity = control.current["id"]
+    failure_json = encode_json(asdict(failure))
     async with control.repository.database.immediate_session() as session:
         current = (
             (await session.execute(select(work).where(work.c.id == identity))).mappings().first()
@@ -154,7 +155,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             activation_id=control.lease.owner,
             exit_reason=reason.value,
             stage=failure.stage,
-            failure_json=encode_json(asdict(failure)),
+            failure_json=failure_json,
             attempts=attempts,
             not_before=not_before,
             updated=time.time(),

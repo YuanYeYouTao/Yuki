@@ -372,6 +372,50 @@ async def test_embedding_loop_database_failure_and_cancellation(database, monkey
             assert stored.status == "done"
 
 
+async def test_embedding_commit_ack_loss_is_not_an_invalid_provider_response(database, monkeypatch):
+    import aiosqlite
+
+    from yuki.persistence.database import write_failure_committed, write_failure_phase
+
+    jobs = await _jobs(database)
+    await jobs.reconcile()
+    provider = FakeEmbeddingProvider(dimensions=2)
+    worker = MemoryEmbeddingWorker(
+        provider=provider, jobs=jobs, interval_seconds=1, claim_limit=1, retry_initial_seconds=0
+    )
+    armed = injected = False
+
+    def vector_written(_connection, _cursor, statement, _params, _context, _many):
+        nonlocal armed
+        if statement.lstrip().startswith("INSERT INTO memory_embeddings "):
+            armed = True
+
+    commit = aiosqlite.Connection.commit
+
+    async def lost_ack(connection):
+        nonlocal injected
+        await commit(connection)
+        if armed and not injected:
+            injected = True
+            raise ValueError("vector commit acknowledgement lost")
+
+    event.listen(database.engine.sync_engine, "after_cursor_execute", vector_written)
+    monkeypatch.setattr(aiosqlite.Connection, "commit", lost_ack)
+    try:
+        with pytest.raises(ValueError, match="acknowledgement lost") as failure:
+            await worker.process_once()
+        assert write_failure_phase(failure.value) == "commit"
+        assert write_failure_committed(failure.value) is None
+        async with database.read_session() as reader:
+            stored = await reader.get(MemoryEmbeddingJobModel, 1)
+            assert stored.status == "done" and stored.error_category is None
+            assert len(tuple(await reader.scalars(select(MemoryEmbeddingModel)))) == 1
+        assert await worker.process_once() == 0
+        assert provider.document_requests == 1
+    finally:
+        event.remove(database.engine.sync_engine, "after_cursor_execute", vector_written)
+
+
 async def test_input_mutation_after_prepare_requeues_original_claim_without_old_vector(
     database, monkeypatch
 ):

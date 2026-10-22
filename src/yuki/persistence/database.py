@@ -135,7 +135,9 @@ class Database:
         args, options = self.engine.sync_engine.dialect.create_connect_args(self.engine.url)
         driver = SQLiteConnection(lambda: sqlite3.connect(args[0], **options))
         try:
-            await driver
+            _, cancellation = await _complete(driver)
+            if cancellation is not None:
+                raise cancellation
             return driver
         except BaseException as failure:
             try:
@@ -154,8 +156,13 @@ class Database:
     @asynccontextmanager
     async def read_session(self) -> AsyncIterator[AsyncSession]:
         """Own a reader without auto-commit; caller-owned sessions keep their mode."""
-        async with self._sessions(autoflush=False) as session:
+        session = self._sessions(autoflush=False)
+        try:
             yield session
+        finally:
+            _, cancellation = await _complete(session.close())
+            if cancellation is not None:
+                raise cancellation
 
     @staticmethod
     def _configure_sqlite_connection(
@@ -299,13 +306,16 @@ class Database:
             transaction_started = None
             cleanup_started = None
             try:
-                connection = await session.connection()
+                connection, cancellation = await _complete(session.connection())
                 self._record_timing(
                     "writer_connection_acquisition", time.monotonic() - connection_started
                 )
-                raw = await connection.get_raw_connection()
+                raw, cancelled = await _complete(connection.get_raw_connection())
+                cancellation = cancellation or cancelled
                 if isinstance(raw.driver_connection, SQLiteConnection):
                     driver = raw.driver_connection
+                if cancellation is not None:
+                    raise cancellation
                 transaction_started = time.monotonic()
                 if self.url.startswith("sqlite+"):
                     await session.execute(text("BEGIN IMMEDIATE"))

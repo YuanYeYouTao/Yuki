@@ -272,17 +272,6 @@ class MemoryAdminService:
         if mutation is not None:
             row = await self._mutation_fact(mutation)
             assert row is not None
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="add",
-                target_type="user",
-                target_id=target,
-                before=None,
-                after={"memory_id": row.id, "content": normalized},
-                success=True,
-                duration_seconds=time.perf_counter() - started,
-            )
             return row
 
         draft = MemoryFactCreate(
@@ -365,21 +354,6 @@ class MemoryAdminService:
         )
         if mutation is not None:
             updated = mutation.ok and mutation.new_fact_id is not None
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="update",
-                target_type="user",
-                target_id=target,
-                before={
-                    "memory_id": memory_id,
-                    "content": current.content if current is not None else None,
-                },
-                after={"memory_id": mutation.new_fact_id, "content": normalized},
-                success=updated,
-                error_category=None if updated else mutation.reason_code,
-                duration_seconds=time.perf_counter() - started,
-            )
             return updated
 
         async def write(session: AsyncSession) -> MemoryFact | None:
@@ -433,7 +407,6 @@ class MemoryAdminService:
             actor, target, person_id=target_person_id
         )
         started = time.perf_counter()
-        current = await self._memories.get_fact(memory_id)
         mutation = await self._apply_mutation(
             actor,
             target=ResolvedSubject(
@@ -448,21 +421,6 @@ class MemoryAdminService:
         )
         if mutation is not None:
             deleted = mutation.ok
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="delete",
-                target_type="user",
-                target_id=target,
-                before={
-                    "memory_id": memory_id,
-                    "content": current.content if current is not None else None,
-                },
-                after=None,
-                success=deleted,
-                error_category=None if deleted else mutation.reason_code,
-                duration_seconds=time.perf_counter() - started,
-            )
             return deleted
 
         async def write(session: AsyncSession) -> bool:

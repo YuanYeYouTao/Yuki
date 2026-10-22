@@ -11,10 +11,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from pydantic import TypeAdapter
-from sqlalchemy import and_, column, func, or_, select, text, update, values
+from sqlalchemy import and_, func, or_, select, text, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -53,10 +54,17 @@ _CHECKPOINT_TOOLS = TypeAdapter(dict[str, StoredToolReceipt])
 
 
 @dataclass(frozen=True, slots=True)
+class _EventSources:
+    data: str
+    count: int
+    columns: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _CursorAdvance:
     state: MemorySelfReflectionStateModel
     gaps: tuple[tuple[int, int, int, str], ...]
-    events: tuple[ChatEventModel, ...]
+    events: _EventSources
     last_event_id: int
     pending_events: int
     pending_characters: int
@@ -68,12 +76,12 @@ _CURSOR_SOURCE_COLUMNS = (
     ChatEventModel.content,
     ChatEventModel.audio_transcript,
     ChatEventModel.occurred_at,
-    ChatEventModel.direction,
-    ChatEventModel.author_kind,
 )
 _EVENT_SOURCE_COLUMNS = _CURSOR_SOURCE_COLUMNS + tuple(
     getattr(ChatEventModel, name)
     for name in (
+        "direction",
+        "author_kind",
         "bot_user_id",
         "platform_message_id",
         "scope_type",
@@ -97,36 +105,57 @@ _EVENT_SOURCE_COLUMNS = _CURSOR_SOURCE_COLUMNS + tuple(
 )
 
 
-async def _events_current(
+def _prepare_event_sources(
     session: AsyncSession,
-    query: Any,
     rows: Sequence[ChatEventModel],
     *,
-    columns: Sequence[Any] = _EVENT_SOURCE_COLUMNS,
-) -> bool:
-    """Compare the prepared window in SQL; never decode its history in the writer."""
-    selected = query.with_only_columns(ChatEventModel.id).subquery()
-    if await session.scalar(select(func.count()).select_from(selected)) != len(rows):
-        return False
-    for start in range(0, len(rows), 100):
-        page = rows[start : start + 100]
-        expected = (
-            values(*(column(c.key, c.type) for c in columns))
-            .data([tuple(getattr(row, c.key) for c in columns) for row in page])
-            .cte("reflection_sources")
+    columns: tuple[Any, ...] = _EVENT_SOURCE_COLUMNS,
+) -> _EventSources:
+    """Encode the actual source values before admission, using SQLite's bound types."""
+    dialect = session.get_bind().dialect
+    processors = tuple(c.type.dialect_impl(dialect).bind_processor(dialect) for c in columns)
+    data = [
+        [
+            process(value) if process is not None else value
+            for value, process in zip(
+                (getattr(row, c.key) for c in columns), processors, strict=True
+            )
+        ]
+        for row in rows
+    ]
+    return _EventSources(
+        json.dumps(data, ensure_ascii=False, separators=(",", ":")), len(rows), columns
+    )
+
+
+async def _events_current(session: AsyncSession, query: Any, sources: _EventSources) -> bool:
+    """Prove the exact selected set and every raw field in one fixed-shape query."""
+    selected = query.with_only_columns(ChatEventModel.id).cte("reflection_selected")
+    expected = func.json_each(sources.data).table_valued("value")
+    # A correlated PK lookup visits each prepared event once. Joining the JSON
+    # table from the event side would rescan it for every row in a large tail.
+    same = (
+        select(ChatEventModel.id)
+        .where(
+            ChatEventModel.id == func.json_extract(expected.c.value, "$[0]"),
+            ChatEventModel.id.in_(select(selected.c.id)),
+            *(
+                c.is_not_distinct_from(func.json_extract(expected.c.value, f"$[{i}]"))
+                for i, c in enumerate(sources.columns[1:], 1)
+            ),
         )
-        matched = await session.scalar(
-            select(func.count())
-            .select_from(ChatEventModel)
-            .join(expected, ChatEventModel.id == expected.c.id)
-            .where(
-                ChatEventModel.id.in_(select(selected.c.id)),
-                *(c.is_not_distinct_from(expected.c[c.key]) for c in columns),
+        .correlate(expected)
+        .exists()
+    )
+    actual, matched = (
+        await session.execute(
+            select(
+                select(func.count()).select_from(selected).scalar_subquery(),
+                select(func.count()).select_from(expected).where(same).scalar_subquery(),
             )
         )
-        if matched != len(page):
-            return False
-    return True
+    ).one()
+    return int(actual) == sources.count and int(matched) == sources.count
 
 
 class SelfReflectionRepository:
@@ -313,16 +342,25 @@ class SelfReflectionRepository:
         ]
         if unfinished:
             processed = min(processed, min(unfinished) - 1)
-        completed = [
-            (first, last)
-            for ident, first, last, status in gaps
-            if status == "completed" or ident in completed_run_ids
-        ]
-        events = tuple(await session.scalars(self._cursor_events_query(state)))
+        completed = iter(
+            sorted(
+                (first, last)
+                for ident, first, last, status in gaps
+                if status == "completed" or ident in completed_run_ids
+            )
+        )
+        events = tuple(
+            await session.scalars(
+                self._cursor_events_query(state).options(load_only(*_CURSOR_SOURCE_COLUMNS))
+            )
+        )
         pending_events = pending_characters = 0
         pending_since = None
+        covered = next(completed, None)
         for event in events:
-            if event.id <= processed or any(first <= event.id <= last for first, last in completed):
+            while covered is not None and covered[1] < event.id:
+                covered = next(completed, None)
+            if event.id <= processed or (covered is not None and covered[0] <= event.id):
                 continue
             content = event.evidence_content
             if content.strip():
@@ -330,12 +368,32 @@ class SelfReflectionRepository:
                 pending_characters += len(content)
                 pending_since = pending_since or event.occurred_at
         return _CursorAdvance(
-            state, gaps, events, processed, pending_events, pending_characters, pending_since
+            state,
+            gaps,
+            _prepare_event_sources(session, events, columns=_CURSOR_SOURCE_COLUMNS),
+            processed,
+            pending_events,
+            pending_characters,
+            pending_since,
         )
 
-    async def _cursor_current(self, session: AsyncSession, prepared: _CursorAdvance) -> bool:
+    async def _cursor_current(
+        self, session: AsyncSession, prepared: _CursorAdvance
+    ) -> MemorySelfReflectionStateModel | None:
         state = prepared.state
-        current = await session.get(MemorySelfReflectionStateModel, state.id)
+        gaps = self._gap_query(state).subquery()
+        rows = tuple(
+            await session.execute(
+                select(MemorySelfReflectionStateModel, *gaps.c)
+                .select_from(MemorySelfReflectionStateModel)
+                .outerjoin(gaps, true())
+                .where(MemorySelfReflectionStateModel.id == state.id)
+                .order_by(gaps.c.id)
+            )
+        )
+        if not rows:
+            return None
+        current = rows[0][0]
         fields = (
             "conversation_key_hash",
             "canonical_person_id",
@@ -343,15 +401,14 @@ class SelfReflectionRepository:
             "last_event_id",
             "latest_event_id",
         )
-        if current is None or any(getattr(current, key) != getattr(state, key) for key in fields):
-            return False
-        gaps = tuple(tuple(row) for row in await session.execute(self._gap_query(current)))
-        return gaps == prepared.gaps and await _events_current(
-            session,
-            self._cursor_events_query(current),
-            prepared.events,
-            columns=_CURSOR_SOURCE_COLUMNS,
-        )
+        if any(getattr(current, key) != getattr(state, key) for key in fields):
+            return None
+        actual_gaps = tuple(tuple(row[1:]) for row in rows if row[1] is not None)
+        if actual_gaps != prepared.gaps or not await _events_current(
+            session, self._cursor_events_query(current), prepared.events
+        ):
+            return None
+        return cast(MemorySelfReflectionStateModel, current)
 
     @staticmethod
     def _apply_cursor(
@@ -485,6 +542,7 @@ class SelfReflectionRepository:
                     ident: tuple(getattr(c, k) for k in conversation_fields)
                     for ident, c in conversations.items()
                 }
+                event_sources = _prepare_event_sources(reader, rows)
             async with self._database.immediate_session() as writer:
                 current_runtime = await writer.get(MemorySelfReflectionRuntimeModel, 1)
                 if (
@@ -505,7 +563,7 @@ class SelfReflectionRepository:
                 if (
                     current_conversations != expected_conversations
                     or tuple(await writer.scalars(live_query)) != live_ids
-                    or not await _events_current(writer, query, rows)
+                    or not await _events_current(writer, query, event_sources)
                 ):
                     continue
                 states = (
@@ -727,6 +785,8 @@ class SelfReflectionRepository:
                     tuple(getattr(r, key) for key in run_fields) for r in outstanding
                 )
                 input_characters = sum(len(r.evidence_content) for r in selected)
+                candidate_sources = _prepare_event_sources(reader, candidates)
+                context_sources = _prepare_event_sources(reader, context)
             async with self._database.immediate_session() as writer:
                 current = await writer.get(MemorySelfReflectionStateModel, state.id)
                 state_fields = (
@@ -757,11 +817,11 @@ class SelfReflectionRepository:
                     )
                 )
                 if actual_runs != expected_runs or not await _events_current(
-                    writer, event_query, candidates
+                    writer, event_query, candidate_sources
                 ):
                     continue
                 if context_query is not None and not await _events_current(
-                    writer, context_query, context
+                    writer, context_query, context_sources
                 ):
                     continue
                 now = datetime.now(UTC)
@@ -1000,33 +1060,58 @@ class SelfReflectionRepository:
             query = query.where(MemorySelfReflectionRunModel.id == run_id)
         else:
             query = query.where(MemorySelfReflectionRunModel.started_at <= started_before)
+        result_count = (
+            select(func.count(MemorySelfReflectionResultModel.id))
+            .where(MemorySelfReflectionResultModel.run_id == MemorySelfReflectionRunModel.id)
+            .correlate(MemorySelfReflectionRunModel)
+            .scalar_subquery()
+        )
+        query = query.outerjoin(
+            InitiativeReflectionWindowModel,
+            InitiativeReflectionWindowModel.reflection_run_id == MemorySelfReflectionRunModel.id,
+        ).order_by(MemorySelfReflectionRunModel.id)
+        fields = (
+            "id",
+            "status",
+            "checkpoint_json",
+            "proposal_count",
+            "committed_count",
+            "attempt_count",
+            "canonical_person_id",
+            "canonical_space_id",
+            "first_event_id",
+            "last_event_id",
+            "first_failed_at",
+        )
+        window_fields = (
+            "reflection_run_id",
+            "initiative_run_id",
+            "first_receipt_id",
+            "last_receipt_id",
+        )
         while True:
             async with self._database.read_session() as reader:
-                runs = tuple(await reader.scalars(query.order_by(MemorySelfReflectionRunModel.id)))
+                snapshots = tuple(
+                    await reader.execute(
+                        query.add_columns(InitiativeReflectionWindowModel, result_count)
+                    )
+                )
+                runs = tuple(row[0] for row in snapshots)
                 if not runs:
                     return {}
-                ids = tuple(run.id for run in runs)
-                counts = {
-                    int(ident): int(count)
-                    for ident, count in (
-                        await reader.execute(
-                            select(
-                                MemorySelfReflectionResultModel.run_id,
-                                func.count(MemorySelfReflectionResultModel.id),
-                            )
-                            .where(MemorySelfReflectionResultModel.run_id.in_(ids))
-                            .group_by(MemorySelfReflectionResultModel.run_id)
-                        )
-                    ).all()
-                }
-                windows = {
-                    w.reflection_run_id: w
-                    for w in await reader.scalars(
-                        select(InitiativeReflectionWindowModel).where(
-                            InitiativeReflectionWindowModel.reflection_run_id.in_(ids)
-                        )
+                counts = {run.id: count for run, _, count in snapshots}
+                windows = {run.id: window for run, window, _ in snapshots if window is not None}
+                expected = tuple(
+                    (
+                        *(getattr(run, key) for key in fields),
+                        count,
+                        *(
+                            getattr(window, key) if window is not None else None
+                            for key in window_fields
+                        ),
                     )
-                }
+                    for run, window, count in snapshots
+                )
                 if completion is not None and initiative_run_id is not None:
                     window = windows.get(cast(int, run_id))
                     if window is None or window.initiative_run_id != initiative_run_id:
@@ -1112,66 +1197,31 @@ class SelfReflectionRepository:
                     ]
                 )
             async with self._database.immediate_session() as writer:
-                current_runs = tuple(
-                    await writer.scalars(query.order_by(MemorySelfReflectionRunModel.id))
-                )
-                fields = (
-                    "id",
-                    "status",
-                    "checkpoint_json",
-                    "proposal_count",
-                    "committed_count",
-                    "attempt_count",
-                    "canonical_person_id",
-                    "canonical_space_id",
-                    "first_event_id",
-                    "last_event_id",
-                    "first_failed_at",
-                )
-                if tuple(tuple(getattr(r, key) for key in fields) for r in current_runs) != tuple(
-                    tuple(getattr(r, key) for key in fields) for r in runs
-                ):
-                    continue
-                current_counts = {
-                    int(ident): int(count)
-                    for ident, count in (
-                        await writer.execute(
-                            select(
-                                MemorySelfReflectionResultModel.run_id,
-                                func.count(MemorySelfReflectionResultModel.id),
-                            )
-                            .where(MemorySelfReflectionResultModel.run_id.in_(ids))
-                            .group_by(MemorySelfReflectionResultModel.run_id)
-                        )
-                    ).all()
-                }
-                current_windows = tuple(
+                current = tuple(
                     await writer.execute(
-                        select(
-                            InitiativeReflectionWindowModel.reflection_run_id,
-                            InitiativeReflectionWindowModel.initiative_run_id,
-                            InitiativeReflectionWindowModel.first_receipt_id,
-                            InitiativeReflectionWindowModel.last_receipt_id,
+                        query.add_columns(
+                            result_count,
+                            *(
+                                getattr(InitiativeReflectionWindowModel, key)
+                                for key in window_fields
+                            ),
                         )
-                        .where(InitiativeReflectionWindowModel.reflection_run_id.in_(ids))
-                        .order_by(InitiativeReflectionWindowModel.reflection_run_id)
                     )
                 )
-                expected_windows = tuple(
+                current_runs = tuple(row[0] for row in current)
+                actual = tuple(
                     (
-                        w.reflection_run_id,
-                        w.initiative_run_id,
-                        w.first_receipt_id,
-                        w.last_receipt_id,
+                        *(getattr(row[0], key) for key in fields),
+                        *row[1:],
                     )
-                    for w in sorted(windows.values(), key=lambda w: w.reflection_run_id)
+                    for row in current
                 )
-                if (
-                    current_counts != counts
-                    or tuple(tuple(w) for w in current_windows) != expected_windows
-                ):
+                if actual != expected:
                     continue
-                if not all([await self._cursor_current(writer, prepared) for prepared in advances]):
+                current_states = [
+                    await self._cursor_current(writer, prepared) for prepared in advances
+                ]
+                if not all(current_states):
                     continue
                 now = datetime.now(UTC)
                 for run in current_runs:
@@ -1181,8 +1231,7 @@ class SelfReflectionRepository:
                     if run.retry_state == "waiting":
                         run.first_failed_at = run.first_failed_at or now
                         run.next_attempt_at = now
-                for prepared in advances:
-                    state = await writer.get(MemorySelfReflectionStateModel, prepared.state.id)
+                for prepared, state in zip(advances, current_states, strict=True):
                     assert state is not None
                     self._apply_cursor(state, prepared, now)
                 for ident in completed_ids:
@@ -1301,10 +1350,11 @@ class SelfReflectionRepository:
                             )
                         ):
                             raise MemoryPartitionResolutionError("checkpoint_source_changed")
+                    event_sources = _prepare_event_sources(reader, source_rows)
             async with self._database.immediate_session() as writer:
                 if expected is None:
                     assert run is not None
-                    if not await _events_current(writer, event_query, source_rows):
+                    if not await _events_current(writer, event_query, event_sources):
                         continue
                     current_receipts = tuple(
                         await writer.execute(

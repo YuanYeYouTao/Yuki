@@ -131,13 +131,6 @@ class MemoryEmbeddingWorker:
                 )
                 for job, vector in zip(valid_jobs, result.vectors, strict=True)
             )
-            completed = await self._jobs.complete(writes)
-            self.metrics.record_documents(
-                input_count=result.usage.input_count,
-                input_tokens=result.usage.input_tokens,
-                latency=time.perf_counter() - started,
-            )
-            return completed
         except asyncio.CancelledError:
             raise
         except EmbeddingProviderError as exc:
@@ -156,3 +149,10 @@ class MemoryEmbeddingWorker:
                 initial_delay_seconds=self._retry_initial_seconds,
             )
             return 0
+        completed = await self._jobs.complete(writes)
+        self.metrics.record_documents(
+            input_count=result.usage.input_count,
+            input_tokens=result.usage.input_tokens,
+            latency=time.perf_counter() - started,
+        )
+        return completed

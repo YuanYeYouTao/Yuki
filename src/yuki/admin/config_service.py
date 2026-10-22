@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -596,19 +594,6 @@ class RuntimeConfigService:
             tuple[str, ConfigScopeType, str], RuntimeConfigOverrideRecord
         ] = {}
 
-    @asynccontextmanager
-    async def _mutation_session(self, session: AsyncSession | None) -> AsyncIterator[AsyncSession]:
-        """Use the caller's writer or own one for the entire validate/write/audit cycle.
-
-        Supplied sessions belong to the Control Plane's short writer transaction.
-        A process lock here would invert its ordering against the SQLite writer.
-        """
-        if session is not None:
-            yield session
-        else:
-            async with self._database.immediate_session() as owned:
-                yield owned
-
     async def initialize(self) -> None:
         """Activate persisted restart-required overrides for this process."""
 
@@ -786,7 +771,7 @@ class RuntimeConfigService:
                 detail=str(exc),
             )
 
-        async with self._mutation_session(session) as session:
+        async with optional_session(self._database, session, write=True) as session:
             try:
                 storage_scope_id, person_id, space_id = await self._bind_write_scope(
                     scope,
@@ -932,7 +917,7 @@ class RuntimeConfigService:
                 error_category=category,
                 detail=str(exc),
             )
-        async with self._mutation_session(session) as session:
+        async with optional_session(self._database, session, write=True) as session:
             storage_scope_id, bound_person_id, bound_space_id = await self._bind_write_scope(
                 scope,
                 normalized_scope_id,
@@ -1251,7 +1236,7 @@ class RuntimeConfigService:
                 detail=str(exc),
             )
 
-        async with self._mutation_session(session) as session:
+        async with optional_session(self._database, session, write=True) as session:
             storage_scope_id, person_id, space_id = await self._bind_write_scope(
                 scope,
                 scope_id,

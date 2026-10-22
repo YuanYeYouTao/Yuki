@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.user_profiles_helpers import inbound, observe_members
@@ -400,9 +401,15 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
 ) -> None:
     repeated = tuple(str(62061 + index) for index in range(7))
     people = await observe_members(database, ("1001", "62060", *repeated))
-    await people.observe(user_id="62060", nickname="Ａ-lpHa", group_id="2001", group_card="")
+    await apply_observations(
+        database,
+        profile_message(user_id="62060", nickname="Ａ-lpHa", group_id="2001", group_card=""),
+    )
     for user_id in repeated:
-        await people.observe(user_id=user_id, nickname="同名", group_id="2001", group_card="")
+        await apply_observations(
+            database,
+            profile_message(user_id=user_id, nickname="同名", group_id="2001", group_card=""),
+        )
     assert await people.find_group_members_by_exact_name("alpha", "2001") == ()
     assert await people.find_group_members_by_exact_name("Ａ-lpHa", "2001") == ("62060",)
     exact = await people.find_group_members_by_normalized_names(
@@ -457,9 +464,12 @@ async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
     from yuki.services.agent_tools import AgentToolService, ToolRuntime, _ToolFailure
 
     user_ids = tuple(str(62081 + index) for index in range(8))
-    people = await observe_members(database, ("1001", *user_ids))
+    await observe_members(database, ("1001", *user_ids))
     for user_id in user_ids:
-        await people.observe(user_id=user_id, nickname="共同名字", group_id="2001", group_card="")
+        await apply_observations(
+            database,
+            profile_message(user_id=user_id, nickname="共同名字", group_id="2001", group_card=""),
+        )
     groups = tuple(str(62101 + index) for index in range(8))
     for group_id in groups:
         await observe_members(database, ("1001",), group_id=group_id)

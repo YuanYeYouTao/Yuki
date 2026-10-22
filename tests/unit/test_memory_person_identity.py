@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.event_seed import seed_event, seed_scoped_event
 from tests.unit.test_dream_owner_projection import _scene
 from tests.unit.test_memory_rebuild import _admin, _service
@@ -423,7 +424,9 @@ async def test_new_dream_merges_same_person_original_facts_without_rewriting_sou
     service, facts, ledger, dreams = dream_service(database, provider)
     originals = []
     for account in ("1001", "1002", "1003"):
-        await PeopleRepository(database).observe(user_id=account, nickname=account, group_id="3001")
+        await apply_observations(
+            database, profile_message(user_id=account, nickname=account, group_id="3001")
+        )
         event, _ = await seed_event(
             ledger,
             bot_user_id="8000",

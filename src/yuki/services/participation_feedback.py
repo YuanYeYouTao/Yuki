@@ -18,7 +18,6 @@ from yuki_participation.self_report import SelfReport
 
 from yuki.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
 from yuki.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
-from yuki.conversation.autonomy_repository import PreparedInitiativeFeedback
 from yuki.conversation.ordinary_admission import OrdinaryAdmission, OrdinaryAdmissionRepository
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
@@ -566,11 +565,8 @@ async def _feedback_current(
     batch: list[str],
     models: dict[str, int],
     model_selection: str,
-    feedback: PreparedInitiativeFeedback,
 ) -> bool:
     """Verify this page's real witnesses; later effects belong to a later page."""
-    if not await service.repository.feedback_run_current(feedback, session=session):
-        return False
     privacy = int(
         await session.scalar(
             select(ExecutionTraceStateModel.privacy_generation).where(
@@ -727,9 +723,7 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
             considered_sources=fact.run.sources,
         )
         async with service.database.immediate_session() as session:
-            if not await _feedback_current(
-                service, session, fact, batch, models, model_selection, feedback
-            ):
+            if not await _feedback_current(service, session, fact, batch, models, model_selection):
                 # Reconciliation will prepare the current factual page next tick;
                 # a changed source never replays the model or external effect.
                 return None

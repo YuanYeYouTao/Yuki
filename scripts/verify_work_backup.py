@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -18,7 +19,9 @@ def digest(path: Path) -> str:
 
 def verify(database_path: Path, data_directory: Path) -> dict[str, int]:
     counts = {"protocol_objects": 0, "tool_artifacts": 0}
-    with sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True) as database:
+    with closing(
+        sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True)
+    ) as database:
         if database.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RuntimeError("backup database integrity failure")
         if database.execute("PRAGMA foreign_key_check").fetchone():

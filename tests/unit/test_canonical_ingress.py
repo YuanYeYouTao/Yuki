@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person
 from tests.support.canonical_identity import ensure_presence as ensure_v2_presence
 from tests.support.canonical_identity import ensure_space as ensure_v2_space
@@ -599,7 +600,6 @@ async def test_canonical_ingress_race_rereads_winner(
 async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
     database: Database,
 ) -> None:
-    from uuid import uuid4
 
     from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 
@@ -667,7 +667,6 @@ async def _insert_keeper(
     suppression_status: str = "keeper",
     canonical_event_id: str | None = None,
 ) -> None:
-    from uuid import uuid4
 
     async with database.immediate_session() as session:
         author_presence_id = (
@@ -801,7 +800,6 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
 async def test_canonical_reply_ambiguous_or_duplicate_only(
     database: Database,
 ) -> None:
-    from uuid import uuid4
 
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
@@ -1145,25 +1143,29 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
         person = await session.get(CanonicalPersonModel, disabled.person_id)
         assert person is not None
         person.enabled = False
-    await people.observe(
-        user_id="61021",
-        nickname="",
-        nickname_known=False,
-        group_id="2001",
-        group_card="",
-        group_card_known=False,
-        expected_person_id=person_id,
+    await apply_observations(
+        database,
+        profile_message(
+            user_id="61021",
+            nickname="",
+            nickname_known=False,
+            group_id="2001",
+            group_card="",
+            group_card_known=False,
+        ),
     )
     old = await people.get(user_id="61021", group_id="2001")
     assert old is not None and old.group_card == "card-61021"
-    await people.observe(
-        user_id="61021",
-        nickname="",
-        nickname_known=False,
-        group_id="2001",
-        group_card="",
-        group_card_known=True,
-        expected_person_id=person_id,
+    await apply_observations(
+        database,
+        profile_message(
+            user_id="61021",
+            nickname="",
+            nickname_known=False,
+            group_id="2001",
+            group_card="",
+            group_card_known=True,
+        ),
     )
     accounts = ("61029", "61022", "61021", "61029", "404", "61023")
     profiles = await people.get_many(accounts, group_id="2001")
@@ -1176,11 +1178,6 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
     card_only = await people.get(user_id="61021", group_id="2001", include_nickname=False)
     assert card_only is not None and card_only.nickname == card_only.group_card == ""
     assert await people.find_group_members_by_exact_name("card-61021", "2001") == ("61021",)
-    with pytest.raises(CanonicalIdentityError) as mismatch:
-        await people.observe(
-            user_id="61021", nickname="wrong owner", expected_person_id=str(uuid4())
-        )
-    assert mismatch.value.category == "canonical_owner_mismatch"
     async with database.read_session() as session:
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "61021")

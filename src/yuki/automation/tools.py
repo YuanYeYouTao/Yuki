@@ -15,6 +15,7 @@ from yuki.automation.models import (
 from yuki.automation.service import AutomationService
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.messages import ChatTool
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.services.agent_tools import ToolRuntime
 from yuki.time.formatting import local_iso
 
@@ -404,6 +405,8 @@ class AutomationToolService:
                 request_postcondition_satisfied=satisfied,
             )
         except (PermissionError, ValueError) as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             if operation == "create":
                 await self._service.record_creation_failure(
                     actor=actor,

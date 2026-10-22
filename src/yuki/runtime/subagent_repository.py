@@ -47,6 +47,7 @@ class SubagentRepository:
         identity = str(uuid4())
         source = json.loads(snapshot["source_json"])
         source.update(work_id=identity, parent_work_id=parent_id, worker=True)
+        source_json = encode_json(source)
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             root = (
@@ -80,6 +81,7 @@ class SubagentRepository:
                 parent_work_id=parent_id,
                 source_key=f"worker:{identity}",
                 source=source,
+                prepared_source_json=source_json,
                 goal=goal,
                 initial_state="queued",
             )
@@ -477,6 +479,26 @@ class SubagentRepository:
             raise ValueError("subagent_not_owned")
         await self.related(parent_id, identity)
         destination = parent_id if to_parent else identity
+        payload_json = (
+            encode_json(
+                {
+                    "text": encode_json(
+                        {
+                            "kind": "subagent_question" if ask else "subagent_message",
+                            "child_id": identity,
+                            "message_id": key,
+                            "sender_work_id": sender,
+                            "target_work_id": destination,
+                            "reply_to": reply_to,
+                            "text": text,
+                        }
+                    ),
+                    "child_id": identity,
+                }
+            )
+            if text is not None
+            else None
+        )
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             child = (
@@ -501,20 +523,6 @@ class SubagentRepository:
             waiting_parent = ask and to_parent and target["state"] not in TERMINAL
             if text is None:
                 return {"message_id": key, "waiting_parent": waiting_parent}
-            payload = {
-                "text": encode_json(
-                    {
-                        "kind": "subagent_question" if ask else "subagent_message",
-                        "child_id": identity,
-                        "message_id": key,
-                        "sender_work_id": sender,
-                        "target_work_id": destination,
-                        "reply_to": reply_to,
-                        "text": text,
-                    }
-                ),
-                "child_id": identity,
-            }
             inserted = (
                 await session.execute(
                     insert(inputs)
@@ -525,7 +533,7 @@ class SubagentRepository:
                         work_id=destination,
                         kind="subagent",
                         ready=True,
-                        payload_json=encode_json(payload),
+                        payload_json=payload_json,
                         created=time.time(),
                     )
                     .on_conflict_do_nothing(index_elements=[inputs.c.source_key])

@@ -71,6 +71,32 @@ async def personal_work(session: AsyncSession, person_id: str, identity: str) ->
     return dict(row)
 
 
+async def _input_work(session: AsyncSession, person_id: str, identity: str) -> dict[str, Any]:
+    """Select the original input owner without decoding the Work's private source."""
+    row = (
+        (
+            await session.execute(
+                select(work.c.id, work.c.conversation_id, work.c.generation, work.c.state)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
+                )
+                .where(
+                    work.c.id == identity,
+                    person_family_condition(
+                        func.json_extract(work.c.source_json, "$.actor_person_id"), person_id
+                    ),
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise ClientError("not_found")
+    return dict(row)
+
+
 async def input_result(
     session: AsyncSession,
     principal: ClientPrincipal,
@@ -392,10 +418,7 @@ class ClientWorks:
             try:
                 async with self.database.read_session() as reader:
                     principal = await self.identity.require_principal(reader, principal)
-                    row = await personal_work(reader, principal.person_id, identity)
-                    actor = json.loads(row["source_json"]).get("actor_person_id")
-                    if not actor or not await same_person_id(reader, actor, principal.person_id):
-                        raise ClientError("not_found")
+                    row = await _input_work(reader, principal.person_id, identity)
                     previous = await self._replay_input(
                         reader, principal, identity, request_id, bound
                     )
@@ -462,12 +485,7 @@ class ClientWorks:
                     current_principal = await self.identity.require_principal(
                         writer, request_principal
                     )
-                    current = await personal_work(writer, current_principal.person_id, identity)
-                    actor = json.loads(current["source_json"]).get("actor_person_id")
-                    if not actor or not await same_person_id(
-                        writer, actor, current_principal.person_id
-                    ):
-                        raise ClientError("not_found")
+                    current = await _input_work(writer, current_principal.person_id, identity)
                     previous = await self._replay_input(
                         writer, current_principal, identity, request_id, bound
                     )

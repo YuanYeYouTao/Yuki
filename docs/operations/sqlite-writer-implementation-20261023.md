@@ -3,7 +3,7 @@
 源码起点：`c2ce7da66ab54efe192993b9615df48266a62137`。分支
 `codex/sqlite-writer-runtime-20261023`。完整范围认[任务书](../architecture/Yuki-SQLite统一写入与短事务重构任务书-2026-10-22.md)。
 
-状态：首轮产品实现与调用方迁移完成，进入全局验证及实现后的三轮交叉复审。未提PR、未合并、未部署。
+状态：产品实现、R1/R2 全范围复审与修复完成，准备固定源码做性能对照及 R3。未提PR、未合并、未部署。
 
 ## 分工
 
@@ -59,10 +59,32 @@ barrier覆盖FIFO/排队取消、并行读、autoflush、根提交hint、BEGIN/S
 | 轮次 | 原 A 域 | Memory 与 SELF | 原 C 域 | 公共边界与全局 |
 | --- | --- | --- | --- | --- |
 | R1 | [C 审查](sqlite-writer-review-r1-c-20261023.md) | [A 审查](sqlite-writer-review-r1-a-20261023.md) | [B 审查](sqlite-writer-review-r1-b-20261023.md) | [root 审查](sqlite-writer-review-r1-root-20261023.md) |
-| R2 | 待执行 | 待执行 | 待执行 | 待执行 |
+| R2 | [B 审查](sqlite-writer-review-r2-b-20261023.md) | [root 审查](sqlite-writer-review-r2-root-20261023.md) | [A 审查](sqlite-writer-review-r2-a-20261023.md) | [C 审查](sqlite-writer-review-r2-c-20261023.md) |
 | R3 | 待执行 | 待执行 | 待执行 | 待执行 |
 
 R1 期间全量 Windows unit 分段检查与 integration 发现的问题、实际修复和复验见各报告，不将分段数字
 相加称作一次全绿。本机 WSL Debian 已准备独立 Python 3.12 环境，Windows 缺 fcntl 的三份媒体回归
 在 Linux 补跑 32 项通过；最终全量与 native CI 另记。R1 修正后，全仓 Ruff、mypy 648 源码和 lock 校验通过。
-性能脚本已按新旧 checkout 做小规模逻辑冒烟，尚无正式 paired 结论。
+性能脚本已完成新旧 checkout 的真实逻辑与测量方法冒烟，正式 paired 结论另记。R2 全仓 Ruff、mypy 648 源码通过。
+
+## 实际资源与提交所有权
+
+```mermaid
+flowchart LR
+    App[ApplicationContainer] --> DB[同一个主库 Database]
+    Producers[消息 / Work / Memory / 插件 / 管理] --> DB
+    Diagnostics[共享 DiagnosticWriter] --> DB
+    DB --> FIFO[writer FIFO 准入]
+    FIFO --> Pool[原连接池]
+    DB --> Readers[并行 read_session]
+    Readers --> Pool
+    Pool --> Main[(主 SQLite WAL)]
+    Snapshot[AsyncSnapshotStore 专用线程 / 原 CAS] --> Independent[(独立 snapshot SQLite)]
+    Manager[Sandbox Manager 进程 / 原 owner] --> Jobs[(独立 jobs SQLite)]
+    CLI[离线 CLI / 升级 / reset] --> AppLock[原 application lock 与停写流程]
+    AppLock --> Main
+```
+
+Protocol/Artifact 的大文件准备和外部调用先结束，再进入所属 writer；GC 沿原标记、释放、文件处理、确认顺序。
+独立 manifest 的短原子发布仍使用自己的同步 owner，不并入主库 FIFO。直接注入的 Database 由调用者关闭，
+ApplicationContainer.create 创建的 Database 由应用生命周期关闭；启动前置初始化也进入同一生命周期回滚。

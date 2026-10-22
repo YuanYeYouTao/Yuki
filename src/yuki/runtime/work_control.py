@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from yuki.domain.messages import ChatMessage, ChatTool
 from yuki.identity.person_identity import same_person_condition
 from yuki.runtime.activation_outcome import ActivationOutcome
-from yuki.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
+from yuki.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
 from yuki.tool_results.access import ArtifactAccess
 
 if TYPE_CHECKING:
@@ -622,14 +622,36 @@ class WorkControl:
                 tool_name=name,
                 provider_id="work_control",
             )
-        except (ValueError, WorkConflict) as exc:
-            payload = {"ok": False, "error": str(exc)}
-            outcome = ToolExecutionResult(
-                ok=False,
-                error_code=str(exc),
-                tool_name=name,
-                provider_id="work_control",
+        except Exception as exc:
+            from yuki.persistence.database import (
+                write_failure_committed,
+                write_failure_phase,
+                write_failure_retryable,
             )
+
+            phase, committed = write_failure_phase(exc), write_failure_committed(exc)
+            if phase is not None and committed is not False:
+                outcome = ToolExecutionResult(
+                    ok=False,
+                    error_code="database_failure",
+                    uncertain=committed is None,
+                    mutation_committed=committed,
+                    retryable=write_failure_retryable(exc),
+                    metadata={"database_write_phase": phase},
+                    tool_name=name,
+                    provider_id="work_control",
+                )
+                payload = outcome.model_payload()
+            elif isinstance(exc, (ValueError, WorkConflict)):
+                payload = {"ok": False, "error": str(exc)}
+                outcome = ToolExecutionResult(
+                    ok=False,
+                    error_code=str(exc),
+                    tool_name=name,
+                    provider_id="work_control",
+                )
+            else:
+                raise
         capture = current_result_capture.get()
         if capture is not None:
             capture.outcome = outcome
@@ -839,12 +861,14 @@ class WorkControl:
             from yuki.runtime.work_schema_v1 import effects, work
 
             metadata = invocation.durable_metadata() if invocation is not None else {}
+            source_json = encode_json(self.source)
             async with self.repository.database.immediate_session() as writer:
                 admitted = await self.repository.accept_in_session(
                     writer,
                     self.lease,
                     source_key=self.source_key,
                     source=self.source,
+                    prepared_source_json=source_json,
                     goal=goal,
                     reporting=args.get("reporting"),
                 )

@@ -282,12 +282,14 @@ class WorkRepository:
         reporting: str | None = None,
         initial_state: str = "running",
     ) -> dict[str, Any]:
+        source_json = encode_json(source)
         async with self.database.immediate_session() as session:
             return await self.accept_in_session(
                 session,
                 lease,
                 source_key=source_key,
                 source=source,
+                prepared_source_json=source_json,
                 goal=goal,
                 parent_work_id=parent_work_id,
                 identity=identity,
@@ -303,6 +305,7 @@ class WorkRepository:
         *,
         source_key: str,
         source: dict[str, Any],
+        prepared_source_json: str,
         goal: str,
         parent_work_id: str | None = None,
         identity: str | None = None,
@@ -321,7 +324,7 @@ class WorkRepository:
             raise ValueError("work_reporting_invalid")
         if initial_state not in {"running", "queued"}:
             raise ValueError("invalid_work_initial_state")
-        source_json, now = encode_json(source), time.time()
+        source_json, now = prepared_source_json, time.time()
         initial_checkpoint = encode_json(
             {"communication": {"reporting": reporting}} if reporting is not None else {}
         )
@@ -476,6 +479,7 @@ class WorkRepository:
             assert created is not None
             return created
         source = json.loads(parent_source)
+        source_json = encode_json(source)
         async with self.database.immediate_session() as session:
             await self._assert_lease(session, lease)
             parent = (
@@ -498,6 +502,7 @@ class WorkRepository:
                 lease,
                 source_key=key,
                 source=source,
+                prepared_source_json=source_json,
                 goal=goal,
                 parent_work_id=parent_work_id,
                 initial_state="queued",
@@ -1841,7 +1846,7 @@ class WorkRepository:
             OrdinaryAdmissionDuplicate,
             OrdinaryAdmissionRepository,
             PreparedOrdinaryAdmission,
-            _identity_allowed,
+            identity_allowed_condition,
         )
         from yuki.persistence.models import ChatEventModel
         from yuki.persistence.repository_helpers import _event_record
@@ -1869,19 +1874,23 @@ class WorkRepository:
                 admission = None
                 payload = json.loads(row["payload_json"])
                 if row["kind"] == "message" and row["event_id"] is not None:
-                    event = await reader.get(ChatEventModel, row["event_id"])
-                    conversation = await reader.get(
-                        CanonicalConversationModel, row["conversation_id"]
+                    event = await reader.scalar(
+                        select(ChatEventModel)
+                        .join(
+                            CanonicalConversationModel,
+                            CanonicalConversationModel.id
+                            == ChatEventModel.canonical_conversation_id,
+                        )
+                        .where(
+                            ChatEventModel.id == row["event_id"],
+                            ChatEventModel.canonical_conversation_id == row["conversation_id"],
+                            ChatEventModel.suppression_status == "keeper",
+                            CanonicalConversationModel.generation == row["generation"],
+                            ChatEventModel.id > CanonicalConversationModel.starts_after_event_id,
+                            identity_allowed_condition(),
+                        )
                     )
-                    if (
-                        event is None
-                        or conversation is None
-                        or event.suppression_status != "keeper"
-                        or event.canonical_conversation_id != conversation.id
-                        or conversation.generation != row["generation"]
-                        or event.id <= conversation.starts_after_event_id
-                        or not await _identity_allowed(reader, event, conversation)
-                    ):
+                    if event is None:
                         prepared.append((row["id"], None, None))
                         continue
                     event_record = _event_record(event)

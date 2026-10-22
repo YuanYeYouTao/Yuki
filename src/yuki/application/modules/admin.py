@@ -87,10 +87,7 @@ class AdminModule:
             self_reflection=self._memory_self_reflection,
             dream=self._memory_dream,
         )
-        preferences = PreferenceAdminService(
-            audit=audit,
-            memory_mutations=memories,
-        )
+        preferences = PreferenceAdminService(memory_mutations=memories)
         groups = GroupAdminService(
             groups=self._groups,
             audit=audit,

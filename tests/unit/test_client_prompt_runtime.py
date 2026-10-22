@@ -18,10 +18,55 @@ from yuki.client_api.errors import ClientError
 from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.requests import ClientRequests, personal_command
 from yuki.gateway.providers.app.ingress import AppGateway
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.models import ChatEventModel
 
 app_env = app_fixture
 admin = admin_fixture
+
+
+@pytest.mark.parametrize("committed", [None, True])
+@pytest.mark.parametrize("has_receipt", [False, True])
+async def test_message_ack_failure_recovers_only_its_original_visible_receipt(
+    app_env, database, monkeypatch, committed, has_receipt
+):
+    env = app_env
+    _device, principal, request_id = await client_prompt(env)
+    original_receive = env.gateway.receive
+    error = CanonicalIdentityError("receipt_conflict")
+    error.add_note("database_write_phase:cleanup" if committed else "database_write_phase:commit")
+    if committed:
+        error.add_note("database_commit:confirmed")
+    calls = 0
+
+    async def lost_ack(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if has_receipt:
+            await original_receive(*args, **kwargs)
+        else:
+            # A preceding cold identity write can commit before any input receipt.
+            async with database.immediate_session() as writer:
+                person = await writer.get(CanonicalPersonModel, principal.person_id)
+                person.display_name = "original identity write"
+        raise error
+
+    monkeypatch.setattr(env.gateway, "receive", lost_ack)
+    if has_receipt:
+        result = await env.service.submit(principal, request_id, "original local prompt")
+        assert result["replay"] and result["event_id"] > 0
+        await drain(env)
+        assert len(env.calls) == 2
+    else:
+        with pytest.raises(CanonicalIdentityError) as caught:
+            await env.service.submit(principal, request_id, "original local prompt")
+        assert caught.value is error
+        assert not env.calls
+        async with database.read_session() as reader:
+            person = await reader.get(CanonicalPersonModel, principal.person_id)
+            assert person.display_name == "original identity write"
+    assert calls == 1
 
 
 async def client_prompt(env):

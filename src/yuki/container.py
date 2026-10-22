@@ -88,6 +88,7 @@ class ApplicationContainer:
         settings: Settings,
         *,
         database: Database | None = None,
+        owns_database: bool = False,
         runtime_config: RuntimeConfigService | None = None,
         vision_provider: VisionProvider | None = None,
     ) -> None:
@@ -100,11 +101,13 @@ class ApplicationContainer:
             settings,
             lifecycle=self.lifecycle,
             database=database,
+            owns_database=owns_database,
             runtime_config=runtime_config,
         ).build()
         self.persistence = persistence
         self.database = persistence.database
         self.runtime_config = persistence.runtime_config
+        self.lifecycle.register("application_identity", start=self._initialize_identity)
         self.gateway_providers = builtin_provider_catalog(
             qq_transfer_root=settings.social_transfer_directory,
             qq_gateway_root=settings.social_gateway_transfer_directory,
@@ -831,9 +834,10 @@ class ApplicationContainer:
             return cls(
                 active_settings,
                 database=database,
+                owns_database=True,
                 runtime_config=runtime_config,
             )
-        except Exception:
+        except BaseException:
             await database.close()
             raise
 
@@ -958,12 +962,14 @@ class ApplicationContainer:
         if self._cleanup_task is not None:
             await self._cleanup_task
 
-    async def start(self) -> None:
-        """Start maintenance tasks after migrations have run."""
-
+    async def _initialize_identity(self) -> None:
         await bootstrap_settings_identity(self.database, self.settings)
         character = await self.character.current()
         self.settings.apply_character_name(character.display_name, character.revision)
+
+    async def start(self) -> None:
+        """Start maintenance tasks after migrations have run."""
+
         await self.lifecycle.start()
 
     async def _cleanup_loop(self) -> None:

@@ -346,7 +346,7 @@ class PluginConfigRepository:
         timestamp = _aware_utc(now or datetime.now(UTC))
         value_json = _json(value)
         async with self._database.immediate_session() as session:
-            return await self._compare_and_set_canonical(
+            row = await self._compare_and_set_canonical(
                 session,
                 plugin_id=plugin_id,
                 scope_type=scope_type,
@@ -357,6 +357,7 @@ class PluginConfigRepository:
                 value_json=value_json,
                 timestamp=timestamp,
             )
+        return _config_record(row, scope_id=scope_id)
 
     async def _compare_and_set_canonical(
         self,
@@ -370,7 +371,7 @@ class PluginConfigRepository:
         expected_row_id: int | None,
         value_json: str,
         timestamp: datetime,
-    ) -> PluginConfigValueRecord:
+    ) -> PluginConfigValueModel:
         from yuki.plugin_host.ownership import (
             STATE_MISMATCH,
             PluginOwnershipError,
@@ -412,7 +413,7 @@ class PluginConfigRepository:
                 raise PluginOwnershipError(STATE_MISMATCH) from exc
             if row is None:
                 raise PluginVersionConflictError("plugin config version changed")
-            return _config_record(row, scope_id=scope_id)
+            return row
         if row.id != expected_row_id or row.version != expected_version:
             raise PluginVersionConflictError("plugin config version changed")
         replacement = await session.scalar(
@@ -436,7 +437,7 @@ class PluginConfigRepository:
         )
         if replacement is None:
             raise PluginVersionConflictError("plugin config version changed")
-        return _config_record(replacement, scope_id=scope_id)
+        return replacement
 
     async def delete(
         self,
@@ -700,7 +701,7 @@ class PluginStateRepository:
                 )
             )
             assert row is not None
-            return _state_record(row, subject_user_id=projected_subject)
+        return _state_record(row, subject_user_id=projected_subject)
 
     async def delete(
         self,
@@ -781,7 +782,7 @@ class PluginAuditRepository:
         async with self._database.immediate_session() as session:
             session.add(row)
             await session.flush()
-            return _audit_record(row)
+        return _audit_record(row)
 
     async def history(
         self,

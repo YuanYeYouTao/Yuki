@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
-from yuki.admin.audit import AdminAuditService
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.authority.targets import PersonControlTarget
 from yuki.admin.models import ControlAuditRef
@@ -26,10 +23,8 @@ class PreferenceAdminService:
     def __init__(
         self,
         *,
-        audit: AdminAuditService,
         memory_mutations: MemoryAdminService,
     ) -> None:
-        self._audit = audit
         self._memory_mutations = memory_mutations
 
     async def list_preferences(
@@ -58,7 +53,6 @@ class PreferenceAdminService:
         normalized_value = " ".join(value.split()).strip()
         if not normalized_key or not normalized_value:
             raise ValueError("偏好键和值不能为空")
-        started = time.perf_counter()
         matching = [
             row
             for row in await self._memory_mutations.list_explicit_preferences(
@@ -77,20 +71,6 @@ class PreferenceAdminService:
             existing=existing,
             target_person_id=target,
         )
-        await self._audit.record(
-            actor=audit,
-            capability="preference",
-            operation="set",
-            target_type="user",
-            target_id=target,
-            before={
-                "key": normalized_key,
-                "preference_value": existing.value if existing else None,
-            },
-            after={"key": normalized_key, "preference_value": normalized_value},
-            success=True,
-            duration_seconds=time.perf_counter() - started,
-        )
         return row
 
     async def delete_preference(
@@ -103,7 +83,6 @@ class PreferenceAdminService:
         require_self_or_capability(context, "control.preference.mutate", audit)
         target = person_storage_id(context)
         normalized_key = key.strip()
-        started = time.perf_counter()
         matching = [
             row
             for row in await self._memory_mutations.list_explicit_preferences(
@@ -122,21 +101,6 @@ class PreferenceAdminService:
                 existing,
                 target_person_id=target,
             )
-        )
-        await self._audit.record(
-            actor=audit,
-            capability="preference",
-            operation="delete",
-            target_type="user",
-            target_id=target,
-            before={
-                "key": normalized_key,
-                "preference_value": existing.value if existing else None,
-            },
-            after=None,
-            success=deleted,
-            error_category=None if deleted else "not_found",
-            duration_seconds=time.perf_counter() - started,
         )
         return deleted
 

@@ -1,6 +1,8 @@
 """Personal inputs retain original Work identity and commit all three facts together."""
 
 import json
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -12,6 +14,7 @@ from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_api import bearer, pair
 
+from yuki.client_api import works as works_module
 from yuki.client_api.works import ClientWorks
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -29,6 +32,49 @@ from yuki.social.db_models import SocialOperationModel
 
 admin = admin_fixture
 app_env = app_fixture
+
+
+async def test_new_input_checks_current_actor_without_decoding_private_work_source(
+    app_env, database, monkeypatch
+):
+    env = app_env
+    device, _person = await owner(env, database)
+    original = await seeded(env, database)
+    source = json.dumps({**original.source, "private_material": "retained private work\n" * 10000})
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work).where(work.c.id == original.row["id"]).values(source_json=source)
+        )
+    active = ContextVar("client_work_input_writer", default=False)
+    original_writer = database.immediate_session
+    decode = works_module.json.loads
+
+    @asynccontextmanager
+    async def tracked_writer():
+        async with original_writer() as writer:
+            token = active.set(True)
+            try:
+                yield writer
+            finally:
+                active.reset(token)
+
+    def decoded_outside_writer(value, *args, **kwargs):
+        if value == source:
+            assert not active.get(), "the private Work body was decoded by the input writer"
+        return decode(value, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(database, "immediate_session", tracked_writer)
+        scoped.setattr(works_module.json, "loads", decoded_outside_writer)
+        response = await env.client.post(
+            f"/client/v1/works/{original.row['id']}/inputs",
+            json={"request_id": str(uuid4()), "text": "original additional requirement"},
+            headers=bearer(device["token"]),
+        )
+    assert response.status_code == 200, response.text
+    current = await original.repository.get(original.row["id"])
+    assert current["source_json"] == source and current["model_requests"] == 3
+    assert not env.calls
 
 
 async def owner(env, database, account="1001"):

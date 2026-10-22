@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import or_, select, text, true
+from sqlalchemy import func, or_, select, text, true
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1388,25 +1388,55 @@ class SocialService:
                 if context.origin == "plugin_background" and context.caused_by_event_id is not None:
                     from yuki.plugin_host.notification_repository import (
                         background_authority_live,
-                        publication_source_person,
                     )
 
-                    original_event = await session.get(ChatEventModel, context.caused_by_event_id)
-                    conversation = await session.get(
-                        CanonicalConversationModel, context.conversation_id
+                    segments = func.json_each(ChatEventModel.segments_json).table_valued(
+                        "key", "value"
                     )
+                    source_person = (
+                        select(func.json_extract(segments.c.value, "$.data.source_person_id"))
+                        .where(
+                            func.json_extract(segments.c.value, "$.type") == "yuki_context",
+                            func.json_type(segments.c.value, "$.data.publication").is_not(None),
+                        )
+                        .order_by(segments.c.key)
+                        .limit(1)
+                        .correlate(ChatEventModel)
+                        .scalar_subquery()
+                    )
+                    original = (
+                        await session.execute(
+                            select(
+                                ChatEventModel.source_plugin_id,
+                                source_person.label("source_person_id"),
+                                CanonicalConversationModel.person_id,
+                                CanonicalConversationModel.space_id,
+                            )
+                            .join(
+                                CanonicalConversationModel,
+                                CanonicalConversationModel.id
+                                == ChatEventModel.canonical_conversation_id,
+                            )
+                            .where(
+                                ChatEventModel.id == context.caused_by_event_id,
+                                CanonicalConversationModel.id == context.conversation_id,
+                            )
+                        )
+                    ).first()
                     if (
-                        original_event is None
-                        or conversation is None
-                        or not original_event.source_plugin_id
-                        or original_event.canonical_conversation_id != conversation.id
+                        original is None
+                        or not original.source_plugin_id
                         or not await background_authority_live(
                             session,
-                            plugin_id=original_event.source_plugin_id,
-                            source_person_id=publication_source_person(original_event),
+                            plugin_id=original.source_plugin_id,
+                            source_person_id=(
+                                str(original.source_person_id)
+                                if original.source_person_id is not None
+                                else None
+                            ),
                             conversation_id=context.conversation_id,
-                            person_id=conversation.person_id,
-                            space_id=conversation.space_id,
+                            person_id=original.person_id,
+                            space_id=original.space_id,
                         )
                     ):
                         raise SocialError("permission_denied")
@@ -1700,6 +1730,15 @@ class SocialService:
             if receipt.status is OperationStatus.FAILED
             else "unknown"
         )
+        if session is not None:
+            await record(
+                control,
+                receipt.operation_id,
+                state,
+                receipt.model_dump(mode="json", exclude={"prepared"}),
+                session=session,
+            )
+            return
         try:
             await record(
                 control,

@@ -645,17 +645,13 @@ async def _prepare_observation(
         )
         if binding is None or binding.person_id != admitted.author_person_id:
             raise CanonicalIdentityError("canonical_owner_mismatch")
-        return await prepare_canonical_person_observation(
-            session,
+        return prepare_canonical_person_observation(
             binding=binding,
             nickname=sanitize_profile_name(message.sender.nickname),
-            group_id=message.group_id,
-            group_card=sanitize_profile_name(message.sender.group_card),
             group_name=sanitize_profile_name(message.group_name),
-            nickname_known=message.sender.nickname_known or bool(message.sender.nickname),
-            group_card_known=message.sender.group_card_known or bool(message.sender.group_card),
             now=now,
             space_id=admitted.space_id,
+            space_binding_id=admitted.space_binding_id,
         )
     if admitted.space_binding_id is not None and admitted.space_id is not None:
         space_binding = await session.get(SpaceBindingModel, admitted.space_binding_id)

@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 import pytest
 from PIL import Image
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.canonical_identity import ensure_person
 from tests.support.memory_identity import transfer_account
 from tests.support.person_merge import merge_persons
@@ -45,6 +46,59 @@ from yuki.social.emoji_intents import EmojiIntentRepository, derived_call_id
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
 
 ARGS = {"text": "正文", "emoji": {"goal": "开心"}}
+
+
+@pytest.mark.parametrize("phase", ["selection", "claim"])
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+async def test_emoji_worker_resumes_original_receipt_after_real_commit_ack_loss(
+    database, tmp_path, monkeypatch, phase, error_type
+):
+    env = await social_env(database, tmp_path)
+    delivery, library = make_delivery(env)
+    await env.service.execute("send", ARGS, env.context)
+    original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    selecting = ContextVar("selection_commit", default=False)
+    select_asset, claim = delivery.intents.select, env.service.receipts.claim
+    commit = AsyncSession.commit
+    fired = False
+
+    async def select_original(*args, **kwargs):
+        token = selecting.set(True)
+        try:
+            return await select_asset(*args, **kwargs)
+        finally:
+            selecting.reset(token)
+
+    async def claim_original(*args, **kwargs):
+        result = await claim(*args, **kwargs)
+        if result:
+            kwargs["session"].info["original_emoji_claim"] = True
+        return result
+
+    async def lose_ack(session):
+        nonlocal fired
+        targeted = (
+            selecting.get() if phase == "selection" else session.info.get("original_emoji_claim")
+        )
+        await commit(session)
+        if targeted and not fired:
+            fired = True
+            raise error_type("original emoji commit acknowledgement lost")
+
+    monkeypatch.setattr(delivery.intents, "select", select_original)
+    monkeypatch.setattr(env.service.receipts, "claim", claim_original)
+    monkeypatch.setattr(AsyncSession, "commit", lose_ack)
+    await delivery.start()
+    try:
+        result = await settle(delivery, env.context)
+        current = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+        assert fired and current.id == original.id and current.selected is not None
+        assert library.select_calls == 1
+        assert result["status"] == ("succeeded" if phase == "selection" else "uncertain")
+        assert len(sends(env.bot)) == (2 if phase == "selection" else 1)
+        assert current.error_category is None
+    finally:
+        await delivery.close()
 
 
 def sends(bot):

@@ -69,6 +69,89 @@ def receipts(control):
     }
 
 
+async def test_child_source_and_message_body_are_encoded_before_writer(
+    database, tmp_path, monkeypatch
+):
+    import yuki.runtime.subagent_repository as child_module
+    import yuki.runtime.work_repository as work_module
+
+    original_child_encode, original_work_encode = child_module.encode_json, work_module.encode_json
+    prepared = []
+
+    def check_source(value):
+        if isinstance(value, dict) and "principal_kind" in value:
+            assert not database._writer.locked()
+            prepared.append("source")
+        return original_work_encode(value)
+
+    def check_child(value):
+        if isinstance(value, dict) and ("principal_kind" in value or "text" in value):
+            assert not database._writer.locked()
+            prepared.append("child")
+        return original_child_encode(value)
+
+    monkeypatch.setattr(work_module, "encode_json", check_source)
+    monkeypatch.setattr(child_module, "encode_json", check_child)
+    probe, parent, workers, identity = await worker_case(database, tmp_path, ())
+    body = "original child question " * 1000
+    message = await workers.message(
+        probe.control.lease,
+        parent.current["id"],
+        identity,
+        "original-question",
+        body,
+        ask=True,
+        to_parent=True,
+    )
+    assert message["waiting_parent"] is True
+    async with database.read_session() as reader:
+        raw = await reader.scalar(
+            select(inputs.c.payload_json).where(inputs.c.source_key == "original-question")
+        )
+    payload = json.loads(raw)
+    assert payload["child_id"] == identity
+    assert json.loads(payload["text"])["text"] == body
+    assert "source" in prepared and "child" in prepared
+
+
+async def test_work_control_keeps_an_actual_unknown_commit_ack(database, tmp_path, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from yuki.runtime.effect_outcomes import ResultCapture, current_result_capture
+
+    probe = await case(database, tmp_path, [])
+    original_commit = AsyncSession.commit
+    commits = 0
+
+    async def lose_ack(session):
+        nonlocal commits
+        await original_commit(session)
+        commits += 1
+        raise ValueError("original Work update commit acknowledgement lost")
+
+    capture = ResultCapture(probe.control.current["id"], "original-update")
+    token = current_result_capture.set(capture)
+    try:
+        with monkeypatch.context() as fault:
+            fault.setattr(AsyncSession, "commit", lose_ack)
+            result = json.loads(
+                await probe.control.execute(
+                    "task_control",
+                    {"action": "update", "goal": "actual committed goal"},
+                    "original-update",
+                )
+            )
+    finally:
+        current_result_capture.reset(token)
+    assert result["ok"] is False and result["uncertain"] is True
+    assert result.get("mutation_committed") is None and result["retryable"] is False
+    assert result["metadata"]["database_write_phase"] == "commit"
+    assert capture.outcome.uncertain and capture.outcome.mutation_committed is None
+    assert commits == 1
+    stored = await probe.repository.get(probe.control.current["id"])
+    assert stored["goal"] == "actual committed goal"
+
+
 async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_child(
     database, tmp_path
 ):

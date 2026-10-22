@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 from tests.support.event_seed import seed_scoped_event
 from tests.support.workspace_snapshots import snapshot_bytes
@@ -72,24 +73,14 @@ async def social_env(database, tmp_path):
         )
         presence = await ensure_presence(session, bot.self_id)
         space = await ensure_space(session, "20001")
-    from datetime import UTC, datetime
-
-    from yuki.identity.canonical_repository import find_identity_binding
-    from yuki.identity.person_state import observe_canonical_person
-
-    async with database.immediate_session() as session:
-        binding = await find_identity_binding(session, "10001")
-        await observe_canonical_person(
-            session,
-            binding=binding,
+    await apply_observations(
+        database,
+        profile_message(
+            user_id="10001",
             nickname="test-10001",
             group_id="20001",
-            group_card="",
-            group_name="",
-            nickname_known=True,
-            group_card_known=True,
-            now=datetime.now(UTC),
-        )
+        ),
+    )
     registry.connect(bot, provider_id="snowluma", presence_id=presence)
     await seed_scoped_event(
         writer,
@@ -378,9 +369,7 @@ async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
         person.enabled = False
     env.bot.missing.add("10002")
     env.bot.calls.clear()
-    result = await env.service.execute(
-        "send", {"text": f"@{{account:{account}}}"}, env.context
-    )
+    result = await env.service.execute("send", {"text": f"@{{account:{account}}}"}, env.context)
     assert result["status"] == "succeeded"
     assert env.bot.calls == [
         (
