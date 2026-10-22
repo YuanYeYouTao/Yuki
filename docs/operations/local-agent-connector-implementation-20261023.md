@@ -38,7 +38,8 @@ Work/generation 终态和原清退入口负责收拢所属关系；不为 QQ Bin
 - 真实 HTTPS/WSS + SQLite + Work 集成覆盖配对、身份、目录分页、重要事件提交后 ACK、原问题回答、断线、原操作查询、精确目标和迟到回执。测试对端明确为协议替身，不用它冒充真实模型。
 - 0147 → 0148 四项真实迁移回归通过：旧 chat 凭据仍可用；已付请求/预算/原回执不变；设备命名空间与实际 FK 约束成立；启动不扫业务表，缺必要新结构会拒绝。
 - 主项目 Ruff 与 Linux 目标的完整 mypy 通过。后者在 Windows 执行类型检查，不等同 Linux 实机验收。
-- 新链及受影响身份、Work、角色、工具与生命周期的定向回归通过；完整测试结果在最终交付记录单列，避免把中途进度称为全部通过。
+- 新链及受影响身份、Work、角色、工具与生命周期的定向回归 96 项通过；排队后来源失效的真实竞争回归另 1 项通过。后续 detach 消费者补修仍单独验其影响。
+- Windows 扩展全库测试截至首次停止为 2425 passed、13 skipped、93 deselected、5 failed；五项失败均在原有 `test_shared_inbound_media` 调用 Linux `fcntl`，此分支不改该模块或伪造其文件锁。Linux CI 与剩余用例另核，不称全库已绿。
 
 ### Windows 本机真实 Codex
 
@@ -54,7 +55,11 @@ Work/generation 终态和原清退入口负责收拢所属关系；不为 QQ Bin
 
 ### 独立包与 Desktop
 
-连接器协议回归使用真实 stdio ACP 对端、官方 Claude SDK 协议解析和可控 Codex WebSocket；与付费模型验收分开。独立 wheel 已在干净环境安装，CLI 和三驱动可导入，没有安装 Bot 包。
+连接器 28 项协议回归通过，使用真实 stdio ACP 对端、官方 Claude SDK 协议解析和可控 Codex WebSocket；与付费模型验收分开。独立 wheel 已在干净环境安装 39 项锁定依赖，CLI 和三驱动可导入，没有安装 Bot 包。Windows 与 Linux 目标的包级 mypy、Ruff 通过。
+
+最后一轮 detach 全消费者补修后，9 项终审与 147 项既有 Work 回执/等待/查询回归通过，4 项 POSIX 场景在 Windows 跳过。监督关系的 detached 状态与 native 最后事实经过 completed_children、原 effect 对账和 owned_run 等待唤醒仍保留，不能被简化成原生 succeeded。
+
+另在 Windows 使用实际安装的 Claude Code `2.1.283`、SDK `0.2.172` 完成隔离目录初始化：显式 cli_path、system/tool 的 claude_code preset 与 user/project/local 设置来源传入后正常握手，未提交模型 prompt、未消费编码模型，随后关闭本测试 SDK owner。此证据不证明真实账户、新建/resume 编码或任意 TUI 接管。
 
 Windows 用户服务烟测实际完成：当前用户 InteractiveToken/LeastPrivilege 注册、启动、连接 loopback WSS、读取 running、停止原进程、卸载。没有配置 native 实例或调用模型；原测试任务/进程已清理。停止按原进程句柄退出核对，不用固定 sleep 冒充结束。
 
@@ -62,7 +67,7 @@ Desktop 在独立分支 `codex/local-agent-connector-20261023`、基线 `cff3073
 
 ## 尚未取得的验收与交付
 
-- Claude 的真实账户/模型、Windows 实际 CLI 和 native preset/config 完整执行尚未实测；当前只有协议与 SDK 行为回归，不能声称已接管用户正在运行的独立终端。
+- Claude 的真实账户/模型和 native preset/config 完整编码尚未实测；Windows 实际 CLI 已完成初始化，不能把它或协议回归称为完整编码或接管用户正在运行的独立终端。
 - Linux/macOS 用户服务已实现并加入对应 OS 的 CI，尚无本轮 Linux/macOS 原生模型与服务实机验收。CI 的 fake 协议不替代真实账户。
 - 尚未进行生产服务器到用户电脑、真实 QQ/TG 自然流量或真实 Social 消息验收；测试未向真实群发送消息。
 - wheel 构建不等于 PyPI 发布；Desktop 构建不等于安装包 Release。PR、CI、合并、镜像与部署分别记录，本轮没有生产上线。
