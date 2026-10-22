@@ -33,7 +33,7 @@ async def test_missing_original_keeps_receipt_and_cannot_read_next_send(database
     assert recovered["delivered_text_available"] is False
     assert "delivered_text" not in recovered
     assert env.bot.calls == calls
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.get(SocialOperationModel, sent["operation_id"])
         assert row.original_event_id == event_id
         assert row.original_conversation_id == env.context.conversation_id

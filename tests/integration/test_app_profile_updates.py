@@ -52,7 +52,7 @@ async def test_app_input_observes_only_the_real_name(
     )
     assert response.status_code == 200, response.text
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(CanonicalPersonModel, person_id)).display_name == (
             person_name or name
         )

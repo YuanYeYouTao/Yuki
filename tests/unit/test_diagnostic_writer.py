@@ -49,7 +49,7 @@ async def test_each_record_is_prepared_before_its_short_commit(database):
     await writer.close()
     event.remove(database.engine.sync_engine, "before_cursor_execute", before_sql)
     event.remove(database.engine.sync_engine, "commit", committing)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.scalars(select(ExecutionTraceStateModel.id))).all() == list(
             range(1, 7)
         )
@@ -75,7 +75,7 @@ async def test_zero_row_guard_marks_only_its_record_after_commit(database, caplo
     assert writer.committed == 2
     assert writer.failures == 1
     assert "diagnostic_discarded kind=source_guard coverage_incomplete=true" in caplog.text
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.scalars(select(ExecutionTraceStateModel.id))).all() == [1, 3]
 
 
@@ -104,7 +104,7 @@ async def test_unknown_commit_does_not_replay_or_claim_success(database, monkeyp
     assert writer.failures == 2
     assert writer.committed == 0
     monkeypatch.setattr(database.engine.sync_engine.dialect, "do_commit", original_commit)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.scalars(select(ExecutionTraceStateModel.id))).all() == [1, 2]
 
 
@@ -125,7 +125,7 @@ async def test_statement_failure_does_not_drop_other_records_or_replay(database)
     assert failed == [1]
     assert writer.failures == 1
     assert writer.committed == 2
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.scalars(select(ExecutionTraceStateModel.id))).all() == [1, 2]
     writer.submit("next", 32, lambda: prepare(3, 3))
     await writer.close()
@@ -152,7 +152,7 @@ async def test_shutdown_cancels_preparation_without_starting_a_writer(database):
     assert writer.dropped == 3
     assert writer.committed == 0
     assert (await writer.health())["bytes"] == 0
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.scalars(select(ExecutionTraceStateModel.id))).all() == []
 
 

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import event as sqlalchemy_events
 from tests.support.canonical_identity import ensure_person
 from tests.support.event_seed import seed_event
+from tests.support.person_merge import merge_persons
 from tests.support.semantic_participation_host_helpers import (
     _choice,
     _event_and_route,
@@ -27,7 +28,6 @@ from yuki_participation.self_report import SelfDelta, SelfReport
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatResponse
-from yuki.identity.person_identity import merge_persons
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.participation_feedback import admission_unit_binding

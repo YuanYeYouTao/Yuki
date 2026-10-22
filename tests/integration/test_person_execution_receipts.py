@@ -42,7 +42,7 @@ from yuki_plugin_sdk.permissions import PluginPermission
 async def invocation(
     database, plugin, event, *, platform, space_id=None, gateway=None, runtime_config=None
 ):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         primary_alias = await require_primary_alias_for_conversation(
             reader, event.canonical_conversation_id
         )
@@ -243,7 +243,7 @@ async def test_onebot_original_receipt_precedes_all_upstream_lifecycle_gates(
     database, tmp_path, api, change, lost_ack
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -329,7 +329,7 @@ async def test_onebot_original_receipt_precedes_all_upstream_lifecycle_gates(
 
 async def test_onebot_group_send_uses_original_person_after_account_transfer(database, tmp_path):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -376,7 +376,7 @@ async def test_onebot_group_send_uses_original_person_after_account_transfer(dat
             with pytest.raises(SocialError, match="plugin_send_source_mismatch"):
                 await host.onebot.send_music_card(provider="qq", resource_id="42")
         assert len(env.bot.calls) == before
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.get(ChatEventModel, event.id)
             ).author_person_id == event.author_person_id
@@ -427,7 +427,7 @@ async def test_forget_during_dispatch_keeps_only_the_original_transport_fact(
         direction="inbound",
         content="original private source",
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.get(ChatEventModel, appended.event.id)
     plugin = "test.forget-confirmed"
     physical = []
@@ -479,7 +479,7 @@ async def test_forget_during_dispatch_keeps_only_the_original_transport_fact(
     receipt = await env.service.receipts.get(operation_id)
     assert receipt.status is (OperationStatus.SUCCEEDED if confirmed else OperationStatus.UNCERTAIN)
     assert receipt.event_id is None and len(physical) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalConversationModel, event.canonical_conversation_id) is None
         assert not list(
             await reader.scalars(

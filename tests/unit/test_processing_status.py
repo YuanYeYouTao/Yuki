@@ -97,7 +97,7 @@ async def test_actual_main_starts_typing_while_model_is_pending_and_stops_on_exi
         await asyncio.wait_for(entered.wait(), 5)
         await asyncio.wait_for(activity.started.wait(), 5)
         assert not task.done() and activity.stops == 0
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             event = (await reader.scalars(select(ChatEventModel))).one()
         router.resolve_send_for_conversation.assert_awaited_once_with(
             event.canonical_conversation_id,

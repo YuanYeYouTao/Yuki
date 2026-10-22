@@ -386,7 +386,7 @@ async def test_standard_stdio_answer_resumes_original_work_and_controls_its_outp
             assert continuation["work"]["work_id"] == work_id
             queued = await repository.get(work_id)
             assert queued["state"] == "queued"
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 admission = await reader.get(OrdinaryTurnAdmissionModel, continuation["event_id"])
                 assert admission.work_id == work_id and admission.route == "work"
             if cancel:
@@ -443,7 +443,7 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
     assert [update.content.text for _, update in first_peer.updates] == [
         "Which city before restart?"
     ]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_journal = await reader.scalar(
             select(journal.c.payload_json).where(journal.c.work_id == original["id"])
         )
@@ -513,7 +513,7 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
                         "tool_calls",
                     ):
                         assert queued[key] == original[key]
-                    async with database.sessions() as reader:
+                    async with database.read_session() as reader:
                         assert (
                             await reader.scalar(
                                 select(journal.c.payload_json).where(
@@ -531,7 +531,7 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
                     assert [update.content.text for _, update in second_peer.updates] == [
                         "Taipei result after restart"
                     ]
-                    async with database.sessions() as reader:
+                    async with database.read_session() as reader:
                         kept = dict(
                             (
                                 await reader.execute(
@@ -566,7 +566,7 @@ async def test_disabled_platform_binding_can_transfer_without_reviving_old_owner
     result = await identity.transfer_for_operator(
         original_id, target.person_id, str(uuid4()), str(uuid4())
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         old = await reader.get(IdentityBindingModel, original_id)
         current = await reader.get(IdentityBindingModel, result["binding_id"])
         assert old.status == "ended" and old.person_id == original_person

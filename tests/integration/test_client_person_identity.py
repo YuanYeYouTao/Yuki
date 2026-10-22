@@ -11,6 +11,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -27,7 +28,7 @@ from yuki.conversation.canonical_db_models import (
     ControlCommandReceiptModel,
 )
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from yuki.identity.person_identity import current_person_id, merge_persons
+from yuki.identity.person_identity import current_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_schema_v1 import journal
 
@@ -47,7 +48,8 @@ async def merge(database, source, target):
     async def apply(session):
         return await merge_persons(session, source, target, now=datetime.now(UTC))
 
-    assert await database.apply_snapshot_write(apply) == target
+    async with database.immediate_session() as _writer:
+        assert await apply(_writer) == target
 
 
 def entry(device, me):
@@ -68,7 +70,7 @@ async def test_two_original_apps_replay_and_default_entries_survive_merge(app_en
         originals.append(sent.json()["data"])
     await drain(env)
     calls = len(env.calls)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         before = {
             item["event_id"]: (
                 (event := await session.get(ChatEventModel, item["event_id"])).author_person_id,
@@ -105,7 +107,7 @@ async def test_two_original_apps_replay_and_default_entries_survive_merge(app_en
         )
         assert changed.status_code == 409
     assert len(env.calls) == calls
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(CanonicalConversationModel.id))) == count
         for event_id, values in before.items():
             event = await session.get(ChatEventModel, event_id)
@@ -186,7 +188,7 @@ async def test_same_device_uuid_is_scoped_to_original_app_not_merged_root(app_en
         headers=entry(b, me_a),
     )
     assert replay.status_code == 200 and replay.json()["data"]["replay"], replay.text
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(
             await session.scalars(
                 select(ControlCommandReceiptModel).where(
@@ -374,7 +376,7 @@ async def test_merged_person_can_resume_original_work_without_rewriting_source(a
     current = await original.repository.get(original.row["id"])
     assert current["source_json"] == original.row["source_json"]
     assert current["model_requests"] == 3 and current["tool_calls"] == 2
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(journal.c.payload_json).where(journal.c.work_id == current["id"])
@@ -406,7 +408,7 @@ async def test_claim_account_merges_two_apps_without_changing_their_original_cre
     code = await env.identity.issue_for_device(
         await env.identity.authenticate(b["token"]), str(uuid4())
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         from yuki.identity.canonical_repository import find_identity_binding
 
         original_binding = await find_identity_binding(session, "1001")
@@ -421,7 +423,7 @@ async def test_claim_account_merges_two_apps_without_changing_their_original_cre
         assert me["person_id"] == person_b and me["source_person_id"] == original["person_id"]
         assert me["binding_id"] == original["binding_id"]
         assert me["conversation_id"] == original["conversation_id"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await session.get(IdentityBindingModel, original_id)
         assert binding.person_id == person_a and binding.status == "active"
     again = await env.identity.issue_for_device(
@@ -545,7 +547,7 @@ async def test_operator_transfer_pauses_current_root_route_without_moving_histor
         binding_id, target, str(uuid4()), str(uuid4())
     )
     assert result["binding_id"] != binding_id and result["person_id"] == target
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_b)
         original = await session.get(IdentityBindingModel, binding_id)
         assert route.paused and route.identity_binding_id == binding_id
@@ -619,7 +621,7 @@ async def test_disabled_app_does_not_revoke_device_person_or_original_work(app_e
     assert new_message.status_code == 401, new_message.text
     await drain(env)
     assert len(env.calls) == models
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(ChatEventModel.id))) == events + 1
         assert (await session.get(ClientDeviceModel, a["device_id"])).revoked_at is None
         assert (await session.get(CanonicalPersonModel, person_a)).enabled

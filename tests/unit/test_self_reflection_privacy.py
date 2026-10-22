@@ -73,7 +73,7 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
     retained = await _append_event(
         ledger, message_id="retained-source", group_id="2001", user_id="1002"
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.get(
             CanonicalConversationModel, erased.canonical_conversation_id
         )
@@ -127,7 +127,7 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
             edited_at=now + timedelta(seconds=1),
             revision=1,
         )
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             current = _event_record(await reader.get(ChatEventModel, mention.id))
         assert current.content == "编辑后无提及资料"
         assert current.mentioned_person_ids == ()
@@ -264,7 +264,7 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
         result_id, request_id, fact_id = result.id, request.id, committed_fact.id
         if copy_kind == "event_expired":
             await writer.execute(delete(ChatEventModel).where(ChatEventModel.id == erased.id))
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         related_before = _values(await reader.get(MemorySelfReflectionRunModel, related_id))
         unrelated_before = _values(await reader.get(MemorySelfReflectionRunModel, unrelated_id))
         result_before = _values(await reader.get(MemorySelfReflectionResultModel, result_id))
@@ -272,7 +272,7 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
         fact_before = _values(await reader.get(MemoryFactModel, fact_id))
     assert erased.id < related_before["first_event_id"]
     assert await PeopleRepository(database).delete_person_id(erased.author_person_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(ChatEventModel, erased.id) is None
         after = _values(await reader.get(MemorySelfReflectionRunModel, related_id))
         assert after == dict(related_before, checkpoint_json=None)

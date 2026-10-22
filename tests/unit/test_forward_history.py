@@ -19,7 +19,7 @@ from yuki.services.agent_tools import ToolRuntime
 
 async def setup_forward(database, tmp_path, segments):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.scalar(select(ChatEventModel))
         event_id = event.id
     async with database.immediate_session() as writer:

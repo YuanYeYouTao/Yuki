@@ -531,7 +531,7 @@ async def test_original_tgs_bytes_survive_image_label_without_platform_metadata(
     attachment_tools, database, monkeypatch
 ):
     case = attachment_tools
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, case.source.id)
         frozen_segments = event.segments_json
     inbound = replace(
@@ -560,7 +560,7 @@ async def test_original_tgs_bytes_survive_image_label_without_platform_metadata(
     assert result["mode"] == "sticker_metadata" and result["status"] == "preview_unavailable"
     assert result["format"] == "TGS" and result["sha256"] == hashlib.sha256(TGS).hexdigest()
     assert case.wire.count(("GET", "/file/botfixture-a/photos/original.png")) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, case.source.id)
         assert event.segments_json == frozen_segments
     analyze.assert_not_called()

@@ -138,7 +138,7 @@ async def test_forgetting_an_owner_without_accounts_removes_its_grant(character)
     await repository.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
     async with repository.database.immediate_session() as session:
         await forget_person_by_id(session, person)
-    async with repository.database.sessions() as session:
+    async with repository.database.read_session() as session:
         assert (
             await session.scalar(
                 select(CharacterOwnerGrantModel).where(CharacterOwnerGrantModel.person_id == person)
@@ -200,7 +200,7 @@ async def test_compare_and_swap_keeps_raw_bytes_and_owner_revoke_stops_reads(cha
 
     from yuki.persistence.models import AdminOperationEventModel
 
-    async with repository.database.sessions() as session:
+    async with repository.database.read_session() as session:
         audit = " ".join(await session.scalars(select(AdminOperationEventModel.after_json)))
     assert "Raw" not in audit and "{{name}}" not in audit
     await repository.set_owner(str(uuid4()), principal.person_id, str(uuid4()), granted=False)
@@ -264,7 +264,7 @@ async def test_missing_selected_soul_keeps_original_request_for_file_recovery(
     assert unknown.status_code == 409 and unknown.json() == {"problem": {"code": "unknown"}}
     assert settings.active_soul_revision == original["active_revision"]
     assert settings.soul == retained.read_bytes().decode("utf-8")
-    async with repository.database.sessions() as session:
+    async with repository.database.read_session() as session:
         receipt = (
             await session.scalars(
                 select(ControlCommandReceiptModel).where(
@@ -279,7 +279,7 @@ async def test_missing_selected_soul_keeps_original_request_for_file_recovery(
     assert recovered.status_code == 200, recovered.text
     assert path.read_bytes() == b"Recovered selected SOUL"
     assert settings.soul == "Recovered selected SOUL"
-    async with repository.database.sessions() as session:
+    async with repository.database.read_session() as session:
         receipt = (
             await session.scalars(
                 select(ControlCommandReceiptModel).where(

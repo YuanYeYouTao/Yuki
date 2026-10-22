@@ -262,7 +262,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
     await app.app_gateway.start()
     repository = WorkRepository(database)
     try:
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             binding = await find_identity_binding(session, "10001")
         issued = await app.client_api.identity.issue_for_operator(
             binding.person_id, str(uuid4()), str(uuid4())
@@ -297,7 +297,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
                             mentions_bot=False,
                         )
                     await app.processor.handle(message, sender)
-                async with database.sessions() as session:
+                async with database.read_session() as session:
                     original = dict(
                         (await session.execute(select(work).where(work.c.state == "waiting_user")))
                         .mappings()
@@ -344,7 +344,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
                     "tool_calls",
                 ):
                     assert queued[key] == original[key]
-                async with database.sessions() as session:
+                async with database.read_session() as session:
                     assert (
                         await session.execute(
                             select(journal.c.payload_json).where(
@@ -390,7 +390,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
             continued["state"] == "queued"
             and continued["model_requests"] == original["model_requests"] + 1
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             consumed = (
                 (
                     await session.execute(
@@ -452,7 +452,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
             and "read_personal_entry" not in {tool.name for tool in call.tools}
             for call in observed
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             expected_manifest = app.main_agent_contract.revision
             saved_calls = [
                 json.loads(body)["invocation"]

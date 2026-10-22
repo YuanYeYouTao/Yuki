@@ -33,10 +33,11 @@ from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatImage, ToolCall, ToolFunction
 from yuki.llm.base import LLMError
 from yuki.memory.enums import MemoryScopeType
+from yuki.persistence.database import write_failure_phase
 from yuki.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from yuki.runtime.work_budget import WorkBudgetExceeded
 from yuki.services.agent_runner import AgentRuntime, AgentToolBackend
-from yuki.services.agent_tools import ToolRuntime
+from yuki.services.agent_tools import ToolRuntime, database_failure_result
 from yuki.services.turn_coordinator import TurnSupersededError
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -310,15 +311,19 @@ class MainAgentBackend(AgentToolBackend):
             except (asyncio.CancelledError, WorkBudgetExceeded):
                 raise
             except Exception as exc:
-                outcome = ToolExecutionResult(
-                    ok=False,
-                    error_code=type(exc).__name__,
-                    public_message="工具执行失败",
-                    retryable=False,
-                    uncertain=state_started,
-                    mutation_committed=None if state_started else False,
-                    provider_id="host_prefix",
-                    tool_name=name,
+                outcome = (
+                    database_failure_result(exc, provider_id="host_prefix", tool_name=name)
+                    if write_failure_phase(exc) is not None
+                    else ToolExecutionResult(
+                        ok=False,
+                        error_code=type(exc).__name__,
+                        public_message="工具执行失败",
+                        retryable=False,
+                        uncertain=state_started,
+                        mutation_committed=None if state_started else False,
+                        provider_id="host_prefix",
+                        tool_name=name,
+                    )
                 )
             return (await ToolResultBudgeter(max_characters=None).render(outcome)).text
         capability_runtime = self._capability_runtime
@@ -424,28 +429,35 @@ class MainAgentBackend(AgentToolBackend):
                     CapabilityEffect.READ_STATE,
                     CapabilityEffect.EXTERNAL_READ,
                 }
-                outcome = ToolExecutionResult(
-                    ok=False,
-                    error_code=type(exc).__name__,
-                    public_message="工具执行失败",
-                    retryable=False,
-                    uncertain=uncertain,
-                    mutation_committed=None if uncertain else False,
-                    provider_id=descriptor.provider_id,
-                    tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                outcome = (
+                    database_failure_result(
+                        exc,
+                        provider_id=descriptor.provider_id,
+                        tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                    )
+                    if write_failure_phase(exc) is not None
+                    else ToolExecutionResult(
+                        ok=False,
+                        error_code=type(exc).__name__,
+                        public_message="工具执行失败",
+                        retryable=False,
+                        uncertain=uncertain,
+                        mutation_committed=None if uncertain else False,
+                        provider_id=descriptor.provider_id,
+                        tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                    )
                 )
-            mutation_committed = mutating and resolve_mutation_commit(
-                outcome,
-                effective_descriptor,
+            mutation_committed = (
+                resolve_mutation_commit(outcome, effective_descriptor)
+                if mutating or (outcome.metadata or {}).get("database_write_phase") is not None
+                else False
             )
             outcome = replace(outcome, mutation_committed=mutation_committed)
             if call.function.name == "send" and isinstance(outcome.data, dict):
                 receipt = outcome.data
                 parts = receipt.get("parts")
                 deliveries = parts if isinstance(parts, list) else [receipt]
-                self.messages_sent += sum(
-                    part.get("status") == "succeeded" for part in deliveries
-                )
+                self.messages_sent += sum(part.get("status") == "succeeded" for part in deliveries)
                 inbound = self._runtime.inbound
                 expected = (
                     {"kind": "space", "id": inbound.space_id}

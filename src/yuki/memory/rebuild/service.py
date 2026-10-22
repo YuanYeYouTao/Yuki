@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from weakref import WeakSet
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +25,6 @@ from yuki.memory.eligibility import MemoryEventEligibilityPolicy
 from yuki.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
-    MemoryRebuildItemStatus,
     MemoryRebuildReviewStatus,
     MemoryRebuildRunStatus,
     MemoryRebuildThirdPartyMode,
@@ -49,8 +48,15 @@ from yuki.memory.rebuild.models import (
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.models import ModelTask
-from yuki.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
+from yuki.persistence.models import (
+    ChatEventModel,
+    MemoryJobModel,
+    MemoryRebuildItemModel,
+    MemoryRebuildProposalModel,
+    MemoryRebuildRunModel,
+)
 from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.unit_of_work import optional_session
 
 SUBJECT_RESOLVER_VERSION = "1"
 CLAIM_VALIDATOR_VERSION = "2"
@@ -281,9 +287,9 @@ class MemoryRebuildService:
     def active_in_flight_calls(self) -> int:
         return self._active_in_flight_calls
 
-    async def _authorize(self, actor_user_id: str) -> None:
-        async with self.repository.database.sessions() as session:
-            allowed = await person_is_superuser(session, actor_user_id)
+    async def _authorize(self, actor_user_id: str, *, session: AsyncSession | None = None) -> None:
+        async with optional_session(self.repository.database, session, write=False) as active:
+            allowed = await person_is_superuser(active, actor_user_id)
         if not allowed:
             raise PermissionError("memory rebuild requires the current real superuser")
 
@@ -306,7 +312,7 @@ class MemoryRebuildService:
         )
 
     async def _continue_run(self, run: MemoryRebuildRun) -> bool:
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             allowed = await self._run_authorized(run.public_id, session=session)
         if not allowed:
             await self._pause_unauthorized_run(run)
@@ -323,28 +329,19 @@ class MemoryRebuildService:
         actor_user_id: str,
         authorize: bool = True,
         session: AsyncSession | None = None,
+        prepared: PreparedRebuildPlan | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            await self._authorize(actor_user_id)
-        self._available()
-        snapshot = await self.ledger.maximum_event_id()
-        statistics = await self.ledger.count_rebuild_candidates(
-            selection,
-            snapshot_max_event_id=snapshot,
-        )
-        selection_json = canonical_json(selection)
-        return await self.repository.create_run(
+            await self._authorize(actor_user_id, session=session)
+        return await plan_rebuild_core(
+            settings=self.settings,
+            repository=self.repository,
+            ledger=self.ledger,
             selection=selection,
-            selection_json=selection_json,
-            selection_hash=hashlib.sha256(selection_json.encode()).hexdigest(),
-            snapshot_max_event_id=snapshot,
-            fingerprint=extraction_fingerprint(
-                self.settings,
-                model_name=self.extractor.model_name,
-            ),
-            statistics=statistics,
             actor_user_id=actor_user_id,
+            model_name=self.extractor.model_name,
             session=session,
+            prepared=prepared,
         )
 
     async def list(self, *, actor_user_id: str) -> tuple[MemoryRebuildRun, ...]:
@@ -370,7 +367,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            await self._authorize(actor_user_id)
+            await self._authorize(actor_user_id, session=session)
         self._available()
         if await self.repository.executing_count(session=session):
             raise RuntimeError("another memory rebuild run is executing")
@@ -415,7 +412,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            await self._authorize(actor_user_id)
+            await self._authorize(actor_user_id, session=session)
         run = await self._require(run_id, session=session)
         if run.status in {
             MemoryRebuildRunStatus.COMPLETED,
@@ -659,13 +656,6 @@ class MemoryRebuildService:
                             tasks.discard(task)
                             if not tasks:
                                 self._in_flight_tasks.pop(run.public_id, None)
-                await self.repository.record_model_usage(
-                    run.public_id,
-                    extraction_requests=1,
-                    input_tokens=extracted.input_tokens,
-                    output_tokens=extracted.output_tokens,
-                    latency_seconds=extracted.latency_seconds,
-                )
                 staged: list[tuple[MemoryClaim, Any, str]] = []
                 for raw_claim in extracted.output.claims:
                     claim = raw_claim
@@ -685,6 +675,9 @@ class MemoryRebuildService:
                     item_id=item_id,
                     event_id=source_event.id,
                     claims=tuple(staged),
+                    input_tokens=extracted.input_tokens,
+                    output_tokens=extracted.output_tokens,
+                    latency_seconds=extracted.latency_seconds,
                 )
             except asyncio.CancelledError:
                 await self.repository.defer_item(item_id, category="cancelled")
@@ -822,10 +815,106 @@ class MemoryRebuildService:
                     ),
                 )
 
+                async with self.repository.database.read_session() as reader:
+                    await reader.execute(text("BEGIN"))
+                    evidence_preparation = await self.processor._facts.prepare_write(
+                        (),
+                        targets=(validated.fact,),
+                        session=reader,
+                    )
+                    raw_run = await reader.get(MemoryRebuildRunModel, proposal.run_id)
+                    if (
+                        raw_run is None
+                        or MemoryRebuildSelection.model_validate_json(raw_run.selection_json)
+                        != run.selection
+                    ):
+                        raise ValueError("rebuild_selection_changed")
+                    run_values = {
+                        name: getattr(raw_run, name)
+                        for name in (
+                            "id",
+                            "selection_json",
+                            "selection_hash",
+                            "snapshot_max_event_id",
+                            "snapshot_created_at",
+                            "extraction_fingerprint",
+                        )
+                    }
+                    event_values = {
+                        name: getattr(stored_event, name)
+                        for name in (
+                            "id",
+                            "bot_user_id",
+                            "platform_message_id",
+                            "scope_type",
+                            "sender_user_id",
+                            "group_id",
+                            "private_peer_user_id",
+                            "direction",
+                            "content",
+                            "audio_transcript",
+                            "segments_json",
+                            "reply_to_message_id",
+                            "occurred_at",
+                            "observed_at",
+                            "origin",
+                            "canonical_event_id",
+                            "canonical_conversation_id",
+                            "author_kind",
+                            "author_person_id",
+                            "ingress_presence_id",
+                            "suppression_status",
+                        )
+                    }
+                    proposal_values = {
+                        name: getattr(proposal, name)
+                        for name in (
+                            "id",
+                            "run_id",
+                            "item_id",
+                            "event_id",
+                            "claim_index",
+                            "claim_json",
+                            "claim_hash",
+                            "scope_type",
+                            "canonical_subject_person_id",
+                            "canonical_subject_space_id",
+                            "subject_user_id",
+                            "group_id",
+                        )
+                    }
+                    item_values = {
+                        name: getattr(item, name)
+                        for name in ("id", "run_id", "event_id", "source_event_hash", "status")
+                    }
+                from yuki.persistence.repository_helpers import _event_record
+
+                original_event = _event_record(stored_event)
+                recorded_people = bool(original_event.mentioned_person_ids) or any(
+                    part.get("type") == "yuki_context"
+                    and isinstance(data := part.get("data"), dict)
+                    and "mentioned_person_ids" in data
+                    for part in original_event.segments
+                )
+                selection_conditions = self.ledger._rebuild_conditions(
+                    run.selection,
+                    snapshot_max_event_id=run.snapshot_max_event_id,
+                    eligible_only=True,
+                )
+
                 async def commit(
                     owned: AsyncSession,
                     resolution: MemoryClaimResolution = resolution,
                     proposal_id: int = proposal.id,
+                    run_values: dict[str, Any] = run_values,
+                    proposal_values: dict[str, Any] = proposal_values,
+                    item_values: dict[str, Any] = item_values,
+                    event_values: dict[str, Any] = event_values,
+                    selection_conditions: tuple[Any, ...] = selection_conditions,
+                    event: Any = event,
+                    validated: Any = validated,
+                    stored_event: Any = stored_event,
+                    recorded_people: bool = recorded_people,
                 ) -> MemoryClaimProcessResult:
                     original = await owned.get(MemoryRebuildProposalModel, proposal_id)
                     if original is None:
@@ -846,6 +935,121 @@ class MemoryRebuildService:
                         or original.commit_status != MemoryRebuildCommitStatus.PENDING.value
                     ):
                         raise ValueError("rebuild_proposal_authority_changed")
+                    for model, values in (
+                        (MemoryRebuildRunModel, run_values),
+                        (MemoryRebuildProposalModel, proposal_values),
+                        (MemoryRebuildItemModel, item_values),
+                    ):
+                        if (
+                            await owned.scalar(
+                                select(model.id).where(
+                                    *(getattr(model, key) == value for key, value in values.items())
+                                )
+                            )
+                            is None
+                        ):
+                            raise ValueError("rebuild_preparation_changed")
+                    if (
+                        await owned.scalar(
+                            select(ChatEventModel.id).where(
+                                *(
+                                    getattr(ChatEventModel, key) == value
+                                    for key, value in event_values.items()
+                                ),
+                                *selection_conditions,
+                            )
+                        )
+                        is None
+                    ):
+                        raise ValueError("rebuild_source_or_selection_changed")
+                    live_status = await owned.scalar(
+                        select(MemoryJobModel.status).where(MemoryJobModel.event_id == event.id)
+                    )
+                    if live_status in {"done", "pending", "processing"} or (
+                        live_status == "failed" and not run.selection.include_failed_live_jobs
+                    ):
+                        raise ValueError("rebuild_live_job_changed")
+                    # A recorded/historical mention keeps the Person who owned it
+                    # at ingress; today's membership or account owner cannot replace it.
+                    from yuki.identity.db_models import PresenceModel
+                    from yuki.identity.ownership_interval import historical_person_ids
+                    from yuki.identity.person_identity import (
+                        person_family_condition,
+                        same_person_id,
+                    )
+                    from yuki.memory.partition import resolve_canonical_memory_partition_for_event
+                    from yuki.persistence.models import MembershipModel
+
+                    if event.mentioned_person_ids and not recorded_people:
+                        presence = await owned.get(PresenceModel, event.ingress_presence_id)
+                        people = (
+                            await historical_person_ids(
+                                owned,
+                                presence.platform,
+                                event.mentioned_user_ids,
+                                stored_event.observed_at,
+                            )
+                            if presence is not None
+                            else {}
+                        )
+                        if (
+                            tuple(
+                                dict.fromkeys(
+                                    people[account]
+                                    for account in event.mentioned_user_ids
+                                    if account in people
+                                )
+                            )
+                            != event.mentioned_person_ids
+                        ):
+                            raise ValueError("rebuild_historical_subject_changed")
+                    owners = await self.processor._facts.requested_target_owners(
+                        validated.fact, session=owned
+                    )
+                    source_partition = await resolve_canonical_memory_partition_for_event(
+                        owned, event
+                    )
+                    if (
+                        owners.subject_space_id
+                        and owners.subject_space_id != source_partition.space_id
+                    ):
+                        raise ValueError("rebuild_target_changed")
+                    if owners.subject_person_id:
+                        is_speaker = bool(
+                            event.author_person_id
+                            and await same_person_id(
+                                owned, owners.subject_person_id, event.author_person_id
+                            )
+                        )
+                        is_member = bool(
+                            source_partition.space_id
+                            and await owned.scalar(
+                                select(MembershipModel.canonical_person_id).where(
+                                    person_family_condition(
+                                        MembershipModel.canonical_person_id,
+                                        owners.subject_person_id,
+                                    ),
+                                    MembershipModel.canonical_space_id == source_partition.space_id,
+                                )
+                            )
+                        )
+                        cited = any(
+                            [
+                                await same_person_id(owned, owners.subject_person_id, person_id)
+                                for person_id in event.mentioned_person_ids
+                            ]
+                        )
+                        if event.reply_to_event_id is not None:
+                            reply = await owned.get(ChatEventModel, event.reply_to_event_id)
+                            cited = cited or bool(
+                                reply is not None
+                                and reply.author_person_id
+                                and await same_person_id(
+                                    owned, owners.subject_person_id, reply.author_person_id
+                                )
+                            )
+                        if not is_speaker and not is_member and not cited:
+                            raise ValueError("rebuild_target_changed")
                     if not await self._run_authorized(run.public_id, session=owned):
                         raise PermissionError("rebuild_initiator_permission_denied")
                     result = await self.processor.apply_resolution(resolution, session=owned)
@@ -862,7 +1066,10 @@ class MemoryRebuildService:
                     return result
 
                 try:
-                    result = await self.processor._facts.repository.apply_evidence_write(commit)
+                    async with self.processor._facts.repository.write_session(
+                        evidence_preparation
+                    ) as writer:
+                        result = await commit(writer)
                 except Exception:
                     # The proposal is atomic with the fact. Read it before
                     # classifying failure; an unknown outcome does not grant replay authority.
@@ -912,27 +1119,7 @@ class MemoryRebuildService:
             include_failed_live_jobs=run.selection.include_failed_live_jobs,
             limit=self.settings.memory_rebuild_commit_batch_size,
         )
-        if not await self.repository.remaining_commit_count(run.public_id):
-            if await self.repository.failed_commit_count(run.public_id):
-                target = MemoryRebuildRunStatus.COMMIT_PAUSED
-            elif await self.repository.pending_review_count(run.public_id):
-                target = MemoryRebuildRunStatus.REVIEW
-            elif await self.repository.remaining_item_receipt_count(run.public_id):
-                return processed
-            elif await self.repository.item_count(
-                run.public_id,
-                statuses=(
-                    MemoryRebuildItemStatus.PENDING,
-                    MemoryRebuildItemStatus.EXTRACTING,
-                    MemoryRebuildItemStatus.FAILED,
-                ),
-            ):
-                target = MemoryRebuildRunStatus.EXTRACTION_PAUSED
-            else:
-                target = MemoryRebuildRunStatus.COMPLETED
-            await self.repository.transition(
-                run.public_id, expected={MemoryRebuildRunStatus.COMMITTING}, status=target
-            )
+        await self.repository.finalize_commit(run.public_id)
         return processed
 
     async def _adapt_event(self, event: Any, mode: MemoryRebuildThirdPartyMode) -> Any:

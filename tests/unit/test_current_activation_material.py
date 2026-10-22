@@ -42,14 +42,14 @@ from yuki.services.turn_transcript import TranscriptRequest, validating_request
 
 
 async def _saved(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return await projection_record(
             reader, (await reader.scalars(select(PromptProjectionModel))).one()
         )
 
 
 async def _assert_public_chat_only(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         for projection in await reader.scalars(select(PromptProjectionModel)):
             row = await projection_record(reader, projection)
             assert "短记录：" not in row.payload_json
@@ -82,7 +82,7 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
     assert json.loads((await _saved(database)).payload_json)[: len(json.loads(original))] == (
         json.loads(original)
     )
-    await database.close()
+    await database.engine.dispose()
     await harness.processor.handle(
         replace(message, message_id="after-restart", text="重启后继续"), MemorySender()
     )
@@ -169,7 +169,7 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
     await harness.processor.handle(message, MemorySender())
     first = await _saved(database)
     adopted = json.loads(first.payload_json)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event_ids = list(
             await reader.scalars(
                 select(ChatEventModel.id)
@@ -223,7 +223,7 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
     assert saved.payload_json == first.payload_json
     assert (saved.epoch_id != first.epoch_id) is evicted
     assert saved.rebuild_reason == ("capacity" if evicted else first.rebuild_reason)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert [
             (row.id, row.payload_json)
             for row in await reader.scalars(
@@ -271,7 +271,7 @@ async def test_eventless_activation_does_not_create_public_trigger_after_evictio
         await chat.runtime.main_turns._projections.invalidate_view(
             message.conversation_id, reason="capacity"
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert all(
             "activation-" not in row.payload_json
             for row in await reader.scalars(select(ContextSelectionModel))
@@ -452,7 +452,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
     assert original_control is not None and original_control.current is not None
     assert original_control.current["state"] == "completed"
     assert original_control.current["model_requests"] == 2
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_journal = await reader.scalar(
             select(journal.c.payload_json).where(
                 journal.c.work_id == original_control.current["id"]
@@ -480,7 +480,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
             .values(content="实际来源已改变")
         )
     assert not await guard.check(original_control)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(
                 select(journal.c.payload_json).where(

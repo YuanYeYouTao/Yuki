@@ -59,7 +59,7 @@ async def test_publication_capacity_ignores_invalidated_history(database):
             async with database.immediate_session() as writer:
                 current = await publish(writer)
         costs.append(read_vm_steps(database, reads))
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(
                     select(table.c.invalidated_reason).where(table.c.view_key == "invalidated-0")

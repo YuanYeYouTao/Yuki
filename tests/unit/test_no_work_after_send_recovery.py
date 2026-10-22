@@ -26,7 +26,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     database, tmp_path, accepted, work_enabled, failure
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         await require_primary_alias_for_conversation(reader, env.context.conversation_id)
     steps = iter(
         [
@@ -104,7 +104,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
     assert len(provider.requests) == (3 if accepted else 2)
     assert ownership == ([False, True, True] if accepted else [False, False])
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         outgoing = (
             await reader.scalars(
                 select(ChatEventModel).where(

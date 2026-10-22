@@ -120,3 +120,79 @@ async def test_bad_sender_does_not_allocate_sequence_and_concurrent_appends_are_
         )
         == 4
     )
+
+
+@pytest.mark.parametrize("kind", ["state", "config"])
+async def test_plugin_value_receipt_decodes_after_the_owned_writer(database, monkeypatch, kind):
+    import yuki.plugin_host.repository as repositories
+
+    await session_repository(database)
+    original_decode = repositories._decode
+    value = {"original": "complete stored value " * 30_000}
+
+    def decode(raw):
+        assert not database._writer.locked()
+        return original_decode(raw)
+
+    monkeypatch.setattr(repositories, "_decode", decode)
+    if kind == "state":
+        repository = repositories.PluginStateRepository(database)
+        record = await repository.compare_and_set(
+            plugin_id="metadata.session",
+            namespace="original",
+            key="value",
+            expected_version=0,
+            value=value,
+        )
+        saved = await repository.get(
+            plugin_id="metadata.session", namespace="original", key="value"
+        )
+    else:
+        repository = repositories.PluginConfigRepository(database)
+        record = await repository.compare_and_set(
+            plugin_id="metadata.session",
+            scope_type="global",
+            scope_id="",
+            key="value",
+            expected_version=0,
+            value=value,
+        )
+        saved = await repository.get(
+            plugin_id="metadata.session", scope_type="global", scope_id="", key="value"
+        )
+    assert record.value == saved.value == value
+    assert record.id == saved.id and record.version == saved.version == 1
+
+
+async def test_plugin_message_metadata_decodes_after_transcript_commit(
+    database, tmp_path, monkeypatch
+):
+    import yuki.plugin_host.session_repository as sessions
+
+    env = await social_env(database, tmp_path)
+    repository = await session_repository(database)
+    session = await repository.create(
+        plugin_id="metadata.session",
+        owner_user_id=env.person,
+        scope_type="user",
+        scope_id=env.person,
+    )
+    original = sessions._message_record
+
+    def message_record(row):
+        assert not database._writer.locked()
+        return original(row)
+
+    monkeypatch.setattr(sessions, "_message_record", message_record)
+    record = await repository.append_message(
+        plugin_id="metadata.session",
+        session_id=session.session_id,
+        role="user",
+        content="original content",
+        sender_user_id=env.person,
+        metadata={"attachments": ["original metadata " * 100] * 50},
+    )
+    (stored,) = await repository.list_messages(
+        plugin_id="metadata.session", session_id=session.session_id
+    )
+    assert record == stored and record.sequence == 1

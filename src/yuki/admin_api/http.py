@@ -21,7 +21,7 @@ from yuki.admin.queries import AdminQueries
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
-from yuki.client_api.http_errors import install_identity_errors
+from yuki.client_api.http_errors import install_identity_errors, unknown_write_response
 from yuki.client_api.identity import ClientIdentityService
 from yuki.client_api.models import (
     CharacterProfile,
@@ -34,6 +34,7 @@ from yuki.client_api.models import (
     character_changes,
 )
 from yuki.domain.identity import RequestId
+from yuki.identity.credentials import CredentialPurpose
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
 from yuki_plugin_sdk.observation import PluginObservationRequest
@@ -112,6 +113,10 @@ class IdentityRequest(BaseModel):
 
 class TransferBody(IdentityRequest):
     to_person: UUID4
+
+
+class PairCodeBody(IdentityRequest):
+    purpose: CredentialPurpose = "chat"
 
 
 class RenameBody(IdentityRequest):
@@ -435,11 +440,11 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return {"data": await resolve().queries.binding(actor, str(identity))}
 
     @router.post("/persons/{identity}/client-pair")
-    async def client_pair(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+    async def client_pair(identity: UUID4, body: PairCodeBody, actor: Actor) -> Any:
         authorize(actor, "identity.client.pair")
         return {
             "data": await resolve().identities.issue_for_operator(
-                str(identity), actor.principal_id.text, str(body.request_id)
+                str(identity), actor.principal_id.text, str(body.request_id), purpose=body.purpose
             )
         }
 
@@ -610,6 +615,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         }
 
     async def domain_error(_request: Any, exc: Any) -> JSONResponse:
+        unknown = unknown_write_response(exc)
+        if unknown is not None:
+            return unknown
         code = exc.problem.code
         status = {
             ProblemCode.UNAUTHENTICATED: 401,
@@ -621,6 +629,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return JSONResponse({"problem": {"code": code.value}}, status_code=status)
 
     async def plugin_error(_request: Any, exc: Any) -> JSONResponse:
+        unknown = unknown_write_response(exc)
+        if unknown is not None:
+            return unknown
         code = (
             exc.category
             if isinstance(exc, (PluginConfigurationError, ConfigFileError))

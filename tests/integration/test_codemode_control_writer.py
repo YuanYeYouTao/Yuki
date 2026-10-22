@@ -52,7 +52,7 @@ async def test_original_program_control_and_tail_survive_runner_segment_writer(
     control = env.control
     control.session = None
     if action == "handoff":
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             event = await reader.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.canonical_conversation_id == control.lease.conversation_id,

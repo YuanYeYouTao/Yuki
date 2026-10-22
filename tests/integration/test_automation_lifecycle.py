@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import event, insert, select, update
+from sqlalchemy import insert, select, update
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.support.canonical_identity import ensure_presence, ensure_space
@@ -67,7 +67,7 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
     database, tmp_path, principal
 ):
     case = await setup_run(database, tmp_path, principal=principal, mode="silent")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         old = await reader.get(AutomationVersionModel, case.row.version_id)
         original = (old.script_json, old.script_hash, old.created_at)
     task = {**case.row.script, "timezone": "America/New_York"}
@@ -100,7 +100,7 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
     assert datetime.fromisoformat(clock["local"]).utcoffset() == timedelta(hours=8)
     assert datetime.fromisoformat(clock["utc"]) == case.clock.now()
     assert not sent(case.env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         old = await reader.get(AutomationVersionModel, case.row.version_id)
         assert (old.script_json, old.script_hash, old.created_at) == original
         actual = await reader.get(AutomationRunModel, run.id)
@@ -173,7 +173,7 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     assert not sent(case.env)
     results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
     assert len(results) == 1 and json.loads(results[0].content)["ok"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not list(await reader.execute(select(work)))
 
 
@@ -217,7 +217,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
     case.clock.advance(61)
     first = await case.dispatch()
     assert first.status is RunStatus.RUNNING
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
         original_effects = list((await reader.execute(select(effects))).mappings())
         original_budget = dict((await reader.execute(select(budgets))).mappings().one())
@@ -243,9 +243,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
                 0,
                 tool_calls=(
                     ToolCall("read-current", ToolFunction("time_get_current", "{}")),
-                    ToolCall(
-                        "send-current", ToolFunction("send", '{"text":"当前代际的新发生"}')
-                    ),
+                    ToolCall("send-current", ToolFunction("send", '{"text":"当前代际的新发生"}')),
                 ),
             ),
             "当前会话的新发生已结束",
@@ -264,7 +262,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
     assert current["state"] == "cancelled" and current["generation"] == 1
     assert current["source_json"] == original["source_json"]
     assert current["model_requests"] == original["model_requests"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert list((await reader.execute(select(effects))).mappings()) == original_effects
         assert dict((await reader.execute(select(budgets))).mappings().one()) == original_budget
     assert len(sent(case.env)) == 2 and len(case.provider.requests) == 3
@@ -418,7 +416,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
                         sandbox_source=source,
                     ),
                 )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = [dict(row) for row in (await reader.execute(select(work))).mappings()]
     assert sorted(row["state"] for row in rows) == ["completed", "waiting_external"]
     pending = next(row for row in rows if row["state"] == "waiting_external")
@@ -452,7 +450,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
         )
 
     async def receipts():
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             return [
                 list((await reader.execute(select(table))).mappings())
                 for table in (work, budgets, effects, journal, invocations)
@@ -514,7 +512,7 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
     case.clock.advance(61)
     first = await case.dispatch()
     assert first.status is RunStatus.RUNNING
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     source = json.loads(original["source_json"])
     assert source["automation_run_id"] == first.id
@@ -561,7 +559,7 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
     case.settings.automation_enabled = True
     next_run = await case.dispatch()
     assert next_run.id != first.id and next_run.version_id == changed.version_id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         keys = list(await reader.scalars(select(AutomationRunModel.idempotency_key)))
     assert len(keys) == len(set(keys)) == 2
     assert (await case.repository.get(case.row.id)).run_count == 2
@@ -577,7 +575,7 @@ async def test_schedule_management_preserves_already_accepted_work(database, tmp
     )
     case.clock.advance(2)
     first = await case.dispatch()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     assert await getattr(case.service, action)(
         case.row.id, actor=case.actor, conversation_key=case.env.context.conversation_id
@@ -727,18 +725,58 @@ async def test_unowned_interrupted_occurrence_records_unknown_once_without_model
     assert not case.provider.requests and not sent(case.env)
 
 
+@pytest.mark.parametrize("source_available", [True, False])
+async def test_run_creation_lost_commit_ack_settles_original_occurrence_without_dispatch(
+    database, tmp_path, monkeypatch, source_available
+):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    case = await setup_run(database, tmp_path, mode="silent")
+    if not source_available:
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, case.env.person)
+            person.enabled = False
+    create_run = case.repository.create_run
+    commit = AsyncSession.commit
+
+    async def lost_ack(session):
+        await commit(session)
+        raise ValueError("original_run_commit_ack_lost")
+
+    async def create_with_lost_ack(*args, **kwargs):
+        with monkeypatch.context() as fault:
+            fault.setattr(AsyncSession, "commit", lost_ack)
+            return await create_run(*args, **kwargs)
+
+    monkeypatch.setattr(case.repository, "create_run", create_with_lost_ack)
+    case.clock.advance(2)
+    original = await case.dispatch()
+    assert original is not None and original.status is RunStatus.UNCERTAIN
+    assert original.error_category == "ValueError"
+    assert (await case.repository.get(case.row.id)).run_count == 1
+    assert await case.dispatch() == original
+    assert not case.provider.requests and not sent(case.env)
+
+
 @pytest.mark.asyncio
-async def test_claim_lease_starts_after_competing_writer_releases(database, tmp_path):
+async def test_claim_lease_starts_after_competing_writer_releases(database, tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+
     case = await setup_run(database, tmp_path)
     clock = FakeClock(case.row.next_run_at)
     waiting = asyncio.Event()
+    immediate = database.immediate_session
 
-    def attempted_writer(_connection, _cursor, statement, _parameters, _context, _many):
-        if statement == "BEGIN IMMEDIATE":
-            waiting.set()
+    @asynccontextmanager
+    async def attempted_writer():
+        waiting.set()
+        async with immediate() as writer:
+            yield writer
 
-    async with database.immediate_session():
-        event.listen(database.engine.sync_engine, "before_cursor_execute", attempted_writer)
+    async with immediate():
+        monkeypatch.setattr(database, "immediate_session", attempted_writer)
         claim = asyncio.create_task(
             case.repository.claim_due(
                 worker_id="real-writer", now=clock.now(), lease_seconds=60, clock=clock.now
@@ -746,10 +784,7 @@ async def test_claim_lease_starts_after_competing_writer_releases(database, tmp_
         )
         await asyncio.wait_for(waiting.wait(), timeout=5)
         clock.advance(120)
-    try:
-        claimed = await claim
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", attempted_writer)
+    claimed = await claim
     assert [item.id for item in claimed] == [case.row.id]
     expiry = await case.repository.claim_expiry(case.row.id, "real-writer")
     assert expiry == (clock.now() + timedelta(seconds=60)).timestamp()
@@ -792,7 +827,7 @@ async def test_batch_claimers_accept_disjoint_sets_and_keep_running_and_versionl
 ):
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     clock = FakeClock(case.row.next_run_at)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         definition = await reader.get(AutomationModel, case.row.id)
         version = await reader.get(AutomationVersionModel, case.row.version_id)
         definition_values = {
@@ -894,7 +929,7 @@ async def test_claim_parses_only_after_successful_commit(
             worker_id="original-claim", now=case.row.next_run_at, lease_seconds=60
         )
         assert parsed == [case.row.id] and accepted[0].script == case.row.script
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await reader.get(AutomationModel, case.row.id)
         assert original.claimed_by == "original-claim"
     assert not case.provider.requests and not sent(case.env)
@@ -1006,7 +1041,7 @@ async def test_terminal_work_survives_maintenance_before_late_occurrence_settlem
         worker_id=claimed.claimed_by,
         version_id=claimed.version_id,
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         version = await reader.get(AutomationVersionModel, run.version_id)
         original_hash = version.script_hash
     lease = await case.works.acquire(case.env.context.conversation_id, 1)
@@ -1038,3 +1073,75 @@ async def test_terminal_work_survives_maintenance_before_late_occurrence_settlem
     assert (await case.repository.run_history(claimed.id))[0] == settled
     assert (await case.repository.get(claimed.id)).run_count == 1
     assert not case.provider.requests
+
+
+@pytest.mark.parametrize("waiting_seconds", [30, 120])
+async def test_renew_uses_admitted_clock_and_never_revives_expired_owner(
+    database,
+    tmp_path,
+    monkeypatch,
+    waiting_seconds,
+):
+    case = await setup_run(database, tmp_path)
+    clock = FakeClock(case.row.next_run_at)
+    claimed = await case.repository.claim_due(
+        worker_id="renew-owner",
+        now=clock.now(),
+        lease_seconds=60,
+        clock=clock.now,
+    )
+    assert len(claimed) == 1
+    original_expiry = await case.repository.claim_expiry(case.row.id, "renew-owner")
+    immediate = database.immediate_session
+    attempted = asyncio.Event()
+
+    @asynccontextmanager
+    async def waiting():
+        attempted.set()
+        async with immediate() as writer:
+            yield writer
+
+    async with immediate():
+        monkeypatch.setattr(database, "immediate_session", waiting)
+        renew = asyncio.create_task(
+            case.repository.renew_claim(
+                case.row.id,
+                "renew-owner",
+                lease_seconds=60,
+                clock=clock.now,
+            )
+        )
+        await attempted.wait()
+        clock.advance(waiting_seconds)
+    renewed = await renew
+    assert renewed is (waiting_seconds < 60)
+    expiry = await case.repository.claim_expiry(case.row.id, "renew-owner")
+    assert expiry == (
+        (clock.now() + timedelta(seconds=60)).timestamp() if renewed else original_expiry
+    )
+
+
+async def test_update_audit_keeps_original_hash_before_orm_publication(database, tmp_path):
+    from yuki.admin.audit import AdminAuditService
+    from yuki.persistence.models import AdminOperationEventModel
+
+    case = await setup_run(database, tmp_path)
+    case.service._audit = AdminAuditService(database)
+    changed = await case.service.update_task(
+        case.row.id,
+        {**case.row.script, "goal": "new task material"},
+        actor=case.actor,
+        conversation_key=case.env.context.conversation_id,
+    )
+    assert changed.script_hash != case.row.script_hash
+    async with database.read_session() as reader:
+        audit = (
+            await reader.scalars(
+                select(AdminOperationEventModel).where(
+                    AdminOperationEventModel.operation == "update",
+                    AdminOperationEventModel.target_id == str(case.row.id),
+                )
+            )
+        ).one()
+        assert json.loads(audit.before_json) == {"script_hash": case.row.script_hash}
+        assert json.loads(audit.after_json) == {"script_hash": changed.script_hash}

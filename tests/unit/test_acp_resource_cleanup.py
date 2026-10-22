@@ -1,5 +1,6 @@
 """Privacy and real archive retire the original ACP resources before losing owners."""
 
+import asyncio
 import json
 import time
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from sqlalchemy import select, update
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.client_identity import client_identity_service
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 from tests.support.subagents_helpers import stack
 
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
@@ -18,8 +20,8 @@ from yuki.admin.operations.base import CommandExecutor
 from yuki.admin.operations.identity import IdentityOperations
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.identity import PrincipalId
+from yuki.external_agents.service import ExternalAgentService
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.persistence.models import AdminOperationEventModel
 from yuki.persistence.people_repository import PeopleRepository
@@ -27,7 +29,9 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import work
+from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.db_models import SandboxTaskRunModel
+from yuki.sandbox.task_repository import SandboxTaskRepository
 
 
 async def seed_task(
@@ -108,8 +112,8 @@ class CleanupClient:
         self.database, self.callback, self.fail = database, callback, fail
         self.calls = []
 
-    async def close_peers_for_requests(self, requests, operation_id, *, purge):
-        self.calls.append((tuple(requests), operation_id, purge))
+    async def cleanup_tasks(self, tasks, operation_id, *, purge):
+        self.calls.append((tuple(task.request_id for task in tasks), operation_id, purge))
         # A second connection can acquire the writer while the external ACK waits.
         async with self.database.immediate_session() as writer:
             await writer.execute(
@@ -152,12 +156,12 @@ async def test_forget_closes_original_active_or_idle_peers_before_deleting_owner
 ):
     original = await privacy_case(database, status=status)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     erase = forget(database, original.person, entry)
     result = await erase()
     assert result
     assert client.calls == [(("original-prompt",), client.calls[0][1], True)]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalPersonModel, original.person) is None
         assert await reader.get(SandboxTaskRunModel, original.task.request_id) is None
         assert await reader.scalar(select(work.c.id).where(work.c.id == original.work_id)) is None
@@ -173,13 +177,13 @@ async def test_forget_closes_original_active_or_idle_peers_before_deleting_owner
 async def test_forget_unknown_close_keeps_original_owner_and_same_operation(database, entry):
     original = await privacy_case(database)
     client = CleanupClient(database, fail=True)
-    database.sandbox_client = client
+    database.external_agents = client
     erase = forget(database, original.person, entry)
     for _ in range(2):
         with pytest.raises(ValueError, match="external_agent_cleanup_unconfirmed"):
             await erase()
     assert client.calls[0] == client.calls[1]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalPersonModel, original.person) is not None
         assert await reader.get(SandboxTaskRunModel, original.task.request_id) is not None
         assert (
@@ -217,12 +221,12 @@ async def test_forget_does_not_expand_scope_after_original_close_admission(datab
                     await merge_persons(writer, original.person, other)
 
     client = CleanupClient(database, race)
-    database.sandbox_client = client
+    database.external_agents = client
     with pytest.raises(ValueError, match=r"cleanup_source_changed|privacy_persons_changed"):
         await forget(database, original.person, entry)()
     assert len(client.calls) == 1
     assert client.calls[0][0] == ("original-prompt",)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(SandboxTaskRunModel, "original-prompt") is not None
         assert (
             await reader.scalar(select(work.c.id).where(work.c.id == original.work_id))
@@ -258,14 +262,14 @@ async def test_forget_accepts_same_request_identity_fill_and_real_progress(datab
             terminal = await writer.get(SandboxTaskRunModel, "ordinary-terminal")
             terminal.progress_json = '{"kind":"terminal_progress","output":"ordinary output"}'
 
-    database.sandbox_client = CleanupClient(database, progress)
+    database.external_agents = CleanupClient(database, progress)
     assert await PeopleRepository(database).delete_person_id(original.person)
 
 
 async def test_plain_terminal_forget_does_not_require_manager_cleanup(database):
     original = await privacy_case(database, acp=False)
     client = CleanupClient(database, fail=True)
-    database.sandbox_client = client
+    database.external_agents = client
     assert await PeopleRepository(database).delete_person_id(original.person)
     assert not client.calls
 
@@ -276,7 +280,7 @@ async def test_new_acp_after_plain_snapshot_is_seen_on_database_only_retry(
 ):
     original = await privacy_case(database, acp=False)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     prepare = PeopleRepository.prepare_person_forget
     attempts = 0
 
@@ -297,17 +301,19 @@ async def test_new_acp_after_plain_snapshot_is_seen_on_database_only_retry(
         await forget(database, original.person, entry)()
     assert attempts == 3
     assert client.calls == []
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(CanonicalPersonModel, original.person) is not None
         assert await reader.get(SandboxTaskRunModel, "new-acp-prompt") is not None
         assert await reader.scalar(select(work.c.id).where(work.c.id == original.work_id))
 
 
 @pytest.mark.parametrize("entry", ["personal", "admin"])
-async def test_snapshot_retry_does_not_repeat_external_close(database, monkeypatch, entry):
+async def test_unrelated_name_write_needs_no_reprepare_or_repeat_external_close(
+    database, monkeypatch, entry
+):
     original = await privacy_case(database)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     prepare = PeopleRepository.prepare_person_forget
     attempts = 0
 
@@ -326,7 +332,7 @@ async def test_snapshot_retry_does_not_repeat_external_close(database, monkeypat
 
     monkeypatch.setattr(PeopleRepository, "prepare_person_forget", race)
     assert await forget(database, original.person, entry)()
-    assert attempts == 3
+    assert attempts == 2
     assert len(client.calls) == 1
 
 
@@ -351,10 +357,10 @@ async def test_forget_prepares_fresh_redactions_after_external_close(database, e
             )
 
     client = CleanupClient(database, append_private_reference)
-    database.sandbox_client = client
+    database.external_agents = client
     assert await forget(database, original.person, entry)()
     assert len(client.calls) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         audit = await reader.scalar(
             select(AdminOperationEventModel).where(AdminOperationEventModel.operation == "test")
         )
@@ -388,13 +394,13 @@ async def age_tree(database, parent, child):
 async def test_completion_keeps_peer_and_true_archive_closes_the_original_tree(database, tmp_path):
     _, workers, parent, child = await archive_case(database, tmp_path)
     client = CleanupClient(database)
-    database.sandbox_client = client
+    database.external_agents = client
     await workers.maintain()
     assert client.calls == []
     await age_tree(database, parent, child)
     await workers.maintain()
     assert client.calls[0][0] == ("child-prompt", "root-prompt")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         archived = await reader.scalar(
             select(children.c.archived_at).where(children.c.work_id == child)
         )
@@ -419,13 +425,83 @@ async def test_archive_keeps_owner_when_close_or_exact_snapshot_is_unconfirmed(
                 )
 
     client = CleanupClient(database, race, fail=change == "unknown")
-    database.sandbox_client = client
+    database.external_agents = client
     with pytest.raises(ValueError, match="external_agent_cleanup_"):
         await workers.maintain()
     assert len(client.calls) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(children.c.archived_at).where(children.c.work_id == child))
             is None
         )
         assert await reader.scalar(select(work.c.source_json).where(work.c.id == child)) != "{}"
+
+
+@pytest.mark.parametrize("entry", ["personal", "admin"])
+@pytest.mark.parametrize("receipt", ["missing_client", "unknown", "rejected", "admitted"])
+async def test_real_external_service_keeps_legacy_close_admission_boundary(
+    database, tmp_path, monkeypatch, entry, receipt
+):
+    original = await privacy_case(database, run_id=False)
+    # Old pending requests can predate the returned peer/resource identity.
+    async with database.immediate_session() as writer:
+        task = await writer.get(SandboxTaskRunModel, original.task.request_id)
+        task.progress_json = json.dumps({"kind": "acp_prompt"})
+    calls = []
+    result = {
+        "unknown": {"status": "unknown", "pending": True, "uncertain": True},
+        "rejected": {"admitted": False, "pending": False},
+        # Manager's accepted revocation is sufficient; native exit can be pending.
+        "admitted": {"admitted": True, "pending": True},
+    }.get(receipt)
+
+    async def connect(*_args, **_kwargs):
+        reader = asyncio.StreamReader()
+
+        class Writer:
+            def write(self, message):
+                calls.append(json.loads(message))
+                reader.feed_data(json.dumps(result).encode() + b"\n")
+                reader.feed_eof()
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        return reader, Writer()
+
+    monkeypatch.setattr(asyncio, "open_unix_connection", connect, raising=False)
+    database.sandbox_client = (
+        None if receipt == "missing_client" else SandboxClient(tmp_path / "legacy.sock")
+    )
+    database.external_agents = ExternalAgentService(database, SandboxTaskRepository(database))
+    erase = forget(database, original.person, entry)
+    if receipt == "admitted":
+        assert await erase()
+    else:
+        for _ in range(2):
+            with pytest.raises(ValueError, match="external_agent_cleanup_unconfirmed"):
+                await erase()
+    async with database.read_session() as reader:
+        if receipt == "admitted":
+            assert await reader.get(CanonicalPersonModel, original.person) is None
+            assert await reader.get(SandboxTaskRunModel, original.task.request_id) is None
+        else:
+            assert await reader.get(CanonicalPersonModel, original.person) is not None
+            assert await reader.get(SandboxTaskRunModel, original.task.request_id) is not None
+            assert await reader.scalar(select(work.c.id).where(work.c.id == original.work_id))
+    if receipt == "missing_client":
+        assert not calls
+    else:
+        assert len(calls) == (1 if receipt == "admitted" else 2)
+        assert all(call == calls[0] for call in calls)
+        assert calls[0]["method"] == "acp_peer_close"
+        assert calls[0]["args"] == {
+            "resource_request_id": f"{original.task.request_id}:peer",
+            "purge": True,
+        }

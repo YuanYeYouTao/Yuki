@@ -130,7 +130,7 @@ async def participation_diagnostics(
 ) -> dict[str, object]:
     """Read-only bounded windows. Ratios describe retained rows, never all-time rates."""
     controller = _controller_facts(states, now=now)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         bindings = list(
             await session.execute(
                 select(AutonomyBindingModel.effective_owner, AutonomyBindingModel.fallback_reason)

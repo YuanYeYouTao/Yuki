@@ -93,7 +93,7 @@ async def test_owner_queries_are_batched_and_no_source_reads_follow_run_insert(d
     assert len(inserts) == (count + 255) // 256
     if count > 1:
         assert all(many for _, many in inserts)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(func.count()).select_from(MemoryDreamClusterModel)) == count
         )
@@ -103,7 +103,7 @@ async def test_owner_queries_are_batched_and_no_source_reads_follow_run_insert(d
 async def test_prepared_source_change_rejected_without_half_run_in_shared_session(database, change):
     dreams, rows = await sources(database)
     prepared = await dreams.prepare_clusters(specs(rows))
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         if change == "delete":
             await writer.execute(delete(MemoryFactModel).where(MemoryFactModel.id == rows[0].id))
         elif change == "owner":
@@ -119,10 +119,10 @@ async def test_prepared_source_change_rejected_without_half_run_in_shared_sessio
                 .where(MemoryFactModel.id == rows[0].id)
                 .values(updated_at=datetime.now(UTC) + timedelta(seconds=1))
             )
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         with pytest.raises(ValueError, match="dream_plan_source_changed"):
             await create(dreams, prepared, session=writer)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(MemoryDreamRunModel)) == 0
         assert await reader.scalar(select(func.count()).select_from(MemoryDreamClusterModel)) == 0
 
@@ -156,17 +156,17 @@ async def test_preparation_does_not_reserve_writer_and_shared_bulk_error_has_no_
         await asyncio.gather(task, return_exceptions=True)
     prepared = await original(specs(rows))
     # A deliberately malformed prepared batch exercises savepoint cleanup after run INSERT.
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         with pytest.raises(IntegrityError):
             await create(dreams, prepared + prepared, session=writer)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(MemoryDreamRunModel)) == 1
 
 
 async def test_shared_session_requires_prepared_sources(database):
     dreams, rows = await sources(database)
     prepared = await dreams.prepare_clusters(specs(rows))
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         with pytest.raises(ValueError, match="prepared before opening a writer"):
             await create(dreams, specs(rows), session=writer)
         run = await create(dreams, prepared, session=writer, mode=DreamRunMode.INCREMENTAL)
@@ -177,7 +177,7 @@ async def test_shared_session_requires_prepared_sources(database):
 async def test_recovery_batches_aggregate_original_committed_operations_once(database):
     dreams, rows = await sources(database)
     run = await create(dreams, specs(rows, 260), mode=DreamRunMode.INCREMENTAL)
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(update(MemoryDreamClusterModel).values(status="processing"))
         clusters = tuple(
             await writer.scalars(
@@ -208,7 +208,7 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
     assert await dreams.reset_processing_after_restart() == 0
     current = await dreams.get_run(run.public_id)
     assert current.completed_clusters == 130
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(
                 select(func.count())

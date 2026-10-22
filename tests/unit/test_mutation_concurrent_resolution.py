@@ -80,3 +80,54 @@ async def test_independent_resolutions_do_not_hold_a_global_mutation_lock(
     assert results[0].mutation_id != results[1].mutation_id
     for source in sources:
         assert len(await facts.list_person(source.sender_user_id)) == 1
+
+
+async def test_selector_keeps_its_resolved_fact_id_when_another_match_arrives(
+    database, monkeypatch
+):
+    from yuki.memory.models import MemoryFactCreate
+    from yuki.memory.mutation.models import MemoryMutationSelector
+
+    service, facts, ledger, _ = _service(database)
+    source = await _event(
+        ledger, message_id="selector-fixed-id", sender_user_id="1001", content="撤回这一条偏好"
+    )
+    payload = MemoryFactCreate(
+        scope_type="person",
+        subject_user_id="1001",
+        canonical_subject_person_id=source.author_person_id,
+        kind="preference",
+        memory_key="preference:tea",
+        category="preference",
+        content="喜欢绿茶",
+        source_type="explicit",
+        authority="explicit",
+    )
+    selected = await facts.remember(payload)
+    prepare = facts.prepare_write
+    inserted = None
+
+    async def interleave(*args, **kwargs):
+        nonlocal inserted
+        value = await prepare(*args, **kwargs)
+        if kwargs.get("session") is None and inserted is None:
+            inserted = False
+            inserted = await facts.remember(
+                payload.model_copy(update={"content": "另一次独立记录"})
+            )
+        return value
+
+    monkeypatch.setattr(facts, "prepare_write", interleave)
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            selector=MemoryMutationSelector(memory_key="preference:tea"),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker", scope_type=MemoryScopeType.PERSON
+            ),
+        ),
+        _context(source),
+    )
+    assert result.ok
+    assert (await facts.get_fact(selected.id)).status.value == "invalidated"
+    assert (await facts.get_fact(inserted.id)).status.value == "active"

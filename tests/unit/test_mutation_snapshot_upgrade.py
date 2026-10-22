@@ -19,7 +19,6 @@ from yuki.identity.canonical_repository import find_identity_binding, replace_as
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.memory.claim_processor import MemoryProcessingContext
 from yuki.memory.enums import MemoryScopeType
-from yuki.memory.mutation import service as mutation_service
 from yuki.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationRequest,
@@ -40,7 +39,7 @@ async def test_mutation_unknown_transaction_ack_uses_original_receipt_without_re
     source = await _event(
         ledger, message_id=f"unknown-{entry}", sender_user_id="1001", content="我准备考研"
     )
-    transaction = facts.repository.transaction
+    transaction = facts.repository.write_session
     resolve = processor.resolve
     reserve = mutations._receipts.reserve
     finalize = mutations._receipts.finalize
@@ -50,16 +49,13 @@ async def test_mutation_unknown_transaction_ack_uses_original_receipt_without_re
     acknowledgement = OperationalError(phase, {}, native)
 
     @asynccontextmanager
-    async def unknown_ack(*, read_snapshot=False):
+    async def unknown_ack(prepared):
         try:
-            async with transaction(read_snapshot=read_snapshot) as session:
+            async with transaction(prepared) as session:
                 yield session
         except OperationalError:
-            if read_snapshot:
-                raise acknowledgement from None
-            raise
-        if read_snapshot:
-            raise acknowledgement
+            raise acknowledgement from None
+        raise acknowledgement
 
     def resolve_once(*args, **kwargs):
         resolutions.append(True)
@@ -77,7 +73,7 @@ async def test_mutation_unknown_transaction_ack_uses_original_receipt_without_re
             raise OperationalError("operation", {}, failure)
         return result
 
-    monkeypatch.setattr(facts.repository, "transaction", unknown_ack)
+    monkeypatch.setattr(facts.repository, "write_session", unknown_ack)
     monkeypatch.setattr(processor, "resolve", resolve_once)
     monkeypatch.setattr(mutations._receipts, "reserve", reserve_once)
     monkeypatch.setattr(mutations._receipts, "finalize", finalize_once)
@@ -124,137 +120,75 @@ async def test_mutation_unknown_transaction_ack_uses_original_receipt_without_re
 
 
 @pytest.mark.parametrize("entry", ["tool", "worker"])
-@pytest.mark.parametrize("code", [5, 517])
-@pytest.mark.parametrize("stop", ["complete", "cancel"])
-async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
-    database, monkeypatch, entry, code, stop
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_prepared_mutation_waits_for_writer_without_resolution_replay(
+    database, monkeypatch, entry, cancel
 ):
     mutations, facts, ledger, processor = _service(database)
     source = await _event(
-        ledger, message_id=f"snapshot-{entry}", sender_user_id="1001", content="我准备考研"
+        ledger, message_id=f"owner-wait-{entry}", sender_user_id="1001", content="我准备考研"
     )
-    resolve_calls = 0
-    preparations = 0
-    preparation_sessions = set()
-    reserved_ids = []
-    original_resolve = processor.resolve
-    original_prepare = facts.prepare_evidence_write
-    original_reserve = mutations._receipts.reserve
-    original_fence = mutation_service.fence_memory_job_claim
-    fence_calls = 0
-    errors = []
-    fourth = asyncio.Event()
+    resolutions = []
+    resolve, prepare = processor.resolve, facts.prepare_write
+    prepared = asyncio.Event()
 
-    def resolve(*args, **kwargs):
-        nonlocal resolve_calls
-        resolve_calls += 1
-        return original_resolve(*args, **kwargs)
+    def once(*args, **kwargs):
+        resolutions.append(True)
+        return resolve(*args, **kwargs)
 
-    async def prepare(*args, **kwargs):
-        nonlocal preparations
-        preparations += 1
-        preparation_sessions.add(kwargs["session"])
-        await original_prepare(*args, **kwargs)
-        if (
-            code == 517
-            and (len(preparation_sessions) <= 4 or stop == "cancel")
-            and not kwargs["session"].info.get("memory_evidence_write_started")
-        ):
-            # A separate, harmless identity-label commit advances the real WAL.
-            # This leaves the decision input and original queue claim unchanged.
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    text("UPDATE accounts SET display_name=:label"),
-                    {"label": f"snapshot-gate-{preparations}"},
-                )
+    async def capture(*args, **kwargs):
+        value = await prepare(*args, **kwargs)
+        if kwargs.get("session") is None:
+            prepared.set()
+        return value
 
-    async def reserve(**kwargs):
-        reserved_ids.append(kwargs["mutation_id"])
-        if code == 5 and entry == "tool" and (len(reserved_ids) <= 4 or stop == "cancel"):
-            async with database.immediate_session() as writer:
-                await writer.execute(text("UPDATE accounts SET display_name='busy-writer'"))
-                return await original_reserve(**kwargs)
-        return await original_reserve(**kwargs)
-
-    async def fence(session, job):
-        nonlocal fence_calls
-        fence_calls += 1
-        if code == 5 and (fence_calls <= 4 or stop == "cancel"):
-            async with database.immediate_session() as writer:
-                await writer.execute(text("UPDATE accounts SET display_name='busy-writer'"))
-                return await original_fence(session, job)
-        return await original_fence(session, job)
-
-    def capture(context):
-        errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
-        if len(errors) >= 4:
-            fourth.set()
-
-    monkeypatch.setattr(processor, "resolve", resolve)
-    monkeypatch.setattr(facts, "prepare_evidence_write", prepare)
-    monkeypatch.setattr(mutations._receipts, "reserve", reserve)
-    monkeypatch.setattr(mutation_service, "fence_memory_job_claim", fence)
+    monkeypatch.setattr(processor, "resolve", once)
+    monkeypatch.setattr(facts, "prepare_write", capture)
     if entry == "tool":
-        request = MemoryMutationRequest(
-            operation=MemoryMutationOperation.CREATE,
-            target=MemoryMutationTarget(
-                subject_ref="current_speaker", scope_type=MemoryScopeType.PERSON
+        invocation = mutations.mutate(
+            MemoryMutationRequest(
+                operation=MemoryMutationOperation.CREATE,
+                target=MemoryMutationTarget(
+                    subject_ref="current_speaker", scope_type=MemoryScopeType.PERSON
+                ),
+                new_content="准备考研",
+                memory_key="education:plan",
+                category="education",
             ),
-            new_content="准备考研",
-            memory_key="education:plan",
-            category="education",
+            _context(source),
         )
-        invocation = mutations.mutate(request, _context(source))
     else:
         claim = processor.validate(_claim(), source)
-        assert claim is not None
         jobs = MemoryJobRepository(database)
-        assert await jobs.enqueue(source.id, "private:1001")
+        await jobs.enqueue(source.id, source.scope.key)
         (job,) = await jobs.claim()
         invocation = mutations.mutate_validated_claim(
-            claim,
-            MemoryProcessingContext(event=source),
-            conversation_key="private:1001",
-            job=job,
+            claim, MemoryProcessingContext(event=source), conversation_key=source.scope.key, job=job
         )
-    engine = database.engine.sync_engine
-    sqlalchemy_event.listen(engine, "handle_error", capture)
-    task = asyncio.create_task(invocation)
-    try:
-        if stop == "cancel":
-            await asyncio.wait_for(fourth.wait(), timeout=5)
+    async with database.immediate_session() as writer:
+        await writer.execute(text("UPDATE accounts SET display_name='unrelated commit'"))
+        task = asyncio.create_task(invocation)
+        await asyncio.wait_for(prepared.wait(), timeout=5)
+        assert not task.done()
+        if cancel:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        else:
-            result = await task
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        sqlalchemy_event.remove(engine, "handle_error", capture)
-    assert errors[:4] == [code] * 4 and resolve_calls == 1
-    if stop == "cancel":
-        assert len(set(reserved_ids)) <= 1
-        async with database.immediate_session() as writer:
-            assert await writer.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
-            assert (
-                await writer.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
-                == 0
-            )
-        return
-    assert result.ok and len(preparation_sessions) == 5
-    assert len(reserved_ids) == (5 if entry == "tool" else 1)
-    assert set(reserved_ids) == {result.mutation_id}
-    async with database.sessions() as reader:
-        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 1
-        assert (
-            await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 1
+    if not cancel:
+        assert (await task).ok
+    assert len(resolutions) == 1
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == int(
+            not cancel
         )
+        assert await reader.scalar(
+            select(func.count()).select_from(MemoryMutationReceiptModel)
+        ) == int(not cancel)
 
 
 @pytest.mark.parametrize("entry", ["tool", "worker"])
 @pytest.mark.parametrize("change", ["binding_owner", "source_hidden"])
-async def test_retry_keeps_original_owner_and_rejects_hidden_source(
+async def test_prepared_commit_keeps_original_owner_and_rejects_hidden_source(
     database, monkeypatch, entry, change
 ):
     mutations, facts, ledger, processor = _service(database)
@@ -266,7 +200,7 @@ async def test_retry_keeps_original_owner_and_rejects_hidden_source(
     )
     resolve_calls = 0
     original_resolve = processor.resolve
-    original_prepare = facts.prepare_evidence_write
+    original_prepare = facts.prepare_write
     changed = False
     sqlite_errors = []
 
@@ -282,8 +216,8 @@ async def test_retry_keeps_original_owner_and_rejects_hidden_source(
 
     async def prepare(*args, **kwargs):
         nonlocal changed
-        await original_prepare(*args, **kwargs)
-        if not changed:
+        prepared = await original_prepare(*args, **kwargs)
+        if kwargs.get("session") is None and not changed:
             changed = True
             async with database.immediate_session() as writer:
                 if change == "binding_owner":
@@ -305,8 +239,10 @@ async def test_retry_keeps_original_owner_and_rejects_hidden_source(
                         },
                     )
 
+        return prepared
+
     monkeypatch.setattr(processor, "resolve", resolve)
-    monkeypatch.setattr(facts, "prepare_evidence_write", prepare)
+    monkeypatch.setattr(facts, "prepare_write", prepare)
     if entry == "tool":
         request = MemoryMutationRequest(
             operation=MemoryMutationOperation.CREATE,
@@ -341,8 +277,8 @@ async def test_retry_keeps_original_owner_and_rejects_hidden_source(
     finally:
         sqlalchemy_event.remove(database.engine.sync_engine, "handle_error", capture_error)
     assert resolve_calls == 1
-    assert 517 in sqlite_errors  # Real BUSY_SNAPSHOT, rather than a mocked retry exception.
-    async with database.sessions() as reader:
+    assert sqlite_errors == []
+    async with database.read_session() as reader:
         stored = list(await reader.scalars(select(MemoryFactModel)))
         if change == "binding_owner":
             assert len(stored) == 1

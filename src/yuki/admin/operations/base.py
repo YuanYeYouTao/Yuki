@@ -30,7 +30,7 @@ from yuki.persistence.command_receipts import (
     CommandSuccess,
     pending_result,
 )
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed, write_failure_phase
 from yuki.persistence.models import AdminOperationEventModel, ChatEventModel
 
 
@@ -57,7 +57,7 @@ async def authorize_current(
     ):
         return
     if session is None:
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             allowed = await person_is_superuser(reader, principal.principal_id.text)
     else:
         allowed = await person_is_superuser(session, principal.principal_id.text)
@@ -90,7 +90,7 @@ class CommandExecutor:
         payload: Mapping[str, Any],
         revision: Callable[[], Awaitable[int]],
     ) -> ControlCommand:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, source_event_id)
             if event is None:
                 raise fail(ProblemCode.NOT_FOUND)
@@ -302,6 +302,7 @@ class CommandExecutor:
             if (
                 isinstance(exc, ControlCommandError)
                 and exc.problem.code in CACHEABLE_COMMAND_FAILURES
+                and (write_failure_phase(exc) is None or write_failure_committed(exc) is False)
             ):
                 async with self.database.immediate_session() as session:
                     reserved = await self.receipts.load_receipt(session, principal, command)
@@ -321,7 +322,7 @@ class CommandExecutor:
                     )
                 raise
             # A committed result takes precedence when only its acknowledgement was lost.
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 old = await self.receipts.load_receipt(session, principal, command)
                 if old is not None and old.status == "succeeded":
                     result = await self._replay(

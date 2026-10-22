@@ -134,7 +134,7 @@ async def test_ordinary_paid_response_recovers_without_rebuy_or_source_mutation(
     snapshot = await context.repository.read(context.version.conversation_id)
     assert snapshot.selected_summary_kind == "compact"
     assert snapshot.selected_summary_text == "Public decision checkpoint."
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         owner = await reader.get(CanonicalConversationModel, context.version.conversation_id)
         assert owner.prompt_source_revision == context.version.prompt_source_revision
         assert await reader.scalar(select(func.count()).select_from(ContextObservationModel)) == 3
@@ -240,7 +240,7 @@ async def test_privacy_erases_compact_body_without_authorising_repurchase(databa
                 "ON CONFLICT(id) DO UPDATE SET privacy_generation=1"
             )
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = (await reader.scalars(select(ContextObservationModel))).all()
         assert len(rows) == 3
         assert all(row.payload_json == '{"phase":"invalidated"}' for row in rows)

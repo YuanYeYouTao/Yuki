@@ -85,7 +85,7 @@ async def launch(session, store, *, tool_name="terminal_exec"):
 
 
 async def original_launch(database, session):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.scalar(
             select(effects.c.receipt_json)
             .where(effects.c.effect_key == session.call_key("launch-owned"))
@@ -518,7 +518,7 @@ async def test_unknown_mutation_remains_unknown_without_vetoing_new_call_or_comp
         ),
         side_effecting=True,
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict(
             (
                 await reader.execute(
@@ -535,7 +535,7 @@ async def test_unknown_mutation_remains_unknown_without_vetoing_new_call_or_comp
     assert (await complete(control))["ok"] is True
     await control.settle(pending_inputs=False)
     assert control.current["state"] == "completed"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         retained = dict(
             (
                 await reader.execute(

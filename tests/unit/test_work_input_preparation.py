@@ -17,7 +17,7 @@ from yuki.runtime.work_wait import WorkWaitRepository
 async def test_unmatched_input_uses_one_narrow_read_without_writer_or_media(database, monkeypatch):
     row = await _event_and_route(database, EventLedgerRepository(database))
     sessions, statements = [], []
-    original = database.sessions
+    original = database.read_session
 
     def session(*args, **kwargs):
         sessions.append(1)
@@ -26,7 +26,7 @@ async def test_unmatched_input_uses_one_narrow_read_without_writer_or_media(data
     def capture(_connection, _cursor, statement, *_args):
         statements.append(statement)
 
-    monkeypatch.setattr(database, "sessions", session)
+    monkeypatch.setattr(database, "read_session", session)
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     prepare = AsyncMock(return_value=True)
     try:
@@ -76,7 +76,7 @@ async def test_wait_rechecks_source_after_external_preparation(database, tmp_pat
             return True
 
         assert await wait.match_input(source.id, prepare_source=prepare) is None
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert not await reader.scalar(
                 select(inputs.c.id).where(inputs.c.event_id == source.id)
             )

@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.models import RuntimeConfigSnapshot
+from yuki.automation.models import TurnOrigin
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.ordinary_admission import (
@@ -587,7 +588,7 @@ class MainAgentTurnService:
             )
         if previous is None:
             return None
-        async with self._invocations.database.sessions() as session:
+        async with self._invocations.database.read_session() as session:
             conversation = await session.get(
                 CanonicalConversationModel, runtime.canonical_conversation_id
             )
@@ -637,14 +638,21 @@ class MainAgentTurnService:
         if control is not None:
             control.current_message = messages[-1] if messages else None
         async with (
-            self._processing_status.during(
-                conversation_id=runtime.canonical_conversation_id,
-                presence_id=runtime.presence_id,
-                source_event_id=runtime.source_event_id,
-                group=runtime.current_group_id is not None,
-            )
-            if self._processing_status is not None
-            else nullcontext()
+            (
+                self._runner._models.foreground_activity()
+                if runtime.origin is TurnOrigin.USER_MESSAGE
+                else nullcontext()
+            ),
+            (
+                self._processing_status.during(
+                    conversation_id=runtime.canonical_conversation_id,
+                    presence_id=runtime.presence_id,
+                    source_event_id=runtime.source_event_id,
+                    group=runtime.current_group_id is not None,
+                )
+                if self._processing_status is not None
+                else nullcontext()
+            ),
         ):
             result = await self._runner.run(
                 messages,

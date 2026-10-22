@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 
 import pytest
-from sqlalchemy import event, select, text, update
+from sqlalchemy import event, select, update
 from tests.unit.test_memory_rebuild import _admin, _event, _service
 
 from yuki.memory.enums import MemoryRebuildRunStatus
@@ -88,7 +88,7 @@ async def test_pause_retains_original_ids_usage_and_item_count_semantics(
     service, provider, public_id, item_id = await _seed(
         database, status=status, item_status=item_status
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before_run = await reader.scalar(
             select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
         )
@@ -98,7 +98,7 @@ async def test_pause_retains_original_ids_usage_and_item_count_semantics(
         assert await service.repository.pause_after_restart() == count
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         after_run = await reader.get(MemoryRebuildRunModel, before_run.id)
         after_item = await reader.get(MemoryRebuildItemModel, item_id)
     assert after_run.status == expected and after_item.status == expected_item
@@ -132,18 +132,19 @@ async def test_candidate_committed_between_probes_is_not_mixed_into_empty_snapsh
     service, _provider, public_id, item_id = await _seed(
         database, status="review", item_status="pending"
     )
-    original = database.sessions
+    original = database.read_session
     injected = False
 
     class SnapshotSession:
         def __init__(self):
-            self.session = original()
+            self.context = original()
 
         async def __aenter__(self):
+            self.session = await self.context.__aenter__()
             return self
 
         async def __aexit__(self, *args):
-            return await self.session.__aexit__(*args)
+            return await self.context.__aexit__(*args)
 
         async def execute(self, *args, **kwargs):
             return await self.session.execute(*args, **kwargs)
@@ -153,8 +154,7 @@ async def test_candidate_committed_between_probes_is_not_mixed_into_empty_snapsh
             value = await self.session.scalar(*args, **kwargs)
             if not injected:
                 injected = True
-                async with original() as writer:
-                    await writer.execute(text("BEGIN IMMEDIATE"))
+                async with database.immediate_session() as writer:
                     await writer.execute(
                         update(MemoryRebuildRunModel)
                         .where(MemoryRebuildRunModel.public_id == public_id)
@@ -165,12 +165,11 @@ async def test_candidate_committed_between_probes_is_not_mixed_into_empty_snapsh
                         .where(MemoryRebuildItemModel.id == item_id)
                         .values(status="extracting")
                     )
-                    await writer.commit()
             return value
 
-    monkeypatch.setattr(database, "sessions", SnapshotSession)
+    monkeypatch.setattr(database, "read_session", SnapshotSession)
     assert await service.repository.pause_after_restart() == 0
-    monkeypatch.setattr(database, "sessions", original)
+    monkeypatch.setattr(database, "read_session", original)
     assert injected
     run = await service.repository.get_run(public_id)
     assert run.status is MemoryRebuildRunStatus.EXTRACTING
@@ -206,7 +205,7 @@ async def test_state_change_after_discovery_is_rechecked_under_writer(database, 
     assert await service.repository.pause_after_restart() == 0
     run = await service.repository.get_run(public_id)
     assert run.status is MemoryRebuildRunStatus.COMPLETED
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.get(MemoryRebuildItemModel, item_id)
     assert item.status == "committed" and item.error_category is None
 
@@ -229,7 +228,7 @@ async def test_mixed_run_pauses_and_all_items_commit_in_one_transaction(database
         run = await repository.get_run(public_id)
         assert run.status.value == expected
         assert provider.requests == 0
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             stored_run = await reader.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )
@@ -264,7 +263,7 @@ async def test_failed_second_update_rolls_back_entire_pause(database, monkeypatc
         await service.repository.pause_after_restart()
     run = await service.repository.get_run(public_id)
     assert run.status is MemoryRebuildRunStatus.EXTRACTING
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.get(MemoryRebuildItemModel, item_id)
     assert item.status == "extracting" and item.error_category is None
 
@@ -292,6 +291,6 @@ async def test_committed_pause_with_lost_ack_is_not_retried_or_auto_resumed(data
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert not any(sql.startswith("UPDATE") for sql in statements)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.get(MemoryRebuildItemModel, item_id)
     assert item.status == "pending" and item.attempts == 2

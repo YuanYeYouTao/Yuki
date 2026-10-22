@@ -74,7 +74,7 @@ class MemoryEmbeddingRepository:
         ]
         if kinds:
             fact_conditions.append(MemoryFactModel.kind.in_(kinds))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (
                 await session.execute(
                     select(
@@ -120,7 +120,7 @@ class MemoryEmbeddingRepository:
         self, profile: EmbeddingProviderProfile
     ) -> MemoryEmbeddingProfileRecord:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             await session.execute(
                 insert(MemoryEmbeddingProfileModel)
                 .values(
@@ -164,7 +164,7 @@ class MemoryEmbeddingRepository:
         ]
         if kinds:
             conditions.append(MemoryFactModel.kind.in_(kinds))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             try:
                 owners = await resolve_fact_canonical_owners(session, target)
             except MemoryPartitionResolutionError:
@@ -247,7 +247,7 @@ class MemoryEmbeddingRepository:
         )
 
     async def purge_old_profiles(self, *, current_profile_id: int) -> int:
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             old_ids = select(MemoryEmbeddingProfileModel.id).where(
                 MemoryEmbeddingProfileModel.id != current_profile_id
             )
@@ -267,7 +267,7 @@ class MemoryEmbeddingRepository:
         return count
 
     async def active_fact_count(self) -> int:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return int(
                 await session.scalar(
                     select(func.count())
@@ -296,7 +296,7 @@ class MemoryEmbeddingRepository:
             MemoryFactModel.review_state != "quarantined",
             or_(MemoryFactModel.valid_until.is_(None), MemoryFactModel.valid_until > now),
         ]
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             active_count = int(
                 await session.scalar(

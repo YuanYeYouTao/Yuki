@@ -1,6 +1,10 @@
 """Original local request receipts survive cancellation and missing live owners."""
 
 import asyncio
+import json
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,13 +13,60 @@ from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
+from yuki.client_api import prompts as prompts_module
 from yuki.client_api.errors import ClientError
 from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.requests import ClientRequests, personal_command
 from yuki.gateway.providers.app.ingress import AppGateway
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.models import ChatEventModel
 
 app_env = app_fixture
 admin = admin_fixture
+
+
+@pytest.mark.parametrize("committed", [None, True])
+@pytest.mark.parametrize("has_receipt", [False, True])
+async def test_message_ack_failure_recovers_only_its_original_visible_receipt(
+    app_env, database, monkeypatch, committed, has_receipt
+):
+    env = app_env
+    _device, principal, request_id = await client_prompt(env)
+    original_receive = env.gateway.receive
+    error = CanonicalIdentityError("receipt_conflict")
+    error.add_note("database_write_phase:cleanup" if committed else "database_write_phase:commit")
+    if committed:
+        error.add_note("database_commit:confirmed")
+    calls = 0
+
+    async def lost_ack(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if has_receipt:
+            await original_receive(*args, **kwargs)
+        else:
+            # A preceding cold identity write can commit before any input receipt.
+            async with database.immediate_session() as writer:
+                person = await writer.get(CanonicalPersonModel, principal.person_id)
+                person.display_name = "original identity write"
+        raise error
+
+    monkeypatch.setattr(env.gateway, "receive", lost_ack)
+    if has_receipt:
+        result = await env.service.submit(principal, request_id, "original local prompt")
+        assert result["replay"] and result["event_id"] > 0
+        await drain(env)
+        assert len(env.calls) == 2
+    else:
+        with pytest.raises(CanonicalIdentityError) as caught:
+            await env.service.submit(principal, request_id, "original local prompt")
+        assert caught.value is error
+        assert not env.calls
+        async with database.read_session() as reader:
+            person = await reader.get(CanonicalPersonModel, principal.person_id)
+            assert person.display_name == "original identity write"
+    assert calls == 1
 
 
 async def client_prompt(env):
@@ -35,6 +86,67 @@ async def submit(env, device, request_id):
     return response.json()["data"]
 
 
+@pytest.mark.parametrize("changed", [False, True])
+async def test_terminal_receipt_prepares_original_payload_before_writer(
+    app_env, database, monkeypatch, changed
+):
+    env = app_env
+    device, principal, request_id = await client_prompt(env)
+    env.gateway.on_finished = None
+    original = await submit(env, device, request_id)
+    await drain(env)
+    calls_before = len(env.calls)
+    prompts = ClientPrompts(
+        env.identity,
+        {"app": env.gateway},
+        env.harness.processor._chat.runtime.bindings,
+        concurrency=env.harness.processor._concurrency,
+    )
+    active = ContextVar("terminal_receipt_writer", default=False)
+    writer = database.immediate_session
+    payload = prompts_module.message_payload
+    preparations = 0
+    intervened = False
+
+    def prepared_payload(*args):
+        nonlocal preparations
+        assert not active.get(), "terminal receipt decoded its source inside writer"
+        preparations += 1
+        return payload(*args)
+
+    @asynccontextmanager
+    async def checked_writer():
+        nonlocal intervened
+        if changed and not intervened:
+            intervened = True
+            async with writer() as session:
+                row = await session.get(ChatEventModel, original["event_id"])
+                parts = json.loads(row.segments_json)
+                parts[0]["data"]["text"] = "updated original request"
+                row.segments_json = json.dumps(parts)
+                row.content = "updated original request"
+        async with writer() as session:
+            token = active.set(True)
+            try:
+                yield session
+            finally:
+                active.reset(token)
+
+    monkeypatch.setattr(prompts_module, "message_payload", prepared_payload)
+    monkeypatch.setattr(database, "immediate_session", checked_writer)
+    await prompts.finish(
+        principal,
+        request_id,
+        original["event_id"],
+        SimpleNamespace(reason="chat", handled=True, sent_messages=1),
+        None,
+    )
+    assert preparations == (2 if changed else 1)
+    assert len(env.calls) == calls_before
+    facts = await ClientRequests(env.identity, prompts=prompts).get(principal, request_id)
+    assert facts["turn"] == {"state": "ended", "outcome": "chat"}
+
+
 async def test_missing_terminal_receipt_remains_unknown_without_replaying_main(app_env):
     env = app_env
     device, principal, request_id = await client_prompt(env)
@@ -44,7 +156,7 @@ async def test_missing_terminal_receipt_remains_unknown_without_replaying_main(a
     original = await submit(env, device, request_id)
     await drain(env)
     assert len(env.calls) == 2
-    async with env.identity.database.sessions() as reader:
+    async with env.identity.database.read_session() as reader:
         assert await personal_command(reader, principal.request_person_id, request_id) is None
 
     # A cold reader has no original in-process owner or durable terminal fact.
@@ -164,7 +276,7 @@ async def test_revoked_device_cannot_cancel_an_accepted_prompt(app_env, monkeypa
         await drain(env)
 
     # Revocation blocks new API actions; the already finished execution keeps its receipt.
-    async with env.identity.database.sessions() as reader:
+    async with env.identity.database.read_session() as reader:
         from yuki.client_api.requests import personal_command
 
         receipt = await personal_command(reader, principal.request_person_id, request_id)

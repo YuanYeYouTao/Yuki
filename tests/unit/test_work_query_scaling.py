@@ -284,7 +284,7 @@ async def test_scheduler_fills_last_slot_past_busy_and_deferred_scopes(
         assert len(started) == 1
         await asyncio.gather(*started)
         assert resumed == [*(f"busy-{i}" for i in range(7)), "ready-last-slot"]
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             state = await reader.scalar(
                 select(work.c.state).where(work.c.id == "deferred-last-slot")
             )
@@ -326,12 +326,17 @@ async def test_one_owned_run_does_not_scan_unrelated_siblings(database, tmp_path
                 ],
             )
         with capture_reads(database) as queries:
-            async with database.immediate_session() as writer:
-                results.append(await waits._observe_page(writer, [binding], 100.0))
+            async with database.read_session() as reader:
+                conditions = {binding["id"]: json.loads(binding["conditions_json"])}
+                owned = waits._owned_runs_query(waits._requested_runs([binding], conditions))
+                states = waits._run_states((await reader.execute(owned)).all())
+                results.append(
+                    waits._observe_due(binding, conditions[binding["id"]], states, 100.0)
+                )
         costs.append(read_vm_steps(database, queries))
         previous = size
     assert results[0] == results[1]
-    assert results[0][0][1] is not None
+    assert results[0] is not None
     assert costs[1] <= costs[0] * 4, costs
 
 
@@ -402,7 +407,7 @@ async def test_empty_child_maintenance_ignores_already_archived_history(database
             await workers.maintain()
         costs.append(read_vm_steps(database, queries))
         previous = size
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         state = await reader.scalar(select(work.c.state).where(work.c.id == waiting_child))
         archived = await reader.scalar(
             select(children.c.archived_at).where(children.c.work_id == waiting_child)

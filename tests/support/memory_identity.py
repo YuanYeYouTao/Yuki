@@ -9,7 +9,7 @@ from yuki.identity.canonical_repository import find_identity_binding
 
 async def transfer_account(database, account: str, target_account: str = "1002"):
     api, target, _issued = await code_for(database, target_account)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         binding = await find_identity_binding(reader, account, platform="qq")
         binding_id = binding.id
     return await api.transfer_for_operator(binding_id, target, str(uuid4()), str(uuid4()))

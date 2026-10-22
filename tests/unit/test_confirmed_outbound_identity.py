@@ -57,7 +57,7 @@ async def _replace_sender(database, env, owner):
 
 
 async def _repeat_original(database, env, sent):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.get(ChatEventModel, sent["event_id"])
         original = dict(
             (
@@ -101,7 +101,7 @@ async def _repeat_original(database, env, sent):
         event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
     assert repeated.event.id == row.id and not repeated.created
     assert not writes
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             dict(
                 (
@@ -139,7 +139,7 @@ async def test_inflight_confirmed_send_retains_original_presence(
     monkeypatch.setattr(env.bot, "call_api", original_ack)
     sent = await env.service.execute("send", {"text": "原发送确认"}, env.context)
     assert sent["status"] == "succeeded"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.get(ChatEventModel, sent["event_id"])
         assert row.author_kind == "yuki"
         assert row.author_presence_id == row.ingress_presence_id == env.presence
@@ -208,7 +208,7 @@ async def test_onebot_private_ack_keeps_the_binding_prepared_before_transfer(dat
         with host.bind(original):
             sent = await host.onebot.send_private("10002", "原账号换人前已发出")
         assert sent.ok and len(calls) == 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             receipt = await reader.get(SocialOperationModel, sent.data["operation_id"])
             message = await reader.get(ChatEventModel, receipt.event_id)
             conversation = await reader.get(
@@ -265,7 +265,7 @@ async def test_onebot_cross_group_ack_keeps_prepared_entry_when_paused(database,
         with host.bind(original):
             sent = await host.onebot.send_group("2002", "群暂停前已发出的原消息")
         assert sent.ok and len(calls) == 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             receipt = await reader.get(SocialOperationModel, sent.data["operation_id"])
             message = await reader.get(ChatEventModel, receipt.event_id)
             assert message is not None
@@ -340,6 +340,51 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
         transport=transport,
         effect_gate=ConversationEffectGate(),
     )
+    from yuki.plugin_host.db_models import PluginInstallationModel, PluginNotificationOutboxModel
+    from yuki_plugin_sdk.api import PLUGIN_API_VERSION
+
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        writer.add(
+            PluginInstallationModel(
+                plugin_id=item.plugin_id,
+                name="notification fixture",
+                version="1.0.0",
+                plugin_api=PLUGIN_API_VERSION,
+                yuki_requires="*",
+                manifest_hash="a" * 64,
+                entrypoint="fixture:Plugin",
+                status="running",
+                enabled=True,
+                discovered_at=now,
+                updated_at=now,
+            )
+        )
+        await writer.flush()
+        writer.add(
+            PluginNotificationOutboxModel(
+                id=item.id,
+                notification_id=item.notification_id,
+                part_key="text",
+                source_event_id=item.source_event_id,
+                plugin_id=item.plugin_id,
+                target_type=item.target_type,
+                target_id=item.target_id,
+                bot_user_id=item.bot_user_id,
+                part_type=item.part_type,
+                text=item.text,
+                status="processing",
+                attempts=item.attempts,
+                next_attempt_at=now,
+                created_at=now,
+                updated_at=now,
+                canonical_target_space_id=item.canonical_target_space_id,
+                canonical_presence_id=item.canonical_presence_id,
+                canonical_conversation_id=item.canonical_conversation_id,
+                source_person_id=item.source_person_id,
+                prepared_json=json.dumps(item.prepared),
+            )
+        )
     await worker._record_outbound(item, receipt)
     async with database.immediate_session() as writer:
         original = await writer.scalar(
@@ -348,7 +393,7 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
         original.author_kind, original.author_presence_id = "external_bot", None
         event_id = original.id
     await _replace_sender(database, env, "yuki")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = dict(
             (
                 await reader.execute(
@@ -359,7 +404,7 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
             .one()
         )
     await worker._record_outbound(item, receipt)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             dict(
                 (
@@ -380,7 +425,7 @@ async def test_original_outbound_receipt_still_rejects_a_different_explicit_time
 ):
     env = await social_env(database, tmp_path)
     sent = await env.service.execute("send", {"text": "原时间事实"}, env.context)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await reader.get(ChatEventModel, sent["event_id"])
     with pytest.raises(CanonicalIdentityError) as conflict:
         await env.service.writer.append(

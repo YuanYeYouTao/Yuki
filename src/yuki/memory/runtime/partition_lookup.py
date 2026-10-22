@@ -25,7 +25,7 @@ class DatabaseMemoryPartitionLookup:
     async def resolve_self_origin(
         self, *, initiative_run_id: str, canonical_conversation_id: str, group_id: str | None = None
     ) -> SelfMemoryOrigin:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             return await resolve_self_origin(
                 session,
                 initiative_run_id=initiative_run_id,

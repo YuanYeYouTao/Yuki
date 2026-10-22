@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
+from yuki.persistence.database import _complete, write_failure_phase
 from yuki.persistence.unit_of_work import state_revision
 from yuki.plugin_host.discovery import DiscoveredPlugin
 from yuki.plugin_host.event_bus import PluginEventBus
@@ -240,23 +242,42 @@ class PluginManager:
                     elif record.approved_at is not None:
                         await self._prepare_definition_unlocked(record.plugin_id)
                 return self.running_plugin_ids
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as original:
                 self._active = False
-                for plugin_id in tuple(sorted(self._running, reverse=True)):
-                    await self._stop_one_unlocked(plugin_id, final_status="approved")
-                for plugin_id in tuple(self._definitions):
-                    self._discard_definition(plugin_id)
+                try:
+                    await self._stop_running_unlocked()
+                except BaseException as cleanup:
+                    original.add_note(f"plugin_start_cleanup_failed:{type(cleanup).__name__}")
                 raise
 
     async def stop(self) -> None:
         async with self._lock:
             self._active = False
-            for plugin_id in tuple(sorted(self._running, reverse=True)):
+            await self._stop_running_unlocked()
+
+    async def _stop_running_unlocked(self) -> None:
+        failure: BaseException | None = None
+        for plugin_id in tuple(sorted(self._running, reverse=True)):
+            final_status = None
+            try:
                 record = await self._installations.get(plugin_id)
                 final_status = "approved" if record is not None and record.enabled else "disabled"
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"plugin_shutdown_failed:{plugin_id}:{type(exc).__name__}")
+            try:
                 await self._stop_one_unlocked(plugin_id, final_status=final_status)
-            for plugin_id in tuple(self._definitions):
-                self._discard_definition(plugin_id)
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"plugin_shutdown_failed:{plugin_id}:{type(exc).__name__}")
+        for plugin_id in tuple(self._definitions):
+            self._discard_definition(plugin_id)
+        if failure is not None:
+            raise failure
 
     async def approve(
         self,
@@ -607,16 +628,27 @@ class PluginManager:
             for registration in background_services:
                 self._start_background_task(plugin_id, registration)
             return True
-        except asyncio.CancelledError:
-            await self._rollback_start_unlocked(
-                plugin_id,
-                loaded,
-                context=context,
-                start_called=start_called,
-            )
-            await self._installations.set_status(plugin_id, status="approved")
+        except asyncio.CancelledError as original:
+            try:
+                await self._rollback_start_unlocked(
+                    plugin_id,
+                    loaded,
+                    context=context,
+                    start_called=start_called,
+                )
+                await self._installations.set_status(plugin_id, status="approved")
+            except BaseException as cleanup:
+                original.add_note(f"plugin_start_cleanup_failed:{type(cleanup).__name__}")
             raise
         except Exception as exc:
+            if isinstance(exc, SQLAlchemyError) or write_failure_phase(exc) is not None:
+                try:
+                    await self._rollback_start_unlocked(
+                        plugin_id, loaded, context=context, start_called=start_called
+                    )
+                except BaseException as cleanup:
+                    exc.add_note(f"plugin_start_cleanup_failed:{type(cleanup).__name__}")
+                raise
             error_category = (
                 "start_timeout" if isinstance(exc, TimeoutError) else type(exc).__name__
             )
@@ -642,24 +674,34 @@ class PluginManager:
         context: PluginContext | None,
         start_called: bool,
     ) -> None:
-        managed = self._running.pop(plugin_id, None)
-        if loaded is not None and start_called:
+        async def cleanup() -> None:
+            managed = self._running.pop(plugin_id, None)
             try:
-                async with asyncio.timeout(self._stop_timeout):
-                    await loaded.instance.stop()
-            except (Exception, asyncio.CancelledError):
-                pass
-        managed_context = managed.context if managed is not None else context
-        if managed is not None:
-            tasks = tuple(managed.background_tasks.values())
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-        await self._close_context(managed_context)
-        self._deactivate_extensions(plugin_id)
-        self._event_bus.unsubscribe_plugin(plugin_id)
-        self._extensions.remove_plugin(plugin_id)
+                if loaded is not None and start_called:
+                    try:
+                        async with asyncio.timeout(self._stop_timeout):
+                            await loaded.instance.stop()
+                    except (Exception, asyncio.CancelledError):
+                        pass
+            finally:
+                try:
+                    managed_context = managed.context if managed is not None else context
+                    await self._close_context(managed_context)
+                finally:
+                    tasks = tuple(managed.background_tasks.values()) if managed is not None else ()
+                    for task in tasks:
+                        task.cancel()
+                    try:
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                    finally:
+                        self._deactivate_extensions(plugin_id)
+                        self._event_bus.unsubscribe_plugin(plugin_id)
+                        self._extensions.remove_plugin(plugin_id)
+
+        _, cancellation = await _complete(cleanup())
+        if cancellation is not None:
+            raise cancellation
 
     async def _stop_one_unlocked(
         self,
@@ -676,27 +718,21 @@ class PluginManager:
             if final_status is not None:
                 await self._installations.set_status(plugin_id, status=final_status)
             return
-        await self._installations.set_status(plugin_id, status="stopping")
-        error_category: str | None = None
+        failure: BaseException | None = None
         try:
-            async with asyncio.timeout(self._stop_timeout):
-                await managed.loaded.instance.stop()
-        except TimeoutError:
-            error_category = "stop_timeout"
-        except Exception as exc:
-            error_category = type(exc).__name__
-        await self._close_context(managed.context)
-        tasks = tuple(managed.background_tasks.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            try:
-                async with asyncio.timeout(self._stop_timeout):
-                    await asyncio.gather(*tasks, return_exceptions=True)
-            except TimeoutError:
-                error_category = error_category or "background_stop_timeout"
-        self._deactivate_extensions(plugin_id)
-        self._extensions.remove_plugin(plugin_id)
+            await self._installations.set_status(plugin_id, status="stopping")
+        except BaseException as exc:
+            failure = exc
+        try:
+            error_category, cancellation = await _complete(self._stop_managed(plugin_id, managed))
+            failure = failure or cancellation
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+            else:
+                failure.add_note(f"plugin_cleanup_failed:{type(exc).__name__}")
+        if failure is not None:
+            raise failure
         if error_category is not None and record_stop_failure:
             await self._installations.record_failure(
                 plugin_id,
@@ -705,6 +741,37 @@ class PluginManager:
             )
         elif final_status is not None:
             await self._installations.set_status(plugin_id, status=final_status)
+
+    async def _stop_managed(self, plugin_id: str, managed: _ManagedPlugin) -> str | None:
+        """Finish the original plugin and its actual tasks even when metadata failed."""
+        error_category: str | None = None
+        try:
+            try:
+                async with asyncio.timeout(self._stop_timeout):
+                    await managed.loaded.instance.stop()
+            except TimeoutError:
+                error_category = "stop_timeout"
+            except Exception as exc:
+                if isinstance(exc, SQLAlchemyError) or write_failure_phase(exc) is not None:
+                    raise
+                error_category = type(exc).__name__
+        finally:
+            try:
+                await self._close_context(managed.context)
+            finally:
+                tasks = tuple(managed.background_tasks.values())
+                for task in tasks:
+                    task.cancel()
+                try:
+                    if tasks:
+                        async with asyncio.timeout(self._stop_timeout):
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                except TimeoutError:
+                    error_category = error_category or "background_stop_timeout"
+                finally:
+                    self._deactivate_extensions(plugin_id)
+                    self._extensions.remove_plugin(plugin_id)
+        return error_category
 
     def _deactivate_extensions(self, plugin_id: str) -> None:
         callback = self._on_deactivated

@@ -12,6 +12,7 @@ from tests.integration.test_telegram_runtime import drain as drain_telegram
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_runtime import update
 from tests.support.client_identity import client_identity_service
+from tests.support.person_merge import merge_persons
 from tests.support.runtime_execution import make_child_executor
 from tests.unit.test_app_messages import app_env as app_env
 from tests.unit.test_app_messages import drain
@@ -22,7 +23,7 @@ from tests.unit.test_personal_entry_contract import admin as admin
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons, rename_person
+from yuki.identity.person_identity import rename_person
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.work_budget import charge
@@ -73,7 +74,7 @@ async def test_warm_work_retains_paid_request_source_and_budget(
     assert response.status_code == 200
     await asyncio.wait_for(entered.wait(), 5)
     original_requests = copy.deepcopy(env.provider.requests)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = (await reader.execute(select(work))).mappings().one()
         target = await find_identity_binding(reader, "1002")
         original_source = original["source_json"]
@@ -95,7 +96,7 @@ async def test_warm_work_retains_paid_request_source_and_budget(
         release.set()
     assert env.provider.requests == original_requests
     assert len(env.provider.requests) == 2
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         current = (
             (await reader.execute(select(work).where(work.c.id == original["id"]))).mappings().one()
         )
@@ -124,7 +125,7 @@ async def test_queued_child_keeps_original_owner_and_budget_without_an_active_ac
     env = telegram_env
     await env.gateway.receive(update(text="original accepted internal task"))
     await drain_telegram(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -197,7 +198,7 @@ async def test_queued_child_keeps_original_owner_and_budget_without_an_active_ac
     allowed = change in {"merge", "transfer"}
     assert child["state"] == ("completed" if allowed else "failed")
     assert len(env.model.requests) - before == int(allowed)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         budget = (
             (await reader.execute(select(budgets).where(budgets.c.root_id == parent["id"])))
             .mappings()

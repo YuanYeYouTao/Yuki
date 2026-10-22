@@ -76,9 +76,9 @@ async def test_pause_unbind_reuse_and_explicit_registration_are_distinct(admin, 
 async def test_binding_directory_projects_current_people_in_batches(admin, database):
     from sqlalchemy import event
     from tests.support.canonical_identity import ensure_person
+    from tests.support.person_merge import merge_persons
 
     from yuki.identity.canonical_repository import find_identity_binding, replace_assignment
-    from yuki.identity.person_identity import merge_persons
 
     client, *_ = admin
     now = datetime.now(UTC)
@@ -132,13 +132,13 @@ async def test_role_conversion_and_binding_unbind_preserve_original_stage(admin,
     )
     assert converted.status_code == 200, converted.text
     binding = converted.json()["data"]["resource_id"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(PresenceModel, identity)).status == "ended"
         assert (await session.get(IdentityBindingModel, binding)).person_id == owner
         assert not (await session.get(CanonicalPersonModel, owner)).enabled
     # Converting a person account to Yuki is a fresh explicit relation change.
     yuki, _ = await register(client, "80902", expected=binding, revision=1)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(IdentityBindingModel, binding)).status == "ended"
     converted = await client.post(
         f"/admin/v1/presences/{yuki['resource_id']}/transfer",
@@ -149,7 +149,7 @@ async def test_role_conversion_and_binding_unbind_preserve_original_stage(admin,
     assert rebound != binding
     unbound = await client.post(f"/admin/v1/bindings/{rebound}/unbind", json=command(1))
     assert unbound.status_code == 200, unbound.text
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await find_assignment(session, "80902") is None
         assert (await session.get(IdentityBindingModel, rebound)).status == "ended"
         assert not (await session.get(CanonicalPersonModel, owner)).enabled

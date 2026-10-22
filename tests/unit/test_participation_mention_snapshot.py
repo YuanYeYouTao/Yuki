@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from tests.support.canonical_identity import ensure_person
+from tests.support.person_merge import merge_persons
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
     _host,
@@ -18,7 +19,6 @@ from yuki_participation.models import Snapshot
 
 from yuki.conversation.initiative_sources import source_revision
 from yuki.domain.messages import MENTION_SNAPSHOT_FIELDS
-from yuki.identity.person_identity import merge_persons
 from yuki.services.participation_trace import TracedSemanticObserver
 
 
@@ -96,7 +96,7 @@ async def test_mentioned_person_current_projection_uses_the_existing_root_batch(
     host, _ = await _host(database, tmp_path, observer=False)
     original = await _event_and_route(database, host.app.ledger, content="看看@Ice")
     item = await _item(host, original)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         old_person = await ensure_person(session, "1002")
         current_person = await ensure_person(session, "1003")
         await merge_persons(session, old_person, current_person)

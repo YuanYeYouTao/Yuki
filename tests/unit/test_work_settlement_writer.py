@@ -388,7 +388,7 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
     assert result["ok"]
     saved = json.loads((await repository.get(identity))["checkpoint_json"])["context_note"]
     assert saved["payload"]["facts"][0]["text"] == "saved"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(
             select(ContextObservationModel.id).where(
                 ContextObservationModel.source_work_id == identity
@@ -520,7 +520,7 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
     await repository.record_effect(
         key, "unknown", {"outcome": {"uncertain": True, "executed": True}, "error": "receipt lost"}
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_effect = dict(
             (await reader.execute(select(effects).where(effects.c.effect_key == key)))
             .mappings()
@@ -541,7 +541,7 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
     assert binding["status"] == "cancelled"
     assert await waits.deliver_due(now=binding["conditions"][0]["due"] + 1) == 0
     assert await repository.get(child["id"]) == stopped_child
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(inputs.c.state).where(inputs.c.work_id == child["id"]))
             == "cancelled"
@@ -692,7 +692,7 @@ async def test_retained_work_and_pending_inputs_do_not_block_new_intents(databas
         lease, source_key="independent-128", source=source, goal="task 128"
     )
     assert replay["id"] == created[-1]["id"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(work)) == 130
         assert (
             await session.scalar(
@@ -964,7 +964,7 @@ async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(da
             update(work).where(work.c.id == identity).values(state="waiting_external")
         )
     await repository.repair_abandoned_inputs("current-process")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = {row["id"]: row for row in (await reader.execute(select(inputs))).mappings()}
         admissions = list((await reader.scalars(select(OrdinaryTurnAdmissionModel))).all())
     for input_id in repaired:
@@ -1023,7 +1023,7 @@ async def test_due_wait_after_unchanged_first_page_delivers_to_original_work(
     due = binding["conditions"][0]["due"]
     reader = WorkWaitRepository(repository)
     assert await reader.deliver_due(now=due) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         bindings = (
             (await session.execute(select(waits).order_by(waits.c.created, waits.c.id)))
             .mappings()
@@ -1125,7 +1125,7 @@ async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event_id = await reader.scalar(select(ChatEventModel.id))
     event = await EventLedgerRepository(database).get_event(event_id)
     ordinary = OrdinaryAdmissionRepository(database)
@@ -1155,7 +1155,7 @@ async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(
         await repository.prepare_input(
             input_id, {"text": "original"}, before_publish=failed_publish
         )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(select(inputs.c.ready).where(inputs.c.id == input_id))
     assert await ordinary.get(event_id) is None
     assert (await repository.get(identity))["state"] == "waiting_external"
@@ -1163,7 +1163,7 @@ async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(
     assert (await ordinary.get(event_id)).input_id == input_id
     assert (await repository.get(identity))["state"] == "queued"
     await repository.discard_input(input_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = (await reader.execute(select(inputs).where(inputs.c.id == input_id))).mappings().one()
         assert row["ready"] and row["state"] == "pending"
 
@@ -1282,3 +1282,214 @@ async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_r
     assert signal["wait_id"] == registered["id"] and signal["reason"] == "signal"
     assert {c["matched"]["event_id"] for c in signal["conditions"]} == {late_id, early_id}
     assert {e["text"] for e in signal["events"]} == {"late human body", "early plugin body"}
+
+
+async def test_due_prepares_original_conditions_before_writer(database, tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from yuki.runtime.work_wait_schema import waits
+
+    repository, lease, control = await _running_work(database, tmp_path)
+    wait_repository = WorkWaitRepository(repository)
+    registered = await wait_repository.register(
+        lease,
+        work_id=control.current["id"],
+        source=control.source,
+        call_key="prepared-time-wait",
+        mode="any",
+        conditions=[{"kind": "time_due", "after_seconds": 1}],
+        deadline_at=None,
+    )
+    async with database.read_session() as reader:
+        original = await reader.scalar(
+            select(waits.c.conditions_json).where(waits.c.id == registered["id"])
+        )
+    immediate = database.immediate_session
+    loads = json.loads
+    writing = False
+    decoded = 0
+
+    @asynccontextmanager
+    async def owner():
+        nonlocal writing
+        async with immediate() as writer:
+            writing = True
+            try:
+                yield writer
+            finally:
+                writing = False
+
+    def interpret(value, *args, **kwargs):
+        nonlocal decoded
+        if value == original:
+            assert not writing, "historical conditions decoded inside writer"
+            decoded += 1
+        return loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(database, "immediate_session", owner)
+    monkeypatch.setattr(json, "loads", interpret)
+    assert await wait_repository.deliver_due(now=registered["conditions"][0]["due"] + 1) == 1
+    assert decoded == 1
+
+
+async def test_conversation_wait_reprepares_changed_conditions_before_its_only_delivery(
+    database,
+    tmp_path,
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import update
+    from tests.unit.test_memory_mutation import _event
+
+    from yuki.persistence.repositories import EventLedgerRepository
+    from yuki.runtime.work_wait_schema import waits
+
+    repository, lease, control = await _running_work(database, tmp_path)
+    waiter = WorkWaitRepository(repository)
+    registered = await waiter.register(
+        lease,
+        work_id=control.current["id"],
+        source=control.source,
+        call_key="changed-conversation-wait",
+        mode="any",
+        conditions=[{"kind": "conversation"}],
+        deadline_at=None,
+    )
+    source = await _event(
+        EventLedgerRepository(database),
+        message_id="event-after-preparation",
+        sender_user_id="10001",
+        group_id="20001",
+        content="actual next message",
+    )
+    immediate = database.immediate_session
+    interleaved = False
+
+    @asynccontextmanager
+    async def changed_before_admission():
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            # The first preparation saw a lower original event watermark.
+            current = [{**registered["conditions"][0], "after_event_id": source.id}]
+            async with immediate() as writer:
+                await writer.execute(
+                    update(waits)
+                    .where(waits.c.id == registered["id"])
+                    .values(conditions_json=json.dumps(current))
+                )
+        async with immediate() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", changed_before_admission)
+    assert await waiter.match_event(event_id=source.id, kind="conversation") is None
+    assert interleaved
+    async with database.read_session() as reader:
+        assert (
+            await reader.scalar(select(waits.c.status).where(waits.c.id == registered["id"]))
+            == "active"
+        )
+        assert not await reader.scalar(
+            select(inputs.c.id).where(inputs.c.source_key == f"wait:{registered['id']}")
+        )
+
+
+async def test_large_owned_completions_keep_original_wait_after_source_changes(
+    database, tmp_path, monkeypatch
+):
+    import sqlite3
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime
+
+    from sqlalchemy import event, update
+
+    from yuki.sandbox.db_models import SandboxTaskRunModel
+
+    repository, lease, control = await _running_work(database, tmp_path)
+    identity = control.current["id"]
+    waiter = WorkWaitRepository(repository)
+    now = datetime.now(UTC)
+    completion = json.dumps({"status": "unknown", "result": "original paid result" * 1024})
+    run_ids = [f"original-owned-{i}" for i in range(70)]
+    async with database.immediate_session() as writer:
+        writer.add_all(
+            SandboxTaskRunModel(
+                request_id=run_id,
+                run_id=run_id,
+                source_conversation_id=lease.conversation_id,
+                source_json=json.dumps({"work_id": identity}),
+                payload_hash="0" * 64,
+                status="completed",
+                completion_json=completion,
+                created_at=now,
+                updated_at=now,
+            )
+            for run_id in run_ids
+        )
+    registered = await waiter.register(
+        lease,
+        work_id=identity,
+        source=control.source,
+        call_key="original-seventy-runs",
+        mode="all",
+        conditions=[{"kind": "owned_run", "run_id": run_id} for run_id in run_ids],
+        deadline_at=None,
+    )
+    immediate = database.immediate_session
+    loads = json.loads
+    writing = False
+    changed = False
+
+    @asynccontextmanager
+    async def admission():
+        nonlocal writing, changed
+        if not changed:
+            changed = True
+            async with immediate() as writer:
+                await writer.execute(
+                    update(SandboxTaskRunModel)
+                    .where(SandboxTaskRunModel.run_id == run_ids[-1])
+                    .values(status="waiting", completion_json=None)
+                )
+        async with immediate() as writer:
+            writing = True
+            try:
+                yield writer
+            finally:
+                writing = False
+
+    def decode(value, *args, **kwargs):
+        if value == completion:
+            assert not writing, "historical completion decoded inside writer"
+        return loads(value, *args, **kwargs)
+
+    def limit_variables(dbapi, _record, _proxy):
+        dbapi.run_async(
+            lambda driver: driver._execute(
+                driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 256
+            )
+        )
+
+    event.listen(database.engine.sync_engine, "checkout", limit_variables)
+    try:
+        monkeypatch.setattr(database, "immediate_session", admission)
+        monkeypatch.setattr(json, "loads", decode)
+        assert await waiter.deliver_due() == 0
+        assert (await waiter.describe(identity))["status"] == "active"
+        assert not await repository.pending(lease, work_id=identity)
+        async with immediate() as writer:
+            await writer.execute(
+                update(SandboxTaskRunModel)
+                .where(SandboxTaskRunModel.run_id == run_ids[-1])
+                .values(status="completed", completion_json=completion)
+            )
+        assert await waiter.deliver_due() == 1
+        assert await waiter.deliver_due() == 0
+        delivered = await waiter.describe(identity)
+        assert delivered["wait_id"] == registered["id"]
+        assert {c["matched"]["status"] for c in delivered["conditions"]} == {"unknown"}
+        pending = await repository.pending(lease, work_id=identity)
+        assert len(pending) == 1 and pending[0]["source_key"] == f"wait:{registered['id']}"
+    finally:
+        event.remove(database.engine.sync_engine, "checkout", limit_variables)

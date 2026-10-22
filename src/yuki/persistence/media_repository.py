@@ -41,7 +41,7 @@ class MediaAnalysisRepository:
         """Find one unexpired exact cache entry for a prepared media payload."""
 
         timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.scalar(
                 select(MediaAnalysisModel).where(
                     MediaAnalysisModel.content_hash == content_hash,
@@ -115,7 +115,7 @@ class MediaAnalysisRepository:
                 "expires_at": expires_at,
             },
         )
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = (await session.scalars(statement.returning(MediaAnalysisModel))).one()
             record = self._record(row)
         return record
@@ -131,7 +131,7 @@ class MediaAnalysisRepository:
 
         if segment_index < 0:
             raise ValueError("segment_index must be non-negative")
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 update(MediaAnalysisModel)
                 .where(
@@ -151,7 +151,7 @@ class MediaAnalysisRepository:
         cutoff = now or datetime.now(UTC)
         if not 1 <= limit <= 128:
             raise ValueError("cleanup page must be between 1 and 128")
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             ids = tuple(
                 await session.scalars(
                     select(MediaAnalysisModel.id)

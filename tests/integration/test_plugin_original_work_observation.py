@@ -49,7 +49,7 @@ async def test_old_boundary_work_survives_callback_observation(
         ).encode()
     ).hexdigest()
     raw = json.dumps(saved, ensure_ascii=False, separators=(",", ":"))
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(
             update(work)
             .where(work.c.id == original["id"])
@@ -66,7 +66,7 @@ async def test_old_boundary_work_survives_callback_observation(
         finally:
             await repository.release(lease)
     await host.close_host_resources()
-    await database.close()
+    await database.engine.dispose()
     restored = HostPluginContext(
         plugin_id=host.plugin_id,
         approved_permissions=(PluginPermission.AGENT_RUN,),
@@ -119,7 +119,7 @@ async def test_old_boundary_work_survives_callback_observation(
         assert final["source_key"] == f"invocation:{saved['execution_boundary']}"
         assert final["model_requests"] == 2 and len(provider.requests) == 2
         sandbox.execute.assert_awaited_once()
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(work)) == 1
     finally:
         release.set()

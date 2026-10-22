@@ -68,6 +68,7 @@ class MemoryRebuildRepository:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         now = datetime.now(UTC)
+        statistics_json = statistics.model_dump_json()
         async with optional_session(self.database, session, write=True) as active:
             row = MemoryRebuildRunModel(
                 public_id=str(uuid.uuid4()),
@@ -82,7 +83,7 @@ class MemoryRebuildRepository:
                 commit_checkpoint_claim_index=None,
                 created_by_user_id=actor_user_id,
                 extraction_fingerprint=fingerprint,
-                plan_statistics_json=statistics.model_dump_json(),
+                plan_statistics_json=statistics_json,
                 extraction_requests=0,
                 consolidation_requests=0,
                 input_tokens=0,
@@ -111,7 +112,7 @@ class MemoryRebuildRepository:
         return self._run(row) if row is not None else None
 
     async def list_runs(self, *, limit: int = 20) -> tuple[MemoryRebuildRun, ...]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(MemoryRebuildRunModel)
@@ -168,7 +169,7 @@ class MemoryRebuildRepository:
 
     async def pause_after_restart(self) -> int:
         now = datetime.now(UTC)
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             # Both absence probes must describe one WAL snapshot. An empty
             # rebuild subsystem has no restart effects and needs no writer.
             await reader.execute(text("BEGIN"))
@@ -220,7 +221,7 @@ class MemoryRebuildRepository:
         )
 
     async def get_executing_run(self) -> MemoryRebuildRun | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.scalar(
                 select(MemoryRebuildRunModel)
                 .where(MemoryRebuildRunModel.status.in_(EXECUTING_STATUSES))
@@ -241,7 +242,7 @@ class MemoryRebuildRepository:
             )
 
     async def get_event(self, event_id: int) -> EventRecord | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(ChatEventModel, event_id)
         return _event_record(row) if row is not None else None
 
@@ -249,7 +250,7 @@ class MemoryRebuildRepository:
         self, public_id: str, *, limit: int
     ) -> tuple[EventRecord, ...]:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = await session.scalars(
                 select(ChatEventModel)
                 .join(MemoryRebuildItemModel, MemoryRebuildItemModel.event_id == ChatEventModel.id)
@@ -274,7 +275,7 @@ class MemoryRebuildRepository:
         source_event_hash: str,
     ) -> tuple[int, bool, str]:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             run_row = await session.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )
@@ -333,23 +334,34 @@ class MemoryRebuildRepository:
         item_id: int,
         event_id: int,
         claims: tuple[tuple[MemoryClaim, Any, str], ...],
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        latency_seconds: float = 0.0,
     ) -> int:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        encoded_claims = tuple(
+            (claim.model_dump_json(), validated, claim_hash)
+            for claim, validated, claim_hash in claims
+        )
+        latency_milliseconds = max(0, round(latency_seconds * 1000))
+        async with self.database.immediate_session() as session:
             run_row = await session.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )
             if run_row is None:
                 raise ValueError("memory rebuild run not found")
             run_id = run_row.id
+            item = await session.get(MemoryRebuildItemModel, item_id)
+            if item is None or item.status != MemoryRebuildItemStatus.EXTRACTING.value:
+                return 0
             staged = 0
-            for index, (claim, validated, claim_hash) in enumerate(claims):
+            for index, (claim_json, validated, claim_hash) in enumerate(encoded_claims):
                 statement = insert(MemoryRebuildProposalModel).values(
                     run_id=run_id,
                     item_id=item_id,
                     event_id=event_id,
                     claim_index=index,
-                    claim_json=claim.model_dump_json(),
+                    claim_json=claim_json,
                     claim_hash=claim_hash,
                     scope_type=validated.fact.scope_type.value,
                     subject_user_id=validated.fact.subject_user_id,
@@ -397,6 +409,18 @@ class MemoryRebuildRepository:
                     error_category=None,
                 )
             )
+            await session.execute(
+                update(MemoryRebuildRunModel)
+                .where(MemoryRebuildRunModel.id == run_id)
+                .values(
+                    extraction_requests=MemoryRebuildRunModel.extraction_requests + 1,
+                    input_tokens=MemoryRebuildRunModel.input_tokens + (input_tokens or 0),
+                    output_tokens=MemoryRebuildRunModel.output_tokens + (output_tokens or 0),
+                    latency_milliseconds=MemoryRebuildRunModel.latency_milliseconds
+                    + latency_milliseconds,
+                    updated_at=now,
+                )
+            )
             return staged
 
     async def fail_item(
@@ -407,9 +431,9 @@ class MemoryRebuildRepository:
         retry_initial_seconds: float,
     ) -> None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             row = await session.get(MemoryRebuildItemModel, item_id)
-            if row is None:
+            if row is None or row.status != MemoryRebuildItemStatus.EXTRACTING.value:
                 return
             row.error_category = category[:64]
             row.status = MemoryRebuildItemStatus.PENDING.value
@@ -418,7 +442,7 @@ class MemoryRebuildRepository:
 
     async def defer_item(self, item_id: int, *, category: str | None = None) -> None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(MemoryRebuildItemModel)
                 .where(
@@ -434,7 +458,7 @@ class MemoryRebuildRepository:
             )
 
     async def scan_checkpoint(self, public_id: str) -> tuple[datetime | None, int | None]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.execute(
                 select(
                     MemoryRebuildRunModel.scan_checkpoint_occurred_at,
@@ -445,7 +469,7 @@ class MemoryRebuildRepository:
         return (result[0], result[1]) if result is not None else (None, None)
 
     async def update_scan_checkpoint(self, public_id: str, event: EventRecord) -> None:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(MemoryRebuildRunModel)
                 .where(MemoryRebuildRunModel.public_id == public_id)
@@ -459,7 +483,7 @@ class MemoryRebuildRepository:
     async def item_count(
         self, public_id: str, *, statuses: tuple[MemoryRebuildItemStatus, ...] = ()
     ) -> int:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return int(
                 await session.scalar(
                     select(func.count())
@@ -483,7 +507,7 @@ class MemoryRebuildRepository:
     async def statistics(self, public_id: str) -> dict[str, Any]:
         """Return bounded, content-free execution counters derived from indexed staging rows."""
 
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             run_row = await session.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )
@@ -576,37 +600,8 @@ class MemoryRebuildRepository:
             "embedding_jobs_created": embedding_jobs_created,
         }
 
-    async def record_model_usage(
-        self,
-        public_id: str,
-        *,
-        extraction_requests: int = 0,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        latency_seconds: float = 0.0,
-    ) -> None:
-        """Persist additive, content-free provider usage for restart-safe status."""
-
-        async with self.database.sessions() as session, session.begin():
-            await session.execute(
-                update(MemoryRebuildRunModel)
-                .where(MemoryRebuildRunModel.public_id == public_id)
-                .values(
-                    extraction_requests=(
-                        MemoryRebuildRunModel.extraction_requests + extraction_requests
-                    ),
-                    input_tokens=MemoryRebuildRunModel.input_tokens + (input_tokens or 0),
-                    output_tokens=MemoryRebuildRunModel.output_tokens + (output_tokens or 0),
-                    latency_milliseconds=(
-                        MemoryRebuildRunModel.latency_milliseconds
-                        + max(0, round(latency_seconds * 1000))
-                    ),
-                    updated_at=datetime.now(UTC),
-                )
-            )
-
     async def review_rows(self, public_id: str, *, offset: int, limit: int) -> tuple[Any, ...]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return tuple(
                 (
                     await session.execute(
@@ -693,7 +688,7 @@ class MemoryRebuildRepository:
                 conditions.append(MemoryRebuildProposalModel.confidence <= float(value))
             else:
                 raise ValueError(f"unknown review filter: {key}")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = await session.scalars(
                 select(MemoryRebuildProposalModel.id)
                 .join(
@@ -728,7 +723,7 @@ class MemoryRebuildRepository:
 
     async def next_commit_rows(self, public_id: str, *, limit: int) -> tuple[Any, ...]:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return tuple(
                 (
                     await session.execute(
@@ -767,7 +762,7 @@ class MemoryRebuildRepository:
 
     async def proposal_result(self, proposal_id: int) -> MemoryRebuildProposalModel | None:
         """Read the original completion receipt after an uncertain commit."""
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return await session.get(MemoryRebuildProposalModel, proposal_id)
 
     async def finish_proposal(
@@ -818,7 +813,7 @@ class MemoryRebuildRepository:
         retry_initial_seconds: float,
     ) -> None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             row = await session.get(MemoryRebuildProposalModel, proposal_id)
             if row is None or row.commit_status == MemoryRebuildCommitStatus.COMMITTED.value:
                 return
@@ -829,7 +824,7 @@ class MemoryRebuildRepository:
             row.updated_at = now
 
     async def receipt_status(self, event_id: int) -> str | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return cast(
                 str | None,
                 await session.scalar(
@@ -859,7 +854,7 @@ class MemoryRebuildRepository:
         """Keep the run active until all bounded receipt pages have settled."""
         from yuki.memory.rebuild.receipt_finalization import READY_STATUSES
 
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return int(
                 await session.scalar(
                     select(func.count())
@@ -877,7 +872,7 @@ class MemoryRebuildRepository:
             )
 
     async def failed_commit_count(self, public_id: str) -> int:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return int(
                 await session.scalar(
                     select(func.count())
@@ -949,7 +944,7 @@ class MemoryRebuildRepository:
             return MemoryRebuildRunStatus.EXTRACTION_PAUSED
 
     async def remaining_commit_count(self, public_id: str) -> int:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return int(
                 await session.scalar(
                     select(func.count())
@@ -969,8 +964,88 @@ class MemoryRebuildRepository:
                 or 0
             )
 
+    async def finalize_commit(self, public_id: str) -> None:
+        """Choose the terminal/paused state from current indexed absence under the writer."""
+        from yuki.memory.rebuild.receipt_finalization import READY_STATUSES
+
+        async with self.database.immediate_session() as writer:
+            run_id = await writer.scalar(
+                select(MemoryRebuildRunModel.id).where(
+                    MemoryRebuildRunModel.public_id == public_id,
+                    MemoryRebuildRunModel.status == MemoryRebuildRunStatus.COMMITTING.value,
+                )
+            )
+            if run_id is None:
+                return
+
+            async def has_proposals(*conditions: Any) -> bool:
+                return (
+                    await writer.scalar(
+                        select(MemoryRebuildProposalModel.id)
+                        .where(
+                            MemoryRebuildProposalModel.run_id == run_id,
+                            *conditions,
+                        )
+                        .limit(1)
+                    )
+                    is not None
+                )
+
+            if await has_proposals(
+                MemoryRebuildProposalModel.review_status
+                == MemoryRebuildReviewStatus.APPROVED.value,
+                MemoryRebuildProposalModel.commit_status == MemoryRebuildCommitStatus.PENDING.value,
+            ):
+                return
+            if await has_proposals(
+                MemoryRebuildProposalModel.commit_status == MemoryRebuildCommitStatus.FAILED.value
+            ):
+                target = MemoryRebuildRunStatus.COMMIT_PAUSED
+            elif await has_proposals(
+                MemoryRebuildProposalModel.review_status == MemoryRebuildReviewStatus.PENDING.value
+            ):
+                target = MemoryRebuildRunStatus.REVIEW
+            elif (
+                await writer.scalar(
+                    select(MemoryRebuildItemModel.id)
+                    .where(
+                        MemoryRebuildItemModel.run_id == run_id,
+                        MemoryRebuildItemModel.status.in_(READY_STATUSES),
+                    )
+                    .limit(1)
+                )
+                is not None
+            ):
+                return
+            elif (
+                await writer.scalar(
+                    select(MemoryRebuildItemModel.id)
+                    .where(
+                        MemoryRebuildItemModel.run_id == run_id,
+                        MemoryRebuildItemModel.status.in_(
+                            (
+                                MemoryRebuildItemStatus.PENDING.value,
+                                MemoryRebuildItemStatus.EXTRACTING.value,
+                                MemoryRebuildItemStatus.FAILED.value,
+                            )
+                        ),
+                    )
+                    .limit(1)
+                )
+                is not None
+            ):
+                target = MemoryRebuildRunStatus.EXTRACTION_PAUSED
+            else:
+                target = MemoryRebuildRunStatus.COMPLETED
+            await self.transition(
+                public_id,
+                expected={MemoryRebuildRunStatus.COMMITTING},
+                status=target,
+                session=writer,
+            )
+
     async def purge(self, public_id: str) -> bool:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             run = await session.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )
@@ -1008,12 +1083,9 @@ class MemoryRebuildRepository:
         from yuki.memory.rebuild.privacy import apply_forget
 
         if session is None:
-
-            async def erase(owned: AsyncSession) -> int:
-                current = await self.prepare_forget_people(aliases, session=owned)
-                return await apply_forget(owned, current)
-
-            return await self.database.apply_snapshot_write(erase)
+            current = await self.prepare_forget_people(aliases)
+            async with self.database.immediate_session() as writer:
+                return await apply_forget(writer, current)
         if prepared is None:
             raise ValueError("memory_rebuild_privacy_preparation_required")
         if prepared.aliases != tuple(sorted(set(aliases))):
@@ -1026,7 +1098,7 @@ class MemoryRebuildRepository:
         enabled: bool,
         active_in_flight_calls: int = 0,
     ) -> MemoryRebuildHealth:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             status_result = (
                 await session.execute(
                     select(MemoryRebuildRunModel.status, func.count()).group_by(

@@ -26,7 +26,7 @@ async def test_fixed_identity_read_does_not_expand_unrelated_names_or_accounts(
 ):
     env = await social_env(database, tmp_path)
     now = datetime.now(UTC)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         sender = await find_identity_binding(reader, "10001")
         other = await find_identity_binding(reader, "10002")
         space_binding = await find_space_binding(reader, "20001")
@@ -96,7 +96,7 @@ async def test_fixed_identity_read_does_not_expand_unrelated_names_or_accounts(
                 )
         with capture_reads(database) as reads:
             if operation == "names":
-                async with database.sessions() as reader:
+                async with database.read_session() as reader:
                     prepared, _apply = await prepare_message_account_observations(
                         reader,
                         message,
@@ -106,7 +106,7 @@ async def test_fixed_identity_read_does_not_expand_unrelated_names_or_accounts(
                     )
                     assert prepared.sender == message.sender
             elif operation == "private-binding":
-                async with database.sessions() as reader:
+                async with database.read_session() as reader:
                     binding = await binding_for_scope(
                         reader, ConversationScope.private("80001", "10001")
                     )

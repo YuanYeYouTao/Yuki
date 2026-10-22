@@ -47,7 +47,7 @@ async def test_invalid_provenance_reason_matches_fact_and_state_event(database):
     current = await facts.get_fact(result.new_fact_id)
     assert current.status is MemoryStatus.INVALIDATED
     assert current.invalidated_reason is MemoryInvalidationReason.INVALID_PROVENANCE
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         state = await reader.scalar(
             select(MemoryFactStateEventModel)
             .where(MemoryFactStateEventModel.fact_id == current.id)

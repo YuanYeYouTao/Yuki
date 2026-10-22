@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import Select, func, select, text, update
+from sqlalchemy import Select, and_, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -155,7 +155,7 @@ class PromptProjectionRepository:
         self, view_key: str, *, session: AsyncSession | None = None
     ) -> ProjectionSnapshot | None:
         if session is None:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 await reader.execute(text("BEGIN"))
                 return await self.read(view_key, session=reader)
         row = await session.scalar(
@@ -228,7 +228,7 @@ class PromptProjectionRepository:
         return snapshot
 
     async def invalidation_reason(self, view_key: str) -> str | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return await session.scalar(
                 select(PromptProjectionModel.invalidated_reason).where(
                     PromptProjectionModel.view_key == view_key
@@ -236,7 +236,7 @@ class PromptProjectionRepository:
             )
 
     async def read_checkpoint(self, conversation_id: str) -> ProjectionSnapshot | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             row = await session.scalar(current_checkpoint_query(conversation_id))
             return await self.read_row(session, row) if row else None
@@ -302,7 +302,7 @@ class PromptProjectionRepository:
 
         prepared_sources = []
         with model_detail("projection_sources_read"):
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 await reader.execute(text("BEGIN"))
                 prepared_privacy = await privacy_generation(reader)
                 owner = await reader.get(CanonicalConversationModel, conversation_id)
@@ -361,6 +361,14 @@ class PromptProjectionRepository:
                         )
                     )
 
+        existing_sources = json.dumps(
+            [
+                (key, row.conversation_id, row.generation, row.event_ids_json, row.payload_json)
+                for key, row in sorted(existing.items())
+            ]
+        )
+        existing_keys = tuple(sorted(existing))
+
         async def publish(session: AsyncSession) -> ProjectionSnapshot:
             source = await session.get(CanonicalConversationModel, conversation_id)
             if source is None or (
@@ -371,6 +379,38 @@ class PromptProjectionRepository:
                 raise ProjectionConflict("projection source changed")
             if await privacy_generation(session) != prepared_privacy:
                 raise ProjectionConflict("projection privacy changed")
+            if existing_keys:
+                wanted = func.json_each(existing_sources).table_valued("value")
+                selected = ContextSelectionModel
+                current_sources = tuple(
+                    await session.execute(
+                        select(
+                            selected.source_key,
+                            and_(
+                                selected.conversation_id.is_(
+                                    func.json_extract(wanted.c.value, "$[1]")
+                                ),
+                                selected.generation.is_(func.json_extract(wanted.c.value, "$[2]")),
+                                selected.event_ids_json.is_(
+                                    func.json_extract(wanted.c.value, "$[3]")
+                                ),
+                                selected.payload_json.is_(
+                                    func.json_extract(wanted.c.value, "$[4]")
+                                ),
+                            ),
+                        )
+                        .select_from(selected)
+                        .join(
+                            wanted, selected.source_key == func.json_extract(wanted.c.value, "$[0]")
+                        )
+                        .where(selected.view_key == view_key)
+                        .order_by(selected.source_key)
+                    )
+                )
+                if tuple(row[0] for row in current_sources) != existing_keys or not all(
+                    row[1] for row in current_sources
+                ):
+                    raise ProjectionConflict("selected source changed after preparation")
             old = await session.get(PromptProjectionModel, view_key)
             if old is None:
                 if expected_epoch is not None or expected_revision or rebuild_reason is None:
@@ -567,7 +607,7 @@ class PromptProjectionRepository:
                 query = select(candidates.c.id, candidates.c.event_ids_json)
             else:
                 query = empty_ids
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             rows = await reader.execute(query.order_by("id"))
             needed = [
@@ -588,7 +628,7 @@ class PromptProjectionRepository:
     async def invalidate_view(self, view_key: str, *, reason: str) -> None:
         if reason not in REBUILD_REASONS:
             raise ValueError("invalid projection rebuild reason")
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(PromptProjectionModel)
                 .where(

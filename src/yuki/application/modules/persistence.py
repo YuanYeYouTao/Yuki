@@ -60,18 +60,20 @@ class PersistenceModule:
         *,
         lifecycle: LifecycleRegistry,
         database: Database | None = None,
+        owns_database: bool = False,
         runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._settings = settings
         self._lifecycle = lifecycle
         self._database = database
+        self._owns_database = database is None or owns_database
         self._runtime_config = runtime_config
 
     def build(self) -> PersistenceBundle:
         settings = self._settings
         configure_identity_write_settings(settings)
         database = self._database or Database(settings.database_url)
-        self._lifecycle.register("database", close=database.close)
+        self._lifecycle.register("database", close=database.close if self._owns_database else None)
         runtime_config = self._runtime_config or RuntimeConfigService(
             settings=settings,
             database=database,

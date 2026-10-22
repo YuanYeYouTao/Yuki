@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -59,6 +60,22 @@ def payload_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class SocialSettlement:
+    receipt: SocialReceipt
+    prepared_json: str | None
+
+    def result(self) -> SocialReceipt:
+        """Decode the exact persisted plan after its settlement writer has exited."""
+        return self.receipt.model_copy(
+            update={
+                "prepared": json.loads(self.prepared_json)
+                if self.prepared_json is not None
+                else None
+            }
+        )
+
+
 class SocialOperationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -76,26 +93,6 @@ class SocialOperationRepository:
         from yuki.identity.person_identity import same_person_id
 
         return await same_person_id(session, row.target_id, str(target.id))
-
-    @staticmethod
-    async def _matches_payload(
-        session: AsyncSession,
-        row: SocialOperationModel,
-        *,
-        action: str,
-        target: SocialTarget,
-        payload: dict[str, Any],
-        conversation_id: str,
-    ) -> bool:
-        return await SocialOperationRepository._same_target(session, row, target) and (
-            row.payload_hash
-            == payload_hash(
-                action,
-                SocialTarget(kind=row.target_kind, id=UUID(row.target_id)),
-                payload,
-                conversation_id,
-            )
-        )
 
     async def prepare(
         self,
@@ -118,78 +115,76 @@ class SocialOperationRepository:
         ):
             raise SocialError("invalid_operation")
         source_turn_id = social_source_key(source_turn_id)
-        digest = payload_hash(action, target, payload, source_conversation_id)
-        async with self.database.sessions() as reader:
-            await reader.execute(text("BEGIN"))
-            existing = await reader.scalar(
-                select(SocialOperationModel).where(
-                    SocialOperationModel.source_turn_id == source_turn_id,
-                    SocialOperationModel.tool_call_id == tool_call_id,
+        prepared_json = json.dumps(prepared, ensure_ascii=False) if prepared is not None else None
+        original_target = target
+        while True:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                existing = await reader.scalar(
+                    select(SocialOperationModel).where(
+                        SocialOperationModel.source_turn_id == source_turn_id,
+                        SocialOperationModel.tool_call_id == tool_call_id,
+                    )
                 )
-            )
-            if existing is not None:
-                if existing.planned_parts != planned_parts or not await self._matches_payload(
-                    reader,
-                    existing,
-                    action=action,
-                    target=target,
-                    payload=payload,
-                    conversation_id=source_conversation_id,
-                ):
+                target = original_target
+                if existing is not None:
+                    if not await self._same_target(reader, existing, original_target):
+                        raise SocialError("idempotency_conflict")
+                    target = SocialTarget(kind=existing.target_kind, id=UUID(existing.target_id))
+                digest = payload_hash(action, target, payload, source_conversation_id)
+                if existing is not None:
+                    if existing.planned_parts != planned_parts or existing.payload_hash != digest:
+                        raise SocialError("idempotency_conflict")
+                    if work_effect is None:
+                        return self._receipt(existing)
+            async with self.database.immediate_session() as session:
+                target_row = await session.get(
+                    CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel,
+                    str(target.id),
+                )
+                if target_row is None:
+                    raise SocialError("target_not_found")
+                now = datetime.now(UTC)
+                await session.execute(
+                    insert(SocialOperationModel)
+                    .values(
+                        id=str(uuid4()),
+                        source_turn_id=source_turn_id,
+                        tool_call_id=tool_call_id,
+                        source_conversation_id=source_conversation_id,
+                        action=action,
+                        payload_hash=digest,
+                        planned_parts=planned_parts,
+                        prepared_json=prepared_json,
+                        target_kind=target.kind,
+                        target_id=str(target.id),
+                        status=OperationStatus.PREPARED.value,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    .on_conflict_do_nothing(index_elements=["source_turn_id", "tool_call_id"])
+                )
+                row = await session.scalar(
+                    select(SocialOperationModel).where(
+                        SocialOperationModel.source_turn_id == source_turn_id,
+                        SocialOperationModel.tool_call_id == tool_call_id,
+                    )
+                )
+                assert row is not None
+                if not await self._same_target(session, row, original_target):
                     raise SocialError("idempotency_conflict")
-                if work_effect is None:
-                    return self._receipt(existing)
-        now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            target_row = await session.get(
-                CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel,
-                str(target.id),
-            )
-            if target_row is None:
-                raise SocialError("target_not_found")
-            await session.execute(
-                insert(SocialOperationModel)
-                .values(
-                    id=str(uuid4()),
-                    source_turn_id=source_turn_id,
-                    tool_call_id=tool_call_id,
-                    source_conversation_id=source_conversation_id,
-                    action=action,
-                    payload_hash=digest,
-                    planned_parts=planned_parts,
-                    prepared_json=json.dumps(prepared, ensure_ascii=False)
-                    if prepared is not None
-                    else None,
-                    target_kind=target.kind,
-                    target_id=str(target.id),
-                    status=OperationStatus.PREPARED.value,
-                    created_at=now,
-                    updated_at=now,
-                )
-                .on_conflict_do_nothing(index_elements=["source_turn_id", "tool_call_id"])
-            )
-            row = await session.scalar(
-                select(SocialOperationModel).where(
-                    SocialOperationModel.source_turn_id == source_turn_id,
-                    SocialOperationModel.tool_call_id == tool_call_id,
-                )
-            )
-            assert row is not None
-            if row.planned_parts != planned_parts or not await self._matches_payload(
-                session,
-                row,
-                action=action,
-                target=target,
-                payload=payload,
-                conversation_id=source_conversation_id,
-            ):
-                raise SocialError("idempotency_conflict")
-            if work_effect is not None:
-                from yuki.runtime.work_repository import WorkRepository
+                if (row.target_kind, row.target_id) != (target.kind, str(target.id)):
+                    # A concurrent first preparation chose another now-merged
+                    # physical Person. Prepare that original hash after exiting.
+                    continue
+                if row.planned_parts != planned_parts or row.payload_hash != digest:
+                    raise SocialError("idempotency_conflict")
+                if work_effect is not None:
+                    from yuki.runtime.work_repository import WorkRepository
 
-                await WorkRepository.bind_domain_receipt(
-                    session, work_effect.work_id, work_effect.effect_key, f"social:{row.id}"
-                )
+                    await WorkRepository.bind_domain_receipt(
+                        session, work_effect.work_id, work_effect.effect_key, f"social:{row.id}"
+                    )
             return self._receipt(row)
 
     async def prepare_sequence(
@@ -207,96 +202,106 @@ class SocialOperationRepository:
         """Freeze the physical plan once; later callers read the same original parts."""
         source_turn_id = social_source_key(source_turn_id)
         tool_call_id = social_call_key(tool_call_id)
-        digest = payload_hash("send_message_sequence", target, payload, source_conversation_id)
         prefix = sequence_prefix(tool_call_id)
-        async with self.database.immediate_session() as session:
-            row = await session.scalar(
-                select(SocialOperationModel).where(
-                    SocialOperationModel.source_turn_id == source_turn_id,
-                    SocialOperationModel.tool_call_id == tool_call_id,
-                )
-            )
-            if row is not None and await self._same_target(session, row, target):
-                # A Person merge changes current authority, never the original
-                # operation target, payload digest or child identities.
-                target = SocialTarget(kind=row.target_kind, id=UUID(row.target_id))
-                digest = payload_hash(
-                    "send_message_sequence", target, payload, source_conversation_id
-                )
-            children = list(
-                await session.scalars(
+        prepared_json = json.dumps(prepared, ensure_ascii=False) if prepared is not None else None
+        original_target = target
+        while True:
+            async with self.database.read_session() as reader:
+                row = await reader.scalar(
                     select(SocialOperationModel).where(
                         SocialOperationModel.source_turn_id == source_turn_id,
-                        SocialOperationModel.tool_call_id.startswith(prefix),
-                        SocialOperationModel.action == "send_message",
+                        SocialOperationModel.tool_call_id == tool_call_id,
                     )
                 )
+            target = (
+                SocialTarget(kind=row.target_kind, id=UUID(row.target_id))
+                if row is not None
+                else original_target
             )
-            children_by_key = {item.tool_call_id: item for item in children}
-            if row is None:
-                now = datetime.now(UTC)
-                row = SocialOperationModel(
-                    id=str(uuid4()),
-                    source_turn_id=source_turn_id,
-                    tool_call_id=tool_call_id,
-                    source_conversation_id=source_conversation_id,
-                    action="send_message_sequence",
-                    payload_hash=digest,
-                    planned_parts=len(parts),
-                    prepared_json=json.dumps(prepared, ensure_ascii=False)
-                    if prepared is not None
-                    else None,
-                    target_kind=target.kind,
-                    target_id=str(target.id),
-                    status=OperationStatus.PREPARED.value,
-                    created_at=now,
-                    updated_at=now,
+            digest = payload_hash("send_message_sequence", target, payload, source_conversation_id)
+            part_digests = tuple(
+                payload_hash("send_message", target, part, source_conversation_id) for part in parts
+            )
+            async with self.database.immediate_session() as session:
+                row = await session.scalar(
+                    select(SocialOperationModel).where(
+                        SocialOperationModel.source_turn_id == source_turn_id,
+                        SocialOperationModel.tool_call_id == tool_call_id,
+                    )
                 )
-                session.add(row)
-                for index, part in enumerate(parts):
-                    session.add(
-                        SocialOperationModel(
-                            id=str(uuid4()),
-                            source_turn_id=source_turn_id,
-                            tool_call_id=f"{prefix}{index}",
-                            source_conversation_id=source_conversation_id,
-                            action="send_message",
-                            payload_hash=payload_hash(
-                                "send_message", target, part, source_conversation_id
-                            ),
-                            target_kind=target.kind,
-                            target_id=str(target.id),
-                            status=OperationStatus.PREPARED.value,
-                            created_at=now,
-                            updated_at=now,
+                if row is not None:
+                    if not await self._same_target(session, row, original_target):
+                        raise SocialError("idempotency_conflict")
+                    if (row.target_kind, row.target_id) != (target.kind, str(target.id)):
+                        continue
+                children = list(
+                    await session.scalars(
+                        select(SocialOperationModel).where(
+                            SocialOperationModel.source_turn_id == source_turn_id,
+                            SocialOperationModel.tool_call_id.startswith(prefix),
+                            SocialOperationModel.action == "send_message",
                         )
                     )
-                dispatch = True
-            else:
-                if (
-                    row.source_conversation_id != source_conversation_id
-                    or row.target_kind != target.kind
-                    or row.target_id != str(target.id)
-                    or row.action != "send_message_sequence"
-                    or row.payload_hash != digest
-                    or row.planned_parts != len(parts)
-                ):
-                    raise SocialError("idempotency_conflict")
-                for index, part in enumerate(parts):
-                    child = children_by_key.get(f"{prefix}{index}")
-                    if child is None or child.payload_hash != payload_hash(
-                        "send_message", target, part, source_conversation_id
+                )
+                children_by_key = {item.tool_call_id: item for item in children}
+                if row is None:
+                    now = datetime.now(UTC)
+                    row = SocialOperationModel(
+                        id=str(uuid4()),
+                        source_turn_id=source_turn_id,
+                        tool_call_id=tool_call_id,
+                        source_conversation_id=source_conversation_id,
+                        action="send_message_sequence",
+                        payload_hash=digest,
+                        planned_parts=len(parts),
+                        prepared_json=prepared_json,
+                        target_kind=target.kind,
+                        target_id=str(target.id),
+                        status=OperationStatus.PREPARED.value,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(row)
+                    for index, digest_part in enumerate(part_digests):
+                        session.add(
+                            SocialOperationModel(
+                                id=str(uuid4()),
+                                source_turn_id=source_turn_id,
+                                tool_call_id=f"{prefix}{index}",
+                                source_conversation_id=source_conversation_id,
+                                action="send_message",
+                                payload_hash=digest_part,
+                                target_kind=target.kind,
+                                target_id=str(target.id),
+                                status=OperationStatus.PREPARED.value,
+                                created_at=now,
+                                updated_at=now,
+                            )
+                        )
+                    dispatch = True
+                else:
+                    if (
+                        row.source_conversation_id != source_conversation_id
+                        or row.target_kind != target.kind
+                        or row.target_id != str(target.id)
+                        or row.action != "send_message_sequence"
+                        or row.payload_hash != digest
+                        or row.planned_parts != len(parts)
                     ):
                         raise SocialError("idempotency_conflict")
-                dispatch = row.status == "prepared" and all(
-                    child.status == "prepared" for child in children
-                )
-            if work_effect is not None:
-                from yuki.runtime.work_repository import WorkRepository
+                    for index, digest_part in enumerate(part_digests):
+                        child = children_by_key.get(f"{prefix}{index}")
+                        if child is None or child.payload_hash != digest_part:
+                            raise SocialError("idempotency_conflict")
+                    dispatch = row.status == "prepared" and all(
+                        child.status == "prepared" for child in children
+                    )
+                if work_effect is not None:
+                    from yuki.runtime.work_repository import WorkRepository
 
-                await WorkRepository.bind_domain_receipt(
-                    session, work_effect.work_id, work_effect.effect_key, f"social:{row.id}"
-                )
+                    await WorkRepository.bind_domain_receipt(
+                        session, work_effect.work_id, work_effect.effect_key, f"social:{row.id}"
+                    )
             return self._receipt(row), dispatch
 
     async def claim(
@@ -358,7 +363,7 @@ class SocialOperationRepository:
         platform_reference: str | None = None,
         event_id: int | None = None,
         error_category: str | None = None,
-    ) -> SocialReceipt:
+    ) -> SocialSettlement:
         """Caller commits a confirmed outgoing ledger append in this same transaction."""
         if status not in {
             OperationStatus.SUCCEEDED,
@@ -402,10 +407,10 @@ class SocialOperationRepository:
         row = result.scalar_one_or_none()
         if row is None:
             raise SocialError("invalid_transition")
-        return self._receipt(row)
+        return SocialSettlement(self._receipt(row, include_prepared=False), row.prepared_json)
 
     async def get(self, operation_id: str) -> SocialReceipt:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(SocialOperationModel, operation_id)
             if row is None:
                 raise SocialError("operation_not_found")
@@ -414,7 +419,7 @@ class SocialOperationRepository:
     async def find(self, source_turn_id: str, tool_call_id: str) -> SocialReceipt | None:
         source_turn_id = social_source_key(source_turn_id)
         tool_call_id = social_call_key(tool_call_id)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.scalar(
                 select(SocialOperationModel).where(
                     SocialOperationModel.source_turn_id == source_turn_id,
@@ -428,7 +433,7 @@ class SocialOperationRepository:
         # Only live illustration dependencies need an interrupted text owner.
         # Prepare their original plan before any UPDATE acquires the writer.
         interrupted = []
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             parents = await reader.scalars(
                 select(SocialOperationModel)
                 .join(
@@ -458,7 +463,7 @@ class SocialOperationRepository:
                 )
                 if "prepared" in statuses and any(status != "prepared" for status in statuses):
                     interrupted.append((parent.id, parent.source_turn_id, keys))
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             result = await session.execute(
                 update(SocialOperationModel)
                 .where(
@@ -692,7 +697,7 @@ class SocialOperationRepository:
         return result
 
     @staticmethod
-    def _receipt(row: SocialOperationModel) -> SocialReceipt:
+    def _receipt(row: SocialOperationModel, *, include_prepared: bool = True) -> SocialReceipt:
         return SocialReceipt(
             operation_id=row.id,
             action=row.action,
@@ -705,5 +710,7 @@ class SocialOperationRepository:
             original_conversation_id=row.original_conversation_id,
             error_category=row.error_category,
             payload_hash=row.payload_hash,
-            prepared=json.loads(row.prepared_json) if row.prepared_json is not None else None,
+            prepared=json.loads(row.prepared_json)
+            if include_prepared and row.prepared_json is not None
+            else None,
         )

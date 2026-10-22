@@ -117,7 +117,7 @@ class AppGateway:
         return request.task if request is not None else None
 
     async def start(self) -> None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             presence = await find_presence(session, self.handle.self_id, platform=self.platform)
         self.registry.connect(
             self.handle, provider_id=self.platform, presence_id=presence.id if presence else None
@@ -180,7 +180,7 @@ class AppGateway:
         principal: ClientPrincipal | None = None,
         thread_id: str | None = None,
     ) -> ScopedAppendResult:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             conversation = await session.get(CanonicalConversationModel, conversation_id)
             assert conversation is not None and conversation.entry_presence_id is not None
             presence_id = conversation.entry_presence_id

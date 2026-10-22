@@ -23,6 +23,52 @@ from yuki.services.concurrency import ConcurrencyManager
 
 
 @pytest.mark.parametrize("kind", ["memory", "memory_batch"])
+async def test_memory_claim_lease_starts_after_waiting_for_the_writer(database, monkeypatch, kind):
+    identity = await append_user_event(database, message_id="queued-claim-clock")
+    repository = MemoryJobRepository(database)
+    assert await repository.enqueue(identity, "private:1001")
+    module = importlib.import_module("yuki.memory.repository")
+    uow = importlib.import_module("yuki.persistence.unit_of_work")
+    instant = datetime.now(UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is not None else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr(uow, "datetime", Clock)
+    prepared = asyncio.Event()
+    original = module.commit_job_claims
+
+    async def prepared_claim(*args):
+        prepared.set()
+        return await original(*args)
+
+    monkeypatch.setattr(module, "commit_job_claims", prepared_claim)
+
+    async def claim():
+        if kind == "memory_batch":
+            return await repository.claim_ready_batch(
+                limit=10, trigger_count=1, max_characters=8000, max_wait_seconds=3600
+            )
+        return await repository.claim()
+
+    async with database.immediate_session():
+        pending = asyncio.create_task(claim())
+        await asyncio.wait_for(prepared.wait(), 3)
+        instant += timedelta(minutes=6)
+    (job,) = await pending
+    assert job.updated_at.replace(tzinfo=UTC) == instant
+    assert not await claim(), "a freshly admitted claim must not already be stale"
+    await repository.complete(job)
+    async with database.read_session() as reader:
+        persisted = await reader.get(MemoryJobModel, job.id)
+        assert persisted.status == "done" and persisted.attempts == job.attempts == 0
+        assert persisted.event_id == identity
+
+
+@pytest.mark.parametrize("kind", ["memory", "memory_batch"])
 @pytest.mark.parametrize("stale_processing", [False, True])
 async def test_claim_prepares_without_writer_and_competing_claims_are_disjoint(
     database, monkeypatch, kind, stale_processing
@@ -34,7 +80,7 @@ async def test_claim_prepares_without_writer_and_competing_claims_are_disjoint(
     module = importlib.import_module("yuki.memory.repository")
 
     if stale_processing:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryJobModel).values(
                     status="processing", updated_at=datetime.now(UTC) - timedelta(minutes=6)
@@ -100,7 +146,7 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
     original = module.commit_job_claims
 
     async def reset_then_commit(*args):
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             source = await session.get(ChatEventModel, identity)
             values = {watermark: identity}
             await session.execute(
@@ -119,7 +165,7 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
         )
     )
     assert not claimed
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.get(MemoryJobModel, 1)
         assert job is not None and job.status == "pending"
 
@@ -151,21 +197,21 @@ async def test_memory_worker_recovers_original_job_after_repeated_provider_failu
     assert await worker.enqueue(identity, "private:1001")
     for attempts in range(1, 5):
         assert await worker.process_once() == 0
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             job = await session.get(MemoryJobModel, 1)
             assert job is not None and job.event_id == identity
             assert job.status == "pending" and job.attempts == attempts
             assert job.error_category == "LLMUnavailableError"
             assert job.next_attempt_at.replace(tzinfo=UTC) > datetime.now(UTC)
         # Advance readiness only; the next activation must reclaim the original ID.
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryJobModel)
                 .where(MemoryJobModel.id == 1)
                 .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
             )
     assert await worker.process_once() == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         job = await session.get(MemoryJobModel, 1)
         assert job is not None and job.event_id == identity and job.attempts == 4
         assert job.status == "done" and job.outcome == "no_claims"

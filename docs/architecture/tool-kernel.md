@@ -266,7 +266,10 @@ WorkspaceStore 保不可变发布、媒体、short_state、下载及实际引用
 
 统一 `query_chat_history(view=recent/search/around)` 读取 Yuki 实际参与并已入账、当前来源获准读取的
 跨平台 canonical 原账本。内部目标只选择真实查询范围，不猜主动路由；每条结果标明原 Conversation、平台和作者。
-recent 默认当前 Conversation；search 未给 target 时检索所有当前获准的已入账 Conversation。
+  recent 默认当前 Conversation，显式 source 时浏览该来源集合；search 未给 target 时检索所有当前获准的已入账 Conversation。
+  source 的平台与 private/group 条件可选，与内部 target 取交集，无交集为空，不强制逐级发现。
+  find_contacts 的 entries 视图按真实 Conversation 平铺来源、话题和原阶段状态，沿同一读取范围分页，
+  不继承当前发送资格；subjects 保留人物/群主体定位。完整 schema 仍在部署时一次冻结。
 Person、Space 或 Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原会话。
 sources 提供可读会话名与目录，每条事件保 conversation_id、platform、scope、thread_id，不合并自动上下文。
 `event_id` 定位实际范围内原事件；`operation_id` 沿原发送回执定位真实出站会话及原锚点。
@@ -302,13 +305,12 @@ Main 固定合同保持每项固定名称、schema和顺序，各入口共用一
 direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入同一合同；工具数量不作运行准入条件。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
-- `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。
+- `external_agent(action=list/get/watch/prompt/steer/queue/respond/cancel/detach)` 调用本人已授权设备上的原生 Agent。list／get 查询目录、原操作、状态和必要历史，无需 Work；prompt／queue 沿原 Work 登记新操作，watch 只登记监督。steer 追加到指定活跃执行；respond 回答原问题，cancel 精确取消原操作，detach 仅结束监督，不关闭用户会话或 daemon。新调用无 close、peer_id 或服务器 agent_id 别名，不让模型拼接启动程序、环境或 owner endpoint。
 
-`external_agent.get` 使用 `run_id` 或原 `request_id` 二选一。首次 open 确认丢失时仍返回原
-prompt 请求及 resource_request_id；冷恢复沿原 Task 保留这些 ID。按 request_id 查询先核原
-Work/source owner，再读取原 prompt；尚查不到 prompt 时，只读查询原 peer 并嵌入 peer_resource，
-不把 peer 的资源 run_id 当作 prompt 执行，不自动 open 或重发未知 prompt。查回 peer 后可沿原
-owner 显式 close；未知事实继续保持未知。
+公开 device_id／instance_id／session_id／execution_id／operation_id／run_id 均为内部 ID；native ID 仅是适配器引用，不用于重建人物归属。run_id 认 Work 等待，execution_id 认原生执行映射。确认丢失保持原关联，不以 resume、fork 或新 prompt 冒充恢复；原生能力缺失照实返回，不隐式取消重启。原问题回答、纠偏和管理操作记录本次真实 actor 与独立稳定调用键，不复用原 prompt 键。
+
+声明、说明和顺序在部署冻结，direct／Code Mode／Script API 共用；设备目录和实际能力变化只影响查询结果。执行处核当前 Person 与设备授予；operator、平台超管和聊天 token 不自动获得电脑控制权。重要问题和进度沿原 Work 私有输入，交付仍走 send／Social。旧 ACP close／peer／prompt 回执按原事实读取，不接收新调用别名。
+
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
 - `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
 - `query_chat_history(view=recent/search/around)` 读取真实获准的原账本集合；recent 默认当前入口，search 默认全部获准入口，around 按内部 event_id 定位原会话。search 使用 start_at/end_at，around 使用 before/after 条数；内部目标解析与共享读取内核统一，入口授权认各自真实来源。

@@ -119,7 +119,7 @@ async def test_nine_original_tool_sources_survive_completed_reflection_and_recei
     ]
     health = await DreamRepository(database).health(enabled=True)
     assert health.compaction_failed == 1 and health.compaction_evidence_after == 9
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert set(await reader.scalars(select(MemoryToolReceiptModel.id))) == set(original_ids)
         item = (await reader.scalars(select(MemoryEvidenceCompactionItemModel))).one()
         assert item.error_category == "old-interrupted-item" and item.deleted_count == 0

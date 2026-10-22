@@ -117,7 +117,7 @@ class MemoryEmbeddingJobRepository:
             query = query.where(fact.id.in_(ids))
         if only_missing_or_changed:
             query = query.where(or_(vector.id.is_(None), fact.updated_at > vector.updated_at))
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             if actor_person_id is not None and not await person_is_superuser(
                 reader, actor_person_id
             ):
@@ -250,7 +250,7 @@ class MemoryEmbeddingJobRepository:
         job = MemoryEmbeddingJobModel
         recovered, after_id = 0, 0
         while True:
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 rows = tuple(
                     await reader.scalars(
                         select(job)
@@ -287,7 +287,7 @@ class MemoryEmbeddingJobRepository:
             return ()
         job = MemoryEmbeddingJobModel
         now = datetime.now(UTC)
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             ids = tuple(
                 await reader.scalars(
                     select(job.id)
@@ -338,7 +338,7 @@ class MemoryEmbeddingJobRepository:
         ids = tuple(job.fact_id for job in jobs)
         if not ids:
             return {}
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = tuple(
                 (
                     await session.scalars(
@@ -366,7 +366,7 @@ class MemoryEmbeddingJobRepository:
         if not writes:
             return 0
         fact = MemoryFactModel
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             jobs = {
                 row.id: self._project(row)
                 for row in await reader.scalars(
@@ -546,7 +546,7 @@ class MemoryEmbeddingJobRepository:
         job = MemoryEmbeddingJobModel
         changed, after_id = 0, 0
         while True:
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 rows = tuple(
                     await reader.execute(
                         select(job.id, job.updated_at, job.content_hash, job.attempts)
@@ -592,7 +592,7 @@ class MemoryEmbeddingJobRepository:
                     changed += int(cast(CursorResult[Any], result).rowcount == 1)
 
     async def delete_for_old_profiles(self) -> int:
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 delete(MemoryEmbeddingJobModel).where(
                     MemoryEmbeddingJobModel.profile_id != self.profile.id

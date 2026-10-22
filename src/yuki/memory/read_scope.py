@@ -56,14 +56,18 @@ class MemoryReadScopeResolver:
         ),
     ) -> AuthorizedMemoryScope:
         """Resolve only the caller and scene; owners are filtered by canonical SQL."""
-        async with self._database.sessions() as session:
-            person_id = await self._person(session, requester) if requester else None
-            family = await person_family_ids(session, person_id) if person_id else ()
-            space_id = (
-                await self._space(session, current_space_id)
-                if current_space_id is not None
-                else None
-            )
+        person_id: str | None = None
+        family: tuple[str, ...] = ()
+        space_id: str | None = None
+        if requester or current_space_id is not None:
+            async with self._database.read_session() as session:
+                person_id = await self._person(session, requester) if requester else None
+                family = await person_family_ids(session, person_id) if person_id else ()
+                space_id = (
+                    await self._space(session, current_space_id)
+                    if current_space_id is not None
+                    else None
+                )
         return AuthorizedMemoryScope(
             requester_person_id=person_id,
             requester_family_ids=family,
@@ -132,7 +136,7 @@ class MemoryReadScopeResolver:
         come from the caller's canonical projection in this same session.
         """
         if session is None:
-            async with self._database.sessions() as owned_session, owned_session.begin():
+            async with self._database.read_session() as owned_session:
                 await owned_session.execute(text("BEGIN"))
                 return await self.people(
                     requester,
@@ -237,7 +241,7 @@ class MemoryReadScopeResolver:
         return result
 
     async def group(self, requester: str, group_id: str) -> ResolvedReadScope:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             person_id = await self._person(session, requester)
             groups = await self._groups(session, person_id)
             space_id = await self._space(session, group_id)
@@ -256,7 +260,7 @@ class MemoryReadScopeResolver:
 
     async def people_named(self, requester: str, name: str) -> tuple[str, ...]:
         """Complete exact-name candidates inside authorized relationships."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             requester_id = await self._person(session, requester)
             if requester_id is None:
                 return ()
@@ -351,7 +355,7 @@ class MemoryReadScopeResolver:
 
     async def groups_named(self, requester: str, name: str) -> tuple[str, ...]:
         """Names resolve within the requester's historical canonical relationships."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             requester_id = await self._person(session, requester)
             if requester_id is None:
                 return ()

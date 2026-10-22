@@ -9,7 +9,7 @@ from dataclasses import asdict
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,16 +18,17 @@ from yuki.domain.tool_actor import ToolActor
 from yuki.emoji.models import EmojiAsset
 from yuki.gateway.social import TransportMessage, prepared_transport, transport_payload
 from yuki.identity.person_identity import same_person_id
-from yuki.persistence.unit_of_work import optional_session
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.worker_recovery import recover_database_loop
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_schema_v1 import scope
+from yuki.social.db_models import SocialEmojiIntentModel
 from yuki.social.emoji_intents import (
     EmojiIntent,
     EmojiIntentRepository,
+    PreparedEmojiIntent,
     derived_call_id,
-    project_intent,
     validate_source,
 )
 from yuki.social.models import SocialError, SocialTarget
@@ -84,8 +85,6 @@ class EmojiDeliveryService:
         self,
         context: SocialContext,
         route: ResolvedSend,
-        *,
-        session: AsyncSession | None = None,
     ) -> dict[str, Any]:
         """Capture real source facts before text dispatch, without retaining its runtime."""
         from yuki.runtime.effect_outcomes import current_result_capture
@@ -128,7 +127,8 @@ class EmojiDeliveryService:
             if control is not None and control.current is not None
             else None
         )
-        async with optional_session(self.social.database, session, write=False) as reader:
+        async with self.social.database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
             conversation = await reader.get(CanonicalConversationModel, context.conversation_id)
             if conversation is None:
                 raise SocialError("emoji_source_removed")
@@ -164,13 +164,26 @@ class EmojiDeliveryService:
             ),
         }
 
-    async def admit(
+    def prepare_admission(
         self,
         arguments: dict[str, Any],
         context: SocialContext,
         target: SocialTarget,
         source: dict[str, Any],
+    ) -> PreparedEmojiIntent:
+        return self.intents.prepare(
+            turn_id=context.turn_id,
+            call_id=context.call_id,
+            conversation_id=context.conversation_id,
+            target=target,
+            arguments=arguments,
+            source=source,
+        )
+
+    async def admit(
+        self,
         *,
+        prepared: PreparedEmojiIntent,
         session: AsyncSession | None = None,
     ) -> dict[str, Any]:
         from yuki.runtime.effect_outcomes import current_result_capture
@@ -178,20 +191,14 @@ class EmojiDeliveryService:
         capture = current_result_capture.get()
         if capture is not None and not (capture.work_id and capture.effect_key):
             capture = None
-        intent = await self.intents.admit(
-            turn_id=context.turn_id,
-            call_id=context.call_id,
-            conversation_id=context.conversation_id,
-            target=target,
-            arguments=arguments,
-            source=source,
-            work_effect=(capture if not arguments.get("text", "").strip() else None),
+        receipt = await self.intents.admit(
+            prepared=prepared,
+            work_effect=capture if not prepared.has_text else None,
             session=session,
         )
         if session is None:
             self.wake()
-        # An enclosing text claim commits this same admission before dispatch.
-        return project_intent(intent, None)
+        return receipt
 
     async def project(self, context: SocialContext) -> dict[str, Any] | None:
         intent = await self.intents.find(context.turn_id, context.call_id)
@@ -212,26 +219,66 @@ class EmojiDeliveryService:
         return await self._project(intent)
 
     async def _project(self, intent: EmojiIntent) -> dict[str, Any]:
-        async with self.social.database.sessions() as session:
+        async with self.social.database.read_session() as session:
             await session.execute(text("BEGIN"))
             return await self.intents.project(session, intent)
 
     async def validate_claim(
         self, session: AsyncSession, identity: str, target: SocialTarget, route: ResolvedSend
     ) -> None:
-        intent = await self.intents.get(identity, session=session)
-        same_target = intent.target == target or (
-            intent.target.kind == target.kind == "person"
-            and await same_person_id(session, str(intent.target.id), str(target.id))
+        def source(path: str) -> Any:
+            return func.json_extract(SocialEmojiIntentModel.source_json, path)
+
+        current = (
+            await session.execute(
+                select(
+                    SocialEmojiIntentModel.target_kind,
+                    SocialEmojiIntentModel.target_id,
+                    source("$.target_presence_id").label("presence_id"),
+                    source("$.binding_id").label("binding_id"),
+                    source("$.platform").label("platform"),
+                    source("$.context.conversation_id").label("conversation_id"),
+                    source("$.generation").label("generation"),
+                    source("$.cancel_epoch").label("cancel_epoch"),
+                    source("$.work_id").label("work_id"),
+                    source("$.work_cancel_epoch").label("work_cancel_epoch"),
+                    source("$.context.trigger_event_id").label("trigger_event_id"),
+                    source("$.context.caused_by_event_id").label("caused_by_event_id"),
+                    source("$.context.actor.person_id").label("person_id"),
+                ).where(SocialEmojiIntentModel.id == identity)
+            )
+        ).first()
+        if current is None:
+            raise SocialError("emoji_source_removed")
+        same_target = current.target_kind == target.kind and (
+            current.target_id == str(target.id)
+            or (
+                target.kind == "person"
+                and await same_person_id(session, current.target_id, str(target.id))
+            )
         )
         if (
             not same_target
-            or intent.source["target_presence_id"] != route.presence_id
-            or intent.source["binding_id"] != route.binding_id
-            or intent.source["platform"] != route.platform
+            or current.presence_id != route.presence_id
+            or current.binding_id != route.binding_id
+            or current.platform != route.platform
         ):
             raise SocialError("emoji_route_changed")
-        await validate_source(session, intent.source)
+        await validate_source(
+            session,
+            {
+                "context": {
+                    "conversation_id": current.conversation_id,
+                    "trigger_event_id": current.trigger_event_id,
+                    "caused_by_event_id": current.caused_by_event_id,
+                    "actor": {"person_id": current.person_id},
+                },
+                "generation": current.generation,
+                "cancel_epoch": current.cancel_epoch,
+                "work_id": current.work_id,
+                "work_cancel_epoch": current.work_cancel_epoch,
+            },
+        )
 
     async def _run(self) -> None:
         await recover_database_loop(self._run_queue, stop=self._stop, logger=logger)
@@ -259,7 +306,7 @@ class EmojiDeliveryService:
 
     async def _run_intent(self, intent: EmojiIntent) -> None:
         async def resume() -> None:
-            async with self.social.database.sessions() as session:
+            async with self.social.database.read_session() as session:
                 current = await self.intents.get(intent.id, session=session)
             if not current.closed:
                 await self._deliver(current)
@@ -305,7 +352,7 @@ class EmojiDeliveryService:
                 if facts["status"] != "accepted":
                     await self.intents.close(intent.id)
                     return
-            async with self.social.database.sessions() as session:
+            async with self.social.database.read_session() as session:
                 await validate_source(session, intent.source)
             if intent.selected is None:
                 try:
@@ -315,6 +362,11 @@ class EmojiDeliveryService:
                 except (asyncio.CancelledError, SQLAlchemyError):
                     raise
                 except Exception as exc:
+                    if write_failure_phase(exc) is not None and (
+                        write_failure_committed(exc) is not False
+                        or not isinstance(exc, (SocialError, WorkspaceError))
+                    ):
+                        raise
                     intent = await self.intents.close(
                         intent.id,
                         str(exc)
@@ -348,6 +400,11 @@ class EmojiDeliveryService:
             # original dispatch CAS and never repeats an unknown network effect.
             raise
         except Exception as exc:
+            if write_failure_phase(exc) is not None and (
+                write_failure_committed(exc) is not False
+                or not isinstance(exc, (SocialError, WorkspaceError))
+            ):
+                raise
             logger.warning("social_illustration_failed category=%s", type(exc).__name__)
             await self.intents.close(
                 intent.id,

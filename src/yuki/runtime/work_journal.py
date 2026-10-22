@@ -34,6 +34,7 @@ from yuki.services.turn_transcript import TurnTranscript
 
 if TYPE_CHECKING:
     from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_source_guard import WorkSourceGuard
 
 
 def _continuation(value: dict[str, Any]) -> ProviderContinuation:
@@ -159,7 +160,7 @@ class WorkJournal:
     async def _load(
         self, lease: WorkLease, work_id: str, contract: str, *, retain_source: bool
     ) -> JournalSnapshot:
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             source = await session.get(CanonicalConversationModel, lease.conversation_id)
             row = (
                 (await session.execute(select(journal).where(journal.c.work_id == work_id)))
@@ -323,6 +324,8 @@ class WorkJournal:
         metadata: dict[str, Any],
         compaction_versions: tuple[int, int] | None = None,
         publication: Publication | None = None,
+        source_guard: WorkSourceGuard | None = None,
+        source_actor_person_id: str | None = None,
     ) -> None:
         await self.objects.refresh_policy()
         self.objects.begin_record_chain(work_id, transcript.chain_id)
@@ -365,7 +368,7 @@ class WorkJournal:
             allow_nan=False,
         )
         # Reference extraction and JSON parsing happen before the writer begins.
-        async with self.repository.database.sessions() as reader:
+        async with self.repository.database.read_session() as reader:
             input_media: set[str] = set()
             for value in await reader.scalars(
                 select(inputs.c.payload_json).where(
@@ -376,7 +379,7 @@ class WorkJournal:
                 )
             ):
                 input_media.update(references(json.loads(value)))
-        next_media = input_media
+        prepared_media = tuple(sorted(input_media))
         async with self.objects.publication(work_id) as prepared_objects:
             async with self.repository.database.immediate_session() as session:
                 await self.repository._assert_lease(session, lease)
@@ -385,6 +388,12 @@ class WorkJournal:
                     raise WorkConflict("work_journal_generation_changed")
                 if not lease.work_id and source.prompt_source_revision != source_revision:
                     raise WorkConflict("work_journal_source_changed")
+                if source_guard is not None:
+                    await source_guard.validate_cross_sources(
+                        session,
+                        work_id=work_id,
+                        actor_person_id=source_actor_person_id,
+                    )
                 if compaction_versions is not None:
                     from yuki.execution_trace.db_models import ExecutionTraceStateModel
 
@@ -412,20 +421,14 @@ class WorkJournal:
                         .where(recovery.c.work_id == work_id)
                         .values(attempts=0, failure_json="{}", not_before=0)
                     )
-                previous_media = set(
-                    await session.scalars(
-                        select(media_refs.c.sha256).where(media_refs.c.work_id == work_id)
-                    )
-                )
                 # Prepared inputs own their images until staged inputs are paired
                 # into the journal. Saving the current transcript must retain them.
-                added = tuple(sorted(next_media - previous_media))
-                for offset in range(0, len(added), 256):
+                for offset in range(0, len(prepared_media), 256):
                     await session.execute(
                         insert(media_refs).on_conflict_do_nothing(),
                         [
                             {"work_id": work_id, "sha256": digest}
-                            for digest in added[offset : offset + 256]
+                            for digest in prepared_media[offset : offset + 256]
                         ],
                     )
                 # Input append can race the prepare-reader. Keep active Work media
@@ -450,12 +453,12 @@ class WorkJournal:
                 )
 
     async def invalidate(self, lease: WorkLease, work_id: str) -> None:
-        async with self.repository.database.sessions() as reader:
+        async with self.repository.database.read_session() as reader:
             archived = await reader.scalar(
                 select(journal.c.archived_journal_json).where(journal.c.work_id == work_id)
             )
         original = json.loads(archived) if archived is not None else None
-        async with self.repository.database.sessions() as session, session.begin():
+        async with self.repository.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             from yuki.runtime.protocol_schema import refs as protocol_refs
 
@@ -494,7 +497,7 @@ class WorkJournal:
 
     async def recovered_inputs(self, lease: WorkLease, included: list[int], work_id: str) -> None:
         """The restored transcript contains staged inputs; consume without appending again."""
-        async with self.repository.database.sessions() as session, session.begin():
+        async with self.repository.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             await session.execute(
                 update(inputs)
@@ -549,7 +552,7 @@ class WorkJournal:
                 )
             return result
 
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             row = (
                 (await session.execute(select(effects).where(effects.c.effect_key == key)))
                 .mappings()
@@ -622,7 +625,7 @@ class WorkJournal:
         from yuki.sandbox.db_models import SandboxTaskRunModel
 
         request_id = sha256(key.encode()).hexdigest()
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             task = await session.get(SandboxTaskRunModel, request_id)
             if task is not None and task.run_id:
                 completion = json.loads(task.completion_json or "{}")
@@ -631,6 +634,7 @@ class WorkJournal:
                         {
                             "ok": True,
                             "data": {
+                                **json.loads(task.progress_json),
                                 **completion,
                                 "run_id": task.run_id,
                                 "request_id": request_id,
@@ -643,7 +647,7 @@ class WorkJournal:
                 )
             if task is not None:
                 progress = json.loads(task.progress_json)
-                if progress.get("kind") == "acp_prompt":
+                if progress.get("kind") in {"external_agent", "acp_prompt"}:
                     return recorded_result(
                         json.dumps(
                             {
@@ -652,16 +656,23 @@ class WorkJournal:
                                     "error": "execution_outcome_unknown",
                                     "uncertain": True,
                                     "request_id": request_id,
-                                    "resource_request_id": progress["resource_request_id"],
-                                    **(
-                                        {"peer_id": progress["peer_id"]}
-                                        if "peer_id" in progress
-                                        else {}
-                                    ),
+                                    **{
+                                        name: progress[name]
+                                        for name in (
+                                            "kind",
+                                            "operation_id",
+                                            "instance_id",
+                                            "session_id",
+                                            "execution_id",
+                                            "resource_request_id",
+                                            "peer_id",
+                                        )
+                                        if name in progress
+                                    },
                                 },
                                 "replay_forbidden": True,
                                 "detail": (
-                                    "查询原资源和请求；peer 会话不是 prompt 执行，不重发未知调用。"
+                                    "查询原资源和操作；会话不等于某次执行，不重发未知调用。"
                                 ),
                             },
                             ensure_ascii=False,
@@ -684,7 +695,7 @@ class WorkJournal:
         """Only a recognized, still-open parent of this Work may resume its program."""
         if work_id is None:
             return None
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             row = (
                 (
                     await session.execute(
@@ -723,7 +734,7 @@ class WorkJournal:
         if not images:
             await self.repository.record_effect(key, state, receipt)
             return
-        async with self.repository.database.sessions() as reader:
+        async with self.repository.database.read_session() as reader:
             work_id = await reader.scalar(
                 select(effects.c.work_id).where(effects.c.effect_key == key)
             )
@@ -753,5 +764,5 @@ class WorkJournal:
 
     async def effect_state(self, key: str) -> str | None:
         """Read the original effect state without dispatching or changing it."""
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             return await session.scalar(select(effects.c.state).where(effects.c.effect_key == key))

@@ -96,7 +96,7 @@ async def test_native_mention_reaches_first_reply_without_remote_profile_reads(
         assert len(sends) == 1 and sends[0]["message"] == [
             {"type": "text", "data": {"text": "收到"}}
         ]
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             original = await reader.scalar(
                 select(ChatEventModel).where(
                     ChatEventModel.platform_message_id == message.message_id
@@ -122,7 +122,7 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
 ):
     app, env, sender, provider = await _reply_environment(database, tmp_path)
     try:
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             original_person_name = (await reader.get(CanonicalPersonModel, env.person)).display_name
         for identifier, fields, expected_card in (
             (401, {"nickname": "旧昵称", "card": "原名片"}, "原名片"),
@@ -131,7 +131,7 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
         ):
             result = await app.processor.handle(_mention(identifier, **fields), sender)
             assert result.reason == "chat" and result.sent_messages == 1
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 membership = await reader.get(MembershipModel, (env.person, env.space))
                 assert membership is not None
                 binding = await reader.scalar(
@@ -143,7 +143,7 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
                 person = await reader.get(CanonicalPersonModel, env.person)
                 assert person is not None and person.display_name == original_person_name
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             binding = await reader.scalar(
                 select(IdentityBindingModel).where(IdentityBindingModel.person_id == env.person)
             )

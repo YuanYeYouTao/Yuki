@@ -212,7 +212,7 @@ async def test_interrupted_upload_has_no_registration_and_same_id_can_retry(app_
             "file",
             interrupted(),
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(func.count(ControlCommandReceiptModel.principal_id)).where(

@@ -77,7 +77,7 @@ async def test_qq_forget_preserves_same_number_telegram_rebuild_proposal(databas
     run = await service.start(run.public_id, actor_user_id=await _admin(database))
     assert await service.process_extraction_once(run) == 1
     assert provider.requests == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
         proposal_id = proposal.id
         assert proposal.canonical_subject_person_id == tg_owner != qq_owner
@@ -85,7 +85,7 @@ async def test_qq_forget_preserves_same_number_telegram_rebuild_proposal(databas
     assert await PeopleRepository(database, memory_rebuilds=service.repository).delete_person_id(
         qq_owner
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.get(ChatEventModel, source.id)).author_person_id == tg_owner
         assert (
             await reader.get(MemoryRebuildProposalModel, proposal_id)
@@ -96,7 +96,7 @@ async def test_qq_forget_preserves_same_number_telegram_rebuild_proposal(databas
 async def test_forget_removes_third_party_proposal_by_its_original_person(
     database, inject_rebuilds
 ):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         target = (await find_identity_binding(reader, "1001")).person_id
     claim = {
         "subject_ref": f"member_{target}",
@@ -134,7 +134,7 @@ async def test_forget_removes_third_party_proposal_by_its_original_person(
     )
     run = await service.start(run.public_id, actor_user_id=await _admin(database))
     assert await service.process_extraction_once(run) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
         assert proposal is not None and proposal.canonical_subject_person_id == target
         proposal_id = proposal.id
@@ -143,7 +143,7 @@ async def test_forget_removes_third_party_proposal_by_its_original_person(
         database, memory_rebuilds=service.repository if inject_rebuilds else None
     )
     assert await people.delete_person_id(target)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(MemoryRebuildProposalModel, proposal_id) is None
         assert (
             await reader.get(ChatEventModel, source.id)
@@ -182,7 +182,7 @@ async def test_paid_dream_preview_survives_account_transfer_without_another_call
         True,
     )
     assert len(provider.requests) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = await reader.scalar(
             select(MemoryDreamClusterPreviewModel).where(
                 MemoryDreamClusterPreviewModel.public_id == preview.preview_public_id
@@ -234,7 +234,7 @@ async def test_changed_dream_source_cannot_reuse_paid_preview_at_request_limit(d
         await service.process_cluster(await dreams.get_run(run.public_id), cluster)
     assert len(provider.requests) == 1
     assert (await dreams.get_run(run.public_id)).model_calls == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         saved = await reader.scalar(
             select(MemoryDreamClusterPreviewModel).where(
                 MemoryDreamClusterPreviewModel.public_id == preview_id
@@ -245,7 +245,7 @@ async def test_changed_dream_source_cannot_reuse_paid_preview_at_request_limit(d
 
 async def test_rebuild_finalization_keeps_original_owner_and_receipt_after_transfer(database):
     seeded = await _seed(database, 1, proposals=True)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         owner = (await reader.get(ChatEventModel, seeded.event_ids[0])).author_person_id
     await transfer_qq(database)
     repository = MemoryRebuildRepository(database)
@@ -253,7 +253,7 @@ async def test_rebuild_finalization_keeps_original_owner_and_receipt_after_trans
         await repository.complete_item_receipts(seeded.public_id, include_failed_live_jobs=False)
         == 1
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.get(MemoryRebuildItemModel, seeded.item_ids[0])
         receipt = await reader.scalar(
             select(MemoryJobModel).where(MemoryJobModel.event_id == item.event_id)
@@ -265,5 +265,5 @@ async def test_rebuild_finalization_keeps_original_owner_and_receipt_after_trans
         await repository.complete_item_receipts(seeded.public_id, include_failed_live_jobs=False)
         == 0
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.get(MemoryJobModel, receipt_id)).canonical_person_id == owner

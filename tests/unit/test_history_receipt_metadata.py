@@ -1,6 +1,6 @@
 """An owned send receipt survives removal of its destination's history."""
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -36,6 +36,8 @@ def missing_receipt_source():
     session = SimpleNamespace(
         get=AsyncMock(side_effect=get),
         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+        scalar=AsyncMock(return_value=0),
+        no_autoflush=nullcontext(),
     )
 
     @asynccontextmanager
@@ -43,7 +45,7 @@ def missing_receipt_source():
         yield session
 
     return (
-        SimpleNamespace(sessions=sessions),
+        SimpleNamespace(read_session=sessions),
         SocialContext(turn_id="receipt-read", call_id="receipt", conversation_id=source_id),
         operation,
         session,

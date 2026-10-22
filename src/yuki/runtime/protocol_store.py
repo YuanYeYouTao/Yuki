@@ -288,7 +288,7 @@ class ProtocolStore:
         from yuki.execution_trace.db_models import ExecutionTraceStateModel
         from yuki.runtime.work_schema_v1 import work
 
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             authority = await reader.scalar(
                 select(work.c.id)
                 .join(
@@ -404,18 +404,19 @@ class ProtocolStore:
             published = False
             try:
                 digests = tuple(sorted(self.prepared_refs))
-                await _finish_thread(self._verify_prepared, digests)
                 owned: set[str] = set()
-                async with self.database.sessions() as reader:
-                    for offset in range(0, len(digests), 256):
-                        owned.update(
-                            await reader.scalars(
-                                select(refs.c.sha256).where(
-                                    refs.c.work_id == work_id,
-                                    refs.c.sha256.in_(digests[offset : offset + 256]),
+                if digests:
+                    await _finish_thread(self._verify_prepared, digests)
+                    async with self.database.read_session() as reader:
+                        for offset in range(0, len(digests), 256):
+                            owned.update(
+                                await reader.scalars(
+                                    select(refs.c.sha256).where(
+                                        refs.c.work_id == work_id,
+                                        refs.c.sha256.in_(digests[offset : offset + 256]),
+                                    )
                                 )
                             )
-                        )
                 yield tuple(
                     {
                         "sha256": digest,
@@ -497,7 +498,7 @@ class ProtocolStore:
     async def _gc_page(self, deleting: bool, cutoff: float) -> list[dict[str, Any]]:
         """Page metadata before examining ownership, even when every row is owned."""
         scan = self._scans.get(deleting)
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             if scan is None:
                 conditions: list[ColumnElement[bool]] = [objects.c.deleting.is_(deleting)]
                 if not deleting:
@@ -574,7 +575,7 @@ class ProtocolStore:
             # Directory discovery is bounded and cannot authorize a later unlink.
             orphans = await _finish_thread(self._orphan_candidates, cutoff)
             if orphans:
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     registered = set(
                         await reader.scalars(
                             select(objects.c.sha256).where(
@@ -641,7 +642,7 @@ class ProtocolStore:
                         for row in selected
                     )
                 )
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     selected = list(
                         (
                             await reader.execute(

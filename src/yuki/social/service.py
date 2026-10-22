@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import or_, select, text, true
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,7 +35,6 @@ from yuki.identity.db_models import (
     AccountAssignmentModel,
     AccountModel,
     AccountSpaceProfileModel,
-    CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     PresenceModel,
@@ -46,13 +45,12 @@ from yuki.identity.person_identity import (
     current_person_id,
     person_enabled_condition,
     person_family_condition,
-    person_root_id,
     same_person_id,
 )
 from yuki.identity.routing import PresenceRouter, ResolvedSend
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.persistence.database import Database
-from yuki.persistence.models import ChatEventModel, PersonAliasModel
+from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.persistence.unit_of_work import optional_session
 from yuki.services.message_splitter import OutboundMessageSplitter
@@ -337,7 +335,7 @@ class SocialService:
             or selected.get("conversation_id")
         ):
             return None
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             platform = await session.scalar(
                 select(AccountModel.platform)
                 .select_from(IdentityBindingModel)
@@ -352,7 +350,7 @@ class SocialService:
             return None
         target = await self.target("person", selected, context)
         await self.check_target(target)
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             bindings = list(
                 await session.scalars(
                     select(IdentityBindingModel)
@@ -374,73 +372,11 @@ class SocialService:
 
     async def contacts(
         self, kind: str, query: str = "", *, exact: bool = False
-    ) -> list[dict[str, str]]:
-        async with self.database.sessions() as session:
-            if kind == "person":
-                known = (
-                    select(ChatEventModel.id)
-                    .where(
-                        person_family_condition(
-                            ChatEventModel.author_person_id, CanonicalPersonModel.id
-                        ),
-                        ChatEventModel.direction == "inbound",
-                        ChatEventModel.author_kind == "person",
-                    )
-                    .exists()
-                )
-                name_matches = (
-                    CanonicalPersonModel.display_name == query
-                    if exact
-                    else CanonicalPersonModel.display_name.contains(query, autoescape=True)
-                )
-                alias_matches = (
-                    select(PersonAliasModel.id)
-                    .where(
-                        person_family_condition(
-                            PersonAliasModel.canonical_person_id, CanonicalPersonModel.id
-                        ),
-                        PersonAliasModel.canonical_space_id.is_(None),
-                        PersonAliasModel.alias == query
-                        if exact
-                        else PersonAliasModel.alias.contains(query, autoescape=True),
-                    )
-                    .exists()
-                )
-                candidates = (
-                    select(
-                        CanonicalPersonModel.id,
-                        CanonicalPersonModel.display_name,
-                    )
-                    .where(
-                        CanonicalPersonModel.enabled.is_(True),
-                        CanonicalPersonModel.merged_into_person_id.is_(None),
-                        known,
-                        or_(name_matches, alias_matches) if query else true(),
-                    )
-                    .order_by(CanonicalPersonModel.id)
-                )
-                if not exact:
-                    candidates = candidates.limit(20)
-                rows = (await session.execute(candidates)).all()
-            elif kind == "space":
-                statement = (
-                    select(CanonicalSpaceModel.id, CanonicalSpaceModel.name)
-                    .where(
-                        CanonicalSpaceModel.enabled.is_(True),
-                        CanonicalSpaceModel.name == query
-                        if exact
-                        else CanonicalSpaceModel.name.contains(query, autoescape=True),
-                    )
-                    .order_by(CanonicalSpaceModel.id)
-                )
-                if not exact:
-                    statement = statement.limit(20)
-                rows = (await session.execute(statement)).all()
-            else:
-                raise SocialError("invalid_target_kind")
-        return [
-            {"target_id": str(row[0]), "display_name": str(row[1]), "kind": kind} for row in rows
-        ]
+    ) -> list[dict[str, Any]]:
+        from yuki.social.contacts import subject_contacts
+
+        async with self.database.read_session() as session:
+            return await subject_contacts(session, kind, query, exact=exact)
 
     async def target(
         self, kind: str, args: dict[str, Any], context: SocialContext, *, validate: bool = True
@@ -469,7 +405,7 @@ class SocialService:
             raw = str(args["target_id"])
         target = SocialTarget.model_validate({"kind": kind, "id": raw})
         if kind == "person":
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 raw = await current_person_id(session, str(target.id))
             target = target.model_copy(update={"id": UUID(raw)})
         if validate:
@@ -508,7 +444,7 @@ class SocialService:
     async def _group_directory(
         self, target: SocialTarget, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             binding_id = args.get("binding_id")
             conversation_id = args.get("conversation_id") or context.conversation_id
             conversation = await session.get(CanonicalConversationModel, conversation_id)
@@ -619,7 +555,7 @@ class SocialService:
 
     async def route(self, target: SocialTarget) -> ResolvedSend:
         # PresenceRouter may provision a missing route; explicit social operations must not.
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             model = PersonActiveRouteModel if target.kind == "person" else SpaceActiveRouteModel
             route = cast(
                 PersonActiveRouteModel | SpaceActiveRouteModel | None,
@@ -632,7 +568,7 @@ class SocialService:
             if target.kind == "person"
             else await self.router.resolve_send_for_space(str(target.id))
         )
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             binding_model = IdentityBindingModel if target.kind == "person" else SpaceBindingModel
             binding = cast(
                 IdentityBindingModel | SpaceBindingModel | None,
@@ -645,7 +581,7 @@ class SocialService:
     async def send_route(
         self, target: SocialTarget, context: SocialContext, binding_id: str | None = None
     ) -> ResolvedSend:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             source = await session.get(CanonicalConversationModel, context.conversation_id)
             event = (
                 await session.get(ChatEventModel, context.trigger_event_id)
@@ -748,7 +684,7 @@ class SocialService:
     async def reply_reference(
         self, event_id: int, target: SocialTarget, route: ResolvedSend, context: SocialContext
     ) -> str:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, event_id)
         if (
             event is None
@@ -761,7 +697,7 @@ class SocialService:
             or event.scope_type != ("group" if target.kind == "space" else "private")
         ):
             raise SocialError("reply_event_unavailable")
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             presence = await session.get(PresenceModel, event.ingress_presence_id)
         if presence is None or presence.platform != route.platform:
             raise SocialError("reply_event_unavailable")
@@ -956,7 +892,7 @@ class SocialService:
     async def _sequence_result(
         self, parent: SocialReceipt, context: SocialContext
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             result = await self.receipts.delivery_facts(
                 session,
@@ -1016,65 +952,18 @@ class SocialService:
                 if choice is not None:
                     return choice
         await self._validate_self_context(context)
-        if name not in {"send", "query_chat_history"}:
+        if name not in {"send", "query_chat_history"} and not (
+            name == "find_contacts" and args.get("view") == "entries"
+        ):
             await self._validate_person_context(context)
         if name == "query_chat_history":
             from yuki.social.history import read_history
 
             return await read_history(self.database, args, context)
         if name == "find_contacts":
-            kind = str(args.get("kind", "person"))
-            items: list[dict[str, Any]]
-            if args.get("target_id") or args.get("subject_ref"):
-                target = await self.target(kind, args, context)
-                items = [{"target_id": str(target.id), "kind": target.kind}]
-            else:
-                items = [
-                    dict(item)
-                    for item in await self.contacts(kind, str(args.get("display_name", "")))
-                ]
-            async with self.database.sessions() as session:
-                selected_ids = [item["target_id"] for item in items]
-                bindings_by_target: dict[str, list[dict[str, str]]] = {
-                    target_id: [] for target_id in selected_ids
-                }
-                if selected_ids:
-                    model = IdentityBindingModel if kind == "person" else SpaceBindingModel
-                    owner_column = (
-                        IdentityBindingModel.person_id
-                        if kind == "person"
-                        else SpaceBindingModel.space_id
-                    )
-                    bindings = (
-                        await session.execute(
-                            select(
-                                person_root_id(owner_column) if kind == "person" else owner_column,
-                                model.id,
-                                model.platform,
-                            )
-                            .where(
-                                (
-                                    person_root_id(owner_column)
-                                    if kind == "person"
-                                    else owner_column
-                                ).in_(selected_ids),
-                                model.status == "active",
-                            )
-                            .order_by(model.id)
-                        )
-                    ).all()
-                    for owner_id, binding_id, platform in bindings:
-                        bindings_by_target[owner_id].append(
-                            {
-                                "binding_id": binding_id,
-                                "platform": platform,
-                            }
-                        )
-                for item in items:
-                    item["bindings"] = bindings_by_target[item["target_id"]]
-            return (
-                items[0] if args.get("target_id") or args.get("subject_ref") else {"items": items}
-            )
+            from yuki.social.contacts import read_contacts
+
+            return await read_contacts(self, args, context)
         if name == "recall_own_message":
             return await self._recall(args, context)
         if name == "send":
@@ -1112,7 +1001,7 @@ class SocialService:
                 )
                 if selected_entry != context.conversation_id:
                     route = replace(route, kind=target.kind)
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     selected_conversation = await reader.get(
                         CanonicalConversationModel, selected_entry
                     )
@@ -1146,7 +1035,7 @@ class SocialService:
 
                 prepared = PreparedContent(prepared_transport(context.prepared_content))
             else:
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     prepared = await prepare_for_entry(
                         reader,
                         message.text,
@@ -1272,10 +1161,24 @@ class SocialService:
     ) -> dict[str, Any]:
         if source is not None and self.emoji_delivery is not None:
             try:
-                return await self.emoji_delivery.admit(args, context, target, source)
-            except SQLAlchemyError:
-                return {"status": "unknown", "error": "emoji_admission_unconfirmed"}
+                return await self.emoji_delivery.admit(
+                    prepared=self.emoji_delivery.prepare_admission(args, context, target, source)
+                )
             except Exception as exc:
+                from yuki.persistence.database import write_failure_committed, write_failure_phase
+
+                phase = write_failure_phase(exc)
+                if isinstance(exc, SQLAlchemyError) or phase is not None:
+                    committed = write_failure_committed(exc)
+                    return {
+                        "status": "not_accepted" if committed is False else "unknown",
+                        "error": "emoji_admission_unconfirmed",
+                        **(
+                            {"mutation_committed": committed, "database_write_phase": phase}
+                            if phase is not None
+                            else {}
+                        ),
+                    }
                 error = str(exc) if isinstance(exc, SocialError) else type(exc).__name__
                 logging.getLogger(__name__).warning(
                     "social_emoji_admission_failed category=%s", error
@@ -1352,6 +1255,15 @@ class SocialService:
             if work_control is not None and name.startswith("send_") and name != "send_file_caption"
             else None
         )
+        prepared_emoji = None
+        if emoji_request is not None and context.sequence_part_index in {None, 0}:
+            assert self.emoji_delivery is not None
+            emoji_arguments, emoji_context = emoji_request
+            source = await self.emoji_delivery.source(emoji_context, route)
+            source["after_operation_id"] = context.parent_operation_id or receipt.operation_id
+            prepared_emoji = self.emoji_delivery.prepare_admission(
+                emoji_arguments, emoji_context, target, source
+            )
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
         with model_detail("social_claim"):
@@ -1365,25 +1277,55 @@ class SocialService:
                 if context.origin == "plugin_background" and context.caused_by_event_id is not None:
                     from yuki.plugin_host.notification_repository import (
                         background_authority_live,
-                        publication_source_person,
                     )
 
-                    original_event = await session.get(ChatEventModel, context.caused_by_event_id)
-                    conversation = await session.get(
-                        CanonicalConversationModel, context.conversation_id
+                    segments = func.json_each(ChatEventModel.segments_json).table_valued(
+                        "key", "value"
                     )
+                    source_person = (
+                        select(func.json_extract(segments.c.value, "$.data.source_person_id"))
+                        .where(
+                            func.json_extract(segments.c.value, "$.type") == "yuki_context",
+                            func.json_type(segments.c.value, "$.data.publication").is_not(None),
+                        )
+                        .order_by(segments.c.key)
+                        .limit(1)
+                        .correlate(ChatEventModel)
+                        .scalar_subquery()
+                    )
+                    original = (
+                        await session.execute(
+                            select(
+                                ChatEventModel.source_plugin_id,
+                                source_person.label("source_person_id"),
+                                CanonicalConversationModel.person_id,
+                                CanonicalConversationModel.space_id,
+                            )
+                            .join(
+                                CanonicalConversationModel,
+                                CanonicalConversationModel.id
+                                == ChatEventModel.canonical_conversation_id,
+                            )
+                            .where(
+                                ChatEventModel.id == context.caused_by_event_id,
+                                CanonicalConversationModel.id == context.conversation_id,
+                            )
+                        )
+                    ).first()
                     if (
-                        original_event is None
-                        or conversation is None
-                        or not original_event.source_plugin_id
-                        or original_event.canonical_conversation_id != conversation.id
+                        original is None
+                        or not original.source_plugin_id
                         or not await background_authority_live(
                             session,
-                            plugin_id=original_event.source_plugin_id,
-                            source_person_id=publication_source_person(original_event),
+                            plugin_id=original.source_plugin_id,
+                            source_person_id=(
+                                str(original.source_person_id)
+                                if original.source_person_id is not None
+                                else None
+                            ),
                             conversation_id=context.conversation_id,
-                            person_id=conversation.person_id,
-                            space_id=conversation.space_id,
+                            person_id=original.person_id,
+                            space_id=original.space_id,
                         )
                     ):
                         raise SocialError("permission_denied")
@@ -1419,15 +1361,10 @@ class SocialService:
                     target_id=str(target.id),
                 )
                 await self._validate_reply_route(session, context, target, route)
-                if emoji_request is not None and context.sequence_part_index in {None, 0}:
+                if prepared_emoji is not None:
                     assert self.emoji_delivery is not None
-                    emoji_arguments, emoji_context = emoji_request
-                    source = await self.emoji_delivery.source(emoji_context, route, session=session)
-                    source["after_operation_id"] = (
-                        context.parent_operation_id or receipt.operation_id
-                    )
                     illustration = await self.emoji_delivery.admit(
-                        emoji_arguments, emoji_context, target, source, session=session
+                        prepared=prepared_emoji, session=session
                     )
                 if reservation is not None and work_control is not None:
                     await reserve(
@@ -1514,9 +1451,11 @@ class SocialService:
                     raise SocialError("unknown_transport_effect")
             confirmed = True
             appended = None
-            from yuki.persistence.history_search import prepare_terms
+            from yuki.persistence.scoped_event_uow import prepare_append
 
-            prepared_terms = await asyncio.to_thread(prepare_terms, content or "")
+            prepared_append = await prepare_append(
+                content or "", segments=ledger_segments if ledger_segments is not None else ()
+            )
             with model_detail("social_settlement"):
                 async with self.database.immediate_session() as session:
                     from yuki.social.confirmed_content import content_sources_retained
@@ -1556,7 +1495,7 @@ class SocialService:
                             sender_user_id=route.sender_account_id,
                             direction="outbound",
                             content=content,
-                            prepared_terms=prepared_terms,
+                            prepared=prepared_append,
                             segments=ledger_segments if ledger_segments is not None else (),
                             origin=context.origin,
                             caused_by_event_id=context.caused_by_event_id,
@@ -1571,14 +1510,14 @@ class SocialService:
                             else None,
                             space_binding_id=route.binding_id if target.kind == "space" else None,
                         )
-                    completed = await self.receipts.finish(
+                    settlement = await self.receipts.finish(
                         operation_id,
                         status=OperationStatus.SUCCEEDED,
                         platform_reference=reference,
                         event_id=appended.event.id if appended is not None else None,
                         session=session,
                     )
-                    await self._record_work_delivery(completed, session=session)
+                    await self._record_work_delivery(settlement.receipt, session=session)
         except BaseException as exc:
             try:
                 persisted = await self.receipts.get(operation_id)
@@ -1592,8 +1531,8 @@ class SocialService:
                     return persisted
             try:
                 with model_detail("social_settlement"):
-                    async with self.database.sessions() as session, session.begin():
-                        completed = await self.receipts.finish(
+                    async with self.database.immediate_session() as session:
+                        settlement = await self.receipts.finish(
                             operation_id,
                             status=OperationStatus.SUCCEEDED
                             if confirmed
@@ -1604,7 +1543,7 @@ class SocialService:
                             error_category=None if confirmed else type(exc).__name__[:64],
                             session=session,
                         )
-                        await self._record_work_delivery(completed, session=session)
+                        await self._record_work_delivery(settlement.receipt, session=session)
             except Exception as secondary:
                 exc.add_note(f"social receipt reconciliation deferred: {type(secondary).__name__}")
                 raise exc from secondary
@@ -1615,7 +1554,7 @@ class SocialService:
                 from yuki.execution_trace.recorder import record_confirmed_delivery
 
                 await record_confirmed_delivery(operation_id, appended.event.id)
-        return completed
+        return settlement.result()
 
     async def replay_send(
         self, args: dict[str, Any], context: SocialContext
@@ -1633,7 +1572,7 @@ class SocialService:
                 prior.action, prior.target, args, context.conversation_id
             ):
                 raise SocialError("idempotency_conflict")
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 dispatched = await session.scalar(
                     select(SocialOperationModel.id)
                     .where(
@@ -1680,12 +1619,21 @@ class SocialService:
             if receipt.status is OperationStatus.FAILED
             else "unknown"
         )
+        if session is not None:
+            await record(
+                control,
+                receipt.operation_id,
+                state,
+                receipt.model_dump(mode="json", exclude={"prepared"}),
+                session=session,
+            )
+            return
         try:
             await record(
                 control,
                 receipt.operation_id,
                 state,
-                receipt.model_dump(mode="json"),
+                receipt.model_dump(mode="json", exclude={"prepared"}),
                 session=session,
             )
         except Exception:
@@ -1722,7 +1670,7 @@ class SocialService:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
         try:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 event = await session.get(ChatEventModel, receipt.event_id)
                 if (
                     event is None
@@ -1769,7 +1717,7 @@ class SocialService:
     async def _recall(self, args: dict[str, Any], context: SocialContext) -> dict[str, Any]:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, int(args["event_id"]))
             if (
                 event is None

@@ -206,7 +206,7 @@ class InvocationService:
                 },
             )
             raise
-        async with control.repository.database.sessions() as reader:
+        async with control.repository.database.read_session() as reader:
             privacy_generation = (
                 await reader.scalar(
                     select(ExecutionTraceStateModel.privacy_generation).where(

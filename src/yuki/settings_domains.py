@@ -77,6 +77,7 @@ class ModelRuntimeSettings(DomainSettings):
         default=16 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
     )
     memory_self_reflection_timeout_seconds: float = Field(default=180.0, gt=0)
+    memory_self_reflection_quiet_seconds: float = Field(default=300.0, ge=0)
     llm_provider: str
     llm_base_url: str
     llm_api_key: str
@@ -160,6 +161,7 @@ class MemorySettings(DomainSettings):
     memory_self_reflection_schedule_hours: str
     memory_self_reflection_timezone: str
     memory_self_reflection_poll_seconds: float = Field(gt=0)
+    memory_self_reflection_quiet_seconds: float = Field(default=300.0, ge=0)
     memory_self_reflection_max_batches_per_run: int = Field(gt=0)
     memory_self_reflection_max_daily_calls: int = Field(gt=0)
     memory_self_reflection_event_threshold: int = Field(gt=0)

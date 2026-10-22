@@ -124,7 +124,10 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
                 print(json.dumps(state), flush=True)
                 await serving
     finally:
-        assert not await runtime.lifecycle._close_entries(runtime.lifecycle._entries)
+        try:
+            assert not await runtime.lifecycle._close_entries(runtime.lifecycle._entries)
+        finally:
+            await database.close()
 
 
 if __name__ == "__main__":

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from yuki.runtime.activation_outcome import (
     ActivationOutcome,
@@ -73,6 +72,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
     await control.refresh_effects()
     assert control.current is not None
     identity = control.current["id"]
+    failure_json = encode_json(asdict(failure))
     async with control.repository.database.immediate_session() as session:
         current = (
             (await session.execute(select(work).where(work.c.id == identity))).mappings().first()
@@ -106,12 +106,19 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             ):
                 raise WorkConflict("deferred_failure_superseded")
         prior = (
-            (await session.execute(select(recovery).where(recovery.c.work_id == identity)))
+            (
+                await session.execute(
+                    select(
+                        recovery,
+                        func.json_extract(recovery.c.failure_json, "$.code").label("failure_code"),
+                    ).where(recovery.c.work_id == identity)
+                )
+            )
             .mappings()
             .first()
         )
         attempts = 1
-        if prior and json.loads(prior["failure_json"]).get("code") == failure.code:
+        if prior and prior["failure_code"] == failure.code:
             attempts += int(prior["attempts"])
         not_before = 0.0
         if failure.retryable:
@@ -134,12 +141,12 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         )
         # Accepted lifecycle decisions survive auxiliary failures. The writer
         # settles input ownership and gathers the original owned execution.
-        accepted = (
-            json.loads(current["checkpoint_json"]).get("accepted_control")
-            if current is not None
-            else None
+        action = await session.scalar(
+            select(func.json_extract(work.c.checkpoint_json, "$.accepted_control.action")).where(
+                work.c.id == identity
+            )
         )
-        proposed = ACCEPTED_ENDINGS.get(str(accepted.get("action"))) if accepted else None
+        proposed = ACCEPTED_ENDINGS.get(str(action)) if action is not None else None
         if proposed is not None and (
             reason != ExitReason.SEGMENT or proposed in {"failed", "cancelled"}
         ):
@@ -148,7 +155,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             activation_id=control.lease.owner,
             exit_reason=reason.value,
             stage=failure.stage,
-            failure_json=encode_json(asdict(failure)),
+            failure_json=failure_json,
             attempts=attempts,
             not_before=not_before,
             updated=time.time(),

@@ -2,9 +2,6 @@
 
 import asyncio
 
-from sqlalchemy import event
-from sqlalchemy.orm import Session
-
 
 class CommitHints:
     def __init__(self) -> None:
@@ -28,12 +25,3 @@ class CommitHints:
                 queue.put_nowait(False)
             else:
                 queue.put_nowait(True)
-
-
-class HintSession(Session):
-    """Session-local SQLAlchemy hook also covers explicit session.begin writers."""
-
-
-@event.listens_for(HintSession, "after_commit")
-def committed(session: HintSession) -> None:
-    session.info["commit_hints"].publish()

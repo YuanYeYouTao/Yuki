@@ -170,7 +170,7 @@ async def test_operator_permissions_rotation_and_secret_validation(admin, databa
         "/admin/v1/models/secrets", json=command(name="KEY", value=secret, person_id="forged")
     )
     assert invalid.status_code == 422 and secret not in invalid.text
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(ControlCommandReceiptModel.id))) == 0
     monkeypatch.setenv("YUKI_TEST_OPERATOR_TOKEN", "rotated-" + "c" * 48)
     assert (await client.get("/admin/v1/health")).status_code == 401
@@ -185,7 +185,7 @@ async def test_retired_browser_routes_return_not_found(admin):
 
 async def test_identity_creation_binding_attach_disable_and_original_replay(admin, database):
     client, *_ = admin
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         initial_persons = await session.scalar(select(func.count(CanonicalPersonModel.id)))
         initial_bindings = await session.scalar(select(func.count(IdentityBindingModel.id)))
     original = command()
@@ -225,7 +225,7 @@ async def test_identity_creation_binding_attach_disable_and_original_replay(admi
         request_result.status_code == 200
         and request_result.json()["data"]["result_resource_id"] == identity
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(func.count(CanonicalPersonModel.id))) == initial_persons + 2
         )
@@ -258,10 +258,10 @@ async def test_binding_attach_only_conflicts_with_current_presence(admin, databa
     else:
         assert response.status_code == 200, response.text
         binding_id = response.json()["data"]["resource_id"]
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             binding = await session.get(IdentityBindingModel, binding_id)
             assert binding is not None and binding.person_id == person
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         retained = await session.get(PresenceModel, presence_id)
         assert retained is not None and retained.external_account_id == "8001"
 
@@ -543,7 +543,7 @@ async def test_notification_retry_preserves_original_delivery_evidence(admin, da
         ).json() == response.json()
     else:
         assert response.status_code == 409
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(PluginNotificationOutboxModel, claimed.id)
         assert row.status == ("pending" if status == "failed" else status)
         assert row.attempts == claimed.attempts
@@ -562,7 +562,7 @@ async def test_work_management_keeps_original_work_and_replays_one_revision(
     client, *_ = admin
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         generation = await session.scalar(
             select(CanonicalConversationModel.generation).where(
                 CanonicalConversationModel.id == env.context.conversation_id

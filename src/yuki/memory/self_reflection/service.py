@@ -126,7 +126,11 @@ class SelfReflectionService:
         self._settings = settings
         self._repository = repository
         self._mutations = mutations
+        self._models = models
         self._structured = StructuredTaskRunner(models)
+
+    async def wait_for_quiet(self) -> None:
+        await self._models.wait_for_background_idle()
 
     async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
         completed = await self._repository.completed_result(batch.run_id)
@@ -216,6 +220,7 @@ class SelfReflectionService:
                 saved,
                 expected=None,
             )
+        await self.wait_for_quiet()
         already_committed = await self._repository.committed_results(batch.run_id)
         events_by_id = {event.id: event for event in batch.events}
         committed = 0
@@ -239,6 +244,7 @@ class SelfReflectionService:
                         "saved reflection action is retired; original checkpoint retained"
                     )
                 proposal = SelfReflectionProposal.model_validate(raw)
+                await self.wait_for_quiet()
                 changed = await self._apply(
                     batch,
                     proposal,
@@ -256,6 +262,7 @@ class SelfReflectionService:
                 continue
             try:
                 episode = SelfEpisodeProposal.model_validate(raw)
+                await self.wait_for_quiet()
                 changed = await self._apply_episode(
                     batch,
                     episode,

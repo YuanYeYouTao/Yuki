@@ -47,15 +47,21 @@ def _row_value(row: ChatEventModel | Mapping[str, Any], name: str) -> Any:
     return getattr(row, name)
 
 
-def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
-    raw_segments = _row_value(row, "segments_json")
-    try:
-        decoded = json.loads(raw_segments) if isinstance(raw_segments, str) else raw_segments
-    except json.JSONDecodeError:
-        decoded = []
-    if not isinstance(decoded, list):
-        decoded = []
-    segments = tuple(item for item in decoded if isinstance(item, dict))
+def _event_record(
+    row: ChatEventModel | Mapping[str, Any],
+    *,
+    segments: tuple[dict[str, Any], ...] | None = None,
+    external_payload: dict[str, object] | None = None,
+) -> EventRecord:
+    if segments is None:
+        raw_segments = _row_value(row, "segments_json")
+        try:
+            decoded = json.loads(raw_segments) if isinstance(raw_segments, str) else raw_segments
+        except json.JSONDecodeError:
+            decoded = []
+        if not isinstance(decoded, list):
+            decoded = []
+        segments = tuple(item for item in decoded if isinstance(item, dict))
     context: dict[str, object] = next(
         (
             item.get("data", {})
@@ -75,9 +81,8 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
     mentioned_person_ids = (
         tuple(str(item) for item in raw_people) if isinstance(raw_people, list | tuple) else ()
     )
-    external_payload: dict[str, object] | None = None
     raw_external = _row_value(row, "external_payload_json")
-    if raw_external:
+    if external_payload is None and raw_external:
         try:
             raw_payload = (
                 json.loads(raw_external) if isinstance(raw_external, str) else raw_external

@@ -98,7 +98,7 @@ async def test_actual_adapters_continue_original_ordinary_chain_after_input_hand
                 ).reason == "ordinary_deferred"
             release[1].set()
             await asyncio.wait_for(arrived[2].wait(), 10)
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 events = {
                     row.content: row.id
                     for row in await reader.scalars(

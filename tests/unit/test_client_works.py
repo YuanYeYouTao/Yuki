@@ -1,6 +1,9 @@
 """Personal inputs retain original Work identity and commit all three facts together."""
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -12,6 +15,7 @@ from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_api import bearer, pair
 
+from yuki.client_api import works as works_module
 from yuki.client_api.works import ClientWorks
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -19,6 +23,7 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import find_identity_binding
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_budget_schema import budgets
@@ -31,8 +36,113 @@ admin = admin_fixture
 app_env = app_fixture
 
 
+@pytest.mark.parametrize("business", ["success", "failure", "cancelled"])
+async def test_input_release_failure_keeps_original_commit_or_exception(
+    app_env, database, monkeypatch, business
+):
+    env = app_env
+    device, _ = await owner(env, database)
+    original = await seeded(env, database, state="waiting_user")
+    principal = await env.identity.authenticate(device["token"])
+    api = ClientWorks(env.identity, env.gateway)
+    request = str(uuid4())
+    release = api.repository.release
+    writer = database.immediate_session
+    release_error = OSError("release transaction rolled back")
+
+    @asynccontextmanager
+    async def rollback_release():
+        async with writer() as session:
+            yield session
+            raise release_error
+
+    async def release_with_rollback(lease):
+        with monkeypatch.context() as patch:
+            patch.setattr(database, "immediate_session", rollback_release)
+            await release(lease)
+
+    monkeypatch.setattr(api.repository, "release", release_with_rollback)
+    business_error = (
+        asyncio.CancelledError("original cancellation")
+        if business == "cancelled"
+        else RuntimeError("original input failure")
+    )
+    if business != "success":
+        record = env.identity.receipts.record_personal_command
+
+        async def fail_after_original_receipt(*args, **kwargs):
+            await record(*args, **kwargs)
+            raise business_error
+
+        monkeypatch.setattr(
+            env.identity.receipts, "record_personal_command", fail_after_original_receipt
+        )
+        with pytest.raises(type(business_error)) as raised:
+            await api.submit(principal, original.row["id"], request, "original requirement")
+        assert raised.value is business_error
+        if business == "failure":
+            assert any("lease release failed" in note for note in business_error.__notes__)
+    else:
+        result = await api.submit(principal, original.row["id"], request, "original requirement")
+        replay = await api.submit(principal, original.row["id"], request, "original requirement")
+        assert replay == {**result, "replay": True}
+    assert write_failure_committed(release_error) is False
+    async with database.read_session() as reader:
+        count = await reader.scalar(
+            select(func.count(ControlCommandReceiptModel.principal_id)).where(
+                ControlCommandReceiptModel.request_id == request
+            )
+        )
+        assert count == (1 if business == "success" else 0)
+        assert await reader.scalar(select(func.count(inputs.c.id))) == count
+    assert not env.calls
+
+
+async def test_new_input_checks_current_actor_without_decoding_private_work_source(
+    app_env, database, monkeypatch
+):
+    env = app_env
+    device, _person = await owner(env, database)
+    original = await seeded(env, database)
+    source = json.dumps({**original.source, "private_material": "retained private work\n" * 10000})
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work).where(work.c.id == original.row["id"]).values(source_json=source)
+        )
+    active = ContextVar("client_work_input_writer", default=False)
+    original_writer = database.immediate_session
+    decode = works_module.json.loads
+
+    @asynccontextmanager
+    async def tracked_writer():
+        async with original_writer() as writer:
+            token = active.set(True)
+            try:
+                yield writer
+            finally:
+                active.reset(token)
+
+    def decoded_outside_writer(value, *args, **kwargs):
+        if value == source:
+            assert not active.get(), "the private Work body was decoded by the input writer"
+        return decode(value, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(database, "immediate_session", tracked_writer)
+        scoped.setattr(works_module.json, "loads", decoded_outside_writer)
+        response = await env.client.post(
+            f"/client/v1/works/{original.row['id']}/inputs",
+            json={"request_id": str(uuid4()), "text": "original additional requirement"},
+            headers=bearer(device["token"]),
+        )
+    assert response.status_code == 200, response.text
+    current = await original.repository.get(original.row["id"])
+    assert current["source_json"] == source and current["model_requests"] == 3
+    assert not env.calls
+
+
 async def owner(env, database, account="1001"):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, account)
     issued = await env.identity.issue_for_operator(binding.person_id, str(uuid4()), str(uuid4()))
     device = await pair(env.client, issued["code"])
@@ -118,7 +228,7 @@ async def test_input_is_one_app_event_with_atomic_ready_payload_and_no_main(
     )
     assert response.status_code == 200, response.text
     result = response.json()["data"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.get(ChatEventModel, result["event_id"])
         item = (
             (await session.execute(select(inputs).where(inputs.c.id == result["input_id"])))
@@ -179,7 +289,7 @@ async def test_waiting_resume_retains_session_budget_and_honors_busy_original_le
         headers=bearer(device["token"]),
     )
     assert busy.status_code == 503
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
     await original.repository.release(original.lease)
@@ -201,7 +311,7 @@ async def test_waiting_resume_retains_session_budget_and_honors_busy_original_le
         "tool_calls",
     ):
         assert current[key] == original.row[key]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.execute(
                 select(budgets.c.models, budgets.c.model_limit).where(
@@ -273,7 +383,7 @@ async def test_input_request_identity_spans_work_message_and_devices(app_env, da
         "/client/v1/messages", json=request, headers=bearer(device["token"])
     )
     assert message.status_code == 409
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 1
     assert not env.calls
 
@@ -294,7 +404,7 @@ async def test_failure_after_mailbox_insert_rolls_back_all_facts(app_env, databa
         await ClientWorks(env.identity, env.gateway).submit(
             principal, original.row["id"], str(uuid4()), "rollback this"
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
         assert (
@@ -326,7 +436,7 @@ async def test_terminal_work_preserves_failure_receipt_and_does_not_create_input
             "code": "precondition_failed",
             "state": state,
         }
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
         assert (
@@ -450,7 +560,7 @@ async def test_home_and_group_work_show_only_this_works_confirmed_question(app_e
 
 
 async def guard_for(original, database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(
             CanonicalConversationModel, original.row["conversation_id"]
         )
@@ -524,7 +634,7 @@ async def test_same_person_event_without_mailbox_proof_is_not_a_work_input(app_e
     original = await seeded(env, database, group=True, retain_lease=True)
     guard, control = await guard_for(original, database)
     principal = await env.identity.authenticate(device["token"])
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         from yuki.identity.db_models import IdentityBindingModel
 
         binding = await session.get(IdentityBindingModel, principal.binding_id)
@@ -555,7 +665,7 @@ async def test_message_request_cannot_be_reused_for_work_input(app_env, database
         headers=bearer(device["token"]),
     )
     assert response.status_code == 409 and response.json()["problem"]["code"] == "request_conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
 
 
@@ -616,7 +726,7 @@ async def test_completion_between_preparation_and_writer_creates_no_input(
         "code": "precondition_failed",
         "state": "completed",
     }
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
 
@@ -706,7 +816,7 @@ async def test_plain_app_reply_matches_own_waiting_entry_without_borrowing_qq_wa
     assert len(env.calls) == before
     assert (await qq.repository.get(app_work["id"]))["state"] == "queued"
     assert await qq.repository.get(qq.row["id"]) == qq.row
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = (
             (await session.execute(select(inputs).where(inputs.c.work_id == app_work["id"])))
             .mappings()

@@ -91,7 +91,7 @@ class CompactReceipt:
         from yuki.conversation.observations import privacy_generation
         from yuki.runtime.work_repository import WorkConflict
 
-        async with self.context.repository.database.sessions() as reader:
+        async with self.context.repository.database.read_session() as reader:
             row = await reader.scalar(
                 select(ContextObservationModel)
                 .where(

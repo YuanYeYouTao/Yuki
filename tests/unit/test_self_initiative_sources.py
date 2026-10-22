@@ -158,7 +158,7 @@ async def test_exact_reader_does_not_enumerate_unrequested_facts(database):
         )
         == ()
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         selected = await read_self_initiative_facts(
             database, fact_ids=(fact_id,), session=session, **arguments
         )

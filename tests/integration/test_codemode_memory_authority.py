@@ -56,7 +56,7 @@ async def test_new_memory_service_allows_distinct_mutations_and_preserves_effect
     first, outer = await run_code(env, first_code)
     assert first["status"] == "completed"
     assert calls[-1].ok and calls[-1].new_fact_id is not None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         raw = await reader.scalar(
             select(effects.c.receipt_json).where(
                 effects.c.effect_key == outer.identity.operation_id + "/c0"

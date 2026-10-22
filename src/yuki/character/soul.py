@@ -98,7 +98,7 @@ class CharacterSoul:
             raise ClientError("unavailable") from exc
         writable = await _media_io(_writable, path)
         revision = document_revision(content)
-        async with self.identity.database.sessions() as reader:
+        async with self.identity.database.read_session() as reader:
             audit = await reader.scalar(
                 select(AdminOperationEventModel)
                 .join(
@@ -132,7 +132,7 @@ class CharacterSoul:
     async def read(
         self, *, principal: ClientPrincipal | None = None, operator_id: str | None = None
     ) -> dict[str, Any]:
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             await self._actor(session, principal, operator_id)
         async with self.lock:
             return await self._document()
@@ -289,7 +289,7 @@ class CharacterSoul:
                 await self._finish(row_id, details, "version_conflict")
                 raise ClientError("version_conflict", details=details)
             try:
-                async with self.identity.database.sessions() as reader:
+                async with self.identity.database.read_session() as reader:
                     await self._actor(reader, principal, operator_id)
                 if current_revision != revision:
                     await _media_io(_replace, self.settings.soul_file, expected_revision, data)

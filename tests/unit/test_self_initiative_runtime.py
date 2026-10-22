@@ -171,7 +171,7 @@ async def test_memory_origin_recovers_without_any_chat_event_and_survives_master
     )
     assert before.actor_person_id is None and before.event_id is None
     assert before.actor_user_id == "" and before.trigger().run_id == source["initiative_run_id"]
-    async with database.sessions() as db:
+    async with database.read_session() as db:
         assert not list(await db.scalars(select(ChatEventModel.id)))
     await admissions.transition(binding, master_enabled=False, external_enabled=True)
     assert (
@@ -313,7 +313,7 @@ async def test_self_owned_sandbox_completion_routes_once_to_original_work(databa
     await repo.release(lease)
     await repo.route_child_completion("command")
     await repo.route_child_completion("command")
-    async with database.sessions() as db:
+    async with database.read_session() as db:
         records = (await db.execute(select(inputs).where(inputs.c.work_id == item["id"]))).all()
         assert len(records) == 1
     assert (await repo.get(item["id"]))["state"] == "queued"
@@ -357,7 +357,7 @@ async def test_self_child_preserves_run_without_adopting_person(database):
     with pytest.raises(WorkConflict):
         await children.finish(child_lease)
     assert (await repo.get(child_id))["model_requests"] == 24
-    async with database.sessions() as db:
+    async with database.read_session() as db:
         assert not list(await db.scalars(select(effects.c.effect_key)))
 
 
@@ -576,7 +576,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
     chat.open_memory_session.assert_not_called()
     assert (await repo.get(child_id))["state"] == "completed"
     assert (await repo.get(child_id))["model_requests"] == 1
-    async with database.sessions() as db:
+    async with database.read_session() as db:
         notifications = list(
             await db.scalars(
                 select(inputs.c.id).where(

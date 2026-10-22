@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import event as sql_event
 from sqlalchemy import select, update
 from tests.support.event_seed import seed_scoped_event
 from tests.support.projection_sql_counts import capture_sql
@@ -89,7 +88,7 @@ async def test_acquire_rechecks_generation_after_read_preparation(database, tmp_
             )
         proceed.set()
         assert await candidate is None
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(select(scope.c.conversation_id)) is None
     finally:
         proceed.set()
@@ -121,7 +120,7 @@ async def test_concurrent_read_candidates_still_have_one_lease_owner(
     )
     winners = [lease for lease in contenders if lease is not None]
     assert len(winners) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         stored = (await reader.execute(select(scope))).mappings().one()
     assert stored["fence"] == winners[0].fence == 1
     assert stored["owner"] == winners[0].owner
@@ -135,23 +134,23 @@ async def test_acquire_uses_database_time_after_waiting_for_writer(database, tmp
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     waiting = asyncio.Event()
+    original_writer = database.immediate_session
 
-    def observe_begin(_connection, _cursor, statement, _parameters, _context, _many):
-        if statement == "BEGIN IMMEDIATE":
-            waiting.set()
+    @asynccontextmanager
+    async def queued_writer():
+        waiting.set()
+        async with original_writer() as writer:
+            yield writer
 
     monkeypatch.setattr("yuki.runtime.work_repository.time", SimpleNamespace(time=lambda: 0))
-    async with database.immediate_session():
-        sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe_begin)
+    async with original_writer():
+        monkeypatch.setattr(database, "immediate_session", queued_writer)
         candidate = asyncio.create_task(repository.acquire(env.context.conversation_id, 1))
-        try:
-            await asyncio.wait_for(waiting.wait(), 2)
-            assert not candidate.done()
-        finally:
-            sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe_begin)
+        await asyncio.wait_for(waiting.wait(), 2)
+        assert not candidate.done()
     lease = await asyncio.wait_for(candidate, 2)
     assert lease is not None and await repository.valid(lease)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         remaining = await reader.scalar(
             select(scope.c.lease_until - (func.julianday("now") - 2440587.5) * 86400).where(
                 scope.c.conversation_id == lease.conversation_id
@@ -203,7 +202,7 @@ async def test_renew_does_not_extend_lease_that_expired_after_read(database, tmp
 
     monkeypatch.setattr(repository, "valid", expire_after_read)
     assert await repository.renew(lease) is False
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(scope.c.lease_until)) == 0
 
 
@@ -230,7 +229,7 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
         direction="inbound",
         content="Continue the independent private work.",
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         events = (await reader.scalars(select(ChatEventModel))).all()
     private_event = next(row for row in events if row.scope_type == "private")
     group_event = next(row for row in events if row.scope_type == "group")

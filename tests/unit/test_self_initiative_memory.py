@@ -58,7 +58,7 @@ async def seed(database):
     )
     run_id = str(uuid4())
     now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         conv = await session.get(CanonicalConversationModel, event.canonical_conversation_id)
         session.add(
             AutonomyBindingModel(
@@ -123,7 +123,7 @@ async def record(
 
 
 async def finish(database, run_id):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         run = await session.get(InitiativeRunModel, run_id)
         run.state = "no_reply"
 
@@ -222,7 +222,7 @@ async def test_reflection_scan_keeps_all_owner_counters_after_unrelated_wal_comm
             scanned += count
         assert scanned == len(events)
     assert await SelfReflectionRepository(database).scan_new_events(limit=2) == 0
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         runtime = await session.get(MemorySelfReflectionRuntimeModel, 1)
         states = tuple(await session.scalars(select(MemorySelfReflectionStateModel)))
         sources = tuple(
@@ -328,14 +328,17 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
 
             patch.setattr(initiative, "resolve_self_origin", prepared_source)
         else:
-            project = SelfReflectionRepository._state
+            from contextlib import asynccontextmanager
 
-            async def prepared_state(*args, **kwargs):
-                state = await project(*args, **kwargs)
+            immediate = database.immediate_session
+
+            @asynccontextmanager
+            async def prepared_state():
                 await rendezvous()
-                return state
+                async with immediate() as writer:
+                    yield writer
 
-            patch.setattr(SelfReflectionRepository, "_state", staticmethod(prepared_state))
+            patch.setattr(database, "immediate_session", prepared_state)
         outcomes = await asyncio.gather(
             repository.claim_due(**options),
             SelfReflectionRepository(database).claim_due(**options),
@@ -345,7 +348,7 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
     assert len(accepted) == 1 and sum(result == () for result in outcomes) == 1, outcomes
     original = accepted[0]
     assert await repository.claim_due(**{**options, "cycle_id": "next-cycle"}) == ()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored = tuple(await session.scalars(select(MemorySelfReflectionRunModel)))
     assert len(stored) == 1 and stored[0].id == original.run_id
     assert stored[0].status == "processing"
@@ -380,7 +383,7 @@ async def test_initiative_claim_keeps_original_paid_window_after_unrelated_wal_c
         assert await reflection.reflect(original) == (0, 0)
         assert len(provider.requests) == 1
         checkpoint = await repository.load_checkpoint(original.run_id)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             fingerprint = (
                 await session.get(MemorySelfReflectionRunModel, original.run_id)
             ).input_fingerprint
@@ -398,7 +401,7 @@ async def test_initiative_claim_keeps_original_paid_window_after_unrelated_wal_c
     (receipt,) = await repository.tool_receipts(batch)
     assert receipt.result_excerpt == "真实的原始工具来源"
     assert batch.first_receipt_id == batch.last_receipt_id == receipt.id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         (stored,) = tuple(await session.scalars(select(MemorySelfReflectionRunModel)))
         initiative = await session.get(InitiativeRunModel, initiative_id)
         owner = await session.get(CanonicalConversationModel, initial.canonical_conversation_id)
@@ -419,7 +422,7 @@ async def test_initiative_claim_keeps_original_paid_window_after_unrelated_wal_c
     assert [item.result_excerpt for item in await repository.tool_receipts(remaining)] == [
         "迟到的另一条真实工具来源"
     ]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         cursor = await session.get(InitiativeReflectionCursorModel, initiative_id)
         assert cursor.last_receipt_id == batch.last_receipt_id
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
@@ -472,7 +475,7 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
             assert await repository.recover_stale_runs(started_before=datetime.now(UTC)) == 1
     assert [item.id for item in batch.events] == [first.id]
     assert batch.events[0].content == first.content
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         (run,) = tuple(await session.scalars(select(MemorySelfReflectionRunModel)))
         state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
         owner = await session.get(CanonicalConversationModel, first.canonical_conversation_id)
@@ -538,7 +541,7 @@ async def test_reflection_request_does_not_grow_with_old_self_memory(database):
                 )
             )
             if index % 3:
-                async with database.sessions() as session, session.begin():
+                async with database.immediate_session() as session:
                     row = await session.get(MemoryFactModel, fact.id)
                     row.status = "invalidated" if index % 3 == 1 else "contested"
                     row.invalidated_reason = "expired" if index % 3 == 1 else None
@@ -722,7 +725,7 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", trace)
     assert source_reads_after_write == []
     assert transcripts == [speech]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         state = await session.get(MemorySelfReflectionStateModel, ordinary.state.id)
         rows = tuple(
             await session.scalars(
@@ -751,7 +754,7 @@ async def test_run_receipt_dedup_and_no_manufactured_events(database):
     await record(database, event, run_id)
     with pytest.raises(ValueError, match="actorless"):
         await record(database, event, run_id, trigger_event_id=event.id)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(MemoryToolReceiptModel)))
         assert len(rows) == 1
         assert rows[0].trigger_event_id is None
@@ -763,7 +766,7 @@ async def test_run_receipt_dedup_and_no_manufactured_events(database):
 @pytest.mark.asyncio
 async def test_committed_tool_receipt_does_not_need_a_live_group_binding(database):
     _, _, event, run_id = await seed(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await session.scalar(
             select(SpaceBindingModel).where(
                 SpaceBindingModel.external_space_id == "3001",
@@ -771,7 +774,7 @@ async def test_committed_tool_receipt_does_not_need_a_live_group_binding(databas
         )
         binding.status = "disabled"
     await record(database, event, run_id)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(select(MemoryToolReceiptModel))
         assert row.initiative_run_id == run_id and row.trigger_event_id is None
 
@@ -841,7 +844,7 @@ async def test_silent_original_receipt_window_retries_without_reselecting_new_bu
     await finish(database, run_id)
     repository = SelfReflectionRepository(database)
     (original,) = await claim(database, "original", max_characters=4000)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original_fingerprint = (
             await session.get(MemorySelfReflectionRunModel, original.run_id)
         ).input_fingerprint
@@ -852,7 +855,7 @@ async def test_silent_original_receipt_window_retries_without_reselecting_new_bu
         original.first_receipt_id,
         original.last_receipt_id,
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(MemorySelfReflectionRunModel, original.run_id)
         assert row.input_fingerprint == original_fingerprint and row.retry_state != "isolated"
     provider = FakeLLMProvider(responder=lambda _: '{"proposals":[],"episodes":[]}')
@@ -915,7 +918,7 @@ async def test_actorless_reflection_uses_unified_mutation_and_readable_evidence(
     assert evidence[0].tool_receipt_id == batch.first_receipt_id
     duplicate = await service.mutate_resolved(request, context, target=target)
     assert duplicate.deduplicated
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt = await session.scalar(select(MemoryMutationReceiptModel))
         assert receipt.trigger_source_type == "initiative_run"
         assert receipt.initiative_run_id == run_id and receipt.trigger_event_id is None
@@ -955,7 +958,7 @@ async def test_actorless_reflection_uses_unified_mutation_and_readable_evidence(
     assert (
         await service.mutate_resolved(bad_quote, context, target=target)
     ).reason_code == "evidence_quote_not_in_tool_receipt"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipts = list(await session.scalars(select(MemoryMutationReceiptModel)))
         assert len(receipts) == 4
         assert all(
@@ -1012,7 +1015,7 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
     assert projected.source_kind == "initiative_tools" and not projected.events and not event_map
     assert projected.tool_receipts[0].occurred_at is not None
     assert await reflection.reflect(batch) == (1, 1)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(MemoryEvidenceModel.id))) == 1
     request_count = len(provider.requests)
     # A crash between committed result/checkpoint and cursor acknowledgement is recovered.
@@ -1046,7 +1049,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
 
     env = await social_env(database, tmp_path)
     if multiple_bindings:
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             session.add(
                 SpaceBindingModel(
                     id=str(uuid4()),
@@ -1140,7 +1143,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         conversation_id=actor.conversation_id,
         presence_id=actor.presence_id,
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         runtime_key = await primary_alias_for_conversation(session, actor.conversation_id)
     assert runtime_key is not None
 
@@ -1182,7 +1185,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
             )
     assert result.text == "" and len(provider.requests) == 4, results
     assert all(json.loads(text).get("ok") for text in results), results[1]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         mutation = await session.scalar(select(MemoryMutationReceiptModel))
         assert mutation is not None, results
         assert await session.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 1
@@ -1228,7 +1231,7 @@ async def test_main_self_evidence_uses_actual_receipt_with_repeated_quote_and_pa
     await record(database, event, run_id, "first", result_excerpt="同一句实际工具结果")
     await record(database, event, run_id, "second", result_excerpt="同一句实际工具结果")
     await record(database, event, run_id, "third", result_excerpt="另一项未使用资料")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipts = list(
             await session.scalars(
                 select(MemoryToolReceiptModel).order_by(MemoryToolReceiptModel.id)
@@ -1268,7 +1271,7 @@ async def test_main_self_evidence_uses_actual_receipt_with_repeated_quote_and_pa
     assert (
         not missing_source.ok and missing_source.reason_code == "initiative_tool_evidence_required"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 1
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
 
@@ -1361,7 +1364,7 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
     )
     (original,) = await repository.claim_due(**options, cycle_id="before-boundary")
     await repository.fail(original.run_id, "provider_unavailable")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         run = await session.get(MemorySelfReflectionRunModel, original.run_id)
         run.retry_state = "isolated" if source_state.endswith("isolated") else "waiting"
         run.next_attempt_at = (
@@ -1390,7 +1393,7 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
         assert [item.id for item in batch.events] == [current.id]
         await repository.complete(batch, proposals=0, committed=0)
         assert await repository.claim_due(**options, cycle_id="after-completion") == ()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         run = await session.get(MemorySelfReflectionRunModel, original.run_id)
         state = await session.get(MemorySelfReflectionStateModel, original.state.id)
         assert run.status == "failed" and run.input_fingerprint == fingerprint
@@ -1471,7 +1474,7 @@ async def test_isolated_receipt_windows_do_not_starve_later_initiatives(database
                 new_id = run_id
     (selected,) = await claim(database, "next-eligible")
     assert selected.initiative_run_id == new_id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         isolated = await reader.scalar(
             select(func.count())
             .select_from(MemorySelfReflectionRunModel)
@@ -1492,3 +1495,97 @@ async def test_silent_receipt_window_uses_character_budget_without_eight_row_cap
     assert tuple(item.result_excerpt for item in await repository.tool_receipts(batch)) == excerpts
     await repository.complete(batch, proposals=0, committed=0)
     assert await claim(database, "all-small-receipts-finished", max_characters=10000) == ()
+
+
+async def test_initiative_hash_preparation_finishes_before_writer(database, monkeypatch):
+    from types import SimpleNamespace
+
+    from yuki.memory.self_reflection import initiative
+
+    _, _, initial, initiative_id = await seed(database)
+    await record(database, initial, initiative_id)
+    await finish(database, initiative_id)
+    held, hashes = False, 0
+    original = initiative.hashlib.sha256
+
+    def digest(*args, **kwargs):
+        nonlocal hashes
+        assert not held
+        hashes += 1
+        return original(*args, **kwargs)
+
+    def inspect(_connection, _cursor, statement, *_args):
+        nonlocal held
+        if statement.lstrip().upper().startswith("BEGIN IMMEDIATE"):
+            held = True
+
+    monkeypatch.setattr(initiative, "hashlib", SimpleNamespace(sha256=digest))
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", inspect)
+    try:
+        (batch,) = await claim(database)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", inspect)
+    assert batch.initiative_run_id == initiative_id and hashes == 3
+
+
+@pytest.mark.parametrize("change", ["selected_excerpt", "late_append"])
+async def test_initiative_claim_rechecks_original_input_without_absorbing_late_receipt(
+    database, monkeypatch, change
+):
+    from contextlib import asynccontextmanager
+
+    from yuki.memory.self_reflection import initiative
+
+    _, _, initial, initiative_id = await seed(database)
+    await record(database, initial, initiative_id, "original", result_excerpt="original input")
+    await finish(database, initiative_id)
+    writer = database.immediate_session
+    resolve = initiative.resolve_self_origin
+    raced, preparations = False, 0
+
+    async def source(*args, **kwargs):
+        nonlocal preparations
+        preparations += 1
+        return await resolve(*args, **kwargs)
+
+    @asynccontextmanager
+    async def changed_before_admission():
+        nonlocal raced
+        if not raced:
+            raced = True
+            if change == "selected_excerpt":
+                async with writer() as active:
+                    await active.execute(
+                        update(MemoryToolReceiptModel)
+                        .where(MemoryToolReceiptModel.initiative_run_id == initiative_id)
+                        .values(result_excerpt="actual changed input")
+                    )
+            else:
+                await record(
+                    database,
+                    initial,
+                    initiative_id,
+                    "late-after-preparation",
+                    result_excerpt="late pending input",
+                )
+        async with writer() as active:
+            yield active
+
+    monkeypatch.setattr(initiative, "resolve_self_origin", source)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(database, "immediate_session", changed_before_admission)
+        (batch,) = await claim(database)
+    inputs = await SelfReflectionRepository(database).tool_receipts(batch)
+    if change == "selected_excerpt":
+        assert preparations == 2 and [row.result_excerpt for row in inputs] == [
+            "actual changed input"
+        ]
+    else:
+        assert preparations == 1 and [row.result_excerpt for row in inputs] == ["original input"]
+        await SelfReflectionRepository(database).complete(batch, proposals=0, committed=0)
+        (late,) = await claim(database, "late-only")
+        assert late.first_receipt_id > batch.last_receipt_id
+        assert [
+            row.result_excerpt
+            for row in await SelfReflectionRepository(database).tool_receipts(late)
+        ] == ["late pending input"]

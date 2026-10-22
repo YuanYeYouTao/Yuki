@@ -1,5 +1,8 @@
 """Derived text uses original source snapshots and short fenced commits."""
 
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+
 import pytest
 from sqlalchemy import event
 from tests.support.event_seed import seed_scoped_event
@@ -11,6 +14,7 @@ from yuki.conversation.canonical_db_models import (
 from yuki.conversation.projection_models import PromptProjectionModel
 from yuki.domain.audio import AudioTranscript, serialize_transcripts
 from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.persistence import scoped_event_uow
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
@@ -72,7 +76,7 @@ async def test_derived_text_never_scans_history_in_writer(database, late_audio):
         event.remove(engine, "commit", ended)
         event.remove(engine, "rollback", ended)
     assert history_reads == 0
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         source = await session.get(ChatEventModel, result.event.id)
         if late_audio:
             checkpoint = await session.get(PromptProjectionModel, result.scope.id)
@@ -127,7 +131,7 @@ async def test_late_audio_rechecks_original_source_before_commit(database, chang
     assert await uow.set_audio_transcript(result.event.id, transcript, generation=1) is (
         change != "generation"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(
             CanonicalConversationModel, result.event.canonical_conversation_id
         )
@@ -137,3 +141,34 @@ async def test_late_audio_rechecks_original_source_before_commit(database, chang
             return
         assert preparations == (6 if change == "append_many" else 2)
         assert source.audio_transcript == transcript
+
+
+@pytest.mark.parametrize("audio", [False, True])
+async def test_derived_text_reuses_prepared_event_without_writer_json_decode(
+    database, monkeypatch, audio
+):
+    _, uow, result = await _source(database)
+    active = ContextVar("derived_writer", default=False)
+    writer = database.immediate_session
+    record = scoped_event_uow._event_record
+
+    @asynccontextmanager
+    async def checked_writer():
+        async with writer() as session:
+            token = active.set(True)
+            try:
+                yield session
+            finally:
+                active.reset(token)
+
+    def checked_record(*args, **kwargs):
+        assert not active.get(), "derived text decoded the original event inside writer"
+        return record(*args, **kwargs)
+
+    monkeypatch.setattr(database, "immediate_session", checked_writer)
+    monkeypatch.setattr(scoped_event_uow, "_event_record", checked_record)
+    if audio:
+        value = serialize_transcripts((AudioTranscript("current", 0, "original speech"),))
+        assert await uow.set_audio_transcript(result.event.id, value, generation=1)
+    else:
+        assert await uow.set_visual_summary(result.event.id, "prepared description")

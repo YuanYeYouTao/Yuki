@@ -85,7 +85,7 @@ async def test_four_bindings_keep_identity_but_separate_prompts_and_generation(d
         assert event.author_person_id == person
         state = await repository.get(scope)
         assert state.runtime_scope_key == f"conversation:{state.id}"
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             conversation = await reader.get(CanonicalConversationModel, state.id)
             assert conversation.identity_binding_id == bindings[index]
         snapshot = await repository.load_prompt_snapshot(scope)
@@ -163,7 +163,7 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
                 await repository.load_prompt_snapshot(second, expected_turn=turn)
             ).raw_events
         ] == expected
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         alias = await session.scalar(
             select(ConversationLegacyAliasModel).where(
                 ConversationLegacyAliasModel.scope_key == second.key
@@ -204,7 +204,7 @@ async def test_person_erasure_removes_all_private_binding_conversations(database
         binding.status = "disabled"
     assert await PeopleRepository(database).delete_person_id(person)
     assert await work.get(accepted["id"]) is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not list(
             await session.scalars(
                 select(CanonicalConversationModel).where(CanonicalConversationModel.id.in_(ids))

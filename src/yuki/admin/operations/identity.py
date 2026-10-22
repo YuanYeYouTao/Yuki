@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.command_types import (
@@ -32,7 +33,12 @@ from yuki.identity.routing import PresenceRouter
 from yuki.persistence.command_receipts import (
     CommandSuccess,
 )
-from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.database import write_failure_committed
+from yuki.persistence.people_repository import (
+    PeopleRepository,
+    PersonForgetPreparation,
+    PrivacyPreparationChanged,
+)
 from yuki.persistence.unit_of_work import next_updated_at
 
 
@@ -57,7 +63,7 @@ class IdentityOperations:
     ) -> dict[str, Any]:
         capability = "identity.binding.transfer"
         await authorize_current(self.database, principal, capability)
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             previous = await self.identities.replay(
                 reader,
                 principal.principal_id.text,
@@ -78,7 +84,7 @@ class IdentityOperations:
         await authorize_current(self.database, principal, "identity.person.forget")
         operation = "identity.person.forget"
         bound = fingerprint(operation, person_id, {})
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             previous = await self.identities.replay(
                 reader, principal.principal_id.text, request_id, bound
             )
@@ -88,18 +94,13 @@ class IdentityOperations:
             person_id, operation_id=f"person-forget:{principal.principal_id.text}:{request_id}"
         )
 
-        async def erase(session: AsyncSession) -> dict[str, Any]:
+        async def erase(session: AsyncSession, prepared: PersonForgetPreparation) -> dict[str, Any]:
             previous = await self.identities.replay(
                 session, principal.principal_id.text, request_id, bound
             )
             if previous is not None:
                 return previous
             await authorize_current(self.database, principal, operation, session=session)
-            prepared = await self.people.prepare_person_forget(
-                person_id, session=session, closed_resources=external
-            )
-            if prepared is None:
-                raise ClientError("not_found")
             await self.people.apply_person_forget(session, prepared)
             result: dict[str, JsonValue] = {"person_id": person_id, "deleted": True}
             if prepared.peer_cleanup_results is not None:
@@ -118,7 +119,21 @@ class IdentityOperations:
             )
             return result
 
-        return await self.database.apply_snapshot_write(erase)
+        while True:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                prepared = await self.people.prepare_person_forget(
+                    person_id, session=reader, closed_resources=external
+                )
+            if prepared is None:
+                raise ClientError("not_found")
+            try:
+                async with self.database.immediate_session() as writer:
+                    return await erase(writer, prepared)
+            except PrivacyPreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
+                continue
 
     async def change_person(
         self,
@@ -129,7 +144,12 @@ class IdentityOperations:
         to_person: str | None = None,
         display_name: str | None = None,
     ) -> dict[str, Any]:
-        from yuki.identity.person_identity import merge_persons, rename_person
+        from yuki.identity.person_identity import (
+            PersonMergePreparationChanged,
+            merge_persons,
+            prepare_person_merge,
+            rename_person,
+        )
 
         operation = "identity.person.merge" if to_person is not None else "identity.person.rename"
         await authorize_current(self.database, principal, operation)
@@ -145,14 +165,13 @@ class IdentityOperations:
                 return previous
             await authorize_current(self.database, principal, operation, session=session)
             if to_person is not None:
-                route_changes = await self.router.prepare_person_merge_routes(
-                    session, person_id, to_person
-                )
+                route_changes = await route_preparation(session)
                 current = await merge_persons(
                     session,
                     person_id,
                     to_person,
                     actor_id=principal.principal_id.text,
+                    prepared=prepared_merge,
                 )
                 route_changes()
             else:
@@ -174,7 +193,26 @@ class IdentityOperations:
             )
             return {**result, "replay": False}
 
-        return await self.database.apply_snapshot_write(mutate)
+        while True:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                previous = await self.identities.replay(
+                    reader, principal.principal_id.text, request_id, bound
+                )
+                if previous is not None:
+                    return previous
+                if to_person is not None:
+                    prepared_merge = await prepare_person_merge(reader, person_id, to_person)
+                    route_preparation = await self.router.prepare_person_merge_routes(
+                        reader, person_id, to_person
+                    )
+            try:
+                async with self.database.immediate_session() as writer:
+                    return await mutate(writer)
+            except PersonMergePreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
+                continue
 
     async def create_person(
         self, principal: ControlPrincipal, command: ControlCommand

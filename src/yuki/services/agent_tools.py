@@ -19,6 +19,7 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from yuki.automation.models import TurnOrigin
+from yuki.capabilities.executions import is_execution
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
@@ -62,11 +63,11 @@ from yuki.persistence.repositories import (
     EventLedgerRepository,
 )
 from yuki.runtime.errors import InvalidTurnContextError
-from yuki.sandbox.environment_tools import SANDBOX_TOOLS, is_execution
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state
-from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, HistoryQuery, history_schema
+from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, history_schema
 from yuki.services.turn_coordinator import TurnToken
 from yuki.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from yuki.web.models import (
@@ -382,6 +383,29 @@ def _object_schema(
     }
 
 
+def database_failure_result(
+    error: BaseException, *, provider_id: str = "", tool_name: str = ""
+) -> ToolExecutionResult:
+    from yuki.persistence.database import (
+        write_failure_committed,
+        write_failure_phase,
+        write_failure_retryable,
+    )
+
+    committed = write_failure_committed(error)
+    return ToolExecutionResult(
+        ok=False,
+        error_code="database_failure",
+        public_message="数据库操作失败",
+        retryable=write_failure_retryable(error),
+        uncertain=committed is None,
+        mutation_committed=committed,
+        provider_id=provider_id,
+        tool_name=tool_name,
+        metadata={"database_write_phase": write_failure_phase(error)},
+    )
+
+
 class AgentToolService:
     """Define and execute tools without granting authority through prompt text."""
 
@@ -426,6 +450,7 @@ class AgentToolService:
         self.short_state: Any = None
         self.workspace_service: Any = None
         self.sandbox_client: Any = None
+        self.external_agent_service: Any = None
 
     @staticmethod
     def _work_source() -> dict[str, str]:
@@ -741,6 +766,7 @@ class AgentToolService:
                     ),
                 )
             )
+        from yuki.external_agents.tools import external_agent_tools
         from yuki.sandbox.client import sandbox_tools
         from yuki.social.tools import social_tool_definitions
         from yuki.workspace.service import workspace_tools
@@ -749,6 +775,7 @@ class AgentToolService:
             *tools,
             *social_tool_definitions(),
             *workspace_tools(),
+            *external_agent_tools(),
             *sandbox_tools(),
         )
 
@@ -762,7 +789,7 @@ class AgentToolService:
 
         from yuki.identity.authority import person_is_superuser
 
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             runtime = replace(
                 runtime,
                 actor_is_superuser=await person_is_superuser(session, runtime.actor_person_id),
@@ -781,16 +808,26 @@ class AgentToolService:
             if not isinstance(arguments, dict):
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
-                from yuki.social.tools import social_tool_definitions
+                from yuki.social.tools import SOCIAL_TOOL_NAMES
 
-                if name in SANDBOX_TOOLS:
+                if name in SANDBOX_TOOLS or name == "external_agent":
                     from yuki.capabilities.invocation import current_invocation
 
                     invocation = current_invocation.get()
                     if runtime.tools_closed:
-                        return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
-                    if self.sandbox_client is None or invocation is None:
-                        return self._result(error="sandbox_unavailable", detail="沙箱未连接")
+                        return self._result(error="permission_denied", detail="本轮未授权执行操作")
+                    client = (
+                        self.external_agent_service
+                        if name == "external_agent"
+                        else self.sandbox_client
+                    )
+                    if client is None or invocation is None:
+                        return self._result(
+                            error="external_agent_unavailable"
+                            if name == "external_agent"
+                            else "sandbox_unavailable",
+                            detail="执行服务未连接",
+                        )
                     from hashlib import sha256
 
                     request_id = sha256(
@@ -805,18 +842,15 @@ class AgentToolService:
                     work_control = current_work_control.get()
                     if work_control is not None and work_control.session is not None:
                         request_id = sha256(invocation.call_id.encode()).hexdigest()
-                    result = await self.sandbox_client.execute(
-                        name,
-                        arguments,
-                        request_id=request_id,
-                        source={**runtime.sandbox_source, **self._work_source()}
+                    source = (
+                        {**runtime.sandbox_source, **self._work_source()}
                         if runtime.sandbox_source
-                        and (is_execution(name, arguments) or name == "external_agent")
                         else {
                             **self._work_source(),
                             "conversation_id": runtime.effective_conversation_id,
                             "origin": runtime.origin.value,
                             "actor_is_superuser": runtime.actor_is_superuser,
+                            "actor_person_id": runtime.actor_person_id,
                             "actor_user_id": runtime.actor_user_id,
                             "bot_user_id": runtime.effective_bot_user_id,
                             "presence_id": runtime.effective_presence_id,
@@ -826,16 +860,26 @@ class AgentToolService:
                             "trigger_event_id": runtime.effective_trigger_event_id,
                             "parent_execution_id": runtime.effective_execution_id,
                         }
-                        if is_execution(name, arguments) or name == "external_agent"
-                        else None,
                     )
+                    source["actor_person_id"] = runtime.actor_person_id
+                    if name == "external_agent":
+                        result = await client.execute(
+                            arguments, request_id=request_id, source=source
+                        )
+                    else:
+                        result = await client.execute(
+                            name,
+                            arguments,
+                            request_id=request_id,
+                            source=source if is_execution(name, arguments) else None,
+                        )
                     if result.get("error"):
                         return self._result(
                             data=result,
                             error=str(result["error"]),
-                            detail="沙箱提交结果未确认；核对原执行回执，不能重新提交。"
+                            detail="操作结果未确认；核对原执行回执，不能重新提交。"
                             if result.get("uncertain")
-                            else "沙箱操作未完成",
+                            else "执行操作未完成",
                             uncertain=bool(result.get("uncertain")),
                         )
                     return self._result(data=result)
@@ -867,6 +911,10 @@ class AgentToolService:
                             uncertain=bool(workspace_result.get("uncertain")),
                         )
                     except (WorkspaceError, ValueError, OSError) as exc:
+                        from yuki.persistence.database import write_failure_phase
+
+                        if write_failure_phase(exc) is not None:
+                            raise
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
                         )
@@ -879,7 +927,7 @@ class AgentToolService:
                         )
                         return self._result(error=category, detail=detail)
 
-                if name in {tool.name for tool in social_tool_definitions()}:
+                if name in SOCIAL_TOOL_NAMES:
                     from yuki.social.agent_adapter import invoke_social
                     from yuki.social.models import SocialError
 
@@ -916,22 +964,23 @@ class AgentToolService:
                             )
                         return self._result(data=social_result)
                     except SocialError as exc:
+                        from yuki.persistence.database import (
+                            write_failure_committed,
+                            write_failure_phase,
+                        )
+
+                        if (
+                            write_failure_phase(exc) is not None
+                            and write_failure_committed(exc) is not False
+                        ):
+                            return await self._database_failure(exc, name=name, runtime=runtime)
                         detail = {
                             "history_receipt_unavailable": (
-                                "该回执不属于当前来源会话，或没有可核验的发送账号"
-                            ),
-                            "history_anchor_unavailable": (
-                                "原事件或定位不可用，使用当前会话的真实 event_id 或原回执"
+                                "该回执不属于当前来源会话，或回执已不存在"
                             ),
                             "history_source_changed": (
                                 "来源授权、代次或隐私状态已变化，未发布旧读取正文"
                             ),
-                            "invalid_history_event_id": (
-                                "event_id 须是当前会话的正整数内部事件 ID"
-                            ),
-                            "history_presence_unavailable": "原账号不可用，未换号读取",
-                            "history_provider_failed": "网关读取失败，不表示没有消息",
-                            "invalid_history_result": "网关历史返回格式无效，不能据此判断会话内容",
                             "invalid_target_id": (
                                 "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
                             ),
@@ -991,13 +1040,16 @@ class AgentToolService:
             except MemoryRetrievalError as exc:
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
-            except SQLAlchemyError:
-                logger.exception("agent_tool_database_failure tool=%s", name)
-                await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
-                return self._result(
-                    error="database_failure", detail="数据库操作失败", retryable=True
-                )
+            except SQLAlchemyError as exc:
+                return await self._database_failure(exc, name=name, runtime=runtime)
             except (TypeError, ValueError) as exc:
+                from yuki.persistence.database import write_failure_committed, write_failure_phase
+
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    return await self._database_failure(exc, name=name, runtime=runtime)
                 if name in _OBSERVED_MEMORY_READS:
                     return self._result(
                         error="invalid_arguments",
@@ -1006,10 +1058,25 @@ class AgentToolService:
                     )
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
             except (OSError, RuntimeError) as exc:
+                from yuki.persistence.database import write_failure_phase
+
+                if write_failure_phase(exc) is not None:
+                    return await self._database_failure(exc, name=name, runtime=runtime)
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
             _MEMORY_READ_TOOL.reset(read_tool_token)
             _RUNTIME_SNAPSHOT.reset(token)
+
+    async def _database_failure(
+        self,
+        error: BaseException,
+        *,
+        name: str,
+        runtime: ToolRuntime,
+    ) -> ToolExecutionResult:
+        logger.exception("agent_tool_database_failure tool=%s", name)
+        await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
+        return database_failure_result(error)
 
     def _my_capabilities(
         self, arguments: dict[str, Any], runtime: ToolRuntime
@@ -1071,13 +1138,12 @@ class AgentToolService:
         from yuki.social.agent_adapter import invoke_social
         from yuki.social.models import SocialError
 
-        query = HistoryQuery.model_validate(arguments)
         defaults = {
             "limit": self._settings.recent_history_tool_limit,
             "before": self._settings.conversation_history_around_before,
             "after": self._settings.conversation_history_around_after,
         }
-        selected = query.model_dump(mode="json", exclude_none=True)
+        selected = {key: value for key, value in arguments.items() if value is not None}
         for key, value in defaults.items():
             selected.setdefault(key, value)
         try:
@@ -1405,7 +1471,7 @@ class AgentToolService:
             return _ToolFailure("permission_denied", "当前执行没有该人物的读取授权")
         from yuki.identity.person_identity import same_person_condition
 
-        async with self._people.database.sessions() as session:
+        async with self._people.database.read_session() as session:
             membership = await session.scalar(
                 select(MembershipModel.canonical_person_id).where(
                     same_person_condition(MembershipModel.canonical_person_id, person_id),
@@ -1853,7 +1919,7 @@ class AgentToolService:
 
         if fact.canonical_subject_person_id is None:
             return False
-        async with self._people.database.sessions() as session:
+        async with self._people.database.read_session() as session:
             return await same_person_id(session, fact.canonical_subject_person_id, person_id)
 
     async def _runtime_canonical_owners(
@@ -2195,6 +2261,8 @@ class AgentToolService:
         detail: str = "",
         retryable: bool = False,
         uncertain: bool = False,
+        mutation_committed: bool | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ToolExecutionResult:
         from yuki.capabilities.media import result_images
 
@@ -2205,7 +2273,12 @@ class AgentToolService:
             public_message=detail or None,
             retryable=retryable,
             uncertain=uncertain,
-            mutation_committed=None if uncertain or error is None else False,
+            mutation_committed=mutation_committed
+            if mutation_committed is not None
+            else None
+            if uncertain or error is None
+            else False,
+            metadata=metadata,
             images=result_images(data) if error is None else (),
         )
 

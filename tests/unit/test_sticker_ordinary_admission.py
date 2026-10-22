@@ -97,7 +97,7 @@ async def test_ordinary_main_admits_and_delivers_without_registering_a_work(
     assert intent is not None and intent.source["work_id"] is None
     assert intent.source["cancel_epoch"] == 11
     assert intent.source["work_cancel_epoch"] is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(select(func.count()).select_from(work))
         assert not await reader.scalar(select(func.count()).select_from(effects))
     await delivery.start()

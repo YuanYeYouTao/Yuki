@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import Table, false, func, or_, select, text, update
+from sqlalchemy import Table, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -287,7 +287,7 @@ class DreamRepository:
         )
 
     async def checkpoint_map(self) -> dict[int, str]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (
                 await session.execute(
                     select(
@@ -300,7 +300,7 @@ class DreamRepository:
 
     async def attempted_fingerprints(self) -> dict[str, datetime]:
         """Only executed attempts affect retry priority, never budget-deferred rows."""
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = await session.execute(
                 select(
                     MemoryDreamClusterModel.fingerprint,
@@ -334,27 +334,29 @@ class DreamRepository:
         ).where(MemoryFactModel.id.in_(fact_ids))
 
     async def person_roots(self, facts: tuple[Any, ...]) -> dict[str, str]:
-        async with self.database.sessions() as reader:
-            return await current_person_ids(
-                reader,
-                (
-                    person
-                    for fact in facts
-                    for person in (
-                        fact.canonical_subject_person_id,
-                        fact.canonical_visibility_person_id,
-                    )
-                    if person is not None
-                ),
+        identities = tuple(
+            person
+            for fact in facts
+            for person in (
+                fact.canonical_subject_person_id,
+                fact.canonical_visibility_person_id,
             )
+            if person is not None
+        )
+        if not identities:
+            return {}
+        async with self.database.read_session() as reader:
+            return await current_person_ids(reader, identities)
 
     async def prepare_clusters(
         self, clusters: tuple[DreamClusterSpec, ...]
     ) -> tuple[PreparedDreamCluster, ...]:
         # No ORM DTO construction or readable-evidence work is needed for ownership.
         identities = tuple(sorted({identity for spec in clusters for identity in spec[4]}))
+        if not identities:
+            return prepare_clusters_from_facts(clusters, (), person_roots={})
         rows: list[Any] = []
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             for offset in range(0, len(identities), 512):
                 rows.extend(
                     (
@@ -430,14 +432,6 @@ class DreamRepository:
                 )
             )
         async with optional_session(self.database, session, write=True) as active:
-            # A zero-row UPDATE reserves the SQLite writer even for a caller's legacy
-            # SELECT-only transaction. No source work or pending ORM flush happens here.
-            await active.execute(
-                update(MemoryDreamRunModel)
-                .where(false())
-                .values(updated_at=MemoryDreamRunModel.updated_at)
-                .execution_options(autoflush=False)
-            )
             current = {}
             for offset in range(0, len(identities), 512):
                 rows = (
@@ -560,7 +554,7 @@ class DreamRepository:
         return self._run(row) if row is not None else None
 
     async def list_runs(self, *, limit: int = 20) -> tuple[DreamRun, ...]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = (
                 await session.scalars(
                     select(MemoryDreamRunModel)
@@ -578,7 +572,7 @@ class DreamRepository:
         page_size: int = 10,
     ) -> DreamRunPage:
         offset = max(0, page - 1) * page_size
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             cluster_rows = (
                 await session.scalars(
                     select(MemoryDreamClusterModel)
@@ -643,7 +637,7 @@ class DreamRepository:
         )
 
     async def cluster_for_run(self, run_public_id: str, cluster_id: int) -> DreamCluster | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.scalar(
                 select(MemoryDreamClusterModel)
                 .join(
@@ -696,7 +690,7 @@ class DreamRepository:
         return bool(cast(CursorResult[Any], result).rowcount)
 
     async def active_run(self) -> DreamRun | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.scalar(
                 select(MemoryDreamRunModel)
                 .where(MemoryDreamRunModel.status == DreamRunStatus.RUNNING.value)
@@ -707,7 +701,7 @@ class DreamRepository:
 
     async def claim_next_cluster(self, run_public_id: str) -> DreamCluster | None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             run = await session.scalar(
                 select(MemoryDreamRunModel).where(
                     MemoryDreamRunModel.public_id == run_public_id,
@@ -732,7 +726,7 @@ class DreamRepository:
             row.error_category = None
             row.updated_at = now
             await session.flush()
-            return self._cluster(row)
+        return self._cluster(row)
 
     async def reserve_model_call(
         self,
@@ -744,7 +738,7 @@ class DreamRepository:
         """Persist one actual API attempt before issuing it, including failed attempts."""
 
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             row = (
                 await session.execute(
                     select(MemoryDreamRunModel, MemoryDreamClusterModel)
@@ -780,7 +774,7 @@ class DreamRepository:
         error_category: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             row = await session.get(MemoryDreamClusterModel, cluster_id)
             if row is None:
                 return
@@ -792,11 +786,17 @@ class DreamRepository:
             run = await session.get(MemoryDreamRunModel, row.run_id)
             if run is not None:
                 if error_category == "budget_deferred":
-                    statistics = json.loads(run.statistics_json)
-                    statistics["budget_deferred_clusters"] = (
-                        int(statistics.get("budget_deferred_clusters", 0)) + 1
+                    run.statistics_json = func.json_set(
+                        MemoryDreamRunModel.statistics_json,
+                        "$.budget_deferred_clusters",
+                        func.coalesce(
+                            func.json_extract(
+                                MemoryDreamRunModel.statistics_json, "$.budget_deferred_clusters"
+                            ),
+                            0,
+                        )
+                        + 1,
                     )
-                    run.statistics_json = json.dumps(statistics)
                 elif status in {
                     DreamClusterStatus.COMPLETED,
                     DreamClusterStatus.SKIPPED,
@@ -810,50 +810,42 @@ class DreamRepository:
 
     async def finalize_run(self, public_id: str) -> DreamRun | None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             row = await session.scalar(
                 select(MemoryDreamRunModel).where(MemoryDreamRunModel.public_id == public_id)
             )
             if row is None:
                 return None
-            pending = int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(MemoryDreamClusterModel)
-                    .where(
-                        MemoryDreamClusterModel.run_id == row.id,
-                        MemoryDreamClusterModel.status.in_(
-                            (
-                                DreamClusterStatus.PENDING.value,
-                                DreamClusterStatus.PROCESSING.value,
+            cluster = MemoryDreamClusterModel
+            pending, failed = (
+                await session.execute(
+                    select(
+                        func.count().filter(
+                            cluster.status.in_(
+                                (
+                                    DreamClusterStatus.PENDING.value,
+                                    DreamClusterStatus.PROCESSING.value,
+                                )
                             )
                         ),
-                    )
-                )
-                or 0
-            )
-            if pending:
-                return self._run(row)
-            failed = int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(MemoryDreamClusterModel)
-                    .where(
-                        MemoryDreamClusterModel.run_id == row.id,
-                        MemoryDreamClusterModel.status.in_(
-                            (DreamClusterStatus.FAILED.value, DreamClusterStatus.STALE.value)
+                        func.count().filter(
+                            cluster.status.in_(
+                                (DreamClusterStatus.FAILED.value, DreamClusterStatus.STALE.value)
+                            )
                         ),
-                    )
+                    ).where(cluster.run_id == row.id)
                 )
-                or 0
-            )
-            row.status = (
-                DreamRunStatus.PARTIAL_FAILED.value if failed else DreamRunStatus.COMPLETED.value
-            )
-            row.completed_at = now
-            row.updated_at = now
-            await session.flush()
-            return self._run(row)
+            ).one()
+            if not pending:
+                row.status = (
+                    DreamRunStatus.PARTIAL_FAILED.value
+                    if failed
+                    else DreamRunStatus.COMPLETED.value
+                )
+                row.completed_at = now
+                row.updated_at = now
+                await session.flush()
+        return self._run(row)
 
     async def cancel(self, public_id: str, *, session: AsyncSession | None = None) -> bool:
         now = datetime.now(UTC)
@@ -902,7 +894,7 @@ class DreamRepository:
     async def defer_pending(self, public_id: str) -> int:
         """Skip this slot without checkpointing facts; the next plan selects them again."""
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             run_id = await session.scalar(
                 select(MemoryDreamRunModel.id).where(MemoryDreamRunModel.public_id == public_id)
             )
@@ -924,11 +916,17 @@ class DreamRepository:
             count = int(cast(CursorResult[Any], result).rowcount or 0)
             run = await session.get(MemoryDreamRunModel, run_id)
             if run is not None and count:
-                statistics = json.loads(run.statistics_json)
-                statistics["budget_deferred_clusters"] = (
-                    int(statistics.get("budget_deferred_clusters", 0)) + count
+                run.statistics_json = func.json_set(
+                    MemoryDreamRunModel.statistics_json,
+                    "$.budget_deferred_clusters",
+                    func.coalesce(
+                        func.json_extract(
+                            MemoryDreamRunModel.statistics_json, "$.budget_deferred_clusters"
+                        ),
+                        0,
+                    )
+                    + count,
                 )
-                run.statistics_json = json.dumps(statistics)
                 run.updated_at = now
         return count
 
@@ -936,7 +934,7 @@ class DreamRepository:
         """Recover bounded batches from committed operations, without replaying effects."""
         recovered = 0
         while True:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 identities = tuple(
                     await reader.scalars(
                         select(MemoryDreamClusterModel.id)
@@ -985,11 +983,19 @@ class DreamRepository:
                         )
                     )
                 }
+                applied = set(
+                    await session.scalars(
+                        select(MemoryDreamClusterPreviewModel.cluster_id).where(
+                            MemoryDreamClusterPreviewModel.cluster_id.in_(identities),
+                            MemoryDreamClusterPreviewModel.status == "applied",
+                        )
+                    )
+                )
                 now = datetime.now(UTC)
                 for row in rows:
                     row.updated_at = now
                     count = int(committed.get(row.id, 0))
-                    if count:
+                    if count or row.id in applied:
                         row.status = DreamClusterStatus.COMPLETED.value
                         row.operation_count = count
                         row.error_category = "recovered_committed_operation"
@@ -1108,7 +1114,7 @@ class DreamRepository:
         await session.flush()
 
     async def cluster_facts(self, cluster: DreamCluster) -> tuple[MemoryFact, ...]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             facts = {
                 fact.id: fact
                 for fact in await self._facts.get_facts(cluster.fact_ids, session=session)
@@ -1132,7 +1138,7 @@ class DreamRepository:
         now = datetime.now(UTC)
         public_id = str(uuid.uuid4())
         proposal_json = proposal.model_dump_json()
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(MemoryDreamClusterPreviewModel)
                 .where(
@@ -1159,7 +1165,7 @@ class DreamRepository:
         return public_id
 
     async def ready_preview_fingerprints(self, cluster_id: int) -> tuple[str, ...]:
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             return tuple(
                 await reader.scalars(
                     select(MemoryDreamClusterPreviewModel.source_fingerprint).where(
@@ -1177,34 +1183,59 @@ class DreamRepository:
         cluster_id: int,
         source_fingerprint: str,
         compatible_fingerprints: frozenset[str] = frozenset(),
+        public_id: str | None = None,
     ) -> tuple[int, str, DreamOutput] | None:
         """Return the exact ready proposal, marking incompatible snapshots stale."""
 
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.read_session() as reader:
             rows = tuple(
                 (
-                    await session.scalars(
-                        select(MemoryDreamClusterPreviewModel)
+                    await reader.execute(
+                        select(
+                            MemoryDreamClusterPreviewModel.id,
+                            MemoryDreamClusterPreviewModel.public_id,
+                            MemoryDreamClusterPreviewModel.source_fingerprint,
+                            MemoryDreamClusterPreviewModel.schema_version,
+                            MemoryDreamClusterPreviewModel.proposal_json,
+                        )
                         .where(
                             MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
                             MemoryDreamClusterPreviewModel.status == "ready",
+                            *(
+                                [MemoryDreamClusterPreviewModel.public_id == public_id]
+                                if public_id is not None
+                                else []
+                            ),
                         )
                         .order_by(MemoryDreamClusterPreviewModel.id.desc())
                     )
                 ).all()
             )
-            for row in rows:
-                if (
-                    row.source_fingerprint not in compatible_fingerprints | {source_fingerprint}
-                    or row.schema_version != _DREAM_PREVIEW_SCHEMA_VERSION
-                ):
-                    row.status = "stale"
-                    continue
-                return row.id, row.public_id, DreamOutput.model_validate_json(row.proposal_json)
-        return None
+        stale = []
+        selected = None
+        for row in rows:
+            if (
+                row.source_fingerprint not in compatible_fingerprints | {source_fingerprint}
+                or row.schema_version != _DREAM_PREVIEW_SCHEMA_VERSION
+            ):
+                stale.append(row.id)
+                continue
+            selected = row.id, row.public_id, DreamOutput.model_validate_json(row.proposal_json)
+            break
+        if stale:
+            async with self.database.immediate_session() as writer:
+                await writer.execute(
+                    update(MemoryDreamClusterPreviewModel)
+                    .where(
+                        MemoryDreamClusterPreviewModel.id.in_(stale),
+                        MemoryDreamClusterPreviewModel.status == "ready",
+                    )
+                    .values(status="stale")
+                )
+        return selected
 
     async def stale_previews(self, cluster_id: int) -> None:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(MemoryDreamClusterPreviewModel)
                 .where(
@@ -1216,7 +1247,7 @@ class DreamRepository:
 
     @staticmethod
     async def mark_preview_applied(preview_id: int, *, session: AsyncSession) -> None:
-        await session.execute(
+        result = await session.execute(
             update(MemoryDreamClusterPreviewModel)
             .where(
                 MemoryDreamClusterPreviewModel.id == preview_id,
@@ -1224,9 +1255,11 @@ class DreamRepository:
             )
             .values(status="applied", applied_at=datetime.now(UTC))
         )
+        if not cast(CursorResult[Any], result).rowcount:
+            raise RuntimeError("dream_preview_changed")
 
     async def health(self, *, enabled: bool) -> DreamHealth:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             active = await session.scalar(
                 select(MemoryDreamRunModel)
                 .where(MemoryDreamRunModel.status == DreamRunStatus.RUNNING.value)
@@ -1325,7 +1358,7 @@ class DreamRepository:
         )
 
     async def committed_operation_ids(self, run_public_id: str) -> tuple[str, ...]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return tuple(
                 await session.scalars(
                     select(MemoryDreamOperationModel.public_id)
@@ -1347,7 +1380,7 @@ class DreamRepository:
 
     async def mark_run_rolling_back(self, public_id: str) -> bool:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             result = await session.execute(
                 update(MemoryDreamRunModel)
                 .where(
@@ -1370,7 +1403,7 @@ class DreamRepository:
 
     async def mark_run_rolled_back(self, public_id: str) -> None:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
             await session.execute(
                 update(MemoryDreamRunModel)
                 .where(MemoryDreamRunModel.public_id == public_id)

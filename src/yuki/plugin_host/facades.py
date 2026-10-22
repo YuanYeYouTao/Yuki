@@ -32,6 +32,7 @@ from yuki.admin.models import ControlAuditRef, RuntimeConfigSnapshot
 from yuki.automation.authority import DelegatedAuthority
 from yuki.automation.models import AutomationRecord, TurnOrigin
 from yuki.automation.service import AutomationService
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.scope import runtime_conversation_key
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import (
@@ -42,6 +43,7 @@ from yuki.domain.messages import (
 )
 from yuki.domain.tool_actor import ToolActor
 from yuki.gateway.media import PlatformMediaGateway
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
@@ -54,6 +56,7 @@ from yuki.memory.enums import (
 from yuki.memory.models import MemoryEntityTarget, MemoryEvidenceCreate
 from yuki.memory.service import MemoryFactService
 from yuki.memory.validation import normalize_memory_text
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -90,6 +93,7 @@ from yuki.services.agent_runner import (
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.renderer import sanitize_model_output
 from yuki.services.vision_service import VisionProcessingError, VisionService
+from yuki.social.history_sources import history_delivery_predicates
 from yuki.social.models import OperationStatus, SocialError, SocialReceipt
 from yuki.social.repository import SocialOperationRepository
 from yuki.vision.models import VisualObservation
@@ -741,7 +745,9 @@ class HostPluginContext:
             return None
         return invocation
 
-    async def _require_privileged(self, invocation: PluginInvocation) -> None:
+    async def _require_privileged(
+        self, invocation: PluginInvocation, *, session: AsyncSession | None = None
+    ) -> None:
         direct_user_event = (
             invocation.inbound is not None and invocation.source_event_id is not None
         )
@@ -751,7 +757,7 @@ class HostPluginContext:
             and invocation.actor.person_id == invocation.actor_person_id
             and invocation.actor.execution_id
         )
-        if not await self._is_real_superuser(invocation) or not (
+        if not await self._is_real_superuser(invocation, session=session) or not (
             direct_user_event or delegated_task
         ):
             raise PluginPermissionError(
@@ -901,6 +907,21 @@ class HostPluginContext:
         return result
 
 
+async def _conversation_delivery_predicates(
+    session: AsyncSession, conversation: CanonicalConversationModel
+) -> tuple[Any, ...]:
+    binding: IdentityBindingModel | SpaceBindingModel | None = None
+    if conversation.identity_binding_id is not None:
+        binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+    elif conversation.space_binding_id is not None:
+        binding = await session.get(SpaceBindingModel, conversation.space_binding_id)
+    platform = binding.platform if binding is not None else None
+    if platform is None and conversation.entry_presence_id is not None:
+        presence = await session.get(PresenceModel, conversation.entry_presence_id)
+        platform = presence.platform if presence is not None else None
+    return history_delivery_predicates((conversation.id,) if platform == "acp" else ())
+
+
 class _MessageFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
@@ -923,10 +944,19 @@ class _MessageFacade:
             or ledger is None
         ):
             return None
-        record = await ledger.get_reply_event(
-            inbound.reply_to_event_id,
-            conversation_id=invocation.conversation_id,
-        )
+        async with ledger._database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            conversation = await session.get(CanonicalConversationModel, invocation.conversation_id)
+            if conversation is None:
+                return None
+            record, _, _ = await ledger.history_around(
+                session=session,
+                conversation_id=conversation.id,
+                event_id=inbound.reply_to_event_id,
+                before=0,
+                after=0,
+                predicates=await _conversation_delivery_predicates(session, conversation),
+            )
         return _record_message(record) if record is not None else None
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]:
@@ -944,14 +974,13 @@ class _MessageFacade:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
         from yuki.services.history_query import HistoryQuery
 
         request = HistoryQuery(
             keyword=query, limit=limit, cursor=cursor, match=match, exclude=exclude
         )
 
-        async with ledger._database.sessions() as session:
+        async with ledger._database.read_session() as session:
             await session.execute(text("BEGIN"))
             conversation = await session.get(CanonicalConversationModel, invocation.conversation_id)
             if conversation is None:
@@ -964,6 +993,7 @@ class _MessageFacade:
                 keyword=request.keyword,
                 match=request.match,
                 exclude=request.exclude,
+                predicates=await _conversation_delivery_predicates(session, conversation),
             )
         return tuple(_record_message(row) for row in reversed(page.events))
 
@@ -1204,7 +1234,10 @@ class _MemoryFacade:
         invocation = self._host._require(PluginPermission.MEMORY_PERSON_READ)
         assert invocation is not None
         memories = _require_service(self._host._services.memories, "memory")
-        async with memories.repository.transaction(read_snapshot=True) as session:
+        async with memories.repository.database.read_session() as session:
+            from sqlalchemy import text
+
+            await session.execute(text("BEGIN"))
             target = await self._host._require_user_scope(invocation, user_id, session=session)
             rows = await memories.list_person(
                 person_id=target, limit=_bounded_limit(limit, maximum=100), session=session
@@ -1219,7 +1252,10 @@ class _MemoryFacade:
         invocation = self._host._require(PluginPermission.MEMORY_GROUP_READ)
         assert invocation is not None
         memories = _require_service(self._host._services.memories, "memory")
-        async with memories.repository.transaction(read_snapshot=True) as session:
+        async with memories.repository.database.read_session() as session:
+            from sqlalchemy import text
+
+            await session.execute(text("BEGIN"))
             target = await self._host._require_group_scope(invocation, group_id, session=session)
             rows = await memories.list_group(
                 space_id=target, limit=_bounded_limit(limit, maximum=100), session=session
@@ -1464,7 +1500,7 @@ class _AgentFacade:
         self._host._require(permission, require_invocation=False)
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
-        async with ledger._database.sessions() as session:
+        async with ledger._database.read_session() as session:
             conversation = await session.get(CanonicalConversationModel, row["conversation_id"])
         if conversation is None or conversation.generation != row["generation"]:
             return _agent_result(
@@ -1512,6 +1548,8 @@ class _AgentFacade:
                 resume=(lease, {"text": "[原插件补充资料；不改变执行权限]\n" + text}),
             )
         except WorkConflict as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             return PluginResult(ok=False, error_code="work_input_conflict", detail=str(exc))
         finally:
             await repository.release(lease)
@@ -2587,13 +2625,15 @@ async def _send_onebot(
             return _delivery_result(receipt)
         assert receipt.prepared is not None
         entry_binding_id = receipt.prepared["binding_id"]
-        from yuki.persistence.history_search import prepare_terms
+        from yuki.persistence.scoped_event_uow import prepare_append
 
-        prepared_terms = await asyncio.to_thread(prepare_terms, outbound.content)
+        prepared_append = await prepare_append(outbound.content, segments=outbound.segments)
         gateway = await _qq_gateway(host, invocation)
         claimed = False
         if receipt.status is OperationStatus.PREPARED:
             async with ledger._database.immediate_session() as session:
+                if privileged:
+                    await host._require_privileged(invocation, session=session)
                 target, current_presence, current_binding = await validate_delivery_source(
                     session,
                     source_conversation_id=invocation.conversation_id,
@@ -2660,7 +2700,7 @@ async def _send_onebot(
                         sender_user_id=invocation.bot_user_id,
                         direction="outbound",
                         content=outbound.content,
-                        prepared_terms=prepared_terms,
+                        prepared=prepared_append,
                         segments=outbound.segments,
                         origin=invocation.origin.value,
                         session=session,
@@ -2690,7 +2730,7 @@ async def _send_onebot(
                     if not isinstance(exc, Exception):
                         raise
                     return _delivery_result(persisted)
-                async with ledger._database.sessions() as session, session.begin():
+                async with ledger._database.immediate_session() as session:
                     await repository.finish(
                         receipt.operation_id,
                         status=OperationStatus.SUCCEEDED
@@ -3073,7 +3113,7 @@ async def _require_qq_user_scope(
     from yuki.identity.canonical_repository import find_identity_binding
 
     ledger = _require_service(host._services.ledger, "ledger")
-    async with ledger._database.sessions() as session:
+    async with ledger._database.read_session() as session:
         binding = await find_identity_binding(session, user_id)
         if binding is None or binding.status != "active":
             raise PluginPermissionError("QQ target is not an active Binding")
@@ -3090,7 +3130,7 @@ async def _require_qq_group_scope(
     from yuki.identity.canonical_repository import find_space_binding
 
     ledger = _require_service(host._services.ledger, "ledger")
-    async with ledger._database.sessions() as session:
+    async with ledger._database.read_session() as session:
         binding = await find_space_binding(session, group_id)
         if binding is None or binding.status != "active":
             raise PluginPermissionError("QQ target is not an active SpaceBinding")

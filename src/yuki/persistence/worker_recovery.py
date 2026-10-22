@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from yuki.persistence.database import write_failure_phase
+
 
 async def recover_database_loop(
     run: Callable[[], Awaitable[None]], *, stop: asyncio.Event, logger: logging.Logger
@@ -14,7 +16,9 @@ async def recover_database_loop(
         try:
             await run()
             return
-        except SQLAlchemyError as exc:
+        except Exception as exc:
+            if not isinstance(exc, SQLAlchemyError) and write_failure_phase(exc) is None:
+                raise
             logger.error(
                 "worker_database_iteration_failed exception_category=%s", type(exc).__name__
             )

@@ -26,15 +26,12 @@ class MemoryMutationReceiptRepository:
         self,
         *,
         idempotency_key: str,
-        claim_fingerprint: str,
         session: AsyncSession | None = None,
     ) -> MemoryMutationReceipt | None:
-        del claim_fingerprint  # Content is not an operation identity.
         if session is None:
-            async with self._database.sessions() as owned:
+            async with self._database.read_session() as owned:
                 return await self.find(
                     idempotency_key=idempotency_key,
-                    claim_fingerprint="",
                     session=owned,
                 )
         row = await session.scalar(

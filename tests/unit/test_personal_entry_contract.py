@@ -59,7 +59,7 @@ async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(app
     modified = await contract.definitions()
     modified[0].parameters["tampered"] = True
     assert all("tampered" not in item.parameters for item in await contract.definitions())
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, "1001")
     captured = []
 
@@ -105,7 +105,7 @@ async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(app
         data["data"]["conversation_id"] == original.row["conversation_id"]
         and person == principal.person_id
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(
             await session.scalars(
                 select(ChatEventModel).where(
@@ -132,7 +132,7 @@ async def test_app_and_qq_sources_select_the_same_stored_binding_history(app_env
         database, runtime, {"conversation_id": principal.conversation_id}
     )
     assert result["conversation_id"] == principal.conversation_id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         other_binding = await find_identity_binding(session, "1002")
     app_result = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
     assert app_result["conversation_id"] == other.row["conversation_id"]
@@ -150,7 +150,7 @@ async def test_app_to_qq_uses_explicit_binding_original_source_and_receipt(
     env = app_env
     device, person = await owner(env, database)
     context = await app_context(env, device)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, "1001")
         presence = await session.scalar(
             select(PresenceModel).where(
@@ -168,7 +168,7 @@ async def test_app_to_qq_uses_explicit_binding_original_source_and_receipt(
     calls = bot.call_api.await_count
     assert await env.social.execute("send", args, context) == result
     assert bot.call_api.await_count == calls == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         operation = await session.get(SocialOperationModel, result["operation_id"])
         assert operation.source_conversation_id == context.conversation_id
         if receipt:
@@ -186,7 +186,7 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
     device, _ = await owner(env, database)
     await seeded(env, database, account="1002")
     context = await app_context(env, device)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         other = await find_identity_binding(session, "1002")
         own = await find_identity_binding(session, "1001")
     refused = await env.social.execute(
@@ -243,7 +243,7 @@ async def test_cross_entry_file_caption_retains_selected_binding(app_env, databa
     env = app_env
     device, person = await owner(env, database)
     context = await app_context(env, device)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_identity_binding(session, "1001")
         presence = await session.scalar(
             select(PresenceModel).where(
@@ -270,7 +270,7 @@ async def test_cross_entry_file_caption_retains_selected_binding(app_env, databa
         "upload_private_file",
         "send_private_msg",
     ]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         outgoing = list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.content == "caption for original file")
@@ -299,7 +299,7 @@ async def test_explicit_self_target_from_app_requires_binding_and_lists_candidat
         item["platform"] for item in refused["bindings"]
     } == {"app", "qq"}
     assert len(env.calls) == before
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not list(
             await session.scalars(
                 select(SocialOperationModel).where(

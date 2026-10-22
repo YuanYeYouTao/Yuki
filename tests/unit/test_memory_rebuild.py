@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -83,7 +84,7 @@ class _ExtractionProvider(LLMProvider):
 
 
 async def _admin(database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         person_id = (await find_identity_binding(session, "9000")).person_id
         assert person_id is not None
         return person_id
@@ -208,7 +209,7 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
     assert statistics["latency_milliseconds"] == 125
     stored = await facts.list_person("1001")
     assert len(stored) == 1 and stored[0].source_type is MemorySourceType.REBUILD
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         embedding = (await session.scalars(select(MemoryEmbeddingJobModel))).one()
         assert embedding.fact_id == stored[0].id and embedding.status == "pending"
         receipt = await session.scalar(select(MemoryJobModel))
@@ -227,7 +228,7 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
     # Re-entering receipt preparation after completion must preserve the
     # original committed item/receipt instead of reporting our own job as a
     # conflicting "already_processed" live job.
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = await session.scalar(select(MemoryRebuildItemModel))
         identity = (item.id, item.event_id, item.updated_at, receipt.id, receipt.updated_at)
     assert (
@@ -236,7 +237,7 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
         )
         == 0
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = await session.scalar(select(MemoryRebuildItemModel))
         receipt = await session.scalar(select(MemoryJobModel))
         assert item.status == MemoryRebuildItemStatus.COMMITTED.value
@@ -395,7 +396,7 @@ async def test_commit_rechecks_live_receipt_without_overwriting_it(database: Dat
     assert await jobs.enqueue(event.id, "private:1001")
     await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt = await session.scalar(
             select(MemoryJobModel).where(MemoryJobModel.event_id == event.id)
         )
@@ -441,7 +442,7 @@ async def test_expired_claim_policy_never_creates_an_active_fact(
     )
     await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
     assert proposal is not None and proposal.commit_status == expected_commit
     assert await facts.list_person("1001") == ()
@@ -473,14 +474,14 @@ async def test_commit_detects_source_fingerprint_change(database: Database) -> N
     await service.set_review(
         run.public_id, "all", approved=True, actor_user_id=await _admin(database)
     )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(ChatEventModel).where(ChatEventModel.id == event.id).values(content="已改变")
         )
     await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
     assert await facts.list_person("1001") == ()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
     assert proposal is not None
     assert proposal.commit_status == "skipped"
@@ -502,7 +503,7 @@ async def test_forget_person_removes_staging_and_redacts_selection(database: Dat
     await worker.process_once()
     await worker.process_once()
     assert await service.repository.forget_people(("1001",)) >= 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         proposal_count = int(
             await session.scalar(select(func.count()).select_from(MemoryRebuildProposalModel)) or 0
         )
@@ -550,21 +551,22 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
 
         monkeypatch.setattr(service.repository, "finish_proposal", finish)
     else:
-        original_write = facts.repository.apply_evidence_write
+        original_write = facts.repository.write_session
 
+        @asynccontextmanager
         async def uncertain(*args, **kwargs):
             nonlocal injected
-            result = await original_write(*args, **kwargs)
+            async with original_write(*args, **kwargs) as writer:
+                yield writer
             if not injected:
                 injected = True
                 raise RuntimeError("commit returned no acknowledgement")
-            return result
 
-        monkeypatch.setattr(facts.repository, "apply_evidence_write", uncertain)
+        monkeypatch.setattr(facts.repository, "write_session", uncertain)
     applied = await worker.process_once()
     assert await worker.process_once() == 0
     assert resolve_spy.call_count == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
         if failure == "receipt":
             assert applied == 0 and await facts.list_person("1001") == ()
@@ -577,7 +579,7 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
         assert proposal.attempts == 1
 
     if failure == "receipt":
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryRebuildProposalModel).values(
                     next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
@@ -613,11 +615,11 @@ async def test_rebuild_database_failure_retains_proposal_until_recovery_without_
     resolver = Mock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolver)
     database_write = AsyncMock(side_effect=OperationalError("write", {}, RuntimeError("disk")))
-    original_write = facts.repository.apply_evidence_write
-    monkeypatch.setattr(facts.repository, "apply_evidence_write", database_write)
+    original_write = facts.repository.use_prepared_write
+    monkeypatch.setattr(facts.repository, "use_prepared_write", database_write)
     for _ in range(6):
         assert await worker.process_once() == 0
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryRebuildProposalModel).values(
                     next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
@@ -628,11 +630,11 @@ async def test_rebuild_database_failure_retains_proposal_until_recovery_without_
     assert (
         await service.repository.get_run(run.public_id)
     ).status is MemoryRebuildRunStatus.COMMITTING
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
         assert proposal.commit_status == "pending"
         assert proposal.attempts == 6
-    monkeypatch.setattr(facts.repository, "apply_evidence_write", original_write)
+    monkeypatch.setattr(facts.repository, "use_prepared_write", original_write)
     assert await worker.process_once() == 1
     assert len(await facts.list_person("1001")) == 1
     assert _provider.requests == 1
@@ -660,18 +662,124 @@ async def test_rebuild_extraction_recovers_original_item_past_old_attempt_limit(
     worker = MemoryRebuildWorker(service, interval_seconds=1)
     for attempts in range(1, 7):
         assert await worker.process_once() == 0
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             item = await session.scalar(select(MemoryRebuildItemModel))
             assert item.id == 1 and item.event_id == source.id
             assert item.status == "pending" and item.attempts == attempts
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await session.execute(
                 update(MemoryRebuildItemModel).values(
                     next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
                 )
             )
     assert await worker.process_once() == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         item = await session.scalar(select(MemoryRebuildItemModel))
         assert item.id == 1 and item.status == "staged" and item.attempts == 7
     assert provider.calls == 7
+
+
+@pytest.mark.parametrize("change", ["source", "selection", "proposal", "live_job"])
+async def test_adoption_rechecks_actual_payload_and_absence_after_preparation(
+    database, monkeypatch, change
+):
+    from sqlalchemy import delete
+
+    from yuki.persistence.models import MemoryFactModel
+
+    settings, ledger, facts, provider, service = await _service(database)
+    event = await _event(ledger, message_id="adoption-prepared-race")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
+    worker = MemoryRebuildWorker(
+        service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
+    )
+    await worker.process_once()
+    await worker.process_once()
+    await service.set_review(
+        run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+    )
+    run = await service.commit(run.public_id, actor_user_id=await _admin(database))
+    prepare = facts.prepare_write
+    original = {}
+    changed = False
+
+    async def interleave(*args, **kwargs):
+        nonlocal changed
+        prepared = await prepare(*args, **kwargs)
+        if not changed:
+            changed = True
+            async with database.immediate_session() as writer:
+                if change == "source":
+                    row = await writer.get(ChatEventModel, event.id)
+                    original["content"] = row.content
+                    row.content = "different source after validation"
+                elif change == "selection":
+                    row = await writer.scalar(
+                        select(MemoryRebuildRunModel).where(
+                            MemoryRebuildRunModel.public_id == run.public_id
+                        )
+                    )
+                    original["selection_json"] = row.selection_json
+                    row.selection_json = json.dumps({"all_events": True, "event_ids": []})
+                elif change == "proposal":
+                    row = await writer.scalar(select(MemoryRebuildProposalModel))
+                    original["claim_json"] = row.claim_json
+                    row.claim_json = "{}"
+                else:
+                    # A new LIVE receipt appeared after the read-side absence check.
+                    writer.add(
+                        MemoryJobModel(
+                            event_id=event.id,
+                            conversation_key=event.scope.key,
+                            canonical_person_id=event.author_person_id,
+                            status="pending",
+                            attempts=0,
+                            next_attempt_at=datetime.now(UTC),
+                            created_at=datetime.now(UTC),
+                            updated_at=datetime.now(UTC),
+                            processing_source="live",
+                        )
+                    )
+        return prepared
+
+    with monkeypatch.context() as prepared_window:
+        prepared_window.setattr(facts, "prepare_write", interleave)
+        assert await service.process_commit_once(run) == 0
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
+        row = await reader.scalar(select(MemoryRebuildProposalModel))
+        original_proposal_id = row.id
+        assert row.commit_status == "pending" and row.actual_fact_id is None
+    assert provider.requests == 1
+    async with database.immediate_session() as writer:
+        if change == "source":
+            await writer.execute(
+                update(ChatEventModel)
+                .where(ChatEventModel.id == event.id)
+                .values(content=original["content"])
+            )
+        elif change == "selection":
+            await writer.execute(
+                update(MemoryRebuildRunModel)
+                .where(MemoryRebuildRunModel.public_id == run.public_id)
+                .values(selection_json=original["selection_json"])
+            )
+        elif change == "proposal":
+            await writer.execute(
+                update(MemoryRebuildProposalModel).values(claim_json=original["claim_json"])
+            )
+        else:
+            await writer.execute(delete(MemoryJobModel).where(MemoryJobModel.event_id == event.id))
+        await writer.execute(
+            update(MemoryRebuildProposalModel).values(
+                next_attempt_at=datetime.now(UTC) - timedelta(seconds=1)
+            )
+        )
+    assert await service.process_commit_once(run) == 1
+    async with database.read_session() as reader:
+        receipt = await reader.get(MemoryRebuildProposalModel, original_proposal_id)
+        assert receipt.commit_status == "committed" and receipt.actual_fact_id is not None
+    assert provider.requests == 1

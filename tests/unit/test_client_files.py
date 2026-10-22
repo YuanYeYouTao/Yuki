@@ -62,7 +62,7 @@ async def test_upload_registers_receipt_without_sending_and_replays_across_devic
     assert replay.json()["data"] == {**first.json()["data"], "replay": True}
     assert first.json()["data"]["filename"] == name
     assert not env.calls
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
         assert (
             await session.scalar(
@@ -115,7 +115,7 @@ async def test_bad_digest_rolls_back_and_published_orphan_is_reference_checked(
             "file",
             chunks(),
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(func.count(ControlCommandReceiptModel.principal_id)).where(
@@ -151,7 +151,7 @@ async def test_personal_attachment_enters_original_main_and_media_index(app_env,
     messages = env.calls[0].messages
     assert not any(item.images for item in messages)
     assert not any("THE ORIGINAL DOCUMENT CONTENT" in (item.content or "") for item in messages)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ConversationMediaItemModel, (sent.json()["data"]["event_id"], 0))
         assert row.cache_status == "cached" and row.content_sha256 == media["sha256"]
         event = await session.get(ChatEventModel, row.source_event_id)
@@ -279,7 +279,7 @@ async def test_local_audio_uses_original_asr_and_does_not_store_bytes(
     segments, attachments = await env.files.attachments(principal, (uploaded["media_id"],))
     from yuki.identity.db_models import IdentityBindingModel
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await session.get(IdentityBindingModel, principal.binding_id)
     message = env.gateway.message(
         binding, str(uuid4()), "voice", segments, attachments,
@@ -416,7 +416,7 @@ async def test_cancelled_upload_retains_its_actual_write_until_thread_finishes(
     assert written.is_set()
     assert not list(env.files.uploads.root.iterdir())
     assert not env.media._staging_paths
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not await session.scalar(
             select(func.count(ControlCommandReceiptModel.principal_id)).where(
                 ControlCommandReceiptModel.operation_kind == "client.upload"
@@ -481,7 +481,7 @@ async def test_slow_upload_does_not_hold_other_uploads_and_original_receipt_wins
     if same_request:
         assert first_result == {**second, "replay": True}
     assert not list(env.files.uploads.root.glob("*.part"))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(
             select(func.count(ControlCommandReceiptModel.principal_id)).where(
                 ControlCommandReceiptModel.operation_kind == "client.upload"

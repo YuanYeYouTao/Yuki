@@ -17,6 +17,7 @@ from yuki.domain.messages import MessageAttachment
 from yuki.gateway.providers.app.ingress import AppGateway, AppMessageRejected
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 
 
 class ClientMessages:
@@ -42,7 +43,7 @@ class ClientMessages:
         text: str,
         references: tuple[str, ...],
     ) -> dict[str, Any] | None:
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             command = await personal_command(
                 session,
@@ -105,7 +106,7 @@ class ClientMessages:
                 f" [{part['type']}附件{index}：{part['data']['filename']}]"
                 for index, part in enumerate(media_segments)
             )
-        async with self.identity.database.sessions() as session:
+        async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             binding = await session.get(IdentityBindingModel, principal.binding_id)
             assert binding is not None
@@ -131,6 +132,11 @@ class ClientMessages:
                 raise
             previous = await self._previous(principal, request_id, text, attachments)
             if previous is None:
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise
                 raise ClientError("request_conflict") from exc
             return previous
         if not appended.created:

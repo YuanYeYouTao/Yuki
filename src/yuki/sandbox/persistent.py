@@ -24,12 +24,12 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from yuki.sandbox.acp_manager import ACP_KINDS, ACPResources
-from yuki.sandbox.acp_peer import read_protocol_line
 from yuki.sandbox.completions import CompletionOutbox
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
+from yuki.sandbox.legacy_acp import ACP_KINDS, LegacyACPResources
 from yuki.sandbox.manager import TERMINAL, identifier
+from yuki.sandbox.protocol import read_protocol_line
 from yuki.workspace.files import FileWorkspace
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -52,11 +52,12 @@ class PersistentManager:
         *,
         runtime: str = "runsc",
         resolv_conf: Path | None = None,
-        acp_config: Path | None = None,
         testing: bool = False,
         name: str = "yuki-environment",
         media_cache: Path | None = None,
     ) -> None:
+        if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
+            raise ValueError("invalid_environment_name")
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
         self.resolv_conf = resolv_conf.resolve() if resolv_conf is not None else None
@@ -64,20 +65,8 @@ class PersistentManager:
         self._waiters: dict[str, set[asyncio.Event]] = {}
         self.ready = False
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.root / "jobs.sqlite3")
-        self.db.row_factory = sqlite3.Row
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, "
-            "request_id TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, "
-            "payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, "
-            "created REAL NOT NULL)"
-        )
-        self.completions = CompletionOutbox(self.db)
-        self.db.commit()
         self.home = home.resolve()
         self.runtime, self.testing = runtime, testing
-        if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
-            raise ValueError("invalid_environment_name")
         self.name = name
         self.files = FileWorkspace(self.home / "workspace")
         self.media_cache = FileWorkspace(media_cache.resolve()) if media_cache is not None else None
@@ -85,19 +74,6 @@ class PersistentManager:
         self.runtime_root = self.root / "environment-jobs"
         self.runtime_root.mkdir(mode=0o755, exist_ok=True)
         self.runtime_root.chmod(0o755)
-        self.db.executescript(
-            "CREATE TABLE IF NOT EXISTS environment_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, "
-            "session_id TEXT, container_id TEXT, dispatched INTEGER NOT NULL DEFAULT 0);"
-            "CREATE TABLE IF NOT EXISTS environment_state"
-            " (key TEXT PRIMARY KEY,value TEXT NOT NULL);"
-            "CREATE TABLE IF NOT EXISTS environment_servic"
-            "es (name TEXT PRIMARY KEY, spec TEXT NOT NULL,"
-            "enabled INTEGER NOT NULL DEFAULT 0, run_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,"
-            "next_start REAL NOT NULL DEFAULT 0);"
-            "CREATE TABLE IF NOT EXISTS environment_mutations (request_id TEXT PRIMARY KEY,"
-            "digest TEXT NOT NULL, result TEXT NOT NULL);"
-        )
-        self.db.commit()
         self.execd: Execd | None = None
         self.container_id = ""
         self.connections: dict[str, Any] = {}
@@ -108,7 +84,36 @@ class PersistentManager:
         self._file_requests: dict[str, tuple[str, asyncio.Task[dict[str, Any]]]] = {}
         self.last_prune = 0.0
         self.last_layer_check = 0.0
-        self.acp = ACPResources(self, acp_config)
+        self.legacy_acp = LegacyACPResources(self)
+        self.db = sqlite3.connect(self.root / "jobs.sqlite3")
+        try:
+            self.db.row_factory = sqlite3.Row
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, "
+                "request_id TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, "
+                "payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, "
+                "created REAL NOT NULL)"
+            )
+            self.completions = CompletionOutbox(self.db)
+            self.db.commit()
+            self.db.executescript(
+                "CREATE TABLE IF NOT EXISTS environment_jobs "
+                "(id TEXT PRIMARY KEY, kind TEXT NOT NULL, "
+                "session_id TEXT, container_id TEXT, dispatched INTEGER NOT NULL DEFAULT 0);"
+                "CREATE TABLE IF NOT EXISTS environment_state"
+                " (key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+                "CREATE TABLE IF NOT EXISTS environment_servic"
+                "es (name TEXT PRIMARY KEY, spec TEXT NOT NULL,"
+                "enabled INTEGER NOT NULL DEFAULT 0, run_id TEXT, "
+                "attempts INTEGER NOT NULL DEFAULT 0,"
+                "next_start REAL NOT NULL DEFAULT 0);"
+                "CREATE TABLE IF NOT EXISTS environment_mutations (request_id TEXT PRIMARY KEY,"
+                "digest TEXT NOT NULL, result TEXT NOT NULL);"
+            )
+            self.db.commit()
+        except BaseException:
+            self.db.close()
+            raise
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
         proc = await asyncio.create_subprocess_exec(
@@ -275,8 +280,8 @@ class PersistentManager:
         }
 
     def get(self, identity: str) -> dict[str, Any]:
-        if self.acp.kind(identity) in ACP_KINDS:
-            return self.acp.view(identity)
+        if self.legacy_acp.kind(identity) in ACP_KINDS:
+            return self.legacy_acp.view(identity)
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (identifier(identity),)).fetchone()
         if row is None:
             return {"error": "run_not_found"}
@@ -402,9 +407,6 @@ class PersistentManager:
                 "--mount",
                 f"type=bind,src={Path(__file__).with_name('environment_supervisor.py').resolve()},"
                 "dst=/opt/yuki-runtime/supervisor.py,readonly",
-                "--mount",
-                f"type=bind,src={Path(__file__).with_name('acp_peer.py').resolve()},"
-                "dst=/opt/yuki-runtime/acp_peer.py,readonly",
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
@@ -464,7 +466,7 @@ class PersistentManager:
         ).fetchall():
             self.finish(row[0], "failed", {"error": "environment_migrated", "interrupted": True})
         for row in self.active():
-            if row["kind"] not in EXECUTION_TOOLS | {"service", "acp_peer"}:
+            if row["kind"] not in EXECUTION_TOOLS | {"service"}:
                 # Retired jobs never gain another dispatch from an upgrade.
                 # A native start/terminal receipt still belongs to the old run.
                 try:
@@ -556,11 +558,6 @@ class PersistentManager:
             "tty": bool(args.get("tty")),
             "timeout_seconds": args.get("timeout_seconds", 0),
         }
-        if kind == "acp_peer":
-            spec.update(
-                acp_peer=args,
-                argv=["/usr/local/bin/python", "-I", "/opt/yuki-runtime/acp_peer.py", identity],
-            )
         if kind == "service":
             spec["timeout_seconds"] = 0
         (root / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
@@ -575,15 +572,7 @@ class PersistentManager:
         if row is None or row["dispatched"] or self.get(identity)["status"] in TERMINAL:
             return
         args = json.loads(row["payload"])
-        try:
-            spec = await asyncio.to_thread(self.prepare_spec, identity, args, row["kind"])
-        finally:
-            if row["kind"] == "acp_peer" and self.get(identity).get("purged"):
-                directory = self.runtime_root / identity
-                if directory.exists():
-                    shutil.rmtree(directory)
-        if row["kind"] == "acp_peer" and self.get(identity)["status"] in TERMINAL:
-            return
+        spec = await asyncio.to_thread(self.prepare_spec, identity, args, row["kind"])
         assert self.execd is not None
         response = await self.execd.request(
             "POST",
@@ -595,11 +584,6 @@ class PersistentManager:
             },
         )
         session = response["session_id"]
-        if row["kind"] == "acp_peer" and self.get(identity)["status"] in TERMINAL:
-            # Creating an execd PTY has not dispatched the Supervisor. A close
-            # received while creating it must never regain launch permission.
-            await self.execd.request("DELETE", f"/pty/{session}")
-            return
         # Commit dispatch before the only action that can actually execute code.
         with self.db:
             self.db.execute(
@@ -657,10 +641,12 @@ class PersistentManager:
 
     async def control(self, identity: str, action: str, text: str = "") -> dict[str, Any]:
         identity = identifier(identity)
-        if self.acp.kind(identity) == "acp_prompt":
+        if self.legacy_acp.kind(identity) == "acp_prompt":
             if action not in {"cancel", "close", "interrupt"}:
                 raise ValueError("acp_prompt_requires_permission_reply")
-            return self.acp.control("cancel", {"run_id": identity}, f"prompt-cancel:{identity}")
+            return self.legacy_acp.control(
+                "cancel", {"run_id": identity}, f"prompt-cancel:{identity}"
+            )
         result = self.get(identity)
         if result.get("error") or result.get("status") in TERMINAL:
             return result
@@ -1087,7 +1073,7 @@ class PersistentManager:
             if method == "sticker_index":
                 return await self.sticker_index(args)
             if method.startswith("acp_"):
-                return await self.acp.handle(method, args, request.get("request_id", ""))
+                return await self.legacy_acp.handle(method, args, request.get("request_id", ""))
             if method in EXECUTION_TOOLS:
                 return await self.submit(method, dict(args), request.get("request_id", ""))
             if method in {
@@ -1112,11 +1098,11 @@ class PersistentManager:
                     or wait_seconds < 0
                 ):
                     raise ValueError("invalid_wait_seconds")
-                if self.acp.kind(identity) == "acp_prompt":
-                    self.acp.refresh()
+                if self.legacy_acp.kind(identity) == "acp_prompt":
+                    self.legacy_acp.refresh()
                     if wait_seconds:
                         await self.wait_result(identity, wait_seconds=wait_seconds)
-                    return self.acp.query(identity, args.get("cursor"))
+                    return self.legacy_acp.query(identity, args.get("cursor"))
                 completion = (
                     await self.wait_result(identity, wait_seconds=wait_seconds)
                     if wait_seconds
@@ -1191,7 +1177,7 @@ class PersistentManager:
                 if task.done():
                     self.pumps.pop(key, None)
             try:
-                self.acp.refresh()
+                self.legacy_acp.refresh()
             except (OSError, ValueError):
                 LOGGER.warning("acp_receipt_reconcile_pending")
             if time.time() - self.last_layer_check > 15:

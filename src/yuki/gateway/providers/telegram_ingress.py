@@ -413,7 +413,7 @@ class TelegramGateway:
                     binding.updated_at = datetime.now(UTC)
             return
         if "new_chat_title" in raw and "edited_message" not in update:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 binding = await find_space_binding(
                     session, str(raw["chat"]["id"]), platform="telegram"
                 )
@@ -428,7 +428,7 @@ class TelegramGateway:
         message = normalize_message(raw, self.client)
         if message is None:
             return
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             receipt = await transport_receipt(
                 session,
                 presence_id=self.presence_id,
@@ -454,7 +454,7 @@ class TelegramGateway:
                 raise PermissionError("telegram_source_conflict")
             return
         if message.group_id is not None:
-            async with self.database.sessions() as session:
+            async with self.database.read_session() as session:
                 binding = await find_space_binding(session, message.group_id, platform="telegram")
             if binding is None:
                 from yuki.gateway.providers.telegram_social import TelegramSocialOperations

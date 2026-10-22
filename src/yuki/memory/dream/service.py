@@ -192,28 +192,25 @@ class DreamService:
 
     async def rollback_operation(self, public_id: str) -> bool:
         mutation_id = str(uuid.uuid4())
-        affected_ids = await self._facts.repository.apply_evidence_write(
-            lambda session: self._rollback_operation_in_session(
-                public_id, mutation_id=mutation_id, session=session
+        async with self._facts.repository.database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
+            prepared = await self._mutations.prepare_dream_rollback(public_id, session=reader)
+        if prepared is None:
+            return False
+        async with self._facts.repository.write_session(prepared.evidence) as writer:
+            affected_ids = await self._mutations.rollback_dream_operation(
+                public_id=public_id,
+                prepared=prepared,
+                mutation_id=mutation_id,
+                session=writer,
             )
-        )
+            for fact_id in affected_ids:
+                fact = await self._facts.repository.get_fact(fact_id, session=writer)
+                if fact is not None:
+                    await self._repository.checkpoint_fact(fact, operation_id=None, session=writer)
         for fact_id in affected_ids:
             await self._facts.schedule_embedding(fact_id)
         return bool(affected_ids)
-
-    async def _rollback_operation_in_session(
-        self, public_id: str, *, mutation_id: str, session: AsyncSession
-    ) -> tuple[int, ...]:
-        affected_ids = await self._mutations.rollback_dream_operation(
-            public_id=public_id,
-            mutation_id=mutation_id,
-            session=session,
-        )
-        for fact_id in affected_ids:
-            fact = await self._facts.repository.get_fact(fact_id, session=session)
-            if fact is not None:
-                await self._repository.checkpoint_fact(fact, operation_id=None, session=session)
-        return affected_ids
 
     async def rollback_run(self, public_id: str) -> int:
         if not await self._repository.mark_run_rolling_back(public_id):
@@ -345,10 +342,56 @@ class DreamService:
                 run=run,
                 cluster=cluster,
             )
+            preview_public_id = await self._repository.save_preview(
+                cluster_id=cluster.id,
+                source_fingerprint=input_fingerprint,
+                proposal=output,
+                model_calls=calls,
+                source_characters=sum(len(fact.content) for fact in facts),
+                output_characters=self._output_characters(output),
+            )
+            stored = await self._repository.ready_preview(
+                cluster_id=cluster.id,
+                source_fingerprint=input_fingerprint,
+                public_id=preview_public_id,
+            )
+            assert stored is not None
+            preview_id = stored[0]
         operation_public_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
         mutation_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
-        embedding_ids, operation_count = await self._facts.repository.apply_evidence_write(
-            lambda session: self._commit_cluster_decision(
+        async with self._facts.repository.database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
+            prepared = await self._facts.prepare_write(
+                tuple(fact.id for fact in ref_map.values()),
+                targets=tuple(ref_map.values()),
+                session=reader,
+            )
+            _, _, current_input_fingerprint = await self._input(
+                tuple(ref_map.values()), session=reader
+            )
+            if current_input_fingerprint != input_fingerprint:
+                raise RuntimeError("dream_input_snapshot_changed")
+            for action in output.actions:
+                sources = tuple(ref_map[ref] for ref in action.source_refs)
+                if action.operation is DreamOperationType.RECOMPOSE:
+                    referenced = {ref for item in action.outputs for ref in item.source_refs}
+                    sources = tuple(ref_map[ref] for ref in action.source_refs if ref in referenced)
+                anchor = self._anchor(action, sources, ref_map)
+                await self._mutations.prepare_dream_evidence(
+                    sources,
+                    anchor_fact_id=anchor.id if anchor is not None else None,
+                    recompose_outputs=tuple(
+                        DreamRecomposePlan(
+                            source_facts=tuple(ref_map[ref] for ref in item.source_refs),
+                            content=item.content,
+                            importance=item.importance,
+                        )
+                        for item in action.outputs
+                    ),
+                    session=reader,
+                )
+        async with self._facts.repository.write_session(prepared) as writer:
+            embedding_ids, operation_count = await self._commit_cluster_decision(
                 run=run,
                 cluster=cluster,
                 ref_map=ref_map,
@@ -357,9 +400,8 @@ class DreamService:
                 preview_id=preview_id,
                 operation_public_ids=operation_public_ids,
                 mutation_ids=mutation_ids,
-                session=session,
+                session=writer,
             )
-        )
         for fact_id in embedding_ids:
             await self._facts.schedule_embedding(fact_id)
         return calls, operation_count, True
@@ -397,37 +439,6 @@ class DreamService:
             ):
                 raise RuntimeError("dream_cluster_stale")
             current_map[ref] = current
-        await self._facts.prepare_evidence_write(
-            tuple(fact.id for fact in current_map.values()),
-            targets=tuple(current_map.values()),
-            session=session,
-        )
-        # The model and any saved preview consumed these exact readable sources.
-        # Equal evidence counts do not prove that the original evidence is live.
-        _, _, current_input_fingerprint = await self._input(
-            tuple(current_map.values()), session=session
-        )
-        if current_input_fingerprint != input_fingerprint:
-            raise RuntimeError("dream_input_snapshot_changed")
-        for action in output.actions:
-            sources = tuple(current_map[ref] for ref in action.source_refs)
-            if action.operation is DreamOperationType.RECOMPOSE:
-                referenced = {ref for item in action.outputs for ref in item.source_refs}
-                sources = tuple(current_map[ref] for ref in action.source_refs if ref in referenced)
-            anchor = self._anchor(action, sources, current_map)
-            await self._mutations.prepare_dream_evidence(
-                sources,
-                anchor_fact_id=anchor.id if anchor is not None else None,
-                recompose_outputs=tuple(
-                    DreamRecomposePlan(
-                        source_facts=tuple(current_map[ref] for ref in item.source_refs),
-                        content=item.content,
-                        importance=item.importance,
-                    )
-                    for item in action.outputs
-                ),
-                session=session,
-            )
         used: set[str] = set()
         for action_index, action in enumerate(output.actions, start=1):
             sources = tuple(current_map[ref] for ref in action.source_refs if ref in current_map)
@@ -698,7 +709,8 @@ class DreamService:
         legacy_owners: dict[str, str | None] | None = None,
     ) -> tuple[DreamInput, dict[str, MemoryFact], str]:
         if session is None:
-            async with self._facts.repository.transaction(read_snapshot=True) as owned:
+            async with self._facts.repository.database.read_session() as owned:
+                await owned.execute(text("BEGIN"))
                 return await self._input(facts, session=owned, legacy_owners=legacy_owners)
         await self._facts.repository.prepare_evidence_rows(
             tuple(fact.id for fact in facts), session=session
@@ -794,7 +806,7 @@ class DreamService:
         # make subject owners and SELF visibility owners mutually exclusive.
         person_id = first.canonical_subject_person_id or first.canonical_visibility_person_id
         space_id = first.canonical_subject_space_id or first.canonical_visibility_space_id
-        async with self._facts.repository.database.sessions() as reader:
+        async with self._facts.repository.database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             persons: set[str | None] = {None}
             spaces: set[str | None] = {None}

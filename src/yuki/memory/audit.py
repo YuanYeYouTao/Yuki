@@ -190,7 +190,7 @@ class MemoryAuditService:
         }
         now = datetime.now(UTC)
         values: dict[str, int] = {}
-        async with self._repository.database.sessions() as session:
+        async with self._repository.database.read_session() as session:
             for key, sql in queries.items():
                 values[key] = int((await session.scalar(text(sql), {"now": now})) or 0)
         return MemoryConsistencyHealth(

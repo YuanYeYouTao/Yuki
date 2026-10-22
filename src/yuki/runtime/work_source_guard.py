@@ -21,6 +21,8 @@ from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.models import ChatEventModel
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from yuki.runtime.work_control import WorkControl
 
 
@@ -64,6 +66,7 @@ class _VerifiedSources:
     additional_events: dict[int, str]
     visible_ids: frozenset[int]
     cross_ids: frozenset[int]
+    cross_values: dict[int, tuple[Any, ...]]
 
 
 class WorkSourceGuard:
@@ -98,6 +101,76 @@ class WorkSourceGuard:
             "fingerprint": self.fingerprint,
             "additional_events": self.additional_events,
         }
+
+    @staticmethod
+    def _accepted_cross_query(work_id: str, actor: str, cross_ids: Set[int]) -> Any:
+        from yuki.runtime.work_schema_v1 import inputs
+
+        return (
+            select(ChatEventModel.id)
+            .join(inputs, inputs.c.event_id == ChatEventModel.id)
+            .join(
+                CanonicalConversationModel,
+                CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+            )
+            .where(
+                inputs.c.work_id == work_id,
+                ChatEventModel.id.in_(cross_ids),
+                func.json_extract(inputs.c.payload_json, "$.origin") == "client_input",
+                func.json_extract(inputs.c.payload_json, "$.text") == ChatEventModel.content,
+                func.json_extract(inputs.c.payload_json, "$.source_conversation_id")
+                == ChatEventModel.canonical_conversation_id,
+                ChatEventModel.origin == "work_input",
+                ChatEventModel.direction == "inbound",
+                ChatEventModel.suppression_status == "keeper",
+                ChatEventModel.author_kind == "person",
+                same_person_condition(ChatEventModel.author_person_id, actor),
+                CanonicalConversationModel.kind == "private",
+                same_person_condition(CanonicalConversationModel.person_id, actor),
+            )
+        )
+
+    async def validate_cross_sources(
+        self, session: AsyncSession, *, work_id: str, actor_person_id: str | None
+    ) -> None:
+        """Recheck only the original selected client inputs in the current writer."""
+        from yuki.runtime.work_repository import WorkConflict
+
+        verified = self._verified
+        if verified is None:
+            if self.additional_events:
+                raise WorkConflict("work_journal_source_changed")
+            return
+        if not verified.cross_ids:
+            return
+        rows = (
+            await session.execute(
+                select(ChatEventModel.__table__).where(ChatEventModel.id.in_(verified.cross_ids))
+            )
+        ).all()
+        # These exact selected rows were encoded in preparation. Equality needs
+        # no transcript scan, hashing or JSON conversion while holding writer.
+        if {row.id: tuple(row) for row in rows} != verified.cross_values:
+            raise WorkConflict("work_journal_source_changed")
+        privacy = (
+            await session.scalar(
+                select(ExecutionTraceStateModel.privacy_generation).where(
+                    ExecutionTraceStateModel.id == 1
+                )
+            )
+            or 0
+        )
+        if (
+            privacy != verified.privacy
+            or not actor_person_id
+            or set(
+                await session.scalars(
+                    self._accepted_cross_query(work_id, actor_person_id, verified.cross_ids)
+                )
+            )
+            != verified.cross_ids
+        ):
+            raise WorkConflict("work_journal_source_changed")
 
     @classmethod
     def restore(cls, payload: dict[str, object]) -> WorkSourceGuard:
@@ -140,7 +213,7 @@ class WorkSourceGuard:
         # aiosqlite's legacy transaction mode does not BEGIN for SELECT. Establish
         # one real read snapshot, without reserving the writer during scans/hashing.
         with model_detail("source_guard_read"):
-            async with source_database.sessions() as session:
+            async with source_database.read_session() as session:
                 await session.execute(text("BEGIN"))
                 source = await session.get(CanonicalConversationModel, version.conversation_id)
                 if source is None or (source.generation, source.starts_after_event_id) != (
@@ -231,38 +304,13 @@ class WorkSourceGuard:
                         if row.canonical_conversation_id != version.conversation_id
                     }
                     if cross_ids:
-                        from yuki.runtime.work_schema_v1 import inputs
-
                         if control is None or control.current is None:
                             return False
                         actor = control.source.get("actor_person_id")
                         if not actor:
                             return False
-                        accepted_query = (
-                            select(ChatEventModel.id)
-                            .join(inputs, inputs.c.event_id == ChatEventModel.id)
-                            .join(
-                                CanonicalConversationModel,
-                                CanonicalConversationModel.id
-                                == ChatEventModel.canonical_conversation_id,
-                            )
-                            .where(
-                                inputs.c.work_id == control.current["id"],
-                                ChatEventModel.id.in_(cross_ids),
-                                func.json_extract(inputs.c.payload_json, "$.origin")
-                                == "client_input",
-                                func.json_extract(inputs.c.payload_json, "$.text")
-                                == ChatEventModel.content,
-                                func.json_extract(inputs.c.payload_json, "$.source_conversation_id")
-                                == ChatEventModel.canonical_conversation_id,
-                                ChatEventModel.origin == "work_input",
-                                ChatEventModel.direction == "inbound",
-                                ChatEventModel.suppression_status == "keeper",
-                                ChatEventModel.author_kind == "person",
-                                same_person_condition(ChatEventModel.author_person_id, actor),
-                                CanonicalConversationModel.kind == "private",
-                                same_person_condition(CanonicalConversationModel.person_id, actor),
-                            )
+                        accepted_query = self._accepted_cross_query(
+                            control.current["id"], actor, cross_ids
                         )
                         accepted = set(await session.scalars(accepted_query))
                         if accepted != cross_ids:
@@ -327,8 +375,9 @@ class WorkSourceGuard:
         # Recheck the lease and scalar dependencies in one fresh read snapshot.
         # This is preparation, not mutation authority: journal/publication/effect
         # writers keep their original execution-time fences and source CAS.
+        cross_values: dict[int, tuple[Any, ...]] = {}
         with model_detail("source_guard_final_read"):
-            async with source_database.sessions() as session:
+            async with source_database.read_session() as session:
                 await session.execute(text("BEGIN"))
                 if control is not None:
                     await control.repository._assert_lease_readonly(session, control.lease)
@@ -370,6 +419,7 @@ class WorkSourceGuard:
                         identity: additional[identity] for identity in cross_ids
                     }:
                         return False
+                    cross_values = {row.id: tuple(row) for row in fresh_extra}
                     if set(await session.scalars(accepted_query)) != cross_ids:
                         return False
         self.version = selected_version
@@ -385,6 +435,7 @@ class WorkSourceGuard:
             dict(additional),
             visible_ids,
             frozenset(cross_ids),
+            cross_values,
         )
         if work_session is not None:
             work_session.source_revision = revision

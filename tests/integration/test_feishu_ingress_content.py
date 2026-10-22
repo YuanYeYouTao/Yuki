@@ -39,7 +39,7 @@ async def test_service_events_do_not_create_chat_or_purchase_model(
     await env.gateway.receive(incoming)
     await drain(env)
     assert not env.model.requests
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
 
 

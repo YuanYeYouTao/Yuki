@@ -15,6 +15,7 @@ from yuki.character.db_models import CharacterOwnerGrantModel, CharacterProfileM
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.client_api.version import CLIENT_API_REVISION
+from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import (
     current_person_id,
     person_enabled_condition,
@@ -84,7 +85,7 @@ class CharacterRepository:
 
     async def current(self, session: AsyncSession | None = None) -> CharacterCurrent:
         if session is None:
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 return await self.current(reader)
         row = await self._profile(session)
         return CharacterCurrent(row.id, row.display_name, row.revision)
@@ -111,7 +112,7 @@ class CharacterRepository:
         return result
 
     async def meta(self) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await self._profile(session)
             return {
                 "api_revision": CLIENT_API_REVISION,
@@ -127,7 +128,7 @@ class CharacterRepository:
             }
 
     async def get(self, principal: ClientPrincipal | None = None) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             owner = False
             if principal is not None:
                 current = await self.identity.require_principal(session, principal)
@@ -196,7 +197,7 @@ class CharacterRepository:
         return result
 
     async def owners(self) -> list[dict[str, Any]]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             rows = await session.scalars(
                 select(CharacterOwnerGrantModel).order_by(
                     CharacterOwnerGrantModel.granted_at, CharacterOwnerGrantModel.person_id
@@ -222,7 +223,10 @@ class CharacterRepository:
             if old is not None:
                 return old
             if granted:
-                await self.identity._person(session, person_id)
+                try:
+                    await require_person(session, person_id)
+                except ClientError:
+                    raise ClientError("not_found") from None
             root = await current_person_id(session, person_id)
             now = datetime.now(UTC)
             family = list(

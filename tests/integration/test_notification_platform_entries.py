@@ -129,7 +129,7 @@ async def test_two_topics_keep_independent_grant_receipt_and_native_delivery(
     assert len(sends) == 1
     assert sends[0]["chat_id"] == "-10099" and sends[0]["message_thread_id"] == 20
     assert env.model.requests == []
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         outboxes = list(
             await session.scalars(
                 select(PluginNotificationOutboxModel).order_by(PluginNotificationOutboxModel.id)
@@ -174,7 +174,7 @@ async def test_private_conversation_keeps_original_bot_even_when_other_bot_is_li
     resolved = await router.resolve_send_for_conversation(entries[0].conversation_id)
     assert resolved.presence_id == env.gateway.presence_id
     assert resolved.kind == "conversation" and resolved.external_target_id == "57"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         await router.validate_prepared_send(
             session, resolved, target_kind="person", target_id=person.person_id
         )
@@ -266,7 +266,7 @@ async def test_notification_media_keeps_handle_mime_and_original_delivery_fact(
     duplicate = await repository.publish(plugin_id="native-notification", request=request)
     assert duplicate.deduplicated and duplicate.notification_id == accepted.notification_id
     assert await repository.claim_outbox() is None and len(wire) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         outbox = await session.get(PluginNotificationOutboxModel, item.id)
         assert outbox.status == "sent"
         sent = await session.scalar(

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, event, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.event_seed import seed_event
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -16,6 +19,19 @@ from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.event_view import event_view
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.services.history_query import HistoryQuery
+
+
+def _observe_history_streams(monkeypatch):
+    streams = []
+    original = AsyncSession.stream_scalars
+
+    async def observe(session, *args, **kwargs):
+        stream = await original(session, *args, **kwargs)
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr(AsyncSession, "stream_scalars", observe)
+    return streams
 
 
 async def _event(database, ledger, key, content, **fields):
@@ -95,6 +111,73 @@ async def test_fts_false_positives_do_not_truncate_or_duplicate_matches(database
     assert [row.content for row in excluded.events] == ["abc ... bcd", "abc ... bcd"]
 
 
+async def test_streamed_candidates_keep_exact_pages_with_dates_media_and_large_false_rows(
+    database, monkeypatch
+):
+    import yuki.persistence.event_repository as module
+
+    ledger = EventLedgerRepository(database)
+    attachment = ({"type": "image", "data": {"caption": "unrelated" * 1024}},)
+    first = await _event(database, ledger, "stream-old", "abcd", segments=attachment)
+    for index in range(150):
+        await _event(database, ledger, f"stream-false-{index}", "abc ... bcd", segments=attachment)
+    last = await _event(database, ledger, "stream-new", "abcd", segments=attachment)
+    streams = _observe_history_streams(monkeypatch)
+    statements = []
+    convert = module._event_record
+
+    def accepted_record(row):
+        assert row.content != "abc ... bcd", "a rejected candidate parsed its attachment JSON"
+        return convert(row)
+
+    monkeypatch.setattr(module, "_event_record", accepted_record)
+
+    def observe(_c, _cur, statement, _params, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        for filters in ({}, {"start_at": datetime(2020, 1, 1, tzinfo=UTC)}, {"has": ("image",)}):
+            for cursor, expected, more in ((None, last.id, True), (last.id, first.id, False)):
+                statements.clear()
+                page = await ledger.query_history(
+                    conversation_id=first.canonical_conversation_id,
+                    keyword="abcd",
+                    limit=1,
+                    cursor=cursor,
+                    **filters,
+                )
+                assert [row.id for row in page.events] == [expected]
+                assert page.has_more is more
+                assert page.next_cursor == (expected if more else None)
+                assert len(statements) == 1
+                assert "chat_history_fts MATCH" in statements[0]
+                assert "LIMIT" not in statements[0]
+                if filters.get("has"):
+                    assert (
+                        "EXISTS (SELECT conversation_media_items.source_event_id" in statements[0]
+                    )
+            statements.clear()
+            empty = await ledger.query_history(
+                conversation_id=first.canonical_conversation_id,
+                keyword="abcd",
+                exclude=("abcd",),
+                **filters,
+            )
+            assert not empty.events and not empty.has_more and empty.next_cursor is None
+            assert len(statements) == 1
+        statements.clear()
+        excluded = await ledger.query_history(
+            conversation_id=first.canonical_conversation_id, exclude=("abc",)
+        )
+        assert not excluded.events and not excluded.has_more
+        assert len(statements) == 1 and "MATCH" not in statements[0]
+        assert all(stream.closed for stream in streams)
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+
+
 async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(database):
     ledger = EventLedgerRepository(database)
     first = await _event(database, ledger, "multi-a-old", "電動車 archive")
@@ -159,6 +242,75 @@ async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(
     assert [row.id for row in oldest.events] == [second.id, third.id]
     assert oldest.has_more and oldest.next_cursor == third.id
     assert not (await ledger.query_history(conversation_id=(), keyword="电动车")).events
+
+
+@pytest.mark.parametrize("order", ("recent", "oldest"))
+async def test_plain_multi_source_pages_bound_sql_when_every_row_is_a_real_hit(database, order):
+    ledger = EventLedgerRepository(database)
+    rows = [
+        await _event(
+            database,
+            ledger,
+            f"plain-{index}",
+            f"original {index}",
+            group_id="2001" if index % 2 else "2002",
+        )
+        for index in range(8)
+    ]
+    statements = []
+
+    def observe(_c, _cur, statement, parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append((statement, parameters))
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        page = await ledger.query_history(
+            conversation_id=tuple(dict.fromkeys(row.canonical_conversation_id for row in rows)),
+            order=order,
+            limit=2,
+            start_at=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    expected = list(reversed(rows)) if order == "recent" else rows
+    assert [row.id for row in page.events] == [row.id for row in expected[:2]]
+    assert page.has_more and page.next_cursor == expected[1].id
+    assert len(statements) == 1
+    statement, parameters = statements[0]
+    assert "LIMIT" in statement and parameters[-2] == 3
+
+
+async def test_sparse_media_without_text_keeps_media_ids_as_candidates(database):
+    ledger = EventLedgerRepository(database)
+    rows = [
+        await _event(
+            database,
+            ledger,
+            f"sparse-media-{index}",
+            "message",
+            segments=({"type": "image", "data": {}},) if index == 2 else (),
+        )
+        for index in range(12)
+    ]
+    statements = []
+
+    def observe(_c, _cur, statement, _params, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        page = await ledger.query_history(
+            conversation_id=rows[0].canonical_conversation_id, has=("image",), limit=20
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    assert [row.id for row in page.events] == [rows[2].id]
+    assert not page.has_more and page.next_cursor is None
+    assert len(statements) == 1
+    assert "IN (SELECT conversation_media_items.source_event_id" in statements[0]
+    assert "LIMIT" in statements[0] and "EXISTS" not in statements[0]
 
 
 async def test_multi_conversation_media_hits_keep_each_neighbors_in_its_original_scene(database):
@@ -328,7 +480,7 @@ async def test_around_reads_permanent_neighbors_and_queries_remain_readonly(data
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", record)
     try:
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             person = await session.get(CanonicalPersonModel, rows[0].author_person_id)
             person.display_name = "must not flush"
             await ledger.query_history(session=session, conversation_id=conversation, limit=1)
@@ -341,15 +493,12 @@ async def test_around_reads_permanent_neighbors_and_queries_remain_readonly(data
 
 @pytest.mark.asyncio
 async def test_cancelling_actual_sqlite_work_releases_reader_and_allows_writer(database):
-    import asyncio
-    import threading
-
     ledger = EventLedgerRepository(database)
     original = await _event(database, ledger, "cancel-source", "source")
     started = threading.Event()
 
     async def long_query():
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             connection = await session.connection()
             raw = await connection.get_raw_connection()
             driver = raw.driver_connection
@@ -390,6 +539,177 @@ async def test_cancelling_actual_sqlite_work_releases_reader_and_allows_writer(d
     assert page.events[0].sender_nickname == "after cancel"
 
 
+@pytest.mark.parametrize("phase", ("fetch", "match"))
+async def test_cancelling_stream_fetch_or_match_closes_cursor_and_keeps_pool_usable(
+    database, monkeypatch, phase
+):
+    import yuki.persistence.event_repository as module
+
+    ledger = EventLedgerRepository(database)
+    rows = [await _event(database, ledger, f"cancel-{phase}-{i}", "source") for i in range(4)]
+    streams = _observe_history_streams(monkeypatch)
+    started = threading.Event()
+    release_match = threading.Event()
+    original_match = module.match_fields
+
+    def blocked_match(*args):
+        started.set()
+        release_match.wait(5)
+        return original_match(*args)
+
+    if phase == "match":
+        monkeypatch.setattr(module, "match_fields", blocked_match)
+
+    async def long_query():
+        async with database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            predicates = ()
+            if phase == "fetch":
+                connection = await session.connection()
+                raw = await connection.get_raw_connection()
+
+                def signal():
+                    started.set()
+                    return 1
+
+                await raw.driver_connection.create_function("history_fetch_started", 0, signal)
+                predicates = (
+                    text(
+                        "CASE WHEN chat_events.id=:slow_id THEN "
+                        "(WITH RECURSIVE long_read(x) AS ("
+                        "SELECT history_fetch_started() UNION ALL "
+                        "SELECT x+1 FROM long_read WHERE x<1000000000) "
+                        "SELECT sum(x) FROM long_read)>0 ELSE 1 END"
+                    ).bindparams(slow_id=rows[-1].id),
+                )
+            await ledger.query_history(
+                session=session,
+                conversation_id=rows[0].canonical_conversation_id,
+                order="oldest",
+                keyword="source",
+                predicates=predicates,
+            )
+
+    query = asyncio.create_task(long_query())
+    try:
+        assert await asyncio.to_thread(started.wait, 5), f"{phase} did not start"
+        assert streams, "the long operation must happen after opening the stream"
+        query.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(query, 2)
+        assert all(stream.closed for stream in streams)
+    finally:
+        release_match.set()
+        if not query.done():
+            query.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await query
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(ChatEventModel)
+            .where(ChatEventModel.id == rows[0].id)
+            .values(content="after stream cancel")
+        )
+    page = await ledger.query_history(conversation_id=rows[0].canonical_conversation_id)
+    assert next(row for row in page.events if row.id == rows[0].id).content == "after stream cancel"
+
+
+async def test_cancellation_when_stream_becomes_ready_still_closes_its_cursor(
+    database, monkeypatch
+):
+    ledger = EventLedgerRepository(database)
+    row = await _event(database, ledger, "cancel-ready", "source")
+    opened = []
+    original = AsyncSession.stream_scalars
+
+    async def cancel_after_open(session, *args, **kwargs):
+        stream = await original(session, *args, **kwargs)
+        opened.append(stream)
+        asyncio.get_running_loop().call_soon(query.cancel)
+        return stream
+
+    monkeypatch.setattr(AsyncSession, "stream_scalars", cancel_after_open)
+    query = asyncio.create_task(ledger.query_history(conversation_id=row.canonical_conversation_id))
+    with pytest.raises(asyncio.CancelledError):
+        await query
+    assert opened and all(stream.closed for stream in opened)
+
+
+async def test_early_stream_exit_keeps_callers_snapshot_and_unflushed_changes(
+    database, monkeypatch
+):
+    ledger = EventLedgerRepository(database)
+    rows = [await _event(database, ledger, f"owned-{i}", "source") for i in range(3)]
+    streams = _observe_history_streams(monkeypatch)
+    async with database.read_session() as session:
+        await session.execute(text("BEGIN"))
+        person = await session.get(CanonicalPersonModel, rows[0].author_person_id)
+        person.display_name = "pending caller change"
+        page = await ledger.query_history(
+            session=session, conversation_id=rows[0].canonical_conversation_id, limit=1
+        )
+        assert page.has_more and all(stream.closed for stream in streams)
+        assert session.in_transaction() and person in session.dirty
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(ChatEventModel).where(ChatEventModel.id == rows[0].id).values(content="new")
+            )
+        with session.no_autoflush:
+            assert (
+                await session.scalar(
+                    text("SELECT content FROM chat_events WHERE id=:id"), {"id": rows[0].id}
+                )
+                == "source"
+            )
+        await session.rollback()
+    async with database.read_session() as reader:
+        assert (
+            await reader.scalar(
+                text("SELECT content FROM chat_events WHERE id=:id"), {"id": rows[0].id}
+            )
+            == "new"
+        )
+        actual_person = await reader.get(CanonicalPersonModel, rows[0].author_person_id)
+        assert actual_person.display_name != "pending caller change"
+
+
+@pytest.mark.parametrize(("before", "after"), ((0, 0), (1, 0), (0, 1), (1, 1)))
+async def test_search_neighbors_only_read_requested_sides_without_rechecking_hit(
+    database, monkeypatch, before, after
+):
+    ledger = EventLedgerRepository(database)
+    rows = [
+        await _event(database, ledger, f"side-{i}", "hit" if i == 2 else "neighbor")
+        for i in range(5)
+    ]
+    streams = _observe_history_streams(monkeypatch)
+    statements = []
+
+    def observe(_c, _cur, statement, params, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            if statements:
+                assert all(stream.closed for stream in streams)
+            statements.append((statement, params))
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        page = await ledger.query_history(
+            conversation_id=rows[0].canonical_conversation_id,
+            keyword="hit",
+            context_before=before,
+            context_after=after,
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    assert [row.id for row in page.events] == [rows[2].id]
+    assert [row.id for row in page.context] == [
+        row.id for row, included in ((rows[1], before), (rows[3], after)) if included
+    ]
+    assert len(statements) <= 1 + bool(before) + bool(after)
+    for statement, params in statements[1:]:
+        assert "LIMIT" in statement and params[-2] == 1
+
+
 @pytest.mark.asyncio
 async def test_oldest_cursor_never_misses_new_event_after_deleted_maximum(database):
     ledger = EventLedgerRepository(database)
@@ -409,7 +729,7 @@ async def test_oldest_cursor_never_misses_new_event_after_deleted_maximum(databa
 
 @pytest.mark.asyncio
 async def test_merged_family_text_query_keeps_original_authors_and_separate_conversations(database):
-    from yuki.identity.person_identity import merge_persons
+    from tests.support.person_merge import merge_persons
 
     ledger = EventLedgerRepository(database)
     rows = [
@@ -426,8 +746,10 @@ async def test_merged_family_text_query_keeps_original_authors_and_separate_conv
         content="同族稀有证据",
     )
     first, middle, root = (row.author_person_id for row in rows)
-    await database.apply_snapshot_write(lambda session: merge_persons(session, first, middle))
-    await database.apply_snapshot_write(lambda session: merge_persons(session, middle, root))
+    async with database.immediate_session() as session:
+        await merge_persons(session, first, middle)
+    async with database.immediate_session() as session:
+        await merge_persons(session, middle, root)
     for person in (first, middle, root):
         page = await ledger.query_history(
             conversation_id=rows[0].canonical_conversation_id,
@@ -492,7 +814,7 @@ async def test_live_page_continuation_accepts_new_asr_without_replaying_newer_ro
     first = await ledger.query_history(conversation_id=conversation, keyword="电动车", limit=1)
     assert [row.id for row in first.events] == [newest.id]
     assert first.has_more and first.next_cursor == newest.id
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.get(CanonicalConversationModel, conversation)
         generation = source.generation
     assert await ledger.set_audio_transcript(

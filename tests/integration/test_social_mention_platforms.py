@@ -38,7 +38,7 @@ async def invoke(env, arguments, *, account="10001"):
             direction="inbound",
             content="hello from my other account",
         )
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         event = await session.scalar(
             select(ChatEventModel).where(
                 ChatEventModel.direction == "inbound", ChatEventModel.sender_user_id == account
@@ -103,7 +103,7 @@ async def telegram_target(env, accounts):
                 now=now,
                 platform="telegram",
             )
-            from yuki.identity.person_identity import merge_persons
+            from tests.support.person_merge import merge_persons
 
             await merge_persons(session, binding.person_id, env.person)
             bindings.append(binding.id)
@@ -114,7 +114,7 @@ async def telegram_target(env, accounts):
 
 
 async def account_id(env, native, platform="qq"):
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         return await session.scalar(
             select(AccountModel.id).where(
                 AccountModel.platform == platform, AccountModel.external_account_id == native
@@ -123,21 +123,20 @@ async def account_id(env, native, platform="qq"):
 
 
 async def observe(env, binding_id, name, *, group="20001"):
-    from yuki.identity.person_state import observe_canonical_person
+    from tests.support.account_observations import apply_observations, profile_message
 
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.read_session() as session:
         binding = await session.get(IdentityBindingModel, binding_id)
-        await observe_canonical_person(
-            session,
-            binding=binding,
+    await apply_observations(
+        env.db,
+        profile_message(
+            user_id=binding.external_account_id,
             nickname=name,
             group_id=group,
             group_card=name,
-            group_name="",
-            nickname_known=True,
-            group_card_known=True,
-            now=datetime.now(UTC),
-        )
+            platform=binding.platform,
+        ),
+    )
 
 
 @pytest.mark.parametrize("account", ["10001", "10002"])
@@ -203,7 +202,7 @@ async def test_unknown_telegram_username_does_not_invent_an_internal_account(dat
 async def test_same_person_two_accounts_default_to_the_recent_speaking_account(database, tmp_path):
     env = await social_env(database, tmp_path)
     other = await add_second_account(env)
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         first = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.account_id == env.account)
         )
@@ -229,7 +228,7 @@ async def test_target_with_no_inbound_history_and_disabled_person_can_be_mention
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         await ensure_person(session, "10003")
         target = await session.scalar(
             select(IdentityBindingModel)

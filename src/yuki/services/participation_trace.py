@@ -54,7 +54,7 @@ class TracedSemanticObserver:
             ids.update(option.target for option in snapshot.focus.unit_options)
             if snapshot.participation is not None:
                 ids.update(unit.target for unit in snapshot.participation.units)
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 roots = await current_person_ids(reader, ids)
 
             def current_actor(actor: str) -> str:

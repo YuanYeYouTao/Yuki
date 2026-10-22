@@ -5,8 +5,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import AdminAuditService
@@ -20,9 +21,12 @@ from yuki.memory.dream.worker import DreamWorker
 from yuki.memory.embedding.models import MemoryEmbeddingHealth
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
 from yuki.memory.enums import (
+    MemoryAuthority,
     MemoryInvalidationReason,
     MemoryKind,
     MemoryScopeType,
+    MemorySourceType,
+    MemoryStatus,
     MemoryTargetRole,
 )
 from yuki.memory.fts import SQLiteMemoryFTSIndex
@@ -33,6 +37,7 @@ from yuki.memory.models import (
     MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
+    MemoryFactCreate,
     MemoryFactStateEvent,
     MemoryIndexHealth,
     MemoryRetrievalResult,
@@ -138,7 +143,8 @@ class MemoryAdminService:
         *,
         target_person_id: str | None = None,
     ) -> tuple[MemoryFact, ...]:
-        async with self._memories.repository.transaction(read_snapshot=True) as session:
+        async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             target_person_id = await self._require_authorized_person_target(
                 actor, target, person_id=target_person_id, session=session
             )
@@ -151,7 +157,8 @@ class MemoryAdminService:
         *,
         target_person_id: str,
     ) -> tuple[MemoryFact, ...]:
-        async with self._memories.repository.transaction(read_snapshot=True) as session:
+        async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             person_id = await self._require_authorized_person_target(
                 actor, target, person_id=target_person_id, session=session
             )
@@ -265,27 +272,29 @@ class MemoryAdminService:
         if mutation is not None:
             row = await self._mutation_fact(mutation)
             assert row is not None
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="add",
-                target_type="user",
-                target_id=target,
-                before=None,
-                after={"memory_id": row.id, "content": normalized},
-                success=True,
-                duration_seconds=time.perf_counter() - started,
-            )
             return row
+
+        draft = MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id=target,
+            canonical_subject_person_id=target_person_id,
+            kind=MemoryKind.FACT,
+            memory_key=f"explicit-{uuid4()}",
+            category="explicit",
+            content=normalized,
+            importance=5,
+            confidence=1,
+            source_type=MemorySourceType.EXPLICIT,
+            authority=MemoryAuthority.EXPLICIT,
+        )
+        prepared = await self._memories.prepare_write((), targets=(draft,))
 
         async def write(session: AsyncSession) -> MemoryFact:
             await self._require_authorized_person_target(
                 actor, target, person_id=target_person_id, session=session
             )
-            row = await self._memories.add_explicit_person(
-                target,
-                normalized,
-                person_id=target_person_id,
+            row = await self._memories.remember(
+                draft,
                 evidence=evidence,
                 session=session,
             )
@@ -303,7 +312,8 @@ class MemoryAdminService:
             )
             return row
 
-        row = await self._memories.repository.apply_evidence_write(write)
+        async with self._memories.repository.write_session(prepared) as writer:
+            row = await write(writer)
         await self._memories.schedule_embedding(row.id)
         return row
 
@@ -344,37 +354,14 @@ class MemoryAdminService:
         )
         if mutation is not None:
             updated = mutation.ok and mutation.new_fact_id is not None
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="update",
-                target_type="user",
-                target_id=target,
-                before={
-                    "memory_id": memory_id,
-                    "content": current.content if current is not None else None,
-                },
-                after={"memory_id": mutation.new_fact_id, "content": normalized},
-                success=updated,
-                error_category=None if updated else mutation.reason_code,
-                duration_seconds=time.perf_counter() - started,
-            )
             return updated
 
         async def write(session: AsyncSession) -> MemoryFact | None:
             await self._require_authorized_person_target(
                 actor, target, person_id=target_person_id, session=session
             )
-            before = next(
-                (
-                    row
-                    for row in await self._memories.list_person(
-                        person_id=target_person_id,
-                        session=session,
-                    )
-                    if row.id == memory_id
-                ),
-                None,
+            before = await self._person_fact(
+                session, memory_id, target=target, person_id=target_person_id
             )
             updated_row = await self._memories.update_explicit_person(
                 memory_id,
@@ -399,7 +386,11 @@ class MemoryAdminService:
             )
             return updated_row
 
-        updated_row = await self._memories.repository.apply_evidence_write(write)
+        prepared = await self._memories.prepare_write(
+            (memory_id,), copies=(((memory_id,), current, None),) if current is not None else ()
+        )
+        async with self._memories.repository.write_session(prepared) as writer:
+            updated_row = await write(writer)
         if updated_row is not None:
             await self._memories.schedule_embedding(updated_row.id)
         return updated_row is not None
@@ -416,7 +407,6 @@ class MemoryAdminService:
             actor, target, person_id=target_person_id
         )
         started = time.perf_counter()
-        current = await self._memories.get_fact(memory_id)
         mutation = await self._apply_mutation(
             actor,
             target=ResolvedSubject(
@@ -431,37 +421,14 @@ class MemoryAdminService:
         )
         if mutation is not None:
             deleted = mutation.ok
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="delete",
-                target_type="user",
-                target_id=target,
-                before={
-                    "memory_id": memory_id,
-                    "content": current.content if current is not None else None,
-                },
-                after=None,
-                success=deleted,
-                error_category=None if deleted else mutation.reason_code,
-                duration_seconds=time.perf_counter() - started,
-            )
             return deleted
 
         async def write(session: AsyncSession) -> bool:
             await self._require_authorized_person_target(
                 actor, target, person_id=target_person_id, session=session
             )
-            before = next(
-                (
-                    row
-                    for row in await self._memories.list_person(
-                        person_id=target_person_id,
-                        session=session,
-                    )
-                    if row.id == memory_id
-                ),
-                None,
+            before = await self._person_fact(
+                session, memory_id, target=target, person_id=target_person_id
             )
             deleted = await self._memories.invalidate_person(
                 memory_id,
@@ -484,7 +451,9 @@ class MemoryAdminService:
             )
             return deleted
 
-        return await self._memories.repository.apply_evidence_write(write)
+        prepared = await self._memories.prepare_write((memory_id,))
+        async with self._memories.repository.write_session(prepared) as writer:
+            return await write(writer)
 
     async def list_evidence(
         self,
@@ -494,7 +463,8 @@ class MemoryAdminService:
         *,
         target_person_id: str | None = None,
     ) -> tuple[MemoryEvidence, ...]:
-        async with self._memories.repository.transaction(read_snapshot=True) as session:
+        async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             target_person_id = await self._require_authorized_person_target(
                 actor, target, person_id=target_person_id, session=session
             )
@@ -553,7 +523,7 @@ class MemoryAdminService:
             raise PermissionError("只有超级管理员可以诊断群记忆")
         from yuki.admin.config_owners import resolve_space_owner
 
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             space_id = await resolve_space_owner(session, space_id or actor.space_id)
         runtime = await self._runtime_config.snapshot(group_id=space_id)
         target = MemoryEntityTarget(
@@ -630,13 +600,15 @@ class MemoryAdminService:
         return await self._memory_embeddings.purge_old()
 
     async def show_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
-        async with self._memories.repository.transaction(read_snapshot=True) as session:
+        async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             fact = await self._fact_audit.get_fact(fact_id, session=session)
             await self._require_fact_access(actor, fact, session=session)
             return fact
 
     async def explain_fact(self, actor: AdminActor, fact_id: int) -> dict[str, object] | None:
-        async with self._memories.repository.transaction(read_snapshot=True) as session:
+        async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             fact = await self._fact_audit.get_fact(fact_id, session=session)
             await self._require_fact_access(actor, fact, session=session)
             if fact is None:
@@ -657,7 +629,8 @@ class MemoryAdminService:
     async def fact_history(
         self, actor: AdminActor, fact_id: int
     ) -> tuple[MemoryFactStateEvent, ...]:
-        async with self._memories.repository.transaction(read_snapshot=True) as session:
+        async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             fact = await self._fact_audit.get_fact(fact_id, session=session)
             await self._require_fact_access(actor, fact, session=session)
             return (
@@ -1103,6 +1076,21 @@ class MemoryAdminService:
             raise ValueError(f"记忆变更未提交：{mutation.reason_code}")
         return row
 
+    async def _person_fact(
+        self, session: AsyncSession, fact_id: int, *, target: str, person_id: str
+    ) -> MemoryFact | None:
+        fact = await self._memories.get_fact(fact_id, session=session)
+        if (
+            fact is not None
+            and fact.scope_type is MemoryScopeType.PERSON
+            and fact.status is MemoryStatus.ACTIVE
+            and await self._memories.person_owns_fact(
+                fact, actor_user_id=target, actor_person_id=person_id, session=session
+            )
+        ):
+            return fact
+        return None
+
     async def _require_authorized_person_target(
         self,
         actor: AdminActor | MemoryPreferenceTrigger,
@@ -1119,8 +1107,8 @@ class MemoryAdminService:
         )
         from yuki.persistence.unit_of_work import optional_session
 
-        actor_person_id = await self._actor_person_id(actor)
         async with optional_session(self._database, session, write=False) as reader:
+            actor_person_id = await self._actor_person_id(actor, session=reader)
             if actor_person_id is not None and not await reader.scalar(
                 select(person_enabled_condition(actor_person_id))
             ):
@@ -1165,7 +1153,7 @@ class MemoryAdminService:
         if not await self._memories.person_owns_fact(
             fact,
             actor_user_id=actor.user_id,
-            actor_person_id=await self._actor_person_id(actor),
+            actor_person_id=await self._actor_person_id(actor, session=session),
             session=session,
         ):
             raise PermissionError("只能查看与本人有关的人物记忆")
@@ -1193,15 +1181,24 @@ class MemoryAdminService:
         from yuki.identity.authority import person_is_superuser
         from yuki.persistence.unit_of_work import optional_session
 
-        person_id = await self._actor_person_id(actor)
         async with optional_session(self._database, session, write=False) as reader:
+            person_id = await self._actor_person_id(actor, session=reader)
             return await person_is_superuser(reader, person_id)
 
-    async def _actor_person_id(self, actor: AdminActor | MemoryPreferenceTrigger) -> str | None:
+    async def _actor_person_id(
+        self,
+        actor: AdminActor | MemoryPreferenceTrigger,
+        *,
+        session: AsyncSession | None = None,
+    ) -> str | None:
         if actor.person_id is not None:
             return actor.person_id
         if self._ledger is not None and actor.trigger_event_id is not None:
-            event = await self._ledger.get_event(actor.trigger_event_id)
+            from yuki.persistence.models import ChatEventModel
+            from yuki.persistence.unit_of_work import optional_session
+
+            async with optional_session(self._database, session, write=False) as reader:
+                event = await reader.get(ChatEventModel, actor.trigger_event_id)
             if event is not None and event.sender_user_id == actor.user_id:
                 return event.author_person_id
             return None

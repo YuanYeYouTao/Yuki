@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from sqlalchemy import event, func, select, update
@@ -56,7 +57,6 @@ async def test_dream_recovery_waits_for_writer_and_reads_committed_operation_rec
         sql = statement.lstrip().upper()
         if sql.startswith("BEGIN IMMEDIATE"):
             connection.info["test_writer_held"] = True
-            acquiring.set()
         if "GROUP BY MEMORY_DREAM_OPERATIONS.CLUSTER_ID" in sql:
             aggregate_reads += 1
             assert connection.info.get("test_writer_held")
@@ -64,6 +64,15 @@ async def test_dream_recovery_waits_for_writer_and_reads_committed_operation_rec
     def released(connection):
         connection.info.pop("test_writer_held", None)
 
+    original = database.immediate_session
+
+    @asynccontextmanager
+    async def admission():
+        acquiring.set()
+        async with original() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", admission)
     engine = database.engine.sync_engine
     event.listen(engine, "before_cursor_execute", capture)
     event.listen(engine, "commit", released)
@@ -87,7 +96,7 @@ async def test_dream_recovery_waits_for_writer_and_reads_committed_operation_rec
     assert aggregate_reads == 1
     current = await dreams.get_run(run.public_id)
     assert current.completed_clusters == 1 and current.model_calls == 7
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         cluster = await reader.scalar(select(MemoryDreamClusterModel))
         assert cluster.status == "completed" and cluster.operation_count == 1
         assert cluster.attempts == 2 and cluster.model_calls == 2
@@ -138,7 +147,7 @@ async def test_dream_run_cluster_and_preview_json_are_prepared_before_first_writ
     event.listen(engine, "rollback", released)
     try:
         await create(dreams, specs(rows))
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             identity = await reader.scalar(select(MemoryDreamClusterModel.id))
         await dreams.save_preview(
             cluster_id=identity,

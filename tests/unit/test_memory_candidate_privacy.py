@@ -67,10 +67,10 @@ async def test_forget_erases_historical_candidate_body_in_every_original_status(
     )
     erased_candidate = await _candidate(database, erased, status=status)
     retained_candidate = await _candidate(database, retained, status=status)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = _values(await reader.get(MemoryClaimCandidateModel, retained_candidate))
     assert await PeopleRepository(database).delete_person_id(erased.author_person_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(ChatEventModel, erased.id) is None
         assert await reader.get(MemoryClaimCandidateModel, erased_candidate) is None
         assert not list(
@@ -91,7 +91,7 @@ async def test_any_erased_candidate_source_cleans_body_without_clearing_unrelate
     mixed = await _candidate(database, other, erased)
     unrelated = await _candidate(database, other)
     assert await PeopleRepository(database).delete_person_id(erased.author_person_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(MemoryClaimCandidateModel, mixed) is None
         assert await reader.get(MemoryClaimCandidateModel, unrelated) is not None
         assert await reader.get(ChatEventModel, other.id) is not None
@@ -130,10 +130,10 @@ async def test_qq_forget_keeps_same_number_telegram_candidate_and_source(databas
     assert telegram.author_person_id == tg_person != qq.author_person_id
     qq_candidate = await _candidate(database, qq)
     tg_candidate = await _candidate(database, telegram)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         before = _values(await reader.get(MemoryClaimCandidateModel, tg_candidate))
     assert await PeopleRepository(database).delete_person_id(qq.author_person_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(MemoryClaimCandidateModel, qq_candidate) is None
         assert _values(await reader.get(MemoryClaimCandidateModel, tg_candidate)) == before
         assert (await reader.get(ChatEventModel, telegram.id)).author_person_id == tg_person
@@ -159,7 +159,7 @@ async def test_forget_cleans_candidate_of_other_authors_actually_redacted_mentio
     candidate = await _candidate(database, mention)
     assert mention.author_person_id != owner.author_person_id
     assert await PeopleRepository(database).delete_person_id(owner.author_person_id)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(MemoryClaimCandidateModel, candidate) is None
         remaining = await reader.get(ChatEventModel, mention.id)
         assert remaining is not None and remaining.content == "[已删除用户]的私人资料"

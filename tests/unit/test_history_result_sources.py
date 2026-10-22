@@ -96,7 +96,7 @@ async def test_erased_text_cannot_enter_journal_or_reexecute_but_sent_receipt_su
 
     with pytest.raises(WorkConflict, match="work_effect_history_source_changed"):
         await invoke_tool(session, call, read_then_erase, side_effecting=False)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.scalar(
             select(effects.c.receipt_json).where(effects.c.effect_key == session.call_key(call.id))
         )
@@ -161,7 +161,7 @@ async def test_independent_audit_uses_read_privacy_instead_of_late_current_value
             )
     finally:
         current_result_capture.reset(token)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(MemoryToolReceiptModel.id)) is None
 
 
@@ -316,7 +316,7 @@ async def test_forget_follows_copied_history_sources_across_conversations(databa
         source_privacy_generation=0,
     )
     assert await PeopleRepository(database).delete_person_id(forgotten)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.get(ChatEventModel, event.id) is None
         assert await session.scalar(select(work.c.id).where(work.c.id == identity)) is None
         assert await session.get(MemoryToolReceiptModel, receipt_id) is None

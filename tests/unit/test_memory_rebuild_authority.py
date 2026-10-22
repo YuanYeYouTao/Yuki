@@ -1,6 +1,8 @@
+
 """A historical rebuild keeps paid work while its original Person loses authorization."""
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from sqlalchemy import select
 from tests.unit.test_memory_rebuild import _admin, _event, _ExtractionProvider, _service
@@ -69,7 +71,7 @@ async def test_rebuild_rechecks_revocation_after_actual_model_queue_wait(databas
         await service.repository.get_run(run.public_id)
     ).status is MemoryRebuildRunStatus.EXTRACTION_PAUSED
     assert (await service.repository.statistics(run.public_id))["extraction_requests"] == 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         item = await reader.scalar(select(MemoryRebuildItemModel))
         assert item.status == "pending"
 
@@ -87,20 +89,22 @@ async def test_rebuild_writer_rechecks_role_and_preserves_paid_staging(database,
     assert await worker.process_once() == 0
     await service.set_review(run.public_id, "all", approved=True, actor_user_id=owner)
     await service.commit(run.public_id, actor_user_id=owner)
-    apply = facts.repository.apply_evidence_write
+    apply = facts.repository.write_session
 
-    async def revoke_before_writer(callback):
+    @asynccontextmanager
+    async def revoke_before_writer(prepared):
         await qualification(database, owner, False)
-        return await apply(callback)
+        async with apply(prepared) as writer:
+            yield writer
 
     with monkeypatch.context() as revoked:
-        revoked.setattr(facts.repository, "apply_evidence_write", revoke_before_writer)
+        revoked.setattr(facts.repository, "write_session", revoke_before_writer)
         assert await worker.process_once() == 0
     paused = await service.repository.get_run(run.public_id)
     assert paused.status is MemoryRebuildRunStatus.COMMIT_PAUSED
     assert paused.error_category == "initiator_permission_denied"
     assert await facts.list_person("1001") == ()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         proposal = await reader.scalar(select(MemoryRebuildProposalModel))
         assert proposal.commit_status == MemoryRebuildCommitStatus.PENDING.value
     assert (await service.repository.statistics(run.public_id))["extraction_requests"] == 1

@@ -1,6 +1,7 @@
 """Real SQLite append work follows new chunks, with the original publication fence."""
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -35,7 +36,7 @@ async def _prepare(repository, context, fragments, previous=None, *, reason=None
 
 
 async def _chunks(database):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return list(
             await reader.execute(
                 select(
@@ -45,6 +46,41 @@ async def _chunks(database):
                 ).order_by(PromptProjectionChunkModel.ordinal)
             )
         )
+
+
+async def test_rebuild_proves_large_existing_selection_with_native_parameter_budget(database):
+    _ledger, context, _seed = await scene(database, 350)
+    repository = PromptProjectionRepository(database)
+    fragments = FrozenFragments.load([]).extend_history(context.history_fragments, ())
+    publication = await _prepare(repository, context, fragments, reason="bootstrap")
+    async with database.immediate_session() as writer:
+        previous = await publication(writer)
+    async with database.read_session() as reader:
+        original = list(await reader.scalars(select(ContextSelectionModel.source_key)))
+    assert len(original) > 300
+
+    def native_limit(dbapi, _record, _proxy):
+        dbapi.run_async(
+            lambda driver: driver._execute(
+                driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300
+            )
+        )
+
+    event.listen(database.engine.sync_engine, "checkout", native_limit)
+    try:
+        publication = await _prepare(
+            repository, context, fragments, previous, reason="source_changed"
+        )
+        async with database.immediate_session() as writer:
+            rebuilt = await publication(writer)
+        assert rebuilt.epoch_id != previous.epoch_id
+        assert tuple(rebuilt.fragments.iter_fragments()) == tuple(fragments.iter_fragments())
+        async with database.read_session() as reader:
+            assert set(await reader.scalars(select(ContextSelectionModel.source_key))) == set(
+                original
+            )
+    finally:
+        event.remove(database.engine.sync_engine, "checkout", native_limit)
 
 
 async def test_hot_append_does_not_materialize_or_rewrite_the_original_prefix(
@@ -154,16 +190,14 @@ async def test_replacement_stores_current_bytes_and_retires_old_chunks_not_prove
     assert [(epoch, ordinal) for epoch, ordinal, _ in await _chunks(database)] == [
         (current.epoch_id, 1)
     ]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         first = await reader.scalar(select(ContextSelectionModel.payload_json))
     assert "first admitted" in first and "current epoch" not in first
     assert current.items()[0]["message"]["content"] == "current epoch"
 
 
 def _source(projection=None):
-    return PromptHistorySource(
-        (), projection=projection, timezone="UTC", after_event_id=0
-    )
+    return PromptHistorySource((), projection=projection, timezone="UTC", after_event_id=0)
 
 
 def test_source_metadata_uses_the_same_total_memory_budget_and_lru(database):

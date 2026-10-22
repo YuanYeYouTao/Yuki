@@ -66,7 +66,7 @@ async def active_work(database, tmp_path, *, reporting=None):
     work = WorkSession(control, "contract")
     control.session = work
     work.transcript = TurnTranscript((ChatMessage("system", "test"),))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         source = await session.scalar(select(ChatEventModel))
     runtime = ToolRuntime(
         inbound=None,
@@ -158,7 +158,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
     owner.sequence += 1
     await batch(calls[:1])  # Same Provider ID in a later model response.
     assert len([entry for entry in env.bot.calls if entry[0] == "send_group_msg"]) == 3
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_ids = set(await reader.scalars(select(SocialOperationModel.tool_call_id)))
         assert original_ids == {
             f"{owner.transcript.chain_id}:0:call_0",
@@ -205,7 +205,7 @@ async def test_post_effect_cancel_or_uncertain_commit_never_runs_unconfirmed_aud
 
     with pytest.raises(asyncio.CancelledError if mode == "cancel_audit" else RuntimeError):
         await invoke_tool(work, call, invoke)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(effects.c.state)) == "accepted"
     assert audit.await_count == (1 if mode == "cancel_audit" else 0)
     assert not defer_tool_audit(work.call_key(call.id), AsyncMock())
@@ -224,7 +224,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
     database, tmp_path, monkeypatch, metadata_only
 ):
     _env, work, runtime = await active_work(database, tmp_path)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await ensure_person(session, "10002")
     source_id = runtime.trigger_event_id
     if metadata_only:
@@ -252,7 +252,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
     result = await invoke_tool(work, call, invoke)
     assert result == "confirmed" and dispatched == 1
     assert await work.journal.effect_result(work.call_key(call.id)) == result
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(effects.c.state)) == "accepted"
         assert await session.get(ChatEventModel, source_id) is not None
         assert await session.scalar(select(ExecutionTraceStateModel.privacy_generation)) == 1
@@ -266,12 +266,12 @@ async def test_group_binding_move_preserves_original_event_receipt_owner(
     env, work, runtime = await active_work(database, tmp_path)
     recorder = ToolReceiptRepository(database)
     call = ToolCall("original-owner-call", ToolFunction("send", "{}"))
-    sessions = database.sessions
+    sessions = database.read_session
     destination = None
 
     async def move_binding():
         nonlocal destination
-        async with sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             destination = await ensure_space(session, "20002")
             binding = await session.scalar(
                 select(SpaceBindingModel).where(SpaceBindingModel.external_space_id == "20001")
@@ -303,11 +303,11 @@ async def test_group_binding_move_preserves_original_event_receipt_owner(
                 if preparation:
                     await move_binding()
 
-            monkeypatch.setattr(database, "sessions", moved_after_prepare)
+            monkeypatch.setattr(database, "read_session", moved_after_prepare)
             try:
                 await record_receipt(**kwargs)
             finally:
-                monkeypatch.setattr(database, "sessions", sessions)
+                monkeypatch.setattr(database, "read_session", sessions)
 
         monkeypatch.setattr(recorder, "record_receipt", record_after_move)
 
@@ -343,9 +343,9 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
     database, tmp_path, monkeypatch, change
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         source = await session.scalar(select(ChatEventModel))
-    original = database.sessions
+    original = database.read_session
     first = True
 
     @asynccontextmanager
@@ -356,7 +356,7 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
         async with original() as session:
             yield session
         if is_prepare:
-            async with original() as session, session.begin():
+            async with database.immediate_session() as session:
                 if change == "privacy":
                     session.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
                 elif change == "binding_disabled":
@@ -364,7 +364,7 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
                 else:
                     await session.execute(update(CanonicalConversationModel).values(generation=2))
 
-    monkeypatch.setattr(database, "sessions", changed_after_prepare)
+    monkeypatch.setattr(database, "read_session", changed_after_prepare)
 
     async def record_original_receipt():
         await ToolReceiptRepository(database).record_receipt(
@@ -405,10 +405,10 @@ async def test_self_receipt_keeps_existing_call_key_and_refuses_erased_generatio
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         assert await session.scalar(select(MemoryToolReceiptModel.source_call_key)) == old_key
         await session.execute(update(CanonicalConversationModel).values(generation=2))
     with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
         await record(database, source, run_id, call="call-2")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 1

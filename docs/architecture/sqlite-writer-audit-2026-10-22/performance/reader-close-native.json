@@ -1,0 +1,450 @@
+{
+  "source_before": "48f621f1b9115b2977bd114a835917b4423167a9",
+  "implemented_reader_close": "8bc4d437ea0b6b9483debf8dbd8d19f33084f30b",
+  "sqlalchemy": "2.0.51",
+  "aiosqlite": "0.22.1",
+  "method": "Disposable subclass counts functions when the original aiosqlite worker executes them. SQLite trace separately records actual statements; no product pool hook or reset configuration change. Actual Database and original SQLiteConnection are used.",
+  "probe": {
+    "reader_cases": [
+      {
+        "order": "current",
+        "case": "empty",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 0,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "current",
+        "case": "select",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 0,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "current",
+        "case": "begin",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "current",
+        "case": "dirty_flush",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "current",
+        "case": "body_error",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "current",
+        "case": "nested",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "current",
+        "case": "repeated_cancel_during_dirty_rollback",
+        "native_rollbacks": 2,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "empty",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 0,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "select",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": false,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 0,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "begin",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "dirty_flush",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "body_error",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "nested",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      },
+      {
+        "order": "connection_first",
+        "case": "repeated_cancel_during_dirty_rollback",
+        "native_rollbacks": 1,
+        "native_commits": 0,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "reuse": {
+          "native_transaction_open": false,
+          "dirty_rows": 0
+        }
+      }
+    ],
+    "deferred_commit": [
+      {
+        "pool_reset": "default",
+        "error": "IntegrityError",
+        "phase": "commit",
+        "native_rollbacks": 1,
+        "native_commits": 1,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "commit",
+            "active_before": true,
+            "active_after": true
+          },
+          {
+            "kind": "native",
+            "verb": "rollback",
+            "active_before": true,
+            "active_after": false
+          }
+        ],
+        "sqlite_rollback_statements": 1,
+        "native_transaction_open": false,
+        "next_reader_child_rows": 0
+      },
+      {
+        "pool_reset": "none",
+        "error": "IntegrityError",
+        "phase": "commit",
+        "native_rollbacks": 0,
+        "native_commits": 1,
+        "native": [
+          {
+            "kind": "native",
+            "verb": "commit",
+            "active_before": true,
+            "active_after": true
+          }
+        ],
+        "sqlite_rollback_statements": 0,
+        "native_transaction_open": true,
+        "next_reader_child_rows": 1
+      }
+    ]
+  },
+  "reader_explicit_commit_failure": [
+    {
+      "order": "current",
+      "explicit_reader_rollback": false,
+      "error": "IntegrityError",
+      "native_rollbacks": 0,
+      "native_commits": 1,
+      "native": [
+        {
+          "kind": "native",
+          "verb": "commit",
+          "active_before": true,
+          "active_after": true
+        }
+      ],
+      "sqlite_rollback_statements": 0,
+      "native_transaction_open_after_exit": true,
+      "next_reader_child_rows": 1
+    },
+    {
+      "order": "current",
+      "explicit_reader_rollback": true,
+      "error": "IntegrityError",
+      "native_rollbacks": 1,
+      "native_commits": 1,
+      "native": [
+        {
+          "kind": "native",
+          "verb": "commit",
+          "active_before": true,
+          "active_after": true
+        },
+        {
+          "kind": "native",
+          "verb": "rollback",
+          "active_before": true,
+          "active_after": false
+        }
+      ],
+      "sqlite_rollback_statements": 1,
+      "native_transaction_open_after_exit": false,
+      "next_reader_child_rows": 0
+    },
+    {
+      "order": "connection_first",
+      "explicit_reader_rollback": false,
+      "error": "IntegrityError",
+      "native_rollbacks": 0,
+      "native_commits": 1,
+      "native": [
+        {
+          "kind": "native",
+          "verb": "commit",
+          "active_before": true,
+          "active_after": true
+        }
+      ],
+      "sqlite_rollback_statements": 0,
+      "native_transaction_open_after_exit": true,
+      "next_reader_child_rows": 1
+    },
+    {
+      "order": "connection_first",
+      "explicit_reader_rollback": true,
+      "error": "IntegrityError",
+      "native_rollbacks": 1,
+      "native_commits": 1,
+      "native": [
+        {
+          "kind": "native",
+          "verb": "commit",
+          "active_before": true,
+          "active_after": true
+        },
+        {
+          "kind": "native",
+          "verb": "rollback",
+          "active_before": true,
+          "active_after": false
+        }
+      ],
+      "sqlite_rollback_statements": 1,
+      "native_transaction_open_after_exit": false,
+      "next_reader_child_rows": 0
+    }
+  ],
+  "production_scope": "Owned reader consumers do not explicitly commit. The separate writer and its default pool reset remain unchanged. SQLAlchemy explicit reader COMMIT failure behavior is identical for both close orders."
+}

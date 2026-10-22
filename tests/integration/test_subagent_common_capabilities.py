@@ -23,7 +23,7 @@ from yuki_plugin_sdk.results import ToolResult
 async def _message_child(database, tmp_path, *, privileged=False):
     database.subagents_enabled = True
     case = await setup_run(database, tmp_path, mode="silent", privileged=privileged)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.scalar(select(ChatEventModel))
     source = {
         "origin": "user_message",
@@ -130,7 +130,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
             == calls[2][1]["text"]
         )
         assert len(await case.repository.list_for_creator(case.env.person)) == 2
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             owned_effects = list((await reader.execute(select(effects))).mappings())
         assert owned_effects and {row["work_id"] for row in owned_effects} == {child}
         assert (await repository.get(parent["id"]))["model_requests"] == 0
@@ -191,7 +191,7 @@ async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
     assert json.loads(settled["checkpoint_json"])["sync_result"] == "verified child result"
     assert sum(action == "send_group_msg" for action, _ in case.env.bot.calls) == 1
     assert await repository.get(parent["id"]) == parent_before
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         nested = list(await reader.scalars(select(work.c.id).where(work.c.parent_work_id == child)))
         mail = list(
             (
@@ -269,7 +269,7 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         "to-child",
     )
     assert result["waiting_parent"] and grand_control.ending == "waiting_user"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         messages = {
             row["source_key"]: row["work_id"]
             for row in (await reader.execute(select(inputs))).mappings()
@@ -307,9 +307,9 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     from yuki.services.execution_sources import BackgroundTaskSource, recover_execution_source
 
     _notifications, event_id, conversation = await _seed_job(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         job = await reader.scalar(select(PluginBackgroundTurnJobModel))
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         presence = await ensure_presence(writer, "8000")
     repository = WorkRepository(database)
     lease = await repository.acquire(conversation, 1)
@@ -339,7 +339,7 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     )
     await repository.release(lease)
     child_source = json.loads((await repository.get(child))["source_json"])
-    await database.close()
+    await database.engine.dispose()
     recovered = await recover_execution_source(
         database, conversation, child_source, request_id=child
     )

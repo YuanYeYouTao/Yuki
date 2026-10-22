@@ -1,18 +1,64 @@
 """Failed file publications are reclaimed without touching durable owners."""
 
+import asyncio
 import json
 import os
+import threading
 import time
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
+from yuki.persistence.models import ToolArtifactModel
 from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 def age(path):
     old = time.time() - 2 * 86400
     os.utime(path, (old, old))
+
+
+async def test_cancelled_publication_keeps_storage_owner_until_thread_exits(
+    database, tmp_path, monkeypatch
+):
+    root = tmp_path / "results"
+    store = ToolArtifactRepository(database, root, retention_seconds=60)
+    started = asyncio.Event()
+    proceed = threading.Event()
+    loop = asyncio.get_running_loop()
+    original = store._publish
+
+    def blocked(path, encoded):
+        loop.call_soon_threadsafe(started.set)
+        assert proceed.wait(5)
+        original(path, encoded)
+
+    monkeypatch.setattr(store, "_publish", blocked)
+    operation = asyncio.create_task(
+        store.write_artifact(
+            provider_id="core", tool_name="read", content="original result", media_type="text/plain"
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        operation.cancel()
+        await asyncio.sleep(0)
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done() and store._storage_lock.locked()
+    finally:
+        proceed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    assert not store._storage_lock.locked()
+    orphan = next(root.glob("*.json"))
+    assert orphan.read_text(encoding="utf-8") == "original result"
+    async with database.read_session() as reader:
+        assert not list(await reader.scalars(select(ToolArtifactModel)))
+    age(orphan)
+    assert await store.cleanup() == 1
+    assert not orphan.exists()
 
 
 @pytest.mark.asyncio

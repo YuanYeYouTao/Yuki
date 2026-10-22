@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
 from tests.support.canonical_identity import ensure_presence
@@ -84,7 +85,7 @@ from yuki.persistence.models import (
     MemoryFactRelationModel,
     MemoryMutationReceiptModel,
 )
-from yuki.persistence.repositories import EventLedgerRepository, PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.concurrency import ConcurrencyManager
 
 
@@ -318,13 +319,40 @@ async def test_candidate_provenance_includes_hidden_bot_and_cluster_preserves_or
         mutations,
     )
     payload, ref_map, fingerprint = await service._input(sources)
-    async with facts.repository.transaction(read_snapshot=True) as session:
+    async with database.read_session() as session:
+        await session.execute(text("BEGIN"))
         await facts.repository.prepare_evidence_rows(original_ids, session=session)
         prepared_payload, prepared_map, prepared_fingerprint = await service._input(
             sources, session=session
         )
     assert prepared_payload == payload and prepared_map == ref_map
     assert prepared_fingerprint == fingerprint
+
+
+@asynccontextmanager
+async def _dream_writer(facts, mutations, sources, *, anchor_id, outputs=()):
+    async with facts.repository.database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        prepared = await facts.prepare_write(
+            tuple(fact.id for fact in sources), targets=sources, session=reader
+        )
+        await mutations.prepare_dream_evidence(
+            sources, anchor_fact_id=anchor_id, recompose_outputs=outputs, session=reader
+        )
+    async with facts.repository.write_session(prepared) as writer:
+        yield writer
+
+
+async def _rollback(facts, mutations, public_id):
+    async with facts.repository.database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        prepared = await mutations.prepare_dream_rollback(public_id, session=reader)
+    if prepared is None:
+        return ()
+    async with facts.repository.write_session(prepared.evidence) as writer:
+        return await mutations.rollback_dream_operation(
+            public_id=public_id, prepared=prepared, session=writer
+        )
 
 
 @pytest.mark.asyncio
@@ -419,6 +447,7 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
     cluster_id = before.clusters[0].id
     assert before_run.model_calls == 1 and before.clusters[0].model_calls == 1
     assert before.clusters[0].status.value == "processing" and not before.operations
+    assert len(await dreams.ready_preview_fingerprints(cluster_id)) == 1
     assert (await facts.get_fact(source.id)).status is MemoryStatus.ACTIVE
     monkeypatch.setattr(facts, "requested_target_owners", resolver)
     worker = DreamWorker(settings=settings, repository=dreams, service=service)
@@ -436,9 +465,9 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
         await asyncio.wait_for(completed.wait(), timeout=5)
         page = await dreams.run_page(run.public_id)
         current_run = await dreams.get_run(run.public_id)
-        assert current_run.public_id == run.public_id and current_run.model_calls == 2
+        assert current_run.public_id == run.public_id and current_run.model_calls == 1
         assert page.clusters[0].id == cluster_id and page.clusters[0].attempts == 2
-        assert page.clusters[0].model_calls == 2 and len(provider.requests) == len(captured) == 2
+        assert page.clusters[0].model_calls == 1 and len(provider.requests) == len(captured) == 1
         assert len(page.operations) == 1
         output = await facts.get_fact(page.operations[0].output_fact_id)
         assert output.id != source.id and output.status is MemoryStatus.ACTIVE
@@ -466,7 +495,6 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
     database, operation, owner_state, scope_type
 ):
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     source = await _fact_with_evidence(
         facts,
         ledger,
@@ -541,7 +569,7 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
         ) == facts.persisted_target_owners(source)
     assert await service.process_cluster(run, cluster) == (0, 1, True)
     assert len(provider.requests) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored_operation = await session.scalar(select(MemoryDreamOperationModel))
         result = await session.scalar(select(MemoryDreamOperationResultModel))
         receipt = await session.scalar(select(MemoryMutationReceiptModel))
@@ -573,7 +601,7 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
     assert await dreams.reset_processing_after_restart() == 0
     assert await dreams.claim_next_cluster(run.public_id) is None
     assert len(provider.requests) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored_operation = await session.scalar(select(MemoryDreamOperationModel))
         result = await session.scalar(select(MemoryDreamOperationResultModel))
         receipt = await session.scalar(select(MemoryMutationReceiptModel))
@@ -589,7 +617,6 @@ async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
 @pytest.mark.asyncio
 async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) -> None:
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     first = await _fact_with_evidence(
         facts,
         ledger,
@@ -626,14 +653,8 @@ async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) 
     cluster = await dreams.claim_next_cluster(run.public_id)
     assert cluster is not None
 
-    async with facts.repository.transaction(read_snapshot=True) as session:
-        source_rows: list[MemoryFact] = []
-        for fact_id in (first.id, second.id):
-            fact = await facts.repository.get_fact(fact_id, session=session)
-            assert fact is not None
-            source_rows.append(fact)
-        sources = tuple(source_rows)
-        await mutations.prepare_dream_evidence(sources, anchor_fact_id=anchor.id, session=session)
+    sources = (await facts.get_fact(first.id), await facts.get_fact(second.id))
+    async with _dream_writer(facts, mutations, sources, anchor_id=anchor.id) as session:
         operation = await dreams.create_operation(
             cluster_id=cluster.id,
             action_index=1,
@@ -685,7 +706,7 @@ async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) 
     assert merged_source is not None and merged_source.status is MemoryStatus.SUPERSEDED
     assert merged_anchor is not None and merged_anchor.status is MemoryStatus.ACTIVE
     assert len(await facts.list_evidence(anchor.id, limit=10)) == 2
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipt = await session.scalar(
             select(MemoryMutationReceiptModel).where(
                 MemoryMutationReceiptModel.dream_operation_id == operation.id,
@@ -704,7 +725,7 @@ async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) 
         content="我喜欢散步",
     )
     unrelated_evidence = (await facts.list_evidence(unrelated.id, limit=10))[0]
-    async with facts.repository.transaction() as session:
+    async with database.immediate_session() as session:
         assert await facts.repository.add_relation(
             source_fact_id=unrelated.id,
             target_fact_id=first.id,
@@ -726,33 +747,29 @@ async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) 
         ("added_evidence_ids_json", unrelated_evidence.id, "Dream evidence reference"),
         ("added_relation_ids_json", unrelated_relation.id, "Dream relation reference"),
     ):
-        with pytest.raises(RuntimeError, match=error):
-            async with facts.repository.transaction(read_snapshot=True) as session:
-                await facts.prepare_evidence_write((first.id, second.id), session=session)
-                stored = await session.get(MemoryDreamOperationModel, operation.id)
-                assert stored is not None
-                setattr(stored, field, json.dumps([stale_id]))
-                await session.flush()
-                await mutations.rollback_dream_operation(
-                    public_id=operation.public_id,
-                    session=session,
-                )
+        async with database.immediate_session() as writer:
+            stored = await writer.get(MemoryDreamOperationModel, operation.id)
+            old = getattr(stored, field)
+            setattr(stored, field, json.dumps([stale_id]))
+        try:
+            with pytest.raises(RuntimeError, match=error):
+                await _rollback(facts, mutations, operation.public_id)
+        finally:
+            async with database.immediate_session() as writer:
+                stored = await writer.get(MemoryDreamOperationModel, operation.id)
+                setattr(stored, field, old)
         assert (await facts.list_evidence(unrelated.id, limit=10))[0].id == unrelated_evidence.id
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert await session.get(MemoryFactRelationModel, unrelated_relation.id) is not None
 
-    async with facts.repository.transaction(read_snapshot=True) as session:
-        affected = await mutations.rollback_dream_operation(
-            public_id=operation.public_id,
-            session=session,
-        )
+    affected = await _rollback(facts, mutations, operation.public_id)
     assert set(affected) == {first.id, second.id}
     restored_source = await facts.get_fact(merged_source_id)
     restored_anchor = await facts.get_fact(anchor.id)
     assert restored_source is not None and restored_source.status is MemoryStatus.ACTIVE
     assert restored_anchor is not None and restored_anchor.status is MemoryStatus.ACTIVE
     assert len(await facts.list_evidence(anchor.id, limit=10)) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rolled_back = await session.get(MemoryDreamOperationModel, operation.id)
         rollback_receipts = int(
             await session.scalar(
@@ -791,7 +808,6 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
     evidence_count: int,
 ) -> None:
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     source_content = "上午处理点单失败；晚上和群友讨论音乐。" * 60
     first_output = "一次点单工具链失败后，我确认需要减少无意义的中间步骤。" * 12
     second_output = "晚上和群友集中聊了音乐，留下了几次有趣的推荐和争论。" * 12
@@ -856,37 +872,37 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
     cluster = await dreams.claim_next_cluster(run.public_id)
     assert cluster is not None
 
-    async with facts.repository.transaction(read_snapshot=True) as session:
-        current_source = await facts.repository.get_fact(source.id, session=session)
-        assert current_source is not None
-        action = DreamAction(
-            operation=DreamOperationType.RECOMPOSE,
-            source_refs=("memory_1", "memory_2"),
-            anchor_ref="memory_1",
-            content="这条上层说明不作为 recompose 正文",
-            importance=5,
-            outputs=tuple(
-                DreamRecomposeOutput(
-                    focus="长期资料",
-                    source_refs=("memory_1",),
-                    content=first_output if index % 2 == 0 else second_output,
-                    importance=3,
-                )
-                for index in range(output_count)
-            ),
-        )
-        recompose_outputs = tuple(
-            DreamRecomposePlan(
-                source_facts=(current_source,), content=item.content, importance=item.importance
+    current_source = await facts.get_fact(source.id)
+    assert current_source is not None
+    action = DreamAction(
+        operation=DreamOperationType.RECOMPOSE,
+        source_refs=("memory_1", "memory_2"),
+        anchor_ref="memory_1",
+        content="这条上层说明不作为 recompose 正文",
+        importance=5,
+        outputs=tuple(
+            DreamRecomposeOutput(
+                focus="长期资料",
+                source_refs=("memory_1",),
+                content=first_output if index % 2 == 0 else second_output,
+                importance=3,
             )
-            for item in action.outputs
+            for index in range(output_count)
+        ),
+    )
+    recompose_outputs = tuple(
+        DreamRecomposePlan(
+            source_facts=(current_source,), content=item.content, importance=item.importance
         )
-        await mutations.prepare_dream_evidence(
-            (current_source, untouched),
-            anchor_fact_id=current_source.id,
-            recompose_outputs=recompose_outputs,
-            session=session,
-        )
+        for item in action.outputs
+    )
+    async with _dream_writer(
+        facts,
+        mutations,
+        (current_source, untouched),
+        anchor_id=current_source.id,
+        outputs=recompose_outputs,
+    ) as session:
         operation = await dreams.create_operation(
             cluster_id=cluster.id,
             action_index=1,
@@ -939,7 +955,7 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
         fact = await facts.get_fact(fact_id)
         assert fact is not None and fact.status is MemoryStatus.ACTIVE
         assert len(await facts.list_evidence(fact_id)) == evidence_count
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         persisted_results = tuple(
             (
                 await session.scalars(
@@ -951,11 +967,7 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
         )
     assert {item.fact_id for item in persisted_results} == set(result.output_fact_ids)
 
-    async with facts.repository.transaction(read_snapshot=True) as session:
-        affected = await mutations.rollback_dream_operation(
-            public_id=operation.public_id,
-            session=session,
-        )
+    affected = await _rollback(facts, mutations, operation.public_id)
     assert set(affected) == {source.id, untouched.id, *result.output_fact_ids}
     restored = await facts.get_fact(source.id)
     assert restored is not None and restored.status is MemoryStatus.ACTIVE
@@ -984,7 +996,9 @@ async def test_dream_never_modifies_an_explicit_anchor(database: Database) -> No
         memory_key="identity:auto",
         content="这是自动提取的近似事实",
     )
-    async with facts.repository.transaction(read_snapshot=True) as session:
+    async with _dream_writer(
+        facts, mutations, (explicit, automatic), anchor_id=explicit.id
+    ) as session:
         with pytest.raises(ValueError, match="explicit memory anchor"):
             await mutations.mutate_dream(
                 dream_operation_id=1,
@@ -1002,7 +1016,6 @@ async def test_dream_never_modifies_an_explicit_anchor(database: Database) -> No
 @pytest.mark.asyncio
 async def test_dream_resolution_records_conflict_provenance(database: Database) -> None:
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     preferred = await _fact_with_evidence(
         facts,
         ledger,
@@ -1037,10 +1050,9 @@ async def test_dream_resolution_records_conflict_provenance(database: Database) 
     assert await dreams.start_run(run.public_id)
     cluster = await dreams.claim_next_cluster(run.public_id)
     assert cluster is not None
-    async with facts.repository.transaction(read_snapshot=True) as session:
-        await mutations.prepare_dream_evidence(
-            (preferred, rejected), anchor_fact_id=preferred.id, session=session
-        )
+    async with _dream_writer(
+        facts, mutations, (preferred, rejected), anchor_id=preferred.id
+    ) as session:
         operation = await dreams.create_operation(
             cluster_id=cluster.id,
             action_index=1,
@@ -1079,7 +1091,7 @@ async def test_dream_resolution_records_conflict_provenance(database: Database) 
 
     resolved = await facts.get_fact(rejected.id)
     assert resolved is not None and resolved.status is MemoryStatus.INVALIDATED
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         relation = await session.scalar(
             select(MemoryFactRelationModel).where(
                 MemoryFactRelationModel.source_fact_id == rejected.id,
@@ -1096,7 +1108,6 @@ async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_meta
     database, disable_owners
 ):
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     sources = tuple(
         [
             await _fact_with_evidence(
@@ -1195,7 +1206,7 @@ async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_meta
     assert await dreams.reset_processing_after_restart() == 1
     assert await dreams.claim_next_cluster(run.public_id) is None
     assert len(provider.requests) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 2
 
 

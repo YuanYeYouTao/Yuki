@@ -2,11 +2,67 @@
 
 import asyncio
 
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.unit.test_admin_api import admin as admin
 from tests.unit.test_admin_api import command, plugin_action
 
+from yuki.admin.authority.command_types import ControlCommandError
+from yuki.admin.authority.problems import Problem, ProblemCode
 from yuki.admin.config_files import ConfigFileError
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.model_runtime.secrets import model_secrets_path
+
+
+@pytest.mark.parametrize("external", [False, True])
+async def test_typed_commit_ack_loss_keeps_original_success_receipt(
+    admin, database, monkeypatch, external
+):
+    client, _, manager, *_ = admin
+    if external:
+        await plugin_action(client, "approve", permissions=["tool.register"])
+        current = (await client.get("/admin/v1/plugins/test.contract")).json()["data"]
+        request = command(current["revision"])
+        url = "/admin/v1/plugins/test.contract/actions/enable"
+    else:
+        request = command(display_name="original created Person")
+        url = "/admin/v1/persons"
+    commit = AsyncSession.commit
+    lost = False
+
+    async def lose_terminal_ack(session):
+        nonlocal lost
+        receipt = await session.scalar(
+            select(ControlCommandReceiptModel).where(
+                ControlCommandReceiptModel.request_id == request["request_id"]
+            )
+        )
+        terminal = receipt is not None and receipt.status == "succeeded"
+        await commit(session)
+        if terminal and not lost:
+            lost = True
+            raise ControlCommandError(Problem(ProblemCode.PRECONDITION_FAILED))
+
+    with monkeypatch.context() as injected:
+        injected.setattr(AsyncSession, "commit", lose_terminal_ack)
+        first = await client.post(url, json=request)
+    assert lost
+    assert first.status_code == (200 if external else 500), first.text
+    if not external:
+        assert first.json()["problem"]["code"] == "unknown"
+    replay = await client.post(url, json=request)
+    assert replay.status_code == 200 and replay.json()["data"]["success"]
+    if external:
+        assert manager.running_plugin_ids == ("test.contract",)
+        assert first.json() == replay.json()
+    async with database.read_session() as reader:
+        receipt = await reader.scalar(
+            select(ControlCommandReceiptModel).where(
+                ControlCommandReceiptModel.request_id == request["request_id"]
+            )
+        )
+        assert receipt.status == "succeeded" and receipt.problem_code is None
 
 
 async def test_prewrite_model_failure_is_failed_and_new_request_can_apply(admin, monkeypatch):

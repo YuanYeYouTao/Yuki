@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 from dataclasses import dataclass
@@ -10,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
@@ -33,22 +32,28 @@ from yuki.identity.canonical_repository import (
     find_presence,
     replace_assignment,
 )
+from yuki.identity.credentials import (
+    CredentialPurpose,
+    DeviceCredentials,
+    DevicePrincipal,
+    require_person,
+    secret_hash,
+)
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import (
+    PersonMergePreparation,
+    PersonMergePreparationChanged,
     current_person_id,
     merge_persons,
     person_family_condition,
+    prepare_person_merge,
     same_person_id,
 )
-from yuki.persistence.command_receipts import CommandReceiptRepository, aware
-from yuki.persistence.database import Database
+from yuki.persistence.command_receipts import CommandReceiptRepository
+from yuki.persistence.database import Database, write_failure_committed
 
 if TYPE_CHECKING:
     from yuki.identity.routing import PresenceRouter
-
-
-def secret_hash(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def fingerprint(operation: str, target: str, payload: object) -> str:
@@ -63,6 +68,15 @@ def request_message_key(
     if conversation_id is not None:
         return f"{external_account_id}:{conversation_id}:{request_id}"
     return f"{external_account_id}:{request_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class AccountClaimPreparation:
+    code_id: str
+    person_id: str
+    old_binding: tuple[str, str] | None
+    merge: PersonMergePreparation | None
+    request_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +113,7 @@ class ClientIdentityService:
         self.database = database
         self.router = router
         self.receipts = CommandReceiptRepository(database)
+        self.credentials = DeviceCredentials(database)
 
     async def authenticate(
         self,
@@ -107,17 +122,10 @@ class ClientIdentityService:
         binding_id: str | None = None,
         conversation_id: str | None = None,
     ) -> ClientPrincipal:
-        async with self.database.sessions() as session:
-            device = await session.scalar(
-                select(ClientDeviceModel).where(
-                    ClientDeviceModel.token_hash == secret_hash(token),
-                    ClientDeviceModel.revoked_at.is_(None),
-                )
-            )
-            if device is None:
-                raise ClientError("unauthenticated")
-            return await self.require_device(
-                session, device.id, binding_id=binding_id, conversation_id=conversation_id
+        async with self.database.read_session() as session:
+            device = await self.credentials.authenticate(session, token, purpose="chat")
+            return await self._chat_principal(
+                session, device, binding_id=binding_id, conversation_id=conversation_id
             )
 
     async def require_device(
@@ -128,16 +136,20 @@ class ClientIdentityService:
         binding_id: str | None = None,
         conversation_id: str | None = None,
     ) -> ClientPrincipal:
-        device = await session.get(ClientDeviceModel, device_id)
-        if device is None or device.revoked_at is not None:
-            raise ClientError("unauthenticated")
-        person = await session.get(CanonicalPersonModel, device.person_id)
-        if person is None or not person.enabled:
-            raise ClientError("unauthenticated")
-        root_id = await current_person_id(session, person.id)
-        root = await session.get(CanonicalPersonModel, root_id)
-        if root is None or not root.enabled:
-            raise ClientError("unauthenticated")
+        device = await self.credentials.require_device(session, device_id, purpose="chat")
+        return await self._chat_principal(
+            session, device, binding_id=binding_id, conversation_id=conversation_id
+        )
+
+    async def _chat_principal(
+        self,
+        session: AsyncSession,
+        device: DevicePrincipal,
+        *,
+        binding_id: str | None,
+        conversation_id: str | None,
+    ) -> ClientPrincipal:
+        root_id = device.person_id
         if conversation_id is not None:
             conversation = await session.get(CanonicalConversationModel, conversation_id)
             binding = (
@@ -166,7 +178,7 @@ class ClientIdentityService:
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.id == binding_id
                     if binding_id is not None
-                    else IdentityBindingModel.person_id == device.person_id,
+                    else IdentityBindingModel.person_id == device.source_person_id,
                     IdentityBindingModel.platform == APP_PLATFORM,
                 )
             )
@@ -179,12 +191,12 @@ class ClientIdentityService:
             if presence is None:
                 raise ClientError("unavailable")
         return ClientPrincipal(
-            device.id,
+            device.device_id,
             root_id,
             binding.id,
             binding.external_account_id,
             conversation.id,
-            person.id,
+            device.source_person_id,
             binding.person_id,
             binding.platform,
             presence.id,
@@ -244,15 +256,6 @@ class ClientIdentityService:
         assert row.status == "succeeded" and row.effective_state_json is not None
         return {**json.loads(row.effective_state_json), "replay": True}
 
-    async def _person(self, session: AsyncSession, person_id: str) -> CanonicalPersonModel:
-        person = await session.get(CanonicalPersonModel, person_id)
-        if person is None or not person.enabled:
-            raise ClientError("not_found")
-        root = await session.get(CanonicalPersonModel, await current_person_id(session, person_id))
-        if root is None or not root.enabled:
-            raise ClientError("not_found")
-        return root
-
     async def _binding(
         self,
         session: AsyncSession,
@@ -297,10 +300,17 @@ class ClientIdentityService:
         source_binding_id: str | None = None,
         trigger_message_id: str = "",
         principal: ClientPrincipal | None = None,
+        purpose: CredentialPurpose = "chat",
     ) -> dict[str, Any]:
-        await self._person(session, person_id)
+        try:
+            await require_person(session, person_id)
+        except ClientError as exc:
+            raise ClientError("not_found") from exc
         operation = "client.link_code"
-        bound = fingerprint(operation, person_id, {"source_binding_id": source_binding_id})
+        payload: dict[str, str | None] = {"source_binding_id": source_binding_id}
+        if purpose != "chat":
+            payload["purpose"] = purpose
+        bound = fingerprint(operation, person_id, payload)
         previous = await self.replay(session, issuer_id, request_id, bound, principal=principal)
         if previous is not None:
             return {**previous, "code": None}
@@ -309,6 +319,7 @@ class ClientIdentityService:
         code = ClientLinkCodeModel(
             id=str(uuid4()),
             code_hash=secret_hash(raw),
+            purpose=purpose,
             person_id=person_id,
             issuer_principal_id=issuer_id,
             issuer_source=source,
@@ -317,7 +328,11 @@ class ClientIdentityService:
             expires_at=now + timedelta(minutes=10),
         )
         session.add(code)
-        result = {"code_id": code.id, "expires_at": code.expires_at.isoformat()}
+        result = {
+            "code_id": code.id,
+            "expires_at": code.expires_at.isoformat(),
+            "purpose": purpose,
+        }
         await self.receipts.record_personal_command(
             session,
             principal_id=issuer_id,
@@ -337,7 +352,13 @@ class ClientIdentityService:
         )
         return {**result, "code": raw, "request_id": request_id, "replay": False}
 
-    async def issue_for_device(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
+    async def issue_for_device(
+        self,
+        principal: ClientPrincipal,
+        request_id: str,
+        *,
+        purpose: CredentialPurpose = "chat",
+    ) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
             current = await self.require_principal(session, principal)
             return await self._issue_code(
@@ -348,10 +369,16 @@ class ClientIdentityService:
                 request_id=request_id,
                 source_binding_id=current.binding_id,
                 principal=current,
+                purpose=purpose,
             )
 
     async def issue_for_operator(
-        self, person_id: str, principal_id: str, request_id: str
+        self,
+        person_id: str,
+        principal_id: str,
+        request_id: str,
+        *,
+        purpose: CredentialPurpose = "chat",
     ) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
             return await self._issue_code(
@@ -360,31 +387,11 @@ class ClientIdentityService:
                 issuer_id=principal_id,
                 source="control",
                 request_id=request_id,
+                purpose=purpose,
             )
 
     async def _code(self, session: AsyncSession, raw: str, now: datetime) -> ClientLinkCodeModel:
-        code = await session.scalar(
-            select(ClientLinkCodeModel).where(
-                ClientLinkCodeModel.code_hash == secret_hash(raw.strip())
-            )
-        )
-        if code is None or code.used_at is not None or aware(code.expires_at) <= now:
-            raise ClientError("unauthenticated")
-        if code.source_binding_id is not None:
-            source = await session.get(IdentityBindingModel, code.source_binding_id)
-            if (
-                source is None
-                or source.status != "active"
-                or not await same_person_id(session, source.person_id, code.person_id)
-            ):
-                raise ClientError("unauthenticated")
-        person = await session.get(CanonicalPersonModel, code.person_id)
-        if person is None or not person.enabled:
-            raise ClientError("unauthenticated")
-        root = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
-        if root is None or not root.enabled:
-            raise ClientError("unauthenticated")
-        return code
+        return await self.credentials.code(session, raw, now, purpose="chat")
 
     async def pair(self, raw_code: str, label: str) -> dict[str, str]:
         async with self.database.immediate_session() as session:
@@ -408,29 +415,7 @@ class ClientIdentityService:
                 )
             if binding.status != "active":
                 raise ClientError("precondition_failed")
-            token = "yuki_device_" + secrets.token_urlsafe(32)
-            device = ClientDeviceModel(
-                id=str(uuid4()),
-                person_id=code.person_id,
-                token_hash=secret_hash(token),
-                label=label,
-                created_at=now,
-            )
-            session.add(device)
-            code.used_at = now
-            await self.receipts.record_personal_command(
-                session,
-                principal_id=device.id,
-                principal_kind="device",
-                person_id=code.person_id,
-                request_id=str(uuid4()),
-                operation="client.pair",
-                operation_ref=device.id,
-                resource_id=device.id,
-                payload_hash=fingerprint("client.pair", code.id, label),
-                result={"device_id": device.id},
-            )
-            return {"device_id": device.id, "token": token}
+            return await self.credentials.pair(session, code, label, now=now)
 
     async def transfer_binding(
         self, session: AsyncSession, binding: IdentityBindingModel, to_person: str, *, now: datetime
@@ -467,7 +452,7 @@ class ClientIdentityService:
             return int(getattr(result, "rowcount", 0) or 0)
 
     async def me(self, principal: ClientPrincipal) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             principal = await self.require_principal(session, principal)
             bindings = list(
                 await session.scalars(
@@ -514,6 +499,7 @@ class ClientIdentityService:
                 "devices": [
                     {
                         "device_id": row.id,
+                        "purpose": row.purpose,
                         "label": row.label,
                         "created_at": row.created_at,
                         "revoked_at": row.revoked_at,
@@ -603,7 +589,7 @@ class ClientIdentityService:
     ) -> dict[str, Any]:
         if session is None:
             bound = fingerprint("identity.binding.transfer", binding_id, {"to_person": to_person})
-            async with self.database.sessions() as reader:
+            async with self.database.read_session() as reader:
                 previous = await self.replay(reader, principal_id, request_id, bound)
             if previous is not None:
                 return previous
@@ -660,6 +646,40 @@ class ClientIdentityService:
             trigger_message_id=message_id,
         )
 
+    async def prepare_account_claim(
+        self,
+        raw_code: str,
+        *,
+        platform: str,
+        account: str,
+        session: AsyncSession | None = None,
+        request_id: str | None = None,
+    ) -> AccountClaimPreparation:
+        if session is None:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                return await self.prepare_account_claim(
+                    raw_code,
+                    platform=platform,
+                    account=account,
+                    session=reader,
+                    request_id=request_id,
+                )
+        code = await self._code(session, raw_code, datetime.now(UTC))
+        presence = await find_presence(session, account, platform=platform)
+        if platform in {APP_PLATFORM, ACP_PLATFORM} or presence is not None:
+            raise ClientError("precondition_failed")
+        old = await find_identity_binding(session, account, platform=platform)
+        return AccountClaimPreparation(
+            code_id=code.id,
+            person_id=code.person_id,
+            old_binding=(old.id, old.person_id) if old is not None else None,
+            merge=await prepare_person_merge(session, old.person_id, code.person_id)
+            if old is not None
+            else None,
+            request_id=request_id or str(uuid4()),
+        )
+
     async def claim_account(
         self,
         raw_code: str,
@@ -669,35 +689,58 @@ class ClientIdentityService:
         display_name: str,
         message_id: str,
         session: AsyncSession | None = None,
+        prepared: AccountClaimPreparation | None = None,
     ) -> dict[str, Any]:
         if session is None:
-
-            async def operation(writer: AsyncSession) -> dict[str, Any]:
-                return await self.claim_account(
-                    raw_code,
-                    platform=platform,
-                    account=account,
-                    display_name=display_name,
-                    message_id=message_id,
-                    session=writer,
+            request_id = str(uuid4())
+            while True:
+                prepared = await self.prepare_account_claim(
+                    raw_code, platform=platform, account=account, request_id=request_id
                 )
-
-            return await self.database.apply_snapshot_write(operation)
+                try:
+                    async with self.database.immediate_session() as writer:
+                        return await self.claim_account(
+                            raw_code,
+                            platform=platform,
+                            account=account,
+                            display_name=display_name,
+                            message_id=message_id,
+                            session=writer,
+                            prepared=prepared,
+                        )
+                except PersonMergePreparationChanged as exc:
+                    if write_failure_committed(exc) is not False:
+                        raise
+                    continue
+        if prepared is None:
+            raise ValueError("account_claim_preparation_required")
         now = datetime.now(UTC)
         code = await self._code(session, raw_code, now)
         presence = await find_presence(session, account, platform=platform)
         if platform in {APP_PLATFORM, ACP_PLATFORM} or presence is not None:
             raise ClientError("precondition_failed")
         old = await find_identity_binding(session, account, platform=platform)
+        if (code.id, code.person_id, (old.id, old.person_id) if old else None) != (
+            prepared.code_id,
+            prepared.person_id,
+            prepared.old_binding,
+        ):
+            raise PersonMergePreparationChanged()
         merged = old is not None and not await same_person_id(
             session, old.person_id, code.person_id
         )
         if old is not None:
-            apply_routes = await self.router.prepare_person_merge_routes(
+            route_preparation = await self.router.prepare_person_merge_routes(
                 session, old.person_id, code.person_id
             )
+            apply_routes = await route_preparation(session)
             await merge_persons(
-                session, old.person_id, code.person_id, now=now, actor_id=code.issuer_principal_id
+                session,
+                old.person_id,
+                code.person_id,
+                now=now,
+                actor_id=code.issuer_principal_id,
+                prepared=cast(PersonMergePreparation, prepared.merge),
             )
             apply_routes()
             binding = old
@@ -722,7 +765,7 @@ class ClientIdentityService:
             principal_id=binding.id,
             principal_kind="person",
             person_id=binding.person_id,
-            request_id=str(uuid4()),
+            request_id=prepared.request_id,
             operation="client.binding_link",
             operation_ref=binding.id,
             payload_hash=fingerprint(

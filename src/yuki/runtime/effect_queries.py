@@ -34,7 +34,7 @@ class RuntimeEffectQueries:
         from yuki.social.repository import SocialOperationRepository
 
         operation_id = reference.removeprefix("social:")
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             await reader.execute(text("BEGIN"))
             conversation = await reader.scalar(
                 select(work.c.conversation_id).where(work.c.id == work_id)

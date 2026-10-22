@@ -213,20 +213,6 @@ async def find_space_binding(
     )
 
 
-async def bindings_for_person(
-    session: AsyncSession,
-    person_id: str,
-) -> tuple[IdentityBindingModel, ...]:
-    rows = list(
-        await session.scalars(
-            select(IdentityBindingModel)
-            .where(IdentityBindingModel.person_id == person_id)
-            .order_by(IdentityBindingModel.external_account_id, IdentityBindingModel.id)
-        )
-    )
-    return tuple(rows)
-
-
 async def create_person_binding(
     session: AsyncSession,
     *,
@@ -379,7 +365,6 @@ async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
 __all__ = [
     "AccountRole",
     "assert_same_shadow",
-    "bindings_for_person",
     "create_person_binding",
     "create_presence",
     "create_space_binding",

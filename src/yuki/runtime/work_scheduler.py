@@ -101,7 +101,7 @@ class WorkScheduler:
         self._in_flight.clear()
 
     async def health(self) -> dict[str, object]:
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             oldest = await session.scalar(
                 select(func.min(inputs.c.created)).where(inputs.c.state.in_(("pending", "staged")))
             )
@@ -245,7 +245,7 @@ class WorkScheduler:
         if not self._accepting or capacity <= 0:
             return []
         with self._timed("selection"):
-            async with self.repository.database.sessions() as session:
+            async with self.repository.database.read_session() as session:
                 query = (
                     select(
                         work.c.id,

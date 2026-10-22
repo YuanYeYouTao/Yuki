@@ -19,6 +19,7 @@ from yuki.capabilities.models import (
 )
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.messages import ChatTool
+from yuki.external_agents.tools import EXTERNAL_AGENT_TOOLS
 from yuki.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
@@ -35,9 +36,15 @@ _RESIDENT_YUKI_TOOLS = (
         }
     )
     | SANDBOX_TOOLS
+    | EXTERNAL_AGENT_TOOLS
     | WORKSPACE_TOOLS
 )
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
+    "external_agent": (
+        "external_agent.control",
+        CapabilityEffect.WRITE_STATE,
+        CapabilityRisk.MUTATE,
+    ),
     **{
         name: (
             "sandbox.read" if name in READ_TOOLS else "sandbox.run",

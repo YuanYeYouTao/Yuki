@@ -226,7 +226,7 @@ async def test_confirmed_ordinary_group_send_binds_original_unit_and_replays_onc
         assert item.controller.state.host_checkpoint["participation_v1"] == checkpoint.model_dump(
             mode="json"
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(InitiativeRunModel)) == 0
             assert (
                 await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 0
@@ -335,7 +335,7 @@ async def test_ordinary_long_binding_metadata_preserves_original_source(database
     from yuki.persistence.repositories import EventLedgerRepository
 
     event = await _event_and_route(database, EventLedgerRepository(database))
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         conversation = await reader.get(CanonicalConversationModel, event.canonical_conversation_id)
         generation = conversation.generation
     repository = OrdinaryAdmissionRepository(database)

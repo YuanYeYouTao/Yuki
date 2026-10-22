@@ -87,7 +87,7 @@ async def test_message_and_command_share_one_atomic_person_request(
         else f"client.{'work_cancel' if operation == 'cancel' else 'upload'}"
     )
     assert found.json()["data"]["operation_kind"] == expected
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         count = await session.scalar(
             select(func.count(ChatEventModel.id)).where(
                 ChatEventModel.canonical_conversation_id == principal.conversation_id,
@@ -157,7 +157,7 @@ async def test_unreadable_old_request_does_not_block_home_other_requests_or_watc
 
 
 async def append_history(env, database, principal, texts):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await session.get(IdentityBindingModel, principal.binding_id)
     rows = []
     for text in texts:

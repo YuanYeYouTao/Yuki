@@ -126,7 +126,7 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
     assert current["parent_work_id"] == old_work["parent_work_id"]
     assert current["source_json"] == old_work["source_json"]
     assert current["tool_calls"] == old_work["tool_calls"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipts = list(await reader.scalars(select(effects.c.receipt_json)))
         assert receipts and all("data:image/" not in receipt for receipt in receipts)
         assert all("media_result_ref" in receipt for receipt in receipts)
@@ -158,7 +158,7 @@ async def test_erasure_during_prepare_cannot_publish_late_image_receipt(database
     call = ToolCall("erased", ToolFunction("inspect_conversation_attachment", "{}"))
 
     async def invoke():
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             state = await writer.get(ExecutionTraceStateModel, 1)
             if state is None:
                 writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
@@ -168,7 +168,7 @@ async def test_erasure_during_prepare_cannot_publish_late_image_receipt(database
 
     with pytest.raises(WorkConflict, match="work_effect_media_source_changed"):
         await invoke_tool(session, call, invoke, side_effecting=False)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(effects.c.state)) == "prepared"
         assert not list(await reader.scalars(select(refs.c.sha256)))
 
@@ -194,13 +194,13 @@ async def test_erasure_fences_already_owned_media_on_a_later_receipt(database, t
     second = ToolCall("second", ToolFunction("workspace_inspect", "{}"))
 
     async def erased():
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
         return MediaResultText('{"ok":true}', (image,))
 
     with pytest.raises(WorkConflict, match="work_effect_media_source_changed"):
         await invoke_tool(session, second, erased, side_effecting=False)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(
                 select(effects.c.state).where(effects.c.effect_key == session.call_key("second"))
@@ -247,7 +247,7 @@ async def test_protocol_capacity_failure_does_not_accept_incomplete_pixels(
 
     with pytest.raises(ValueError, match="work_protocol_object_capacity"):
         await invoke_tool(session, call, invoke, side_effecting=False)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(effects.c.state)) == "prepared"
         assert not list(await reader.scalars(select(refs.c.sha256)))
 
@@ -279,7 +279,7 @@ async def test_receipt_writer_publishes_only_prepared_metadata(database, tmp_pat
     await session.journal.record_effect(
         key, "accepted", {"result": MediaResultText('{"ok":true}', (_image(control, "pixels"),))}
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(effects.c.state)) == "accepted"
         assert set(await reader.scalars(select(refs.c.sha256))) == set(published_files)
 
@@ -308,7 +308,7 @@ async def test_selected_tool_pixels_do_not_expand_the_context_history_read_set(d
     assert selected.id not in guard.additional_events
     assert guard.version.visible_event_ids == (initial.id,)
     saved = guard.snapshot()
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(
             update(ChatEventModel).where(ChatEventModel.id == selected.id).values(content="erased")
         )

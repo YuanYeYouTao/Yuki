@@ -26,7 +26,7 @@ async def _persons(database, *accounts):
         return tuple([await ensure_person(writer, account) for account in accounts])
 
 
-async def test_aliases_prepared_together_exact_selection_no_writer_json(database):
+async def test_aliases_prepared_together_exact_selection_no_writer_json(database, monkeypatch):
     seeded = await _seed(database, 1, proposals=True)
     first, second, unrelated = await _persons(database, "1001", "1002", "10011")
     async with database.immediate_session() as writer:
@@ -44,15 +44,22 @@ async def test_aliases_prepared_together_exact_selection_no_writer_json(database
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", trace)
     try:
-        async with database.immediate_session() as writer:
-            assert (
-                await repo.forget_people(("1001", "1002"), prepared=prepared, session=writer) == 2
-            )
+        with monkeypatch.context() as patches:
+
+            def decode_in_writer(*_args, **_kwargs):
+                raise AssertionError("selection decoding belongs to preparation")
+
+            patches.setattr(MemoryRebuildSelection, "model_validate_json", decode_in_writer)
+            async with database.immediate_session() as writer:
+                assert (
+                    await repo.forget_people(("1001", "1002"), prepared=prepared, session=writer)
+                    == 2
+                )
         reads = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
-        assert reads and all("selection_json" not in sql for sql in reads)
+        assert reads
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", trace)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         run = await reader.get(MemoryRebuildRunModel, seeded.run_id)
         selection = MemoryRebuildSelection.model_validate_json(run.selection_json)
         assert selection.person_ids == (unrelated,)
@@ -79,7 +86,7 @@ async def test_new_matching_selection_is_prepared_on_current_snapshot_without_ca
         )
 
     async def maxima():
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             return tuple(
                 (
                     await reader.execute(
@@ -103,7 +110,7 @@ async def test_new_matching_selection_is_prepared_on_current_snapshot_without_ca
         )
     assert await maxima() == before
     assert await repo.forget_people(("1001",), prepared=prepared) >= 2
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(func.count()).select_from(MemoryRebuildProposalModel)) == 0
         )
@@ -114,6 +121,52 @@ async def test_new_matching_selection_is_prepared_on_current_snapshot_without_ca
         )
         assert MemoryRebuildSelection.model_validate_json(sanitized.selection_json).event_ids == ()
         assert sanitized.status == "committing"
+
+
+@pytest.mark.parametrize("change", ["new_matching_run", "payload_same_tokens"])
+async def test_shared_privacy_writer_rechecks_selection_members_and_original_payload(
+    database, change
+):
+    first, second = await _seed(database, 1, proposals=True), await _seed(database, 1)
+    selected, unrelated = await _persons(database, "1001", "777771")
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(MemoryRebuildRunModel)
+            .where(MemoryRebuildRunModel.id == first.run_id)
+            .values(**_selection(person_ids=(selected,)))
+        )
+        await writer.execute(
+            update(MemoryRebuildRunModel)
+            .where(MemoryRebuildRunModel.id == second.run_id)
+            .values(**_selection(person_ids=(unrelated,)))
+        )
+    repo = MemoryRebuildRepository(database)
+    prepared = await repo.prepare_forget_people(("1001",))
+    async with database.immediate_session() as writer:
+        if change == "new_matching_run":
+            await writer.execute(
+                update(MemoryRebuildRunModel)
+                .where(MemoryRebuildRunModel.id == second.run_id)
+                .values(**_selection(person_ids=(selected,)))
+            )
+        else:
+            # The stored hash and timestamp alone cannot certify the original JSON.
+            await writer.execute(
+                update(MemoryRebuildRunModel)
+                .where(MemoryRebuildRunModel.id == first.run_id)
+                .values(
+                    selection_json=MemoryRebuildSelection(
+                        person_ids=(selected,), maximum_events=7
+                    ).model_dump_json()
+                )
+            )
+    with pytest.raises(ValueError, match="privacy_preparation_changed"):
+        async with database.immediate_session() as writer:
+            await repo.forget_people(("1001",), prepared=prepared, session=writer)
+    async with database.read_session() as reader:
+        assert (
+            await reader.scalar(select(func.count()).select_from(MemoryRebuildProposalModel)) == 1
+        )
 
 
 async def test_shared_privacy_writer_requires_preparation_and_rolls_back_as_one_unit(database):
@@ -134,7 +187,7 @@ async def test_shared_privacy_writer_requires_preparation_and_rolls_back_as_one_
         async with database.immediate_session() as writer:
             await repo.forget_people(("1001",), prepared=prepared, session=writer)
             raise RuntimeError("outer privacy failure")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         run = await reader.get(MemoryRebuildRunModel, seeded.run_id)
         assert MemoryRebuildSelection.model_validate_json(run.selection_json).person_ids == (
             selected,
@@ -158,7 +211,7 @@ async def test_forget_erases_original_native_selection_body_without_replacing_qu
         run.extraction_requests = 4
     repository = MemoryRebuildRepository(database)
     assert await repository.forget_people(("1001",)) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         run = await reader.get(MemoryRebuildRunModel, seeded.run_id)
         assert run.original_selection_json is None and run.original_selection_hash == digest
         assert (run.selection_json, run.selection_hash) == (selection_json, selection_hash)

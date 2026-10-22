@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import case, exists, func, select, text, update
+from sqlalchemy import and_, case, exists, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,10 +76,10 @@ class _Item:
         return MemoryRebuildJobOutcome.CLAIMS_APPLIED.value
 
 
-async def _read_batch(
+async def _read_items(
     session: AsyncSession, run_id: int, item_ids: tuple[int, ...]
-) -> tuple[dict[int, _Item], dict[int, Any]]:
-    """Three indexed reads, independent of the number of items in the page."""
+) -> dict[int, _Item]:
+    """Two indexed metadata reads, independent of the page's item count."""
     proposal = MemoryRebuildProposalModel
     counts = {
         int(row.item_id): row
@@ -144,18 +144,7 @@ async def _read_batch(
             rejected=int(aggregate.rejected) if aggregate else 0,
             unfinished=int(aggregate.unfinished) if aggregate else 0,
         )
-    receipts = {
-        int(row.event_id): row
-        for row in await session.execute(
-            select(
-                MemoryJobModel.event_id,
-                MemoryJobModel.status,
-                MemoryJobModel.processing_source,
-                MemoryJobModel.rebuild_run_id,
-            ).where(MemoryJobModel.event_id.in_(tuple(item.event_id for item in items.values())))
-        )
-    }
-    return items, receipts
+    return items
 
 
 async def complete_receipts(
@@ -169,7 +158,7 @@ async def complete_receipts(
     limit = max(1, min(limit, 256))
     if item_ids == ():
         return 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         await reader.execute(text("BEGIN"))
         run = (
             await reader.execute(
@@ -202,7 +191,7 @@ async def complete_receipts(
         )
         if not ids:
             return 0
-        prepared, _ = await _read_batch(reader, run.id, ids)
+        prepared = await _read_items(reader, run.id, ids)
         selection = MemoryRebuildSelection.model_validate_json(run.selection_json)
         mode = selection.third_party_mode
         include_failed_live_jobs = include_failed_live_jobs and selection.include_failed_live_jobs
@@ -214,6 +203,31 @@ async def complete_receipts(
             )
         )
         events = tuple(_event_record(source) for source in sources)
+        source_values = tuple(
+            {
+                name: getattr(source, name)
+                for name in (
+                    "id",
+                    "bot_user_id",
+                    "platform_message_id",
+                    "scope_type",
+                    "sender_user_id",
+                    "group_id",
+                    "private_peer_user_id",
+                    "direction",
+                    "content",
+                    "audio_transcript",
+                    "segments_json",
+                    "reply_to_message_id",
+                    "reply_to_event_id",
+                    "origin",
+                    "occurred_at",
+                    "observed_at",
+                    "ingress_presence_id",
+                )
+            }
+            for source in sources
+        )
         trusted_fences = (
             await prepare_trusted_sources(reader, events)
             if mode is MemoryRebuildThirdPartyMode.TRUSTED_METADATA
@@ -259,8 +273,40 @@ async def complete_receipts(
             )
         ):
             return 0
-        current, receipts = await _read_batch(writer, run.id, ids)
+        current = await _read_items(writer, run.id, ids)
+        receipts = {
+            int(row.event_id): row
+            for row in await writer.execute(
+                select(
+                    MemoryJobModel.event_id,
+                    MemoryJobModel.status,
+                    MemoryJobModel.processing_source,
+                    MemoryJobModel.rebuild_run_id,
+                ).where(
+                    MemoryJobModel.event_id.in_(tuple(item.event_id for item in current.values()))
+                )
+            )
+        }
         changed_references = await changed_trusted_sources(writer, trusted_fences)
+        matching_sources: set[int] = set()
+        for offset in range(0, len(source_values), 128):
+            matching_sources.update(
+                await writer.scalars(
+                    select(ChatEventModel.id).where(
+                        or_(
+                            *(
+                                and_(
+                                    *(
+                                        getattr(ChatEventModel, key) == value
+                                        for key, value in row.items()
+                                    )
+                                )
+                                for row in source_values[offset : offset + 128]
+                            )
+                        )
+                    )
+                )
+            )
         for item_id, item in current.items():
             # Recheck the bounded page before its first DML. Concurrent source,
             # staging, review or privacy changes require a fresh preparation.
@@ -269,6 +315,7 @@ async def complete_receipts(
                 or item.unfinished
                 or item.status not in READY_STATUSES
                 or item.event_id in changed_references
+                or item.event_id not in matching_sources
             ):
                 continue
             receipt = receipts.get(item.event_id)

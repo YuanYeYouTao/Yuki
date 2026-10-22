@@ -16,14 +16,9 @@ ENVIRONMENT_TOOLS = frozenset(
         "terminal_control",
         "environment_status",
         "environment_service",
-        "external_agent",
     }
 )
 SANDBOX_TOOLS = ENVIRONMENT_TOOLS
-
-
-def is_execution(name: str, args: dict[str, Any]) -> bool:
-    return name == "terminal_exec" or (name == "external_agent" and args.get("action") == "prompt")
 
 
 def tool(
@@ -54,29 +49,6 @@ def environment_tools() -> tuple[ChatTool, ...]:
     run = {"run_id": text}
     cursor = {"cursor": {"type": "integer", "minimum": 0}}
     return (
-        tool(
-            "external_agent",
-            "使用已配置的外部 Agent：list 查看目录；prompt 在原 Work 中委托工作，"
-            "peer_id 续用本 Work 原会话；get 按 run_id 或原 request_id 查原进展与结果。"
-            "respond 以原 permission_id/option_id 回答权限，必要时才询问用户；"
-            "cancel 停止原 prompt，close 释放原 peer。pending 后等待或查询原执行，不重复提交。",
-            {
-                "action": {
-                    "type": "string",
-                    "enum": ["list", "prompt", "get", "respond", "cancel", "close"],
-                },
-                "agent_id": text,
-                "prompt": text,
-                "peer_id": text,
-                **run,
-                "request_id": text,
-                "permission_id": text,
-                "option_id": text,
-                "outcome": {"type": "string", "enum": ["cancelled"]},
-                **cursor,
-            },
-            ("action",),
-        ),
         tool(
             "terminal_exec",
             "以管理员身份操作自己的持久 Linux 环境，HOME=/home/yuki，"

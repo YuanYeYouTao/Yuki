@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.user_profiles_helpers import inbound, observe_members
@@ -75,7 +76,7 @@ async def _canonical_message(database, message):
 
 
 async def _owners(database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         people = dict(
             (
                 await session.execute(
@@ -144,13 +145,13 @@ def test_format_and_parse_only_accept_canonical_owner_ids() -> None:
 
 @pytest.mark.asyncio
 async def test_private_event_resolves_all_bindings_to_one_person(database: Database) -> None:
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         person_id = await ensure_person(session, "1101", now=_NOW)
         account = await ensure_account(session, "1102", platform=IDENTITY_PLATFORM, now=_NOW)
         await replace_assignment(
             session, account, None, await session.get(CanonicalPersonModel, person_id), now=_NOW
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         first = await resolve_memory_partition_for_event(
             session, _event(message_id="p1", peer="1101")
         )
@@ -166,7 +167,7 @@ async def test_private_event_resolves_all_bindings_to_one_person(database: Datab
 async def test_space_partition_requires_enabled_active_binding(
     database: Database, disabled
 ) -> None:
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         space_id = await ensure_space(session, "2001", now=_NOW)
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
@@ -179,12 +180,12 @@ async def test_space_partition_requires_enabled_active_binding(
         else:
             space.enabled = False
     event = _event(message_id="g1", group="2001")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         with pytest.raises(MemoryPartitionResolutionError) as disabled:
             await resolve_memory_partition_for_event(session, event)
     assert disabled.value.reason == "missing_owner"
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
         )
@@ -193,7 +194,7 @@ async def test_space_partition_requires_enabled_active_binding(
         space = await session.get(CanonicalSpaceModel, space_id)
         assert space is not None
         space.enabled = True
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         partition = await resolve_memory_partition_for_event(session, event)
     assert partition.value == f"space:{space_id}"
     assert partition.space_id == space_id
@@ -204,7 +205,7 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
     person_id = str(uuid4())
     conversation_id = str(uuid4())
     alias_id = str(uuid4())
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(text("PRAGMA defer_foreign_keys=ON"))
         session.add(
             CanonicalPersonModel(
@@ -248,7 +249,7 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
                 updated_at=_NOW,
             )
         )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         resolved = await resolve_memory_partition_for_event(
             session, _event(message_id="conversation-owner", peer="1103")
         )
@@ -400,9 +401,15 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
 ) -> None:
     repeated = tuple(str(62061 + index) for index in range(7))
     people = await observe_members(database, ("1001", "62060", *repeated))
-    await people.observe(user_id="62060", nickname="Ａ-lpHa", group_id="2001", group_card="")
+    await apply_observations(
+        database,
+        profile_message(user_id="62060", nickname="Ａ-lpHa", group_id="2001", group_card=""),
+    )
     for user_id in repeated:
-        await people.observe(user_id=user_id, nickname="同名", group_id="2001", group_card="")
+        await apply_observations(
+            database,
+            profile_message(user_id=user_id, nickname="同名", group_id="2001", group_card=""),
+        )
     assert await people.find_group_members_by_exact_name("alpha", "2001") == ()
     assert await people.find_group_members_by_exact_name("Ａ-lpHa", "2001") == ("62060",)
     exact = await people.find_group_members_by_normalized_names(
@@ -457,9 +464,12 @@ async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
     from yuki.services.agent_tools import AgentToolService, ToolRuntime, _ToolFailure
 
     user_ids = tuple(str(62081 + index) for index in range(8))
-    people = await observe_members(database, ("1001", *user_ids))
+    await observe_members(database, ("1001", *user_ids))
     for user_id in user_ids:
-        await people.observe(user_id=user_id, nickname="共同名字", group_id="2001", group_card="")
+        await apply_observations(
+            database,
+            profile_message(user_id=user_id, nickname="共同名字", group_id="2001", group_card=""),
+        )
     groups = tuple(str(62101 + index) for index in range(8))
     for group_id in groups:
         await observe_members(database, ("1001",), group_id=group_id)

@@ -120,7 +120,7 @@ async def test_intrinsic_to_real_chat_and_terminal_feedback(database, tmp_path, 
     async def observe(label, run_id, task_id):
         task = await repo.get(task_id)
         run = await host.repository.get_run(run_id)
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             lease = (
                 (
                     await session.execute(

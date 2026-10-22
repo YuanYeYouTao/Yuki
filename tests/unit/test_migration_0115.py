@@ -34,7 +34,7 @@ def test_upgrade_preserves_reflection_work_state(tmp_path, monkeypatch):
                     ),
                     {"hash": "a" * 64, "person": person, "now": datetime.now(UTC)},
                 )
-            async with db.sessions() as reader:
+            async with db.read_session() as reader:
                 return dict(
                     (
                         await reader.execute(
@@ -58,7 +58,7 @@ def test_upgrade_preserves_reflection_work_state(tmp_path, monkeypatch):
     async def verify():
         db = Database(url)
         try:
-            async with db.sessions() as reader:
+            async with db.read_session() as reader:
                 saved = dict(
                     (await reader.execute(text("SELECT * FROM memory_self_reflection_states")))
                     .mappings()

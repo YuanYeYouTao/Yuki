@@ -50,9 +50,10 @@ class ConversationCommands:
 
     async def status(self, identity: ConversationScope, conversation_key: str) -> str:
         scope = await self._conversation_scopes.get(identity)
-        async with self._people._database.sessions() as session:
-            checkpoint = (
-                await session.scalar(
+        checkpoint = None
+        if scope:
+            async with self._people._database.read_session() as session:
+                checkpoint = await session.scalar(
                     current_checkpoint_query(scope.id).options(
                         load_only(
                             PromptProjectionModel.selected_summary_coverage,
@@ -60,15 +61,12 @@ class ConversationCommands:
                         )
                     )
                 )
-                if scope
-                else None
-            )
-            compact_line = (
-                f"Compact 覆盖点：{checkpoint.selected_summary_coverage}，"
-                f"公共窗口更新时间：{checkpoint.updated_at.isoformat()}"
-                if checkpoint is not None
-                else "Compact 检查点：无"
-            )
+        compact_line = (
+            f"Compact 覆盖点：{checkpoint.selected_summary_coverage}，"
+            f"公共窗口更新时间：{checkpoint.updated_at.isoformat()}"
+            if checkpoint is not None
+            else "Compact 检查点：无"
+        )
         pending_restart = await self._runtime_config.pending_restart_count()
         vision_busy = self._vision is not None and self._vision.busy
         vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0

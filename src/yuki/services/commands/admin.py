@@ -95,7 +95,7 @@ class AdminChatCommands:
                     raise ValueError("管理修改缺少原内部事件。")
 
                 async def group_revision() -> int:
-                    async with self.control._database.sessions() as session:
+                    async with self.control._database.read_session() as session:
                         row = await session.get(CanonicalSpaceModel, identity)
                         if row is None:
                             raise ValueError("没有找到该 Space。")

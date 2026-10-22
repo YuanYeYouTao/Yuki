@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import event, select, update
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.person_merge import merge_persons
 from tests.support.social_identity_cases import social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -22,7 +23,6 @@ from yuki.identity.db_models import (
     IdentityBindingModel,
 )
 from yuki.identity.ingress import CanonicalIngressResolver
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.services.agent_tools import ToolRuntime
 from yuki.social.agent_adapter import invoke_social
@@ -80,7 +80,7 @@ async def send(env, text, *, call_id="send", **arguments):
 
 
 async def account(env, native):
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         return await session.scalar(
             select(AccountModel).where(
                 AccountModel.platform == "qq", AccountModel.external_account_id == native
@@ -107,7 +107,7 @@ async def test_prior_unknown_native_mention_and_current_name_are_one_account(env
         message_id="unknown-ice",
         mentions=(MessageMention("member", 0, 6, 10, "10055", "Ice"),),
     )
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         binding = await create_person_binding(
             session,
             external_account_id="10055",
@@ -118,7 +118,7 @@ async def test_prior_unknown_native_mention_and_current_name_are_one_account(env
     await append_message(
         env, "10055", "Ice", at=env.started + timedelta(seconds=3), message_id="known-ice"
     )
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         stages = set(
             await session.scalars(
                 select(AccountNameObservationModel.assignment_id).where(
@@ -134,7 +134,7 @@ async def test_prior_unknown_native_mention_and_current_name_are_one_account(env
     assert result["mentioned_accounts"] == [
         {"account_id": selected, "display_name": "Ice", "reference": f"@{{account:{selected}}}"}
     ]
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         row = await session.get(ChatEventModel, result["event_id"])
         from yuki.persistence.repository_helpers import _event_record
 
@@ -150,7 +150,7 @@ async def test_prior_unknown_native_mention_and_current_name_are_one_account(env
 @pytest.mark.parametrize("same_person", [False, True])
 async def test_same_name_uses_message_time_not_last_seen_or_late_arrival(env, same_person):
     if same_person:
-        async with env.db.sessions() as session, session.begin():
+        async with env.db.immediate_session() as session:
             second = await session.scalar(
                 select(IdentityBindingModel)
                 .join(AccountModel)
@@ -165,7 +165,7 @@ async def test_same_name_uses_message_time_not_last_seen_or_late_arrival(env, sa
             at=env.started + timedelta(seconds=second),
             message_id=f"{native}-{second}",
         )
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         future = env.started + timedelta(days=3)
         await session.execute(
             update(AccountSpaceProfileModel)
@@ -212,7 +212,7 @@ async def test_explicit_account_and_original_receipt_keep_the_frozen_target(env,
 async def test_natural_name_uses_the_destination_conversation_not_the_invoking_one(env):
     from tests.support.canonical_identity import ensure_space
 
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         space = await ensure_space(session, "20002")
     for native, second in (("10001", 1), ("10002", 2)):
         await append_message(
@@ -247,7 +247,7 @@ async def test_natural_name_uses_the_destination_conversation_not_the_invoking_o
     assert result["status"] == "succeeded"
     assert [item["account_id"] for item in result["mentioned_accounts"]] == [selected.id]
     assert native_targets(env) == [later]
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         row = await session.get(ChatEventModel, result["event_id"])
     assert row.canonical_conversation_id == target_message.conversation_id
 
@@ -262,7 +262,7 @@ async def test_cross_target_private_name_uses_the_original_participants_history(
         group_id=None,
         mentions=(MessageMention("yuki", 0, 6, 10, env.bot.self_id, "Ice"),),
     )
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         member = await session.scalar(
             select(IdentityBindingModel)
             .join(AccountModel)
@@ -302,7 +302,7 @@ async def test_cross_target_private_name_uses_the_original_participants_history(
     sent = [params for method, params in env.bot.calls if method == "send_private_msg"]
     assert len(sent) == 2 and sent[-1]["user_id"] == 10002
     assert sent[-1]["message"][0] == {"type": "at", "data": {"qq": native}}
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         row = await session.get(ChatEventModel, result["event_id"])
     assert row.canonical_conversation_id == private.conversation_id
     assert row.canonical_conversation_id != env.source.conversation_id
@@ -322,7 +322,7 @@ async def test_recipient_transfer_after_preparation_does_not_block_the_real_sour
         nonlocal moved
         receipt = await prepare(**kwargs)
         if not moved:
-            async with env.db.sessions() as session, session.begin():
+            async with env.db.immediate_session() as session:
                 old = await session.scalar(
                     select(IdentityBindingModel).where(IdentityBindingModel.account_id == target.id)
                 )
@@ -465,7 +465,7 @@ async def test_partial_send_reports_only_the_successfully_mentioned_account(env,
     assert native_targets(env) == ["10002"]
     assert await send(env, text) == result
     assert attempts == 2
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         recorded = list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")
@@ -496,7 +496,7 @@ async def test_real_indexed_preparation_reads_while_another_writer_is_active(env
         )
         event.listen(env.db.engine.sync_engine, "before_cursor_execute", capture)
         try:
-            async with env.db.sessions() as reader:
+            async with env.db.read_session() as reader:
                 prepared = await asyncio.wait_for(
                     prepare_for_entry(
                         reader,
@@ -577,7 +577,7 @@ async def test_notification_preparation_uses_its_target_conversation_and_keeps_t
     await append_message(
         env, "10001", "Diana", at=env.started + timedelta(seconds=5), message_id="newer-input"
     )
-    async with env.db.sessions() as session, session.begin():
+    async with env.db.immediate_session() as session:
         current = await session.scalar(
             select(IdentityBindingModel)
             .join(AccountModel)
@@ -593,7 +593,7 @@ async def test_notification_preparation_uses_its_target_conversation_and_keeps_t
     await worker._deliver(claimed)
     assert native_targets(env) == ["10002"]
     assert await repository.claim_outbox() is None
-    async with env.db.sessions() as session:
+    async with env.db.read_session() as session:
         delivered = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "outbound")
         )

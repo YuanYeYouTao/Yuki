@@ -8,7 +8,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person
+from tests.support.person_merge import merge_persons
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
 
 from yuki.admin.config_service import RuntimeConfigService
@@ -31,7 +33,6 @@ from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.event_author import project_event_author
 from yuki.identity.person_identity import (
     current_person_id,
-    merge_persons,
     person_enabled_condition,
     person_family_ids,
     rename_person,
@@ -39,7 +40,6 @@ from yuki.identity.person_identity import (
 from yuki.identity.person_state import (
     load_canonical_aliases,
     load_canonical_profile,
-    observe_canonical_person,
     set_canonical_person_enabled,
 )
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
@@ -52,7 +52,8 @@ async def merge(database, source, target):
     async def apply(session):
         return await merge_persons(session, source, target, now=NOW)
 
-    return await database.apply_snapshot_write(apply)
+    async with database.immediate_session() as _writer:
+        return await apply(_writer)
 
 
 async def test_merge_chain_keeps_raw_bindings_names_and_accountless_person(database):
@@ -69,7 +70,7 @@ async def test_merge_chain_keeps_raw_bindings_names_and_accountless_person(datab
     assert await merge(database, a, b) == b
     assert await merge(database, b, c) == c
     assert await merge(database, c, a) == c
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await current_person_id(session, a) == c
         assert set(await person_family_ids(session, a)) == {a, b, c}
         assert [
@@ -85,7 +86,7 @@ async def test_merge_chain_keeps_raw_bindings_names_and_accountless_person(datab
 async def test_mutual_concurrent_merges_do_not_form_cycle(database):
     a, b, _, _ = await _owners(database)
     await asyncio.gather(merge(database, a, b), merge(database, b, a))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         root = await current_person_id(session, a)
         assert root == await current_person_id(session, b)
         assert (await session.get(CanonicalPersonModel, root)).merged_into_person_id is None
@@ -125,7 +126,7 @@ async def test_forget_reprepares_actual_family_when_merge_commits_after_preparat
     assert await asyncio.wait_for(pending, timeout=10)
     assert families[0] == {a}
     assert families[-1] == {a, b}
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.get(CanonicalPersonModel, a) is None
         assert await session.get(CanonicalPersonModel, b) is None
         assert (await session.get(CanonicalPersonModel, unrelated)).display_name == "Other"
@@ -157,7 +158,7 @@ async def test_configuration_target_wins_unique_moves_and_unset_never_falls_back
     assert (await runtime.snapshot(user_id=a)).context.compact_trigger_tokens == make_settings(
         database.url
     ).context_compact_trigger_tokens
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original = await session.scalar(
             select(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.canonical_person_id == a,
@@ -274,21 +275,17 @@ async def test_route_trigger_accepts_root_to_original_binding_and_keeps_target_r
     async with database.immediate_session() as session:
         session.add(CanonicalPersonModel(id=c, created_at=NOW, updated_at=NOW))
     await merge(database, c, b)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (await session.get(PersonActiveRouteModel, b)).identity_binding_id == bindings[b]
 
 
 async def test_profile_observation_of_retired_presence_requires_and_uses_person_binding(database):
     people = PeopleRepository(database)
-    await people.observe(user_id="8001", nickname="Still Yuki")
     async with database.immediate_session() as session:
         presence = await find_presence(session, "8001")
         assert presence is not None
         presence_id = presence.id
         presence.enabled = False
-    with pytest.raises(CanonicalIdentityError) as error:
-        await people.observe(user_id="8001", nickname="Ordinary account")
-    assert error.value.category == "unclassified"
     async with database.immediate_session() as session:
         with pytest.raises(CanonicalIdentityError, match="canonical identity invariant failed"):
             await ensure_person(session, "8001", now=NOW)
@@ -301,10 +298,10 @@ async def test_profile_observation_of_retired_presence_requires_and_uses_person_
             session, presence.account, presence.id, person, now=NOW
         )
         person_id, replacement_id = person.id, replacement.id
-    await people.observe(user_id="8001", nickname="Ordinary account", expected_person_id=person_id)
+    await apply_observations(database, profile_message(user_id="8001", nickname="Ordinary account"))
     profile = await people.get(person_id=person_id)
     assert profile is not None and profile.nickname == "Ordinary account"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         presence = await session.get(PresenceModel, presence_id)
         assert (
             presence is not None
@@ -320,23 +317,17 @@ async def test_initial_name_is_person_owned_and_rename_survives_platform_observa
             session, external_account_id="name-test", display_name="", platform="telegram", now=NOW
         )
         person = binding.person_id
-        for nickname in ("First", "Platform rename"):
-            await observe_canonical_person(
-                session,
-                binding=binding,
-                nickname=nickname,
-                nickname_known=True,
-                group_id=None,
-                group_card="",
-                group_name="",
-                group_card_known=False,
-                now=NOW,
-            )
+        binding_id, account_id = binding.id, binding.account_id
+    for nickname in ("First", "Platform rename"):
+        await apply_observations(
+            database, profile_message(user_id="name-test", nickname=nickname, platform="telegram")
+        )
+    async with database.immediate_session() as session:
         assert (await session.get(CanonicalPersonModel, person)).display_name == "First"
-        account_id = binding.account_id
         await rename_person(session, person, "Chosen", now=NOW)
+        binding = await session.get(IdentityBindingModel, binding_id)
         binding.status = "disabled"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await load_canonical_profile(session, person_id=person) == ("Chosen", "")
         assert (await session.get(AccountModel, account_id)).display_name == "Platform rename"
         aliases = set(await load_canonical_aliases(session, person, limit=20))
@@ -348,12 +339,12 @@ async def test_disable_source_does_not_revoke_target_but_disable_root_blocks_eve
     async with database.immediate_session() as session:
         await set_canonical_person_enabled(session, a, False, now=NOW)
     await merge(database, a, b)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not await session.scalar(select(person_enabled_condition(a)))
         assert await session.scalar(select(person_enabled_condition(b)))
     async with database.immediate_session() as session:
         await set_canonical_person_enabled(session, b, False, now=NOW)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not await session.scalar(select(person_enabled_condition(b)))
 
 
@@ -364,7 +355,7 @@ async def test_root_disable_rejects_original_actor_but_keeps_person_qualificatio
     await merge(database, a, b)
     access = ControlAccess(database)
     assert "superuser" in (await access.principal_for_person(b)).roles
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         author = await project_event_author(
             session,
             sender_user_id="10001",
@@ -375,7 +366,7 @@ async def test_root_disable_rejects_original_actor_but_keeps_person_qualificatio
         assert author.author_person_id == a
     async with database.immediate_session() as session:
         await set_canonical_person_enabled(session, b, False, now=NOW)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         with pytest.raises(CanonicalIdentityError) as error:
             await project_event_author(
                 session,
@@ -448,3 +439,97 @@ async def test_legacy_opaque_operator_rollback_uses_original_principal_exactly(d
         audit_ref=ControlAuditRef(user_id=b, principal_kind="control", principal_id=operator_id),
     )
     assert result.success
+
+
+@pytest.mark.parametrize("change", ["original_audit", "relevant_move", "unrelated_move"])
+async def test_legacy_config_rollback_rechecks_only_actual_selected_lineage(database, change):
+    from sqlalchemy import event
+
+    from yuki.admin.config_service import ConfigRollbackPreparationChanged
+
+    source, target, _, _ = await _owners(database)
+    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    initial = await runtime.set_override(
+        "context.compact_trigger_tokens",
+        70000,
+        scope_type="user",
+        scope_id=source,
+        actor_user_id="operator",
+        trigger_message_id="",
+    )
+    async with database.immediate_session() as writer:
+        audit = await writer.get(AdminOperationEventModel, initial.change_id)
+        after = json.loads(audit.after_json)
+        after.pop("row_id")
+        audit.after_json = json.dumps(after)
+    await merge(database, source, target)
+    prepared = await runtime.prepare_rollback(initial.change_id)
+    async with database.immediate_session() as writer:
+        if change == "original_audit":
+            audit = await writer.get(AdminOperationEventModel, initial.change_id)
+            after = json.loads(audit.after_json)
+            after["value"] = 71000
+            audit.after_json = json.dumps(after)
+        else:
+            current = await writer.scalar(
+                select(RuntimeConfigOverrideModel).where(
+                    RuntimeConfigOverrideModel.canonical_person_id == target
+                )
+            )
+            writer.add(
+                AdminOperationEventModel(
+                    actor_user_id="operator",
+                    capability="identity.person.merge",
+                    operation="identity.person.merge",
+                    target_type="person",
+                    target_id=target,
+                    before_json="{}",
+                    after_json=json.dumps(
+                        {
+                            "configuration_moves": [
+                                {
+                                    "table": "runtime_config_overrides",
+                                    "id": current.id
+                                    if change == "relevant_move"
+                                    else current.id + 999,
+                                    "version": current.version,
+                                    "from": target,
+                                    "to": target,
+                                }
+                            ]
+                        }
+                    ),
+                    success=True,
+                    duration_seconds=0,
+                    created_at=NOW,
+                )
+            )
+    writes = []
+
+    def inspect(_connection, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", inspect)
+    try:
+        if change == "unrelated_move":
+            async with database.immediate_session() as writer:
+                result = await runtime.rollback(
+                    initial.change_id,
+                    actor_user_id="operator",
+                    session=writer,
+                    prepared=prepared,
+                )
+            assert result.success
+        else:
+            with pytest.raises(ConfigRollbackPreparationChanged):
+                async with database.immediate_session() as writer:
+                    await runtime.rollback(
+                        initial.change_id,
+                        actor_user_id="operator",
+                        session=writer,
+                        prepared=prepared,
+                    )
+            assert not writes
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", inspect)

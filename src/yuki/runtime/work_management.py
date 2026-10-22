@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Mapping
 from typing import Any, Literal
@@ -172,7 +171,29 @@ async def manage_work(
         raise WorkManagementError("validation_error")
     if reason is not None and not isinstance(reason, str):
         raise WorkManagementError("validation_error")
-    row = (await session.execute(select(work).where(work.c.id == identity))).mappings().first()
+    row = (
+        (
+            await session.execute(
+                select(
+                    work.c.id,
+                    work.c.revision,
+                    work.c.state,
+                    work.c.conversation_id,
+                    work.c.generation,
+                    work.c.parent_work_id,
+                    work.c.model_requests,
+                    *(
+                        func.json_extract(work.c.source_json, literal_column(f"'$.{key}'")).label(
+                            key
+                        )
+                        for key in CLASSIFICATION_KEYS
+                    ),
+                ).where(work.c.id == identity)
+            )
+        )
+        .mappings()
+        .first()
+    )
     if row is None:
         raise WorkManagementError("not_found")
     if row["revision"] != revision:
@@ -204,7 +225,13 @@ async def manage_work(
         parent_id = row["parent_work_id"]
         if parent_id is not None:
             parent = (
-                (await session.execute(select(work).where(work.c.id == parent_id)))
+                (
+                    await session.execute(
+                        select(work.c.conversation_id, work.c.generation, work.c.state).where(
+                            work.c.id == parent_id
+                        )
+                    )
+                )
                 .mappings()
                 .first()
             )
@@ -247,11 +274,8 @@ async def manage_work(
                         .values(state="queued", revision=work.c.revision + 1, updated=now)
                     )
         return revision + 1, state
-    try:
-        source = json.loads(row["source_json"])
-    except (ValueError, TypeError):
-        source = None
-    blocker = await resume_blocker(session, row, source if isinstance(source, dict) else None, now)
+    source = {key: row[key] for key in CLASSIFICATION_KEYS}
+    blocker = await resume_blocker(session, row, source, now)
     if blocker is not None:
         raise WorkManagementError(blocker)
     await session.execute(

@@ -60,7 +60,7 @@ async def model_record(repository, *, conversation=None):
 
 async def test_diagnostic_source_proof_uses_no_per_record_read_session(database, tmp_path):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
     writer = DiagnosticWriter()
     recorder = TraceRecorder(database, writer=writer)
@@ -85,7 +85,7 @@ async def test_diagnostic_source_proof_uses_no_per_record_read_session(database,
     assert not any(sql.lstrip().upper().startswith("SELECT") for sql in statements)
     assert writer.committed == 2
     assert original.coverage.failures == 0
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.scalar(select(ModelInvocationModel))
         assert row.cached_prompt_tokens == 80
         assert row.total_tokens == 105
@@ -102,7 +102,7 @@ async def test_erasure_before_writer_rejects_old_trace_and_model_without_recaptu
 
     async def erase_after_encode(*args):
         prepared = await prepare(*args)
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             session.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
         return prepared
 
@@ -123,7 +123,7 @@ async def test_erasure_before_writer_rejects_old_trace_and_model_without_recaptu
     monkeypatch.setattr(recorder, "_prepare_write", prepare)
     await recorder.append(scope(recorder, generation=1), "fresh", {})
     await writer.close()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (await reader.scalars(select(ExecutionTraceEntryModel.kind))).all() == ["fresh"]
         assert await reader.scalar(select(func.count(ModelInvocationModel.id))) == 0
 
@@ -133,7 +133,7 @@ async def test_original_conversation_event_source_is_checked_at_write_time(
     database, tmp_path, change
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
     writer = DiagnosticWriter()
     recorder = TraceRecorder(database, writer=writer)
@@ -149,7 +149,7 @@ async def test_original_conversation_event_source_is_checked_at_write_time(
     await writer.close()
     assert original.coverage.failures == 1
     assert writer.failures == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count(ExecutionTraceEntryModel.id))) == 0
 
 
@@ -159,7 +159,7 @@ async def test_delivery_diagnostic_requires_original_confirmed_receipt_and_event
 ):
     env = await social_env(database, tmp_path)
     sent = await env.service.execute("send", {"text": "confirmed"}, env.context)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -172,7 +172,7 @@ async def test_delivery_diagnostic_requires_original_confirmed_receipt_and_event
         {"event_id": sent["event_id"]},
         delivery=(receipt.id if valid else "missing-receipt", sent["event_id"]),
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = (await reader.scalars(select(ExecutionTraceEntryModel))).all()
         assert len(rows) == int(valid)
         assert await reader.scalar(select(SocialOperationModel.status)) == "succeeded"

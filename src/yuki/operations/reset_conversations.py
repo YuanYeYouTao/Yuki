@@ -24,7 +24,7 @@ from yuki.persistence.models import (
 async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[str, int]:
     if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", batch_id) is None:
         raise ValueError("invalid_batch_id")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         ids = (
             await session.scalars(
                 select(CanonicalConversationModel.id).order_by(CanonicalConversationModel.id)
@@ -85,16 +85,19 @@ async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[s
                     select(AutomationModel).where(
                         AutomationModel.creator_kind == "self",
                         AutomationModel.status.in_(("active", "paused")),
+                        func.json_extract(
+                            AutomationModel.authority_snapshot_json, "$.canonical_conversation_id"
+                        )
+                        == conversation_id,
+                        func.json_extract(
+                            AutomationModel.authority_snapshot_json, "$.conversation_generation"
+                        )
+                        == prior,
                     )
                 )
             ).all()
             for automation in automations:
                 authority = json.loads(automation.authority_snapshot_json)
-                if authority.get("canonical_conversation_id") != conversation_id:
-                    continue
-                if authority.get("conversation_generation") != prior:
-                    # Already stale before the cutover: do not resurrect it.
-                    continue
                 authority["conversation_generation"] = generation
                 automation.authority_snapshot_json = json.dumps(
                     authority, ensure_ascii=False, separators=(",", ":")
@@ -131,7 +134,7 @@ async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[s
                 )
             )
         summary["newly_reset"] += 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         complete = int(
             await session.scalar(
                 select(func.count())

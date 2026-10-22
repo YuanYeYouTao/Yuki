@@ -54,7 +54,7 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
         result = await host.agent.run("check the actual source and delegate")
     repository = WorkRepository(database)
     root = await repository.get(result.data["work_id"])
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         child = dict(
             (await reader.execute(select(work).where(work.c.parent_work_id == root["id"])))
             .mappings()
@@ -69,7 +69,7 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
         # metadata, not the live domain approval for this original child.
         source["allowed_tools"] = ["subagent_start", "workspace_read", "automation_list"]
         child["source_json"] = json.dumps(source, ensure_ascii=False, separators=(",", ":"))
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             await writer.execute(
                 update(work)
                 .where(work.c.id == child["id"])
@@ -77,7 +77,7 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
             )
     original_source = child["source_json"]
     await host.close_host_resources()
-    await database.close()
+    await database.engine.dispose()
     restored = HostPluginContext(
         plugin_id=host.plugin_id,
         approved_permissions=(PluginPermission.AGENT_RUN,),
@@ -108,7 +108,7 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
         assert (await repository.get(child["id"]))["source_json"] == original_source
         assert len(provider.requests) == 3
         assert (await repository.get(root["id"]))["model_requests"] == 2
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(select(budgets.c.models).where(budgets.c.root_id == root["id"]))
                 == 3
@@ -157,10 +157,10 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
     provider = FakeLLMProvider()
     env, harness, chat, _state, _message = await _scene(database, tmp_path, provider)
     chat._tools.social_service = env.service
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         other_space = await ensure_space(session, "30001")
     database.subagents_enabled = True
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event_id = await reader.scalar(select(ChatEventModel.id))
     event = await harness.ledger.get_event(event_id)
     recovered = await recover_source(
@@ -214,7 +214,7 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
         with host.invocation_scope(host.plugin_id, source_runtime):
             result = await host.agent.run("delegate with the original SDK grant")
         repository = WorkRepository(database)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             child = dict(
                 (
                     await reader.execute(

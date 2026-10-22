@@ -101,7 +101,7 @@ async def test_message_work_recovery_uses_current_person_qualification(
     env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
     await harness.processor.handle(message, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     frozen_source = json.loads(original["source_json"])
     frozen_source["actor_is_superuser"] = not current_superuser
@@ -168,7 +168,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
     )
     await harness.processor.handle(message, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
         prior_effects = [dict(row) for row in (await reader.execute(select(effects))).mappings()]
     assert original["state"] == "queued"
@@ -182,7 +182,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
             repository, lease, original["source_key"], json.loads(original["source_json"]), validate
         )
         control.current = original
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             contract = await reader.scalar(
                 select(journal.c.contract).where(journal.c.work_id == original["id"])
             )
@@ -299,7 +299,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         if action in {"deferred-permanent", "deferred-provider-retry"}:
             assert isinstance(deferred.__cause__, WorkRecoveryDeferred)
             assert isinstance(deferred.__cause__.__cause__, (ValueError, LLMUnavailableError))
-    await database.close()
+    await database.engine.dispose()
     scheduler = original_scheduler(repository, env, harness, chat)
     requests_before = len(provider.requests)
     if action == "cancel":
@@ -315,7 +315,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
     if action == "lost-response-input":
         assert recovered["state"] == "queued"
         assert len(provider.requests) == requests_before
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             failure = await reader.scalar(
                 select(recovery.c.failure_json).where(recovery.c.work_id == original["id"])
             )
@@ -361,7 +361,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         assert len(provider.requests) == requests_before
     if action in {"lost-response", "deferred-lost-response"}:
         assert final["reason"] == "work_response_not_persisted"
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             retained = (await reader.execute(select(journal))).mappings().one()
             assert retained["work_id"] == original["id"] and retained["phase"] == "dispatched"
         await scheduler.drain_once()
@@ -374,18 +374,18 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
     if action == "lost-response-input":
         assert len(provider.requests) == requests_before + 1
         assert final["model_requests"] == original["model_requests"] + 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(select(inputs.c.state).where(inputs.c.id == input_id))
                 == "consumed"
             )
     if action == "unknown":
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(select(effects.c.state).where(effects.c.effect_key == key))
                 == "unknown"
             )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         final_effects = [dict(row) for row in (await reader.execute(select(effects))).mappings()]
     for prior in prior_effects:
         assert (
@@ -422,7 +422,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
             message, message_id=f"capacity-input-{number}", text=f"distinct input {number}"
         )
         await harness.processor.handle(incoming, MemorySender())
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             current = dict(
                 (await reader.execute(select(work).order_by(work.c.created.desc()).limit(1)))
                 .mappings()
@@ -463,7 +463,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
         text="independent private work",
     )
     await harness.processor.handle(private, MemorySender())
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         idle = dict(
             (
                 await reader.execute(
@@ -505,7 +505,7 @@ async def test_cancel_retires_only_stale_control_preserving_original_facts(
     await repository.record_effect(
         key, "accepted", {"outcome": {"ok": True, "mutation_committed": True}}
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         prior = dict(
             (await reader.execute(select(effects).where(effects.c.effect_key == key)))
             .mappings()
@@ -520,7 +520,7 @@ async def test_cancel_retires_only_stale_control_preserving_original_facts(
     checkpoint = json.loads(final["checkpoint_json"])
     assert final["state"] == "cancelled" and "accepted_control" not in checkpoint
     assert checkpoint["sync_result"] == "preserved result" and checkpoint["other"] == "retained"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             dict(
                 (await reader.execute(select(effects).where(effects.c.effect_key == key)))
@@ -604,7 +604,7 @@ async def test_message_recovery_uses_original_event_account_and_canonical_owner(
     provider._responder = original_responses(provider)
     _, harness, _, _, message = await _scene(database, tmp_path, provider, request_limit=1)
     await harness.processor.handle(message, MemorySender())
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     source = json.loads(original["source_json"])
     recovered = await recover_source(
@@ -680,7 +680,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list((await reader.execute(select(work))).mappings())
     parent = next(dict(row) for row in rows if row["parent_work_id"] is None)
     child = next(dict(row) for row in rows if row["parent_work_id"] == parent["id"])
@@ -698,7 +698,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
             person.is_superuser = True
             account = await ensure_account(writer, "9001", platform="qq", now=now)
             await replace_assignment(writer, account, None, person, now=now)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             actor, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
         assert actor == "" and permission is PermissionLevel.SUPERUSER
     resumed_actors = []
@@ -759,7 +759,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
             lease_seconds=case.settings.automation_lease_seconds,
         )
         assert len(claimed) == 1 and claimed[0].id == case.row.id
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             owner_before = dict(
                 (
                     await reader.execute(
@@ -778,7 +778,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         waits = WorkWaitRepository(repository)
         binding = await waits.describe(child["id"])
         assert await waits.deliver_due(now=binding["registered_at"] + 1) == 1
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             owner_after = dict(
                 (
                     await reader.execute(
@@ -800,7 +800,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     assert all(runtime.actor_is_superuser == promoted for runtime in resumed_actors)
     assert resumed_actors[0].require_actor().principal_kind == principal
     assert (await repository.get(parent["id"]))["state"] == "completed"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         runs = list(await reader.scalars(select(AutomationRunModel)))
         assert len(runs) == 1 and runs[0].id == case.run.id
         assert runs[0].status == "succeeded" and runs[0].finished_at is not None
@@ -826,7 +826,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     provider = FakeLLMProvider(responder=lambda _: "original conversation observed")
     env, harness, chat, _, message = await _scene(database, tmp_path, provider)
     await harness.processor.handle(message, MemorySender())
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -896,7 +896,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     ), result
     repository = WorkRepository(database)
     parent = await repository.get(result.data["work_id"])
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         child = dict(
             (await reader.execute(select(work).where(work.c.parent_work_id == parent["id"])))
             .mappings()
@@ -1022,7 +1022,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     assert (await repository.get(parent["id"]))["state"] == "completed"
     if not revoked:
         assert (await host.agent.result(child["id"])).data["text"] == final_text
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert set(await reader.scalars(select(ChatEventModel.id))) == event_ids
         assert len(list(await reader.scalars(select(work.c.id)))) == 2
     await host.close_host_resources()
@@ -1093,7 +1093,7 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
     assert job and job.source_event_id == receipt.source_event_id
     await worker._execute(job)
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         stored_job = dict(
             (await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings().one()
         )
@@ -1147,7 +1147,7 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
     assert final["parent_work_id"] == selected["parent_work_id"]
     assert final["model_requests"] == selected["model_requests"] + int(not revoked)
     assert calls == calls_before + int(not revoked)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         final_job = dict(
             (await reader.execute(select(PluginBackgroundTurnJobModel.__table__))).mappings().one()
         )

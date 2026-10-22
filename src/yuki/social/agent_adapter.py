@@ -65,7 +65,7 @@ async def invoke_social(
             or arguments.get("target") is not None
         ):
             raise SocialError("permission_denied")
-        async with service.database.sessions() as session:
+        async with service.database.read_session() as session:
             event = await session.get(ChatEventModel, event_id)
             conversation = await session.get(CanonicalConversationModel, conversation_id)
             if (
@@ -101,7 +101,10 @@ async def invoke_social(
             raise SocialError(exc.category) from exc
         except ValidationError as exc:
             raise SocialError("invalid_message_arguments") from exc
-    if getattr(runtime, "read_target_id", None) is not None and name == "query_chat_history":
+    if getattr(runtime, "read_target_id", None) is not None and (
+        name == "query_chat_history"
+        or (name == "find_contacts" and arguments.get("view") == "entries")
+    ):
         actor = runtime.actor_context
         invocation = current_invocation.get()
         if invocation is None or runtime.tools_closed:
@@ -139,7 +142,7 @@ async def invoke_social(
         selected = dict(arguments)
         if any(selected.get(key) for key in ("target_id", "subject_ref", "display_name")):
             target = await service.target(kind, selected, context, validate=False)
-            async with service.database.sessions() as session:
+            async with service.database.read_session() as session:
                 if str(target.id) != target_id and (
                     kind != "person" or not await same_person_id(session, str(target.id), target_id)
                 ):
@@ -172,7 +175,7 @@ async def invoke_social(
             refs["mentioned_user"] = actor.mentioned_person_ids[0]
         reply_id = getattr(inbound, "reply_to_event_id", None)
         if reply_id is not None:
-            async with service.database.sessions() as session:
+            async with service.database.read_session() as session:
                 reply = await session.get(ChatEventModel, reply_id)
                 if (
                     reply is not None

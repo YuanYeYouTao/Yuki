@@ -20,12 +20,50 @@ from yuki.social.models import OperationStatus, SocialTarget
 from yuki.social.repository import payload_hash
 
 
+@pytest.mark.parametrize("sequence", [False, True])
+async def test_original_delivery_payload_hashes_are_prepared_before_writer(
+    database, tmp_path, monkeypatch, sequence
+):
+    import yuki.social.repository as social_repository
+
+    env = await social_env(database, tmp_path)
+    original_hash = social_repository.payload_hash
+    original_receipt = social_repository.SocialOperationRepository._receipt
+    hashed = []
+
+    def prepare_hash(*args):
+        assert not database._writer.locked(), "body hashing must precede writer admission"
+        hashed.append(args[0])
+        return original_hash(*args)
+
+    monkeypatch.setattr(social_repository, "payload_hash", prepare_hash)
+
+    def decode_receipt(row, *, include_prepared=True):
+        if include_prepared and row.prepared_json is not None:
+            assert not database._writer.locked(), "original send plans are decoded after the writer"
+        return original_receipt(row, include_prepared=include_prepared)
+
+    monkeypatch.setattr(
+        social_repository.SocialOperationRepository, "_receipt", staticmethod(decode_receipt)
+    )
+    context = replace(
+        env.context,
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20)),
+    )
+    args = {"text": "first\nsecond" if sequence else "one original message"}
+    sent = await env.service.execute("send", args, context)
+    assert sent["status"] == "succeeded" and hashed
+    before = tuple(env.bot.calls)
+    assert await env.service.execute("send", args, context) == sent
+    assert tuple(env.bot.calls) == before
+
+
 @pytest.mark.parametrize("current_entry", [False, True])
 async def test_known_group_route_sends_without_remote_membership_preflight(
     database, tmp_path, current_entry
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
     context = replace(
         env.context,
@@ -182,7 +220,7 @@ async def test_cancel_after_ack_and_receipt_commit_replays_without_another_send(
     assert result["status"] == "succeeded"
     assert result["delivered_text"] == args["text"]
     assert [action for action, _ in env.bot.calls] == ["send_group_msg"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = await reader.get(SocialOperationModel, result["operation_id"])
         outgoing = list(
             await reader.scalars(
@@ -210,3 +248,55 @@ async def test_delivery_timings_separate_platform_wait_from_claim_and_settlement
         "social_settlement_seconds",
     } <= metrics.keys()
     assert all(value >= 0 for value in metrics.values())
+
+
+async def test_failed_work_delivery_rolls_back_normal_settlement_without_resending(
+    database, tmp_path, monkeypatch
+):
+    from tests.support.work_runner_helpers import case
+
+    import yuki.runtime.delivery_intents as delivery_intents
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_recovery_schema import deliveries
+
+    probe = await case(database, tmp_path, [])
+    env = probe.env
+    original = delivery_intents.record
+    attempts = 0
+
+    async def fail_first_record(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("work receipt unavailable after the acknowledged send")
+        await original(*args, **kwargs)
+
+    monkeypatch.setattr(delivery_intents, "record", fail_first_record)
+    env.bot.calls.clear()
+    token = current_work_control.set(probe.control)
+    try:
+        args = {"text": "one acknowledged transport effect"}
+        result = await env.service.execute("send", args, env.context)
+        assert result["status"] == "succeeded"
+        assert attempts == 2
+        async with database.read_session() as reader:
+            outgoing = list(
+                await reader.scalars(
+                    select(ChatEventModel.id).where(ChatEventModel.direction == "outbound")
+                )
+            )
+            receipt = await reader.get(SocialOperationModel, result["operation_id"])
+            delivery = (
+                (await reader.execute(select(deliveries).where(deliveries.c.id == receipt.id)))
+                .mappings()
+                .one()
+            )
+        # The first normal ledger/Social/Work transaction rolled back as one unit.
+        # Reconciliation retains the actual send receipt without inventing its lost ledger row.
+        assert outgoing == [] and receipt.event_id is None
+        assert delivery["state"] == "accepted"
+        assert await env.service.execute("send", args, env.context) == result
+        assert [action for action, _ in env.bot.calls] == ["send_group_msg"]
+    finally:
+        current_work_control.reset(token)
+        await probe.repository.release(probe.control.lease)

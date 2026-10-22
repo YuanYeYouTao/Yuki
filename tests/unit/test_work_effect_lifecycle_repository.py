@@ -38,7 +38,7 @@ async def receipt(owned, key, outcome, state="accepted"):
 
 
 async def read_receipt(repo, key):
-    async with repo.database.sessions() as reader:
+    async with repo.database.read_session() as reader:
         return dict(
             (await reader.execute(select(effects).where(effects.c.effect_key == key)))
             .mappings()

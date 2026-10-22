@@ -56,7 +56,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
         count = gateway.await_count
         assert await env.service.execute("send", {"text": "不确定"}, context) == result
         assert gateway.await_count == count
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert not list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")
@@ -73,7 +73,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
         # Marker-looking ordinary text is the original send payload, not framing.
         assert result["status"] == "succeeded" and result["delivered_text"] == "#62052>真实正文"
         assert result["delivered_text_available"] is True
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             stored = await session.get(SocialOperationModel, result["operation_id"])
             assert stored.event_id == result["event_id"]
             event = await session.get(ChatEventModel, stored.event_id)
@@ -102,10 +102,10 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
     env = await social_env(database, tmp_path)
     args = {"text": "#62052>真实正文"}
     receipt = await env.service.execute("send", args, env.context)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         actual = await session.get(ChatEventModel, receipt["event_id"])
         timestamp = actual.occurred_at
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         await ensure_presence(session, "80002")
         await ensure_space(session, "20002")
     unrelated_ids = []
@@ -126,26 +126,26 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         )
         # New writes already reject conflicting receipt identities. Simulate
         # pre-existing imported/corrupt ledger data to exercise read isolation.
-        async with database.sessions.begin() as session:
+        async with database.immediate_session() as session:
             other = await session.get(ChatEventModel, unrelated.event.id)
             other.platform_message_id = actual.platform_message_id
         unrelated_ids.append(unrelated.event.id)
     assert await env.service.execute("send", args, env.context) == receipt
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         actual = await session.get(ChatEventModel, receipt["event_id"])
         actual.platform_message_id = "transport-metadata-changed"
         actual.occurred_at = datetime(2020, 1, 1, tzinfo=UTC)
     # Neither transport reference nor timestamps are used to locate the event.
     assert await env.service.execute("send", args, env.context) == receipt
     for event_id in unrelated_ids:
-        async with database.sessions.begin() as session:
+        async with database.immediate_session() as session:
             stored = await session.get(SocialOperationModel, receipt["operation_id"])
             stored.event_id = event_id
         projected = await env.service.execute("send", args, env.context)
         assert projected["status"] == "succeeded" and projected["delivered_text_available"] is False
         assert "delivered_text" not in projected
     # Missing or incorrectly bound historical data is not reconstructed from raw args.
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         stored = await session.get(SocialOperationModel, receipt["operation_id"])
         stored.event_id = receipt["event_id"]
         actual = await session.get(ChatEventModel, receipt["event_id"])
@@ -163,21 +163,21 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
     args = {"text": "#62052>真实正文"}
     receipt = await env.service.execute("send", args, env.context)
     event_id = receipt["event_id"]
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         stored = await session.get(SocialOperationModel, receipt["operation_id"])
         stored.event_id = None
     # The matching historical event still exists, but must never be reverse-looked up.
     old = await env.service.execute("send", args, env.context)
     assert old["status"] == "succeeded" and old["event_id"] is None
     assert old["delivered_text_available"] is False and "delivered_text" not in old
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         stored = await session.get(SocialOperationModel, receipt["operation_id"])
         stored.event_id = event_id
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         await session.execute(delete(ChatEventModel).where(ChatEventModel.id == event_id))
     deleted = await env.service.execute("send", args, env.context)
     assert deleted == old
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         stored = await session.get(SocialOperationModel, receipt["operation_id"])
         assert stored.status == "succeeded" and stored.event_id is None
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
@@ -252,7 +252,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             ),
         )
         source_event_id = publication.source_event_id
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             row = await session.get(ChatEventModel, source_event_id)
             conversation_id = row.canonical_conversation_id
         runtime = SimpleNamespace(
@@ -376,7 +376,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
         quoted_context,
     )
     assert quoted["status"] == "succeeded"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         sent = list(
             await session.scalars(
                 select(ChatEventModel)

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person
 from tests.support.canonical_identity import ensure_presence as ensure_v2_presence
 from tests.support.canonical_identity import ensure_space as ensure_v2_space
@@ -120,7 +121,7 @@ async def test_v2_private_and_group_dual_presence_same_person_space(database: Da
     registry, resolver, uow = await _stack(database)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         await ensure_v2_space(session, "2001")
@@ -164,7 +165,7 @@ async def test_non_ingest_drops_before_policy_without_body(
     registry, resolver, _uow = await _stack(database)
     bot = _Bot("8000")
     other = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         await ensure_v2_space(session, "2001")
@@ -194,7 +195,7 @@ async def test_non_ingest_drops_before_policy_without_body(
 async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Database) -> None:
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -210,7 +211,7 @@ async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Da
             await uow.append_inbound(admitted.message, admitted)
     finally:
         set_identity_failpoint(None)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(ChatEventModel)))
         assert rows == []
     await uow.append_inbound(admitted.message, admitted)
@@ -262,7 +263,7 @@ async def test_retired_presence_sender_becomes_person_without_rewriting_history(
         bot, _message(message_id="after-binding-created", user_id="8001", group_id="2001")
     )
     assert repeated is not None and repeated.author_person_id == current.author_person_id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         historic = await session.get(ChatEventModel, stored.event.id)
         assert historic is not None
         assert historic.author_kind == AuthorKind.YUKI.value
@@ -296,7 +297,7 @@ async def test_ensure_person_only_conflicts_with_current_presence(
 async def test_external_bot_does_not_create_person(database: Database) -> None:
     registry, resolver, _uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -307,7 +308,7 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
     assert admitted.author_kind == AuthorKind.EXTERNAL_BOT.value
     assert admitted.author_person_id is None
     assert admitted.conversation_id is None
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         from yuki.identity.db_models import CanonicalPersonModel
 
         binding = await session.scalar(
@@ -404,7 +405,7 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     resolver = CanonicalIngressResolver(database, registry, router)
     uow = CanonicalIngressUnitOfWork(database, router)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="lagrange")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -419,7 +420,7 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     assert admitted.handle_external_account_id == "8000"
     assert admitted.message.bot_user_id == "8000"
     appended = await uow.append_inbound(admitted.message, admitted)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ChatEventModel, appended.event.id)
         assert row is not None
         assert row.ingress_provider == "lagrange"
@@ -435,7 +436,7 @@ async def test_retired_provider_provenance_remains_readable_without_recreating_e
 
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, presence_id=presence, provider_id="snowluma")
     admitted = await resolver.pre_admit(bot, _message(message_id="historical-provider"))
@@ -457,7 +458,7 @@ async def test_retired_provider_provenance_remains_readable_without_recreating_e
     duplicate = await uow.append_inbound(admitted.message, admitted)
     assert not duplicate.created
     assert duplicate.event.id == appended.event.id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ChatEventModel, read.id)
         assert row is not None
         assert row.ingress_provider == "napcat"
@@ -476,7 +477,7 @@ async def test_unknown_group_and_unknown_presence_fail_closed(database: Database
     )
     assert missing_presence is not None and missing_presence.dropped
     assert missing_presence.reason == "no_presence"
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8888")
     registry.bind_presence(platform="qq", external_account_id="8888", presence_id=presence)
     unknown_group = await resolver.pre_admit(
@@ -485,7 +486,7 @@ async def test_unknown_group_and_unknown_presence_fail_closed(database: Database
     )
     assert unknown_group is not None and unknown_group.dropped
     assert unknown_group.reason == "no_space_binding"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(SpaceBindingModel).where(SpaceBindingModel.external_space_id == "404")
@@ -498,7 +499,7 @@ async def test_unknown_group_and_unknown_presence_fail_closed(database: Database
 async def _admit_private(database: Database, message_id: str, *, text: str = "hello"):
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -520,7 +521,7 @@ async def test_canonical_ingress_content_conflict_keeps_original(database: Datab
         await uow.append_inbound(tampered, admitted)
     assert exc.value.category == "receipt_conflict"
     assert "tampered" not in str(exc.value)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ChatEventModel, first.event.id)
         events = list(await session.scalars(select(ChatEventModel)))
     assert row is not None
@@ -553,7 +554,7 @@ async def test_canonical_ingress_segments_or_occurred_at_conflict_fails_closed(
         )
     assert segments.value.category == "receipt_conflict"
     assert occurred.value.category == "receipt_conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.get(ChatEventModel, first.event.id)
     assert row is not None
     assert row.content == "payload"
@@ -588,7 +589,7 @@ async def test_canonical_ingress_race_rereads_winner(
     with pytest.raises(CanonicalIdentityError) as exc:
         await uow.append_inbound(replace(admitted.message, text="race-loser"), admitted)
     assert exc.value.category == "receipt_conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
         events = list(await session.scalars(select(ChatEventModel)))
     assert len(receipts) == 1
@@ -599,20 +600,19 @@ async def test_canonical_ingress_race_rereads_winner(
 async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
     database: Database,
 ) -> None:
-    from uuid import uuid4
 
     from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 
     uow, admitted = await _admit_private(database, "ingress-forge-1", text="kept")
     first = await uow.append_inbound(admitted.message, admitted)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         receipt = await session.scalar(select(CanonicalEventReceiptModel))
         assert receipt is not None
         receipt.canonical_event_id = str(uuid4())
     with pytest.raises(CanonicalIdentityError) as dangling:
         await uow.append_inbound(admitted.message, admitted)
     assert dangling.value.category == "receipt_conflict"
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         from yuki.conversation.hydrate import ensure_canonical_conversation
 
         receipt = await session.scalar(select(CanonicalEventReceiptModel))
@@ -641,7 +641,7 @@ async def test_canonical_ingress_receipt_with_only_duplicate_fails_closed(
 ) -> None:
     uow, admitted = await _admit_private(database, "ingress-dup-only", text="kept-body")
     first = await uow.append_inbound(admitted.message, admitted)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         row = await session.get(ChatEventModel, first.event.id)
         assert row is not None
         assert row.utterance_fingerprint
@@ -650,7 +650,7 @@ async def test_canonical_ingress_receipt_with_only_duplicate_fails_closed(
         await uow.append_inbound(admitted.message, admitted)
     assert exc.value.category == "receipt_conflict"
     assert "kept-body" not in str(exc.value)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         events = list(await session.scalars(select(ChatEventModel)))
     assert len(events) == 1
     assert events[0].suppression_status == "duplicate"
@@ -667,9 +667,8 @@ async def _insert_keeper(
     suppression_status: str = "keeper",
     canonical_event_id: str | None = None,
 ) -> None:
-    from uuid import uuid4
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         author_presence_id = (
             await ensure_v2_presence(session, bot_user_id)
             if author_kind == AuthorKind.YUKI.value
@@ -708,7 +707,7 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
 ) -> None:
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -779,7 +778,7 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
     assert yuki.message.reply_to_event_id is not None
     appended = await uow.append_inbound(yuki.message, yuki)
     assert appended.event.reply_to_event_id == yuki.message.reply_to_event_id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         persisted = await session.get(ChatEventModel, appended.event.id)
         anchor = await session.get(ChatEventModel, persisted.reply_to_event_id)
         assert anchor.platform_message_id == "yuki-out"
@@ -801,11 +800,10 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
 async def test_canonical_reply_ambiguous_or_duplicate_only(
     database: Database,
 ) -> None:
-    from uuid import uuid4
 
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -871,7 +869,7 @@ async def test_gateway_probe_during_pre_admission_does_not_hold_sqlite_writer(
     from sqlalchemy import text
 
     registry, resolver, uow = await _stack(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
         await ensure_v2_space(session, "2001")
     bot = _Bot("8000")
@@ -890,10 +888,8 @@ async def test_gateway_probe_during_pre_admission_does_not_hold_sqlite_writer(
     )
     try:
         await asyncio.wait_for(entered.wait(), 3)
-        async with database.sessions() as session:
+        async with database.immediate_session() as session:
             await session.execute(text("PRAGMA busy_timeout=30"))
-            await session.execute(text("BEGIN IMMEDIATE"))
-            await session.commit()
     finally:
         release.set()
     admitted = await pending
@@ -909,7 +905,7 @@ async def test_admitted_group_message_survives_disconnect_but_not_route_change(
     from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
         replacement_presence = await ensure_v2_presence(session, "8001")
         await ensure_v2_space(session, "2001")
@@ -933,7 +929,7 @@ async def test_admitted_group_message_survives_disconnect_but_not_route_change(
         with pytest.raises(CanonicalIdentityError) as failure:
             await uow.append_inbound(admitted.message, admitted)
         assert failure.value.category == ("paused" if route_state == "paused" else "not_ingest")
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert not list(await session.scalars(select(ChatEventModel)))
     else:
         assert (await uow.append_inbound(admitted.message, admitted)).created
@@ -947,7 +943,7 @@ async def test_admitted_group_new_survives_socket_disconnect_but_not_route_pause
     from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
         await ensure_v2_space(session, "2001")
     bot = _Bot("8000")
@@ -974,7 +970,7 @@ async def test_admitted_group_new_survives_socket_disconnect_but_not_route_pause
         with pytest.raises(CanonicalIdentityError) as failure:
             await uow.append_new_generation(admitted.message, admitted)
         assert failure.value.category == "paused"
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert not list(await session.scalars(select(ChatEventModel)))
     else:
         changed = await uow.append_new_generation(admitted.message, admitted)
@@ -988,7 +984,7 @@ async def test_internal_reply_reference_rejects_a_foreign_conversation(database:
 
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
@@ -999,7 +995,7 @@ async def test_internal_reply_reference_rejects_a_foreign_conversation(database:
     with pytest.raises(CanonicalIdentityError) as error:
         await uow.append_inbound(forged, other)
     assert error.value.category == "receipt_conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(ChatEventModel).where(ChatEventModel.platform_message_id == "foreign-ref")
@@ -1050,7 +1046,7 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
     )
     admitted = await resolver.pre_admit(bot, native)
     stored = await uow.append_inbound(admitted.message, admitted)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         bindings = {
             row.external_account_id: row.person_id
             for row in await session.scalars(
@@ -1068,7 +1064,7 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
         admitted.message.text[mention.text_start : mention.text_end] == mention.text
         for mention in admitted.message.mentions
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         authors = tuple(item for item in inputs if item != user_ids[-1])
         batch = await project_event_authors(session, sender_user_ids=authors)
         for account in dict.fromkeys(authors):
@@ -1104,7 +1100,7 @@ async def test_author_projection_rejects_disabled_source_and_cannot_dual_assign_
                 session, external_account_id="8000", display_name="collision", now=_NOW
             )
         assert collision.value.category == "canonical_kind_mismatch"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         with pytest.raises(CanonicalIdentityError) as disabled:
             await project_event_authors(session, sender_user_ids=("1001", "61010"))
         assert disabled.value.category == "canonical_owner_disabled"
@@ -1147,25 +1143,29 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
         person = await session.get(CanonicalPersonModel, disabled.person_id)
         assert person is not None
         person.enabled = False
-    await people.observe(
-        user_id="61021",
-        nickname="",
-        nickname_known=False,
-        group_id="2001",
-        group_card="",
-        group_card_known=False,
-        expected_person_id=person_id,
+    await apply_observations(
+        database,
+        profile_message(
+            user_id="61021",
+            nickname="",
+            nickname_known=False,
+            group_id="2001",
+            group_card="",
+            group_card_known=False,
+        ),
     )
     old = await people.get(user_id="61021", group_id="2001")
     assert old is not None and old.group_card == "card-61021"
-    await people.observe(
-        user_id="61021",
-        nickname="",
-        nickname_known=False,
-        group_id="2001",
-        group_card="",
-        group_card_known=True,
-        expected_person_id=person_id,
+    await apply_observations(
+        database,
+        profile_message(
+            user_id="61021",
+            nickname="",
+            nickname_known=False,
+            group_id="2001",
+            group_card="",
+            group_card_known=True,
+        ),
     )
     accounts = ("61029", "61022", "61021", "61029", "404", "61023")
     profiles = await people.get_many(accounts, group_id="2001")
@@ -1178,12 +1178,7 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
     card_only = await people.get(user_id="61021", group_id="2001", include_nickname=False)
     assert card_only is not None and card_only.nickname == card_only.group_card == ""
     assert await people.find_group_members_by_exact_name("card-61021", "2001") == ("61021",)
-    with pytest.raises(CanonicalIdentityError) as mismatch:
-        await people.observe(
-            user_id="61021", nickname="wrong owner", expected_person_id=str(uuid4())
-        )
-    assert mismatch.value.category == "canonical_owner_mismatch"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "61021")
         )

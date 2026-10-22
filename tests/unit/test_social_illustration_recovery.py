@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
@@ -14,8 +15,10 @@ from uuid import UUID, uuid4
 import pytest
 from PIL import Image
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.canonical_identity import ensure_person
 from tests.support.memory_identity import transfer_account
+from tests.support.person_merge import merge_persons
 from tests.support.social_identity_cases import Bot, social_env
 from tests.support.sticker_delivery import make_delivery, settle
 
@@ -32,7 +35,6 @@ from yuki.identity.canonical_repository import (
     create_presence,
     create_space_binding,
 )
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import current_work_control
@@ -46,8 +48,144 @@ from yuki.social.models import OperationStatus, SocialError, SocialTarget
 ARGS = {"text": "正文", "emoji": {"goal": "开心"}}
 
 
+@pytest.mark.parametrize("phase", ["selection", "claim"])
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+async def test_emoji_worker_resumes_original_receipt_after_real_commit_ack_loss(
+    database, tmp_path, monkeypatch, phase, error_type
+):
+    env = await social_env(database, tmp_path)
+    delivery, library = make_delivery(env)
+    await env.service.execute("send", ARGS, env.context)
+    original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    selecting = ContextVar("selection_commit", default=False)
+    select_asset, claim = delivery.intents.select, env.service.receipts.claim
+    commit = AsyncSession.commit
+    fired = False
+
+    async def select_original(*args, **kwargs):
+        token = selecting.set(True)
+        try:
+            return await select_asset(*args, **kwargs)
+        finally:
+            selecting.reset(token)
+
+    async def claim_original(*args, **kwargs):
+        result = await claim(*args, **kwargs)
+        if result:
+            kwargs["session"].info["original_emoji_claim"] = True
+        return result
+
+    async def lose_ack(session):
+        nonlocal fired
+        targeted = (
+            selecting.get() if phase == "selection" else session.info.get("original_emoji_claim")
+        )
+        await commit(session)
+        if targeted and not fired:
+            fired = True
+            raise error_type("original emoji commit acknowledgement lost")
+
+    monkeypatch.setattr(delivery.intents, "select", select_original)
+    monkeypatch.setattr(env.service.receipts, "claim", claim_original)
+    monkeypatch.setattr(AsyncSession, "commit", lose_ack)
+    await delivery.start()
+    try:
+        result = await settle(delivery, env.context)
+        current = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+        assert fired and current.id == original.id and current.selected is not None
+        assert library.select_calls == 1
+        assert result["status"] == ("succeeded" if phase == "selection" else "uncertain")
+        assert len(sends(env.bot)) == (2 if phase == "selection" else 1)
+        assert current.error_category is None
+    finally:
+        await delivery.close()
+
+
 def sends(bot):
     return [(method, args) for method, args in bot.calls if method.startswith("send_")]
+
+
+@pytest.mark.parametrize("text", ["", "正文"])
+async def test_emoji_admission_and_dispatch_keep_original_codecs_outside_writer(
+    database, tmp_path, monkeypatch, text
+):
+    import yuki.social.emoji_intents as intents_module
+
+    env = await social_env(database, tmp_path)
+    delivery, _library = make_delivery(env)
+    writer_active = ContextVar("test_original_emoji_writer", default=False)
+    writer = database.immediate_session
+
+    @asynccontextmanager
+    async def observed_writer():
+        async with writer() as session:
+            token = writer_active.set(True)
+            try:
+                yield session
+            finally:
+                writer_active.reset(token)
+
+    monkeypatch.setattr(database, "immediate_session", observed_writer)
+
+    def checked(operation):
+        def apply(*args, **kwargs):
+            assert not writer_active.get(), "original emoji bodies are prepared on a reader"
+            return operation(*args, **kwargs)
+
+        return apply
+
+    monkeypatch.setattr(intents_module, "encode", checked(intents_module.encode))
+    monkeypatch.setattr(intents_module, "payload_hash", checked(intents_module.payload_hash))
+    monkeypatch.setattr(
+        EmojiIntentRepository, "record", staticmethod(checked(EmojiIntentRepository.record))
+    )
+    result = await env.service.execute("send", {"text": text, "emoji": ARGS["emoji"]}, env.context)
+    assert result["status"] == ("succeeded" if text else "accepted")
+    intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    await delivery._deliver(intent)
+    final = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    assert final.id == intent.id and final.closed
+    assert len(sends(env.bot)) == (2 if text else 1)
+
+
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+async def test_emoji_only_admission_preserves_unknown_commit_and_original_intent(
+    database, tmp_path, monkeypatch, error_type
+):
+    env = await social_env(database, tmp_path)
+    delivery, _library = make_delivery(env)
+    original_writer = database.immediate_session
+    failure = error_type("original admission acknowledgement lost")
+
+    @asynccontextmanager
+    async def lose_acknowledgement():
+        async with original_writer() as writer:
+            commit = writer.commit
+
+            async def commit_without_ack():
+                await commit()
+                raise failure
+
+            monkeypatch.setattr(writer, "commit", commit_without_ack)
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", lose_acknowledgement)
+    arguments = {"emoji": {"goal": "开心"}}
+    result = await env.service.execute("send", arguments, env.context)
+    assert result["status"] == "unknown"
+    assert result["emoji"] == {
+        "status": "unknown",
+        "error": "emoji_admission_unconfirmed",
+        "mutation_committed": None,
+        "database_write_phase": "commit",
+    }
+    assert "database_write_phase:commit" in failure.__notes__
+    original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    assert original is not None and not sends(env.bot)
+    replay = await env.service.execute("send", arguments, env.context)
+    assert replay["status"] == "accepted"
+    assert (await delivery.intents.find(env.context.turn_id, env.context.call_id)).id == original.id
+    assert not sends(env.bot)
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -247,7 +385,7 @@ async def test_pure_illustration_keeps_internal_reply_and_mention_without_foregr
 ):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     context = env.context
     env.bot.calls.clear()
@@ -392,9 +530,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
     assert delivered["delivered_text"] == arguments["text"]
     assert len(sends(env.bot)) == 1
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute(
-            "send", dict(arguments, text="changed request"), env.context
-        )
+        await env.service.execute("send", dict(arguments, text="changed request"), env.context)
 
 
 @pytest.mark.parametrize("phase", ["claim", "finish"])
@@ -539,7 +675,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
         assert receipt.status is (
             OperationStatus.UNCERTAIN if uncertain else OperationStatus.SUCCEEDED
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             outbound = list(
                 await session.scalars(
                     select(ChatEventModel)
@@ -559,7 +695,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
         projected = await delivery.project(env.context)
         assert projected["status"] == ("uncertain" if uncertain else "succeeded")
         assert projected["status"] == ("uncertain" if uncertain else "succeeded")
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             recovered = await EmojiIntentRepository.effect_facts(
                 session,
                 intent.id,

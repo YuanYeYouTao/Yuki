@@ -1,6 +1,6 @@
 # 语义参与 V6：宿主接入与验证边界
 
-2026-10-15。独立仓库：
+2026-10-23。独立仓库：
 [Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
@@ -12,6 +12,11 @@
 不生成聊天回复，也不构成第二个 Agent Runner。
 
 人物同一性查询从原checkpoint读取actor/target事实，再由Host按内部ID批量解析当前人物；`participation_actor_ids()`不评估参与资格、不重放belief，也不修改checkpoint。来源分页、水合及冷恢复不得为收集人物ID调用全局`participating_units()`；当前参与判定仍只在真实决策处计算。
+
+普通接纳先在写事务外收集所需人物 ID，包括原 SELF 单元、语义 review 和 proposal 保留的目标。
+writer 按这些固定 ID 批读当前人物归属，继续使用独立库原有的当前邀请、单元、边界和到期判定；
+不在 writer 内遍历历史事件收集人物，也不把准备时的资格保存成许可。当前判定实际引用了新人物时，
+退出未写入的事务重新准备同一接纳；只有确认回滚才能重备，未知提交沿原事件与接纳回执处理。
 
 普通输入的 binding 准备复用入口已有的原事件与配置；场景在一次关联读取中解析原
 Conversation、Space、Binding 与接收 Presence。事件、场景及配置的准备在 Controller 应用锁外，

@@ -41,7 +41,7 @@ def bearer(token):
 
 
 async def paired_owner(env, database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         person = (await find_identity_binding(session, "1001")).person_id
     code = await env.identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
     response = await env.client.post(
@@ -138,7 +138,7 @@ async def test_authenticated_device_never_silently_changes_new_message_person(
     assert response.status_code == 200
     original_result = response.json()["data"]
     await finish_app_turns(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         binding = await reader.get(IdentityBindingModel, principal.binding_id)
         revision = binding.revision
         before_people = await reader.scalar(select(func.count()).select_from(CanonicalPersonModel))
@@ -175,7 +175,7 @@ async def test_authenticated_device_never_silently_changes_new_message_person(
         "/client/v1/messages", headers=headers, json={"request_id": str(uuid4()), "text": new_text}
     )
     await finish_app_turns(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         new = list(
             await reader.scalars(select(ChatEventModel).where(ChatEventModel.content == new_text))
         )

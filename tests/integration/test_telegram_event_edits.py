@@ -38,7 +38,7 @@ def _photo(message, file="old-photo"):
 
 
 async def _source(database, message_id="42:1"):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.scalar(
             select(ChatEventModel).where(
                 ChatEventModel.platform_message_id == message_id,
@@ -197,7 +197,7 @@ async def test_caption_repositions_existing_index_and_reuses_original_cache_life
     await drain(env)
     source = await _source(database)
     _, original_path = await _path(reader, source)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         cached = await session.get(ConversationMediaItemModel, (source.id, 0))
         original_expiry = cached.expires_at
     edit = _edit(2, "caption now exists")

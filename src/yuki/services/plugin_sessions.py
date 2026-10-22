@@ -131,7 +131,7 @@ class PluginAgentSessionService:
         conversation_key = self.conversation_key(authority.plugin_id, session_id)
         async with self._concurrency.conversation(conversation_key):
             session = await self._get_authorized(authority, session_id)
-            async with self._repository._database.sessions() as reader:
+            async with self._repository._database.read_session() as reader:
                 await require_live_actor(
                     reader,
                     scope_type=session.scope_type,

@@ -34,7 +34,7 @@ class MemoryProductionQualityAudit:
     async def run(self) -> ProductionAuditReport:
         checks = self._checks()
         issues: list[ProductionAuditIssue] = []
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             try:
                 issues.extend(await audit_event_evidence(session))
             except (DatabaseError, ValueError, TypeError):

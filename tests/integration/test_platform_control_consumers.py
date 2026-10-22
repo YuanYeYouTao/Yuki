@@ -30,7 +30,7 @@ async def test_telegram_link_consumes_code_without_chat_or_model(telegram_env, d
     env.harness.processor._client_links = ClientLinkCommands(service, env.gateway.registry)
     await env.gateway.receive(update(text=f"/ai link {issued['code']}"))
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         binding = await find_identity_binding(reader, "42", platform="telegram")
         code = await reader.scalar(select(ClientLinkCodeModel))
         rows = list(await reader.scalars(select(ChatEventModel)))
@@ -42,7 +42,7 @@ async def test_telegram_link_consumes_code_without_chat_or_model(telegram_env, d
     await env.gateway.receive(update(2, text=f"/ai link {issued['code']}"))
     await drain(env)
     assert not env.model.requests
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not list(await reader.scalars(select(ChatEventModel)))
         assert (await find_identity_binding(reader, "42", platform="telegram")).person_id == target
 
@@ -69,7 +69,7 @@ async def test_invalid_native_link_never_creates_chat_or_person(telegram_env, da
     await env.gateway.receive(update(text="/ai link invalid"))
     await drain(env)
     assert not env.model.requests
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not list(await reader.scalars(select(ChatEventModel)))
         assert await find_identity_binding(reader, "42", platform="telegram") is None
 
@@ -83,7 +83,7 @@ async def test_confirmed_reply_keeps_original_owner_during_binding_transfer(
 
     async def send_then_transfer(sender, message):
         receipt = await original_send(sender, message)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             binding = await find_identity_binding(reader, "42", platform="telegram")
         await service.transfer_for_operator(binding.id, target, str(uuid4()), str(uuid4()))
         return receipt
@@ -91,7 +91,7 @@ async def test_confirmed_reply_keeps_original_owner_during_binding_transfer(
     monkeypatch.setattr(TelegramSender, "send", send_then_transfer)
     await env.gateway.receive(update(text="/ai ping"))
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list(await reader.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
         binding = await find_identity_binding(reader, "42", platform="telegram")
     assert len(rows) == 2
@@ -137,7 +137,7 @@ async def test_distinct_platform_people_have_independent_chat_buckets(telegram_e
     before = len(env.model.requests)
     await env.gateway.receive(update(text="TG second"))
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         qq = await find_identity_binding(reader, "42", platform="qq")
         telegram = await find_identity_binding(reader, "42", platform="telegram")
     assert qq.person_id != telegram.person_id
@@ -149,13 +149,13 @@ async def test_same_person_across_platform_bindings_shares_chat_bucket(telegram_
     env.harness.processor._rate_limiter = SlidingWindowRateLimiter(per_user=1, per_group=20)
     await _qq_turn(env)
     service, _, _ = await code_for(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         qq = await find_identity_binding(reader, "42", platform="qq")
     issued = await service.issue_for_operator(qq.person_id, str(uuid4()), str(uuid4()))
     env.harness.processor._client_links = ClientLinkCommands(service, env.gateway.registry)
     await env.gateway.receive(update(text=f"/ai link {issued['code']}"))
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         telegram = await find_identity_binding(reader, "42", platform="telegram")
         assert telegram.person_id == qq.person_id
         started_at = telegram.started_at.replace(tzinfo=UTC)
@@ -178,7 +178,7 @@ async def test_telegram_command_and_rate_reply_keep_original_entry(telegram_env,
     await drain(env)
     await env.gateway.receive(update(2, text="/ai ping"))
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list(await reader.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
     inbound = [row for row in rows if row.direction == "inbound"]
     outbound = [row for row in rows if row.direction == "outbound"]

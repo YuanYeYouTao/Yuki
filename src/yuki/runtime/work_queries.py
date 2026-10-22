@@ -106,7 +106,7 @@ class WorkQueries:
     async def get(
         self, lease: WorkLease, source: dict[str, Any], work_id: str, *, local: bool = False
     ) -> dict[str, Any] | None:
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             row = (
                 (
                     await session.execute(
@@ -157,7 +157,7 @@ class WorkQueries:
             .order_by(work.c.created, work.c.id)
             .limit(PROMPT_AVAILABLE_LIMIT)
         )
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             return [dict(row) for row in (await session.execute(query)).mappings().all()]
 
     async def recent(self, lease: WorkLease, source: dict[str, Any]) -> dict[str, Any] | None:
@@ -167,7 +167,7 @@ class WorkQueries:
         query = query.with_only_columns(
             columns.work_id, columns.goal_excerpt, columns.goal_complete, columns.state
         )
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             row = (
                 (
                     await session.execute(
@@ -212,7 +212,7 @@ class WorkQueries:
         if cursor is not None:
             updated, identity = self._cursor(cursor)
             query = query.where(tuple_(work.c.updated, work.c.id) < (updated, identity))
-        async with self.repository.database.sessions() as session:
+        async with self.repository.database.read_session() as session:
             # Different status pages share one explicit read snapshot. Taking
             # at most N+1 from each disjoint state preserves the exact global
             # top N without sorting every historical row matching an IN list.

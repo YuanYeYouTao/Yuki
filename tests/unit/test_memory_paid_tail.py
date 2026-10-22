@@ -1,6 +1,7 @@
 """Paid Memory results finish through their original SQLite receipts and budgets."""
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import event as sql_event
@@ -18,7 +19,7 @@ from yuki.memory.dream.models import DreamClusterStatus, DreamOutput
 from yuki.memory.dream.service import DreamBudgetExhausted
 from yuki.memory.enums import MemoryRebuildJobOutcome
 from yuki.memory.job_claims import MemoryJobClaimLost
-from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.repository import MemoryJobRepository
 from yuki.memory.self_reflection.models import SelfReflectionOutput
 from yuki.memory.self_reflection.repository import SelfReflectionRepository
 from yuki.memory.self_reflection.service import (
@@ -107,11 +108,11 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
 
         from yuki.identity.canonical_repository import find_identity_binding
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             target = (await find_identity_binding(reader, "1002")).person_id
             saved = (await reader.get(MemorySelfReflectionRunModel, batch.run_id)).checkpoint_json
         await merge_people(database, source.author_person_id, target)
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.get(MemorySelfReflectionRunModel, batch.run_id)
             ).checkpoint_json == saved
@@ -122,7 +123,7 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
     assert await worker.process_once() == 1
     assert not provider.requests
     assert (await worker.control.snapshot())["calls_today"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await reader.get(MemorySelfReflectionRunModel, batch.run_id)
         assert original.status == "completed" and original.committed_count == 1
 
@@ -168,7 +169,7 @@ async def test_dream_worker_applies_paid_preview_at_limit_and_defers_only_new_re
     monkeypatch.setattr(service, "_decide", no_more_requests)
     await worker._drain_active()
     assert len(calls) == 1 and (await dreams.get_run(run.public_id)).model_calls == 2
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = list(
             await reader.scalars(
                 select(MemoryDreamClusterModel).order_by(MemoryDreamClusterModel.id)
@@ -178,46 +179,61 @@ async def test_dream_worker_applies_paid_preview_at_limit_and_defers_only_new_re
     assert rows[2].status == "skipped" and rows[2].error_category == "budget_deferred"
 
 
-async def test_job_completion_retries_only_database_after_real_wal_snapshot_conflict(
-    database, monkeypatch
+@pytest.mark.parametrize("recovery", ["worker", "restart"])
+async def test_empty_paid_dream_applied_receipt_prevents_model_replay(
+    database, monkeypatch, recovery
 ):
+    _facts, dreams, service, run, worker, calls = await _case(database, monkeypatch)
+    original = service._facts.repository.write_session
+    decide = service._decide
+
+    async def empty_decision(*args, **kwargs):
+        await decide(*args, **kwargs)
+        return DreamOutput(), 1
+
+    monkeypatch.setattr(service, "_decide", empty_decision)
+
+    @asynccontextmanager
+    async def uncertain(*args, **kwargs):
+        async with original(*args, **kwargs) as writer:
+            yield writer
+        raise RuntimeError("commit acknowledgement lost")
+
+    monkeypatch.setattr(service._facts.repository, "write_session", uncertain)
+    if recovery == "worker":
+        await worker._drain_active()
+    else:
+        cluster = await dreams.claim_next_cluster(run.public_id)
+        with pytest.raises(RuntimeError, match="acknowledgement"):
+            await service.process_cluster(run, cluster)
+        assert await dreams.reset_processing_after_restart() == 1
+    page = await dreams.run_page(run.public_id)
+    assert page.clusters[0].status == DreamClusterStatus.COMPLETED
+    assert page.clusters[0].operation_count == 0
+    assert len(calls) == 1
+
+
+async def test_job_completion_waits_for_shared_writer_and_rechecks_original_claim(database):
     _, _, ledger, _ = _service(database)
     event = await _event(
-        ledger, message_id="completion-busy", sender_user_id="1001", content="evidence"
+        ledger, message_id="completion-owner", sender_user_id="1001", content="evidence"
     )
     jobs = MemoryJobRepository(database)
-    assert await jobs.enqueue(event.id, event.scope.key)
+    await jobs.enqueue(event.id, event.scope.key)
     (job,) = await jobs.claim()
-    original = MemoryFactRepository.apply_evidence_write
-    attempts = []
-    native_errors = []
-
-    async def interleave(repository, operation):
-        async def complete(session):
-            await session.scalar(select(MemoryJobModel.id).where(MemoryJobModel.id == job.id))
-            attempts.append(job.id)
-            if len(attempts) == 1:
-                async with database.immediate_session() as other:
-                    await other.execute(
-                        update(MemoryJobModel)
-                        .where(MemoryJobModel.id == job.id)
-                        .values(error_category="unrelated metadata")
-                    )
-            return await operation(session)
-
-        return await original(repository, complete)
-
-    def error(context):
-        native_errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
-
-    monkeypatch.setattr(MemoryFactRepository, "apply_evidence_write", interleave)
-    sql_event.listen(database.engine.sync_engine, "handle_error", error)
-    try:
-        await jobs.complete(job, outcome=MemoryRebuildJobOutcome.NO_CLAIMS)
-    finally:
-        sql_event.remove(database.engine.sync_engine, "handle_error", error)
-    assert native_errors == [517] and attempts == [job.id, job.id]
-    async with database.sessions() as reader:
+    async with database.immediate_session() as other:
+        await other.execute(
+            update(MemoryJobModel)
+            .where(MemoryJobModel.id == job.id)
+            .values(error_category="unrelated metadata")
+        )
+        task = asyncio.create_task(jobs.complete(job, outcome=MemoryRebuildJobOutcome.NO_CLAIMS))
+        await asyncio.sleep(0)
+        assert not task.done()
+        async with database.read_session() as reader:
+            assert (await reader.get(MemoryJobModel, job.id)).status == "processing"
+    await task
+    async with database.read_session() as reader:
         row = await reader.get(MemoryJobModel, job.id)
         assert row.status == "done" and row.attempts == job.attempts
     with pytest.raises(MemoryJobClaimLost):
@@ -250,48 +266,30 @@ async def test_worker_keeps_paid_output_and_applied_claim_during_completion_cont
     async with database.immediate_session() as writer:
         await writer.execute(update(MemoryJobModel).values(attempts=7))
         original_job_id = await writer.scalar(select(MemoryJobModel.id))
-    original_write = MemoryFactRepository.apply_evidence_write
     original_complete = jobs.complete
-    completing, attempts, errors = False, [], []
+    attempts, errors = [], []
 
     async def complete(*args, **kwargs):
-        nonlocal completing
-        completing = True
-        try:
-            return await original_complete(*args, **kwargs)
-        finally:
-            completing = False
-
-    async def write(repository, operation):
-        if not completing:
-            return await original_write(repository, operation)
-
-        async def interleave(session):
-            await session.scalar(select(MemoryJobModel.id))
-            attempts.append(original_job_id)
-            if len(attempts) == 1:
-                async with database.immediate_session() as other:
-                    await other.execute(
-                        update(MemoryJobModel).values(error_category="competing metadata commit")
-                    )
-            return await operation(session)
-
-        return await original_write(repository, interleave)
+        attempts.append(original_job_id)
+        async with database.immediate_session() as other:
+            await other.execute(
+                update(MemoryJobModel).values(error_category="competing metadata commit")
+            )
+        return await original_complete(*args, **kwargs)
 
     def record_error(context):
         errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
 
     monkeypatch.setattr(jobs, "complete", complete)
-    monkeypatch.setattr(MemoryFactRepository, "apply_evidence_write", write)
     sql_event.listen(database.engine.sync_engine, "handle_error", record_error)
     try:
         assert await worker.process_once() == 1
         assert await worker.process_once() == 0
     finally:
         sql_event.remove(database.engine.sync_engine, "handle_error", record_error)
-    assert errors == [517] and attempts == [original_job_id, original_job_id]
+    assert errors == [] and attempts == [original_job_id]
     assert provider.requests == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         job = await reader.get(MemoryJobModel, original_job_id)
         assert job.status == "done" and job.attempts == 7 and job.outcome == "claims_applied"
         assert len(list(await reader.scalars(select(MemoryFactModel)))) == 1
@@ -309,20 +307,22 @@ async def test_job_completion_reads_unknown_commit_and_keeps_cancellation(
     jobs = MemoryJobRepository(database)
     await jobs.enqueue(event.id, event.scope.key)
     (job,) = await jobs.claim()
-    original = MemoryFactRepository.apply_evidence_write
+    original = database.immediate_session
 
-    async def lost_ack(repository, operation):
-        await original(repository, operation)
+    @asynccontextmanager
+    async def lost_ack():
+        async with original() as writer:
+            yield writer
         if cancel:
             raise asyncio.CancelledError
         raise OSError("commit acknowledgement unavailable")
 
-    monkeypatch.setattr(MemoryFactRepository, "apply_evidence_write", lost_ack)
+    monkeypatch.setattr(database, "immediate_session", lost_ack)
     if cancel:
         with pytest.raises(asyncio.CancelledError):
             await jobs.complete(job)
     else:
         await jobs.complete(job)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = await reader.get(MemoryJobModel, job.id)
         assert row.status == "done" and row.attempts == 0

@@ -134,7 +134,7 @@ async def test_new_work_reuses_prepared_object_marked_for_deletion(database, tmp
         async with database.immediate_session() as writer:
             await current.publish_refs(writer, identity, prepared)
     assert await current.get(digest) == value
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert (
             await reader.scalar(select(objects.c.deleting).where(objects.c.sha256 == digest))
             is False
@@ -183,7 +183,7 @@ async def test_gc_rechecks_object_reused_before_file_fence(database, tmp_path, m
         continue_gc.set()
         assert await gc_task == 0
         assert await current.get(digest) == value
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(select(refs.c.sha256).where(refs.c.work_id == identity))
                 == digest
@@ -450,7 +450,7 @@ async def test_native_provider_brand_rename_resumes_paid_work(
         await invoke_tool(first, call, execute_once, side_effecting=False)
         # Crash after accepting the original effect, before pairing its result.
         await first.save("response", (call,))
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             raw = await reader.scalar(
                 select(journal.c.payload_json).where(journal.c.work_id == work_id)
             )
@@ -925,7 +925,7 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
     assert await control.repository.prepare_effect(
         control.lease, control.current["id"], effect_key, "tool"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(CanonicalConversationModel, control.lease.conversation_id)
         assert conversation is not None and conversation.space_id is not None
         target = SocialTarget(kind="space", id=conversation.space_id)
@@ -955,7 +955,7 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
             payload={"text": chunk},
         )
         assert await receipts.claim(part.operation_id, presence_id=presence_id)
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             await receipts.finish(
                 part.operation_id,
                 status=OperationStatus.UNCERTAIN
@@ -966,7 +966,7 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
     await first.save("response", (call,))
     original = await control.repository.get(control.current["id"])
     if boundary == "source_changed":
-        async with database.sessions() as session, session.begin():
+        async with database.immediate_session() as session:
             conversation = await session.get(
                 CanonicalConversationModel, control.lease.conversation_id
             )
@@ -1153,7 +1153,7 @@ async def test_retired_compaction_anchor_does_not_block_original_recovery(
     first = WorkSession(control, "same")
     await first.restore(TurnTranscript((task,)))
     await first.save("paired")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         raw = await session.scalar(
             select(journal.c.payload_json).where(journal.c.work_id == control.current["id"])
         )
@@ -1341,6 +1341,7 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
     )
     harness = build_harness(database, make_settings(database.url), FakeLLMProvider())
     chat = harness.processor._chat
+    runner._models = chat._models
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="1001",
@@ -1549,7 +1550,7 @@ async def test_private_note_keeps_normal_resume_without_public_history_publicati
     )
     await harness.processor.handle(inbound, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         identity = await reader.scalar(select(work.c.id))
     queued = await repository.get(identity)
     assert queued["state"] == "queued" and queued["model_requests"] == 2
@@ -1569,6 +1570,6 @@ async def test_private_note_keeps_normal_resume_without_public_history_publicati
     completed = await repository.get(identity)
     assert completed["state"] == "completed" and len(provider.requests) == 3
     assert json.loads(completed["checkpoint_json"])["context_note"] == saved
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         observations = (await reader.scalars(select(ContextObservationModel))).all()
     assert not any(observation.source_key.startswith("work-note:") for observation in observations)

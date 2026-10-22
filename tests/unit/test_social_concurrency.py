@@ -45,7 +45,7 @@ async def test_slow_cross_space_send_does_not_block_current_group_reply(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = await social_env(database, tmp_path)
-    async with database.sessions.begin() as session:
+    async with database.immediate_session() as session:
         other = await ensure_space(session, "20002")
         await session.execute(
             update(CanonicalSpaceModel)
@@ -55,7 +55,7 @@ async def test_slow_cross_space_send_does_not_block_current_group_reply(
     assert await env.router.cas_takeover_space(other) == "taken"
     other_target = SocialTarget(kind="space", id=UUID(other))
     other_route = await env.service.send_route(other_target, env.context)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(select(ChatEventModel.id).limit(1))
     current_context = replace(env.context, call_id="current", trigger_event_id=event_id)
     current_target = SocialTarget(kind="space", id=UUID(env.space))
@@ -161,7 +161,7 @@ async def test_route_change_after_prepare_before_claim_fails_closed(
             if change == "reconnect":
                 env.registry.connect(env.bot, provider_id="snowluma", presence_id=env.presence)
         else:
-            async with database.sessions.begin() as session:
+            async with database.immediate_session() as session:
                 if change in {"paused", "generation"}:
                     row = await session.get(SpaceActiveRouteModel, env.space)
                     assert row is not None

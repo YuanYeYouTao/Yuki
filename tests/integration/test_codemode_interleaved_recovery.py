@@ -166,7 +166,7 @@ async def test_pending_code_interleave(
     snapshots = []
 
     async def snap(label):
-        async with database.sessions() as r:
+        async with database.read_session() as r:
             projs = (await r.scalars(select(PromptProjectionModel))).all()
             notes = (await r.scalars(select(ContextObservationModel))).all()
             selections = (await r.scalars(select(ContextSelectionModel))).all()
@@ -190,7 +190,7 @@ async def test_pending_code_interleave(
 
     try:
         await harness.processor.handle(replace(inbound, text="W1 initial request"), MemorySender())
-        async with database.sessions() as r:
+        async with database.read_session() as r:
             first_id = await r.scalar(select(work.c.id))
         await snap("parent_pending_child_note_committed")
         assert len(domain.log) == (1 if pause == "pending" else 2)
@@ -240,7 +240,7 @@ async def test_pending_code_interleave(
                 return version, rows
 
             monkeypatch.setattr(EventLedgerRepository, "read_scope_delta", append_after_selection)
-        await database.close()
+        await database.engine.dispose()
         error = await resumer.resume(await repository.get(first_id))
         assert error is None, error
         await snap("original_work_resumed")

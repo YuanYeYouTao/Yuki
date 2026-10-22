@@ -47,7 +47,7 @@ async def turn_queue(database, tmp_path):
             agent_intent="original goal",
         ),
     )
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         job = dict((await reader.execute(select(Job.__table__))).mappings().one())
         event = dict(
             (
@@ -188,7 +188,7 @@ async def test_unbound_and_expired_processing_use_original_attempt_semantics(tur
             .values(lease_until=datetime.now(UTC) - timedelta(seconds=1))
         )
     assert await queue.repo.claim_turn() is None
-    async with queue.db.sessions() as reader:
+    async with queue.db.read_session() as reader:
         row = await reader.get(Job, unbound.id)
         assert row.work_id == identity and row.status == "pending"
         assert row.attempts == unbound.attempts and row.lease_until is None
@@ -201,7 +201,7 @@ async def test_terminal_reconciliation_keeps_original_result_usage_and_ids(turn_
     identity = await _bind(queue, state)
     assert await queue.repo.claim_turn() is None
     await queue.repo.reconcile_terminal_turns()
-    async with queue.db.sessions() as reader:
+    async with queue.db.read_session() as reader:
         row = await reader.get(Job, queue.job["id"])
         assert row.status == state and row.work_id == identity
         assert row.source_event_id == queue.event["id"]
@@ -221,7 +221,7 @@ async def test_reconciliation_preserves_missing_work_result_for_legacy_broken_li
         finally:
             await connection.exec_driver_sql("PRAGMA foreign_keys=ON")
     await queue.repo.reconcile_terminal_turns()
-    async with queue.db.sessions() as reader:
+    async with queue.db.read_session() as reader:
         row = await reader.get(Job, queue.job["id"])
         assert row.work_id == identity and row.status == "failed"
         assert row.last_error_category == "runtime_work_missing" and row.attempts == 0
@@ -257,5 +257,5 @@ async def test_worker_reconciles_at_each_start_without_waiting_for_the_poll(
             await worker._task
         await worker.close()
     assert reconcile.await_count == 2
-    async with queue.db.sessions() as reader:
+    async with queue.db.read_session() as reader:
         assert (await reader.get(Job, queue.job["id"])).status == "completed"

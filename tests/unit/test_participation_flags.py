@@ -65,7 +65,7 @@ async def test_canonical_config_queries_use_exact_keys_aliases_and_owner(databas
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     from yuki.identity.canonical_repository import find_space_binding
 
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await find_space_binding(reader, "2001")
         alternate = await find_space_binding(reader, "2002")
     _, space = await runtime._owner_match(user_id=None, group_id=original.space_id)

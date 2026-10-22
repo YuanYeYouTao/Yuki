@@ -40,13 +40,14 @@ class SubagentRepository:
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError("invalid_subagent_goal")
         encoded = encode_json(brief)
-        async with self.database.sessions() as reader:
+        async with self.database.read_session() as reader:
             snapshot = (
                 (await reader.execute(select(work).where(work.c.id == parent_id))).mappings().one()
             )
         identity = str(uuid4())
         source = json.loads(snapshot["source_json"])
         source.update(work_id=identity, parent_work_id=parent_id, worker=True)
+        source_json = encode_json(source)
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             root = (
@@ -80,6 +81,7 @@ class SubagentRepository:
                 parent_work_id=parent_id,
                 source_key=f"worker:{identity}",
                 source=source,
+                prepared_source_json=source_json,
                 goal=goal,
                 initial_state="queued",
             )
@@ -158,7 +160,7 @@ class SubagentRepository:
 
     async def maintain(self) -> None:
         """Repair a crash after settlement, then archive only expired root trees."""
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             missed = list(
                 await session.scalars(
                     select(children.c.work_id).where(
@@ -277,7 +279,7 @@ class SubagentRepository:
 
         # Most passes have nothing to archive. Scan before reserving SQLite's
         # single writer, then check eligibility again after acquiring it.
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             candidates = (await session.execute(expired_query())).all()
             if not candidates:
                 return
@@ -286,12 +288,12 @@ class SubagentRepository:
             original_roots = await roots_for_archive(session, original_expired, root_ids)
             original_ids = tuple(sorted({*original_expired, *original_roots}))
             resources = await ResourceCleanupPreparation.prepare(session, work_ids=original_ids)
-        if resources.has_peers:
-            client = self.database.sandbox_client
+        if resources.has_external_resources:
+            client = self.database.external_agents
             if client is None:
                 raise ValueError("external_agent_cleanup_unconfirmed")
-            await client.close_peers_for_requests(
-                resources.request_ids, f"work-archive:{','.join(original_ids)}", purge=True
+            await client.cleanup_tasks(
+                resources.tasks, f"work-archive:{','.join(original_ids)}", purge=True
             )
         async with self.database.immediate_session() as session:
             prepared_query = expired_query(root_ids)
@@ -308,15 +310,9 @@ class SubagentRepository:
                 return
             expired_roots = await roots_for_archive(session, expired, root_ids)
             archived_work_ids = [*expired, *expired_roots]
-            current = await ResourceCleanupPreparation.prepare(
-                session, work_ids=tuple(archived_work_ids)
-            )
-            if resources.has_peers:
-                if tuple(sorted(set(archived_work_ids))) != original_ids:
-                    raise ValueError("external_agent_cleanup_source_changed")
-                resources.verify(current)
-            elif current.has_peers:
+            if tuple(sorted(set(archived_work_ids))) != original_ids:
                 raise ValueError("external_agent_cleanup_source_changed")
+            await resources.validate(session)
             # Result receipts retain summaries, artifact references and per-worker accounting.
             await session.execute(
                 update(children)
@@ -358,7 +354,7 @@ class SubagentRepository:
     async def related(
         self, parent_id: str, identity: str, *, include_checkpoint: bool = False
     ) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = (
                 (
                     await session.execute(
@@ -423,7 +419,7 @@ class SubagentRepository:
         else:
             owned = descendants(parent_id)
         result: list[dict[str, Any]] = []
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             while True:
                 size = limit if limit is not None else 50
                 query = (
@@ -452,7 +448,7 @@ class SubagentRepository:
 
     async def unfinished(self, parent_id: str) -> builtins.list[dict[str, Any]]:
         """Read actual unfinished descendants without directory pagination."""
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return [
                 dict(row)
                 for row in (
@@ -483,6 +479,26 @@ class SubagentRepository:
             raise ValueError("subagent_not_owned")
         await self.related(parent_id, identity)
         destination = parent_id if to_parent else identity
+        payload_json = (
+            encode_json(
+                {
+                    "text": encode_json(
+                        {
+                            "kind": "subagent_question" if ask else "subagent_message",
+                            "child_id": identity,
+                            "message_id": key,
+                            "sender_work_id": sender,
+                            "target_work_id": destination,
+                            "reply_to": reply_to,
+                            "text": text,
+                        }
+                    ),
+                    "child_id": identity,
+                }
+            )
+            if text is not None
+            else None
+        )
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
             child = (
@@ -507,20 +523,6 @@ class SubagentRepository:
             waiting_parent = ask and to_parent and target["state"] not in TERMINAL
             if text is None:
                 return {"message_id": key, "waiting_parent": waiting_parent}
-            payload = {
-                "text": encode_json(
-                    {
-                        "kind": "subagent_question" if ask else "subagent_message",
-                        "child_id": identity,
-                        "message_id": key,
-                        "sender_work_id": sender,
-                        "target_work_id": destination,
-                        "reply_to": reply_to,
-                        "text": text,
-                    }
-                ),
-                "child_id": identity,
-            }
             inserted = (
                 await session.execute(
                     insert(inputs)
@@ -531,7 +533,7 @@ class SubagentRepository:
                         work_id=destination,
                         kind="subagent",
                         ready=True,
-                        payload_json=encode_json(payload),
+                        payload_json=payload_json,
                         created=time.time(),
                     )
                     .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
@@ -644,82 +646,103 @@ class SubagentRepository:
 
     async def finish(self, lease: WorkLease) -> None:
         """Notify the parent with the committed result of this exact revision."""
-        async with self.database.immediate_session() as session:
-            await self.repository._assert_lease(session, lease)
-            row = (
-                (await session.execute(select(work).where(work.c.id == lease.work_id)))
-                .mappings()
-                .one()
-            )
+        while True:
+            async with self.database.read_session() as reader:
+                row = (
+                    (await reader.execute(select(work).where(work.c.id == lease.work_id)))
+                    .mappings()
+                    .one()
+                )
             checkpoint = json.loads(row["checkpoint_json"])
-            if row["state"] == "completed":
-                result = checkpoint.get("sync_result")
-            elif row["state"] == "waiting_user":
-                result = checkpoint.get("reason")
-            else:
-                result = checkpoint.get("reason") or row["reason"]
-            receipt = {
-                "child_id": lease.work_id,
-                "state": row["state"],
-                "text": str(result or ""),
-            }
-            await session.execute(
-                update(children)
-                .where(children.c.work_id == lease.work_id)
-                .values(
-                    result_json=encode_json(receipt),
-                    notified_revision=row["revision"],
-                )
+            result = (
+                checkpoint.get("sync_result")
+                if row["state"] == "completed"
+                else checkpoint.get("reason")
+                if row["state"] == "waiting_user"
+                else checkpoint.get("reason") or row["reason"]
             )
-            if row["state"] not in {
-                "completed",
-                "failed",
-                "cancelled",
-                "suspended",
-                "waiting_user",
-            }:
-                return
-            parent = (
-                (await session.execute(select(work).where(work.c.id == row["parent_work_id"])))
-                .mappings()
-                .one()
-            )
-            await session.execute(
-                insert(inputs)
-                .values(
-                    conversation_id=lease.conversation_id,
-                    generation=lease.generation,
-                    source_key=f"worker-result:{lease.work_id}:{row['revision']}",
-                    work_id=row["parent_work_id"],
-                    kind="subagent",
-                    ready=True,
-                    payload_json=encode_json(
+            receipt = {"child_id": lease.work_id, "state": row["state"], "text": str(result or "")}
+            receipt_json = encode_json(receipt)
+            input_json = encode_json(
+                {
+                    "text": encode_json(
                         {
-                            "text": encode_json(
-                                {
-                                    "child_id": lease.work_id,
-                                    "state": row["state"],
-                                    "text": receipt["text"],
-                                    "detail": (
-                                        "按需用 subagent_control(action=result, child_id=原ID) "
-                                        "查询原结果与执行回执。"
-                                    ),
-                                }
-                            )
+                            **receipt,
+                            "detail": (
+                                "按需用 subagent_control(action=result, child_id=原ID) "
+                                "查询原结果与执行回执。"
+                            ),
                         }
-                    ),
-                    created=time.time(),
+                    )
+                }
+            )
+            async with self.database.immediate_session() as session:
+                await self.repository._assert_lease(session, lease)
+                current = await session.scalar(
+                    select(work.c.id).where(
+                        work.c.id == lease.work_id,
+                        work.c.revision == row["revision"],
+                        work.c.state == row["state"],
+                        work.c.checkpoint_json == row["checkpoint_json"],
+                        work.c.parent_work_id == row["parent_work_id"],
+                        work.c.reason == row["reason"]
+                        if row["reason"] is not None
+                        else work.c.reason.is_(None),
+                    )
                 )
-                .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
-            )
-            waiting = await session.scalar(
-                select(waits.c.id)
-                .where(waits.c.work_id == row["parent_work_id"], waits.c.status == "active")
-                .limit(1)
-            )
-            if parent["state"] == "waiting_external" and waiting is None:
+                if current is None:
+                    continue
                 await session.execute(
-                    update(work)
-                    .where(work.c.id == row["parent_work_id"])
-                    .values(state="queued", revision=work.c.revision + 1, updated=time.time())
+                    update(children)
+                    .where(children.c.work_id == lease.work_id)
+                    .values(
+                        result_json=receipt_json,
+                        notified_revision=row["revision"],
+                    )
                 )
+                if row["state"] not in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "suspended",
+                    "waiting_user",
+                }:
+                    return
+                parent = (
+                    await session.execute(
+                        select(work.c.state).where(work.c.id == row["parent_work_id"])
+                    )
+                ).one()
+                await session.execute(
+                    insert(inputs)
+                    .values(
+                        conversation_id=lease.conversation_id,
+                        generation=lease.generation,
+                        source_key=f"worker-result:{lease.work_id}:{row['revision']}",
+                        work_id=row["parent_work_id"],
+                        kind="subagent",
+                        ready=True,
+                        payload_json=input_json,
+                        created=time.time(),
+                    )
+                    .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
+                )
+                waiting = await session.scalar(
+                    select(waits.c.id)
+                    .where(
+                        waits.c.work_id == row["parent_work_id"],
+                        waits.c.status == "active",
+                    )
+                    .limit(1)
+                )
+                if parent.state == "waiting_external" and waiting is None:
+                    await session.execute(
+                        update(work)
+                        .where(work.c.id == row["parent_work_id"])
+                        .values(
+                            state="queued",
+                            revision=work.c.revision + 1,
+                            updated=time.time(),
+                        )
+                    )
+                return

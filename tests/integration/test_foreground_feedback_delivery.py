@@ -99,7 +99,7 @@ async def test_quiet_is_saved_before_split_delivery_and_keeps_original_request_a
         assert continuation.tools == first.tools
         assert continuation.messages[: len(first.messages)] == first.messages
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             rows = list(await reader.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
             operations = list(
                 await reader.scalars(

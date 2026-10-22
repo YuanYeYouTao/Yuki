@@ -1,6 +1,7 @@
 """Session material and known output are distinct from permission to start a run."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -130,7 +131,7 @@ async def test_pause_after_model_response_keeps_paid_assistant(
     monkeypatch.setattr(env.provider, "complete", pause_after_response)
     result = await env.facade.run(env.request)
     assert result.text == "known complete output" and result.model_requests == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         messages = tuple(
             await session.scalars(
                 select(PluginAgentMessageModel)
@@ -235,6 +236,76 @@ async def _expiring_session(database, env, monkeypatch):
         row = await writer.get(PluginAgentSessionModel, str(env.created.session_id))
         row.expires_at = expiry
     return clock, expiry
+
+
+@pytest.mark.parametrize("operation", ["create", "reset", "state"])
+async def test_expiry_is_decided_after_actual_writer_admission(
+    database, plugin_session, monkeypatch, operation
+):
+    import yuki.plugin_host.repository as state_module
+    import yuki.plugin_host.session_repository as session_module
+
+    env = plugin_session
+    clock, expiry = await _expiring_session(database, env, monkeypatch)
+    monkeypatch.setattr(state_module, "datetime", session_module.datetime)
+    states = state_module.PluginStateRepository(database)
+    if operation == "state":
+        await states.compare_and_set(
+            plugin_id=env.plugin,
+            namespace="original",
+            key="expiry",
+            expected_version=0,
+            value="expired value",
+            expires_at=expiry,
+        )
+    admitted = asyncio.Event()
+    writer = database.immediate_session
+
+    @asynccontextmanager
+    async def queued_writer():
+        admitted.set()
+        async with writer() as session:
+            yield session
+
+    async def mutate():
+        if operation == "create":
+            return await env.repository.create(
+                plugin_id=env.plugin,
+                owner_user_id=None,
+                scope_type="plugin",
+                scope_id="",
+                name="queued original",
+                expires_at=expiry,
+            )
+        if operation == "reset":
+            return await env.repository.reset(
+                plugin_id=env.plugin, session_id=str(env.created.session_id)
+            )
+        return await states.compare_and_set(
+            plugin_id=env.plugin,
+            namespace="original",
+            key="expiry",
+            expected_version=0,
+            value="current replacement",
+        )
+
+    async with writer():
+        monkeypatch.setattr(database, "immediate_session", queued_writer)
+        pending = asyncio.create_task(mutate())
+        async with asyncio.timeout(5):
+            await admitted.wait()
+        clock.now = expiry + timedelta(seconds=1)
+    if operation == "create":
+        with pytest.raises(ValueError, match="expires_at must be in the future"):
+            await pending
+    elif operation == "reset":
+        assert await pending is None
+    else:
+        assert (await pending).value == "current replacement"
+    original = await env.repository.get(
+        plugin_id=env.plugin, session_id=str(env.created.session_id)
+    )
+    assert original.expires_at == expiry and not env.provider.requests
 
 
 @pytest.mark.parametrize("maintenance", [False, True])

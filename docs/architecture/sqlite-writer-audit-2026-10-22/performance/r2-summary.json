@@ -1,0 +1,478 @@
+{
+  "summary": {
+    "chat": {
+      "old": {
+        "runs": 6,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 72,
+        "confirmed": {
+          "count": 72,
+          "mean_ms": 399.0885026804689,
+          "p50_ms": 384.25209978595376,
+          "p95_ms": 514.7488997317851,
+          "max_ms": 526.057600043714
+        },
+        "handler_count": 72,
+        "handler_mean_ms": 472.19525002098334,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 68.81305709993467,
+        "process_cpu_seconds": 4.0625
+      },
+      "new": {
+        "runs": 6,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 72,
+        "confirmed": {
+          "count": 72,
+          "mean_ms": 405.61338612395855,
+          "p50_ms": 382.6509998179972,
+          "p95_ms": 528.2665998674929,
+          "max_ms": 585.8315997757018
+        },
+        "handler_count": 72,
+        "handler_mean_ms": 481.91332220125736,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 68.91903670039028,
+        "process_cpu_seconds": 4.828125
+      }
+    },
+    "mixed": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 400.3800667899971,
+          "p50_ms": 383.8522001169622,
+          "p95_ms": 587.9727001301944,
+          "max_ms": 717.5206001847982
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 467.3569416821313,
+        "errors": {
+          "SQLITE_BUSY_SNAPSHOT": 3
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.853789600078017,
+        "process_cpu_seconds": 1.953125
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 435.42587499056634,
+          "p50_ms": 404.80410028249025,
+          "p95_ms": 679.4211999513209,
+          "max_ms": 752.8237998485565
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 513.5515791674455,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 23.001551600173116,
+        "process_cpu_seconds": 1.875
+      }
+    },
+    "mixed-stress": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 48,
+        "confirmed": {
+          "count": 48,
+          "mean_ms": 5520.397314598085,
+          "p50_ms": 5488.940100185573,
+          "p95_ms": 7588.940100278705,
+          "max_ms": 7888.940100092441
+        },
+        "handler_count": 48,
+        "handler_mean_ms": 2882.635997918745,
+        "errors": {
+          "SQLITE_BUSY_SNAPSHOT": 406,
+          "SQLITE_BUSY": 178
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 15.1260402998887,
+        "process_cpu_seconds": 1.625
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 48,
+        "confirmed": {
+          "count": 48,
+          "mean_ms": 2170.964849744147,
+          "p50_ms": 2142.558400053531,
+          "p95_ms": 3792.5583999603987,
+          "max_ms": 3942.5583998672664
+        },
+        "handler_count": 48,
+        "handler_mean_ms": 300.2286416788896,
+        "errors": {
+          "CancelledError": 3
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 7.965327099896967,
+        "process_cpu_seconds": 0.75
+      }
+    },
+    "tail": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 0,
+        "confirmed": {
+          "count": 0
+        },
+        "handler_count": 0,
+        "handler_mean_ms": null,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 0,
+        "process_cpu_seconds": 0,
+        "recovery_ms": {
+          "count": 2,
+          "mean_ms": 35.75355000793934,
+          "p50_ms": 33.34630001336336,
+          "p95_ms": 38.160800002515316,
+          "max_ms": 38.160800002515316
+        }
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 0,
+        "confirmed": {
+          "count": 0
+        },
+        "handler_count": 0,
+        "handler_mean_ms": null,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 0,
+        "process_cpu_seconds": 0.03125,
+        "recovery_ms": {
+          "count": 2,
+          "mean_ms": 63.140799989923835,
+          "p50_ms": 54.57310006022453,
+          "p95_ms": 71.70849991962314,
+          "max_ms": 71.70849991962314
+        }
+      }
+    },
+    "memory": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 459.00039180802804,
+          "p50_ms": 356.95530008524656,
+          "p95_ms": 1069.5406002923846,
+          "max_ms": 1090.1461001485586
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 543.2923250870468,
+        "errors": {
+          "SQLITE_BUSY": 7,
+          "SQLITE_BUSY_SNAPSHOT": 18
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.871542800217867,
+        "process_cpu_seconds": 2.140625
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 472.64702930503216,
+          "p50_ms": 428.0925001949072,
+          "p95_ms": 851.4967001974583,
+          "max_ms": 956.7259000614285
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 564.608779134384,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 23.00816470058635,
+        "process_cpu_seconds": 1.328125
+      }
+    },
+    "forget": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 445.9063707812068,
+          "p50_ms": 347.26430010050535,
+          "p95_ms": 820.8011998794973,
+          "max_ms": 864.1842999495566
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 542.4569208213749,
+        "errors": {
+          "SQLITE_BUSY_SNAPSHOT": 23,
+          "SQLITE_BUSY": 23
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.97009629989043,
+        "process_cpu_seconds": 1.15625
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 461.3818749591398,
+          "p50_ms": 345.61199974268675,
+          "p95_ms": 1361.2118000164628,
+          "max_ms": 1427.3247998207808
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 530.9737750212662,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.860657200217247,
+        "process_cpu_seconds": 0.859375
+      }
+    },
+    "merge": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 341.29311245245236,
+          "p50_ms": 334.0830998495221,
+          "p95_ms": 413.2313998416066,
+          "max_ms": 471.36700013652444
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 414.1309291590005,
+        "errors": {
+          "SQLITE_BUSY": 3,
+          "SQLITE_BUSY_SNAPSHOT": 5
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.904037000145763,
+        "process_cpu_seconds": 0.84375
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 375.7287124171853,
+          "p50_ms": 364.4993999041617,
+          "p95_ms": 491.438299883157,
+          "max_ms": 537.9110001958907
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 441.0247916627365,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.82321809977293,
+        "process_cpu_seconds": 1.28125
+      }
+    },
+    "gc": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 376.5567207980591,
+          "p50_ms": 355.19490018486977,
+          "p95_ms": 513.168300036341,
+          "max_ms": 653.5776001401246
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 448.1488375264841,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.863060899544507,
+        "process_cpu_seconds": 0.40625
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 388.62501670761657,
+          "p50_ms": 381.0451999306679,
+          "p95_ms": 546.443400438875,
+          "max_ms": 591.3205998949707
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 454.94443754432723,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.94368930021301,
+        "process_cpu_seconds": 0.453125
+      }
+    },
+    "chat-cpu2": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 341.74712085708353,
+          "p50_ms": 332.3301998898387,
+          "p95_ms": 419.9942001141608,
+          "max_ms": 420.0900001451373
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 430.1540166682874,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.84461099980399,
+        "process_cpu_seconds": 0.6875
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 362.25815408397466,
+          "p50_ms": 353.95639995113015,
+          "p95_ms": 424.35389989987016,
+          "max_ms": 465.9732999280095
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 435.66782497024786,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.88940740004182,
+        "process_cpu_seconds": 0.71875
+      }
+    },
+    "mixed-cpu2": {
+      "old": {
+        "runs": 2,
+        "heads": [
+          "c2ce7da66ab54efe192993b9615df48266a62137"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 504.6062833862379,
+          "p50_ms": 374.70229994505644,
+          "p95_ms": 1335.4973001405597,
+          "max_ms": 1855.9541003778577
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 587.5465792099325,
+        "errors": {
+          "SQLITE_BUSY_SNAPSHOT": 12,
+          "SQLITE_BUSY": 1
+        },
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 22.975306499749422,
+        "process_cpu_seconds": 1.046875
+      },
+      "new": {
+        "runs": 2,
+        "heads": [
+          "1fb34b85031dc3a7df1f8f5c7e7f0cdf60fc6966"
+        ],
+        "messages": 24,
+        "confirmed": {
+          "count": 24,
+          "mean_ms": 634.6424249156067,
+          "p50_ms": 407.59370010346174,
+          "p95_ms": 1675.947199575603,
+          "max_ms": 2675.947199575603
+        },
+        "handler_count": 24,
+        "handler_mean_ms": 687.5689624575898,
+        "errors": {},
+        "workload_errors": [],
+        "source_clean": true,
+        "elapsed_seconds": 23.0489837997593,
+        "process_cpu_seconds": 0.859375
+      }
+    }
+  },
+  "semantics": {
+    "confirmed": "Scheduled input arrival to first original successful committed Social receipt associated through the actual model call key; includes queueing. A coalesced receipt can confirm multiple observed inputs.",
+    "handler": "Actual processor.handle entry to return; may precede a coalesced producer. Means weighted by input count. Per-run P95 is not a pooled P95.",
+    "sql": "SQLAlchemy Engine events; native pre_ping and implicit SQLite BEGIN are absent. Not all native statements.",
+    "writer": "Entry includes checkout/BEGIN; explicit scopes only. Baseline mixed scopes absent. Acknowledged-write interval starts after first successful DML or explicit BEGIN; not equivalent total hold semantics.",
+    "callback": "20Hz observer thread posts a callback; measures posting-to-dispatch delay, excludes GIL delay before posting. Per-run summaries, not continuous maximum stall.",
+    "environment": "Windows local synthetic fixture, fixed FakeLLM and in-memory platform; no real requests. Two logical CPUs selected only for cpu2 cases. Old/new/new/old, no run discarded."
+  },
+  "script_sha256": "2775b8452519bc7c06c99c7b96ff5aa55ed96dde28473d77befed91e5e201ffd"
+}

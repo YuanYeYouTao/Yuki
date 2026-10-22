@@ -92,7 +92,7 @@ class ConversationScopeRepository:
     async def get(
         self, scope: ConversationScope, *, expected_turn: ConversationTurnSnapshot | None = None
     ) -> ConversationScopeState | None:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             conversation = (
                 await session.get(CanonicalConversationModel, expected_turn.conversation_id)
                 if expected_turn
@@ -103,7 +103,7 @@ class ConversationScopeRepository:
             return await hydrate_scope_state_from_canonical(session, scope, conversation)
 
     async def generation_matches(self, conversation_id: str, generation: int) -> bool:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             conversation = await session.get(CanonicalConversationModel, conversation_id)
             return conversation is not None and int(conversation.generation) == generation
 
@@ -115,7 +115,7 @@ class ConversationScopeRepository:
         expected_turn: ConversationTurnSnapshot | None = None,
     ) -> ConversationPromptSnapshot:
         """Read the full uncovered raw tail for explicit raw-history consumers."""
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             conversation, state = await self._prompt_scope(session, scope, expected_turn)
             checkpoint = await session.scalar(current_checkpoint_query(conversation.id))
@@ -180,7 +180,7 @@ class ConversationScopeRepository:
         timezone: str = "Asia/Shanghai",
         trigger_event_id: int | None = None,
     ) -> ConversationPromptSnapshot:
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             conversation, state = await self._prompt_scope(session, scope, expected_turn)
             checkpoint = await session.scalar(current_checkpoint_query(conversation.id))

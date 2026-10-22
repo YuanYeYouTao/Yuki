@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from yuki.persistence.database import write_failure_phase
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.lease_heartbeat import supervise_lease
 from yuki.runtime.work_control import WorkControl
@@ -170,7 +171,12 @@ async def bind_work_activation(
                         await control.settle(pending_inputs=pending)
                     if finish is not None:
                         await finish(control)
-            except (SQLAlchemyError, WorkConflict) as exc:
+            except Exception as exc:
+                if (
+                    not isinstance(exc, (SQLAlchemyError, WorkConflict))
+                    and write_failure_phase(exc) is None
+                ):
+                    raise
                 # Confirmed effects stay confirmed even if derived cleanup fails.
                 logger.warning("work_cleanup_deferred stage=settle category=%s", type(exc).__name__)
             finally:
@@ -179,7 +185,9 @@ async def bind_work_activation(
                         await repository.release(lease)
                     else:
                         await release()
-                except SQLAlchemyError as exc:
+                except Exception as exc:
+                    if not isinstance(exc, SQLAlchemyError) and write_failure_phase(exc) is None:
+                        raise
                     # Leases expire independently; never resend or reset work here.
                     logger.warning(
                         "work_cleanup_deferred stage=release category=%s", type(exc).__name__

@@ -22,7 +22,7 @@ async def _append(
 ) -> None:
     from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 
-    async with uow._database.sessions() as session, session.begin():
+    async with uow._database.immediate_session() as session:
         await ensure_presence(session, scope.bot_user_id)
         if scope.scope_type is ScopeType.GROUP:
             assert scope.group_id is not None
@@ -53,7 +53,7 @@ async def _prepare_v2_private(
 ) -> ConversationScope:
     from tests.support.canonical_identity import ensure_person, ensure_presence
 
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await ensure_presence(session, bot)
         await ensure_person(session, peer, now=_NOW)
     return ConversationScope.private(bot, peer)

@@ -12,6 +12,7 @@ from yuki.domain.conversations import ScopeType
 from yuki.memory.dream.db_models import MemoryDreamOperationModel
 from yuki.memory.dream.models import DreamAction, DreamOperationType, DreamOutput, DreamRunMode
 from yuki.memory.dream.service import DreamService
+from yuki.memory.partition import MemoryPartitionResolutionError
 from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
@@ -19,7 +20,7 @@ from yuki.persistence.models import (
 )
 
 
-@pytest.mark.parametrize("window", ["model", "retry"])
+@pytest.mark.parametrize("window", ["model", "prepared"])
 async def test_dream_rejects_hidden_input_even_when_readable_evidence_count_is_unchanged(
     database, monkeypatch, window
 ):
@@ -104,17 +105,18 @@ async def test_dream_rejects_hidden_input_even_when_readable_evidence_count_is_u
             )
         assert (await facts.get_fact(sources[0].id)).evidence_count == 1
 
-    prepare = facts.prepare_evidence_write
+    prepare = facts.prepare_write
     prepared_once = False
 
-    async def prepare_and_swap(fact_ids, *, session, targets=()):
+    async def prepare_and_swap(*args, **kwargs):
         nonlocal prepared_once
-        await prepare(fact_ids, session=session, targets=targets)
-        if window == "retry" and not prepared_once:
+        prepared = await prepare(*args, **kwargs)
+        if window == "prepared" and not prepared_once:
             prepared_once = True
             await swap()
+        return prepared
 
-    monkeypatch.setattr(facts, "prepare_evidence_write", prepare_and_swap)
+    monkeypatch.setattr(facts, "prepare_write", prepare_and_swap)
 
     async def decide(payload, **_kwargs):
         nonlocal calls
@@ -142,13 +144,16 @@ async def test_dream_rejects_hidden_input_even_when_readable_evidence_count_is_u
     engine = database.engine.sync_engine
     event.listen(engine, "handle_error", handle_error)
     try:
-        with pytest.raises(RuntimeError, match="dream_input_snapshot_changed"):
+        with pytest.raises(
+            (RuntimeError, MemoryPartitionResolutionError),
+            match=r"dream_input_snapshot_changed|memory_evidence_changed",
+        ):
             await service.process_cluster(run, cluster)
     finally:
         event.remove(engine, "handle_error", handle_error)
-    assert native_errors == ([517] if window == "retry" else [])
+    assert native_errors == []
     assert calls == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 0
         assert (
             await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 0
@@ -222,7 +227,7 @@ async def test_dream_saved_input_proof_reuses_preview_and_commits_actual_merge(
     assert preview.preview_public_id is not None
     assert await service.process_cluster(run, cluster) == (0, 1, True)
     assert calls == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(MemoryDreamOperationModel)) == 1
         assert (
             await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 1

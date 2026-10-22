@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import sqlite3
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -14,6 +15,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import OperationalError
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.canonical_identity import ensure_person
+from tests.support.person_merge import merge_persons
 from tests.support.social_identity_cases import add_second_account, social_env
 from tests.support.sticker_delivery import DirectoryBridge, make_delivery, settle
 from tests.support.work_runner_helpers import case, run, tool
@@ -28,7 +30,6 @@ from yuki.emoji.library import EmojiLibrary
 from yuki.gateway.providers.telegram import TelegramClient
 from yuki.identity.canonical_repository import create_person_binding, create_presence
 from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.effect_outcomes import current_result_capture
 from yuki.runtime.origin import TurnOrigin
@@ -74,7 +75,7 @@ async def test_text_returns_while_selection_never_finishes(database, tmp_path):
         assert len(sends(env)) == 2
         intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
         assert "description" not in intent.selected and "ocr_text" not in intent.selected
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             receipt = await session.get(SocialOperationModel, result["operation_id"])
             assert receipt.payload_hash == payload_hash(
                 "send_message",
@@ -143,7 +144,7 @@ async def test_qq_library_sticker_reaches_native_small_sticker_payload_only(
             ),
         ]
         assert library.selected_platforms == ["qq"]
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             receipt = await session.get(SocialOperationModel, illustrated["operation_id"])
             image = await session.get(ChatEventModel, receipt.event_id)
             segment = json.loads(image.segments_json)[0]["data"]
@@ -178,6 +179,7 @@ async def test_qq_library_sticker_reaches_native_small_sticker_payload_only(
 
 @pytest.mark.parametrize("target_platform", ["qq", "telegram"])
 @pytest.mark.parametrize("matching_library", [False, True])
+@pytest.mark.skipif(sys.platform == "win32", reason="Original sticker file locking requires POSIX")
 async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
     database, tmp_path, target_platform, matching_library
 ):
@@ -195,7 +197,7 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
             now=now,
             platform="telegram",
         )
-        from yuki.identity.person_identity import merge_persons
+        from tests.support.person_merge import merge_persons
 
         await merge_persons(session, binding.person_id, env.person)
         presence = await create_presence(
@@ -295,7 +297,7 @@ async def test_original_replay_and_concurrent_acceptance_send_once(database, tmp
         *(env.service.execute("send", ARGS, env.context) for _ in range(4))
     )
     assert any(result["emoji"]["status"] == "accepted" for result in results)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert len(list(await session.scalars(select(SocialEmojiIntentModel)))) == 1
     await delivery.start()
     try:
@@ -438,7 +440,7 @@ async def test_later_main_failure_does_not_revoke_an_accepted_illustration(datab
     env = await social_env(database, tmp_path)
     delivery, _ = make_delivery(env)
     repository, lease, accepted, text = await accept_work(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         before = await session.scalar(
             select(scope.c.cancel_epoch).where(
                 scope.c.conversation_id == env.context.conversation_id
@@ -454,7 +456,7 @@ async def test_later_main_failure_does_not_revoke_an_accepted_illustration(datab
     control.current = accepted
     await recover_failure(control, RuntimeError("later main model call failed"))
     assert (await repository.get(accepted["id"]))["state"] == "failed"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         after = await session.scalar(
             select(scope.c.cancel_epoch).where(
                 scope.c.conversation_id == env.context.conversation_id
@@ -498,7 +500,7 @@ async def test_worker_failure_that_revokes_child_epoch_stops_its_pending_image(d
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     await recover_failure(control, RuntimeError("worker failed and its execution was revoked"))
     assert (await repository.get(identity))["state"] == "failed"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         epoch = await session.scalar(
             select(children.c.cancel_epoch).where(children.c.work_id == identity)
         )
@@ -578,7 +580,7 @@ async def test_cancellation_between_selection_and_claim_is_rechecked(
         result = await settle(delivery, env.context)
         assert result["status"] == "not_sent"
         assert len(sends(env)) == 1
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             intent = await session.scalar(select(SocialEmojiIntentModel))
             assert intent.error_category == "emoji_source_cancelled"
     finally:
@@ -759,7 +761,7 @@ async def test_pure_illustration_admission_acknowledgement_loss_is_not_rejection
 async def test_deferred_effect_keeps_real_actor_source_and_presence(database, tmp_path, revocation):
     env = await social_env(database, tmp_path)
     delivery, _ = make_delivery(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(
             select(ChatEventModel.id).where(
                 ChatEventModel.canonical_conversation_id == env.context.conversation_id,

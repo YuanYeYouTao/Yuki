@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,9 +24,11 @@ from yuki_participation.self_report import SelfDelta, SelfReport
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.ordinary_admission import (
     OrdinaryAdmission,
+    OrdinaryAdmissionConflict,
     OrdinaryParticipationBinding,
 )
 from yuki.domain.messages import ChatResponse
+from yuki.identity.person_identity import current_person_ids
 from yuki.persistence.repository_records import EventRecord
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.participation_feedback import (
@@ -33,7 +36,7 @@ from yuki.services.participation_feedback import (
     admission_unit_binding,
     sync_scope_effects,
 )
-from yuki.services.participation_identity import actor_identity
+from yuki.services.participation_identity import actor_identity, actor_ids
 
 if TYPE_CHECKING:
     from yuki.admin.models import RuntimeConfigSnapshot
@@ -309,16 +312,46 @@ async def continuation_for_event(
         return None
 
 
-async def continuation_current(
+@dataclass(frozen=True)
+class PreparedContinuation:
+    actors: frozenset[str]
+
+
+async def prepare_continuation(
     service: SemanticParticipationService,
     binding: OrdinaryParticipationBinding,
+) -> PreparedContinuation | None:
+    """Collect controller actors outside the writer."""
+    item = service._sessions.get((binding.conversation_id, binding.generation))
+    if item is None:
+        return None
+    return PreparedContinuation(
+        frozenset(actor_ids(item, (binding.target_hint,), include_continuation_targets=True))
+    )
+
+
+async def continuation_matches(
+    service: SemanticParticipationService,
+    binding: OrdinaryParticipationBinding,
+    prepared: PreparedContinuation | None,
     *,
-    session: AsyncSession | None = None,
+    session: AsyncSession,
 ) -> bool:
-    """Read the current derived eligibility at the original admission boundary."""
+    """Use fixed identity reads and the existing current-unit predicate."""
+    if prepared is None:
+        if (binding.conversation_id, binding.generation) in service._sessions:
+            raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
+        return False
+    roots = await current_person_ids(session, prepared.actors)
     item = service._sessions.get((binding.conversation_id, binding.generation))
     if item is None:
         return False
+
+    def identity(actor: str) -> str:
+        if actor not in prepared.actors:
+            raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
+        return roots.get(actor, actor)
+
     event = item.controller.state.events.get(f"event:{binding.event_id}")
     versions = cast(
         dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
@@ -328,7 +361,6 @@ async def continuation_current(
         binding.source_revision,
     ]:
         return False
-    identity = await actor_identity(service, item, (event.author,), session=session)
     invited = invitation_unit(item, event, actor_identity=identity)
     if (
         invited is not None
@@ -349,6 +381,20 @@ async def continuation_current(
         time.time(),
         actor_identity=identity,
     )
+
+
+async def continuation_current(
+    service: SemanticParticipationService, binding: OrdinaryParticipationBinding
+) -> bool:
+    """Read eligibility without borrowing a writer for controller preparation."""
+    while True:
+        prepared = await prepare_continuation(service, binding)
+        async with service.database.read_session() as reader:
+            try:
+                return await continuation_matches(service, binding, prepared, session=reader)
+            except OrdinaryAdmissionConflict as exc:
+                if str(exc) != "ordinary_participation_preparation_changed":
+                    raise
 
 
 async def on_ordinary_admitted(

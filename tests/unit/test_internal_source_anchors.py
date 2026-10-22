@@ -18,7 +18,7 @@ from yuki.services.execution_sources import recover_source
 @pytest.mark.asyncio
 async def test_recovery_requires_internal_anchor_and_ignores_qq_credential(database, tmp_path):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(select(ChatEventModel))
         conv = await session.get(CanonicalConversationModel, row.canonical_conversation_id)
         source = dict(
@@ -80,7 +80,7 @@ async def test_sandbox_self_source_keeps_original_execution_without_message_or_w
 async def test_prompt_and_inbound_identity_use_internal_event_not_platform_id(database, tmp_path):
     await social_env(database, tmp_path)
     ledger = EventLedgerRepository(database)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
     original = await ledger.get_event(event_id)
     # The same QQ id in a different event must not substitute current user content.

@@ -28,7 +28,7 @@ async def test_new_group_message_updates_native_names_in_its_original_admission(
     env = telegram_env
     await env.gateway.receive(update(chat=-10042, text="!ai first"))
     await drain(env)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         first = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
         )
@@ -45,7 +45,7 @@ async def test_new_group_message_updates_native_names_in_its_original_admission(
     await env.gateway.receive(incoming)
     await drain(env)
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_space_binding(session, "-10042", platform="telegram")
         space = await session.get(CanonicalSpaceModel, binding.space_id)
         events = list(
@@ -120,7 +120,7 @@ async def test_group_rename_updates_only_known_names_without_chat(
             platform="telegram",
         )
         original_id, space_id = binding.id, binding.space_id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         people_before = await session.scalar(select(func.count()).select_from(CanonicalPersonModel))
     handle = AsyncMock(wraps=env.harness.processor.handle)
     monkeypatch.setattr(env.harness.processor, "handle", handle)
@@ -130,7 +130,7 @@ async def test_group_rename_updates_only_known_names_without_chat(
     handle.assert_not_awaited()
     assert not env.model.requests and not env.gateway._turns
     assert [method for method, _ in env.wire] == ["getMe"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         current = await find_space_binding(session, "-10042", platform="telegram")
         space = await session.get(CanonicalSpaceModel, space_id)
         assert current.id == original_id and current.space_id == space_id
@@ -156,7 +156,7 @@ async def test_replayed_or_edited_old_message_does_not_restore_old_names(telegra
     await env.gateway.receive(edited)
     await drain(env)
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding = await find_space_binding(session, "-10042", platform="telegram")
         space = await session.get(CanonicalSpaceModel, binding.space_id)
         event = await session.scalar(

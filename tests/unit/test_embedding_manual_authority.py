@@ -28,7 +28,7 @@ async def test_manual_reconcile_stops_after_role_revoked_between_pages(database,
     monkeypatch.setattr(jobs, "_enqueue_prepared", enqueue_and_revoke)
     with pytest.raises(PermissionError, match="current_superuser"):
         await jobs.reconcile(force=True, actor_person_id=actor)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(MemoryEmbeddingJobModel)) == 128
     assert calls == 1
     # Normal system reconciliation owns the index independently of a requesting Person.
@@ -55,6 +55,6 @@ async def test_manual_retry_checks_role_inside_original_writer(database, monkeyp
         revoked.setattr(database, "immediate_session", revoke_before_writer)
         with pytest.raises(PermissionError, match="current_superuser"):
             await jobs.retry_failed(actor_person_id=actor)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         job = await reader.scalar(select(MemoryEmbeddingJobModel))
         assert job.status == "failed" and job.attempts == 3

@@ -66,7 +66,7 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original = await session.scalar(select(ChatEventModel))
     current = await seed_scoped_event(
         env.service.writer,
@@ -109,7 +109,7 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     )
     assert receipt is not None and receipt.operation_id == result["operation_id"]
     assert receipt.status == "succeeded" and receipt.event_id == result["event_id"]
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         sent = await session.get(ChatEventModel, receipt.event_id)
     assert sent.direction == "outbound" and sent.content == "reply delivered"
     assert sent.canonical_conversation_id == current.event.canonical_conversation_id
@@ -118,7 +118,7 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
 
 async def test_current_reply_rechecks_original_source_before_claim(database, tmp_path, monkeypatch):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     context = replace(env.context, trigger_event_id=event.id, presence_id=env.presence)
     prepare = env.service.receipts.prepare
@@ -143,7 +143,7 @@ async def test_social_refs_use_original_person_after_external_account_transfer(
     database, tmp_path, monkeypatch
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     inbound = InboundMessage(
         "inbound",

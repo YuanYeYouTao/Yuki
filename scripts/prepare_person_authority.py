@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ def _accounts(value: str) -> tuple[str, ...]:
 
 def export_candidates(database: Path, accounts: tuple[str, ...]) -> dict[str, Any]:
     """Include transferred/disabled bindings and both historical and current root facts."""
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(persons)")}
         # 0119–0128 have permanent Person IDs but no names or merge relation yet.

@@ -152,9 +152,12 @@ async def test_quiet_closes_unadmitted_continuation_at_writer_without_blocking_d
             provider,
         ).processor
         processor.set_participation(host)
+        continuation = await host.prepare_continuation(binding)
 
         async def allowed(writer):
-            return await processor._ordinary_admission_allowed(prepared, "continuation", writer)
+            return await processor._ordinary_admission_allowed(
+                prepared, "continuation", writer, continuation=continuation
+            )
 
         assert not await host.ordinary.commit(prepared, admission_allowed=allowed)
         assert await host.ordinary.get(b.id) is None

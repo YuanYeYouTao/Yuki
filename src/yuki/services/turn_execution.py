@@ -1209,7 +1209,7 @@ class TurnExecution:
                 }
             if public_context is not None:
                 state["source_revision"] = public_context.version.prompt_source_revision
-                async with public_context.repository.database.sessions() as reader:
+                async with public_context.repository.database.read_session() as reader:
                     state["privacy_generation"] = await privacy_generation(reader)
         state["request"] = asdict(plan.request)
         state["covered_entries"] = len(plan.transcript.entries()) - 1

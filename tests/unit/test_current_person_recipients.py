@@ -6,11 +6,11 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.person_merge import merge_persons
 from tests.unit.test_notification_preparation_sources import prepare_fixture
 
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.identity.routing import RouteSendError
 from yuki.plugin_host.db_models import PluginNotificationOutboxModel
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
@@ -66,7 +66,7 @@ async def test_original_publication_target_alias_does_not_revoke_current_actor(d
     assert item is not None and item.source_event_id == event_id
     assert item.source_person_id == root and item.canonical_target_person_id == env.person
     await worker._deliver(item)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = {
             row.source_event_id: row
             for row in await reader.scalars(
@@ -88,13 +88,13 @@ async def test_recipient_routes_use_current_person_without_reviving_original_act
     database, tmp_path
 ):
     env, _, _, _, root, _, _target = await recipient_fixture(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         binding_id = (await find_identity_binding(reader, "10001")).id
     await merge_disabled_recipient(database, env.person, root)
     assert await env.router.cas_takeover_person(root) == "taken"
     route = await env.router.resolve_send_for_person(env.person)
     assert route.binding_id == binding_id and route.external_target_id == "10001"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         await env.router.validate_prepared_send(
             reader, route, target_kind="person", target_id=env.person
         )

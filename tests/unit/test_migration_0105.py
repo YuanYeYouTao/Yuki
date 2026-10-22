@@ -91,7 +91,7 @@ def test_0107_query_migration_removes_retired_overrides_without_removing_other_c
     async def verify():
         database = Database(url)
         try:
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 rows = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
                 expected = [("llm.max_output_tokens", "16384")]
                 if target_revision == "0107":
@@ -217,7 +217,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
     async def verify_current():
         database = Database(url)
         try:
-            async with database.sessions() as session:
+            async with database.read_session() as session:
                 columns = {
                     row[1] for row in await session.execute(text("PRAGMA table_info(runtime_work)"))
                 }
@@ -275,7 +275,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
                 identity = await SubagentRepository(repository).start(
                     lease, derived["id"], "new-worker", {"goal": "new worker"}
                 )
-                async with database.sessions() as session:
+                async with database.read_session() as session:
                     assert await budget_root_id(session, identity) == parent["id"]
                 await repository.release(lease)
         finally:
@@ -434,7 +434,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                     ),
                     {"started": started.isoformat()},
                 )
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 return dict(
                     (await reader.execute(text("SELECT * FROM automation_runs WHERE id=1")))
                     .mappings()
@@ -450,7 +450,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
         database = Database(url)
         repository = AutomationRepository(database)
         try:
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 migrated = dict(
                     (await reader.execute(text("SELECT * FROM automation_runs WHERE id=1")))
                     .mappings()
@@ -483,7 +483,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
             assert admitted.version_id != 1 and accepted.script["goal"] == "original target"
             assert accepted.canonical_target_space_id == current.canonical_target_space_id
             assert accepted.authority_snapshot == current.authority_snapshot
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 assert (await reader.get(AutomationVersionModel, 1)).authority_snapshot_json is None
                 assert (
                     await reader.scalar(text("SELECT version_id FROM automation_runs WHERE id=1"))
@@ -506,7 +506,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                         select(automation_budgets).where(automation_budgets.c.run_id == admitted.id)
                     )
                 ).first()
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 audits = list(
                     await reader.scalars(
                         select(AutomationStepRunModel).where(AutomationStepRunModel.run_id == 1)

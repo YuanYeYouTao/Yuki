@@ -154,7 +154,7 @@ class AdminAuditService:
     async def transaction(self) -> AsyncIterator[AsyncSession]:
         """Open the transaction shared by one business mutation and its audit row."""
 
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             yield session
 
     async def record(
@@ -227,7 +227,7 @@ class AdminAuditService:
             AdminOperationEventModel.created_at.desc(),
             AdminOperationEventModel.id.desc(),
         ).limit(max(1, min(limit, 100)))
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             rows = (await session.scalars(statement)).all()
             return tuple(event_from_model(row) for row in rows)
 
@@ -237,6 +237,6 @@ class AdminAuditService:
         if session is not None:
             row = await session.get(AdminOperationEventModel, event_id)
             return event_from_model(row) if row is not None else None
-        async with self._database.sessions() as owned:
+        async with self._database.read_session() as owned:
             row = await owned.get(AdminOperationEventModel, event_id)
             return event_from_model(row) if row is not None else None

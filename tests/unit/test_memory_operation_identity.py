@@ -1,6 +1,8 @@
 """Real Memory writes retain canonical owners and original operation receipts."""
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -53,8 +55,88 @@ async def test_operation_replay_is_distinct_from_equal_content_and_later_actions
     assert (await facts.get_fact(first.new_fact_id)).status is MemoryStatus.INVALIDATED
     conflict = await mutations.mutate(create_request("喜欢咖啡"), first_context)
     assert not conflict.ok and conflict.reason_code == "memory_operation_payload_conflict"
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 3
+
+
+@pytest.mark.parametrize("lost_ack", [False, True])
+async def test_concurrent_original_operation_rejects_a_different_payload(
+    database, monkeypatch, lost_ack
+):
+    mutations, facts, ledger, _ = _service(database)
+    event = await _event(
+        ledger, message_id="concurrent-original-payload", sender_user_id="1001", content="喜欢茶"
+    )
+    context = replace(_context(event), operation_id="original:concurrent:create")
+    both_prepared = asyncio.Event()
+    original_prepare = facts.prepare_write
+    arrivals = 0
+
+    async def prepare(*args, **kwargs):
+        nonlocal arrivals
+        result = await original_prepare(*args, **kwargs)
+        arrivals += 1
+        if arrivals == 2:
+            both_prepared.set()
+        await asyncio.wait_for(both_prepared.wait(), 3)
+        return result
+
+    monkeypatch.setattr(facts, "prepare_write", prepare)
+    if lost_ack:
+        original_writer = facts.repository.write_session
+
+        @asynccontextmanager
+        async def lose_ack(*args, **kwargs):
+            async with original_writer(*args, **kwargs) as writer:
+                yield writer
+            raise RuntimeError("commit acknowledgement lost")
+
+        monkeypatch.setattr(facts.repository, "write_session", lose_ack)
+    requests = (create_request("喜欢茶"), create_request("喜欢咖啡"))
+    results = await asyncio.gather(*(mutations.mutate(request, context) for request in requests))
+    winner = next(index for index, result in enumerate(results) if result.ok)
+    loser = results[1 - winner]
+    assert not loser.ok and loser.reason_code == "memory_operation_payload_conflict"
+    assert len(await facts.list_person("1001")) == 1
+    original = results[winner]
+    replay = await mutations.mutate(requests[winner], context)
+    assert replay.ok and replay.deduplicated
+    assert (replay.mutation_id, replay.new_fact_id) == (original.mutation_id, original.new_fact_id)
+    assert (await facts.get_fact(replay.new_fact_id)).content == requests[winner].new_content
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count(MemoryMutationReceiptModel.id))) == 1
+
+
+async def test_prepared_operation_checks_the_receipt_that_arrived_before_its_writer(
+    database, monkeypatch
+):
+    mutations, facts, ledger, _ = _service(database)
+    event = await _event(
+        ledger, message_id="prepared-original-payload", sender_user_id="1001", content="喜欢茶"
+    )
+    context = replace(_context(event), operation_id="original:prepared:create")
+    pending_request = create_request("喜欢咖啡")
+    original_prepare = mutations._prepare
+    prepared, committed = asyncio.Event(), asyncio.Event()
+
+    async def prepare(request, *args, **kwargs):
+        result = await original_prepare(request, *args, **kwargs)
+        if request == pending_request:
+            prepared.set()
+            await committed.wait()
+        return result
+
+    monkeypatch.setattr(mutations, "_prepare", prepare)
+    pending = asyncio.create_task(mutations.mutate(pending_request, context))
+    await asyncio.wait_for(prepared.wait(), 3)
+    try:
+        original = await mutations.mutate(create_request(), context)
+        assert original.ok
+    finally:
+        committed.set()
+    result = await pending
+    assert not result.ok and result.reason_code == "memory_operation_payload_conflict"
+    assert [row.id for row in await facts.list_person("1001")] == [original.new_fact_id]
 
 
 @pytest.mark.parametrize("pretty_json", [False, True])

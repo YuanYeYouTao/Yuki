@@ -5,13 +5,14 @@ import hashlib
 import json
 import sqlite3
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
 from tests.support.sqlite_cost import capture_reads, read_vm_steps
@@ -104,7 +105,7 @@ async def setup(database, *, owner=AutonomyOwner.SEMANTIC):
 
 
 async def set_work(database, task, **values):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(update(work).where(work.c.id == task["id"]).values(**values))
 
 
@@ -124,76 +125,48 @@ async def social(database, run, call, *, turn=None, action="send_message", secon
         created_at=at,
         updated_at=at,
     )
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         session.add(row)
     return row
 
 
-@pytest.mark.parametrize("code", [5, 517])
-async def test_feedback_busy_exits_tick_and_next_host_reconciliation_preserves_original_facts(
-    database, monkeypatch, code
+async def test_feedback_preparation_closes_before_writer_and_preserves_original_facts(
+    database, monkeypatch
 ):
     service, item, run, task = await setup(database)
     await set_work(database, task, state="completed", model_requests=3)
     receipt = await social(database, run, "original-send")
     original_task = await service.work.get(task["id"])
     service._terminal_cursor, service._terminal_ceiling, service._failures = "", None, 0
-    original = service.repository.record_feedback
-    calls, errors = [], []
+    original_writer = database.immediate_session
+    injected = False
 
-    async def race(identity, **kwargs):
-        calls.append((identity, kwargs["sequence"]))
-        if len(calls) == 1:
-            async with database.immediate_session() as writer:
-                # A no-op value update still takes the real WAL writer. Work's
-                # identity, state, budget and effect receipts remain unchanged.
+    @asynccontextmanager
+    async def intervening_writer():
+        nonlocal injected
+        if not injected:
+            injected = True
+            async with original_writer() as writer:
                 await writer.execute(
                     update(work).where(work.c.id == task["id"]).values(updated=work.c.updated)
                 )
-                if code == 5:
-                    result = await original(identity, **kwargs)
-                    await kwargs["session"].flush()
-                    return result
-            # A committed writer invalidates the feedback's original read snapshot.
-        return await original(identity, **kwargs)
+        async with original_writer() as writer:
+            yield writer
 
-    def capture(context):
-        errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
-
-    monkeypatch.setattr(service.repository, "record_feedback", race)
-    event.listen(database.engine.sync_engine, "handle_error", capture)
-    try:
-        await SemanticParticipationService._reconcile_outbox(service)
-    finally:
-        event.remove(database.engine.sync_engine, "handle_error", capture)
-    assert calls == [(run.run_id, 1)] and errors == [code]
-    assert service._failures == 1
-    assert (await service.repository.get_run(run.run_id)) == run
-    assert await service.repository.latest_feedback(run.run_id) is None
-    assert await service.work.get(task["id"]) == original_task
-    assert run.run_id not in item.controller.state.feedback
-    service._save.assert_not_awaited()
-    service._dispatch.assert_not_awaited()
-    # The failed feedback transaction retained no lease or writer ownership.
-    lease = await service.work.acquire(run.conversation_id, run.generation)
-    assert lease is not None
-    await service.work.release(lease)
-    async with database.immediate_session() as writer:
-        assert (await writer.get(SocialOperationModel, receipt.id)).status == "succeeded"
-
+    monkeypatch.setattr(database, "immediate_session", intervening_writer)
     await SemanticParticipationService._reconcile_outbox(service)
-    assert calls == [(run.run_id, 1), (run.run_id, 1)]
+    assert injected and service._failures == 0
     settled = await service.repository.get_run(run.run_id)
     assert settled.state == "completed" and settled.feedback_sequence == 1
     assert await service.work.get(task["id"]) == original_task
     assert item.controller.state.feedback[run.run_id].outcome == "completed"
     assert len(item.controller.state.effects) == 4
     await SemanticParticipationService._reconcile_outbox(service)
-    assert len(calls) == 2 and len(item.controller.state.effects) == 4
+    assert len(item.controller.state.effects) == 4
     service._dispatch.assert_not_awaited()
-    async with database.sessions() as session:
-        assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 1
-        assert (await session.get(SocialOperationModel, receipt.id)).status == "succeeded"
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 1
+        assert (await reader.get(SocialOperationModel, receipt.id)).status == "succeeded"
 
 
 async def test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durable_sequence(
@@ -236,7 +209,7 @@ async def test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durab
     assert len(item.controller.state.effects) == 4
     assert await service.work.get(task["id"]) == original_task
     service._dispatch.assert_not_awaited()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 1
 
 
@@ -248,13 +221,13 @@ async def test_all_120_compute_charges_page_and_replay_after_checkpoint_loss(dat
     await reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
     assert all(record.effect.kind == "compute" for record in item.controller.state.effects.values())
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = list(await session.scalars(select(InitiativeFeedbackModel)))
         assert len(rows) == 2
         assert sorted(len(json.loads(row.payload_json)["effects"]) for row in rows) == [56, 64]
     # A stale caller snapshot cannot write the same feedback again.
     await reconcile_page(service, (run,))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 2
     effects = item.controller.state.effects.copy()
     item.controller = Controller.restore(original, time.time())
@@ -312,14 +285,14 @@ async def test_retained_wait_releases_new_opportunity_without_revoking_original_
     )
     assert result.outcome == "accepted" and result.run is not None
     assert result.run.run_id != run.run_id
-    retained = await validate_self_initiative(
+    await validate_self_initiative(
         service.database,
         run.run_id,
         conversation_id=run.conversation_id,
         space_id=run.space_id,
         presence_id=run.presence_id,
     )
-    assert retained.state == "running"
+    assert (await service.repository.get_run(run.run_id)).state == "running"
     assert (await service.work.get(task["id"]))["state"] == state
     assert set(r.run_id for r in await service.repository.list_active()) == {
         run.run_id,
@@ -484,7 +457,7 @@ async def test_legacy_self_report_uses_real_charged_run_without_semantic_proposa
         "at": time.time(),
         "delta": {"engage": "quiet", "mood": "平静"},
     }
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             journal.insert().values(
                 work_id=task["id"],
@@ -523,7 +496,7 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
     service, item, run, task = await setup(database)
     child_id = str(uuid4())
     await set_work(database, task, model_requests=26, state="completed")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         child = {
             **task,
             "id": child_id,
@@ -549,7 +522,7 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
                 [{**task, "id": str(uuid4()), "source_key": str(uuid4())} for _ in range(size)],
             )
         with capture_reads(database) as queries:
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 facts = await participation_feedback._read_facts(service, (run.run_id,), reader)
         assert len(facts[0].model_refs) == 120
         costs.append(read_vm_steps(database, queries))
@@ -564,5 +537,5 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
         sum(key.startswith(f"work-model:{child_id}:") for key in item.controller.state.effects)
         == 94
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 2

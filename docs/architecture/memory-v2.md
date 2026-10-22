@@ -119,32 +119,39 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   后台 Memory 种子扫描、分页游标和无 ID 候选枚举已删除，主 Agent 的按需查询、自省、Dream 与真实 SELF 来源解析保留。
   内部证据聚合读取全部可读来源，不以固定条数截断历史尾部；原始 confidence/authority
   和来源资格保留。无消费者的完整 lineage 装配入口已删除，原 operation/result/source 账本保留。
-  Memory mutation、Dream 与维护批次在同连接显式只读 BEGIN 中先准备完整证据、
-  来源和目标归属，再升级为短写事务。SQLite WAL 快照是本次准备的完整依赖围栏；
-  任何竞争提交都使旧快照的首次写入被拒绝，不能仅用 fact.updated_at 推断来源未改变。
-  原生 SQLITE_BUSY（主码5，含517）仅在原操作整体回滚确认后，用新 session 重备同一计划，不设固定次数封口。
-  重备仅执行纯数据库单元，复用原 mutation/operation/request ID，不重跑模型或外部效果；提交后的 embedding 调度不在重试范围内。Dream 模型判断所引用的事实还须
-  在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
-  操作人的当前人物权限、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
-  当前人物归属按同一归并集合判断；原计划的 raw owner、来源快照和指纹仍逐字核验，不因合并、改名或换绑重编码。
-  ORM flush属于该纯数据库单元；物理commit/rollback确认错误不能按BUSY授予重放资格。取消继续传播。
-  Dream 操作失败先核对原 cluster 的 committed operation 回执，保留实际提交计数和累计预算。
+  Memory mutation 与 Dream 先用 `Database.read_session()` 的显式只读 BEGIN
+  准备实际证据、复制目标和两跳关系，再关闭 reader，进入统一 FIFO 的 `immediate_session()`。
+  writer 在取得连接前排队，不把 reader 升级为 writer，也不再由 Memory 自己重试 BUSY。
+  当前事务重新核验原证据 ID/字段、来源资格、复制目标与关系成员，不能只比较条数或 fact.updated_at。
+  不相关的数据库提交不会使准备自动失效；实际来源、选择或权限改变仍拒绝原变更。
+  同一归并集合用于当前人物权限，原 raw owner、来源和指纹保持原件。
+  事实、证据、状态事件与原 mutation/operation/request 回执一次提交；未知提交先读原回执，
+  不重跑模型或外部效果，取消继续传播，embedding 调度在提交后。
+  偏好按键删除、到期维护只依赖当前小列与关系 SQL，直接在短 writer 处理；不准备证据正文。
+  到期候选写时仍须处于 active/contested 且已到期，不能覆盖发现后形成的 superseded 状态。
+  Dream 操作失败先核对原 cluster 的 committed operation 或 applied preview 回执，
+  空 actions 同样按已应用的原结果恢复，保留实际提交计数和累计预算。
   已保存的 ReflectionCheckpoint 与匹配来源指纹的 Dream ready preview 可继续纯数据库收尾；
   模型额度只约束新的实际 Provider 请求，不阻止原已付结果提交。没有保存的输出不能凭 usage
   重建；未决提交不授予重放资格。
   原来源隐藏、擦除或当前授权、执行 generation 实际失效时拒绝旧计划，不能写入一个无证据事实。
   账号换绑本身不改写原 canonical owner，也不单独增加旧计划的拒绝条件。
   Dream 将实际模型输入、选中证据身份与内容及 canonical 分区纳入输入指纹，持久 preview
-  复用同一指纹；每次新快照首写前核验，证据数量不变不能证明原模型来源仍然有效。
-  准备缓存仅属于当前事务，提交或回滚后释放，不增加持久 revision 或事实源。
+  复用同一指纹；读阶段核模型输入，writer 复核对应实际来源，证据数量不变不能证明原来源有效。
+  正常运行的新模型输出也先写入现有 ready preview，再按原输入提交；准备或写入失败后复用
+  该原件，不重新购买模型结果。应用精确对应原 preview 身份，与事实变更一起标为 applied。
+  临时工具回执清理保留现存 ReflectionCheckpoint 的 tool_map 实际引用，未写完的普通自省
+  不会因回执到期丢掉已付输出的来源；解除引用后按原到期规则清理。
+  准备材料仅供本次领域提交消费，提交或回滚后释放，不增加持久 revision 或事实源。
   后续写入只累计实际新增证据；版本复制同时批量核验原来源与新目标资格，批量插入后
   更新临时计数，写入期间不重新扫描历史。必要的主键、状态、来源／owner 最终
   复核及两跳关系短查询保留，不以 writer 内零 SELECT 作为验收条件。
-  共享事务调用者必须在其最早的领取围栏、
-  回执或状态写入前准备整个批次，缺少准备时拒绝，不能退回写后历史读取。
+  共享事务调用者在 reader 准备完整批次，通过 `prepare_write` / `use_prepared_write`
+  将领域证据交给同一个 writer；供给的 session 一直复用，writer 不另开 reader 扫描历史。
   Control 的确认／隔离保留原能力判定；revision 核验、savepoint、审计和回执仍共用
-  同一事务，证据准备早于本次首写，不拆分提交。旧管理入口的新增／修改／删除同样
-  将记忆变更和管理审计作为一个纯数据库单元准备与提交。
+  同一事务，证据准备早于本次首写，不拆分提交。旧管理入口和偏好入口通过 Memory
+  mutation 提交事实与原变更回执，完成后不另写一笔管理审计；未装配 mutation 的旧管理
+  fallback 仍把事实变更与管理审计放在同一个数据库事务中。
   新自省结果以实际 run ID 原子登记，不从旧 delegation_mode 字符串反推归属。
 - 永久证据不按样本数压缩删除。Evidence compaction 的新任务、装配和配置已退出运行链；
   原表、run/item 和删除回执仅保留真实历史诊断。Dream 的模型输入可按请求预算选择证据摘录，
@@ -156,13 +163,16 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   历史验收记录不覆盖本页。
 
 Memory mutation 的来源与候选可并行准备，不使用进程全局锁跨外部查证串行所有变更。
-提交仍由原 SQLite writer、来源/owner 快照与 mutation receipt 完成；不在 writer 内解析身份或调用 embedding。
+提交使用主库统一 writer、当前来源/owner 复核与原 mutation receipt；重查必要身份关系复用当前 session，embedding 在提交后。
 
 Hygiene 因缺少有效来源失效的 fact 使用 `invalid_provenance`，与状态事件一致。
 原历史原因仍可读，不回写旧事件。
 
 Rebuild 提案保存经原 Claim 校验的 canonical Person/Space 目标，第三方目标不等于来源作者。人物遗忘的默认和显式装配都在同一 WAL 读快照准备完整人物族、原账号时段、实际相关源和 selection，
-然后直接升级短 writer 清退；纯数据库竞争整体回滚后才重备，不以全库隐私 token 或 run 目录变化拒绝无关写入。
+再进入短 writer 核对实际相关 selection 集合、原 JSON 与来源后清退；包含新匹配行的复核，不以全库隐私 token 或无关 run 变化拒绝写入。
+每次抽取的 proposals、item 与 usage 一次暂存，失败收尾只处理原 extracting 状态，不能把已暂存结果
+改回 pending。最终 receipt sweep 在 writer 核原正文、ASR、segments 等实际输入字段，不能仅凭
+source hash、数量或会话身份推进完成。
 删除覆盖无 Binding 的归并人物，跨平台同号或账号后来的其他真人不扩大删除范围。
 Sandbox 的原私有任务和 continuation 随实际来源清退；其他作者的引用断开但正文保留。
 退役的 SELF 候选保留历史读取；显式遗忘按实际事件和证据引用清退相关候选正文，

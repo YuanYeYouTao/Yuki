@@ -97,11 +97,11 @@ async def _reflection_history(database, start, stop):
         )
 
 
-@pytest.mark.parametrize("method", ["claim", "retry_due", "pending_reports"])
+@pytest.mark.parametrize("method", ["claim", "pending_reports"])
 async def test_idle_reflection_seeks_ignore_closed_history(database, method):
     repository = ReflectionControlRepository(database, make_settings(database.url))
     costs = []
-    expected = {"claim": None, "retry_due": False, "pending_reports": []}[method]
+    expected = {"claim": None, "pending_reports": []}[method]
     for start, stop in ((0, 50), (50, 2000)):
         await _reflection_history(database, start, stop)
         with capture_reads(database) as statements:
@@ -137,7 +137,6 @@ async def test_reflection_indexes_preserve_due_order_retry_and_original_report(d
         run.next_attempt_at = NOW - timedelta(days=1)
     claimed = await repository.claim()
     assert claimed["id"] == "original-running"
-    assert await repository.retry_due()
     reports = await repository.pending_reports()
     assert [report["id"] for report in reports] == ["original-report"]
     assert reports[0]["original"] == "paid-result"

@@ -44,7 +44,7 @@ async def prepared(database, tmp_path):
 
 
 async def facts(database, key):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         row = (
             (await reader.execute(select(effects).where(effects.c.effect_key == key)))
             .mappings()
@@ -81,7 +81,7 @@ async def test_t1_does_not_charge_or_dispatch_and_original_t2_charges_once(datab
 async def test_budget_rejection_rolls_back_dispatch_marker_and_all_usage(database, tmp_path):
     owner, invocation = await prepared(database, tmp_path)
     identity = owner.control.current["id"]
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(insert(budgets).values(root_id=identity, tool_limit=0))
     with pytest.raises(WorkBudgetExceeded):
         await owner.control.repository.admit_dispatch(
@@ -119,7 +119,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
     )
     await harness.processor.handle(message, MemorySender())
     repository = WorkRepository(database)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
         contract = await reader.scalar(select(journal.c.contract))
     lease = await repository.acquire(original["conversation_id"], original["generation"])
@@ -197,7 +197,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
         k: v for k, v in metadata[0].items() if k != "revision"
     }
     assert receipt["result"] == payload and total == root == current["tool_calls"] == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         budget = (
             (await reader.execute(select(budgets).where(budgets.c.root_id == original["id"])))
             .mappings()

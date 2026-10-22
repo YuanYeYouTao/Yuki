@@ -52,7 +52,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         person_id = await _ensure_person_id(session, "1001", platform="qq")
     empty = await router.cas_takeover_person(person_id)
@@ -61,19 +61,19 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     taken = await router.cas_takeover_person(person_id)
     assert taken == "taken"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert route.paused is False
         first_generation = int(route.route_generation)
         conversation_generation_untouched = 1
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_b = await ensure_v2_presence(session, "8001")
     registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     kept = await router.cas_takeover_person(person_id)
     assert kept == "unchanged"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert route.paused is False
@@ -84,7 +84,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
     registry.disconnect(bot_a)
     taken = await router.cas_takeover_person(person_id)
     assert taken == "taken"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert route.paused is False
@@ -106,7 +106,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
     router = PresenceRouter(database, registry, membership_probe=_true)
     monitor = RouteMonitor(router)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
         person_id = await _ensure_person_id(session, "1001", platform="qq")
         space_id = await ensure_v2_space(session, "2001")
@@ -138,7 +138,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
         )
         == "ok"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         person_route = await session.get(PersonActiveRouteModel, person_id)
         space_route = await session.get(SpaceActiveRouteModel, space_id)
         ingest_route = await session.get(SpaceBindingIngestRouteModel, binding_id)
@@ -196,7 +196,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
         == "ok"
     )
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         person_route = await session.get(PersonActiveRouteModel, person_id)
         space_route = await session.get(SpaceActiveRouteModel, space_id)
         ingest_route = await session.get(SpaceBindingIngestRouteModel, binding_id)
@@ -241,7 +241,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
     router = PresenceRouter(database, registry, membership_probe=_probe)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         space_id = await ensure_v2_space(session, "2001")
     empty = await router.cas_takeover_space(space_id)
@@ -251,18 +251,18 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
     taken = await router.cas_takeover_space(space_id)
     assert taken == "taken"
     assert calls
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         first_generation = int(route.route_generation)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_b = await ensure_v2_presence(session, "8001")
     registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     # bot_b fails the membership probe, so the unique live member stays bot_a.
     same = await router.cas_takeover_space(space_id)
     assert same == "unchanged"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         assert route.paused is False
@@ -274,7 +274,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
     both = PresenceRouter(database, registry, membership_probe=_all_members)
     kept = await both.cas_takeover_space(space_id)
     assert kept == "unchanged"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         assert route.paused is False
@@ -282,7 +282,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
     registry.disconnect(bot_a)
     taken = await both.cas_takeover_space(space_id)
     assert taken == "taken"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         assert route.paused is False
@@ -299,7 +299,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         space_id = await ensure_v2_space(session, "2001")
@@ -312,7 +312,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     first = await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_a)
     assert first == "ok"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         generation = int(route.route_generation)
@@ -323,7 +323,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
     assert second == "not_ingest"
     still = await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_a)
     assert still == "ok"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         assert route.paused is False
@@ -333,7 +333,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
     registry.disconnect(bot_a)
     taken = await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_b)
     assert taken == "ok"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         assert route.paused is False
@@ -353,13 +353,13 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     bot = _Bot("8000")
     extra = _Bot("8001")
     other = _Bot("8002")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         person_id = await _ensure_person_id(session, "1001", platform="qq")
     registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_person(person_id) == "taken"
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         route.paused = True
@@ -369,14 +369,14 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     second = await router.reconcile_person(person_id)
     assert first == "paused"
     assert second == "paused"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert route.paused is True
         assert int(route.route_generation) == generation
         assert int(route.revision) == revision
     registry.disconnect(bot)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_b = await ensure_v2_presence(session, "8001")
         presence_c = await ensure_v2_presence(session, "8002")
         route = await session.get(PersonActiveRouteModel, person_id)
@@ -388,7 +388,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     registry.bind_presence(platform="qq", external_account_id="8002", presence_id=presence_c)
     paused = await router.cas_takeover_person(person_id)
     assert paused == "ambiguous"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         after = int(route.route_generation)
@@ -397,7 +397,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
         assert after == generation + 1
     again = await router.reconcile_person(person_id)
     assert again == "paused"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert int(route.route_generation) == after
@@ -415,7 +415,7 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
     registry = builtin_registry(gateway_instance_id="gw-elig")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence = await ensure_v2_presence(session, "8000")
         person_id = await _ensure_person_id(session, "1001", platform="qq")
         space_id = await ensure_v2_space(session, "2001")
@@ -455,7 +455,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         presence_c = await ensure_v2_presence(session, "8002")
@@ -469,7 +469,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
     registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_person(person_id) == "taken"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         first_generation = int(route.route_generation)
@@ -489,7 +489,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
         route.revision += 1
     release.set()
     assert await task == "conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert route.presence_id == presence_c
@@ -497,7 +497,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
         assert int(route.route_generation) == first_generation + 1
     router._cas_hold = None
     assert await router.reconcile_person(person_id) == "paused"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         assert route.presence_id == presence_c
@@ -513,7 +513,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         presence_c = await ensure_v2_presence(session, "8002")
@@ -521,7 +521,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
     registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_space(space_id) == "taken"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         first_generation = int(route.route_generation)
@@ -541,7 +541,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
         route.revision += 1
     release.set()
     assert await task == "conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         assert route.presence_id == presence_c
@@ -549,7 +549,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
         assert int(route.route_generation) == first_generation + 1
     router._cas_hold = None
     assert await router.reconcile_space(space_id) == "paused"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         assert int(route.route_generation) == first_generation + 1
@@ -566,7 +566,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         presence_c = await ensure_v2_presence(session, "8002")
@@ -582,7 +582,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
         await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_a)
         == "ok"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         first_generation = int(route.route_generation)
@@ -604,7 +604,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
         route.revision += 1
     release.set()
     assert await task == "paused"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         assert route.ingest_presence_id == presence_c
@@ -615,7 +615,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
         await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_b)
         == "paused"
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         assert route.ingest_presence_id == presence_c

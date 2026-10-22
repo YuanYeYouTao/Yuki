@@ -62,7 +62,7 @@ from yuki.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
 from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
 from yuki.memory.service import MemoryFactService
 from yuki.memory.worker import MemoryWorker
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed, write_failure_phase
 from yuki.persistence.models import ConversationMediaItemModel
 from yuki.persistence.repositories import (
     EventLedgerRepository,
@@ -95,6 +95,7 @@ from yuki.services.effect_gate import (
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
+from yuki.services.participation_ordinary import PreparedContinuation
 from yuki.services.plugin_events import (
     LifecycleEventPublisher,
     content_free_turn_payload,
@@ -216,7 +217,7 @@ async def _attachment_metadata(
             )
     if not references:
         return ""
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         items = {
             (item.source_event_id, item.attachment_index): item
             for item in await reader.scalars(
@@ -270,11 +271,16 @@ class OrdinaryParticipationService(Protocol):
         tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None
     ): ...
 
-    async def continuation_current(
+    async def prepare_continuation(
+        self, binding: OrdinaryParticipationBinding
+    ) -> PreparedContinuation | None: ...
+
+    async def continuation_matches(
         self,
         binding: OrdinaryParticipationBinding,
+        prepared: PreparedContinuation | None,
         *,
-        session: AsyncSession | None = None,
+        session: AsyncSession,
     ) -> bool: ...
 
     async def on_ordinary_admitted(
@@ -346,7 +352,7 @@ class MessageProcessor:
     async def _person_is_superuser(self, person_id: str | None) -> bool:
         from yuki.identity.authority import person_is_superuser
 
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await person_is_superuser(session, person_id)
 
     def __init__(
@@ -623,47 +629,58 @@ class MessageProcessor:
         # Media capability checks run before AgentRunner. Pin at admission so a
         # hot provider switch cannot change the model between those two steps.
         with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
-            if (
-                self._client_links is not None
-                and message.platform not in LOCAL_CLIENT_PLATFORMS
-                and self._client_links.is_request(message)
+            async with (
+                self._chat._models.foreground_activity()
+                if not message.is_self_message
+                else nullcontext()
             ):
-                link_response = await self._client_links.execute(
-                    getattr(sender, "bot", None), message
-                )
-                await sender.send(OutboundMessage(text=link_response))
-                result = ProcessResult(True, sent_messages=1, reason="client_link")
-                return result
-            if self._group_recovery is not None and self._group_recovery.is_enable_request(message):
-                limited = await self._rate_limiter.check(
-                    user_id=message.sender.user_id,
-                    group_id=message.group_id,
-                    category="command",
-                )
-                if not limited.allowed:
-                    result = ProcessResult(False, reason="rate_limited")
-                    return result
-                response = await self._group_recovery.enable(getattr(sender, "bot", None), message)
-                if response is not None:
-                    await sender.send(OutboundMessage(text=response))
-                    result = ProcessResult(True, sent_messages=1, reason="group_recovery")
-                    return result
-            admitted = await self._canonical_ingress.pre_admit(
-                getattr(sender, "bot", None), message
-            )
-            if admitted.dropped:
-                result = await self._handle_ingress_drop(message, sender, admitted.reason)
-                return result
-            if admitted.author_kind == "account" and admitted.conversation_id is None:
-                await self._canonical_uow.record_account_fact(admitted.message, admitted)
-                return ProcessResult(False, reason="account_fact_recorded")
-            result = await self._handle_admitted(
-                admitted.message,
-                sender,
-                admitted=admitted,
-                on_committed=on_committed,
-            )
+                return await self._handle_input(message, sender, on_committed=on_committed)
+
+    async def _handle_input(
+        self,
+        message: InboundMessage,
+        sender: OutboundSender,
+        *,
+        on_committed: Callable[[ScopedAppendResult], None] | None,
+    ) -> ProcessResult:
+        """Keep input preparation and admission inside the foreground activity scope."""
+        if (
+            self._client_links is not None
+            and message.platform not in LOCAL_CLIENT_PLATFORMS
+            and self._client_links.is_request(message)
+        ):
+            link_response = await self._client_links.execute(getattr(sender, "bot", None), message)
+            await sender.send(OutboundMessage(text=link_response))
+            result = ProcessResult(True, sent_messages=1, reason="client_link")
             return result
+        if self._group_recovery is not None and self._group_recovery.is_enable_request(message):
+            limited = await self._rate_limiter.check(
+                user_id=message.sender.user_id,
+                group_id=message.group_id,
+                category="command",
+            )
+            if not limited.allowed:
+                result = ProcessResult(False, reason="rate_limited")
+                return result
+            response = await self._group_recovery.enable(getattr(sender, "bot", None), message)
+            if response is not None:
+                await sender.send(OutboundMessage(text=response))
+                result = ProcessResult(True, sent_messages=1, reason="group_recovery")
+                return result
+        admitted = await self._canonical_ingress.pre_admit(getattr(sender, "bot", None), message)
+        if admitted.dropped:
+            result = await self._handle_ingress_drop(message, sender, admitted.reason)
+            return result
+        if admitted.author_kind == "account" and admitted.conversation_id is None:
+            await self._canonical_uow.record_account_fact(admitted.message, admitted)
+            return ProcessResult(False, reason="account_fact_recorded")
+        result = await self._handle_admitted(
+            admitted.message,
+            sender,
+            admitted=admitted,
+            on_committed=on_committed,
+        )
+        return result
 
     async def _handle_admitted(
         self,
@@ -1101,6 +1118,7 @@ class MessageProcessor:
         session: AsyncSession,
         *,
         check_continuation: bool = True,
+        continuation: PreparedContinuation | None = None,
     ) -> bool:
         if reason not in {"group_open", "semantic_invitation", "continuation"}:
             return True
@@ -1138,8 +1156,8 @@ class MessageProcessor:
                 or (
                     prepared.admission.binding is not None
                     and self._participation is not None
-                    and await self._participation.continuation_current(
-                        prepared.admission.binding, session=session
+                    and await self._participation.continuation_matches(
+                        prepared.admission.binding, continuation, session=session
                     )
                 )
             )
@@ -1221,7 +1239,7 @@ class MessageProcessor:
                     )
                 except OrdinaryAdmissionConflict:
                     continue
-                async with self.ordinary_admissions.database.sessions() as reader:
+                async with self.ordinary_admissions.database.read_session() as reader:
                     if not await self._ordinary_admission_allowed(
                         prepared, reason, reader, check_continuation=False
                     ):
@@ -1402,12 +1420,18 @@ class MessageProcessor:
                 )
                 if audio is None and (work_input_id is not None or not defer_new_main):
                     await prepare_source(existing_work=work_input_id is not None or defer_new_main)
-        except OrdinaryAdmissionDuplicate:
+        except OrdinaryAdmissionDuplicate as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             return ProcessResult(False, reason="ordinary_already_admitted")
-        except OrdinaryAdmissionConflict:
+        except OrdinaryAdmissionConflict as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(False, reason="ordinary_source_changed")
-        except (TurnInterruptedError, TurnSupersededError, WorkConflict):
+        except (TurnInterruptedError, TurnSupersededError, WorkConflict) as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(True, reason="turn_interrupted")
         except BaseException:
@@ -1463,7 +1487,9 @@ class MessageProcessor:
                 audio=audio,
             )
             record, content, audio = complete.record, complete.content, complete.audio
-        except (TurnInterruptedError, TurnSupersededError, WorkConflict):
+        except (TurnInterruptedError, TurnSupersededError, WorkConflict) as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(True, reason="turn_interrupted")
         except BaseException:
@@ -1503,7 +1529,9 @@ class MessageProcessor:
                 binding,
                 reason=decision.reason,
             )
-        except OrdinaryAdmissionConflict:
+        except OrdinaryAdmissionConflict as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(False, reason="ordinary_source_changed")
         if (
@@ -1523,7 +1551,12 @@ class MessageProcessor:
                     input_text,
                     admission=prepared,
                 )
-            except OrdinaryAdmissionDuplicate:
+            except OrdinaryAdmissionDuplicate as exc:
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise
                 return ProcessResult(False, reason="ordinary_already_admitted")
             if ready:
                 await self._record_ordinary_participation(record.id, binding)
@@ -1549,16 +1582,41 @@ class MessageProcessor:
                 reason=decision.reason,
             )
 
-        async def admission_allowed(session: AsyncSession) -> bool:
-            return await self._ordinary_admission_allowed(prepared, decision.reason, session)
+        while True:
+            continuation = (
+                await self._participation.prepare_continuation(binding)
+                if binding is not None
+                and self._participation is not None
+                and decision.reason in {"continuation", "semantic_invitation"}
+                else None
+            )
 
-        try:
-            if not await self.ordinary_admissions.commit(
-                prepared, admission_allowed=admission_allowed
-            ):
-                return ProcessResult(False, reason="ordinary_already_admitted")
-        except OrdinaryAdmissionConflict:
-            return ProcessResult(False, reason="ordinary_source_changed")
+            async def admission_allowed(
+                session: AsyncSession,
+                continuation: PreparedContinuation | None = continuation,
+            ) -> bool:
+                return await self._ordinary_admission_allowed(
+                    prepared, decision.reason, session, continuation=continuation
+                )
+
+            try:
+                if not await self.ordinary_admissions.commit(
+                    prepared, admission_allowed=admission_allowed
+                ):
+                    return ProcessResult(False, reason="ordinary_already_admitted")
+            except OrdinaryAdmissionConflict as exc:
+                if (
+                    str(exc) == "ordinary_participation_preparation_changed"
+                    and write_failure_committed(exc) is False
+                ):
+                    continue
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise
+                return ProcessResult(False, reason="ordinary_source_changed")
+            break
         await self._record_ordinary_participation(record.id, binding, admission=prepared.admission)
 
         await publish_notification(
@@ -1721,7 +1779,7 @@ class MessageProcessor:
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:
             return None
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await canonical_group_policy(session, group_id)
 
     async def _effective_private_policy(
@@ -1729,7 +1787,7 @@ class MessageProcessor:
     ) -> EffectivePrivatePolicy | None:
         if message.scope_type is not ScopeType.PRIVATE:
             return None
-        async with self._ledger._database.sessions() as session:
+        async with self._ledger._database.read_session() as session:
             return await canonical_private_policy(
                 session, message.sender.user_id, platform=message.platform
             )

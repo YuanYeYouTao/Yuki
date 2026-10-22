@@ -105,7 +105,7 @@ async def test_successful_http_batch_survives_other_batch_failure(database, embe
         if env.failed:
             break
     assert len(env.failed) == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         jobs = tuple(await session.scalars(select(MemoryEmbeddingJobModel)))
         vectors = tuple(await session.scalars(select(MemoryEmbeddingModel)))
     expected = env.provider.capabilities.max_batch_size
@@ -124,7 +124,7 @@ async def test_retry_only_reissues_failed_documents(database, embedding_batches,
         await env.worker.process_once()
         if sum(map(len, env.requested)) == env.count + len(env.failed):
             break
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         jobs = tuple(await session.scalars(select(MemoryEmbeddingJobModel)))
         vectors = tuple(await session.scalars(select(MemoryEmbeddingModel)))
     assert len(vectors) == env.count and all(row.status == "done" for row in jobs)
@@ -156,6 +156,6 @@ async def test_protocol_sized_claim_drains_ready_batches_without_waiting_for_pol
             await finished.wait()
     finally:
         await env.worker.close()
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert len(tuple(await reader.scalars(select(MemoryEmbeddingModel)))) == env.count
     assert [len(batch) for batch in env.requested] == [env.provider.capabilities.max_batch_size, 1]

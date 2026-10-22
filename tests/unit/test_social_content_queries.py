@@ -42,7 +42,7 @@ def queries(database):
 
 @pytest_asyncio.fixture
 async def entry(database):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         space = await create_space_binding(
             session,
             external_space_id="71999",
@@ -105,7 +105,7 @@ async def observe(
 
 
 async def prepare(database, entry, text, **kwargs):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return await prepare_for_entry(
             session,
             text,
@@ -156,7 +156,7 @@ async def test_plain_text_and_protected_addresses_do_not_read_identity(database,
 
 @pytest.mark.asyncio
 async def test_same_account_old_and_null_observations_use_one_current_snapshot(database, entry):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await find_identity_binding(session, "1001")
         account = await session.get(AccountModel, binding.account_id)
         old = IdentityBindingModel(
@@ -200,7 +200,7 @@ async def test_same_account_old_and_null_observations_use_one_current_snapshot(d
 
 @pytest.mark.asyncio
 async def test_longest_name_does_not_query_recent_shorter_accounts(database, entry):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await observe(session, entry, name="Ice", native="71001")
         longest = await observe(session, entry, name="Iceberg", native="71002")
     with queries(database) as captured:
@@ -212,7 +212,7 @@ async def test_longest_name_does_not_query_recent_shorter_accounts(database, ent
 
 @pytest.mark.asyncio
 async def test_at_inside_a_longest_name_does_not_add_a_second_recipient_lookup(database, entry):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         whole = await observe(session, entry, name="A@B", native="71001")
         await observe(session, entry, name="B", native="71002")
         await observe(session, entry, name="B", native="71003")
@@ -228,7 +228,7 @@ async def test_at_inside_a_longest_name_does_not_add_a_second_recipient_lookup(d
 async def test_real_equal_names_choose_latest_message_then_id_then_account(
     database, entry, activity
 ):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         first = await observe(
             session, entry, native="71001", account_id="11111111-1111-4111-8111-111111111111"
         )
@@ -257,7 +257,7 @@ async def test_real_equal_names_choose_latest_message_then_id_then_account(
 async def test_recent_choice_ignores_other_conversations_duplicates_and_plugin_events(
     database, entry
 ):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         first = await observe(session, entry, native="71001")
         second = await observe(session, entry, native="71002")
         other = await ensure_canonical_conversation(
@@ -282,7 +282,7 @@ async def test_recent_choice_ignores_other_conversations_duplicates_and_plugin_e
 
 @pytest.mark.asyncio
 async def test_private_names_only_come_from_original_participant_accounts(database, entry):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         binding = await find_identity_binding(session, "1001")
         account = await session.get(AccountModel, binding.account_id)
         session.add(
@@ -296,7 +296,7 @@ async def test_private_names_only_come_from_original_participant_accounts(databa
             )
         )
         outsider = await observe(session, entry, name="Ice", scoped=False)
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         content = await prepare_for_entry(
             session,
             "@Ice",
@@ -311,7 +311,7 @@ async def test_private_names_only_come_from_original_participant_accounts(databa
 
 @pytest.mark.asyncio
 async def test_explicit_accounts_are_physical_and_unknown_references_keep_at(database, entry):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         physical = await observe(session, entry)
         physical.display_name = "\tIce\nOld\x00 "
         other_platform = await observe(session, entry, native="71002", platform="telegram")
@@ -337,7 +337,7 @@ async def test_explicit_accounts_are_physical_and_unknown_references_keep_at(dat
 
 @pytest.mark.asyncio
 async def test_name_and_recent_queries_use_covering_scope_and_message_indexes(database, entry):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await observe(session, entry)
         second = await observe(session, entry, native="71002")
         session.add(message(second, entry.conversation_id))

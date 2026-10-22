@@ -8,10 +8,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, case, false, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.initiative_sources import source_revision
@@ -23,7 +24,7 @@ from yuki.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
-from yuki.identity.person_identity import current_person_id, person_root_id
+from yuki.identity.person_identity import person_enabled_condition, person_root_id
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import _event_record
@@ -67,6 +68,48 @@ class OrdinaryAdmissionDuplicate(OrdinaryAdmissionConflict):
     """Rollback a competing mailbox publication; the original admission wins."""
 
 
+def identity_allowed_condition() -> ColumnElement[bool]:
+    """Current qualification of an original event and its joined Conversation."""
+    event, conversation = ChatEventModel, CanonicalConversationModel
+    identity, presence = aliased(IdentityBindingModel), aliased(PresenceModel)
+    space, binding = CanonicalSpaceModel, SpaceBindingModel
+    return (
+        select(identity.id)
+        .join(presence, presence.id == event.ingress_presence_id)
+        .outerjoin(space, space.id == conversation.space_id)
+        .outerjoin(
+            binding,
+            and_(
+                binding.space_id == space.id,
+                binding.platform == presence.platform,
+                binding.external_space_id == event.group_id,
+            ),
+        )
+        .where(
+            identity.person_id == event.author_person_id,
+            identity.platform == presence.platform,
+            identity.external_account_id == event.sender_user_id,
+            identity.status == "active",
+            presence.enabled.is_(True),
+            presence.external_account_id == event.bot_user_id,
+            person_enabled_condition(event.author_person_id),
+            or_(
+                and_(
+                    conversation.kind == "private",
+                    conversation.person_id == event.author_person_id,
+                ),
+                and_(
+                    conversation.kind != "private",
+                    space.enabled.is_(True),
+                    binding.status == "active",
+                ),
+            ),
+        )
+        .correlate(event, conversation)
+        .exists()
+    )
+
+
 def _dto(row: OrdinaryTurnAdmissionModel) -> OrdinaryAdmission:
     saved = json.loads(row.basis_json)
     basis = saved["basis"] if isinstance(saved, dict) else saved
@@ -104,6 +147,7 @@ class PreparedOrdinaryAdmission:
     admission: OrdinaryAdmission
     event: EventRecord
     basis_json: str
+    segments_json: str
 
 
 class OrdinaryAdmissionRepository:
@@ -113,7 +157,7 @@ class OrdinaryAdmissionRepository:
     async def get(
         self, event_id: int, *, conversation_id: str | None = None, generation: int | None = None
     ) -> OrdinaryAdmission | None:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             row = await session.get(OrdinaryTurnAdmissionModel, event_id)
             if (
                 row is None
@@ -128,7 +172,7 @@ class OrdinaryAdmissionRepository:
     ) -> set[int]:
         if not event_ids:
             return set()
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             return set(
                 await session.scalars(
                     select(OrdinaryTurnAdmissionModel.event_id).where(
@@ -292,6 +336,7 @@ class OrdinaryAdmissionRepository:
             ),
             event,
             basis_json,
+            json.dumps(event.segments, ensure_ascii=False, separators=(",", ":")),
         )
 
     def publisher(
@@ -393,12 +438,7 @@ class OrdinaryAdmissionRepository:
                     admission_allowed=admission_allowed,
                 )
         a, e = prepared.admission, prepared.event
-        if await session.get(OrdinaryTurnAdmissionModel, e.id) is not None:
-            return False
-        # Only indexed source/owner checks remain under the writer; the digest and
-        # binding JSON were frozen outside it. A primary-key source is not history.
-        current = await session.get(ChatEventModel, e.id)
-        conversation = await session.get(CanonicalConversationModel, a.conversation_id)
+        event, conversation = ChatEventModel, CanonicalConversationModel
         fields = (
             "content",
             "visual_summary",
@@ -413,16 +453,33 @@ class OrdinaryAdmissionRepository:
             "direction",
             "event_kind",
         )
-        if (
-            current is None
-            or conversation is None
-            or conversation.generation != a.generation
-            or e.id <= conversation.starts_after_event_id
-            or current.suppression_status != "keeper"
-            or any(getattr(current, name) != getattr(e, name) for name in fields)
-            or _event_record(current).segments != e.segments
-            or not await _identity_allowed(session, current, conversation)
-        ):
+        current_source = (
+            select(event.id)
+            .join(conversation, conversation.id == a.conversation_id)
+            .where(
+                event.id == e.id,
+                conversation.generation == a.generation,
+                event.id > conversation.starts_after_event_id,
+                event.suppression_status == "keeper",
+                *(getattr(event, name).is_(getattr(e, name)) for name in fields),
+                func.json(event.segments_json) == func.json(prepared.segments_json),
+                identity_allowed_condition(),
+            )
+            .exists()
+        )
+        existing = (
+            select(OrdinaryTurnAdmissionModel.event_id)
+            .where(OrdinaryTurnAdmissionModel.event_id == e.id)
+            .exists()
+        )
+        # The original admission wins even if today's source is no longer eligible.
+        # No event/Conversation DTO is consumed by this current-fact proof.
+        duplicate, allowed = (
+            await session.execute(select(existing, case((existing, false()), else_=current_source)))
+        ).one()
+        if duplicate:
+            return False
+        if not allowed:
             raise OrdinaryAdmissionConflict("ordinary_source_changed")
         if admission_allowed is not None and not await admission_allowed(session):
             return False
@@ -450,41 +507,3 @@ class OrdinaryAdmissionRepository:
             .returning(OrdinaryTurnAdmissionModel.event_id)
         )
         return result.scalar_one_or_none() is not None
-
-
-async def _identity_allowed(
-    session: AsyncSession, event: ChatEventModel, conversation: CanonicalConversationModel
-) -> bool:
-    person = await session.get(CanonicalPersonModel, event.author_person_id)
-    presence = await session.get(PresenceModel, event.ingress_presence_id)
-    if person is None or not person.enabled or presence is None or not presence.enabled:
-        return False
-    root = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
-    if root is None or not root.enabled:
-        return False
-    identity = await session.scalar(
-        select(IdentityBindingModel.id).where(
-            IdentityBindingModel.person_id == person.id,
-            IdentityBindingModel.platform == presence.platform,
-            IdentityBindingModel.external_account_id == event.sender_user_id,
-            IdentityBindingModel.status == "active",
-        )
-    )
-    if identity is None or presence.external_account_id != event.bot_user_id:
-        return False
-    if conversation.kind == "private":
-        return conversation.person_id == person.id and person.enabled
-    space = await session.get(CanonicalSpaceModel, conversation.space_id)
-    if space is None or not space.enabled:
-        return False
-    return (
-        await session.scalar(
-            select(SpaceBindingModel.id).where(
-                SpaceBindingModel.space_id == space.id,
-                SpaceBindingModel.platform == presence.platform,
-                SpaceBindingModel.external_space_id == event.group_id,
-                SpaceBindingModel.status == "active",
-            )
-        )
-        is not None
-    )

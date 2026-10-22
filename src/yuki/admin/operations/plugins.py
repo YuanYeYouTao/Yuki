@@ -16,6 +16,7 @@ from yuki.admin.operations.base import CommandExecutor, fail, outcome, revision
 from yuki.persistence.command_receipts import (
     CommandSuccess,
 )
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.unit_of_work import state_revision
 from yuki.plugin_host.configuration_service import (
     PluginConfigurationError,
@@ -92,9 +93,19 @@ class PluginOperations:
                 return outcome(
                     plugin_id, state_revision(record.updated_at), record.status, operation
                 )
-            except PluginRevisionConflict:
+            except PluginRevisionConflict as exc:
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise
                 raise fail(ProblemCode.VERSION_CONFLICT) from None
-            except PluginManagementRejected:
+            except PluginManagementRejected as exc:
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise
                 raise fail(ProblemCode.PRECONDITION_FAILED) from None
 
         return await self.executor.external_command(
@@ -116,6 +127,11 @@ class PluginOperations:
                     self.database, self.plugins.configuration_schema
                 ).save(plugin_id, command.expected_revision, spec)
             except PluginConfigurationError as exc:
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise
                 raise fail(ProblemCode(exc.category)) from None
             return outcome(plugin_id, saved, "saved", operation)
 

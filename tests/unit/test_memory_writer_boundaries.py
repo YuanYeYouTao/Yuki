@@ -53,11 +53,18 @@ async def facts(database, count=1):
 
 
 async def test_unexpired_and_empty_maintenance_do_not_acquire_writer(database):
-    repository, service, rows = await facts(database)
+    _repository, service, rows = await facts(database)
     worker = MemoryMaintenanceWorker(settings=make_settings(database.url), facts=service)
     async with other_writer_and_read_only(database):
         assert await worker.process_once() == 0
-    async with repository.transaction() as session:
+    async with database.immediate_session() as session:
         await session.execute(delete(MemoryFactModel).where(MemoryFactModel.id == rows[0].id))
     async with other_writer_and_read_only(database):
         assert await worker.process_once() == 0
+
+
+async def test_missing_preference_returns_without_waiting_for_writer(database):
+    import asyncio
+    _, service, _ = await facts(database)
+    async with other_writer_and_read_only(database):
+        assert not await asyncio.wait_for(service.delete_preference("1001", "missing-key"), 1)

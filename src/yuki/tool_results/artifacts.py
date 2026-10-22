@@ -242,7 +242,7 @@ class ToolArtifactRepository:
         retention = retention_seconds if retention_seconds is not None else self._retention
         if retention <= 0:
             raise ValueError("artifact retention must be positive")
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             privacy = int(
                 await reader.scalar(
                     select(ExecutionTraceStateModel.privacy_generation).where(
@@ -260,17 +260,17 @@ class ToolArtifactRepository:
         access_json = json.dumps(source, sort_keys=True) if source else None
         await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
         async with self._storage_lock:
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 used = await reader.scalar(
                     select(func.coalesce(func.sum(ToolArtifactModel.byte_size), 0))
                 )
             if int(used or 0) + len(encoded) > self._max_total_bytes:
                 raise ValueError("tool_artifact_capacity")
-            await asyncio.to_thread(self._publish, path, encoded)
-            now = datetime.now(UTC)
+            await self._publish_file(path, encoded)
             # Cancellation can arrive after COMMIT: bounded orphan maintenance
             # owns unregistered files; never unlink a potentially durable ref here.
             async with self._database.immediate_session() as session:
+                now = datetime.now(UTC)
                 if access is not None or source_event_ids:
                     if (
                         access is not None
@@ -312,6 +312,29 @@ class ToolArtifactRepository:
                     )
                 )
         return handle
+
+    async def _publish_file(self, path: Path, encoded: bytes) -> None:
+        worker = asyncio.create_task(asyncio.to_thread(self._publish, path, encoded))
+        cancellation = None
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as error:
+                cancellation = cancellation or error
+            except BaseException as error:
+                if cancellation is not None:
+                    raise cancellation from error
+                raise
+        # Keep the storage owner until the actual filesystem operation exits.
+        # A cancelled publication remains an unregistered UUID for orphan GC.
+        try:
+            worker.result()
+        except BaseException as error:
+            if cancellation is not None:
+                raise cancellation from error
+            raise
+        if cancellation is not None:
+            raise cancellation
 
     @staticmethod
     def _publish(path: Path, encoded: bytes) -> None:
@@ -395,7 +418,7 @@ class ToolArtifactRepository:
             raise ValueError("artifact offset must be non-negative and limit must be positive")
         if not handle_id.isalnum() or len(handle_id) > 64:
             return None
-        async with self._database.sessions() as session:
+        async with self._database.read_session() as session:
             row = await session.get(ToolArtifactModel, handle_id)
             if row is None or row.deleting:
                 return None
@@ -456,7 +479,7 @@ class ToolArtifactRepository:
             }
         if access is not None:
             # Erasure, generation changes and GC may race the bounded file I/O.
-            async with self._database.sessions() as session:
+            async with self._database.read_session() as session:
                 current = await session.get(ToolArtifactModel, handle_id)
                 if (
                     current is None
@@ -600,7 +623,7 @@ class ToolArtifactRepository:
         # create() holds the same lock through publication and metadata commit.
         # Immutable UUID names are never reused, so an old unregistered file
         # cannot gain a new owner between this read and its physical removal.
-        async with self._database.sessions() as reader:
+        async with self._database.read_session() as reader:
             registered = set(
                 await reader.scalars(
                     select(ToolArtifactModel.relative_path).where(
@@ -625,7 +648,7 @@ class ToolArtifactRepository:
                 ToolArtifactModel.deleting.is_(True),
                 and_(ToolArtifactModel.expires_at <= now, ~self._protected()),
             )
-            async with self._database.sessions() as reader:
+            async with self._database.read_session() as reader:
                 candidates = list(
                     await reader.scalars(
                         select(ToolArtifactModel.handle_id)

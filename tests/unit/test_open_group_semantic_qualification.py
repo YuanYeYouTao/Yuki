@@ -27,7 +27,8 @@ async def _scene(database, tmp_path, *, semantic=True):
     participation = SimpleNamespace(
         continuation_for_event=classify,
         binding_for_event=AsyncMock(return_value=None),
-        continuation_current=AsyncMock(return_value=True),
+        prepare_continuation=AsyncMock(),
+        continuation_matches=AsyncMock(return_value=True),
         on_ordinary_admitted=AsyncMock(),
     )
     harness.processor.set_participation(participation)

@@ -93,6 +93,11 @@ class ActivationOutcome:
 
 
 def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFailure:
+    from yuki.persistence.database import (
+        write_failure_committed,
+        write_failure_phase,
+        write_failure_retryable,
+    )
     from yuki.services.concurrency import RequestCancelledError
 
     if isinstance(exc, (asyncio.CancelledError, RequestCancelledError)):
@@ -102,6 +107,9 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     if isinstance(exc, BaseExceptionGroup):
         failures = [classify_failure(item, stage) for item in exc.exceptions]
         return next((item for item in failures if not item.retryable), failures[0])
+    committed = write_failure_committed(exc)
+    certainty = {True: "committed", False: "not_committed", None: "unknown"}[committed]
+    phase = write_failure_phase(exc)
     if isinstance(exc, (OperationalError, sqlite3.Error)):
         original = exc.orig if isinstance(exc, OperationalError) else exc
         code = getattr(original, "sqlite_errorcode", None)
@@ -114,12 +122,26 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
                 return RuntimeFailure(
                     "sqlite_busy" if busy else "sqlite_locked",
                     stage,
-                    busy,
-                    diagnostics={"sqlite_errorcode": code},
+                    write_failure_retryable(exc),
+                    certainty,
+                    diagnostics={
+                        "sqlite_errorcode": code,
+                        "database_write_phase": phase,
+                    },
                 )
-        return RuntimeFailure("database_failure", stage)
+        return RuntimeFailure(
+            "database_failure",
+            stage,
+            certainty=certainty,
+            diagnostics={"database_write_phase": phase},
+        )
     if isinstance(exc, SQLAlchemyError):
-        return RuntimeFailure("database_failure", stage)
+        return RuntimeFailure(
+            "database_failure",
+            stage,
+            certainty=certainty,
+            diagnostics={"database_write_phase": phase},
+        )
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
     from yuki.runtime.work_journal import JournalUnavailable
@@ -127,8 +149,18 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
 
     if isinstance(exc, JournalUnavailable):
         code = str(exc)
+        cause = exc.__cause__
+        database_failure = (
+            classify_failure(cause, "journal")
+            if isinstance(cause, (SQLAlchemyError, sqlite3.Error))
+            or (cause is not None and write_failure_phase(cause) is not None)
+            else None
+        )
         return RuntimeFailure(
-            code if code in _JOURNAL_FAILURE_CODES else "work_journal_unavailable", "journal"
+            code if code in _JOURNAL_FAILURE_CODES else "work_journal_unavailable",
+            "journal",
+            certainty=database_failure.certainty if database_failure else "unknown",
+            diagnostics=database_failure.diagnostics if database_failure else {},
         )
 
     if isinstance(exc, WorkCapacityError):
@@ -138,8 +170,13 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure(
             exc.code,
             "context" if exc.code == "work_journal_source_changed" else stage,
-            exc.code in {"work_journal_source_changed", "work_activation_interrupted"},
-            diagnostics={"category": "work_conflict"},
+            exc.code in {"work_journal_source_changed", "work_activation_interrupted"}
+            and (phase is None or committed is False),
+            certainty=certainty,
+            diagnostics={
+                "category": "work_conflict",
+                **({"database_write_phase": phase} if phase is not None else {}),
+            },
         )
     # An exact Presence lookup can fail before any gateway call when its live
     # connection drops. Restart the original activation after reconnection;
@@ -168,4 +205,9 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
             ),
             diagnostics=exc.diagnostics,
         )
-    return RuntimeFailure(type(exc).__name__, stage)
+    return RuntimeFailure(
+        type(exc).__name__,
+        stage,
+        certainty=certainty,
+        diagnostics={"database_write_phase": phase} if phase is not None else {},
+    )

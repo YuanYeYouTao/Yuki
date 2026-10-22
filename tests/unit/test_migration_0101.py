@@ -32,7 +32,7 @@ async def _seed(database, tmp_path):
         "typed": {"outcome": {"ok": True, "side_effecting": False}, "result": "{}"},
         "final": {"transport_accepted": True, "message_id": "1"},
     }
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         for key, receipt in rows.items():
             await session.execute(
                 text(
@@ -52,7 +52,7 @@ async def _seed(database, tmp_path):
 
 
 async def _receipts(database):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = await session.execute(
             text("SELECT effect_key, receipt_json FROM runtime_work_effects")
         )

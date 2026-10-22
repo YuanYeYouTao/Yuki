@@ -90,7 +90,7 @@ async def test_long_task_persists_and_reaches_original_main_agent(
     declaration, _ = json.JSONDecoder().raw_decode(submitted[0], submitted[0].index(instruction))
     assert declaration == expected
     assert declaration["constraints"][0].endswith("\nTAIL_MARKER=YUKI_AUTO_TAIL_OK_731")
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         stored = await reader.get(AutomationModel, case.row.id)
         saved = await reader.get(AutomationVersionModel, result.version_id)
         assert json.loads(stored.script_json) == json.loads(saved.script_json) == updated.script

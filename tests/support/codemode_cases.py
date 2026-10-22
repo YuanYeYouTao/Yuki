@@ -181,7 +181,7 @@ async def run_code(env, code, **kwargs):
 
 
 async def effect_rows(database, work_id):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         rows = (
             (await reader.execute(select(effects).where(effects.c.work_id == work_id)))
             .mappings()

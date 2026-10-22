@@ -1,0 +1,52 @@
+{
+  "sqlite": "3.46.1",
+  "schema": "0148",
+  "conversation_count": 8,
+  "not_a_load_benchmark": true,
+  "source_sha256": {
+    "src/yuki/persistence/database.py": "bcbd84519f2ba9ed5a2c6e15e5c4e4c9e0f07c73805f5fe7d93656213e97f6c2",
+    "src/yuki/social/history_sources.py": "8867a9be80e401dbec23566fb1dfa402fd12fd596b470f9dd764bd0296871c75",
+    "migrations/versions/0148_history_source_indexes.py": "fe02f2e1115e2ad851ab53af65171b2c471ff125bfcef4bbc4dfcf384dfb31f1"
+  },
+  "observation": {
+    "baseline": {
+      "mode": "TRUNCATE",
+      "busy": 0,
+      "log_frames": 0,
+      "checkpointed_frames": 0,
+      "page_size": 4096,
+      "wal_bytes": 0
+    },
+    "cursor_closed": true,
+    "transaction_active_after_cursor_close": true,
+    "writer_commit_visible_to_fresh_reader": true,
+    "original_value": "Group 3",
+    "value_inside_old_snapshot": "Group 3",
+    "while_owner_holds_snapshot": {
+      "mode": "PASSIVE",
+      "busy": 0,
+      "log_frames": 1,
+      "checkpointed_frames": 0,
+      "page_size": 4096,
+      "wal_bytes": 4152
+    },
+    "transaction_active_after_owner_end": false,
+    "after_owner_end": {
+      "mode": "PASSIVE",
+      "busy": 0,
+      "log_frames": 1,
+      "checkpointed_frames": 1,
+      "page_size": 4096,
+      "wal_bytes": 4152
+    },
+    "final_truncate": {
+      "mode": "TRUNCATE",
+      "busy": 0,
+      "log_frames": 0,
+      "checkpointed_frames": 0,
+      "page_size": 4096,
+      "wal_bytes": 0
+    }
+  },
+  "temporary_database_removed": true
+}

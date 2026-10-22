@@ -107,7 +107,7 @@ async def test_chat_transfer_rechecks_role_in_actual_writer(database, monkeypatc
             time.perf_counter(),
         )
         assert "capability_denied" in result.text
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             original_binding = await find_identity_binding(session, "9000")
             assert original_binding.id == binding_id and original_binding.person_id == operator_id
             assert original_binding.status == "active"
@@ -121,7 +121,7 @@ async def test_group_new_rechecks_role_after_wait_before_generation_write(databa
 
     app, bot, _presence, space, _binding = await stack(database)
     try:
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             operator = await find_identity_binding(session, "9000")
             operator_id = operator.person_id
             generation = await session.scalar(
@@ -143,7 +143,7 @@ async def test_group_new_rechecks_role_after_wait_before_generation_write(databa
         sender = Sender(bot)
         result = await app.processor.handle(message("/ai new", message_id="revoke-new"), sender)
         assert result.handled and "超级管理员" in sender.messages[-1].text
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(
                     select(CanonicalConversationModel.generation).where(
@@ -193,7 +193,7 @@ async def test_manual_group_compact_rechecks_role_after_build(database, tmp_path
     )
     harness.provider.requests.clear()
     build_messages = harness.processor._chat._build_messages
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         operator = await find_identity_binding(session, "9000")
         operator_id = operator.person_id
 
@@ -253,7 +253,7 @@ async def test_chat_person_creation_replays_original_internal_event(database):
             request.sender.user_id, request.scope_type, group_id=request.group_id
         )
         before = None
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             before = await session.scalar(select(func.count()).select_from(CanonicalPersonModel))
         first = await app.command_service.execute(
             CommandName.ADMIN,
@@ -273,7 +273,7 @@ async def test_chat_person_creation_replays_original_internal_event(database):
         )
         first_result, second_result = json.loads(first.text), json.loads(second.text)
         assert first_result["success"] and second_result == first_result
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(CanonicalPersonModel))
                 == before + 1

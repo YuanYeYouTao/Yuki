@@ -61,7 +61,7 @@ async def test_app_memory_write_search_detail_and_correction_keep_original_perso
     assert runtime.require_actor().person_id == person
     profile = await PeopleRepository(database).get(person_id=person)
     assert profile is not None and profile.user_id == person
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(
             select(IdentityBindingModel.id).where(
                 IdentityBindingModel.person_id == person, IdentityBindingModel.platform == "qq"
@@ -188,7 +188,7 @@ async def test_app_only_self_reflection_claim_and_write_do_not_require_qq_bindin
     payload, *_ = await service._input(batch)
     assert payload.person_id == person and payload.private_peer_user_id is None
     assert await service.reflect(batch) == (1, 1)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not await reader.scalar(
             select(IdentityBindingModel.id).where(
                 IdentityBindingModel.person_id == person, IdentityBindingModel.platform == "qq"
@@ -218,7 +218,7 @@ async def test_app_rebuild_preserves_source_owner_after_review_commit_and_stagin
     )
     assert response.status_code == 200, response.text
     await drain(env)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         event = (
             await reader.scalars(
                 select(ChatEventModel).where(
@@ -260,7 +260,7 @@ async def test_app_rebuild_preserves_source_owner_after_review_commit_and_stagin
     assert len(stored) == 1 and stored[0].canonical_subject_person_id == person
     assert [row.event_id for row in await facts.list_evidence(stored[0].id)] == [event.id]
     assert provider.requests == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_run = await reader.scalar(
             select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == run.public_id)
         )
@@ -281,7 +281,7 @@ async def test_app_rebuild_preserves_source_owner_after_review_commit_and_stagin
     assert original_run_id in plan.purge_terminal_rebuild_run_ids
     assert stored[0].id not in plan.invalid_fact_ids
     await hygiene.apply(plan.fingerprint)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.get(MemoryRebuildRunModel, original_run_id) is not None
         assert not await reader.scalar(
             select(func.count(MemoryRebuildItemModel.id)).where(

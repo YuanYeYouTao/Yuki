@@ -88,6 +88,7 @@ class ApplicationContainer:
         settings: Settings,
         *,
         database: Database | None = None,
+        owns_database: bool = False,
         runtime_config: RuntimeConfigService | None = None,
         vision_provider: VisionProvider | None = None,
     ) -> None:
@@ -100,11 +101,13 @@ class ApplicationContainer:
             settings,
             lifecycle=self.lifecycle,
             database=database,
+            owns_database=owns_database,
             runtime_config=runtime_config,
         ).build()
         self.persistence = persistence
         self.database = persistence.database
         self.runtime_config = persistence.runtime_config
+        self.lifecycle.register("application_identity", start=self._initialize_identity)
         self.gateway_providers = builtin_provider_catalog(
             qq_transfer_root=settings.social_transfer_directory,
             qq_gateway_root=settings.social_gateway_transfer_directory,
@@ -258,6 +261,11 @@ class ApplicationContainer:
         )
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
         self.database.sandbox_client = self.sandbox_client
+        from yuki.external_agents.service import ExternalAgentService
+
+        self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
+        self.database.external_agents = self.external_agents
+        self.agent_tools.external_agent_service = self.external_agents
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client
@@ -386,7 +394,6 @@ class ApplicationContainer:
             memory_embeddings=self.memory_embeddings,
             memory_audit=self.memory_audit,
             memory_maintenance=self.memory_maintenance_worker,
-            groups=self.groups,
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
             memory_self_reflection=self.memory_self_reflection_worker,
@@ -396,7 +403,6 @@ class ApplicationContainer:
         self.admin_audit = admin.audit
         self.memory_admin = admin.memories
         self.preference_admin = admin.preferences
-        self.group_admin = admin.groups
         self.config_admin = admin.config
         self.automation_module = AutomationModule(
             settings=settings,
@@ -831,9 +837,10 @@ class ApplicationContainer:
             return cls(
                 active_settings,
                 database=database,
+                owns_database=True,
                 runtime_config=runtime_config,
             )
-        except Exception:
+        except BaseException:
             await database.close()
             raise
 
@@ -850,6 +857,7 @@ class ApplicationContainer:
         self.lifecycle.register(
             "social_recovery", start=self.social_service.receipts.recover_interrupted
         )
+        self.lifecycle.register("external_agents", close=self.external_agents.close)
         self.lifecycle.register(
             "workspace", start=self.workspace_service.start, close=self.workspace_service.close
         )
@@ -958,12 +966,14 @@ class ApplicationContainer:
         if self._cleanup_task is not None:
             await self._cleanup_task
 
-    async def start(self) -> None:
-        """Start maintenance tasks after migrations have run."""
-
+    async def _initialize_identity(self) -> None:
         await bootstrap_settings_identity(self.database, self.settings)
         character = await self.character.current()
         self.settings.apply_character_name(character.display_name, character.revision)
+
+    async def start(self) -> None:
+        """Start maintenance tasks after migrations have run."""
+
         await self.lifecycle.start()
 
     async def _cleanup_loop(self) -> None:

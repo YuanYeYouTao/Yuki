@@ -89,7 +89,7 @@ async def test_explicit_source_restore_preserves_other_revocations_and_original_
     assert (await api.identities.authenticate(devices[source]["token"])).person_id == target
     with pytest.raises(ClientError, match="unauthenticated"):
         await api.identities.authenticate(devices[other]["token"])
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         source_row = await session.get(CanonicalPersonModel, source)
         other_row = await session.get(CanonicalPersonModel, other)
         target_row = await session.get(CanonicalPersonModel, target)
@@ -181,7 +181,7 @@ async def test_new_binding_uses_current_person_without_reviving_disabled_origina
     assert (
         await client.post(f"/admin/v1/persons/{original}/bindings", json=request)
     ).json() == result
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         new = await session.get(IdentityBindingModel, result["data"]["resource_id"])
         assert new.person_id == current and new.status == "active"
         assert await session.scalar(select(person_enabled_condition(new.person_id)))
@@ -220,7 +220,7 @@ async def test_app_binding_restore_allows_new_pair_without_reviving_revoked_devi
 
 async def test_presence_management_preserves_original_identity(admin, database):
     client, *_ = admin
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         presence = await session.scalar(
             select(PresenceModel).where(PresenceModel.external_account_id == "7777")
         )
@@ -246,7 +246,7 @@ async def test_work_discovery_supplies_actual_revision_for_cancel(admin, databas
     issued = await api.identities.issue_for_operator(person, str(uuid4()), str(uuid4()))
     device = await api.identities.pair(issued["code"], "work-owner")
     principal = await api.identities.authenticate(device["token"])
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(CanonicalConversationModel, principal.conversation_id)
         generation = conversation.generation
     repository = WorkRepository(database)

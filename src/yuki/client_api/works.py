@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import and_, func, literal_column, or_, select, text, union
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,9 +20,12 @@ from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
 from yuki.gateway.providers.app.ingress import AppGateway
+from yuki.identity.canonical_uow import InboundPreparation
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from yuki.identity.ingress import IngressPreAdmit
 from yuki.identity.person_identity import person_family_condition, same_person_id
+from yuki.identity.person_state import ObservationChanged
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_management import WorkManagementError, manage_work
@@ -28,6 +33,8 @@ from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import effects, inputs, work
 from yuki.social.db_models import SocialOperationModel
+
+logger = logging.getLogger(__name__)
 
 
 def _values(values: Iterable[Any]) -> Any:
@@ -57,6 +64,32 @@ async def personal_work(session: AsyncSession, person_id: str, identity: str) ->
                     CanonicalConversationModel.id == work.c.conversation_id,
                 )
                 .where(work.c.id == identity, work_access(person_id))
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise ClientError("not_found")
+    return dict(row)
+
+
+async def _input_work(session: AsyncSession, person_id: str, identity: str) -> dict[str, Any]:
+    """Select the original input owner without decoding the Work's private source."""
+    row = (
+        (
+            await session.execute(
+                select(work.c.id, work.c.conversation_id, work.c.generation, work.c.state)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
+                )
+                .where(
+                    work.c.id == identity,
+                    person_family_condition(
+                        func.json_extract(work.c.source_json, "$.actor_person_id"), person_id
+                    ),
+                )
             )
         )
         .mappings()
@@ -321,7 +354,7 @@ class ClientWorks:
         return projections
 
     async def get(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
-        async with self.database.sessions() as session:
+        async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             return (
@@ -382,15 +415,14 @@ class ClientWorks:
             raise ClientError("validation_error")
         operation = "client.work_input"
         bound = fingerprint(operation, identity, {"text": body})
+        canonical_event_id = str(uuid4())
         while True:
             lease = None
+            outcome: dict[str, Any] | ClientError | None = None
             try:
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     principal = await self.identity.require_principal(reader, principal)
-                    row = await personal_work(reader, principal.person_id, identity)
-                    actor = json.loads(row["source_json"]).get("actor_person_id")
-                    if not actor or not await same_person_id(reader, actor, principal.person_id):
-                        raise ClientError("not_found")
+                    row = await _input_work(reader, principal.person_id, identity)
                     previous = await self._replay_input(
                         reader, principal, identity, request_id, bound
                     )
@@ -402,7 +434,7 @@ class ClientWorks:
                     if lease is None:
                         raise ClientError("unavailable")
                 binding = None
-                async with self.database.sessions() as reader:
+                async with self.database.read_session() as reader:
                     binding = await reader.get(IdentityBindingModel, principal.binding_id)
                 assert binding is not None
                 gateway = self.gateways[principal.platform]
@@ -427,6 +459,23 @@ class ClientWorks:
 
                 prepared_terms = await asyncio.to_thread(prepare_terms, admitted.message.text)
 
+                from yuki.runtime.work_repository import encode_json
+
+                input_payload = {
+                    "text": body,
+                    "origin": "client_input",
+                    "source_conversation_id": principal.conversation_id,
+                    "device_id": principal.device_id,
+                }
+                encoded_payload = encode_json(input_payload)
+                prepared_inbound = await gateway.processor._canonical_uow.prepare_inbound(
+                    admitted.message,
+                    admitted,
+                    canonical_event_id=canonical_event_id,
+                    origin="work_input",
+                    prepared_terms=prepared_terms,
+                )
+
                 async def record_input(
                     writer: AsyncSession,
                     source: IngressPreAdmit = admitted,
@@ -434,16 +483,13 @@ class ClientWorks:
                     input_lease: WorkLease | None = lease,
                     request_principal: ClientPrincipal = principal,
                     request_gateway: AppGateway = gateway,
+                    inbound_preparation: InboundPreparation = prepared_inbound,
+                    input_payload_json: str = encoded_payload,
                 ) -> dict[str, Any] | ClientError | None:
                     current_principal = await self.identity.require_principal(
                         writer, request_principal
                     )
-                    current = await personal_work(writer, current_principal.person_id, identity)
-                    actor = json.loads(current["source_json"]).get("actor_person_id")
-                    if not actor or not await same_person_id(
-                        writer, actor, current_principal.person_id
-                    ):
-                        raise ClientError("not_found")
+                    current = await _input_work(writer, current_principal.person_id, identity)
                     previous = await self._replay_input(
                         writer, current_principal, identity, request_id, bound
                     )
@@ -477,6 +523,7 @@ class ClientWorks:
                             session=writer,
                             origin="work_input",
                             prepared_terms=input_terms,
+                            prepared=inbound_preparation,
                         )
                         payload = {
                             "text": body,
@@ -493,6 +540,7 @@ class ClientWorks:
                             work_id=identity,
                             ready=True,
                             payload=payload,
+                            prepared_payload=input_payload_json,
                             session=writer,
                             resume=(input_lease, payload)
                             if waiting and input_lease is not None
@@ -514,14 +562,43 @@ class ClientWorks:
                         )
                         return {**result, "replay": False}
 
-                outcome = await self.database.apply_snapshot_write(record_input)
+                async with self.database.immediate_session() as writer:
+                    outcome = await record_input(writer)
+            except BaseException as original_error:
+                if lease is not None:
+                    try:
+                        await self.repository.release(lease)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as cleanup_error:
+                        original_error.add_note(
+                            f"client input lease release failed: {type(cleanup_error).__name__}"
+                        )
+                if (
+                    isinstance(original_error, ObservationChanged)
+                    and write_failure_committed(original_error) is False
+                ):
+                    continue
+                raise
+            else:
+                if lease is not None:
+                    try:
+                        await self.repository.release(lease)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as cleanup_error:
+                        if outcome is None:
+                            raise
+                        # The original input, event and UUID receipt are committed.
+                        # This short borrowed lease can expire without replaying them.
+                        logger.warning(
+                            "client_work_input_lease_release_failed category=%s",
+                            type(cleanup_error).__name__,
+                        )
                 if isinstance(outcome, ClientError):
                     raise outcome
                 if outcome is not None:
                     return outcome
-            finally:
-                if lease is not None:
-                    await self.repository.release(lease)
 
     async def cancel(
         self, principal: ClientPrincipal, identity: str, request_id: str, revision: int

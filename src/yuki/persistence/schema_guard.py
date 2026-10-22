@@ -190,8 +190,35 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "account_name_observations": frozenset(
         {"account_id", "assignment_id", "space_binding_id", "name"}
     ),
-    "client_devices": frozenset({"id", "person_id", "token_hash", "revoked_at"}),
-    "client_link_codes": frozenset({"id", "person_id", "code_hash", "expires_at", "used_at"}),
+    "client_devices": frozenset({"id", "person_id", "purpose", "token_hash", "revoked_at"}),
+    "client_link_codes": frozenset(
+        {"id", "person_id", "purpose", "code_hash", "expires_at", "used_at"}
+    ),
+    "external_agent_instances": frozenset({"id", "device_id", "local_id", "catalog_json"}),
+    "external_agent_sessions": frozenset({"id", "instance_id", "native_id"}),
+    "external_agent_executions": frozenset({"id", "session_id", "native_id"}),
+    "external_agent_operations": frozenset(
+        {
+            "id",
+            "instance_id",
+            "session_id",
+            "actor_person_id",
+            "work_id",
+            "source_json",
+            "action",
+            "payload_hash",
+            "command_json",
+            "run_id",
+            "native_execution_id",
+            "result_json",
+            "created_at",
+            "dispatched_at",
+            "detached_at",
+        }
+    ),
+    "external_agent_events": frozenset(
+        {"id", "device_id", "event_id", "operation_id", "kind", "payload_json", "created_at"}
+    ),
     "spaces": frozenset({"id", "enabled", "autonomous_enabled", "require_mention", "revision"}),
     "space_bindings": frozenset(
         {
@@ -254,6 +281,14 @@ class CanonicalSchemaError(RuntimeError):
 
 async def require_canonical_schema(database_url: str) -> None:
     """Validate the bundled version and metadata without scanning business data."""
+    from yuki.persistence.database import _complete
+
+    _, cancellation = await _complete(_check_canonical_schema(database_url))
+    if cancellation is not None:
+        raise cancellation
+
+
+async def _check_canonical_schema(database_url: str) -> None:
 
     if not database_url.startswith("sqlite+aiosqlite:///"):
         raise CanonicalSchemaError("Yuki supports only its canonical SQLite schema")

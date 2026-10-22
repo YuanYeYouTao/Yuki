@@ -61,7 +61,7 @@ async def test_disconnected_presence_queues_original_work_without_error_notice(d
     assert outcome.reason is ExitReason.RETRY
     assert outcome.failure and outcome.failure.code == "gateway_disconnected"
     assert control.current and control.current["state"] == "queued"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = (
             await session.execute(
                 select(recovery.c.exit_reason, recovery.c.attempts).where(
@@ -95,7 +95,7 @@ async def test_repeated_transient_failure_preserves_retained_boundary_and_can_co
         assert control.current["id"] == identity
         assert control.current["state"] == "queued"
         assert control.current["model_requests"] == 1
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(recovery.c.attempts).where(recovery.c.work_id == identity))
             == 5
@@ -123,7 +123,7 @@ async def test_model_cancellation_preserves_original_owner_and_lease_failure(
     await control.repository.checkpoint(control.lease, identity, None, models=1)
     await control.session.save("paired")
     original_work = await control.repository.get(identity)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original_journal = (
             (await reader.execute(select(journal).where(journal.c.work_id == identity)))
             .mappings()
@@ -178,7 +178,7 @@ async def test_model_cancellation_preserves_original_owner_and_lease_failure(
         assert not harness.concurrency.is_processing(control.lease.conversation_id)
         assert wire == provider.requests == []
         assert await control.repository.get(identity) == original_work
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 (await reader.execute(select(journal).where(journal.c.work_id == identity)))
                 .mappings()
@@ -246,7 +246,7 @@ async def test_artifact_publication_failure_preserves_typed_effect_without_repla
         )
         assert json.loads(replayed)["replay_forbidden"] is True
         assert executions == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         receipt = (
             await reader.execute(
                 select(effects.c.state, effects.c.receipt_json).where(effects.c.effect_key == key)
@@ -260,7 +260,7 @@ async def test_artifact_publication_failure_preserves_typed_effect_without_repla
 
 
 async def change_prompt_source(database, conversation_id):
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(CanonicalConversationModel)
             .where(CanonicalConversationModel.id == conversation_id)
@@ -285,7 +285,7 @@ async def test_source_change_rebases_retained_work_before_any_effect(database, t
     assert outcome.reason is ExitReason.RETRY
     assert outcome.failure and outcome.failure.code == "work_journal_source_changed"
     assert control.current["id"] == original_id and control.current["state"] == "queued"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = (
             await session.execute(
                 select(recovery.c.failure_json, recovery.c.exit_reason).where(
@@ -334,7 +334,7 @@ async def test_source_change_after_accepted_automation_preserves_receipt_without
         item.get("ok") and item.get("effect_key") == original_key for item in control.known_effects
     )
     invoke.assert_awaited_once()
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         saved = (
             await session.execute(
                 select(recovery.c.failure_json, recovery.c.exit_reason).where(
@@ -366,7 +366,7 @@ async def test_source_change_after_accepted_automation_preserves_receipt_without
 async def test_source_change_never_lets_expired_owner_commit_recovery(database, tmp_path):
     control = await setup(database, tmp_path)
     assert control.current is not None
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(scope)
             .where(scope.c.conversation_id == control.lease.conversation_id)
@@ -374,7 +374,7 @@ async def test_source_change_never_lets_expired_owner_commit_recovery(database, 
         )
     with pytest.raises(WorkConflict, match="work_journal_source_changed"):
         await recover_failure(control, WorkConflict("work_journal_source_changed"))
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(recovery.c.work_id).where(recovery.c.work_id == control.current["id"])
@@ -393,7 +393,7 @@ async def test_committed_cancellation_is_read_before_lease_guarded_effects(datab
     assert outcome.reason is ExitReason.CANCELLED
     assert outcome.work_id == identity
     assert control.current["state"] == "cancelled"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(select(recovery.c.work_id).where(recovery.c.work_id == identity))
         ) is None

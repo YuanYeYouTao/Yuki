@@ -1,7 +1,15 @@
 # 个人客户端 API
 
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
-设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或设备执行器权限。公开服务沿部署提供 HTTPS。
+聊天设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或电脑控制权限。公开服务沿部署提供 HTTPS。
+
+## 本机 Agent 设备
+
+凭据资格由共同 identity 服务处理，App／ACP 再附加聊天入口。`client_devices` 与一次性码使用明确的 `purpose=chat|connector`；迁移 0149 将旧行全部保为 chat，不自动扩大授权。`POST /link-codes` 可显式提交 `purpose="connector"`，operator 对应 `yuki admin client pair --person <id> --purpose connector`。现有设备列表展示 purpose，原撤销入口同时管理本人这两类设备。
+
+电脑使用独立 `/agents/v1/pair` 兑换 connector 码，再用该 token 建立 `/agents/v1/connect` WSS；不能使用聊天 token。电脑归原 Person，不依赖 App Binding、Conversation 或其 generation；同人合并保原 device namespace，账号转移不转电脑。电脑连接只传输原生控制和重要事件，不自行发聊天消息。
+
+`GET /agents/v1/devices` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。新控制沿 Main 固定 `external_agent` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
 
 ## 角色资料与单 SOUL
 
@@ -131,7 +139,8 @@ Work 的来源、预算、子任务数和原投递结果按这批 Work 一起读
 conversation、work、activity 变化提示。事实仍须经对应 GET 读取。Last-Event-ID 不作为
 持久事实游标；每次重连都重新 sync。同一轮已排队的唤醒合成一次最新快照，不重复扫描中间状态。15 秒静默时发送 keepalive 注释。
 
-原数据库 session 的 after_commit 只唤醒进程内订阅，不执行 I/O；回滚无提示。
+主库 owner 在根事务确认提交并释放 writer 后同步唤醒进程内订阅，不执行 I/O；
+savepoint 释放和回滚不发提示。取消若在物理提交后到达，先发布这次已确认的提示，再继续传播取消。
 提示队列溢出会结束该订阅，包括被丢弃的是最后一条提示的情况。新连接重新登记与核对，
 客户端在重连／回前台时用持久事件 ID 和 Work revision 补读。撤销／遗忘使后续读取与流失效。
 
@@ -196,7 +205,9 @@ watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人
 重传前检查本地原件，下载核对收到字节的原版本摘要。
 
 本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
-个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。ACP 方向 A 的接入见下节；方向 B 仍由 #456 跟踪。
+个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。ACP 方向 A 的接入见下节；
+方向 B 已有通过 `external_agent` 访问服务器持久环境内 Agent 的实现，见[主 Agent](main-agent-runtime.md#预算等待与异常)。
+服务器访问用户本机原生 Agent 的设备通道、授权与生命周期解耦尚未实施，见[本机 Agent 任务书](Yuki-本机Agent接入与ACP统一重构任务书-2026-10-23.md)。
 
 App/ACP 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
 其他入口的等待不会因此被匹配，跨入口接续仍使用明确的 Work inputs 接口。
@@ -261,7 +272,7 @@ Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支�
 
 ## 控制面重构后的个人入口
 
-App/ACP 与其他 Main 入口共用固定工具合同26，执行处核本人来源；保留原 Work 普通回答匹配与显式 Binding 路由，每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
+App/ACP 与其他 Main 入口共用当前 Main 固定工具合同，执行处核本人来源；保留原 Work 普通回答匹配与显式 Binding 路由，每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
 
 Person 的管理员资格直接保存于人物，但个人设备正文仍不解析 `/ai admin` 或插件直达命令。真正管理走既有 operator/平台命令入口。鉴权不再写设备 last_used_at；GET/事件读取与初始 SSE sync 的调用链为只读，仍即时核当前撤销、人物启停与入口归属。
 

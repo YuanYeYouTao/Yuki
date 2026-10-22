@@ -107,7 +107,7 @@ async def test_receipt_replay_after_person_transfer_keeps_original_author_conver
         with pytest.raises(CanonicalIdentityError) as error:
             await uow.append_inbound(message, admitted)
         assert error.value.category == "receipt_conflict"
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         events = list(await session.scalars(select(ChatEventModel)))
         receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
         assert len(events) == len(receipts) == 1

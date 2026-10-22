@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from tests.conftest import make_settings
+from tests.support.person_merge import merge_persons
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
 
@@ -14,7 +15,6 @@ from yuki.admin.models import AdminActor
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.errors import CanonicalIdentityError
-from yuki.identity.person_identity import merge_persons
 from yuki.memory.enums import MemoryScopeType, MemorySourceType
 from yuki.memory.models import MemoryFactCreate
 from yuki.services.admin.memory_admin import MemoryAdminService
@@ -37,9 +37,8 @@ async def test_effective_configuration_keeps_owner_and_value_in_one_read_snapsho
         current = await resolve(session, raw)
         if not merged:
             merged = True
-            await database.apply_snapshot_write(
-                lambda writer: merge_persons(writer, source, target)
-            )
+            async with database.immediate_session() as writer:
+                await merge_persons(writer, source, target)
         return current
 
     monkeypatch.setattr(module, "current_person_id", merge_during_resolution)
@@ -56,7 +55,8 @@ async def test_runtime_configuration_resolves_disabled_material_alias_without_en
 ):
     source, target, _, _ = await _owners(database)
     await _override(database, source, 70000)
-    await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
     async with database.immediate_session() as writer:
         (await writer.get(CanonicalPersonModel, source)).enabled = False
         (await writer.get(CanonicalPersonModel, target)).enabled = root_enabled
@@ -76,7 +76,7 @@ async def test_runtime_configuration_resolves_disabled_material_alias_without_en
     )
     assert changed.success, changed
     assert (await runtime.snapshot(user_id=target)).context.compact_trigger_tokens == 71000
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not (await reader.get(CanonicalPersonModel, source)).enabled
         assert (await reader.get(CanonicalPersonModel, target)).enabled is root_enabled
 
@@ -94,7 +94,8 @@ async def test_memory_admin_reads_same_person_material_but_still_rejects_disable
             source_type=MemorySourceType.EXPLICIT,
         )
     )
-    await database.apply_snapshot_write(lambda writer: merge_persons(writer, source, target))
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
     async with database.immediate_session() as writer:
         (await writer.get(CanonicalPersonModel, source)).enabled = False
     service = MemoryAdminService(

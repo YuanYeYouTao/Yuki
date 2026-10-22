@@ -139,7 +139,7 @@ async def test_public_preparation_does_not_publish_or_replace_original_paid_sour
     assert result.read_version.conversation_id == control.lease.conversation_id
     assert session.source_guard.snapshot() == original
     assert await projections.read(control.lease.conversation_id) is None
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(ContextSelectionModel)) == 0
     loaded = await session.journal.load(control.lease, control.current["id"], "fixed-contract")
     assert "original-signature" in loaded.record["payload_json"]
@@ -275,13 +275,13 @@ async def test_original_guard_does_not_excuse_changed_private_sources(database, 
     if change == "selected":
         await _change(database, selected)
     elif change == "deleted":
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             await writer.execute(delete(ChatEventModel).where(ChatEventModel.id == selected.id))
     elif change == "privacy":
         # An unrelated edit exercises the load scalar boundary; privacy invalidates
         # the saved selected fingerprint even though its actual events are unchanged.
         await _change(database, unselected)
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             state = await writer.get(ExecutionTraceStateModel, 1)
             if state is None:
                 writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
@@ -352,7 +352,7 @@ async def test_changed_context_uses_original_receipts_without_replaying_calls(
     assert control.current["model_requests"] == 2 and control.current["sent_messages"] == 2
     assert control.current["state"] == "completed"
     assert result.model_requests == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = (
             await reader.execute(
                 select(effects.c.effect_key, effects.c.state).where(effects.c.work_id == identity)
@@ -386,7 +386,7 @@ async def test_saved_steer_source_is_checked_before_session_restore(database, ch
     if change == "edited":
         await _change(database, steer)
     else:
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             await writer.execute(delete(ChatEventModel).where(ChatEventModel.id == steer.id))
     loaded = await session.journal.load(
         control.lease, control.current["id"], session.contract, source_control=control
@@ -407,7 +407,7 @@ async def test_private_observations_extend_only_unchanged_original_guard(databas
     )
     before = guard.snapshot()
     identity = str(uuid4())
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         writer.add(
             ContextObservationModel(
                 id=identity,
@@ -432,7 +432,7 @@ async def test_private_observations_extend_only_unchanged_original_guard(databas
         session.progress["provider_pause_replay"] = True
         await session.save("paired")
         control.session = None
-        async with database.sessions() as writer, writer.begin():
+        async with database.immediate_session() as writer:
             await writer.execute(
                 delete(ContextObservationModel).where(ContextObservationModel.id == identity)
             )
@@ -574,7 +574,7 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         invoke.assert_awaited_once()
         from yuki.runtime.work_schema_v1 import inputs
 
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert (
                 await reader.scalar(select(inputs.c.state).where(inputs.c.id == pending))
                 == "consumed"

@@ -24,7 +24,7 @@ from yuki.domain.messages import (
     ToolCall,
 )
 from yuki.execution_trace.phases import model_detail
-from yuki.runtime.activation_outcome import classify_failure
+from yuki.persistence.database import write_failure_committed, write_failure_retryable
 from yuki.runtime.effect_outcomes import (
     ResultCapture,
     current_result_capture,
@@ -122,7 +122,7 @@ class WorkSession:
         control = self.control
         self.public_event_ids = set(visible_event_ids)
         with model_detail("work_restore_source_read"):
-            async with control.repository.database.sessions() as session:
+            async with control.repository.database.read_session() as session:
                 source = (
                     await session.execute(
                         select(
@@ -584,7 +584,7 @@ class WorkSession:
             item["input_id"] for item in [*task_inputs, *material.get("recent_inputs", [])]
         }
         if media_ids:
-            async with self.control.repository.database.sessions() as reader:
+            async with self.control.repository.database.read_session() as reader:
                 rows = (
                     (
                         await reader.execute(
@@ -617,7 +617,7 @@ class WorkSession:
             return None
         from yuki.persistence.models import ChatEventModel
 
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             original = await reader.get(ChatEventModel, trigger)
             if (
                 original is None
@@ -647,7 +647,7 @@ class WorkSession:
         from yuki.execution_trace.db_models import ExecutionTraceStateModel
 
         assert self.transcript is not None
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             source = await reader.get(
                 CanonicalConversationModel, self.control.lease.conversation_id
             )
@@ -681,7 +681,7 @@ class WorkSession:
         if after_id is not None:
             watermark = after_id
         limit = 2 if recent else 16
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             rows = (
                 (
                     await reader.execute(
@@ -868,7 +868,7 @@ class WorkSession:
         from yuki.runtime.work_schema_v1 import effects
 
         assert self.control.current is not None
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             row = (
                 (
                     await reader.execute(
@@ -978,7 +978,7 @@ class WorkSession:
             for call in calls
         ]
         try:
-            while await self.control.repository.valid(self.control.lease):
+            while True:
                 try:
                     await self.journal.save(
                         self.control.lease,
@@ -990,6 +990,8 @@ class WorkSession:
                         source_revision=self.source_revision,
                         compaction_versions=compaction_versions,
                         publication=publication,
+                        source_guard=self.source_guard,
+                        source_actor_person_id=self.control.source.get("actor_person_id"),
                         metadata={
                             "sequence": self.sequence,
                             "event_ids": list(
@@ -1008,18 +1010,13 @@ class WorkSession:
                     )
                     break
                 except OperationalError as exc:
-                    if classify_failure(exc, "journal").code != "sqlite_busy":
-                        raise
-                    cleanup_failed = any(
-                        note.startswith(("rollback_failed:", "invalidation_failed:"))
-                        for error in (exc, exc.orig)
-                        for note in getattr(error, "__notes__", ())
-                    )
-                    if cleanup_failed:
+                    if not write_failure_retryable(exc):
                         # A paid response cannot be repurchased merely because
                         # publishing it failed. The prior checkpoint and budgets
                         # remain authoritative; the new response is not durable.
-                        raise JournalUnavailable("work_journal_unavailable") from exc
+                        if write_failure_committed(exc) is not False:
+                            raise JournalUnavailable("work_journal_unavailable") from exc
+                        raise
                     # The failed writer has rolled back and closed. Rebuild
                     # this same in-memory publication; the new transaction
                     # rechecks lease, owner and source before publishing.
@@ -1028,12 +1025,9 @@ class WorkSession:
                 except WorkConflict as exc:
                     if (
                         exc.code != "work_journal_source_changed"
+                        or write_failure_committed(exc) is not False
                         or compaction_versions is not None
                         or self.source_guard is None
-                        or any(
-                            note.startswith(("rollback_failed:", "invalidation_failed:"))
-                            for note in getattr(exc, "__notes__", ())
-                        )
                     ):
                         raise
                     # The failed publication/writer has closed. A conversation
@@ -1043,8 +1037,6 @@ class WorkSession:
                     if not await self.source_guard.check(self.control):
                         raise
                     # Retry this same journal, never the model or tool effects.
-            else:
-                raise WorkConflict("work_activation_obsolete")
         except ValueError as exc:
             if str(exc) in {
                 "work_journal_capacity",

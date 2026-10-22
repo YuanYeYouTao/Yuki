@@ -15,7 +15,7 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 async def test_no_match_directory_read_work_grows_with_candidate_count(database, tmp_path):
     case = await setup_run(database, tmp_path, mode="silent")
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         original = dict(
             (
                 await session.execute(
@@ -71,7 +71,7 @@ async def test_equivalence_uses_normalized_task_and_not_the_owner_or_name(databa
         direction="inbound",
         content="find the same task",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.platform_message_id == "second-real-owner")
         )

@@ -15,6 +15,7 @@ from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.origin import TurnOrigin
@@ -87,7 +88,9 @@ class WorkResumer:
             elif source.get("origin") in {"user_message", "autonomous_group"}:
                 return await self._resume(item, source)
             return None
-        except WorkConflict:
+        except WorkConflict as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             return None
         except Exception as exc:
             from yuki.runtime.activation_outcome import (
@@ -160,7 +163,7 @@ class WorkResumer:
             if current and current["state"] in {"queued", "running"}:
                 control.current = current
                 if orphan or (deferred is not None and isinstance(failure, WorkConflict)):
-                    async with self.repository.database.sessions() as reader:
+                    async with self.repository.database.read_session() as reader:
                         phase = await reader.scalar(
                             select(journal.c.phase).where(journal.c.work_id == item["id"])
                         )
@@ -397,7 +400,7 @@ class WorkResumer:
                 )
                 from yuki.identity.authority import person_is_superuser
 
-                async with self.repository.database.sessions() as authority_session:
+                async with self.repository.database.read_session() as authority_session:
                     actor_is_superuser = await person_is_superuser(
                         authority_session,
                         recovered.actor_person_id,

@@ -13,12 +13,13 @@ from yuki.admin.authority.commands import ControlCommand, ControlResult
 from yuki.admin.authority.json_types import JsonValue
 from yuki.admin.authority.principal import ControlPrincipal
 from yuki.admin.authority.problems import ProblemCode
-from yuki.admin.config_service import RuntimeConfigService
+from yuki.admin.config_service import ConfigRollbackPreparationChanged, RuntimeConfigService
 from yuki.admin.control_resolution import audit_ref_from_actor
 from yuki.admin.models import AdminActor, ConfigChangeResult
 from yuki.admin.operations.base import CommandExecutor, authorize_current, fail
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.command_receipts import CommandSuccess
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
 
 
@@ -30,7 +31,7 @@ class ConfigOperations:
         self, principal: ControlPrincipal, key: str, *, scope_type: str, scope_id: str
     ) -> int:
         await authorize_current(self.executor.database, principal, "control.config.read")
-        async with self.executor.database.sessions() as session:
+        async with self.executor.database.read_session() as session:
             stmt = select(RuntimeConfigOverrideModel.version).where(
                 RuntimeConfigOverrideModel.config_key == key,
                 RuntimeConfigOverrideModel.scope_type == scope_type,
@@ -46,7 +47,7 @@ class ConfigOperations:
 
     async def rollback_revision(self, principal: ControlPrincipal, change_id: int) -> int:
         await authorize_current(self.executor.database, principal, "control.config.read")
-        async with self.executor.database.sessions() as session:
+        async with self.executor.database.read_session() as session:
             row = await session.get(AdminOperationEventModel, change_id)
             if row is None or row.capability != "runtime_config":
                 raise fail(ProblemCode.NOT_FOUND)
@@ -99,7 +100,7 @@ class ConfigOperations:
                     key, scope_type=scope_type, scope_id=scope_id, **kwargs
                 )
             else:
-                result = await self.config.rollback(change_id, **kwargs)
+                result = await self.config.rollback(change_id, prepared=prepared_rollback, **kwargs)
             if not result.success:
                 code = (
                     ProblemCode.VERSION_CONFLICT
@@ -125,9 +126,18 @@ class ConfigOperations:
             }
             return CommandSuccess(target, rev, "config", target, {}, state, state)
 
-        return await self.executor.database_command(
-            principal, command, operation, "control.config.mutate", target, mutate
-        )
+        while True:
+            prepared_rollback = (
+                await self.config.prepare_rollback(change_id) if action == "rollback" else None
+            )
+            try:
+                return await self.executor.database_command(
+                    principal, command, operation, "control.config.mutate", target, mutate
+                )
+            except ConfigRollbackPreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
+                continue
 
     async def set(
         self,

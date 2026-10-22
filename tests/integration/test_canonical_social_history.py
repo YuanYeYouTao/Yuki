@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 from tests.support.social_history_cases import history_agent_loop, stored_private_entry
 from tests.support.social_identity_cases import social_env
 
@@ -19,7 +20,6 @@ from yuki.identity.canonical_repository import (
     replace_assignment,
 )
 from yuki.identity.db_models import AccountModel, CanonicalPersonModel
-from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.agent_tools import ToolRuntime
@@ -201,7 +201,7 @@ async def test_platform_personal_history_and_cross_entry_binding_survive_new_win
     )
     assert [row.id for row in automatic_context] == [current.id]
     assert version.generation == 2 and version.starts_after_event_id == original.id
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         conversation = await session.get(
             CanonicalConversationModel, original.canonical_conversation_id
         )

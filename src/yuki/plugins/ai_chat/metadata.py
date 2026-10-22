@@ -41,7 +41,7 @@ async def observe_group_name_notice(
         or connection.presence_id is None
     ):
         return False
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         binding_id = await session.scalar(
             select(SpaceBindingModel.id)
             .join(

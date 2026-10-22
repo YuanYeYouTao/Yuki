@@ -51,9 +51,7 @@ from yuki.web.base import WebSearchProvider
 def selected_test_soul():
     """Select public test data explicitly; production never falls back to a preset."""
     with pytest.MonkeyPatch.context() as environment:
-        environment.setenv(
-            "SOUL_FILE", str(Path(__file__).resolve().parents[1] / "config/SOUL.md")
-        )
+        environment.setenv("SOUL_FILE", str(Path(__file__).resolve().parents[1] / "config/SOUL.md"))
         yield
 
 
@@ -284,7 +282,7 @@ def build_harness(
         model_executor=models,
         runtime_config=runtime_config,
         memory_admin=memory_admin,
-        preference_admin=PreferenceAdminService(memory_mutations=memory_admin, audit=audit),
+        preference_admin=PreferenceAdminService(memory_mutations=memory_admin),
         config_admin=ConfigAdminService(runtime_config),
         permission_catalog=PermissionCatalogService(config_registry=runtime_config.registry),
         vision_service=vision,

@@ -15,7 +15,7 @@ from yuki.persistence.repositories import EventLedgerRepository
 
 
 async def _stored_cycle(database, key):
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return (
             (await session.execute(select(Cycle.__table__).where(Cycle.source_key == key)))
             .mappings()
@@ -122,10 +122,83 @@ async def test_new_manual_cycle_race_keeps_one_original_cycle(database, monkeypa
     assert first["before"] == {"calls_today": 4}
     assert first["delivery_state"] == "pending"
     assert prepared == 2
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         assert (
             await session.scalar(
                 select(func.count()).select_from(Cycle).where(Cycle.source_key == "racing-cycle")
             )
             == 1
         )
+
+
+@pytest.mark.parametrize("change", ["delete", "identity"])
+async def test_manual_cycle_rechecks_original_event_after_snapshot(database, monkeypatch, change):
+    from sqlalchemy import delete, update
+
+    from yuki.persistence.models import ChatEventModel
+
+    event = await _append_event(EventLedgerRepository(database), message_id="manual-source-race")
+    repository = ReflectionControlRepository(database, make_settings(database.url))
+
+    async def snapshot():
+        async with database.immediate_session() as writer:
+            if change == "delete":
+                await writer.execute(delete(ChatEventModel).where(ChatEventModel.id == event.id))
+            else:
+                from uuid import uuid4
+
+                await writer.execute(
+                    update(ChatEventModel)
+                    .where(ChatEventModel.id == event.id)
+                    .values(canonical_event_id=str(uuid4()))
+                )
+        return {}
+
+    monkeypatch.setattr(repository, "snapshot", snapshot)
+    with pytest.raises(ValueError, match="original internal event"):
+        await repository.enqueue(
+            trigger="manual",
+            key="removed-event",
+            source_event_id=event.id,
+            conversation_id=event.canonical_conversation_id,
+        )
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(Cycle)) == 0
+
+
+async def test_request_day_uses_time_after_writer_admission(database, monkeypatch):
+    from datetime import UTC, datetime
+
+    from tests.unit.test_self_reflection_priority import reflection_worker
+
+    from yuki.memory.self_reflection import control
+    from yuki.persistence.models import MemorySelfReflectionRequestModel as Request
+
+    worker, repository, _, _ = await reflection_worker(database)
+    await repository.scan_new_events()
+    (batch,) = await repository.claim_due(
+        scheduled_slot="clock",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=0,
+        max_events=10,
+        max_characters=10000,
+    )
+
+    class Clock(datetime):
+        value = datetime(2026, 10, 22, 15, 59, tzinfo=UTC)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.value.astimezone(tz) if tz else cls.value.replace(tzinfo=None)
+
+    monkeypatch.setattr(control, "datetime", Clock)
+    async with database.immediate_session():
+        task = asyncio.create_task(worker.control.reserve_request(batch.run_id))
+        await asyncio.sleep(0)
+        assert not task.done()
+        Clock.value = datetime(2026, 10, 22, 16, 1, tzinfo=UTC)
+    request_id = await task
+    async with database.read_session() as reader:
+        request = await reader.get(Request, request_id)
+        assert request.run_id == batch.run_id and request.local_date == "2026-10-23"

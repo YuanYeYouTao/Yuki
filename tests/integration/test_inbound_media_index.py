@@ -55,7 +55,7 @@ async def test_native_telegram_file_index_survives_current_input_composition(
     current = next(content for content in reversed(contents) if "[本轮附件索引]\n" in content)
     indices, _ = json.JSONDecoder().raw_decode(current.split("[本轮附件索引]\n", 1)[1])
     assert len(indices) == 1
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel).order_by(ChatEventModel.id))
         indexed = await reader.get(ConversationMediaItemModel, (source.id, 0))
     source_segment = next(
@@ -150,7 +150,7 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
             parent["reply_to_message"] = reply
             await env.gateway.receive(payload)
             await native.drain(env)
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 events = list(await reader.scalars(select(ChatEventModel)))
                 sources = list(
                     await reader.scalars(
@@ -205,7 +205,7 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
                 "document": {"file_id": "new-observed-id", "file_name": "new.txt"},
             }
             await env.gateway.receive(edited)
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 events = list(await reader.scalars(select(ChatEventModel)))
                 sources = list(await reader.scalars(select(ConversationMediaItemModel)))
             assert len(events) == 1 and events[0].reply_to_event_id is None

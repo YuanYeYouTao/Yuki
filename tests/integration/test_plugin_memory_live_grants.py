@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 from tests.integration.test_plugin_agent_domain_grants import source_host
+from tests.support.account_observations import apply_observations, profile_message
 from tests.unit.test_history_dispatch_ownership import _tool
 
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -31,14 +32,10 @@ async def memory_scene(
     database, tmp_path, provider, initial, *, personal_content="Original personal fact"
 ):
     env, _, chat, source, host = await source_host(database, tmp_path, provider, grants(initial))
-    await chat._people.observe(
-        user_id="10001",
-        nickname="member",
-        group_id="20001",
-        space_id=env.space,
-        expected_person_id=env.person,
+    await apply_observations(
+        database, profile_message(user_id="10001", nickname="member", group_id="20001")
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
     person = await chat._memories.remember(
         MemoryFactCreate(

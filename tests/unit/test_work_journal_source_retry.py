@@ -1,6 +1,7 @@
 """Journal CAS retries prove the original selected source without replaying effects."""
 
 import json
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -46,7 +47,7 @@ async def _session(database, initial=None):
 
 
 async def _change(database, event, nickname="changed unselected metadata"):
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         await writer.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == event.id)
@@ -55,7 +56,7 @@ async def _change(database, event, nickname="changed unselected metadata"):
 
 
 async def _saved(database, control):
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         return dict(
             (
                 await reader.execute(
@@ -99,7 +100,7 @@ async def test_real_source_mutation_cannot_retry_journal(database, change):
     control, session, selected, _unselected = await _session(database)
     before = await _saved(database, control)
     session.transcript.append(ChatMessage("assistant", "response not yet saved"))
-    async with database.sessions() as writer, writer.begin():
+    async with database.immediate_session() as writer:
         if change == "selected":
             await writer.execute(
                 update(ChatEventModel)
@@ -178,3 +179,115 @@ async def test_repeated_source_changes_reprepare_same_journal_outside_writer(dat
     assert restored.reason == "resume"
     payload = json.loads(restored.record["payload_json"])
     assert decode_transcript(payload["transcript"]).request() == session.transcript.request()
+
+
+@pytest.mark.parametrize("committed", [True, None])
+async def test_source_change_category_cannot_replay_a_journal_with_unknown_commit(
+    database, monkeypatch, committed
+):
+    control, session, _selected, _unselected = await _session(database)
+    session.transcript.append(ChatMessage("assistant", "already published response"))
+    original_writer = database.immediate_session
+    calls = 0
+    error = WorkConflict("work_journal_source_changed")
+    error.add_note("database_write_phase:cleanup" if committed else "database_write_phase:commit")
+    if committed:
+        error.add_note("database_commit:confirmed")
+
+    @asynccontextmanager
+    async def lost_acknowledgement():
+        nonlocal calls
+        calls += 1
+        async with original_writer() as writer:
+            yield writer
+        raise error
+
+    monkeypatch.setattr(database, "immediate_session", lost_acknowledgement)
+    control.validate = AsyncMock()
+    with pytest.raises(WorkConflict) as raised:
+        await session.save("response")
+    assert raised.value is error and calls == 1
+    control.validate.assert_not_awaited()
+    assert (await _saved(database, control))["phase"] == "response"
+
+
+@pytest.mark.parametrize("stage", ["settle", "release"])
+@pytest.mark.parametrize("database_failure", [True, False])
+async def test_cleanup_preserves_finished_work_and_only_defers_real_database_failures(
+    database, monkeypatch, stage, database_failure
+):
+    from yuki.runtime.work_activation import bind_work_activation
+
+    control, _work_session, _selected, _unselected = await _session(database)
+    control.settled = True
+    original_release = control.repository.release
+    error = OSError("cleanup acknowledgement lost")
+    if database_failure:
+        error.add_note("database_write_phase:cleanup")
+        error.add_note("database_commit:confirmed")
+
+    async def finish(_control):
+        if stage == "settle":
+            raise error
+
+    async def release():
+        await original_release(control.lease)
+        if stage == "release":
+            raise error
+
+    async def activate():
+        async with bind_work_activation(control, finish=finish, release=release):
+            pass
+
+    if database_failure:
+        await activate()
+    else:
+        with pytest.raises(OSError) as raised:
+            await activate()
+        assert raised.value is error
+    assert not await control.repository.valid(control.lease)
+
+
+@pytest.mark.parametrize("committed", [True, None])
+@pytest.mark.parametrize("category", ["conflict", "duplicate"])
+async def test_abandoned_input_repair_does_not_swallow_original_commit_uncertainty(
+    database, monkeypatch, committed, category
+):
+    from yuki.conversation.ordinary_admission import (
+        OrdinaryAdmissionConflict,
+        OrdinaryAdmissionDuplicate,
+    )
+
+    control, _work_session, _selected, _unselected = await _session(database)
+    repository = control.repository
+    identity = await repository.enqueue(
+        control.lease.conversation_id,
+        control.lease.generation,
+        "abandoned-original-callback",
+        kind="control",
+        work_id=control.current["id"],
+        ready=False,
+    )
+    prepare = repository.prepare_input
+    failure = (
+        OrdinaryAdmissionConflict if category == "conflict" else OrdinaryAdmissionDuplicate
+    )()
+    failure.add_note("database_write_phase:cleanup" if committed else "database_write_phase:commit")
+    if committed:
+        failure.add_note("database_commit:confirmed")
+    attempts = 0
+
+    async def lose_acknowledgement(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        assert await prepare(*args, **kwargs)
+        raise failure
+
+    monkeypatch.setattr(repository, "prepare_input", lose_acknowledgement)
+    with pytest.raises(type(failure)) as raised:
+        await repository.repair_abandoned_inputs("restarted-process")
+    assert raised.value is failure and attempts == 1
+    from yuki.runtime.work_schema_v1 import inputs
+
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(inputs.c.ready).where(inputs.c.id == identity))

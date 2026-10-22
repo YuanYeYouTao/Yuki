@@ -14,6 +14,7 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.commands_and_chat_helpers import inbound
 from tests.support.event_seed import seed_scoped_event
+from tests.support.person_merge import merge_persons
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.support.work_runner_helpers import case, run, tool
@@ -24,7 +25,6 @@ from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import ensure_account, replace_assignment
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
-from yuki.identity.person_identity import merge_persons
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_activation import activate_work
@@ -85,7 +85,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
 ):
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         original_id = await session.scalar(select(ChatEventModel.id))
         space = await session.get(CanonicalSpaceModel, env.space)
         space.enabled = True
@@ -111,7 +111,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         direction="inbound",
         content="make an exam document",
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         event_id = await session.scalar(
             select(ChatEventModel.id).where(ChatEventModel.platform_message_id == "new-request")
         )
@@ -219,7 +219,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             direction="inbound",
             content="send the same document again",
         )
-        async with database.sessions() as session:
+        async with database.read_session() as session:
             resend_id = await session.scalar(
                 select(ChatEventModel.id).where(
                     ChatEventModel.platform_message_id == "resend-request"
@@ -386,7 +386,7 @@ async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_o
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         original = await reader.scalar(select(ChatEventModel))
     source = {
         "origin": "user_message",
@@ -462,7 +462,7 @@ async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_o
     recovered = await recover_source(database, key, saved, request_id=queued["id"])
     assert recovered.event_id == event.id
     assert (await repository.get(old["id"]))["source_json"] == old["source_json"]
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         kept = await reader.get(ChatEventModel, original.id)
         assert kept.author_person_id == env.person
     await repository.release(lease)
@@ -479,7 +479,7 @@ async def test_retired_work_report_is_rejected_without_new_social_effect(databas
     with pytest.raises(SocialError, match="invalid_message_arguments"):
         await env.service.execute("send", original, env.context)
     assert env.bot.calls == original_calls
-    async with database.sessions() as reader:
+    async with database.read_session() as reader:
         assert not list(await reader.scalars(select(SocialOperationModel)))
     schema = next(t for t in social_tool_definitions() if t.name == "send").parameters
     assert "work_report" not in schema["properties"]

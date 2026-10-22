@@ -118,7 +118,7 @@ async def test_claude_cache_statistics_use_returned_fields_across_supplier_names
     assert summary.cache_creation_input_tokens == (write or 0) * 2
     assert tasks[ModelTask.CHAT_AGENT.value].cache_creation_input_tokens == (write or 0) * 2
 
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         rows = (await session.scalars(select(ModelInvocationModel))).all()
         assert [
             (
@@ -146,7 +146,7 @@ async def test_absent_cache_creation_is_unknown_in_usage_records(database, suppl
         latency_seconds=0,
         error_category=None,
     )
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         row = await session.scalar(
             select(ModelInvocationModel).where(ModelInvocationModel.provider == supplier)
         )

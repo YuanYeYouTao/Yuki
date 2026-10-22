@@ -1,5 +1,6 @@
 """Content may be forgotten while its already dispatched effect is confirmed."""
 
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -17,19 +18,20 @@ async def content_sources_retained(
     person_id: str | None = None,
 ) -> bool:
     """Keep the confirmed receipt even when privacy no longer permits its body."""
-    if await session.get(CanonicalConversationModel, conversation_id) is None:
-        return False
-    if (
-        await session.get(
-            CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel,
-            str(target.id),
+    target_model = CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel
+    retained = [
+        select(CanonicalConversationModel.id)
+        .where(CanonicalConversationModel.id == conversation_id)
+        .exists(),
+        select(target_model.id).where(target_model.id == str(target.id)).exists(),
+    ]
+    if person_id is not None:
+        retained.append(
+            select(CanonicalPersonModel.id).where(CanonicalPersonModel.id == person_id).exists()
         )
-        is None
-    ):
-        return False
-    if person_id is not None and await session.get(CanonicalPersonModel, person_id) is None:
-        return False
-    for event_id in dict.fromkeys(event_ids):
-        if event_id is not None and await session.get(ChatEventModel, event_id) is None:
-            return False
-    return True
+    retained.extend(
+        select(ChatEventModel.id).where(ChatEventModel.id == event_id).exists()
+        for event_id in dict.fromkeys(event_ids)
+        if event_id is not None
+    )
+    return bool(await session.scalar(select(and_(*retained))))

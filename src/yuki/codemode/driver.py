@@ -797,7 +797,7 @@ class CodeModeDriver:
 
         from yuki.runtime.work_schema_v1 import effects
 
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             raw = await reader.scalar(
                 select(effects.c.receipt_json).where(effects.c.effect_key == key)
             )
@@ -993,7 +993,7 @@ class CodeModeDriver:
             control = self.control
             assert control.current is not None
             database = control.repository.database
-            async with database.sessions() as reader:
+            async with database.read_session() as reader:
                 receipt = await reader.scalar(
                     select(effects.c.receipt_json).where(
                         effects.c.effect_key == child.operation_id,
@@ -1155,7 +1155,7 @@ class CodeModeDriver:
         from yuki.runtime.work_schema_v1 import effects
 
         assert self.control.current is not None
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             row = (
                 (
                     await reader.execute(
@@ -1176,7 +1176,7 @@ class CodeModeDriver:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
         from yuki.execution_trace.db_models import ExecutionTraceStateModel
 
-        async with self.control.repository.database.sessions() as reader:
+        async with self.control.repository.database.read_session() as reader:
             source = await reader.get(
                 CanonicalConversationModel, self.control.lease.conversation_id
             )

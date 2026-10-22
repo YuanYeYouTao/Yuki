@@ -136,7 +136,7 @@ async def test_worker_window_zero_runs_ordinary_even_without_autonomy() -> None:
 
 async def _open_group_scene(database, tmp_path, provider, *, debounce: float, **settings):
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(CanonicalSpaceModel)
             .where(CanonicalSpaceModel.id == env.space)
@@ -181,7 +181,7 @@ async def _open_group_scene(database, tmp_path, provider, *, debounce: float, **
 
 
 async def _admissions(database) -> list[OrdinaryTurnAdmissionModel]:
-    async with database.sessions() as session:
+    async with database.read_session() as session:
         return list((await session.scalars(select(OrdinaryTurnAdmissionModel))).all())
 
 
@@ -243,7 +243,7 @@ async def test_open_floor_rechecks_require_mention_when_window_closes(database, 
         "ordinary_deferred"
     )
     pending = next(iter(harness.processor._observed_human_turns.values()))
-    async with database.sessions() as session, session.begin():
+    async with database.immediate_session() as session:
         await session.execute(
             update(CanonicalSpaceModel)
             .where(CanonicalSpaceModel.id == env.space)
@@ -441,7 +441,7 @@ async def test_original_wait_prepares_voice_and_memory_before_publication(
         assert VOICE_REQUIREMENT in event.audio_transcript
         current = await harness.processor.ordinary_admissions.current(event.id)
         assert current is not None and current.activation_id == admission.activation_id
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(
                 select(MemoryJobModel.id).where(MemoryJobModel.event_id == event.id)
             )
@@ -504,7 +504,7 @@ async def test_unmatched_group_voice_does_not_buy_asr_or_enqueue_memory(database
         assert result.reason == "group_observed"
         assert not provider.requests and not await _admissions(database)
         service.prepare.assert_not_awaited()
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(select(MemoryJobModel.id)) is None
     finally:
         await worker.close()
@@ -539,7 +539,7 @@ async def test_overlong_implicit_group_input_keeps_original_wait_unpublished(
             assert (await WorkWaitRepository(repository).describe(control.current["id"]))[
                 "status"
             ] == "active"
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(select(inputs.c.id)) is None
     finally:
         await worker.close()
@@ -570,7 +570,7 @@ async def test_wait_source_generation_change_during_asr_does_not_publish(databas
         )
         assert result.reason == "turn_interrupted"
         assert not await _admissions(database) and not provider.requests
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(select(inputs.c.id)) is None
     finally:
         await worker.close()
@@ -638,7 +638,7 @@ async def test_failed_or_cancelled_wait_voice_does_not_publish_unprepared_input(
         assert (await WorkWaitRepository(repository).describe(control.current["id"]))[
             "status"
         ] == "active"
-        async with database.sessions() as reader:
+        async with database.read_session() as reader:
             assert await reader.scalar(select(inputs.c.id)) is None
             assert await reader.scalar(select(MemoryJobModel.id)) is None
     finally:
