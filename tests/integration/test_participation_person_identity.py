@@ -134,8 +134,9 @@ async def test_merged_new_actor_has_one_original_admission_and_cold_progress_aft
         await merge(database, a.author_person_id, b.author_person_id)
         binding_b, reason = await host.continuation_for_event(b.id)
         assert reason == "continuation" and binding_b.target_hint == b.author_person_id
-        async with database.read_session() as writer:
-            assert await host.continuation_current(binding_b, session=writer)
+        continuation = await host.prepare_continuation(binding_b)
+        async with database.immediate_session() as writer:
+            assert await host.continuation_matches(binding_b, continuation, session=writer)
         accepted_b = host.ordinary.prepare(b, item.scene.generation, 2, binding_b, reason=reason)
         assert await host.ordinary.commit(accepted_b)
         await host.on_ordinary_admitted(binding_b, accepted_b.admission)
