@@ -28,6 +28,13 @@ Social service。不能只解决冲突标记：自动合入的新增读路径、
 - 新迁移 0148 仍只增加三个 Conversation 来源定位索引，接在 0147 后，不改旧迁移、业务数据或
   FTS 构造。部署前的升级、备份和停写按原运行手册处理。
 
+0148 的实际新增为 `ix_conversations_space(space_id, id)`、
+`ix_conversations_identity_binding(identity_binding_id, id)`、
+`ix_conversations_space_binding(space_binding_id, id)`；每项只索引对应归属列非 NULL 的行。
+升级回归逐表比较原行、原结构与外键，并分别检查 Space、个人 Binding、群 Binding 的 scope/display
+查询计划。#497 的独立新迁移也暂用 0148，后续顺序接入时须将其排到 0149，保留这三项索引和
+外部 Agent DDL，最终只有一个 migration head；这里尚未把该步骤记为完成。
+
 ## 验证记录
 
 合流后的 30 个改动 Python 文件 AST、Ruff、格式与 `git diff --check` 已通过；14 个变更产品文件
