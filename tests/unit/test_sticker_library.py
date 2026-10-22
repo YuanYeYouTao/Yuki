@@ -19,9 +19,11 @@ import zlib
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from PIL import Image
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.emoji.library import EmojiLibrary
@@ -30,7 +32,7 @@ from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import _media_io
 from yuki.vision.fake import FakeVisionProvider
 from yuki.workspace.service import WorkspaceService
-from yuki.workspace.store import WorkspaceStore
+from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix", reason="Persistent environment uses Linux FDs/flock"
@@ -46,8 +48,9 @@ def picture(color="red") -> bytes:
 class LocalDirectoryBridge:
     """Actual standalone engine, files, content hashes and snapshot SQLite."""
 
-    def __init__(self, root, store):
+    def __init__(self, root, store, *, cache_root=None):
         self.root, self.store = root, store
+        self.cache = cache_root or root.parent / "cache"
         root.mkdir(parents=True, exist_ok=True)
         self.calls = []
 
@@ -55,14 +58,19 @@ class LocalDirectoryBridge:
         self.calls.append((method, args))
         if method == "sticker_index":
             return await _media_io(StickerIndex(self.root).execute, args)
-        if method == "workspace_checkout":
-            metadata, content = self.store.read_bytes(args["artifact_id"])
+        if method == "workspace_copy":
+            source = self.cache / str(args["path"]).removeprefix("/inputs/media-cache/")
+            content = source.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            assert digest == args["expected_version"]
             target = self.root / args["destination"]
             target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists() and target.read_bytes() != content:
-                return {"error": "version_conflict"}
             target.write_bytes(content)
-            return {"path": "/workspace/" + args["destination"], "version": metadata["sha256"]}
+            return {
+                "path": "/workspace/" + args["destination"],
+                "version": digest,
+                "size": len(content),
+            }
         if method in {"workspace_media_read", "workspace_media_validate"}:
             target = self.root / str(args["path"]).removeprefix("/workspace/")
             if not target.exists():
@@ -73,13 +81,14 @@ class LocalDirectoryBridge:
                 return {"error": "version_conflict"}
             return {"version": digest, "base64": base64.b64encode(content).decode()}
         if method == "workspace_publish":
-            with (self.root / args["path"]).open("rb") as stream:
+            path = self.root / str(args["path"]).removeprefix("/workspace/")
+            with path.open("rb") as stream:
                 return self.store.snapshot(
                     stream.fileno(),
-                    args["name"],
+                    args.get("name") or path.name,
                     artifact_id=args["artifact_id"],
                     source_key=args["source_key"],
-                    expected_version=args["expected_version"],
+                    expected_version=args.get("expected_version"),
                 )
         raise AssertionError(method)
 
@@ -93,6 +102,23 @@ async def library(tmp_path):
     value = EmojiLibrary(workspace)
     yield value, bridge
     await value.close()
+
+
+async def seed_cached_sticker(value, content, **arguments):
+    """Seed the real shared original; collection itself only copies its cache path."""
+    digest = hashlib.sha256(content).hexdigest()
+    relative = f"v1/{digest}"
+    original = value.workspace.sandbox.cache / relative
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(content)
+    return await value.store_cached(
+        original,
+        shared_path="/inputs/media-cache/" + relative,
+        sha256=digest,
+        source_key="test-original:" + digest,
+        request_id=arguments.pop("request_id", f"test-sticker:{uuid4()}"),
+        **arguments,
+    )
 
 
 def index_path(bridge, asset):
@@ -109,9 +135,9 @@ def edit(bridge, asset, **changes):
 
 async def test_file_unique_source_and_platform_catalogs(library):
     value, bridge = library
-    qq = await value.store_content(picture(), platform="qq", tags=("大笑",))
-    tg = await value.store_content(picture(), platform="telegram", tags=("反讽",))
-    third = await value.store_content(picture(), platform="matrix", tags=("😂",))
+    qq = await seed_cached_sticker(value, picture(), platform="qq", tags=("大笑",))
+    tg = await seed_cached_sticker(value, picture(), platform="telegram", tags=("反讽",))
+    third = await seed_cached_sticker(value, picture(), platform="matrix", tags=("😂",))
     assert len({qq.id, tg.id, third.id}) == 3 and qq.sha256 == tg.sha256
     assert (await value.select("大笑", platform="qq")).id == qq.id
     assert await value.select("反讽", platform="qq") is None
@@ -126,34 +152,88 @@ async def test_file_unique_source_and_platform_catalogs(library):
 
 async def test_duplicate_original_avoids_copy_and_renamed_file_stays_canonical(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("大笑",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("大笑",))
     old = bridge.root / asset.relative_path
     renamed = old.with_name("my picture.png")
     old.rename(renamed)
     await value.rebuild()
     bridge.calls.clear()
-    second = await value.store_content(picture(), platform="qq")
+    second = await seed_cached_sticker(value, picture(), platform="qq")
     assert second.id == asset.id and second.relative_path.endswith("my picture.png")
-    assert not any(method == "workspace_checkout" for method, _ in bridge.calls)
+    assert not any(method == "workspace_copy" for method, _ in bridge.calls)
     assert len(list(renamed.parent.iterdir())) == 1
 
 
 async def test_native_repeat_updates_only_real_sticker_fact(library):
     value, bridge = library
-    first = await value.store_content(picture(), platform="qq", tags=("manual_tag",))
+    first = await seed_cached_sticker(value, picture(), platform="qq", tags=("manual_tag",))
     assert not first.is_sticker
     provider = attach_caption_provider(value)
     bridge.calls.clear()
-    native = await value.store_content(picture(), platform="qq", is_sticker=True)
+    native = await seed_cached_sticker(value, picture(), platform="qq", is_sticker=True)
     assert native.id == first.id and native.is_sticker and native.tags == ("manual_tag",)
     assert json.loads(index_path(bridge, native).read_text())["is_sticker"] is True
     assert not provider.requests
-    assert not any(method == "workspace_checkout" for method, _ in bridge.calls)
+    assert not any(method == "workspace_copy" for method, _ in bridge.calls)
+
+
+async def test_duplicate_sticker_keeps_first_caption_without_reloading_original(
+    library, monkeypatch
+):
+    value, bridge = library
+    provider = attach_caption_provider(value)
+    content = picture()
+    first = await seed_cached_sticker(value, content, platform="qq", tags=("manual_tag",))
+    await asyncio.gather(*tuple(value._tasks))
+    edit(bridge, first, tags=["manual_tag"])
+    description = json.loads(index_path(bridge, first).read_text())["description"]
+    original = bridge.cache / "v1" / first.sha256
+    read_bytes = Path.read_bytes
+
+    def read_other_file(path):
+        assert path != original, "an already cataloged sticker must not reload the cache"
+        return read_bytes(path)
+
+    def unexpected_inspection(_content):
+        raise AssertionError("an already cataloged sticker must not inspect the cache")
+
+    monkeypatch.setattr(Path, "read_bytes", read_other_file)
+    monkeypatch.setattr("yuki.emoji.library.inspect_content", unexpected_inspection)
+    bridge.calls.clear()
+    native = await seed_cached_sticker(value, content, platform="qq", is_sticker=True)
+    repeated = await seed_cached_sticker(value, content, platform="qq", is_sticker=True)
+    assert native.id == repeated.id == first.id
+    assert native.is_sticker and repeated.is_sticker
+    assert native.tags == repeated.tags == ("manual_tag",)
+    cataloged = json.loads(index_path(bridge, native).read_text())
+    assert cataloged["is_sticker"] is True and cataloged["description"] == description
+    assert len(provider.requests) == 1 and not value._tasks
+    assert not any(method == "workspace_copy" for method, _ in bridge.calls)
+
+
+async def test_new_sticker_rejects_changed_cache_before_copy(library):
+    value, bridge = library
+    digest = hashlib.sha256(picture()).hexdigest()
+    source = bridge.cache / "v1" / digest
+    source.parent.mkdir(parents=True)
+    source.write_bytes(picture("blue"))
+    with pytest.raises(WorkspaceError, match="attachment_source_changed"):
+        await value.store_cached(
+            source,
+            shared_path="/inputs/media-cache/v1/" + digest,
+            sha256=digest,
+            platform="qq",
+            source_key="attachment:101:0",
+            request_id="actual-original-changed",
+            is_sticker=True,
+        )
+    assert not any(method == "workspace_copy" for method, _ in bridge.calls)
+    assert not (bridge.root / "stickers/qq/files").exists()
 
 
 async def test_terminal_tags_update_and_actual_facts_rebuild(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("旧tag",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("旧tag",))
     path = edit(
         bridge,
         asset,
@@ -176,7 +256,7 @@ async def test_terminal_tags_update_and_actual_facts_rebuild(library):
 
 async def test_delete_metadata_never_restores_cached_tags(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("cachedold",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("cachedold",))
     await value.rebuild()
     index_path(bridge, asset).unlink()
     assert await value.select("cachedold", platform="qq") is None
@@ -187,29 +267,34 @@ async def test_delete_metadata_never_restores_cached_tags(library):
 
 async def test_missing_file_cannot_be_selected_but_published_original_survives(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("大笑",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("大笑",))
+    assert artifact_ids(value.workspace.store) == []
+    published = await value.publish(asset, request_id="accepted-before-delete")
     (bridge.root / asset.relative_path).unlink()
     assert await value.select("大笑", platform="qq") is None
     metadata = await value.publish(asset, request_id="accepted-before-delete")
+    assert metadata["artifact_id"] == published["artifact_id"]
     assert value.workspace.store.read_bytes(metadata["artifact_id"])[1] == picture()
 
 
-async def test_terminal_replacement_is_preserved_and_new_original_gets_own_path(library):
+async def test_collecting_a_new_original_normally_overwrites_its_destination(library):
     value, bridge = library
-    first = await value.store_content(picture(), platform="qq")
+    first = await seed_cached_sticker(value, picture(), platform="qq")
     old = bridge.root / first.relative_path
     old.write_bytes(picture("blue"))
-    actual = await value.store_content(picture(), platform="qq", request_id="new-real-original")
-    assert old.read_bytes() == picture("blue")
-    assert actual.relative_path != first.relative_path
+    actual = await seed_cached_sticker(
+        value, picture(), platform="qq", request_id="new-real-original"
+    )
+    assert old.read_bytes() == picture()
+    assert actual.relative_path == first.relative_path
     assert (bridge.root / actual.relative_path).read_bytes() == picture()
     result = await value.rebuild()
-    assert result["assets"] == 2
+    assert result["assets"] == 1
 
 
 async def test_explicit_copied_json_carries_tags_but_plain_image_copy_does_not(library):
     value, bridge = library
-    original = await value.store_content(picture(), platform="qq", tags=("原库标签",))
+    original = await seed_cached_sticker(value, picture(), platform="qq", tags=("原库标签",))
     for platform in ("telegram", "matrix"):
         target = bridge.root / f"stickers/{platform}/files" / Path(original.relative_path).name
         target.parent.mkdir(parents=True)
@@ -227,7 +312,7 @@ async def test_explicit_copied_json_carries_tags_but_plain_image_copy_does_not(l
 @pytest.mark.parametrize("damage", ["delete", "corrupt", "partial"])
 async def test_cold_cache_waits_for_actual_rebuild(library, damage):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("😂",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("😂",))
     await value.rebuild()
     cache = bridge.root / "stickers/qq/search.sqlite3"
     if damage == "delete":
@@ -243,7 +328,8 @@ async def test_cold_cache_waits_for_actual_rebuild(library, damage):
 
 async def test_corrupt_later_index_page_rebuilds_from_files(library):
     value, bridge = library
-    asset = await value.store_content(
+    asset = await seed_cached_sticker(
+        value,
         picture(),
         platform="qq",
         tags=tuple(f"word{number:04}" for number in range(4000)),
@@ -267,7 +353,7 @@ async def test_corrupt_later_index_page_rebuilds_from_files(library):
 
 async def test_program_sql_error_does_not_erase_a_healthy_cache(library):
     value, bridge = library
-    await value.store_content(picture(), platform="qq", tags=("valid",))
+    await seed_cached_sticker(value, picture(), platform="qq", tags=("valid",))
     await value.rebuild()
     engine = StickerIndex(bridge.root)
     cache = bridge.root / "stickers/qq/search.sqlite3"
@@ -284,7 +370,7 @@ async def test_program_sql_error_does_not_erase_a_healthy_cache(library):
 
 async def test_changed_cache_schema_rebuilds_from_canonical_files(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("valid",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("valid",))
     await value.rebuild()
     cache = bridge.root / "stickers/qq/search.sqlite3"
     with closing(sqlite3.connect(cache)) as db:
@@ -294,7 +380,7 @@ async def test_changed_cache_schema_rebuilds_from_canonical_files(library):
 
 async def test_cache_deleted_again_after_completed_build_uses_actual_cold_result(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("valid",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("valid",))
     execute = bridge.execute
     deleted = False
 
@@ -313,8 +399,8 @@ async def test_cache_deleted_again_after_completed_build_uses_actual_cold_result
 
 async def test_bad_json_does_not_disable_other_assets(library):
     value, bridge = library
-    bad = await value.store_content(picture(), platform="qq", tags=("broken_tag",))
-    good = await value.store_content(picture("green"), platform="qq", tags=("valid_tag",))
+    bad = await seed_cached_sticker(value, picture(), platform="qq", tags=("broken_tag",))
+    good = await seed_cached_sticker(value, picture("green"), platform="qq", tags=("valid_tag",))
     index_path(bridge, bad).write_text("{")
     result = await value.rebuild()
     assert result["errors"] == 1
@@ -345,12 +431,13 @@ async def test_concurrent_first_create_has_one_optional_caption(library):
     value, bridge = library
     provider = attach_caption_provider(value)
     first, second = await asyncio.gather(
-        value.store_content(picture(), platform="qq"), value.store_content(picture(), platform="qq")
+        seed_cached_sticker(value, picture(), platform="qq"),
+        seed_cached_sticker(value, picture(), platform="qq"),
     )
     await asyncio.gather(*tuple(value._tasks))
     assert first.id == second.id and len(provider.requests) == 1
     assert json.loads(index_path(bridge, first).read_text())["description"]
-    await value.store_content(picture(), platform="qq")
+    await seed_cached_sticker(value, picture(), platform="qq")
     await value.rebuild()
     assert len(provider.requests) == 1
 
@@ -368,12 +455,12 @@ async def test_close_cancels_optional_caption_without_retries(library):
 
     attach_caption_provider(value)
     value.provider = SimpleNamespace(analyze=analyze)
-    asset = await value.store_content(picture(), platform="qq")
+    asset = await seed_cached_sticker(value, picture(), platform="qq")
     await entered.wait()
     await value.close()
     assert cancelled.is_set()
     assert (bridge.root / asset.relative_path).read_bytes() == picture()
-    await value.store_content(picture(), platform="qq")
+    await seed_cached_sticker(value, picture(), platform="qq")
     assert not value._tasks
 
 
@@ -381,7 +468,9 @@ async def test_tgs_no_preview_stays_original_and_does_not_call_vision(library):
     value, bridge = library
     provider = attach_caption_provider(value)
     content = gzip.compress(json.dumps({"v": "5", "layers": [], "w": 64, "h": 64}).encode())
-    asset = await value.store_content(content, platform="telegram", tags=("😂",), is_sticker=True)
+    asset = await seed_cached_sticker(
+        value, content, platform="telegram", tags=("😂",), is_sticker=True
+    )
     await asyncio.gather(*tuple(value._tasks))
     assert not provider.requests
     assert (bridge.root / asset.relative_path).read_bytes() == content
@@ -399,7 +488,8 @@ async def test_tgs_real_preview_caption_never_replaces_original(library):
         return preview_path, hashlib.sha256(preview).hexdigest()
 
     content = gzip.compress(json.dumps({"v": "5", "layers": [], "w": 64}).encode())
-    asset = await value.store_content(
+    asset = await seed_cached_sticker(
+        value,
         content,
         platform="telegram",
         is_sticker=True,
@@ -431,7 +521,7 @@ async def test_large_valid_png_saves_and_indexes_without_pixel_decode(library):
         + chunk(b"IDAT", compressed)
         + chunk(b"IEND", b"")
     )
-    asset = await value.store_content(content, platform="qq", tags=("大图",))
+    asset = await seed_cached_sticker(value, content, platform="qq", tags=("大图",))
     assert asset.image_format == "PNG"
     assert (bridge.root / asset.relative_path).read_bytes() == content
     assert (await value.select("大图", platform="qq")).id == asset.id
@@ -523,7 +613,7 @@ async def test_actual_manager_helper_and_file_close_drain(tmp_path):
 
 async def test_rebuild_preserves_completed_update_and_concurrent_collection(library):
     value, bridge = library
-    original = await value.store_content(picture(), platform="qq", tags=("oldterm",))
+    original = await seed_cached_sticker(value, picture(), platform="qq", tags=("oldterm",))
     await value.rebuild()
     engine = StickerIndex(bridge.root)
     entered, release = threading.Event(), threading.Event()
@@ -540,7 +630,7 @@ async def test_rebuild_preserves_completed_update_and_concurrent_collection(libr
     await asyncio.to_thread(entered.wait)
     path = edit(bridge, original, tags=["newterm"])
     await _media_io(StickerIndex(bridge.root).update, str(path.relative_to(bridge.root)))
-    new = await value.store_content(picture("green"), platform="qq", tags=("concurrent",))
+    new = await seed_cached_sticker(value, picture("green"), platform="qq", tags=("concurrent",))
     release.set()
     await rebuilding
     assert (await value.select("newterm", platform="qq")).id == original.id
@@ -550,7 +640,7 @@ async def test_rebuild_preserves_completed_update_and_concurrent_collection(libr
 
 async def test_stale_candidate_cleanup_keeps_completed_new_metadata_update(library):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("oldterm",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("oldterm",))
     await value.rebuild()
     edit(bridge, asset, tags=["temporary"])
     engine = StickerIndex(bridge.root)
@@ -577,7 +667,9 @@ async def test_stale_candidate_cleanup_keeps_completed_new_metadata_update(libra
 async def test_deleted_candidates_beyond_a_page_do_not_hide_real_file(library):
     value, bridge = library
     assets = [
-        await value.store_content(picture((index, 10, 20)), platform="qq", tags=("samequery",))
+        await seed_cached_sticker(
+            value, picture((index, 10, 20)), platform="qq", tags=("samequery",)
+        )
         for index in range(23)
     ]
     await value.rebuild()
@@ -600,10 +692,10 @@ async def test_animation_facts_survive_fast_lookup_and_selection(library, format
         loop=0,
     )
     content = output.getvalue()
-    first = await value.store_content(
-        content, platform="telegram", tags=("animation",), is_sticker=True
+    first = await seed_cached_sticker(
+        value, content, platform="telegram", tags=("animation",), is_sticker=True
     )
-    duplicate = await value.store_content(content, platform="telegram")
+    duplicate = await seed_cached_sticker(value, content, platform="telegram")
     selected = await value.select("animation", platform="telegram")
     assert first.animated and duplicate.animated and selected.animated
     assert first.frame_count == duplicate.frame_count == selected.frame_count == 2

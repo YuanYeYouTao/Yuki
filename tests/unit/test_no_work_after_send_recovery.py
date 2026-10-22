@@ -45,7 +45,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                 else []
             ),
             (
-                "send_message",
+                "send",
                 {
                     "text": "已确认的原消息",
                 },

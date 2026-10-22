@@ -141,7 +141,7 @@ async def test_two_external_cli_devices_share_original_message_and_persistent_ou
             if request.messages[-1].role == "tool":
                 return "file delivered"
             return response(
-                "send_message",
+                "send",
                 {
                     "artifact_id": artifact["artifact_id"],
                     "attachment_kind": "file",
@@ -245,7 +245,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
             response(
                 "task_control", {"action": "accept", "goal": "continue original work"}, "accept"
             ),
-            response("send_message", {"text": "which city?"}, "question"),
+            response("send", {"text": "which city?"}, "question"),
             response("task_control", {"action": "need_input", "reason": "city missing"}, "waiting"),
         )
     )
@@ -405,7 +405,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
         final_calls = iter(
             (
                 response(
-                    "send_message",
+                    "send",
                     {
                         "artifact_id": artifact["artifact_id"],
                         "attachment_kind": "file",

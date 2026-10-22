@@ -56,7 +56,7 @@ async def invoke(env, arguments, *, account="10001"):
     runtime = ToolRuntime(inbound=message)
     token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="mention"))
     try:
-        return await invoke_social(env.service, "send_message", arguments, runtime)
+        return await invoke_social(env.service, "send", arguments, runtime)
     finally:
         current_invocation.reset(token)
 

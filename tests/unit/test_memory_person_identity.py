@@ -57,7 +57,7 @@ async def test_forget_whole_family_preserves_original_social_receipt_and_other_p
         incoming.canonical_conversation_id,
         person_refs={"current_speaker": env.person},
     )
-    sent = await env.service.execute("send_message", {"text": "收到"}, context)
+    sent = await env.service.execute("send", {"text": "收到"}, context)
     assert sent["status"] == "succeeded"
     calls = tuple(env.bot.calls)
     unbound = str(uuid4())

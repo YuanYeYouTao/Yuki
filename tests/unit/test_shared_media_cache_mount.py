@@ -14,7 +14,7 @@ from yuki.sandbox.persistent import PersistentManager
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.workspace.inspect import WorkspaceInspector
 from yuki.workspace.service import WorkspaceService
-from yuki.workspace.store import WorkspaceError, WorkspaceStore
+from yuki.workspace.store import WorkspaceStore
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Environment cache FDs require Linux")
 
@@ -32,10 +32,11 @@ def manager_at(tmp_path):
         testing=True,
         media_cache=cache,
     )
+    owner.files.root.mkdir(parents=True, exist_ok=True)
     return owner, cache
 
 
-async def test_cache_reads_and_publication_reuse_safe_fd_without_allowing_cache_checkout(tmp_path):
+async def test_cache_reads_copy_and_publication_reuse_safe_fd_without_writing_cache(tmp_path):
     owner, cache = manager_at(tmp_path)
     original = cache / "v1/conversation/101/0-original.png"
     original.parent.mkdir(parents=True)
@@ -64,12 +65,24 @@ async def test_cache_reads_and_publication_reuse_safe_fd_without_allowing_cache_
             "workspace_publish", {"path": path, "expected_version": version}
         )
         assert owner.store.read_bytes(published["artifact_id"])[1] == data
-        with pytest.raises(WorkspaceError, match="path_outside_workspace"):
-            await owner.file_request(
-                "workspace_checkout",
-                {"artifact_id": published["artifact_id"], "destination": path},
-                "cache-is-a-read-source",
-            )
+        copied = await owner.file_request(
+            "workspace_copy",
+            {
+                "path": path,
+                "expected_version": version,
+                "source_key": "attachment:101:0",
+                "destination": "saved/original.png",
+            },
+            "direct-cache-copy",
+        )
+        assert (owner.files.root / "saved/original.png").read_bytes() == data
+        assert copied["version"] == version
+        denied = await owner.file_request(
+            "workspace_copy",
+            {"path": path, "source_key": "attachment:101:0", "destination": path},
+            "cache-is-a-read-source",
+        )
+        assert denied["error"] == "path_outside_workspace"
         outside = tmp_path / "host-only"
         outside.mkdir()
         (outside / "private.bin").write_bytes(b"synthetic host-only bytes")

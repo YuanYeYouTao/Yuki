@@ -128,7 +128,7 @@ async def social_env(database, tmp_path):
 
 async def test_recall_uses_original_presence(social_env, route_state):
     env = social_env
-    sent = await env.service.execute("send_message", {"text": "hello"}, env.context)
+    sent = await env.service.execute("send", {"text": "hello"}, env.context)
     other = Bot("80002")
     async with env.db.sessions() as session, session.begin():
         second = await ensure_presence(session, other.self_id)
@@ -189,7 +189,7 @@ async def test_multiple_space_bindings_require_explicit_selection(social_env):
 
 async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
     env = social_env
-    sent = await env.service.execute("send_message", {"text": "hello"}, env.context)
+    sent = await env.service.execute("send", {"text": "hello"}, env.context)
     async with env.db.sessions() as session:
         event = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.id == sent["event_id"])
@@ -253,7 +253,7 @@ async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(so
     )
     with pytest.raises(RouteSendError, match="binding_unavailable"):
         await env.service.execute(
-            "send_message",
+            "send",
             {
                 "text": "private report",
                 "target": {"kind": "person", "target_id": env.person, "binding_id": str(uuid4())},
@@ -261,7 +261,7 @@ async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(so
             env.context,
         )
     result = await env.service.execute(
-        "send_message",
+        "send",
         {
             "text": "private report",
             "target": {"kind": "person", "target_id": env.person, "binding_id": second},
@@ -284,14 +284,14 @@ async def test_group_mention_resolves_binding_without_first_item(social_env, sel
     if selector == "subject":
         with pytest.raises(SocialError, match="invalid_message_arguments"):
             await env.service.execute(
-                "send_message",
+                "send",
                 {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]},
                 env.context,
             )
         return
     requested = str(uuid4()) if selector == "foreign" else account_id
     result = await env.service.execute(
-        "send_message", {"text": f"@{{account:{requested}}} hello"}, env.context
+        "send", {"text": f"@{{account:{requested}}} hello"}, env.context
     )
     assert result["status"] == "succeeded"
     native = [part for part in env.bot.calls[-1][1]["message"] if part["type"] == "at"]
@@ -307,7 +307,7 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
     if attachment:
         artifact = snapshot_bytes(env.store, "hello.txt", b"hello")
         args.update(artifact_id=artifact["artifact_id"], attachment_kind=attachment)
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded"
     messages = [params["message"] for action, params in env.bot.calls if action == "send_group_msg"]
     assert len(messages) == 1
@@ -327,7 +327,7 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
             for event in events
         )
     effects = list(env.bot.calls)
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert env.bot.calls == effects
 
 
@@ -354,7 +354,7 @@ async def current_speaker_mention(env):
     try:
         result = await invoke_social(
             env.service,
-            "send_message",
+            "send",
             {
                 "text": "@test-10001 test",
             },
@@ -379,7 +379,7 @@ async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     env.bot.missing.add("10002")
     env.bot.calls.clear()
     result = await env.service.execute(
-        "send_message", {"text": f"@{{account:{account}}}"}, env.context
+        "send", {"text": f"@{{account:{account}}}"}, env.context
     )
     assert result["status"] == "succeeded"
     assert env.bot.calls == [

@@ -38,16 +38,27 @@ class SocialMessage(BaseModel):
 
     text: str = Field(default="", repr=False)
     artifact_id: UUID | None = None
+    path: str | None = None
+    name: str | None = None
+    expected_version: str | None = None
     attachment_kind: Literal["image", "file"] | None = None
     emoji: SocialEmoji | None = None
 
     @model_validator(mode="after")
     def validate_content(self) -> "SocialMessage":
-        if not self.text.strip() and self.artifact_id is None and self.emoji is None:
+        if (
+            not self.text.strip()
+            and self.artifact_id is None
+            and self.path is None
+            and self.emoji is None
+        ):
             raise ValueError("message_empty")
-        if (self.artifact_id is None) != (self.attachment_kind is None):
+        if self.artifact_id is not None and self.path is not None:
+            raise ValueError("choose_path_or_artifact_id")
+        has_attachment = self.artifact_id is not None or self.path is not None
+        if has_attachment != (self.attachment_kind is not None):
             raise ValueError("attachment_kind_required")
-        if sum((self.artifact_id is not None, self.emoji is not None)) > 1:
+        if has_attachment and self.emoji is not None:
             raise ValueError("message_media_conflict")
         return self
 

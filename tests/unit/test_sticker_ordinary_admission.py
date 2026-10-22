@@ -56,14 +56,14 @@ async def call_through_main(env, control, arguments):
             context = replace(env.context, call_id=invocation.identity.operation_id)
             contexts.append(context)
             receipt = await env.service.execute(
-                "send_message", json.loads(invocation.call.function.arguments), context
+                "send", json.loads(invocation.call.function.arguments), context
             )
             return json.dumps({"ok": True, "data": receipt})
 
     token = current_work_control.set(control)
     try:
         result = await ToolInvocationCoordinator().execute_batch(
-            (ToolCall("original-message", ToolFunction("send_message", json.dumps(arguments))),),
+            (ToolCall("original-message", ToolFunction("send", json.dumps(arguments))),),
             Backend(),
             SimpleNamespace(work_control=control, execution_id=control.lease.owner),
             remaining_calls=None,
@@ -105,7 +105,7 @@ async def test_ordinary_main_admits_and_delivers_without_registering_a_work(
         delivered = await settle(delivery, context)
         assert delivered["status"] == "succeeded"
         assert len(sends(env)) == 1 + bool(text)
-        replay = await env.service.execute("send_message", arguments, context)
+        replay = await env.service.execute("send", arguments, context)
         assert replay["emoji"]["status"] == "succeeded"
         assert len(sends(env)) == 1 + bool(text) and library.select_calls == 1
         if text:

@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import closing
 
 import pytest
-from tests.unit.test_sticker_library import edit, index_path, picture
+from tests.unit.test_sticker_library import edit, index_path, picture, seed_cached_sticker
 from tests.unit.test_sticker_library import library as library
 
 from yuki.emoji.sticker_index import StickerIndex, terms
@@ -20,11 +20,11 @@ def test_mixed_script_terms_preserve_unicode_words_and_emoji():
 @pytest.mark.skipif(os.name != "posix", reason="The real index uses Linux flock")
 async def test_mixed_goal_selects_yuki_instead_of_latin_fragments_in_description(library):
     value, bridge = library
-    intended = await value.store_content(
-        picture(), platform="qq", tags=("开心", "大笑", "Yuki", "哈哈")
+    intended = await seed_cached_sticker(
+        value, picture(), platform="qq", tags=("开心", "大笑", "Yuki", "哈哈")
     )
-    other = await value.store_content(
-        picture("green"), platform="qq", tags=("开心", "期待", "满足", "吃饭时间")
+    other = await seed_cached_sticker(
+        value, picture("green"), platform="qq", tags=("开心", "期待", "满足", "吃饭时间")
     )
     edit(
         bridge,
@@ -38,9 +38,9 @@ async def test_mixed_goal_selects_yuki_instead_of_latin_fragments_in_description
 @pytest.mark.skipif(os.name != "posix", reason="The real index uses Linux flock")
 async def test_description_ocr_and_native_emoji_remain_searchable_without_tag_gate(library):
     value, bridge = library
-    described = await value.store_content(picture(), platform="qq")
+    described = await seed_cached_sticker(value, picture(), platform="qq")
     edit(bridge, described, description="紫薇星", ocr_text="observatory")
-    native = await value.store_content(picture("blue"), platform="qq", tags=("😂",))
+    native = await seed_cached_sticker(value, picture("blue"), platform="qq", tags=("😂",))
     await value.rebuild()
     assert (await value.select("紫薇星", platform="qq")).id == described.id
     assert (await value.select("observatory", platform="qq")).id == described.id
@@ -50,7 +50,9 @@ async def test_description_ocr_and_native_emoji_remain_searchable_without_tag_ga
 @pytest.mark.skipif(os.name != "posix", reason="The real index uses Linux flock")
 async def test_v1_cache_rebuilds_terms_without_changing_canonical_files(library, monkeypatch):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("Yuki", "开心", "大笑"))
+    asset = await seed_cached_sticker(
+        value, picture(), platform="qq", tags=("Yuki", "开心", "大笑")
+    )
     await value.rebuild()
     metadata = index_path(bridge, asset)
     original_json = metadata.read_bytes()

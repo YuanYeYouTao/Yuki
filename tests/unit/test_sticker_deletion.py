@@ -10,6 +10,7 @@ from tests.unit.test_sticker_library import (
     attach_caption_provider,
     index_path,
     picture,
+    seed_cached_sticker,
 )
 from tests.unit.test_sticker_library import (
     library as library,
@@ -32,7 +33,7 @@ async def test_late_description_does_not_recreate_deleted_metadata(library):
         return await provider.analyze(*args, **kwargs)
 
     value.provider = SimpleNamespace(analyze=analyze)
-    asset = await value.store_content(picture(), platform="qq", is_sticker=True)
+    asset = await seed_cached_sticker(value, picture(), platform="qq", is_sticker=True)
     await entered.wait()
     metadata = index_path(bridge, asset)
     metadata.unlink()
@@ -48,7 +49,7 @@ async def test_rebuild_removes_metadata_and_cache_when_original_is_gone(
     library, replace_original, cache_ready
 ):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("removed",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("removed",))
     if cache_ready:
         await value.rebuild()
     original = bridge.root / asset.relative_path
@@ -66,7 +67,7 @@ async def test_rebuild_removes_metadata_and_cache_when_original_is_gone(
 @pytest.mark.parametrize("duplicate", (False, True))
 async def test_rebuild_preserves_tags_for_renamed_or_remaining_duplicate(library, duplicate):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("retained",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("retained",))
     original = bridge.root / asset.relative_path
     renamed = original.with_name("my chosen name.png")
     if duplicate:
@@ -82,8 +83,8 @@ async def test_rebuild_preserves_tags_for_renamed_or_remaining_duplicate(library
 
 async def test_rebuild_keeps_metadata_edited_after_scan_started(library, monkeypatch):
     value, bridge = library
-    removed = await value.store_content(picture(), platform="qq", tags=("old",))
-    other = await value.store_content(picture("blue"), platform="qq")
+    removed = await seed_cached_sticker(value, picture(), platform="qq", tags=("old",))
+    other = await seed_cached_sticker(value, picture("blue"), platform="qq")
     (bridge.root / removed.relative_path).unlink()
     engine = StickerIndex(bridge.root)
     metadata = index_path(bridge, removed)
@@ -103,7 +104,7 @@ async def test_rebuild_keeps_metadata_edited_after_scan_started(library, monkeyp
 
 async def test_failed_original_read_does_not_discard_renamed_metadata(library, monkeypatch):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("retained",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("retained",))
     original = bridge.root / asset.relative_path
     renamed = original.with_name("renamed.png")
     original.rename(renamed)
@@ -124,7 +125,7 @@ async def test_failed_original_read_does_not_discard_renamed_metadata(library, m
 @pytest.mark.parametrize("rename_metadata", (False, True))
 async def test_metadata_update_removes_previous_asset_from_cache(library, rename_metadata):
     value, bridge = library
-    asset = await value.store_content(picture(), platform="qq", tags=("old",))
+    asset = await seed_cached_sticker(value, picture(), platform="qq", tags=("old",))
     await value.rebuild()
     original = bridge.root / asset.relative_path
     original.write_bytes(picture("blue"))

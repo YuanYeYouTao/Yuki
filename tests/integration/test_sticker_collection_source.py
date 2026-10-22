@@ -54,11 +54,13 @@ async def test_native_sticker_collection_keeps_only_the_actual_original_source(
         source_segments=source.segments,
     )
     assert inbound.attachments[0].is_sticker
-    assert await env.media.source_current(source.id, 0, json.dumps(source.segments))
     workspace = WorkspaceService(WorkspaceStore(tmp_path / "published"))
-    bridge = DirectoryBridge(tmp_path / "shared-workspace", workspace.store)
+    workspace.conversation_media = env.media
+    bridge = DirectoryBridge(
+        tmp_path / "shared-workspace", workspace.store, cache_root=env.media.root.parent
+    )
     workspace.sandbox = bridge
-    library = EmojiLibrary(workspace, source_valid=env.media.source_current)
+    library = EmojiLibrary(workspace)
     entered, release = asyncio.Event(), asyncio.Event()
     resolve = env.media_gateway.resolve_media_file
 
@@ -102,7 +104,6 @@ async def test_native_sticker_collection_keeps_only_the_actual_original_source(
                 outcome = ()
             assert outcome == ()
             assert not files_root.exists() or not tuple(files_root.rglob("files/*"))
-            assert not await env.media.source_current(source.id, 0, json.dumps(source.segments))
             return
 
         # Both an unchanged conversation and /ai new keep this original file collectible.

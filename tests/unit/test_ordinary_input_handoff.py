@@ -301,9 +301,9 @@ async def test_accepted_input_does_not_reactivate_and_duplicate_real_social_send
     provider = _PausedProvider(
         [
             _tool("query_chat_history", {"view": "recent"}, "read"),
-            _tool("send_message", {"text": ANSWER}, "answer"),
+            _tool("send", {"text": ANSWER}, "answer"),
             "NO_REPLY",
-            _tool("send_message", {"text": ANSWER}, "answer"),
+            _tool("send", {"text": ANSWER}, "answer"),
             "NO_REPLY",
         ]
     )
@@ -486,9 +486,9 @@ async def test_new_identical_input_after_last_admission_keeps_its_own_send(
     provider = _PausedProvider(
         [
             _tool("query_chat_history", {"view": "recent"}, "read"),
-            _tool("send_message", {"text": ANSWER}, "answer"),
+            _tool("send", {"text": ANSWER}, "answer"),
             "NO_REPLY",
-            _tool("send_message", {"text": ANSWER}, "answer"),
+            _tool("send", {"text": ANSWER}, "answer"),
             "NO_REPLY",
         ],
         pauses=(1, 2, 3),

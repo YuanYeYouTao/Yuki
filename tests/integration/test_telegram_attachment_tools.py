@@ -1,6 +1,6 @@
 """Real ToolRuntime and SQLite media tools resolve the original Telegram bot.
 
-Telegram HTTP and environment checkout are local substitutes; no real Bot API,
+Telegram HTTP and shared-cache copying are local substitutes; no real Bot API,
 Docker runtime, model, or platform message is used.
 """
 
@@ -17,6 +17,7 @@ import httpx
 import pytest
 from PIL import Image
 from tests.support.event_seed import seed_event, seed_scoped_event
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -188,18 +189,27 @@ async def attachment_tools(database, tmp_path, request):
         store = WorkspaceStore(tmp_path / "artifacts")
         workspace = WorkspaceService(store)
         workspace.conversation_media = media
-        checkouts = []
+        copies = []
 
-        async def checkout(method, args, *, request_id):
-            assert method == "workspace_checkout"
-            metadata, content = store.read_bytes(args["artifact_id"])
-            path = tmp_path / "environment" / metadata["name"]
+        async def copy(method, args, *, request_id):
+            if method == "workspace_copy_result":
+                return {"found": False}
+            assert method == "workspace_copy"
+            original = media.root.parent / args["path"].removeprefix("/inputs/media-cache/")
+            content = original.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            assert digest == args["expected_version"]
+            path = tmp_path / "environment" / args["destination"]
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
-            checkouts.append(path)
-            return {"path": "/workspace/" + metadata["name"], "version": metadata["sha256"]}
+            copies.append(path)
+            return {
+                "path": "/workspace/" + args["destination"],
+                "version": digest,
+                "size": len(content),
+            }
 
-        workspace.sandbox = SimpleNamespace(execute=checkout)
+        workspace.sandbox = SimpleNamespace(execute=copy)
         try:
             yield SimpleNamespace(
                 workspace=workspace,
@@ -213,7 +223,7 @@ async def attachment_tools(database, tmp_path, request):
                 wire=wire,
                 original_bytes=original_bytes,
                 media_content=media_content,
-                checkouts=checkouts,
+                copies=copies,
             )
         finally:
             await media.close()
@@ -247,7 +257,7 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
     if original_offline and not cached:
         with pytest.raises(WorkspaceError, match="resource_unavailable"):
             await case.workspace.execute(tool, arguments, runtime=case.runtime, request_id=tool)
-        assert case.wire == case.checkouts == []
+        assert case.wire == case.copies == []
         return
     result = await case.workspace.execute(tool, arguments, runtime=case.runtime, request_id=tool)
     assert case.wire == (
@@ -265,9 +275,9 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
         assert result.images[0].source_event_id == case.source.id
         assert result["sha256"] == hashlib.sha256(case.original_bytes).hexdigest()
     else:
-        assert result["file_imported"] is True
-        assert case.checkouts[0].read_bytes() == case.original_bytes
-        assert case.store.read_bytes(result["artifact_id"])[1] == case.original_bytes
+        assert result["version"] == hashlib.sha256(case.original_bytes).hexdigest()
+        assert case.copies[0].read_bytes() == case.original_bytes
+        assert artifact_ids(case.store) == []
 
 
 async def test_native_file_selection_uses_resolvers_actual_locator_priority(

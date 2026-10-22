@@ -184,7 +184,7 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) == "taken"
     receipt = await env.service.execute(
-        "send_message",
+        "send",
         {"target": {"kind": "person", "target_id": env.person}, "text": "old"},
         env.context,
     )

@@ -75,7 +75,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
                 0,
                 tool_calls=(
                     ToolCall(
-                        "original-send", ToolFunction("send_message", '{"text":"已收到更新。"}')
+                        "original-send", ToolFunction("send", '{"text":"已收到更新。"}')
                     ),
                 ),
             ),

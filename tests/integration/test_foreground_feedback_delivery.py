@@ -66,7 +66,7 @@ async def test_quiet_is_saved_before_split_delivery_and_keeps_original_request_a
             tool_calls=(
                 ToolCall(
                     "original-send",
-                    ToolFunction("send_message", json.dumps({"text": "first\nsecond"})),
+                    ToolFunction("send", json.dumps({"text": "first\nsecond"})),
                 ),
             ),
         )

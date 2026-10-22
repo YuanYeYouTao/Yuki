@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -22,7 +22,7 @@ jobs:
       - run: uv run --no-sync mypy src
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +34,11 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - run: uv sync --frozen --all-extras --python 3.12
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install media dependencies
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - run: ffmpeg -version && ffprobe -version
       - name: Test direct runtime and offline contracts
         run: >-
@@ -60,7 +64,11 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - run: uv sync --frozen --all-extras --python 3.12
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor-utils ffmpeg
+      - name: Install isolation and media dependencies
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap apparmor-utils ffmpeg
       - name: Build the pinned native distribution
         run: |
           rustup toolchain install 1.96.0 --profile minimal

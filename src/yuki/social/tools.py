@@ -16,12 +16,28 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     }
     message: dict[str, object] = {
         "text": {"type": "string"},
-        "artifact_id": {"type": "string", "description": "工作区对象 ID，不是路径或 URL"},
+        "path": {
+            "type": "string",
+            "description": (
+                "要发送的 /workspace 文件或 /inputs/media-cache 原件路径；"
+                "程序冻结本次版本后发送。与 artifact_id 二选一。"
+            ),
+        },
+        "artifact_id": {
+            "type": "string",
+            "description": "已发布不可变快照的内部 ID；与 path 二选一，不是 URL。",
+        },
+        "name": {"type": "string", "description": "可选；路径文件本次交付的文件名。"},
+        "expected_version": {
+            "type": "string",
+            "description": "可选；path 所选原文件的内容 SHA256，不是目标覆盖门槛。",
+        },
         "attachment_kind": {
             "type": "string",
             "enum": ["image", "file"],
             "description": (
-                "提供 artifact_id 时必填。普通文件用 file；可附 text，平台分步交付时分别返回确认。"
+                "提供 path 或 artifact_id 时必填。普通文件用 file；可附 text，"
+                "平台分步交付时分别返回确认。"
                 "图片用 image。部分成功不要重发文件。"
             ),
         },
@@ -41,7 +57,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     ) -> ChatTool:
         return ChatTool(
             name=name,
-            schema_version="4" if name == "send_message" else "1",
+            schema_version="5" if name == "send" else "1",
             description=description,
             parameters={
                 "type": "object",
@@ -62,8 +78,10 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             ("kind",),
         ),
         tool(
-            "send_message",
-            "回复当前用户或向外发消息时调用此工具；普通最终正文只是内部结果，不会送达。"
+            "send",
+            "向当前会话或指定目标发送文字、图片、文件或表情；普通最终正文只是内部结果，不会送达。"
+            "发文件可直接提供 path 和 attachment_kind，无须先调用发布工具；"
+            "已有 artifact_id 也可发送。"
             "一次调用的纯文本会按回复分条规则自动发送为一条或多条，每条均有投递回执；"
             "确有需要时可多次调用，遵循发言节奏；发送后仍可继续工作。"
             "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"

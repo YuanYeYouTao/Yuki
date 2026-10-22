@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
 from yuki.services.native_media import NativeMediaPreparer
@@ -116,7 +117,7 @@ async def test_selected_manager_file_pixels_and_dispatch_version_guard(tmp_path)
     assert result.images[0].workspace_path == "/workspace/selected.png"
     assert result.images[0].version == version
     assert "base64" not in result and "data:image" not in str(result)
-    assert list(store.list()["items"]) == []  # Reading does not publish or mutate.
+    assert artifact_ids(store) == []  # Reading does not publish or mutate.
     sandbox.execute.return_value = {"version": version}
     await service.validate_images(result.images)
     assert sandbox.execute.await_args.args[0] == "workspace_media_validate"

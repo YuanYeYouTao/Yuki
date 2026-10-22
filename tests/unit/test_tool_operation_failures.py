@@ -24,13 +24,21 @@ from yuki.services.agent_tools import AgentToolService, ToolRuntime
 @pytest.mark.parametrize(
     ("tool", "payload", "committed"),
     [
-        ("workspace_publish", {"error": "version_conflict"}, False),
-        ("workspace_publish", {"error": "workspace_full"}, False),
+        (
+            "save_conversation_attachment_to_workspace",
+            {"error": "attachment_source_changed"},
+            False,
+        ),
+        ("save_conversation_attachment_to_workspace", {"error": "attachment_expired"}, False),
         ("terminal_exec", {"error": "environment_unavailable"}, False),
         ("terminal_control", {"error": "idempotency_conflict"}, False),
-        ("workspace_publish", {"error": "sandbox_unavailable", "uncertain": True}, None),
+        (
+            "save_conversation_attachment_to_workspace",
+            {"error": "sandbox_unavailable", "uncertain": True},
+            None,
+        ),
         ("terminal_exec", {"error": "sandbox_submission_unknown", "uncertain": True}, None),
-        ("workspace_publish", {"artifact_id": "published-snapshot", "immutable": True}, True),
+        ("save_conversation_attachment_to_workspace", {"path": "saved.txt", "saved": True}, True),
     ],
 )
 async def test_tool_operation_receipt(database, tool, payload, committed):

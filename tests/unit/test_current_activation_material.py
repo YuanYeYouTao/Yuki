@@ -516,7 +516,7 @@ async def test_actual_http_failure_preserves_send_receipt_without_material_histo
                                     "id": "original-send",
                                     "type": "function",
                                     "function": {
-                                        "name": "send_message",
+                                        "name": "send",
                                         "arguments": json.dumps({"text": sent_text}),
                                     },
                                 }

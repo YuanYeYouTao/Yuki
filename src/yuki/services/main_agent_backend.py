@@ -246,7 +246,7 @@ class MainAgentBackend(AgentToolBackend):
         call = invocation.call
         name, arguments_json = call.function.name, call.function.arguments
         runtime: AgentRuntime = invocation.context.runtime
-        if name != "send_message" and self._runtime.before_model_request is not None:
+        if name != "send" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         contract = self._service.runtime.runner.main_contract
         if contract is not None and not contract.plugin_binding_current(name):
@@ -256,7 +256,7 @@ class MainAgentBackend(AgentToolBackend):
         # follows the original Host operation, including ordinary direct sends.
         receipt_call_id = invocation.identity.operation_id
         if (
-            name != "send_message"
+            name != "send"
             and control is not None
             and self.is_side_effecting(name, arguments_json, runtime)
             and await control.has_pending_business_inputs()
@@ -270,11 +270,11 @@ class MainAgentBackend(AgentToolBackend):
 
             work = current_work_control.get()
             if work is not None:
-                if name != "send_message":
+                if name != "send":
                     await work.validate()
                 if not await work.repository.valid(work.lease):
                     raise TurnSupersededError("work activation changed")
-                if name != "send_message" and await work.has_pending_business_inputs():
+                if name != "send" and await work.has_pending_business_inputs():
                     return ToolExecutionResult(
                         ok=False,
                         data={"executed": False},
@@ -414,7 +414,7 @@ class MainAgentBackend(AgentToolBackend):
                     )
 
                 outcome = await self._service.run_effect(
-                    None if name == "send_message" else execution_runtime.turn_snapshot,
+                    None if name == "send" else execution_runtime.turn_snapshot,
                     lambda: invoke_effect(invoke_binding),
                 )
             except (asyncio.CancelledError, WorkBudgetExceeded):
@@ -439,22 +439,13 @@ class MainAgentBackend(AgentToolBackend):
                 effective_descriptor,
             )
             outcome = replace(outcome, mutation_committed=mutation_committed)
-            if call.function.name == "send_message" and isinstance(outcome.data, dict):
+            if call.function.name == "send" and isinstance(outcome.data, dict):
                 receipt = outcome.data
-                file = receipt.get("file")
-                caption = receipt.get("caption")
                 parts = receipt.get("parts")
-                accepted = (
-                    sum(part.get("status") == "succeeded" for part in parts)
-                    if isinstance(parts, list)
-                    else (
-                        int(file.get("status") == "succeeded")
-                        + int(isinstance(caption, dict) and caption.get("status") == "succeeded")
-                        if isinstance(file, dict)
-                        else int(receipt.get("status") == "succeeded")
-                    )
+                deliveries = parts if isinstance(parts, list) else [receipt]
+                self.messages_sent += sum(
+                    part.get("status") == "succeeded" for part in deliveries
                 )
-                self.messages_sent += accepted
                 inbound = self._runtime.inbound
                 expected = (
                     {"kind": "space", "id": inbound.space_id}
@@ -467,13 +458,6 @@ class MainAgentBackend(AgentToolBackend):
                     }
                 )
                 sent_target = receipt.get("target")
-                deliveries = (
-                    parts
-                    if isinstance(parts, list)
-                    else [caption]
-                    if isinstance(file, dict)
-                    else [receipt]
-                )
                 if isinstance(sent_target, dict) and sent_target == expected:
                     # Only the confirmed ledger projection knows what survived
                     # sanitization/splitting/media preparation and reached QQ.
@@ -583,7 +567,7 @@ class MainAgentBackend(AgentToolBackend):
             ):
                 raise PluginPermissionError("message is outside the original Conversation")
         elif namespace == "social.send":
-            if arguments.get("artifact_id") or arguments.get("emoji"):
+            if arguments.get("artifact_id") or arguments.get("path") or arguments.get("emoji"):
                 permission = PluginPermission.MESSAGE_MEDIA_SEND
             else:
                 target = arguments.get("target")

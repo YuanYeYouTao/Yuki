@@ -18,19 +18,27 @@ from yuki.services.media_resolver import _media_io
 class DirectoryBridge:
     """Real independent file index and snapshots, replacing only the RPC transport."""
 
-    def __init__(self, root, store):
+    def __init__(self, root, store, *, cache_root=None):
         self.root, self.store = root, store
+        self.cache = cache_root or root.parent / "cache"
         root.mkdir(parents=True)
 
     async def execute(self, method, args, *, request_id):
         if method == "sticker_index":
             return await _media_io(StickerIndex(self.root).execute, args)
-        if method == "workspace_checkout":
-            metadata, content = self.store.read_bytes(args["artifact_id"])
+        if method == "workspace_copy":
+            source = self.cache / str(args["path"]).removeprefix("/inputs/media-cache/")
+            content = source.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            assert digest == args["expected_version"]
             target = self.root / args["destination"]
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
-            return {"path": args["destination"], "version": metadata["sha256"]}
+            return {
+                "path": "/workspace/" + args["destination"],
+                "version": digest,
+                "size": len(content),
+            }
         if method == "workspace_publish":
             with (self.root / args["path"]).open("rb") as stream:
                 result = self.store.snapshot(
@@ -38,7 +46,7 @@ class DirectoryBridge:
                     args["name"],
                     artifact_id=args["artifact_id"],
                     source_key=args["source_key"],
-                    expected_version=args["expected_version"],
+                    expected_version=args.get("expected_version"),
                 )
             return {**result, "version": result["sha256"]}
         raise AssertionError(method)

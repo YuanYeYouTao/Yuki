@@ -262,6 +262,7 @@ class ApplicationContainer:
         self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client
         self.social_service.workspace = self.workspace_service.store
+        self.social_service.workspace_service = self.workspace_service
         from yuki.admin.models import VisionRuntimeConfig
         from yuki.emoji.delivery import EmojiDeliveryService
         from yuki.emoji.library import EmojiLibrary
@@ -271,7 +272,6 @@ class ApplicationContainer:
 
         self.emoji_library = EmojiLibrary(
             workspace=self.workspace_service,
-            source_valid=self.conversation_media.source_current,
             preprocessor=self.image_preprocessor,
             provider=self.vision_provider,
             vision_runtime=sticker_vision_runtime,

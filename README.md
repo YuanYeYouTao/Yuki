@@ -61,6 +61,8 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 | 任务与自动化 | 查看进度、补充要求、等待事件、安排定时任务，管理父子任务 |
 | 跨平台交流 | 查找已观察联系人、发送文字和文件、原生提及人物，读取获准历史 |
 
+文字、图片、文件和表情统一使用 `send`。发文件直接传工作区路径，程序内部冻结交付版本，无需模型先发布；收藏和附件保存直接复制到最终文件，不留下永久中转副本。已发送、部分成功和未知结果仍认原回执，不因重试重新读取或重发。
+
 模型支持 Chat Completions、Responses、Claude Messages 和 Gemini GenerateContent。模型连接、思考档位、搜索与任务路由都通过 Profile 配置。
 
 记忆由 Agent 按需检索；提取、SELF 自省和 Dream 整理可分别选择模型。长期事实、短期记录、聊天历史和工作文件各自保存。记忆的可见范围见 [Memory 文档](docs/architecture/memory-v2.md)。

@@ -48,7 +48,7 @@ async def test_plain_text_never_wakes_optional_illustration_queue(
     wake = Mock(wraps=delivery.wake)
     monkeypatch.setattr(delivery, "wake", wake)
     context = split_context(env.context) if split else env.context
-    result = await env.service.execute("send_message", {"text": "first\nsecond"}, context)
+    result = await env.service.execute("send", {"text": "first\nsecond"}, context)
     assert result["status"] == "succeeded"
     assert len(messages(env)) == (2 if split else 1)
     wake.assert_not_called()
@@ -70,10 +70,10 @@ async def test_failed_atomic_admission_does_not_dispatch_text_or_leave_orphan_in
     with monkeypatch.context() as patch:
         patch.setattr(delivery, "admit", fail_before_claim_commit)
         with pytest.raises(OperationalError):
-            await env.service.execute("send_message", arguments, env.context)
+            await env.service.execute("send", arguments, env.context)
     assert not messages(env)
     assert await delivery.intents.find(env.context.turn_id, env.context.call_id) is None
-    result = await env.service.execute("send_message", arguments, env.context)
+    result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "succeeded" and result["emoji"]["status"] == "accepted"
     await delivery.start()
     try:
@@ -101,7 +101,7 @@ async def test_confirmed_text_interruption_recovers_only_original_illustration(
     with monkeypatch.context() as patch:
         patch.setattr(env.service, "_send_message_sequence", stop_after_confirmed_text)
         with pytest.raises(asyncio.CancelledError):
-            await env.service.execute("send_message", arguments, context)
+            await env.service.execute("send", arguments, context)
     original = await delivery.intents.find(context.turn_id, context.call_id)
     assert original is not None, "confirmed text lost its illustration before admission"
     assert original.source["generation"] == 1
@@ -119,7 +119,7 @@ async def test_confirmed_text_interruption_recovers_only_original_illustration(
                         conversation_id=context.conversation_id, generation=1, cancel_epoch=1
                     )
                 )
-    replay = await env.service.execute("send_message", arguments, context)
+    replay = await env.service.execute("send", arguments, context)
     assert replay["status"] == "succeeded"
     assert replay["emoji"]["status"] == "accepted"
     assert len(messages(env)) == (2 if split else 1)
@@ -160,7 +160,7 @@ async def test_inflight_text_does_not_release_image_or_block_another_intent(
     await delivery.start()
     sending = asyncio.create_task(
         env.service.execute(
-            "send_message", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context
+            "send", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context
         )
     )
     try:
@@ -188,7 +188,7 @@ async def test_inflight_text_does_not_release_image_or_block_another_intent(
                         )
                     )
         independent = replace(context, call_id="independent")
-        await env.service.execute("send_message", {"emoji": {"goal": "fast"}}, independent)
+        await env.service.execute("send", {"emoji": {"goal": "fast"}}, independent)
         assert (await settle(delivery, independent))["status"] == "succeeded"
         assert len(messages(env)) == 1  # Only the independent image.
         if blocked_count > 1:
@@ -237,7 +237,7 @@ async def test_text_failure_ends_its_dispatch_without_requiring_success_for_imag
 
     monkeypatch.setattr(env.bot, "call_api", fail_text)
     result = await env.service.execute(
-        "send_message", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
+        "send", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
     )
     assert result["emoji"]["status"] == "accepted"
     await delivery.start()
@@ -293,7 +293,7 @@ async def test_later_text_preflight_exit_does_not_leave_image_pending_forever(
     await delivery.start()
     try:
         result = await env.service.execute(
-            "send_message", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
+            "send", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
         )
         assert result["emoji"]["status"] == "accepted"
         assert len(messages(env)) == 1
@@ -321,7 +321,7 @@ async def test_obsolete_source_closes_while_its_text_transport_is_still_pending(
     monkeypatch.setattr(env.bot, "call_api", pending_text)
     sending = asyncio.create_task(
         env.service.execute(
-            "send_message", {"text": "pending text", "emoji": {"goal": "happy"}}, env.context
+            "send", {"text": "pending text", "emoji": {"goal": "happy"}}, env.context
         )
     )
     try:
@@ -366,7 +366,7 @@ async def test_shutdown_between_text_parts_preserves_original_image_without_rese
 
     monkeypatch.setattr(env.service, "_effect", observe_first_effect)
     arguments = {"text": "first\nsecond", "emoji": {"goal": "happy"}}
-    sending = asyncio.create_task(env.service.execute("send_message", arguments, context))
+    sending = asyncio.create_task(env.service.execute("send", arguments, context))
     await asyncio.wait_for(first_finished.wait(), 3)
     original = await delivery.intents.find(context.turn_id, context.call_id)
     assert original is not None
@@ -396,7 +396,7 @@ async def test_shutdown_between_text_parts_preserves_original_image_without_rese
         assert current.source == original.source
         assert result["status"] == ("failed" if cancel_source else "succeeded")
         assert len(messages(env)) == 1 + int(not cancel_source)
-        replay = await env.service.execute("send_message", arguments, context)
+        replay = await env.service.execute("send", arguments, context)
         assert replay["status"] == "uncertain"  # The second text was never dispatched.
         assert len(messages(env)) == 1 + int(not cancel_source)
     finally:
@@ -408,7 +408,7 @@ async def test_startup_keeps_fully_confirmed_text_sequence_parent_facts(database
     delivery, _ = make_delivery(env)
     context = split_context(env.context)
     arguments = {"text": "first\nsecond", "emoji": {"goal": "happy"}}
-    result = await env.service.execute("send_message", arguments, context)
+    result = await env.service.execute("send", arguments, context)
     assert result["status"] == "succeeded"
     original = await delivery.intents.find(context.turn_id, context.call_id)
     parent_id = original.source["after_operation_id"]
@@ -419,7 +419,7 @@ async def test_startup_keeps_fully_confirmed_text_sequence_parent_facts(database
     try:
         assert (await settle(delivery, context))["status"] == "succeeded"
         assert len(messages(env)) == 3
-        replay = await env.service.execute("send_message", arguments, context)
+        replay = await env.service.execute("send", arguments, context)
         assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "succeeded"
         assert len(messages(env)) == 3
     finally:

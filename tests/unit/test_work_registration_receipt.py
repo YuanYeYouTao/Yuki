@@ -57,7 +57,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     calls = (
         tool("task_control", {"action": "accept", "goal": "original new goal"}, "first-accept"),
         tool("task_control", {"action": "complete"}, "complete"),
-        tool("send_message", {"text": "original tail"}, "send"),
+        tool("send", {"text": "original tail"}, "send"),
     )
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     probe.control.current = None
@@ -98,7 +98,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     assert receipt["ok"] and receipt["work_id"] == probe.control.current["id"]
     assert result.work_state == "completed"
     assert recovered.handoff_work_id is None
-    assert probe.observed == ["send_message"]
+    assert probe.observed == ["send"]
     assert len(probe.provider.requests) == 1
     async with database.sessions() as reader:
         assert set(await reader.scalars(select(work.c.id))) == before
@@ -239,7 +239,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
         tool_calls=(
             tool("task_control", {"action": "complete"}, "complete"),
             tool("write_fixture", {"step": 2}, "same-id"),
-            tool("send_message", {"text": "original tail"}, "send"),
+            tool("send", {"text": "original tail"}, "send"),
         ),
     )
     probe = await case(database, tmp_path, [first, second])
@@ -271,7 +271,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
     assert [call["id"] for call in pending] == ["complete", "same-id", "send"]
     result, recovered = await _restore(probe)
     assert result.work_state == "completed"
-    assert probe.observed == ["write_fixture", "write_fixture", "send_message"]
+    assert probe.observed == ["write_fixture", "write_fixture", "send"]
     assert await recovered.session.journal.effect_state(original_key) == "accepted"
     assert len(probe.provider.requests) == 2
 
@@ -282,7 +282,7 @@ async def _media_recovery_case(database, tmp_path, monkeypatch, *, new_image=Fal
         tool("write_fixture", {}, "prefix-image"),
         *((tool("write_fixture", {}, "new-image"),) if new_image else ()),
         *((tool("execute_code", {"code": "1"}, "code"),) if code else ()),
-        tool("send_message", {"text": "original tail"}, "last-tail"),
+        tool("send", {"text": "original tail"}, "last-tail"),
     )
     probe, _parent, _workers, _identity = await worker_case(database, tmp_path, calls)
     if code:

@@ -27,7 +27,7 @@ from yuki.services.turn_transcript import TurnTranscript
 
 async def prepared(database, tmp_path):
     _env, owner, _runtime = await active_work(database, tmp_path)
-    call = ToolCall("original", ToolFunction("send_message", '{"text":"hello"}'))
+    call = ToolCall("original", ToolFunction("send", '{"text":"hello"}'))
     invocation = direct_invocations(
         (call,), SimpleNamespace(work_control=owner.control), manifest_revision="contract"
     )[0]
@@ -38,7 +38,7 @@ async def prepared(database, tmp_path):
         invocation.identity.operation_id,
         "tool",
         invocation=invocation.durable_metadata(),
-        outcome={"tool": "send_message", "side_effecting": True},
+        outcome={"tool": "send", "side_effecting": True},
     )
     return owner, invocation
 
@@ -135,7 +135,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
     owner = WorkSession(control, contract)
     control.session = owner
     await owner.restore(TurnTranscript((ChatMessage("user", "retained send"),)))
-    call = ToolCall("original", ToolFunction("send_message", '{"text":"hello"}'))
+    call = ToolCall("original", ToolFunction("send", '{"text":"hello"}'))
     invocation = direct_invocations(
         (call,), SimpleNamespace(work_control=control), manifest_revision=contract
     )[0]
@@ -166,7 +166,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
         nonlocal armed
         dispatched.append(key)
         sent = await env.service.execute(
-            "send_message",
+            "send",
             {"target": {"kind": "space", "target_id": env.space}, "text": "hello"},
             replace(env.context, call_id=key),
         )
@@ -212,7 +212,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
 
 async def test_changed_arguments_under_original_id_cannot_reuse_or_dispatch(database, tmp_path):
     owner, invocation = await prepared(database, tmp_path)
-    changed = ToolCall(invocation.call.id, ToolFunction("send_message", '{"text":"changed"}'))
+    changed = ToolCall(invocation.call.id, ToolFunction("send", '{"text":"changed"}'))
     dispatched = []
 
     async def external():
@@ -228,7 +228,7 @@ async def test_changed_arguments_under_original_id_cannot_reuse_or_dispatch(data
 
 async def test_unknown_dispatch_is_never_replayed_after_reentry(database, tmp_path):
     _env, owner, _runtime = await active_work(database, tmp_path)
-    call = ToolCall("original", ToolFunction("send_message", "{}"))
+    call = ToolCall("original", ToolFunction("send", "{}"))
     external_log = []
 
     async def external():
@@ -252,7 +252,7 @@ async def test_late_receipt_settles_original_after_cancel_without_new_admission(
     key = invocation.identity.operation_id
     assert await repository.admit_dispatch(lease, identity, key)
     waiting = direct_invocations(
-        (ToolCall("queued", ToolFunction("send_message", '{"text":"later"}')),),
+        (ToolCall("queued", ToolFunction("send", '{"text":"later"}')),),
         SimpleNamespace(work_control=owner.control),
         manifest_revision="contract",
     )[0]
@@ -262,7 +262,7 @@ async def test_late_receipt_settles_original_after_cancel_without_new_admission(
         waiting.identity.operation_id,
         "tool",
         invocation=waiting.durable_metadata(),
-        outcome={"tool": "send_message", "side_effecting": True},
+        outcome={"tool": "send", "side_effecting": True},
     )
     await repository.cancel(lease.conversation_id)
     # The already-dispatched send reports back after the hard boundary.
@@ -272,7 +272,7 @@ async def test_late_receipt_settles_original_after_cancel_without_new_admission(
     assert receipt["result"] == late["result"] and total == root == 1
     # The narrow settlement path cannot authorize another dispatch.
     other = direct_invocations(
-        (ToolCall("after-cancel", ToolFunction("send_message", "{}")),),
+        (ToolCall("after-cancel", ToolFunction("send", "{}")),),
         SimpleNamespace(work_control=owner.control),
         manifest_revision="contract",
     )[0]

@@ -905,8 +905,6 @@ class AgentToolService:
                                     if social_result.get("error") == "binding_required"
                                     else "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if social_result.get("error") == "presence_ambiguous"
-                                    else "文件已发送成功，附带文字未确认发送；不要重发文件"
-                                    if social_result.get("error") == "file_sent_caption_unconfirmed"
                                     else "部分分条已确认发送；不要重发已成功的分条"
                                     if sent_parts
                                     else "发送结果未知，不要重发；请根据回执说明情况"
@@ -934,14 +932,11 @@ class AgentToolService:
                             "history_presence_unavailable": "原账号不可用，未换号读取",
                             "history_provider_failed": "网关读取失败，不表示没有消息",
                             "invalid_history_result": "网关历史返回格式无效，不能据此判断会话内容",
-                            "artifact_transfer_unavailable": (
-                                "文件已存在工作区，但中转不可用，尚未发送；本轮不要重复发送"
-                            ),
                             "invalid_target_id": (
                                 "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
                             ),
                             "invalid_message_arguments": (
-                                "检查 text、artifact_id 和 attachment_kind；"
+                                "检查 text、path 或 artifact_id，以及 attachment_kind；"
                                 "文件必须指定 file 类型。"
                                 "已生成的工作区文件仍保留"
                             ),

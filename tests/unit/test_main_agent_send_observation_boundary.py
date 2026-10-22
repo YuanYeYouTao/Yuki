@@ -25,7 +25,7 @@ def _gemini_reply(send_text=None):
     if send_text is not None:
         part = {
             "functionCall": {
-                "name": "send_message",
+                "name": "send",
                 "args": {"text": send_text},
                 "id": "actual-boundary-send",
             },
@@ -75,7 +75,7 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
 
         async def send_with_concurrent_events(name, args, context):
             receipt = await execute(name, args, context)
-            if interleaved_events != "none" and name == "send_message" and not interleaved:
+            if interleaved_events != "none" and name == "send" and not interleaved:
                 interleaved.append(True)
                 other = await seed_scoped_event(
                     env.service.writer,
@@ -184,7 +184,7 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
 )
 def test_typed_send_receipts_preserve_only_confirmed_internal_events(data, expected):
     outcome = ToolExecutionResult(ok=data["status"] == "succeeded", data=data)
-    fact = execution_evidence(outcome, tool="send_message", side_effecting=True)
+    fact = execution_evidence(outcome, tool="send", side_effecting=True)
     assert fact["observed_event_ids"] == expected
     read = execution_evidence(outcome, tool="get_recent_chat_history", side_effecting=False)
     assert "observed_event_ids" not in read

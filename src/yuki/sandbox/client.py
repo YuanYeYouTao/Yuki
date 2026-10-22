@@ -70,7 +70,8 @@ class SandboxClient:
                 in {
                     "sticker_index",
                     "workspace_publish",
-                    "workspace_checkout",
+                    "workspace_copy",
+                    "workspace_copy_result",
                     "workspace_media_read",
                     "workspace_media_validate",
                 }
@@ -143,7 +144,7 @@ class SandboxClient:
                     in (
                         (SANDBOX_TOOLS - READ_TOOLS)
                         | (WORKSPACE_TOOLS - WORKSPACE_READ_TOOLS)
-                        | {"workspace_checkout"}
+                        | {"workspace_copy", "workspace_publish"}
                     )
                 ),
             }

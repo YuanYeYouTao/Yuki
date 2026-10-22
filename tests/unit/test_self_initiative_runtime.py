@@ -556,7 +556,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         load_tools=AsyncMock(
             return_value=tuple(
                 ChatTool(name, name, {"type": "object"})
-                for name in ("task_control", "send_message", "subagent_start")
+                for name in ("task_control", "send", "subagent_start")
             )
         ),
     )

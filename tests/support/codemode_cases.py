@@ -47,7 +47,7 @@ READS = ("lookup", "search_chat_history")
 WRITES = ("workspace_write",)
 TOOLS = (
     *(ChatTool(name, name, {"type": "object"}) for name in (*READS, *WRITES)),
-    ChatTool("send_message", "send", {"type": "object"}),
+    ChatTool("send", "send", {"type": "object"}),
     ChatTool("memory_change", "memory", {"type": "object"}),
     ChatTool("task_control", "control", {"type": "object"}),
     EXECUTE_CODE_TOOL,
@@ -108,7 +108,7 @@ def classify(call: ToolCall) -> ChildClass:
         return ChildClass("control", False, False)
     if name == "memory_change":
         return ChildClass("memory_write", False, True)
-    if name == "send_message":
+    if name == "send":
         return ChildClass("send", False, True)
     if name in WRITES:
         return ChildClass("write", False, True)

@@ -123,13 +123,13 @@ Conversation、Space、Presence 和群绑定；每次新到期发生使用该会
 已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单。
 固定直调声明与完整执行 API 均不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
-模型侧只用 `send_message` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
+模型侧只用 `send` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
 其他人或群，后端选择私聊或群聊路由。表情、附件和引用由同一工具的参数表达；提及直接在正文原位置写 `@名字`，同名时复制 `@{account:UUID}`；语音合成与发送已退出；
 真实网关发送和持久回执组成普通工具结果，`uncertain` 不自动重试。一次循环可按实际需要多次发送，也可
 完全不发送；模型最终正文交回原调用方，不会自动作为平台聊天消息发送。`report_progress` 和本轮最终回复
 效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
 固定媒体提示将表情作为聊天语气，按当前话题和任务需要选读附件；讨论图片本身时仍可具体查看与说明。
-自然配图通过 `send_message.emoji.goal` 表达情绪或含义，正文先发、后台选图；纯表情可省略 `text`，不要求模型等图或逐张复述标签。
+自然配图通过 `send.emoji.goal` 表达情绪或含义，正文先发、后台选图；纯表情可省略 `text`，不要求模型等图或逐张复述标签。
 有前台文字（包括只写 `@名字`）时，提及和引用随前台原位发送一次，后台只追加图片。配图意图与首个正文发送 claim 在同一短事务保存原来源，并关联原文本回执；
 后台沿原分段计划等待文字派发结束，失败或未知同样保留原配图意图，不要求正文全部成功。
 正文前不单独补查配图来源，正文后不另开接纳写事务；来源查询与必要复核复用原 claim。
@@ -145,23 +145,23 @@ Main、JEV 和插件读取同一事件原位提及快照（显示名、Account�
 存在原 Work 时经共同 complete 入口接纳结束决定，由原 writer 收拢所属执行和晚到业务输入；没有
 Work 时返回内部结果。自动化沿原 Work 终态收尾，完成不强制发送；发送是否发生由原回执证明，内部 final 不证明 QQ 已回复。参数、权限或预算拒绝不伪造发送尝试，未知发送不盲目重试。
 共享执行提示明确要求：当前真人委托的写操作按真实回执简短反馈，相关结果可随任务进展或交付合并说明。
-实际发给当前会话仍调用 `send_message`；未确认不宣称成功，已送达的
+实际发给当前会话仍调用 `send`；未确认不宣称成功，已送达的
 同一结果不重复反馈。明确安静执行、自主 SELF、定时任务和后台维护不因此额外发消息。
 这是 Agent 的执行指导，不新增关键词判断、强制代发或恢复循环；合成回放验证提示装配、
 工具回执顺序和显式发送边界，不证明真实模型在任意场景都遵守提示。
 记忆写入不创建独占轮、单次写配额或特殊发送权限。每次操作仍核对原 actor、授权、
 输入来源、预算和效果回执；发送继续经 Social 权限、路由与投递合同。记忆写和发送可在同批或同一 Code 脚本按原调用顺序执行，真实结果逐条返回。原未知调用不重新派发，后续独立调用不因历史未知被整体拒绝。
-`NO_REPLY` 是合法内部沉默，`return_to_caller` 不制造真人收尾通知。作为 `send_message`
+`NO_REPLY` 是合法内部沉默，`return_to_caller` 不制造真人收尾通知。作为 `send`
 正文的完整 `NO_REPLY` 仍在发送和回执前拒绝；子 Agent 可沿真实来源与授权发送，内部结果与实际发送回执分别记录。
 
 工具执行、pending、retryable 和 committed 判据只来自类型化执行事实或原持久回执，
 不从模型可见展示文本反推。新 call 每次核当前授权并读取当前事实，不以另一 call 的同参
 业务结果代替执行。原 call 与旧 readonly alias 沿自己的持久回执恢复，保原展示与执行事实；
 纯 query-vector、不可变内容及 Provider 的真实缓存各沿原合同。恢复不增加新执行或重置预算。旧格式只在一次升级中归一；原回执和已付快照保留原件，新执行不保留旧参数解析器。来源标题和摘要等展示材料不作为执行权威。
-单次 `send_message` 的纯文本复用原回复分条规则（换行、结构与字数上限），
+单次 `send` 的纯文本复用原回复分条规则（换行、结构与字数上限），
 逐条持久化发送回执；模型主动多次调用仍是独立的发送。部分发送未知时停止后续
 分条，重入只读取已有回执，不盲目重发。文字、原位提及、引用与媒体先形成共同内容，再由适配器纯 `plan_send` 布局成实际派发。
-`send_message` 是显式会话交付，不要求先 `task_control.accept`；它仍被视为真实副作用，
+`send` 是显式会话交付，不要求先 `task_control.accept`；它仍被视为真实副作用，
 目标权限、路由、mutation 围栏和投递回执均在执行处核验。普通写操作沿原领域授权和回执执行，不强制先接纳 Work。社交工具不再对发消息或戳一戳施加额外的每目标/全局分钟频率上限。
 已接纳 Work 也不额外施加发送次数或 16 条/60 秒窗口；投递意图只负责身份、内容冲突和
 回执防重放，不是频率配额。已有明确未派发的 blocked 意图可按原身份恢复；accepted、
@@ -169,7 +169,7 @@ dispatching 和 unknown 不因此获得重发资格。平台实际拒绝仍按�
 原 Presence 的实时连接在发送前断开时，原 Work 可按持久检查点短暂重试；
 明确暂停、路由歧义和已进入 dispatching/unknown 的发送不因此获得重发资格。
 共同内容、原路由和物理 parts 在首次接纳时一次冻结，父子回执沿同一原计划保存；重试不按新昵称、今日归属、运行参数或当前适配器重新布局。每个物理派发仍单独 claim/ACK；确认失败与结果未知分别报告，不把发送前拒绝误报为未知。
-模型提供给 `send_message` 的文本在分条、回执准备、媒体生成、网关发送和账本写入之前统一净化；
+模型提供给 `send` 的文本在分条、回执准备、媒体生成、网关发送和账本写入之前统一净化；
 内部历史事件前缀不会进入新的可见消息。既有 QQ 消息、原始账本、公共检查点和记忆不追溯改写。
 可选 `<yuki-state>` 控制尾段同样在发送与最终正文净化时移除，格式错误不额外重试模型。
 主 SELF 自报按实际 run、请求序号和响应 ID 保存；它不是别人行为的证据，也不允许工作者代报。
@@ -206,7 +206,7 @@ delivery.target 是任务要求与原目标，不裁剪工具或制造另一套�
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
 绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
-主任务的 `need_input.reason` 是内部等待资料，不会自动变成平台提问；需要用户补充时，先用 `send_message` 交付问题，再登记等待。
+主任务的 `need_input.reason` 是内部等待资料，不会自动变成平台提问；需要用户补充时，先用 `send` 交付问题，再登记等待。
 子任务直接 `need_input(reason=问题)`，Host 会通过父子通信发送问题并按原回执决定是否等待，无需再单独提问；底层等价方式是 `subagent_control(action=message, ask=true)`。
 恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。
 已有 Work 的 direct 控制使用原 InvocationService 的 T1/T2/T3 保存调用与回执，不扣业务工具预算。原响应中明确未派发的尾部沿原调用键接续；已派发未知调用、旧未执行终结回执与已关闭程序不因升级取得重派资格。合同变更在合法新链应用，旧已付请求、公共历史和固定前缀原件保持不变。
@@ -233,10 +233,10 @@ Person ID、外部账号 ID 和当前可用显示名；`automation_query(view=ge
 
 | 来源 | 恢复所有者 | 交付所有者 |
 | --- | --- | --- |
-| 用户消息 | WorkScheduler 选择，WorkResumer 恢复原 work/generation | Agent 显式 `send_message` |
-| SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler 选择、WorkResumer 恢复原 initiative/work/generation | Agent 显式 `send_message`；允许 `NO_REPLY` |
-| 定时 Main 发生 | AutomationWorker 保存唯一 run；实际 Work/派生目标由 WorkScheduler 交给共同 Main 入口 | Agent 显式 `send_message`，原 Social 回执不重发 |
-| 插件通知自主轮 | PluginBackgroundTurnWorker 保留原 job/event；尚存 Work 由 WorkScheduler 交回原 Host 入口 | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
+| 用户消息 | WorkScheduler 选择，WorkResumer 恢复原 work/generation | Agent 显式 `send` |
+| SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler 选择、WorkResumer 恢复原 initiative/work/generation | Agent 显式 `send`；允许 `NO_REPLY` |
+| 定时 Main 发生 | AutomationWorker 保存唯一 run；实际 Work/派生目标由 WorkScheduler 交给共同 Main 入口 | Agent 显式 `send`，原 Social 回执不重发 |
+| 插件通知自主轮 | PluginBackgroundTurnWorker 保留原 job/event；尚存 Work 由 WorkScheduler 交回原 Host 入口 | Agent 显式 `send`；插件自己的通知 outbox 独立 |
 | 真实 actor/source 的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 选择并交回插件 Host 恢复；无消息来源保原 run/执行编号 | 原调用方查询结果 |
 | 子 Agent | SubagentScheduler 选择，SubagentExecution 恢复原父子关系 | 父 Agent 根据真实子结果决定交付 |
 
@@ -486,7 +486,7 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 普通回答无需接纳 Work。模型最终文字可结束内部循环，但不触发发送；
 工作完成由 Agent 提交决定，原 writer 收拢实际所属执行。发送是否成功只看显式发送回执，
 不自动把工具 JSON 或固定成功句发到聊天中。
-分条 `send_message` 在首条网关调用前持久记录计划段数，并按原调用的确定性子调用 ID
+分条 `send` 在首条网关调用前持久记录计划段数，并按原调用的确定性子调用 ID
 核对每一段 Social 回执。完整计划和同目标的全部子回执说明实际投递，部分成功不
 冒充整次发送成功；缺失计划或结果保持未知。领域回执不补造原 Work 工具结果，也不
 给未知调用重新派发资格。原 Work effect 与 Social 操作之间的真实归属继续核验。
@@ -499,7 +499,7 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 该元数据保存于原 checkpoint 的
 有界 `communication` 子路径，原 wait/need_input/fail 检查点不会擦除它。
 
-沟通由 Agent 在原循环决定，send_message 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
+沟通由 Agent 在原循环决定，send 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
 同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送或脚本停止。
 `task_control.derive` 沿已有 Work 派生普通业务子目标；get/list 可查父子与祖先，指定 work_id 的 cancel/fail/resume 使用原管理 writer。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
 

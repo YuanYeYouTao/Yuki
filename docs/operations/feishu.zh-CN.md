@@ -63,7 +63,7 @@ uv run yuki-bot
 
 | 功能 | 当前路径 |
 | --- | --- |
-| 文字、图片和文件 | `send_message`，由适配器编码为原生消息 |
+| 文字、图片和文件 | `send`，由适配器编码为原生消息 |
 | 提及与引用 | 保留真实账号提及与原消息关系；业务工具使用内部事件 ID |
 | 话题 | 原平台 root/thread 关系映射到独立 Conversation |
 | 撤回 | `recall_own_message`，使用原发送 Presence 和原回执 |

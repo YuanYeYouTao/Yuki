@@ -57,7 +57,7 @@ async def test_late_selection_close_cannot_erase_another_owners_frozen_version(
     env = await social_env(database, tmp_path)
     first, first_library = make_delivery(env)
     second, second_library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     intent = await first.intents.find(env.context.turn_id, env.context.call_id)
     selecting, release_selection = asyncio.Event(), asyncio.Event()
     publishing, first_publishing = asyncio.Event(), asyncio.Event()
@@ -108,7 +108,7 @@ async def test_slow_illustration_does_not_block_another_intent(database, tmp_pat
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
     entered, release = asyncio.Event(), asyncio.Event()
-    slow = await env.service.execute("send_message", ARGS, env.context)
+    slow = await env.service.execute("send", ARGS, env.context)
     slow_id = slow["emoji"]["intent_id"]
     select_asset, publish, call_api = library.select, library.publish, env.bot.call_api
     blocked_network = False
@@ -143,7 +143,7 @@ async def test_slow_illustration_does_not_block_another_intent(database, tmp_pat
         await asyncio.wait_for(entered.wait(), 3)
         fast_context = replace(env.context, call_id="independent-fast")
         fast = await env.service.execute(
-            "send_message", {"text": "第二条正文", "emoji": {"goal": "另一张"}}, fast_context
+            "send", {"text": "第二条正文", "emoji": {"goal": "另一张"}}, fast_context
         )
         assert fast["status"] == "succeeded"
         assert (await settle(delivery, fast_context))["status"] == "succeeded"
@@ -158,7 +158,7 @@ async def test_slow_illustration_does_not_block_another_intent(database, tmp_pat
 async def test_pending_discovery_crosses_a_page_of_active_intents(database, tmp_path):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", {"emoji": {"goal": "blocked"}}, env.context)
+    await env.service.execute("send", {"emoji": {"goal": "blocked"}}, env.context)
     original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     async with database.immediate_session() as session:
         row = await session.get(SocialEmojiIntentModel, original.id)
@@ -192,7 +192,7 @@ async def test_pending_discovery_crosses_a_page_of_active_intents(database, tmp_
     await delivery.start()
     try:
         fast_context = replace(env.context, call_id="page-101")
-        await env.service.execute("send_message", {"emoji": {"goal": "fast"}}, fast_context)
+        await env.service.execute("send", {"emoji": {"goal": "fast"}}, fast_context)
         async with asyncio.timeout(10):
             while True:
                 intent = await delivery.intents.find(fast_context.turn_id, fast_context.call_id)
@@ -210,7 +210,7 @@ async def test_pending_discovery_crosses_a_page_of_active_intents(database, tmp_
 async def test_original_dispatch_restores_without_source_or_manager(database, tmp_path, uncertain):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     original_call = env.bot.call_api
 
     async def transport(method, **arguments):
@@ -252,7 +252,7 @@ async def test_pure_illustration_keeps_internal_reply_and_mention_without_foregr
     context = env.context
     env.bot.calls.clear()
     result = await env.service.execute(
-        "send_message",
+        "send",
         {
             "emoji": {"goal": "开心"},
             "text": f"@{{account:{env.account}}}",
@@ -284,7 +284,7 @@ async def test_same_binding_uses_original_presence_among_two_connected_accounts(
     env.registry.connect(other, provider_id="snowluma", presence_id=presence.id)
     delivery, _ = make_delivery(env)
     await env.service.execute(
-        "send_message", {**ARGS, "target": {"kind": "person", "target_id": env.person}}, env.context
+        "send", {**ARGS, "target": {"kind": "person", "target_id": env.person}}, env.context
     )
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     await delivery._deliver(intent)
@@ -333,7 +333,7 @@ async def test_self_source_presence_is_independent_of_its_actual_private_target(
     )
     delivery, _ = make_delivery(env)
     text = await env.service.execute(
-        "send_message", {**ARGS, "target": {"kind": "person", "target_id": env.person}}, context
+        "send", {**ARGS, "target": {"kind": "person", "target_id": env.person}}, context
     )
     assert text["status"] == "succeeded"
     intent = await delivery.intents.find(context.turn_id, context.call_id)
@@ -383,7 +383,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
     async with database.immediate_session() as session:
         new_root = await ensure_person(session, "10002")
         await merge_persons(session, env.person, new_root)
-    result = await env.service.execute("send_message", arguments, env.context)
+    result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "succeeded" and result["operation_id"] == prepared.operation_id
     current = await env.service.receipts.get(prepared.operation_id)
     assert str(current.target.id) == env.person and current.payload_hash == prepared.payload_hash
@@ -393,7 +393,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
     assert len(sends(env.bot)) == 1
     with pytest.raises(SocialError, match="idempotency_conflict"):
         await env.service.execute(
-            "send_message", dict(arguments, text="changed request"), env.context
+            "send", dict(arguments, text="changed request"), env.context
         )
 
 
@@ -405,7 +405,7 @@ async def test_original_social_cas_survives_committed_acknowledgement_loss(
 
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     intent = await delivery.intents.select(intent.id, library.asset.model_dump(mode="json"))
     writer, boundary = database.immediate_session, getattr(env.service.receipts, phase)
@@ -520,7 +520,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
     token = current_work_control.set(control)
     try:
         result = await env.service.execute(
-            "send_message",
+            "send",
             {
                 "emoji": {"goal": "开心"},
                 "target": {"kind": "space", "target_id": space_binding.space_id},
@@ -607,11 +607,11 @@ async def test_admission_commit_acknowledgement_loss_wakes_an_already_sleeping_o
     await delivery.start()
     try:
         await asyncio.wait_for(discovered.wait(), 3)
-        result = await env.service.execute("send_message", arguments, env.context)
+        result = await env.service.execute("send", arguments, env.context)
         assert result["status"] == "unknown" and result["emoji"]["status"] == "unknown"
         assert (await settle(delivery, env.context))["status"] == "succeeded"
         assert len(sends(env.bot)) == 1 and library.select_calls == 1
-        assert (await env.service.execute("send_message", arguments, env.context))["emoji"][
+        assert (await env.service.execute("send", arguments, env.context))["emoji"][
             "status"
         ] == "succeeded"
         assert len(sends(env.bot)) == 1
@@ -640,9 +640,9 @@ async def test_original_request_replay_wakes_its_persisted_pending_intent(
         with monkeypatch.context() as patch:
             # The durable row survives an absent in-memory notification.
             patch.setattr(delivery, "wake", lambda: None)
-            result = await env.service.execute("send_message", ARGS, env.context)
+            result = await env.service.execute("send", ARGS, env.context)
         assert result["emoji"]["status"] == "accepted" and library.select_calls == 0
-        replay = await env.service.execute("send_message", ARGS, env.context)
+        replay = await env.service.execute("send", ARGS, env.context)
         assert replay["status"] == "succeeded" and len(sends(env.bot)) == 1
         assert (await settle(delivery, env.context))["status"] == "succeeded"
         assert library.select_calls == 1 and len(sends(env.bot)) == 2
@@ -662,7 +662,7 @@ async def test_account_transfer_does_not_retarget_a_pending_illustration(
         arguments.update(text="原正文", target={"kind": "person", "target_id": env.person})
     else:
         arguments["text"] = f"@{{account:{env.account}}}"
-    original = await env.service.execute("send_message", arguments, env.context)
+    original = await env.service.execute("send", arguments, env.context)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     original_source, original_target = intent.source, intent.target
 
@@ -687,7 +687,7 @@ async def test_account_transfer_does_not_retarget_a_pending_illustration(
 async def test_two_illustration_owners_share_the_original_dispatch_claim(database, tmp_path):
     env = await social_env(database, tmp_path)
     first, _ = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     intent = await first.intents.find(env.context.turn_id, env.context.call_id)
     second, _ = make_delivery(env)
     network, entered, release = env.bot.call_api, asyncio.Event(), asyncio.Event()
@@ -722,7 +722,7 @@ async def test_repeated_close_cancellation_joins_the_actual_copy_and_keeps_pendi
 ):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send_message", ARGS, env.context)
+    await env.service.execute("send", ARGS, env.context)
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
     def copy_original(asset):

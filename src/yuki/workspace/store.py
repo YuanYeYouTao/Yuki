@@ -127,13 +127,6 @@ class WorkspaceStore:
             "immutable": bool(row["immutable"]),
         }
 
-    def _prune_metadata(self, db: sqlite3.Connection) -> int:
-        # Existing, still-present legacy files become persistent on first activation.
-        db.execute("UPDATE artifacts SET expires_at=253402300799 WHERE expires_at<253402300799")
-        count = db.execute("DELETE FROM artifacts WHERE expires_at<=?", (time.time(),)).rowcount
-        db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
-        return count
-
     @staticmethod
     def _unlink(paths: list[Path]) -> None:
         for path in paths:
@@ -143,7 +136,7 @@ class WorkspaceStore:
                 # An open reader on Windows or a transient I/O failure can defer GC.
                 pass
 
-    def cleanup(self) -> int:
+    def cleanup(self) -> None:
         # Discover files before the writer fence. A publisher can only introduce a
         # fresh UUID blob while holding that fence; it cannot resurrect a candidate.
         with self._transaction(write=False) as db:
@@ -160,7 +153,8 @@ class WorkspaceStore:
                 invalid.append((row["id"], row["blob"], row["revision"]))
         candidates = list(self.root.glob("*.blob"))
         with self._transaction() as db:
-            count = self._prune_metadata(db)
+            # Preserve still-present snapshots written before permanent storage.
+            db.execute("UPDATE artifacts SET expires_at=253402300799 WHERE expires_at<253402300799")
             db.executemany("DELETE FROM artifacts WHERE id=? AND blob=? AND revision=?", invalid)
             db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
             referenced = {row[0] for row in db.execute("SELECT blob FROM artifacts")}
@@ -168,7 +162,6 @@ class WorkspaceStore:
                 :128
             ]
         self._unlink(garbage)
-        return count
 
     def _publish_file(self, item: PreparedArtifact) -> None:
         if item.pending.parent != self.root:
@@ -289,20 +282,3 @@ class WorkspaceStore:
             return result
         finally:
             self._unlink([path])
-
-    def list(self, *, cursor: str = "", limit: int = 20) -> dict[str, Any]:
-        if cursor:
-            self._id(cursor)
-        if not 1 <= limit <= 100:
-            raise WorkspaceError("invalid_limit")
-        with self._transaction(write=False) as db:
-            now = time.time()
-            rows = db.execute(
-                "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
-                "AS immutable FROM artifacts WHERE expires_at>? AND id>? ORDER BY id LIMIT ?",
-                (now, cursor, limit + 1),
-            ).fetchall()
-            return {
-                "items": [self._metadata(row) for row in rows[:limit]],
-                "next_cursor": rows[limit - 1]["id"] if len(rows) > limit else None,
-            }

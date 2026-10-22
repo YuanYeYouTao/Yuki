@@ -61,7 +61,7 @@ async def setup_run(
                 tool_calls=(
                     ToolCall(
                         id="actual-delivery",
-                        function=ToolFunction(name="send_message", arguments=json.dumps(args)),
+                        function=ToolFunction(name="send", arguments=json.dumps(args)),
                     ),
                 ),
             )

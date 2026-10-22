@@ -46,7 +46,7 @@ async def test_normal_decision_preserves_all_authorized_original_calls(
         tool("task_control", arguments, "decision"),
         tool("read_fixture", {}, "read"),
         tool("write_fixture", {}, "write"),
-        tool("send_message", {"text": "prepared report"}, "send"),
+        tool("send", {"text": "prepared report"}, "send"),
         tool("task_control", {"action": "get", "work_id": probe.control.current["id"]}, "get"),
         tool("subagent_control", {"action": "list"}, "children"),
     )
@@ -54,7 +54,7 @@ async def test_normal_decision_preserves_all_authorized_original_calls(
     result = await run(probe)
     assert result.work_state == ending
     assert len(probe.provider.requests) == 1
-    assert probe.observed == ["read_fixture", "write_fixture", "send_message"]
+    assert probe.observed == ["read_fixture", "write_fixture", "send"]
     receipts = pairs(probe.control)
     assert list(receipts) == [call.id for call in calls]
     assert all(receipt["ok"] for receipt in receipts.values())
@@ -69,7 +69,7 @@ async def test_true_current_revocation_stops_remaining_calls(database, tmp_path,
     calls = (
         tool("task_control", {"action": "complete"}, "ordinary-decision"),
         tool("task_control", {"action": action}, "revoke-current"),
-        tool("send_message", {"text": "revoked source"}, "not-sent"),
+        tool("send", {"text": "revoked source"}, "not-sent"),
     )
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     result = await run(probe)
@@ -96,7 +96,7 @@ async def test_complete_then_send_keeps_real_social_receipt_without_recovery_res
                 0,
                 tool_calls=(
                     tool("task_control", {"action": "complete", "result": "report sent"}, "done"),
-                    tool("send_message", {"text": "actual original report"}, "report"),
+                    tool("send", {"text": "actual original report"}, "report"),
                 ),
             )
         ],
@@ -122,7 +122,7 @@ async def test_complete_then_send_keeps_real_social_receipt_without_recovery_res
     result = await run(probe)
     assert result.work_state == "completed" and result.text == "report sent"
     fact = next(
-        fact for fact in await probe.control.effect_evidence() if fact["tool"] == "send_message"
+        fact for fact in await probe.control.effect_evidence() if fact["tool"] == "send"
     )
     assert fact["executed"] is True and fact["uncertain"] is False
     recovered = WorkControl(
@@ -151,7 +151,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
     calls = (
         tool("task_control", {"action": "complete", "result": "retained result"}, "complete"),
         tool("write_fixture", {"step": 1}, "first-tail"),
-        tool("send_message", {"text": "original tail report"}, "last-tail"),
+        tool("send", {"text": "original tail report"}, "last-tail"),
     )
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     control = probe.control
@@ -224,7 +224,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
     )
     assert result.work_state == "completed" and result.text == "retained result"
     assert len(probe.provider.requests) == original_requests == 1
-    assert probe.observed.count("send_message") == 1
+    assert probe.observed.count("send") == 1
     assert probe.observed.count("write_fixture") == (boundary != "after_t2")
     first_result = json.loads(await recovered.session.journal.effect_result(original_key))
     assert first_result.get("uncertain", False) == (boundary == "after_t2")

@@ -1246,7 +1246,7 @@ class SemanticParticipationService:
             + "沿原工作保存必要发现和下一步，可委派独立子任务；持续目标本轮暂无变化时，"
             "用 task_control wait 等后续信号或复查时间。没有需要继续的工作才安静结束。"
             "不要因醒来或群里安静主动开话题、打招呼、追问或找人聊天。已有任务需要反馈、约定提醒"
-            "到期或重要变化确实需要对方知道或决定时，再用 send_message 简短说明。"
+            "到期或重要变化确实需要对方知道或决定时，再用 send 简短说明。"
             "来源引用如下，详情可按需查询："
             + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
         )

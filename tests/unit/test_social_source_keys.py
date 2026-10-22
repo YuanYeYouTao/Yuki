@@ -52,7 +52,7 @@ async def test_automation_source_replay_never_repeats_a_send(database, tmp_path,
         assert await env.service.receipts.claim(receipt.operation_id, presence_id=env.presence)
         assert await env.service.receipts.recover_interrupted() == 1
     else:
-        receipt = await env.service.execute("send_message", arguments, context)
+        receipt = await env.service.execute("send", arguments, context)
         assert receipt["status"] == "succeeded"
 
     # Recreate the repository so replay relies on durable state, not process memory.
@@ -61,7 +61,7 @@ async def test_automation_source_replay_never_repeats_a_send(database, tmp_path,
     assert recovered is not None
     expected = OperationStatus.UNCERTAIN if interrupted else OperationStatus.SUCCEEDED
     assert recovered.status is expected
-    replay = await env.service.execute("send_message", arguments, context)
+    replay = await env.service.execute("send", arguments, context)
     assert replay["operation_id"] == recovered.operation_id
     assert replay["status"] == expected.value
     sends = [call for call in env.bot.calls if call[0] == "send_group_msg"]

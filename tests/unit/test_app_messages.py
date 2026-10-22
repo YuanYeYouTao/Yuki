@@ -57,7 +57,7 @@ async def app_env(database, admin, tmp_path):
             tool_calls=(
                 ToolCall(
                     id=str(uuid4()),
-                    function=ToolFunction(name="send_message", arguments='{"text":"App reply"}'),
+                    function=ToolFunction(name="send", arguments='{"text":"App reply"}'),
                 ),
             ),
         )
@@ -428,7 +428,7 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
 
     monkeypatch.setattr(env.bot, "call_api", transfer_during_send)
     result = await env.service.execute(
-        "send_message",
+        "send",
         {
             "target": {"kind": "person", "target_id": env.person},
             "text": "dispatched for original owner",

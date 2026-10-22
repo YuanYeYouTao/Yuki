@@ -215,7 +215,7 @@ mypy 710 文件无错误。
 
 既有测试调整：`test_social_source_keys.py` 的长 call ID 从拒绝改为完整身份存储表示、
 重入与参数冲突断言（合约变化有注释）；`test_codemode_authority_parity.py` 纳入
-`update_short_state`，移除 send_message 对照跳过；`test_automation_timeout_certainty.py`
+`update_short_state`，移除 send 对照跳过；`test_automation_timeout_certainty.py`
 用真实 asyncio Timeout 在派发边界触发，消除 0.2 秒期限在 SQLite 准备阶段被机器负载
 耗尽的问题，原未知/不重发断言保留。没有删除或放宽验收断言。
 
@@ -509,7 +509,7 @@ uv run --frozen pytest -q tests   # P01 后：2758 通过、1 跳过（需生产
 #   test_automation_timeout_certainty::test_transport_deadline_preserves_uncertain_receipt_and_original_dispatch
 #   （剩余 0.2s 截止；该轮因机器负载耗时 25 分钟，截止在发送意图前触发）。单独重跑 5/5 通过，
 #   P05 未改 automation 执行器；记为计时敏感，未修改测试。
-# P05 后（同上）：3100 通过、2 跳过（生产备份路径；send_message 在已提交修改后仍可调用的对照项）；mypy 719 文件无错误
+# P05 后（同上）：3100 通过、2 跳过（生产备份路径；send 在已提交修改后仍可调用的对照项）；mypy 719 文件无错误
 ```
 
 第一轮全量：2727 通过、7 失败、24 错误。失败为本次删除旧 `execute/begin_batch` 后未迁移的

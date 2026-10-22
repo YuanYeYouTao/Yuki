@@ -644,7 +644,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         "",
         0,
         tool_calls=(
-            ToolCall("original-effect", ToolFunction("send_message", '{"text":"original effect"}')),
+            ToolCall("original-effect", ToolFunction("send", '{"text":"original effect"}')),
             ToolCall("original-finish", ToolFunction("task_control", '{"action":"complete"}')),
         ),
     )
@@ -692,7 +692,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
                 )
             ).one()
             receipt_id = receipt.id
-            assert receipt.tool_name == "send_message" and receipt.success
+            assert receipt.tool_name == "send" and receipt.success
             assert receipt.execution_id == child_id and receipt.trigger_event_id is None
             assert receipt.canonical_space_id == space and receipt.canonical_person_id is None
         assert await executor.run(child_id) is None

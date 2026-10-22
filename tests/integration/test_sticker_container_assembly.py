@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from tests.conftest import make_settings
 from tests.support.model_profiles import write_fake_profiles
-from tests.unit.test_sticker_library import LocalDirectoryBridge, picture
+from tests.unit.test_sticker_library import LocalDirectoryBridge
 
 from yuki.container import ApplicationContainer
 from yuki.health import build_health_payload
@@ -38,7 +38,11 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         database=database,
     )
     await app.character.initialize("Offline fixture")
-    bridge = LocalDirectoryBridge(tmp_path / "manager-workspace", app.workspace_service.store)
+    bridge = LocalDirectoryBridge(
+        tmp_path / "manager-workspace",
+        app.workspace_service.store,
+        cache_root=app.conversation_media.root.parent,
+    )
 
     async def manager_read_or_file(method, arguments, *, request_id, **_kwargs):
         if method == "list_code_completions":
@@ -49,7 +53,7 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
     try:
         await app.start()
         assert app.social_service.emoji_delivery is app.emoji_delivery
-        assert app.emoji_library.source_valid == app.conversation_media.source_current
+        assert app.emoji_library.workspace.conversation_media is app.conversation_media
         assert not hasattr(app.workspace_service, "stickers")
         assert app.emoji_delivery.running
         delivery_task = app.emoji_delivery._task
@@ -57,24 +61,32 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         personal = await app.main_agent_contract.definitions()
         revision = app.main_agent_contract.revision
         assert personal == platform
+        names = {tool.name for tool in platform}
+        assert "send" in names
+        assert not {"send_message", "send_file", "workspace_publish"} & names
+        assert "send" in {tool.name for tool in await app.main_agent_contract.model_definitions()}
+        if code_enabled:
+            api = app.main_agent_contract.script_api
+            assert api is not None
+            assert api.tool_for("yuki_send") == "send"
+            assert api.tool_for("yuki_send_message") is None
+            assert "workspace_publish" not in api.schemas
         assert "query_chat_history" in {tool.name for tool in platform}
         assert "read_personal_entry" not in {tool.name for tool in platform}
         assert ("execute_code" in {tool.name for tool in platform}) == code_enabled
-        message = next(tool for tool in platform if tool.name == "send_message")
+        message = next(tool for tool in platform if tool.name == "send")
         declared_message = next(
-            tool for tool in social_tool_definitions() if tool.name == "send_message"
+            tool for tool in social_tool_definitions() if tool.name == "send"
         )
-        personal_message = next(tool for tool in personal if tool.name == "send_message")
+        personal_message = next(tool for tool in personal if tool.name == "send")
         assert message == personal_message
         assert message.parameters == declared_message.parameters
         assert message.description == declared_message.description
-        assert message.schema_version == declared_message.schema_version == "4"
+        assert message.schema_version == declared_message.schema_version
         assert "mentions" not in message.parameters["properties"]
         target_fields = message.parameters["properties"]["target"]["properties"]
         assert not {"display_name", "subject_ref"} & target_fields.keys()
         assert "后台配图" in message.parameters["properties"]["emoji"]["description"]
-        asset = await app.emoji_library.store_content(picture(), platform="qq", is_sticker=True)
-        assert asset.relative_path is not None
         assert await app.main_agent_contract.definitions() == platform
         assert app.main_agent_contract.revision == revision
         payload = await build_health_payload(app)

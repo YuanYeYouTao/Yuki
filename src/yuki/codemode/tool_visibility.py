@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 TOOL_LOOKUP_NAME = "lookup_tools"
 DIRECT_TOOL_NAMES = frozenset(
     {
-        "send_message",
+        "send",
         "task_control",
         "subagent_start",
         "subagent_control",
@@ -28,7 +28,6 @@ DIRECT_TOOL_NAMES = frozenset(
         "inspect_conversation_attachment",
         "read_tool_artifact",
         "workspace_inspect",
-        "workspace_publish",
         "time_get_current",
         "terminal_exec",
         "external_agent",

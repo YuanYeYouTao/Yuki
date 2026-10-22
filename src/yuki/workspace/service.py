@@ -1,19 +1,16 @@
-"""Persistent global files and explicit event-bound attachment import."""
+"""Persistent files, selected media and internal delivery publication."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import logging
-from pathlib import PurePosixPath
-from tempfile import TemporaryFile
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
 from yuki.domain.messages import ChatImage
 from yuki.sandbox.client import SandboxClient
-from yuki.services.media_resolver import _media_io
 from yuki.workspace.inspect import WorkspaceInspector
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 from yuki.workspace.tools import workspace_tools as workspace_tools
@@ -110,6 +107,24 @@ class WorkspaceService:
                 None, str(args["question"]), runtime=vision, file_metadata=metadata, data=data
             )
         if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
+            source_key = f"attachment:{int(args['event_id'])}:{int(args['attachment_index'])}"
+            if name == "save_conversation_attachment_to_workspace":
+                if self.sandbox is None:
+                    raise WorkspaceError("environment_unavailable")
+                prior = await self.sandbox.execute(
+                    "workspace_copy_result",
+                    {"source_key": source_key, "destination": str(args["destination"])},
+                    request_id=request_id,
+                )
+                if prior.get("error"):
+                    return (
+                        {**prior, "uncertain": True}
+                        if prior["error"] == "sandbox_unavailable"
+                        else prior
+                    )
+                if prior.get("found"):
+                    result: dict[str, Any] = prior["result"]
+                    return result
             media = self.conversation_media
             if media is None:
                 raise WorkspaceError("event_attachment_unavailable")
@@ -131,26 +146,15 @@ class WorkspaceService:
                     )
                 if self.sandbox is None:
                     raise WorkspaceError("environment_unavailable")
-                destination = str(args["destination"])
-
-                def snapshot_attachment() -> dict[str, Any]:
-                    with path.open("rb") as stream:
-                        return self.store.snapshot(
-                            stream.fileno(),
-                            PurePosixPath(destination).name,
-                            artifact_id=str(uuid5(NAMESPACE_URL, f"yuki:attachment:{request_id}")),
-                            source_key=f"attachment:{item.conversation_id}:{int(args['event_id'])}:{int(args['attachment_index'])}",
-                        )
-
-                metadata = await _media_io(snapshot_attachment)
-                result = await self._checkout(metadata, request_id, destination=destination)
-                return result
+                return await self.copy_from_cache(
+                    path="/inputs/media-cache/v1/" + path.relative_to(media.root).as_posix(),
+                    destination=str(args["destination"]),
+                    expected_version=item.content_sha256,
+                    request_id=request_id,
+                    source_key=source_key,
+                )
             except ConversationMediaError as exc:
                 raise WorkspaceError(str(exc)) from exc
-        if name == "workspace_publish":
-            if self.sandbox is None:
-                raise WorkspaceError("environment_unavailable")
-            return await self.sandbox.execute(name, args, request_id=request_id)
         raise WorkspaceError("unknown_tool")
 
     async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
@@ -190,52 +194,51 @@ class WorkspaceService:
             else:
                 raise WorkspaceError("workspace_source_missing")
 
-    async def _checkout(
+    async def copy_from_cache(
         self,
-        metadata: dict[str, Any],
-        request_id: str,
-        previous_version: str | None = None,
         *,
-        destination: str | None = None,
+        path: str,
+        destination: str,
+        request_id: str,
+        source_key: str,
+        expected_version: str | None = None,
     ) -> dict[str, Any]:
         if self.sandbox is None:
-            return metadata
+            raise WorkspaceError("environment_unavailable")
         result = await self.sandbox.execute(
-            "workspace_checkout",
+            "workspace_copy",
             {
-                "artifact_id": metadata["artifact_id"],
-                "name": metadata["name"],
-                "expected_version": previous_version,
-                **({"destination": destination} if destination is not None else {}),
+                "path": path,
+                "destination": destination,
+                "expected_version": expected_version,
+                "source_key": source_key,
             },
             request_id=request_id,
         )
-        if result.get("error"):
-            return {**metadata, "file_error": result["error"], "file_imported": False}
-        return {**metadata, **result, "file_imported": True}
+        return result
 
-    async def import_content(
+    async def publish_for_send(
         self,
-        content: bytes,
-        destination: str,
         *,
+        path: str,
         request_id: str,
         artifact_id: str,
         source_key: str,
         name: str | None = None,
+        expected_version: str | None = None,
     ) -> dict[str, Any]:
-        """Use the existing shared snapshot/checkout bridge for a selected byte version."""
-
-        def prepare() -> dict[str, Any]:
-            with TemporaryFile() as stream:
-                stream.write(content)
-                stream.flush()
-                return self.store.snapshot(
-                    stream.fileno(),
-                    name or PurePosixPath(destination).name,
-                    artifact_id=artifact_id,
-                    source_key=source_key,
-                )
-
-        metadata = await _media_io(prepare)
-        return await self._checkout(metadata, request_id, destination=destination)
+        """Freeze one original send through the Manager's durable file request."""
+        if self.sandbox is None:
+            raise WorkspaceError("environment_unavailable")
+        result = await self.sandbox.execute(
+            "workspace_publish",
+            {
+                "path": path,
+                "artifact_id": artifact_id,
+                "source_key": source_key,
+                **({"name": name} if name is not None else {}),
+                **({"expected_version": expected_version} if expected_version is not None else {}),
+            },
+            request_id=request_id,
+        )
+        return result

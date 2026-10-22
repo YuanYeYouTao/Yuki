@@ -339,7 +339,7 @@ class EmojiDeliveryService:
             asset = EmojiAsset.model_validate(intent.selected)
             metadata = await self.library.publish(asset, request_id=intent.id)
             args, context = self._send_input(intent, metadata["artifact_id"])
-            await self.social.execute("send_message", args, context)
+            await self.social.execute("send", args, context)
             await self.intents.close(intent.id)
         except asyncio.CancelledError:
             raise

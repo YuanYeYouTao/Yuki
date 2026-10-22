@@ -168,7 +168,7 @@ class ToolInvocationCoordinator:
 
         def is_parallel_safe(call: ToolCall) -> bool:
             # Delivery must finish before a subsequent read-safe stretch can start.
-            if call.function.name == "send_message":
+            if call.function.name == "send":
                 return False
             return backend.parallel_safe(call.function.name, runtime)
 

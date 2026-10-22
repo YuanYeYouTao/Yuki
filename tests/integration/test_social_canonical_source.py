@@ -52,7 +52,7 @@ async def test_send_context_does_not_query_a_reply_author_for_retired_subject_sh
     event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
     token = current_invocation.set(ToolInvocationContext(runtime, call_id="no-subject-lookup"))
     try:
-        await invoke_social(env.service, "send_message", {"text": "reply text"}, runtime)
+        await invoke_social(env.service, "send", {"text": "reply text"}, runtime)
     finally:
         current_invocation.reset(token)
         event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
@@ -97,7 +97,7 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     arguments = {"text": "reply delivered", "reply_to_event_id": original.id}
     token = current_invocation.set(ToolInvocationContext(runtime, call_id="ordinary-reply-send"))
     try:
-        result = await invoke_social(env.service, "send_message", arguments, runtime)
+        result = await invoke_social(env.service, "send", arguments, runtime)
     finally:
         current_invocation.reset(token)
     assert result["status"] == "succeeded"
@@ -133,7 +133,7 @@ async def test_current_reply_rechecks_original_source_before_claim(database, tmp
     monkeypatch.setattr(env.service.receipts, "prepare", delete_after_route)
     env.bot.calls.clear()
     with pytest.raises(SocialError, match="invalid_reply_context"):
-        await env.service.execute("send_message", {"text": "obsolete source"}, context)
+        await env.service.execute("send", {"text": "obsolete source"}, context)
     assert not any(action.startswith("send_") for action, _ in env.bot.calls)
     receipt = await env.service.receipts.find(context.turn_id, context.call_id)
     assert receipt.status == "prepared"

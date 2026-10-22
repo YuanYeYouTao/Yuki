@@ -207,7 +207,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
         trigger_event_id=source.id,
     )
     sent = await env.service.execute(
-        "send_message", {"text": "original reply", "reply_to_event_id": source.id}, context
+        "send", {"text": "original reply", "reply_to_event_id": source.id}, context
     )
     assert sent["status"] == "succeeded"
     send_params = sends(env)[-1][1]
@@ -278,7 +278,7 @@ async def test_native_text_limit_counts_decoded_mentions_and_preserves_reply(nat
         "text": f"@{{account:{env.account}}}" + text,
         "reply_to_event_id": env.event.id,
     }
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded" and result["planned_messages"] == 2
     wire = sends(env)
     assert len(wire) == 2 and all(len(visible(item[1]["text"])) <= 4096 for item in wire)
@@ -288,7 +288,7 @@ async def test_native_text_limit_counts_decoded_mentions_and_preserves_reply(nat
     assert (
         "".join(part["delivered_text"] for part in result["parts"]) == "@" + env.account_name + text
     )
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert len(sends(env)) == 2
 
 
@@ -301,14 +301,14 @@ async def test_native_short_file_caption_is_one_atomic_receipt(native_env):
         "text": "x" * 1024,
         "reply_to_event_id": env.event.id,
     }
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded" and "parts" not in result
     assert len(sends(env)) == 1
     method, params, files = sends(env)[0]
     assert method == "sendDocument" and files["document"] == b"original file"
     assert params["caption"] == args["text"]
     assert params["reply_parameters"] == {"message_id": 1}
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert len(sends(env)) == 1
 
 
@@ -323,20 +323,20 @@ async def test_native_long_caption_has_distinct_facts_and_never_reuploads(native
     }
     if fail_caption:
         env.failure.method = "sendMessage"
-    result = await env.service.execute("send_message", args, env.context)
-    assert result["file"]["status"] == "succeeded"
-    assert result["caption"]["status"] == ("failed" if fail_caption else "succeeded")
+    result = await env.service.execute("send", args, env.context)
+    assert result["parts"][0]["status"] == "succeeded"
+    assert result["parts"][1]["status"] == ("failed" if fail_caption else "succeeded")
     assert [item[0] for item in sends(env)] == ["sendDocument", "sendMessage"]
     assert len(visible(sends(env)[0][1]["caption"])) == 1024
     assert len(visible(sends(env)[1][1]["text"])) <= 4096
     if fail_caption:
-        assert result["error"] == "file_sent_caption_unconfirmed"
+        assert result["error"] == "TelegramAPIError"
     else:
         assert (
             "".join(part["delivered_text"] for part in result["parts"])
             == "@" + env.account_name + "长" * 5000
         )
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert len(sends(env)) == 2
 
 
@@ -345,9 +345,9 @@ async def test_native_timeout_is_unknown_and_same_call_never_retries(native_env)
     artifact = snapshot_bytes(env.store, "unknown.txt", b"original")
     env.failure.method, env.failure.timeout = "sendDocument", True
     args = {"artifact_id": artifact["artifact_id"], "attachment_kind": "file", "text": "caption"}
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == "uncertain"
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert len(sends(env)) == 1
     async with env.db.sessions() as reader:
         rows = list(await reader.scalars(select(SocialOperationModel)))
@@ -368,10 +368,10 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
         "attachment_kind": "file",
         "text": f"@{{account:{env.account}}}附言",
     }
-    result = await env.service.execute("send_message", args, env.context)
-    assert result["file"]["status"] == result["caption"]["status"] == "succeeded"
+    result = await env.service.execute("send", args, env.context)
+    assert result["parts"][0]["status"] == result["parts"][1]["status"] == "succeeded"
     async with database.sessions() as reader:
-        caption = await reader.get(ChatEventModel, result["caption"]["event_id"])
+        caption = await reader.get(ChatEventModel, result["parts"][1]["event_id"])
     segments = json.loads(caption.segments_json)
     mention = next(item["data"] for item in segments if item["type"] == "mention")
     assert mention["account_id"] == env.account
@@ -407,7 +407,7 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
         raise AssertionError("successful captions retain the original account and assignment")
 
     monkeypatch.setattr("yuki.social.service.prepare_for_entry", must_not_prepare_again)
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
     async with database.sessions() as reader:
@@ -451,15 +451,19 @@ async def test_qq_confirmed_file_is_not_reuploaded_when_caption_fails(
         monkeypatch.setattr(env.service, "_effect", fail_preflight)
     else:
         monkeypatch.setattr(env.bot, "call_api", fail_caption)
-    result = await env.service.execute("send_message", args, env.context)
-    assert result["file"]["status"] == "succeeded"
+    result = await env.service.execute("send", args, env.context)
+    assert result["parts"][0]["status"] == "succeeded"
     assert (
-        result["caption"]["status"]
+        result["parts"][1]["status"]
         == {"failed": "failed", "timeout": "uncertain", "preflight": "prepared"}[caption_failure]
     )
-    assert result["error"] == "file_sent_caption_unconfirmed"
+    assert result["error"] == (
+        "delivery_uncertain"
+        if caption_failure == "preflight"
+        else result["parts"][1]["error_category"]
+    )
     env.registry.disconnect(env.bot)
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
 
 
@@ -471,13 +475,13 @@ async def test_sequence_replay_reads_confirmed_or_unknown_facts_while_disconnect
     if lost_ack:
         env.failure.method, env.failure.timeout = "sendMessage", True
     args = {"text": "原始消息" * 1500}
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == ("uncertain" if lost_ack else "succeeded")
     sent = len(sends(env))
     env.registry.disconnect(env.client)
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute("send_message", {"text": "changed"}, env.context)
+        await env.service.execute("send", {"text": "changed"}, env.context)
     assert len(sends(env)) == sent
 
 
@@ -493,7 +497,7 @@ async def test_retired_sequence_hash_never_executes_or_silently_reinterprets(nat
         ),
     )
     args = {"text": "旧记录" * 1000}
-    result = await env.service.execute("send_message", args, context)
+    result = await env.service.execute("send", args, context)
     parent = await env.service.receipts.find(context.turn_id, context.call_id)
     old_payload = {
         "original": args,
@@ -506,7 +510,7 @@ async def test_retired_sequence_hash_never_executes_or_silently_reinterprets(nat
         )
     env.registry.disconnect(env.client)
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute("send_message", args, context)
+        await env.service.execute("send", args, context)
     assert result["status"] == "succeeded"
     assert len(sends(env)) == 3
 
@@ -527,7 +531,7 @@ async def test_never_dispatched_sequence_keeps_first_plan_across_config_changes(
 
     monkeypatch.setattr(env.service.receipts, "prepare_sequence", interrupt_prepare)
     with pytest.raises(BeforeDispatch):
-        await env.service.execute("send_message", args, env.context)
+        await env.service.execute("send", args, env.context)
     parent = await env.service.receipts.find(env.context.turn_id, env.context.call_id)
     assert parent.status == "prepared" and not sends(env)
     monkeypatch.setattr(env.service.receipts, "prepare_sequence", original_prepare)
@@ -540,7 +544,7 @@ async def test_never_dispatched_sequence_keeps_first_plan_across_config_changes(
             ),
         ),
     )
-    result = await env.service.execute("send_message", args, context)
+    result = await env.service.execute("send", args, context)
     assert result["operation_id"] == parent.operation_id
     assert result["status"] == "succeeded" and result["planned_messages"] == 2
     assert len(sends(env)) == 2
@@ -562,10 +566,10 @@ async def test_confirmed_prefix_does_not_dispatch_missing_tail_on_recovery(nativ
 
     monkeypatch.setattr(env.service, "_effect", stop_before_tail)
     with pytest.raises(Interrupted):
-        await env.service.execute("send_message", args, env.context)
+        await env.service.execute("send", args, env.context)
     assert len(sends(env)) == 1
     env.registry.disconnect(env.client)
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["sent_messages"] == 1 and result["parts"][1]["status"] == "prepared"
     assert len(sends(env)) == 1
 
@@ -640,7 +644,7 @@ async def test_prepared_layout_replacement_cannot_dispatch_stale_child(
                 ),
             ),
         )
-        result = await env.service.execute("send_message", args, context)
+        result = await env.service.execute("send", args, context)
         assert result["status"] == "succeeded"
     finally:
         release.set()
@@ -686,7 +690,7 @@ async def test_work_unclaimed_delivery_replans_without_resetting_original_budget
     try:
         monkeypatch.setattr(env.service.receipts, "claim", stop_before_claim)
         with pytest.raises(BeforeClaim):
-            await env.service.execute("send_message", args, env.context)
+            await env.service.execute("send", args, env.context)
         monkeypatch.setattr(env.service.receipts, "claim", original_claim)
         context = replace(
             env.context,
@@ -699,7 +703,7 @@ async def test_work_unclaimed_delivery_replans_without_resetting_original_budget
                 ),
             ),
         )
-        result = await env.service.execute("send_message", args, context)
+        result = await env.service.execute("send", args, context)
         assert result["status"] == "succeeded"
         assert control.current["id"] == identity
         async with env.db.sessions() as reader:
@@ -735,7 +739,7 @@ async def test_work_dispatched_plan_and_reservations_are_readonly_on_recovery(na
         env.failure.method, env.failure.timeout = "sendMessage", True
     args = {"text": "原有Work" * 1000}
     try:
-        result = await env.service.execute("send_message", args, env.context)
+        result = await env.service.execute("send", args, env.context)
 
         async def persisted_facts():
             async with env.db.sessions() as reader:
@@ -768,7 +772,7 @@ async def test_work_dispatched_plan_and_reservations_are_readonly_on_recovery(na
             ),
         )
         env.registry.disconnect(env.client)
-        assert await env.service.execute("send_message", args, context) == result
+        assert await env.service.execute("send", args, context) == result
         assert await persisted_facts() == original
         assert len(sends(env)) == sent and control.current["sent_messages"] == count
     finally:
@@ -788,7 +792,7 @@ async def prepare_paid_send(env, args):
     control.current = await repository.accept(
         lease, source_key="native-t3", source=source, goal="send"
     )
-    call = ToolCall("paid-file", ToolFunction("send_message", json.dumps(args)))
+    call = ToolCall("paid-file", ToolFunction("send", json.dumps(args)))
     invocation = direct_invocations(
         (call,),
         SimpleNamespace(work_control=control),
@@ -831,7 +835,7 @@ async def test_native_t3_recovery_preserves_exact_media_and_caption_facts(
         current_result_capture.set(capture),
     )
     try:
-        result = await env.service.execute("send_message", args, context)
+        result = await env.service.execute("send", args, context)
     finally:
         current_result_capture.reset(capture_token)
         current_work_control.reset(work_token)
@@ -847,10 +851,8 @@ async def test_native_t3_recovery_preserves_exact_media_and_caption_facts(
         recovered = json.loads(await WorkJournal(control.repository).effect_result(context.call_id))
         for response in ({"ok": result["status"] == "succeeded", "data": result}, recovered):
             fact = execution_evidence(
-                normalize_legacy_result(
-                    json.dumps(response), provider_id="core", tool_name="send_message"
-                ),
-                tool="send_message",
+                normalize_legacy_result(json.dumps(response), provider_id="core", tool_name="send"),
+                tool="send",
                 side_effecting=True,
                 arguments=json.dumps(args),
             )
@@ -934,10 +936,8 @@ async def test_legacy_qq_file_caption_layout_t3_recovery_reads_original_ledger(
         env.registry.disconnect(env.bot)
         recovered = json.loads(await WorkJournal(control.repository).effect_result(context.call_id))
         fact = execution_evidence(
-            normalize_legacy_result(
-                json.dumps(recovered), provider_id="core", tool_name="send_message"
-            ),
-            tool="send_message",
+            normalize_legacy_result(json.dumps(recovered), provider_id="core", tool_name="send"),
+            tool="send",
             side_effecting=True,
             arguments=json.dumps(args),
         )
@@ -972,9 +972,9 @@ async def assert_committed_ack_loss_preserves_delivery(env, monkeypatch):
     monkeypatch.setattr(env.service.receipts, "finish", mark_commit)
     monkeypatch.setattr(AsyncSession, "commit", lost_ack)
     args = {"text": "confirmed before local ack loss"}
-    result = await env.service.execute("send_message", args, env.context)
+    result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded" and result["delivered_text"] == args["text"]
-    assert await env.service.execute("send_message", args, env.context) == result
+    assert await env.service.execute("send", args, env.context) == result
 
 
 async def test_telegram_committed_receipt_does_not_depend_on_local_ack(native_env, monkeypatch):
@@ -1031,11 +1031,11 @@ async def test_two_original_executors_cannot_mix_changed_tail_layouts(native_env
 
     monkeypatch.setattr(env.service.receipts, "prepare", hold_first_receipt)
     monkeypatch.setattr(env.service.receipts, "prepare_sequence", hold_second_plan)
-    old = asyncio.create_task(env.service.execute("send_message", args, context(3)))
+    old = asyncio.create_task(env.service.execute("send", args, context(3)))
     new = None
     try:
         await asyncio.wait_for(old_wait.wait(), 2)
-        new = asyncio.create_task(env.service.execute("send_message", args, context(2)))
+        new = asyncio.create_task(env.service.execute("send", args, context(2)))
         await asyncio.wait_for(new_wait.wait(), 2)
         old_release.set()
         await asyncio.wait_for(old, 3)
@@ -1064,7 +1064,7 @@ async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
         )
     artifact = snapshot_bytes(env.store, "quoted.txt", b"original file")
     result = await env.service.execute(
-        "send_message",
+        "send",
         {
             "artifact_id": artifact["artifact_id"],
             "attachment_kind": "file",
@@ -1093,7 +1093,7 @@ async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
     original_effects = list(env.bot.calls)
     assert (
         await env.service.execute(
-            "send_message",
+            "send",
             {
                 "artifact_id": artifact["artifact_id"],
                 "attachment_kind": "file",

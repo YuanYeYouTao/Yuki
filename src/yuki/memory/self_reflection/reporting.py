@@ -77,7 +77,7 @@ async def deliver_report(social: SocialService, cycle: dict[str, Any]) -> dict[s
         target_kind = "space" if conversation.space_id else "person"
     try:
         return await social.execute(
-            "send_message",
+            "send",
             {
                 "target": {"kind": target_kind, "target_id": target},
                 "text": format_report(cycle),

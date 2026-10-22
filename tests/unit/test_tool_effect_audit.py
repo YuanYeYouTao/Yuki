@@ -103,7 +103,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         context = current_invocation.get()
         assert context is not None
         result = await env.service.execute(
-            "send_message",
+            "send",
             {"target": {"kind": "space", "target_id": env.space}, "text": "same"},
             replace(
                 env.context, call_id=context.call_id, trigger_event_id=runtime.trigger_event_id
@@ -116,13 +116,13 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         InProcessToolProvider(
             provider_id="core",
             source=CapabilityTrustSource.CORE,
-            definitions=lambda _: (ChatTool("send_message", "send", {"type": "object"}),),
+            definitions=lambda _: (ChatTool("send", "send", {"type": "object"}),),
             execute=dispatch,
         )
     )
     backend = MainAgentBackend(chat, runtime)
     backend._catalog = registry.catalog(runtime)
-    backend._callable_tool_names = {"send_message"}
+    backend._callable_tool_names = {"send"}
     actor = runtime.actor_context
     agent = AgentRuntime(
         origin=actor.origin,
@@ -139,7 +139,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         max_model_requests=runtime.runtime_config.agent.max_model_requests,
         work_control=owner.control,
     )
-    calls = tuple(ToolCall(i, ToolFunction("send_message", "{}")) for i in ("call_0", "call_1"))
+    calls = tuple(ToolCall(i, ToolFunction("send", "{}")) for i in ("call_0", "call_1"))
     coordinator = ToolInvocationCoordinator()
 
     async def batch(selected):
@@ -173,7 +173,7 @@ async def invoke_audit(recorder, runtime, call_key, result='{"ok":true}'):
         SimpleNamespace(_tool_receipts=recorder),
         runtime=runtime,
         provider_id="social",
-        tool_name="send_message",
+        tool_name="send",
         success=True,
         error_category=None,
         result_excerpt=result,
@@ -186,7 +186,7 @@ async def test_post_effect_cancel_or_uncertain_commit_never_runs_unconfirmed_aud
     database, tmp_path, monkeypatch, mode
 ):
     _env, work, runtime = await active_work(database, tmp_path)
-    call = ToolCall("original", ToolFunction("send_message", "{}"))
+    call = ToolCall("original", ToolFunction("send", "{}"))
     audit = AsyncMock(side_effect=asyncio.CancelledError() if mode == "cancel_audit" else None)
     recorder = SimpleNamespace(record_receipt=audit)
     if mode == "uncertain_accepted_commit":
@@ -230,7 +230,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
     if metadata_only:
         runtime = replace(runtime, trigger_event_id=None)
     recorder = ToolReceiptRepository(database)
-    call = ToolCall("original-erased-call", ToolFunction("send_message", "{}"))
+    call = ToolCall("original-erased-call", ToolFunction("send", "{}"))
     original = work.control.repository.record_effect
     dispatched = 0
 
@@ -265,7 +265,7 @@ async def test_group_binding_move_preserves_original_event_receipt_owner(
 ):
     env, work, runtime = await active_work(database, tmp_path)
     recorder = ToolReceiptRepository(database)
-    call = ToolCall("original-owner-call", ToolFunction("send_message", "{}"))
+    call = ToolCall("original-owner-call", ToolFunction("send", "{}"))
     sessions = database.sessions
     destination = None
 

@@ -404,27 +404,6 @@ class ConversationMediaService:
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
-    async def source_current(self, event_id: int, segment_index: int, source_segments: str) -> bool:
-        """Accept promotion from one original event/index snapshot, without writing provenance."""
-        async with self.database.sessions() as session:
-            segments = await session.scalar(
-                select(ChatEventModel.segments_json)
-                .join(
-                    ConversationMediaItemModel,
-                    ConversationMediaItemModel.source_event_id == ChatEventModel.id,
-                )
-                .where(
-                    ChatEventModel.id == event_id,
-                    ConversationMediaItemModel.segment_index == segment_index,
-                    ConversationMediaItemModel.source_snapshot_json.is_(None),
-                    ChatEventModel.canonical_conversation_id
-                    == ConversationMediaItemModel.conversation_id,
-                    ChatEventModel.direction == "inbound",
-                    ChatEventModel.suppression_status == "keeper",
-                )
-            )
-        return segments is not None and json.loads(segments) == json.loads(source_segments)
-
     async def _cache_event(
         self,
         event_id: int,
@@ -777,10 +756,16 @@ class ConversationMediaService:
         *,
         event_id: int,
         attachment_index: int,
+        expected_source_segments: str | None = None,
     ) -> tuple[ConversationMediaItemModel, Path]:
         key = (event_id, attachment_index)
         source = (await self._sources((key,)))[key]
         item, _, source_segments = source
+        if expected_source_segments is not None and (
+            item.source_snapshot_json is not None
+            or json.loads(source_segments) != json.loads(expected_source_segments)
+        ):
+            raise ConversationMediaError("attachment_source_changed")
         path = await self._cache(event_id, attachment_index, None, source=source)
         # Keep the exact observed source when publication waited for network I/O.
         async with self.database.sessions() as session:
@@ -793,7 +778,7 @@ class ConversationMediaService:
                 or live.source_snapshot_json != item.source_snapshot_json
             ):
                 raise ConversationMediaError("attachment_source_changed")
-        return item, path
+        return live, path
 
     async def inspect(
         self,

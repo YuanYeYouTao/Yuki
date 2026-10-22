@@ -1,14 +1,13 @@
 """Trusted Linux host daemon. Not mounted into, or executed by, the Bot container.
 
-Only this process controls Docker. All paths, images and resource options are
-operator configuration; untrusted requests contain code and artifact IDs only.
+Only this process controls Docker. Host roots, images and resource options are
+operator configuration; requests select code or files within configured roots.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import signal
 import stat
@@ -34,7 +33,6 @@ async def main() -> None:
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--persistent-home", type=Path, required=True)
-    parser.add_argument("--migrate-only", action="store_true")
     parser.add_argument("--network", default="yuki-sandbox-egress")
     parser.add_argument("--proxy", default="")
     parser.add_argument("--resolv-conf", type=Path)
@@ -58,9 +56,6 @@ async def main() -> None:
         acp_config=args.acp_config,
         media_cache=args.media_cache,
     )
-    if args.migrate_only:
-        print(json.dumps(manager.migrate_files()))
-        return
     await manager.recover()
     args.socket.parent.mkdir(parents=True, exist_ok=True)
     if args.socket.exists():

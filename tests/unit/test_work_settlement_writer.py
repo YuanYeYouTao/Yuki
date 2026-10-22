@@ -147,7 +147,7 @@ async def test_answer_completion_does_not_require_send_classification(database, 
     await _persisted_tool_receipt(
         control,
         "answer-send",
-        "send_message",
+        "send",
         json.dumps({"ok": True, "data": {"status": "succeeded"}}),
         arguments=json.dumps({"text": "已经完成分析。"}),
     )
@@ -256,7 +256,7 @@ async def test_successful_send_keeps_work_open_until_explicit_completion(databas
     await _persisted_tool_receipt(
         control,
         "claimed-success",
-        "send_message",
+        "send",
         json.dumps({"ok": True, "data": {"status": "succeeded"}}),
         arguments=json.dumps({"text": "保存好了。"}),
     )

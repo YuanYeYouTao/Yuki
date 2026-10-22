@@ -1,4 +1,4 @@
-"""Media, publication and explicit conversation-attachment bridges."""
+"""Selected media and explicit conversation-attachment bridges."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from yuki.sandbox.environment_tools import tool
 WORKSPACE_READ_TOOLS = frozenset({"workspace_inspect", "inspect_conversation_attachment"})
 WORKSPACE_TOOLS = WORKSPACE_READ_TOOLS | {
     "save_conversation_attachment_to_workspace",
-    "workspace_publish",
 }
 
 
@@ -36,13 +35,6 @@ def workspace_tools() -> tuple[ChatTool, ...]:
             "path 可带 expected_version 核对刚找到的文件；图片是待检查资料，工具不生成视觉摘要。",
             {**path, **identity, **version, "question": {"type": "string", "maxLength": 2000}},
             ("question",),
-        ),
-        tool(
-            "workspace_publish",
-            "把选定文件制作成不可变 artifact 快照，返回 artifact_id，"
-            "再由 send_message 发送。修改工作文件不改变已发布快照。",
-            {**path, **version, "name": {"type": "string"}},
-            ("path",),
         ),
         tool(
             "inspect_conversation_attachment",

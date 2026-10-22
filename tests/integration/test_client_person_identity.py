@@ -467,7 +467,7 @@ async def test_current_root_can_read_original_file_but_foreign_person_cannot(app
     context = await app_context(env, a)
     snapshot = snapshot_bytes(env.store, "original.txt", b"the immutable original file")
     receipt = await env.social.execute(
-        "send_message",
+        "send",
         {
             "artifact_id": snapshot["artifact_id"],
             "attachment_kind": "file",
