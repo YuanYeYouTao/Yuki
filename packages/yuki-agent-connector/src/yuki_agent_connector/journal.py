@@ -71,15 +71,14 @@ class Journal:
         return None
 
     def complete(self, key: str, response: dict[str, Any]) -> None:
+        command = json.loads(
+            self.db.execute("SELECT command FROM operations WHERE id = ?", (key,)).fetchone()[0]
+        )
+        action = command["action"]
+        result = response.get("result", {})
+        encoded = encode(response)
         with self.db:
-            self.db.execute(
-                "UPDATE operations SET response = ? WHERE id = ?", (encode(response), key)
-            )
-            command = json.loads(
-                self.db.execute("SELECT command FROM operations WHERE id = ?", (key,)).fetchone()[0]
-            )
-            action = command["action"]
-            result = response.get("result", {})
+            self.db.execute("UPDATE operations SET response = ? WHERE id = ?", (encoded, key))
             if action in {"watch", "prompt", "queue"} and result.get("session_id"):
                 self.db.execute(
                     "UPDATE operations SET observing = CASE WHEN "
@@ -143,15 +142,16 @@ class Journal:
         return observations
 
     def append(self, event: dict[str, Any]) -> None:
+        encoded = encode(event)
         with self.db:
             self.db.execute(
                 "INSERT OR IGNORE INTO events(id, event) VALUES (?, ?)",
-                (event["event_id"], encode(event)),
+                (event["event_id"], encoded),
             )
             if event["kind"] == "completed" and event.get("operation_id"):
                 self.db.execute(
                     "UPDATE operations SET receipt = ?, observing = 0 WHERE id = ?",
-                    (encode(event), event["operation_id"]),
+                    (encoded, event["operation_id"]),
                 )
             elif (
                 event.get("operation_id")
@@ -163,7 +163,7 @@ class Journal:
                     "WHEN json_extract(receipt, '$.kind') = 'completed' THEN 0 ELSE 1 END "
                     "WHERE id = ? AND json_extract(command, '$.action') "
                     "IN ('watch', 'prompt', 'queue')",
-                    (encode(event), event["operation_id"]),
+                    (encoded, event["operation_id"]),
                 )
 
     def pending(self) -> list[dict[str, Any]]:
