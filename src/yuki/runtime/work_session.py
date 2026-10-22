@@ -978,7 +978,7 @@ class WorkSession:
             for call in calls
         ]
         try:
-            while await self.control.repository.valid(self.control.lease):
+            while True:
                 try:
                     await self.journal.save(
                         self.control.lease,
@@ -1037,8 +1037,6 @@ class WorkSession:
                     if not await self.source_guard.check(self.control):
                         raise
                     # Retry this same journal, never the model or tool effects.
-            else:
-                raise WorkConflict("work_activation_obsolete")
         except ValueError as exc:
             if str(exc) in {
                 "work_journal_capacity",

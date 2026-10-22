@@ -379,7 +379,7 @@ class WorkJournal:
                 )
             ):
                 input_media.update(references(json.loads(value)))
-        next_media = input_media
+        prepared_media = tuple(sorted(input_media))
         async with self.objects.publication(work_id) as prepared_objects:
             async with self.repository.database.immediate_session() as session:
                 await self.repository._assert_lease(session, lease)
@@ -421,20 +421,14 @@ class WorkJournal:
                         .where(recovery.c.work_id == work_id)
                         .values(attempts=0, failure_json="{}", not_before=0)
                     )
-                previous_media = set(
-                    await session.scalars(
-                        select(media_refs.c.sha256).where(media_refs.c.work_id == work_id)
-                    )
-                )
                 # Prepared inputs own their images until staged inputs are paired
                 # into the journal. Saving the current transcript must retain them.
-                added = tuple(sorted(next_media - previous_media))
-                for offset in range(0, len(added), 256):
+                for offset in range(0, len(prepared_media), 256):
                     await session.execute(
                         insert(media_refs).on_conflict_do_nothing(),
                         [
                             {"work_id": work_id, "sha256": digest}
-                            for digest in added[offset : offset + 256]
+                            for digest in prepared_media[offset : offset + 256]
                         ],
                     )
                 # Input append can race the prepare-reader. Keep active Work media

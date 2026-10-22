@@ -320,7 +320,8 @@ async def test_busy_retry_rechecks_source_and_lease_without_overwriting_old_chec
     monkeypatch.setattr(WorkJournal, "save", save)
     with pytest.raises(WorkConflict):
         await session.save("response")
-    assert attempts == (1 if change == "lease" else 2)
+    # The second writer checks the original lease before any publication/DML.
+    assert attempts == 2
     assert await _saved(database, control) == before
     persisted = await control.repository.get(control.current["id"])
     assert persisted["model_requests"] == 1 and persisted["tool_calls"] == 0

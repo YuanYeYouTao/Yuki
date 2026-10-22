@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Protocol, TypeVar, cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.config_service import RuntimeConfigService
@@ -1267,19 +1268,10 @@ class ChatService:
                 and actor.principal_kind == "person"
                 and actor.person_id is not None
             ):
-                from yuki.identity.db_models import CanonicalPersonModel
-                from yuki.identity.person_identity import current_person_id
+                from yuki.identity.person_identity import person_enabled_condition
 
                 async with self._ledger._database.read_session() as session:
-                    original = await session.get(CanonicalPersonModel, actor.person_id)
-                    root = (
-                        await session.get(
-                            CanonicalPersonModel, await current_person_id(session, actor.person_id)
-                        )
-                        if original is not None and actor.person_id is not None
-                        else None
-                    )
-                    if original is None or not original.enabled or root is None or not root.enabled:
+                    if not await session.scalar(select(person_enabled_condition(actor.person_id))):
                         raise PermissionError("main_person_disabled")
             snapshot = runtime.turn_snapshot
             if snapshot is not None and not await self.validate_turn_snapshot(snapshot):
