@@ -15,6 +15,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy import event as sql_event
 from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.conversation.hydrate import bump_canonical_generation
@@ -386,11 +387,57 @@ async def test_collection_publishes_shared_cache_without_delivery_artifact(
     finally:
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
     assert (env.files / saved.relative_path).read_bytes() == env.data
-    assert env.store.list()["items"] == []
+    assert artifact_ids(env.store) == []
     assert not any("sticker_" in statement.lower() for statement in statements)
     async with database.sessions() as reader:
         item = await reader.get(ConversationMediaItemModel, (env.event.id, 0))
         assert item.cache_status == "cached" and item.content_sha256 == saved.sha256
+
+
+async def test_repeated_collection_reuses_original_catalog_before_reloading_cache(
+    admitted_media, monkeypatch
+):
+    env = admitted_media
+    execute = env.workspace.sandbox.execute
+    copies = []
+
+    async def record_copy(name, arguments, *, request_id):
+        if name == "workspace_copy":
+            copies.append((arguments, request_id))
+        return await execute(name, arguments, request_id=request_id)
+
+    monkeypatch.setattr(env.workspace.sandbox, "execute", record_copy)
+    env.release.set()
+    (first,) = await env.emoji.collect_message(env.message, source_event_id=env.event.id)
+    item, original = await env.media.authorized_path(event_id=env.event.id, attachment_index=0)
+    assert item.content_sha256 == first.sha256 == hashlib.sha256(env.data).hexdigest()
+    metadata = env.files / f"stickers/qq/index/{first.id}.json"
+    record = json.loads(metadata.read_text(encoding="utf-8"))
+    record.update(
+        description="已保存的描述", tags=["手工标签"], ocr_text="原文本", is_sticker=False
+    )
+    metadata.write_text(json.dumps(record), encoding="utf-8")
+    read_bytes = Path.read_bytes
+
+    def read_other_file(path):
+        assert path != original, "duplicate collection must not reload its published cache"
+        return read_bytes(path)
+
+    def no_new_inspection(_content):
+        raise AssertionError("duplicate collection must not inspect its original again")
+
+    monkeypatch.setattr(Path, "read_bytes", read_other_file)
+    monkeypatch.setattr("yuki.emoji.library.inspect_content", no_new_inspection)
+    (repeated,) = await env.emoji.collect_message(env.message, source_event_id=env.event.id)
+    assert repeated.id == first.id and repeated.sha256 == first.sha256 and repeated.is_sticker
+    assert repeated.tags == ("手工标签",)
+    assert repeated.description == repeated.ocr_text == ""
+    saved = json.loads(metadata.read_text(encoding="utf-8"))
+    assert saved["description"] == "已保存的描述" and saved["ocr_text"] == "原文本"
+    assert saved["tags"] == ["手工标签"] and saved["is_sticker"] is True
+    assert len(env.calls) == len(copies) == 1
+    assert copies[0][0]["source_key"] == f"attachment:{env.event.id}:0"
+    assert artifact_ids(env.store) == []
 
 
 async def test_completed_save_replays_before_source_and_preserves_later_user_edit(admitted_media):
@@ -408,7 +455,7 @@ async def test_completed_save_replays_before_source_and_preserves_later_user_edi
         "save_conversation_attachment_to_workspace", args, request_id="original-save"
     )
     assert second == first and selected.read_bytes() == b"edited later"
-    assert env.store.list()["items"] == [] and len(env.calls) == 1
+    assert artifact_ids(env.store) == [] and len(env.calls) == 1
 
 
 @pytest.mark.parametrize("field", ["event_id", "destination"])

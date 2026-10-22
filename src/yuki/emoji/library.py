@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -107,18 +108,16 @@ class EmojiLibrary:
                     attachment_index=index,
                     expected_source_segments=attachment.prepared_media.source_segments,
                 )
-                content = await _media_io(path.read_bytes)
-                facts = await _media_io(inspect_content, content)
-                if facts["sha256"] != item.content_sha256:
-                    raise WorkspaceError("attachment_source_changed")
+                digest = cast(str, item.content_sha256)
                 results.append(
                     await self.store_cached(
-                        "/inputs/media-cache/v1/" + path.relative_to(media.root).as_posix(),
-                        facts=facts,
-                        content=content,
+                        path,
+                        shared_path="/inputs/media-cache/v1/"
+                        + path.relative_to(media.root).as_posix(),
+                        sha256=digest,
                         platform=message.platform,
                         is_sticker=True,
-                        request_id=f"sticker:{source_event_id}:{attachment.segment_index}:{facts['sha256']}",
+                        request_id=f"sticker:{source_event_id}:{attachment.segment_index}:{digest}",
                         source_key=f"attachment:{source_event_id}:{index}",
                         tags=(attachment.summary.strip(),)
                         if attachment.summary and attachment.summary.strip()
@@ -132,18 +131,18 @@ class EmojiLibrary:
 
     async def store_cached(
         self,
-        path: str,
+        cached_path: Path,
         *,
-        facts: dict[str, Any],
-        content: bytes,
+        shared_path: str,
+        sha256: str,
         platform: str,
         source_key: str,
+        request_id: str,
         is_sticker: bool = False,
-        request_id: str | None = None,
         tags: tuple[str, ...] = (),
         preview: MessageAttachment | None = None,
     ) -> EmojiAsset:
-        digest = facts["sha256"]
+        digest = sha256
         previous = await self._index("lookup", platform=platform, digest=digest)
         if previous["asset"] is not None:
             if is_sticker and not previous["asset"].get("is_sticker"):
@@ -154,13 +153,16 @@ class EmojiLibrary:
                     is_sticker=True,
                 )
             return EmojiAsset.model_validate(previous["asset"])
-        operation = request_id or f"sticker-copy:{uuid4()}"
+        content = await _media_io(cached_path.read_bytes)
+        facts = await _media_io(inspect_content, content)
+        if facts["sha256"] != digest:
+            raise WorkspaceError("attachment_source_changed")
         name = f"{digest}.{extension(facts['image_format'])}"
         destination = f"stickers/{platform}/files/{name}"
         metadata = await self.workspace.copy_from_cache(
-            path=path,
+            path=shared_path,
             destination=destination,
-            request_id=operation,
+            request_id=request_id,
             expected_version=digest,
             source_key=source_key,
         )

@@ -3,6 +3,11 @@
 from tempfile import TemporaryFile
 
 
+def artifact_ids(store):
+    with store._transaction(write=False) as db:
+        return [row[0] for row in db.execute("SELECT id FROM artifacts ORDER BY id")]
+
+
 def snapshot_bytes(store, name, data, *, artifact_id=None):
     with TemporaryFile() as stream:
         stream.write(data)

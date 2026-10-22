@@ -16,6 +16,7 @@ from PIL import Image
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.integration.test_telegram_attachment_tools import attachment_tools  # noqa: F401
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ScopeType
@@ -96,7 +97,7 @@ async def test_save_original_then_terminal_update_collects_without_inspection(
             request_id="main-collect-original",
         )
         assert saved["version"]
-        assert case.store.list()["items"] == []
+        assert artifact_ids(case.store) == []
         original = manager.files.root / destination
         assert original.read_bytes() == case.original_bytes
         assert not (manager.files.root / "stickers/telegram/index").exists()

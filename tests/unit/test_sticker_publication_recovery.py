@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 from tests.support.social_identity_cases import social_env
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.emoji.delivery import EmojiDeliveryService
 from yuki.emoji.library import EmojiLibrary
@@ -54,7 +55,7 @@ async def manual_library(database, tmp_path):
     index = StickerIndex(owner.manager.files.root)
     index.catalog("qq", "stickers/qq/files/manual.png", tags=["happy"])
     index.rebuild()
-    assert env.store.list()["items"] == []
+    assert artifact_ids(env.store) == []
     await env.service.execute("send", ARGS, env.context)
     intent = await first.intents.find(env.context.turn_id, env.context.call_id)
     try:
@@ -176,7 +177,7 @@ async def test_manager_restart_publication_unknown_is_never_failed_or_replayed(
     result = await case.second.project(case.env.context)
     assert result["status"] == "unknown"
     assert result["error"] == "file_mutation_unknown_read_current_version"
-    assert not physical and case.env.store.list()["items"] == []
+    assert not physical and artifact_ids(case.env.store) == []
     assert await case.second.intents.pending() == ()
     replay = await case.env.service.execute("send", ARGS, case.env.context)
     assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "unknown"
@@ -215,7 +216,7 @@ async def test_lost_publication_ack_keeps_background_intent_unknown_without_rese
         result = await case.first.project(case.env.context)
         assert result["status"] == "unknown"
         assert result["error"] == "file_mutation_unknown_read_current_version"
-        assert len(requests) == 1 and len(case.env.store.list()["items"]) == 1
+        assert len(requests) == 1 and len(artifact_ids(case.env.store)) == 1
         assert await case.first.intents.pending() == ()
         calls = len(case.env.bot.calls)
         replay = await case.env.service.execute("send", ARGS, case.env.context)

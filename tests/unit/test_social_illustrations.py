@@ -18,7 +18,7 @@ from tests.support.social_identity_cases import add_second_account, social_env
 from tests.support.sticker_delivery import DirectoryBridge, make_delivery, settle
 from tests.support.work_runner_helpers import case, run, tool
 from tests.support.workspace_snapshots import snapshot_bytes
-from tests.unit.test_sticker_library import store_content
+from tests.unit.test_sticker_library import seed_cached_sticker
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatResponse
@@ -210,7 +210,7 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
     for platform in ("qq", "telegram"):
         if not matching_library and platform == target_platform:
             continue
-        assets[platform] = await store_content(
+        assets[platform] = await seed_cached_sticker(
             library, fixture.content, platform=platform, tags=("开心",), is_sticker=True
         )
     delivery = EmojiDeliveryService(env.service, library)

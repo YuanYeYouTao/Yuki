@@ -705,19 +705,11 @@ class PersistentManager:
             limit = 20 * 1024 * 1024
             files, path, prefix = self._media_source(path)
             with files.open_file(path) as fd:
-                before = os.fstat(fd)
-                if method == "workspace_media_read" and before.st_size > limit:
-                    raise WorkspaceError("workspace_media_too_large")
-                current, info = files.fingerprint(fd)
-                if version is not None and current != version:
-                    raise WorkspaceError("version_conflict")
-                result = {
-                    "path": prefix + "/".join(files.parts(path)),
-                    "version": current,
-                    "size": info.st_size,
-                }
+                result: dict[str, Any] = {}
                 if method == "workspace_media_read":
-                    os.lseek(fd, 0, os.SEEK_SET)
+                    before = os.fstat(fd)
+                    if before.st_size > limit:
+                        raise WorkspaceError("workspace_media_too_large")
                     chunks = []
                     remaining = limit + 1
                     while remaining:
@@ -727,15 +719,27 @@ class PersistentManager:
                         chunks.append(chunk)
                         remaining -= len(chunk)
                     data = b"".join(chunks)
-                    after = os.fstat(fd)
-                    if (
-                        len(data) != info.st_size
-                        or hashlib.sha256(data).hexdigest() != current
-                        or (info.st_mtime_ns, info.st_ctime_ns)
-                        != (after.st_mtime_ns, after.st_ctime_ns)
-                    ):
+                    info = os.fstat(fd)
+                    if len(data) > limit:
+                        raise WorkspaceError("workspace_media_too_large")
+                    if len(data) != info.st_size or (
+                        before.st_size,
+                        before.st_mtime_ns,
+                        before.st_ctime_ns,
+                    ) != (info.st_size, info.st_mtime_ns, info.st_ctime_ns):
                         raise WorkspaceError("file_changed_during_read")
+                    current = hashlib.sha256(data).hexdigest()
+                else:
+                    current, info = files.fingerprint(fd)
+                if version is not None and current != version:
+                    raise WorkspaceError("version_conflict")
+                if method == "workspace_media_read":
                     result["base64"] = base64.b64encode(data).decode("ascii")
+                result.update(
+                    path=prefix + "/".join(files.parts(path)),
+                    version=current,
+                    size=info.st_size,
+                )
                 return result
         if method == "workspace_publish":
             files, relative, _prefix = self._media_source(path)

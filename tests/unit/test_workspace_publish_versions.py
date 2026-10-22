@@ -7,6 +7,7 @@ import threading
 from tempfile import TemporaryFile
 
 import pytest
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.persistent import PersistentManager
@@ -22,7 +23,7 @@ def test_snapshot_expected_version_rejects_actual_mismatch_before_artifact_write
             store.snapshot(
                 source.fileno(), "selected.png", expected_version=hashlib.sha256(b"old").hexdigest()
             )
-    assert store.list()["items"] == []
+    assert artifact_ids(store) == []
     assert list(store.root.glob("*.blob")) == list(store.root.glob("*.pending")) == []
 
 
@@ -60,7 +61,7 @@ def test_manager_publish_uses_single_snapshot_digest_even_when_source_changes(
         if expected:
             with pytest.raises(WorkspaceError, match="version_conflict"):
                 manager.file_operation("workspace_publish", arguments)
-            assert store.list()["items"] == []
+            assert artifact_ids(store) == []
         else:
             result = manager.file_operation("workspace_publish", arguments)
             metadata, content = store.read_bytes(result["artifact_id"])

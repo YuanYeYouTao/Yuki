@@ -1,7 +1,7 @@
 """Trusted Linux host daemon. Not mounted into, or executed by, the Bot container.
 
-Only this process controls Docker. All paths, images and resource options are
-operator configuration; untrusted requests contain code and artifact IDs only.
+Only this process controls Docker. Host roots, images and resource options are
+operator configuration; requests select code or files within configured roots.
 """
 
 from __future__ import annotations

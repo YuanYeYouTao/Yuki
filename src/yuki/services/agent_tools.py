@@ -932,9 +932,6 @@ class AgentToolService:
                             "history_presence_unavailable": "原账号不可用，未换号读取",
                             "history_provider_failed": "网关读取失败，不表示没有消息",
                             "invalid_history_result": "网关历史返回格式无效，不能据此判断会话内容",
-                            "artifact_transfer_unavailable": (
-                                "文件已存在工作区，但中转不可用，尚未发送；本轮不要重复发送"
-                            ),
                             "invalid_target_id": (
                                 "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
                             ),

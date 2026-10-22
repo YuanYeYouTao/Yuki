@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import make_settings
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.capabilities.models import CapabilityEffect
@@ -104,7 +105,7 @@ async def test_completed_copy_replays_before_source_or_destination_access(tmp_pa
             "size": len(content),
             "external_untrusted": True,
         }
-        assert manager.store.list()["items"] == []
+        assert artifact_ids(manager.store) == []
         (cache / "original.txt").unlink()
         (manager.files.root / "target.txt").write_bytes(b"user edit after successful copy")
 

@@ -1,4 +1,4 @@
-"""FD operations for selected media, immutable publication and internal imports.
+"""FD operations for selected media, immutable publication and direct file copies.
 
 Ordinary file operations belong to the terminal. The Manager only opens its
 real shared workspace or runtime files here, without following host symlinks.

@@ -1,6 +1,6 @@
 """Real ToolRuntime and SQLite media tools resolve the original Telegram bot.
 
-Telegram HTTP and environment checkout are local substitutes; no real Bot API,
+Telegram HTTP and shared-cache copying are local substitutes; no real Bot API,
 Docker runtime, model, or platform message is used.
 """
 
@@ -17,6 +17,7 @@ import httpx
 import pytest
 from PIL import Image
 from tests.support.event_seed import seed_event, seed_scoped_event
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -276,7 +277,7 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
     else:
         assert result["version"] == hashlib.sha256(case.original_bytes).hexdigest()
         assert case.copies[0].read_bytes() == case.original_bytes
-        assert case.store.list()["items"] == []
+        assert artifact_ids(case.store) == []
 
 
 async def test_native_file_selection_uses_resolvers_actual_locator_priority(

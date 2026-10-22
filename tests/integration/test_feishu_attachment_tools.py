@@ -10,6 +10,7 @@ import httpx
 import pytest
 from PIL import Image
 from tests.support.event_seed import seed_scoped_event
+from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -214,7 +215,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
             else:
                 assert result["version"] == hashlib.sha256(picture).hexdigest()
                 assert copies[0].read_bytes() == picture
-                assert store.list()["items"] == []
+                assert artifact_ids(store) == []
         finally:
             await media.close()
             await resolver.close()

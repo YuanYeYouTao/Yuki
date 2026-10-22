@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from tests.integration.test_native_social_delivery import prepare_paid_send
 from tests.support.social_identity_cases import social_env
-from tests.support.workspace_snapshots import snapshot_bytes
+from tests.support.workspace_snapshots import artifact_ids, snapshot_bytes
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_api import bearer
@@ -189,7 +189,7 @@ async def test_restart_between_freeze_and_social_uses_original_snapshot(
     try:
         with pytest.raises(RuntimeError, match="host interrupted"):
             await env.service.execute("send", args, env.context)
-        original = env.store.list()["items"]
+        original = artifact_ids(env.store)
         assert len(original) == 1
         assert not any(action.startswith("upload_") for action, _ in env.bot.calls)
         source.unlink()
@@ -206,7 +206,7 @@ async def test_restart_between_freeze_and_social_uses_original_snapshot(
     try:
         result = await env.service.execute("send", args, env.context)
         assert result["status"] == "succeeded"
-        assert result["artifact_id"] == original[0]["artifact_id"]
+        assert result["artifact_id"] == original[0]
         assert env.store.read_bytes(result["artifact_id"])[1] == b"original report"
         with pytest.raises(SocialError, match="idempotency_conflict"):
             await env.service.execute("send", args | {"path": "/workspace/other.txt"}, env.context)
