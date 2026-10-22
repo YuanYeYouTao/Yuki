@@ -341,9 +341,10 @@ class ACPDriver:
             }
         if action == "prompt":
             if not identity:
-                created = await self.connection.new_session(cwd=self.spec.cwd, mcp_servers=[])
+                cwd = arguments.get("cwd") or self.spec.cwd
+                created = await self.connection.new_session(cwd=cwd, mcp_servers=[])
                 identity = created.session_id
-                self.sessions[identity] = Session(identity, self.spec.cwd)
+                self.sessions[identity] = Session(identity, cwd)
             elif identity not in self.sessions:
                 if not arguments.get("resume"):
                     raise DriverError(

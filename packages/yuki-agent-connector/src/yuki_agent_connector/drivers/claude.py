@@ -156,8 +156,10 @@ class ClaudeDriver:
                 consumed.set_result(False)
             self.requests.pop(key, None)
 
-    async def _open(self, session_id: str, *, resume: bool) -> ManagedSession:
-        cwd = self.spec.cwd
+    async def _open(
+        self, session_id: str, *, resume: bool, cwd: str | None = None
+    ) -> ManagedSession:
+        cwd = cwd or self.spec.cwd
         if resume:
             metadata = await self._inspect("get", {"session_id": session_id})
             original = metadata.get("native")
@@ -320,7 +322,9 @@ class ClaudeDriver:
                         "explicit_resume_required",
                         "Stored sessions are not live attachments; explicitly authorize resume",
                     )
-                session = await self._open(identity or str(uuid4()), resume=bool(identity))
+                session = await self._open(
+                    identity or str(uuid4()), resume=bool(identity), cwd=arguments.get("cwd")
+                )
             if session.stopped.is_set():
                 raise DriverError("owner_disconnected", "Original SDK session owner has exited")
             if session.active:

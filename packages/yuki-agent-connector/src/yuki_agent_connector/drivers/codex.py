@@ -237,15 +237,11 @@ class CodexDriver:
     async def recover(self, command: dict[str, Any], result: dict[str, Any]) -> None:
         session, execution = result["session_id"], result.get("execution_id")
         operation = command["id"]
-        if command["action"] == "watch":
-            self.watches[operation] = session
-            self.watch_turns[operation] = execution
-        elif execution:
-            self.turn_operations[execution] = operation
-            self.turn_sessions[execution] = session
-        elif command["action"] == "queue":
-            self.queue_operations[operation] = result["queued_submission_id"]
         try:
+            if command["action"] == "watch" and not execution:
+                raise DriverError(
+                    "observation_gap", "Original first execution cannot be proven after restart"
+                )
             thread = (
                 await self.rpc.call(
                     "thread/read",
@@ -258,6 +254,54 @@ class CodexDriver:
             original = next(
                 (turn for turn in thread.get("turns", []) if turn["id"] == execution), None
             )
+            state = "unknown"
+            if command["action"] == "queue" and not execution:
+                matches = [
+                    turn
+                    for turn in thread.get("turns", [])
+                    if any(
+                        item.get("type") == "userMessage" and item.get("clientId") == operation
+                        for item in turn.get("items", [])
+                    )
+                ]
+                if len(matches) == 1:
+                    original = matches[0]
+                    execution = original["id"]
+                elif not matches:
+                    cursor = None
+                    while True:
+                        page = await self.rpc.call(
+                            "thread/queue/list", {"threadId": session, "cursor": cursor}
+                        )
+                        queued = next(
+                            (
+                                item
+                                for item in page.get("data", [])
+                                if item["id"] == result.get("queued_submission_id")
+                            ),
+                            None,
+                        )
+                        if queued:
+                            self.queue_operations[operation] = queued["id"]
+                            state = "queued"
+                            break
+                        cursor = page.get("nextCursor")
+                        if not cursor:
+                            break
+            if original:
+                execution = original["id"]
+                if command["action"] == "watch":
+                    self.watches[operation] = session
+                    self.watch_turns[operation] = execution
+                else:
+                    self.turn_operations[execution] = operation
+                    self.turn_sessions[execution] = session
+                state = {
+                    "inProgress": "running",
+                    "completed": "completed",
+                    "failed": "failed",
+                    "interrupted": "cancelled",
+                }.get(original["status"], "unknown")
             if original and original["status"] in {"completed", "failed", "interrupted"}:
                 await self._notification(
                     {
@@ -268,9 +312,13 @@ class CodexDriver:
                         },
                     }
                 )
+                return
             loaded = await self.rpc.call("thread/loaded/list", {})
-            if session in loaded.get("data", []):
+            live = session in loaded.get("data", [])
+            if live and state in {"running", "queued"}:
                 await self.rpc.call("thread/resume", {"threadId": session, "excludeTurns": True})
+            elif state == "running":
+                state = "unknown"
             await self.emit(
                 "progress",
                 {
@@ -278,7 +326,7 @@ class CodexDriver:
                     "execution_id": execution,
                     "operation_id": operation,
                     "payload": {
-                        "status": native_status(thread),
+                        "status": state,
                         "reason": "connector_restarted_native_snapshot_restored",
                         "stream_gap": True,
                     },
@@ -345,6 +393,7 @@ class CodexDriver:
             if client_id in self.queue_operations or client_id == self.pending_prompts.get(session):
                 self.turn_operations[turn] = client_id
                 self.turn_sessions[turn] = session
+                self.queue_operations.pop(client_id, None)
                 for earlier in self.buffered.pop((session, turn), []):
                     await self._notification(earlier)
         if turn in self.turn_operations:
@@ -599,7 +648,7 @@ class CodexDriver:
                     await self.rpc.call(
                         "thread/start",
                         {
-                            "cwd": self.spec.cwd,
+                            "cwd": arguments.get("cwd") or self.spec.cwd,
                         },
                     )
                 )["thread"]["id"]
@@ -659,17 +708,29 @@ class CodexDriver:
                 },
             )
             queue_id = result["queuedSubmission"]["id"]
-            self.queue_operations[operation] = queue_id
+            if operation in self.queue_operations:
+                self.queue_operations[operation] = queue_id
+            active_turn = next(
+                (key for key, value in self.turn_operations.items() if value == operation), None
+            )
             return {
                 "session_id": session,
+                "execution_id": active_turn,
                 "queued_submission_id": queue_id,
-                "status": "queued",
+                "status": "running"
+                if active_turn
+                else ("queued" if operation in self.queue_operations else "unknown"),
                 "pending": True,
                 "admitted": True,
             }
         if action == "cancel":
-            queued = arguments.get("queued_submission_id") or self.queue_operations.get(
-                arguments.get("operation_id", "")
+            queued = (
+                None
+                if execution
+                else (
+                    arguments.get("queued_submission_id")
+                    or self.queue_operations.get(arguments.get("operation_id", ""))
+                )
             )
             if queued:
                 await self.rpc.call(

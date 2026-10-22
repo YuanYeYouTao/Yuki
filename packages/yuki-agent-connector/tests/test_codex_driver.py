@@ -383,3 +383,109 @@ async def test_explicit_old_execution_watch_does_not_attach_the_current_differen
     assert original["execution_id"] == "A" and original["status"] == "completed"
     assert original["pending"] is False
     assert not driver.watches and not driver.watch_turns
+
+
+@pytest.mark.asyncio
+async def test_consumed_queue_cancels_exact_original_turn_even_with_historical_queue_id(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(kind: str, value: dict[str, Any]) -> None:
+        pass
+
+    driver = CodexDriver(Instance("c", "codex", "c", "unused", cwd=str(tmp_path)), emit)
+
+    async def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append((method, params))
+        return (
+            {"queuedSubmission": {"id": "historical-queue"}} if method == "thread/queue/add" else {}
+        )
+
+    driver.rpc = SimpleNamespace(call=call)  # type: ignore[assignment]
+    await driver.execute(command("queue", identity="queue-op", prompt="queued"))
+    await driver._notification(
+        {
+            "method": "item/started",
+            "params": {
+                "threadId": "thread",
+                "turnId": "actual-native-turn",
+                "item": {"type": "userMessage", "clientId": "queue-op", "id": "native-item"},
+            },
+        }
+    )
+    assert "queue-op" not in driver.queue_operations
+    await driver.execute(
+        command(
+            "cancel",
+            execution="actual-native-turn",
+            queued_submission_id="historical-queue",
+            operation_id="queue-op",
+        )
+    )
+    assert calls[-1] == ("turn/interrupt", {"threadId": "thread", "turnId": "actual-native-turn"})
+    assert all(method != "thread/queue/delete" for method, params in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["prompt", "queue"])
+async def test_recover_exact_original_turn_cannot_take_current_other_turn_state(
+    action: str, tmp_path: Path
+) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(kind: str, value: dict[str, Any]) -> None:
+        events.append((kind, value))
+
+    driver = CodexDriver(Instance("c", "codex", "c", "unused", cwd=str(tmp_path)), emit)
+
+    async def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        assert method == "thread/read"
+        return {
+            "thread": {
+                "id": "thread",
+                "status": {"type": "active"},
+                "turns": [
+                    {
+                        "id": "A",
+                        "status": "completed",
+                        "items": [{"type": "userMessage", "clientId": "original"}],
+                    },
+                    {"id": "B", "status": "inProgress", "items": []},
+                ],
+            }
+        }
+
+    driver.rpc = SimpleNamespace(call=call)  # type: ignore[assignment]
+    await driver.recover(
+        {"id": "original", "action": action},
+        {
+            "session_id": "thread",
+            **({"execution_id": "A"} if action == "prompt" else {"queued_submission_id": "q"}),
+        },
+    )
+    assert len(events) == 1
+    assert events[0][0] == "completed" and events[0][1]["execution_id"] == "A"
+    assert events[0][1]["payload"]["status"] == "completed"
+    assert not driver.turn_operations
+
+
+@pytest.mark.asyncio
+async def test_unbound_watch_recovery_keeps_gap_unknown_without_adopting_current_turn(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(kind: str, value: dict[str, Any]) -> None:
+        events.append((kind, value))
+
+    driver = CodexDriver(Instance("c", "codex", "c", "unused", cwd=str(tmp_path)), emit)
+
+    async def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("An unrelated current turn cannot identify the missed original")
+
+    driver.rpc = SimpleNamespace(call=call)  # type: ignore[assignment]
+    await driver.recover({"id": "original-watch", "action": "watch"}, {"session_id": "thread"})
+    assert events[0][1]["payload"]["status"] == "unknown"
+    assert events[0][1]["payload"]["stream_gap"] is True
+    assert not driver.watches and not driver.turn_operations

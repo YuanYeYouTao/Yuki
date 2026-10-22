@@ -115,7 +115,10 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
                 {
                     "id": "original",
                     "action": "prompt",
-                    "arguments": {"prompt": "native work"},
+                    "arguments": {
+                        "prompt": "native work",
+                        "cwd": str(tmp_path / "selected-project"),
+                    },
                 }
             ),
             3,
@@ -127,6 +130,7 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         assert options.tools == {"type": "preset", "preset": "claude_code"}
         assert options.setting_sources == ["user", "project", "local"]
         assert options.cli_path == sys.executable
+        assert options.cwd == str(tmp_path / "selected-project")
         assert options.fork_session is False and options.max_turns is None
         built = SubprocessCLITransport(prompt="", options=options)._build_command()
         assert built[0] == sys.executable
