@@ -33,7 +33,7 @@ from yuki.identity.canonical_repository import (
 )
 from yuki.identity.receipt_compat import load_claimed_keeper, transport_receipt
 from yuki.identity.routing import PresenceRouter
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, _complete
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.processor import MessageProcessor
 
@@ -310,12 +310,34 @@ class FeishuGateway:
         await self._websocket.start()
 
     async def close(self) -> None:
-        await self._websocket.close()
-        for task in self._turns:
-            task.cancel()
-        await asyncio.gather(*tuple(self._turns), return_exceptions=True)
-        self._disconnected()
-        await self.client.close()
+        async def shutdown() -> BaseException | None:
+            failure: BaseException | None = None
+            try:
+                await self._websocket.close()
+            except BaseException as original:
+                failure = original
+            finally:
+                try:
+                    turns = tuple(self._turns)
+                    for task in turns:
+                        task.cancel()
+                    await asyncio.gather(*turns, return_exceptions=True)
+                    self._disconnected()
+                    await self.client.close()
+                except BaseException as cleanup:
+                    if failure is None:
+                        failure = cleanup
+                    else:
+                        failure.__cause__ = cleanup
+            return failure
+
+        # One shutdown owns the original producers through their settlement;
+        # caller cancellation must not let the lifecycle close their database.
+        failure, cancellation = await _complete(shutdown())
+        if cancellation is not None:
+            raise cancellation from failure
+        if failure is not None:
+            raise failure
 
     async def health(self) -> dict[str, object]:
         socket = self._websocket

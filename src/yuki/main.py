@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
 import nonebot
 from fastapi import FastAPI
 from nonebot.adapters.onebot.v11 import Bot
@@ -52,6 +56,7 @@ def bootstrap(settings: Settings | None = None) -> None:
     if app_settings.onebot_access_token:
         driver.register_adapter(SnowLumaOneBotAdapter)
     application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
+    container: ApplicationContainer | None = None
 
     @driver.on_bot_connect
     async def _on_bot_connect(bot: Bot) -> None:
@@ -92,25 +97,43 @@ def bootstrap(settings: Settings | None = None) -> None:
 
     @driver.on_startup
     async def startup() -> None:
+        nonlocal container
         application_lock.acquire()
-        try:
-            await require_canonical_schema(app_settings.database_url)
-            container = await ApplicationContainer.create(app_settings)
-            set_container(container)
-            await container.start()
-        except BaseException:
-            application_lock.release()
-            raise
-
-    @driver.on_shutdown
-    async def shutdown() -> None:
-        try:
-            await get_container().close()
-        finally:
-            application_lock.release()
+        await require_canonical_schema(app_settings.database_url)
+        container = await ApplicationContainer.create(app_settings)
+        set_container(container)
+        await container.start()
 
     if not isinstance(driver, FastAPIDriver):
         raise RuntimeError("FastAPI driver is required")
+    framework_lifespan = driver.server_app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[Any]:
+        failure: BaseException | None = None
+        try:
+            async with framework_lifespan(app) as state:
+                yield state
+        except BaseException as original:
+            failure = original
+        finally:
+            # NoneBot joins its shielded connection hooks after adapter shutdown.
+            # Their route reconciliation still owns the live application database.
+            try:
+                try:
+                    if container is not None:
+                        await container.close()
+                finally:
+                    application_lock.release()
+            except BaseException as cleanup:
+                if failure is None:
+                    failure = cleanup
+                else:
+                    failure.__cause__ = cleanup
+        if failure is not None:
+            raise failure
+
+    driver.server_app.router.lifespan_context = lifespan
     register_health_routes(driver.server_app)
     from yuki.admin_api.http import attach_admin_api
 
