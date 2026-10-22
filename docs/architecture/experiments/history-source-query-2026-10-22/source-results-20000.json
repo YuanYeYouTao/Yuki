@@ -1,0 +1,346 @@
+{
+  "sqlite": "3.46.1",
+  "entries": 20000,
+  "threads": 8,
+  "source_sha256": {
+    "src/yuki/social/history_sources.py": "8867a9be80e401dbec23566fb1dfa402fd12fd596b470f9dd764bd0296871c75",
+    "src/yuki/conversation/canonical_db_models.py": "d2a5695751da22214a7689b524b208e7e3d2d5f66ce898e4509700db02c2d7e5",
+    "migrations/versions/0148_history_source_indexes.py": "fe02f2e1115e2ad851ab53af65171b2c471ff125bfcef4bbc4dfcf384dfb31f1"
+  },
+  "indexed": {
+    "space_scope": {
+      "rows": 8,
+      "first_ms": 4.292097000870854,
+      "warm_median_ms": 0.010795996786328033,
+      "approximate_vm_median": 400,
+      "plan": [
+        "SEARCH canonical_conversations USING INDEX ix_conversations_space (space_id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "space_display": {
+      "rows": 8,
+      "first_ms": 0.11902600090252236,
+      "warm_median_ms": 0.021422005374915898,
+      "approximate_vm_median": 700,
+      "plan": [
+        "SEARCH canonical_conversations USING INDEX ix_conversations_space (space_id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "private_binding_scope": {
+      "rows": 8,
+      "first_ms": 0.08742499630898237,
+      "warm_median_ms": 0.012712996976915747,
+      "approximate_vm_median": 500,
+      "plan": [
+        "MULTI-INDEX OR",
+        "INDEX 1",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_identity_binding (identity_binding_id=?)",
+        "INDEX 2",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_space_binding (space_binding_id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "private_binding_display": {
+      "rows": 8,
+      "first_ms": 0.15858400001889095,
+      "warm_median_ms": 0.027619000320555642,
+      "approximate_vm_median": 900,
+      "plan": [
+        "MULTI-INDEX OR",
+        "INDEX 1",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_identity_binding (identity_binding_id=?)",
+        "INDEX 2",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_space_binding (space_binding_id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "space_binding_scope": {
+      "rows": 8,
+      "first_ms": 0.06492499960586429,
+      "warm_median_ms": 0.01263399826711975,
+      "approximate_vm_median": 500,
+      "plan": [
+        "MULTI-INDEX OR",
+        "INDEX 1",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_identity_binding (identity_binding_id=?)",
+        "INDEX 2",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_space_binding (space_binding_id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "space_binding_display": {
+      "rows": 8,
+      "first_ms": 0.11588699999265373,
+      "warm_median_ms": 0.026542998966760933,
+      "approximate_vm_median": 900,
+      "plan": [
+        "MULTI-INDEX OR",
+        "INDEX 1",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_identity_binding (identity_binding_id=?)",
+        "INDEX 2",
+        "SEARCH canonical_conversations USING INDEX ix_conversations_space_binding (space_binding_id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "conversation_scope": {
+      "rows": 1,
+      "first_ms": 0.04887999966740608,
+      "warm_median_ms": 0.004968500434188172,
+      "approximate_vm_median": 100,
+      "plan": [
+        "SEARCH canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1 (id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "conversation_display": {
+      "rows": 1,
+      "first_ms": 0.055953001719899476,
+      "warm_median_ms": 0.00777349850977771,
+      "approximate_vm_median": 100,
+      "plan": [
+        "SEARCH canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1 (id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "telegram_scope": {
+      "rows": 10000,
+      "first_ms": 24.198548999265768,
+      "warm_median_ms": 23.266949498065514,
+      "approximate_vm_median": 1065000,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "telegram_display": {
+      "rows": 21,
+      "first_ms": 0.20996500097680837,
+      "warm_median_ms": 0.07458400068571791,
+      "approximate_vm_median": 3600,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    }
+  },
+  "before": {
+    "space_scope": {
+      "rows": 8,
+      "first_ms": 5.063664000772405,
+      "warm_median_ms": 2.9830604980816133,
+      "approximate_vm_median": 80400,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "space_display": {
+      "rows": 8,
+      "first_ms": 3.373917999851983,
+      "warm_median_ms": 2.31693849855219,
+      "approximate_vm_median": 80700,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "private_binding_scope": {
+      "rows": 8,
+      "first_ms": 3.744358000403736,
+      "warm_median_ms": 3.1378439998661634,
+      "approximate_vm_median": 120400,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "private_binding_display": {
+      "rows": 8,
+      "first_ms": 2.6087899968842976,
+      "warm_median_ms": 3.112516995315673,
+      "approximate_vm_median": 120700,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "space_binding_scope": {
+      "rows": 8,
+      "first_ms": 3.6877489983453415,
+      "warm_median_ms": 3.105232499365229,
+      "approximate_vm_median": 120400,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "space_binding_display": {
+      "rows": 8,
+      "first_ms": 2.961301004688721,
+      "warm_median_ms": 2.7810544961539563,
+      "approximate_vm_median": 120700,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "conversation_scope": {
+      "rows": 1,
+      "first_ms": 0.06467300408985466,
+      "warm_median_ms": 0.00531250043422915,
+      "approximate_vm_median": 100,
+      "plan": [
+        "SEARCH canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1 (id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "conversation_display": {
+      "rows": 1,
+      "first_ms": 0.08298299508169293,
+      "warm_median_ms": 0.010338997526559979,
+      "approximate_vm_median": 100,
+      "plan": [
+        "SEARCH canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1 (id=?)",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "telegram_scope": {
+      "rows": 10000,
+      "first_ms": 22.38134499930311,
+      "warm_median_ms": 27.352445002179593,
+      "approximate_vm_median": 1065000,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN"
+      ]
+    },
+    "telegram_display": {
+      "rows": 21,
+      "first_ms": 0.2454959976603277,
+      "warm_median_ms": 0.18749849914456718,
+      "approximate_vm_median": 3600,
+      "plan": [
+        "SCAN canonical_conversations USING INDEX sqlite_autoindex_canonical_conversations_1",
+        "SEARCH account_assignments_1 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_1 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH space_bindings USING INDEX sqlite_autoindex_space_bindings_1 (id=?) LEFT-JOIN",
+        "SEARCH account_assignments_2 USING INDEX sqlite_autoindex_account_assignments_1 (id=?) LEFT-JOIN",
+        "SEARCH accounts_2 USING INDEX sqlite_autoindex_accounts_1 (id=?) LEFT-JOIN",
+        "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?) LEFT-JOIN",
+        "SEARCH spaces USING INDEX sqlite_autoindex_spaces_1 (id=?) LEFT-JOIN"
+      ]
+    }
+  },
+  "sql": {
+    "space_scope": "SELECT canonical_conversations.id AS conversation_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.space_id = '00000000-0000-4000-8000-000000019063' ORDER BY conversation_id",
+    "space_display": "SELECT canonical_conversations.id AS conversation_id, canonical_conversations.kind AS conversation_kind, canonical_conversations.person_id, canonical_conversations.space_id, coalesce(canonical_conversations.identity_binding_id, canonical_conversations.space_binding_id) AS binding_id, canonical_conversations.entry_presence_id AS presence_id, canonical_conversations.thread_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform, CASE WHEN (canonical_conversations.kind = 'private') THEN coalesce(nullif(accounts_1.display_name, ''), persons.display_name) ELSE coalesce(nullif(space_bindings.display_name, ''), spaces.name) END AS conversation_name, CASE WHEN (canonical_conversations.kind = 'private') THEN account_assignments_1.status ELSE space_bindings.status END AS binding_status, account_assignments_2.status AS presence_status, canonical_conversations.generation \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.space_id = '00000000-0000-4000-8000-000000019063' ORDER BY conversation_id\n LIMIT 21 OFFSET 0",
+    "private_binding_scope": "SELECT canonical_conversations.id AS conversation_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.identity_binding_id = '00000000-0000-4000-8000-000000031702' OR canonical_conversations.space_binding_id = '00000000-0000-4000-8000-000000031702' ORDER BY conversation_id",
+    "private_binding_display": "SELECT canonical_conversations.id AS conversation_id, canonical_conversations.kind AS conversation_kind, canonical_conversations.person_id, canonical_conversations.space_id, coalesce(canonical_conversations.identity_binding_id, canonical_conversations.space_binding_id) AS binding_id, canonical_conversations.entry_presence_id AS presence_id, canonical_conversations.thread_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform, CASE WHEN (canonical_conversations.kind = 'private') THEN coalesce(nullif(accounts_1.display_name, ''), persons.display_name) ELSE coalesce(nullif(space_bindings.display_name, ''), spaces.name) END AS conversation_name, CASE WHEN (canonical_conversations.kind = 'private') THEN account_assignments_1.status ELSE space_bindings.status END AS binding_status, account_assignments_2.status AS presence_status, canonical_conversations.generation \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.identity_binding_id = '00000000-0000-4000-8000-000000031702' OR canonical_conversations.space_binding_id = '00000000-0000-4000-8000-000000031702' ORDER BY conversation_id\n LIMIT 21 OFFSET 0",
+    "space_binding_scope": "SELECT canonical_conversations.id AS conversation_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.identity_binding_id = '00000000-0000-4000-8000-000000031703' OR canonical_conversations.space_binding_id = '00000000-0000-4000-8000-000000031703' ORDER BY conversation_id",
+    "space_binding_display": "SELECT canonical_conversations.id AS conversation_id, canonical_conversations.kind AS conversation_kind, canonical_conversations.person_id, canonical_conversations.space_id, coalesce(canonical_conversations.identity_binding_id, canonical_conversations.space_binding_id) AS binding_id, canonical_conversations.entry_presence_id AS presence_id, canonical_conversations.thread_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform, CASE WHEN (canonical_conversations.kind = 'private') THEN coalesce(nullif(accounts_1.display_name, ''), persons.display_name) ELSE coalesce(nullif(space_bindings.display_name, ''), spaces.name) END AS conversation_name, CASE WHEN (canonical_conversations.kind = 'private') THEN account_assignments_1.status ELSE space_bindings.status END AS binding_status, account_assignments_2.status AS presence_status, canonical_conversations.generation \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.identity_binding_id = '00000000-0000-4000-8000-000000031703' OR canonical_conversations.space_binding_id = '00000000-0000-4000-8000-000000031703' ORDER BY conversation_id\n LIMIT 21 OFFSET 0",
+    "conversation_scope": "SELECT canonical_conversations.id AS conversation_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.id = '00000000-0000-4000-8000-0000000f4240' ORDER BY conversation_id",
+    "conversation_display": "SELECT canonical_conversations.id AS conversation_id, canonical_conversations.kind AS conversation_kind, canonical_conversations.person_id, canonical_conversations.space_id, coalesce(canonical_conversations.identity_binding_id, canonical_conversations.space_binding_id) AS binding_id, canonical_conversations.entry_presence_id AS presence_id, canonical_conversations.thread_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform, CASE WHEN (canonical_conversations.kind = 'private') THEN coalesce(nullif(accounts_1.display_name, ''), persons.display_name) ELSE coalesce(nullif(space_bindings.display_name, ''), spaces.name) END AS conversation_name, CASE WHEN (canonical_conversations.kind = 'private') THEN account_assignments_1.status ELSE space_bindings.status END AS binding_status, account_assignments_2.status AS presence_status, canonical_conversations.generation \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE canonical_conversations.id = '00000000-0000-4000-8000-0000000f4240' ORDER BY conversation_id\n LIMIT 21 OFFSET 0",
+    "telegram_scope": "SELECT canonical_conversations.id AS conversation_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) = 'telegram' ORDER BY conversation_id",
+    "telegram_display": "SELECT canonical_conversations.id AS conversation_id, canonical_conversations.kind AS conversation_kind, canonical_conversations.person_id, canonical_conversations.space_id, coalesce(canonical_conversations.identity_binding_id, canonical_conversations.space_binding_id) AS binding_id, canonical_conversations.entry_presence_id AS presence_id, canonical_conversations.thread_id, coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) AS platform, CASE WHEN (canonical_conversations.kind = 'private') THEN coalesce(nullif(accounts_1.display_name, ''), persons.display_name) ELSE coalesce(nullif(space_bindings.display_name, ''), spaces.name) END AS conversation_name, CASE WHEN (canonical_conversations.kind = 'private') THEN account_assignments_1.status ELSE space_bindings.status END AS binding_status, account_assignments_2.status AS presence_status, canonical_conversations.generation \nFROM canonical_conversations LEFT OUTER JOIN account_assignments AS account_assignments_1 ON canonical_conversations.identity_binding_id = account_assignments_1.id AND account_assignments_1.kind IN ('person') LEFT OUTER JOIN accounts AS accounts_1 ON accounts_1.id = account_assignments_1.account_id LEFT OUTER JOIN space_bindings ON canonical_conversations.space_binding_id = space_bindings.id LEFT OUTER JOIN account_assignments AS account_assignments_2 ON canonical_conversations.entry_presence_id = account_assignments_2.id AND account_assignments_2.kind IN ('yuki') LEFT OUTER JOIN accounts AS accounts_2 ON accounts_2.id = account_assignments_2.account_id LEFT OUTER JOIN persons ON persons.id = canonical_conversations.person_id LEFT OUTER JOIN spaces ON spaces.id = canonical_conversations.space_id \nWHERE coalesce(CASE WHEN (canonical_conversations.kind = 'private') THEN accounts_1.platform ELSE space_bindings.platform END, accounts_2.platform) = 'telegram' ORDER BY conversation_id\n LIMIT 21 OFFSET 0"
+  }
+}

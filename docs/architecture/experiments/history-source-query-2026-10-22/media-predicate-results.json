@@ -1,0 +1,691 @@
+{
+  "sqlite": "3.46.1",
+  "count": 20000,
+  "source_sha256": "0bfecbfb5cab7e6ef5c814a522cb7159a693eab991554e539ee2fd128eec8a7f",
+  "results": [
+    {
+      "density": "dense",
+      "keyword": "稀有锚点001",
+      "shape": "in",
+      "warm_median_ms": 15.313365001929924,
+      "samples": [
+        {
+          "ms": 17.251279998163227,
+          "approx_vm_1000": 204000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 15.313365001929924,
+          "approx_vm_1000": 204000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 16.65507100551622,
+          "approx_vm_1000": 205000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 13.57932099926984,
+          "approx_vm_1000": 204000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "LIST SUBQUERY 1"
+        ],
+        [
+          45,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "dense",
+      "keyword": "稀有锚点001",
+      "shape": "exists",
+      "warm_median_ms": 3.2536750004510395,
+      "samples": [
+        {
+          "ms": 6.035262005752884,
+          "approx_vm_1000": 5000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.5992900011478923,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.2536750004510395,
+          "approx_vm_1000": 5000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.0912459988030605,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "CORRELATED SCALAR SUBQUERY 1"
+        ],
+        [
+          47,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=? AND source_event_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "dense",
+      "keyword": "常见",
+      "shape": "in",
+      "warm_median_ms": 15.62553399708122,
+      "samples": [
+        {
+          "ms": 15.40776299952995,
+          "approx_vm_1000": 206000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 15.653697002562694,
+          "approx_vm_1000": 205000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 14.997747006418649,
+          "approx_vm_1000": 205000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 15.62553399708122,
+          "approx_vm_1000": 206000,
+          "returned": 20,
+          "has_more": true
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "LIST SUBQUERY 1"
+        ],
+        [
+          45,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "dense",
+      "keyword": "常见",
+      "shape": "exists",
+      "warm_median_ms": 5.055106004874688,
+      "samples": [
+        {
+          "ms": 5.736638995585963,
+          "approx_vm_1000": 7000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 5.025661004765425,
+          "approx_vm_1000": 7000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 5.055106004874688,
+          "approx_vm_1000": 7000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 5.532718998438213,
+          "approx_vm_1000": 7000,
+          "returned": 20,
+          "has_more": true
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "CORRELATED SCALAR SUBQUERY 1"
+        ],
+        [
+          47,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=? AND source_event_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "dense",
+      "keyword": "(plain media)",
+      "shape": "in",
+      "warm_median_ms": 14.670409997052047,
+      "samples": [
+        {
+          "ms": 13.950713000667747,
+          "approx_vm_1000": 201000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 14.670409997052047,
+          "approx_vm_1000": 201000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 14.670468000986148,
+          "approx_vm_1000": 202000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 13.248174000182189,
+          "approx_vm_1000": 201000,
+          "returned": 20,
+          "has_more": true
+        }
+      ],
+      "plan": [
+        [
+          9,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          13,
+          0,
+          0,
+          "LIST SUBQUERY 1"
+        ],
+        [
+          16,
+          13,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "dense",
+      "keyword": "(plain media)",
+      "shape": "exists",
+      "warm_median_ms": 4.465910998987965,
+      "samples": [
+        {
+          "ms": 4.451257002074271,
+          "approx_vm_1000": 5000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 4.465910998987965,
+          "approx_vm_1000": 5000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 3.455865000432823,
+          "approx_vm_1000": 5000,
+          "returned": 20,
+          "has_more": true
+        },
+        {
+          "ms": 4.687944005127065,
+          "approx_vm_1000": 5000,
+          "returned": 20,
+          "has_more": true
+        }
+      ],
+      "plan": [
+        [
+          10,
+          0,
+          0,
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+        ],
+        [
+          44,
+          0,
+          0,
+          "CORRELATED SCALAR SUBQUERY 1"
+        ],
+        [
+          49,
+          44,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=? AND source_event_id=?)"
+        ],
+        [
+          135,
+          0,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      ]
+    },
+    {
+      "density": "sparse",
+      "keyword": "稀有锚点001",
+      "shape": "in",
+      "warm_median_ms": 3.542837002896704,
+      "samples": [
+        {
+          "ms": 6.076903999201022,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.1969019983080216,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.542837002896704,
+          "approx_vm_1000": 5000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 5.178808001801372,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "LIST SUBQUERY 1"
+        ],
+        [
+          45,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "sparse",
+      "keyword": "稀有锚点001",
+      "shape": "exists",
+      "warm_median_ms": 4.068010995979421,
+      "samples": [
+        {
+          "ms": 5.992307000269648,
+          "approx_vm_1000": 5000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 4.7829870018176734,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 4.068010995979421,
+          "approx_vm_1000": 5000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.8131990004330873,
+          "approx_vm_1000": 4000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "CORRELATED SCALAR SUBQUERY 1"
+        ],
+        [
+          47,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=? AND source_event_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "sparse",
+      "keyword": "常见",
+      "shape": "in",
+      "warm_median_ms": 35.124895999615546,
+      "samples": [
+        {
+          "ms": 30.089711995969992,
+          "approx_vm_1000": 421000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 35.124895999615546,
+          "approx_vm_1000": 421000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 36.00229600124294,
+          "approx_vm_1000": 421000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 31.181348997051828,
+          "approx_vm_1000": 422000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "LIST SUBQUERY 1"
+        ],
+        [
+          45,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "sparse",
+      "keyword": "常见",
+      "shape": "exists",
+      "warm_median_ms": 37.23968799749855,
+      "samples": [
+        {
+          "ms": 40.241912996862084,
+          "approx_vm_1000": 1041000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 37.23968799749855,
+          "approx_vm_1000": 1041000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 42.43220500211464,
+          "approx_vm_1000": 1041000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 35.99907899479149,
+          "approx_vm_1000": 1041000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          4,
+          0,
+          0,
+          "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+        ],
+        [
+          12,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          42,
+          0,
+          0,
+          "CORRELATED SCALAR SUBQUERY 1"
+        ],
+        [
+          47,
+          42,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=? AND source_event_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "sparse",
+      "keyword": "(plain media)",
+      "shape": "in",
+      "warm_median_ms": 2.4013180009205826,
+      "samples": [
+        {
+          "ms": 3.6834109996561892,
+          "approx_vm_1000": 0,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 3.3475900054327212,
+          "approx_vm_1000": 0,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 2.4013180009205826,
+          "approx_vm_1000": 0,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 1.973758997337427,
+          "approx_vm_1000": 0,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          9,
+          0,
+          0,
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        [
+          13,
+          0,
+          0,
+          "LIST SUBQUERY 1"
+        ],
+        [
+          16,
+          13,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+        ]
+      ]
+    },
+    {
+      "density": "sparse",
+      "keyword": "(plain media)",
+      "shape": "exists",
+      "warm_median_ms": 44.536948000313714,
+      "samples": [
+        {
+          "ms": 52.916565000487026,
+          "approx_vm_1000": 860000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 52.03187299775891,
+          "approx_vm_1000": 860000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 44.536948000313714,
+          "approx_vm_1000": 861000,
+          "returned": 1,
+          "has_more": false
+        },
+        {
+          "ms": 44.2543589961133,
+          "approx_vm_1000": 860000,
+          "returned": 1,
+          "has_more": false
+        }
+      ],
+      "plan": [
+        [
+          10,
+          0,
+          0,
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+        ],
+        [
+          44,
+          0,
+          0,
+          "CORRELATED SCALAR SUBQUERY 1"
+        ],
+        [
+          49,
+          44,
+          0,
+          "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=? AND source_event_id=?)"
+        ],
+        [
+          135,
+          0,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      ]
+    }
+  ]
+}

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.character.repository import CharacterRepository, is_character_owner
@@ -22,10 +22,9 @@ from yuki.execution_trace.recorder import TraceRecorder
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.persistence.event_view import event_view
-from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.runtime.work_schema_v1 import work
-from yuki.social.db_models import SocialOperationModel
+from yuki.social.history_sources import history_delivery_predicates
 
 
 async def personal_conversation(
@@ -138,20 +137,9 @@ class ClientViews:
             conversation = await personal_conversation(session, principal.person_id, identity)
             binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
             assert binding is not None
-            predicates: tuple[Any, ...] = ()
-            if binding.platform == "acp":
-                predicates = (
-                    or_(
-                        ChatEventModel.direction == "inbound",
-                        select(SocialOperationModel.id)
-                        .where(
-                            SocialOperationModel.event_id == ChatEventModel.id,
-                            SocialOperationModel.status == "succeeded",
-                            ChatEventModel.direction == "outbound",
-                        )
-                        .exists(),
-                    ),
-                )
+            predicates = history_delivery_predicates(
+                (identity,) if binding.platform == "acp" else ()
+            )
             page = await EventLedgerRepository(self.database).query_history(
                 session=session,
                 conversation_id=identity,

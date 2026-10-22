@@ -169,3 +169,108 @@ async def test_global_search_keeps_real_delegated_conversation_scope(permanent_e
             )
     finally:
         current_invocation.reset(token)
+
+
+@pytest.mark.parametrize("view", ["recent", "search"])
+@pytest.mark.parametrize(
+    "source, selected",
+    [
+        ({"platform": "telegram"}, [1]),
+        ({"scope": "private"}, [0, 1, 2]),
+        ({"platform": "qq", "scope": "group"}, [3, 4]),
+        ({"platform": "missing-platform"}, []),
+        ({"platform": ""}, []),
+    ],
+)
+async def test_source_filters_select_their_collection_once(
+    permanent_entries, view, source, selected
+):
+    env, entries = permanent_entries
+    result = await env.service.execute(
+        "query_chat_history",
+        {"view": view, "source": source, "keyword": "雷达站", "limit": 100},
+        env.context,
+    )
+    assert [row["event_id"] for row in result["events"]] == sorted(
+        (entries[index].event.id for index in selected), reverse=True
+    )
+    assert {row["conversation_id"] for row in result["sources"]} == {
+        entries[index].event.canonical_conversation_id for index in selected
+    }
+    assert env.bot.calls == []
+
+
+async def test_source_and_target_intersect_without_scope_fallback(permanent_entries):
+    env, entries = permanent_entries
+    target = {"conversation_id": entries[0].event.canonical_conversation_id}
+    request = {"target": target, "source": {"platform": "telegram"}}
+    for view in ("recent", "search", "around"):
+        result = await env.service.execute(
+            "query_chat_history",
+            {**request, "view": view, "event_id": entries[1].event.id},
+            env.context,
+        )
+        assert result["events"] == [] and result["sources"] == []
+        assert result.source_event_ids == ()
+        if view == "around":
+            assert result["center_status"] == "unavailable"
+    for source in ({}, {"platform": None, "scope": None}):
+        result = await env.service.execute(
+            "query_chat_history", {"view": "recent", "source": source}, env.context
+        )
+        assert [row["content"] for row in result["events"]] == ["hello"]
+
+
+async def test_filtered_receipt_keeps_effect_and_actual_evidence(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    receipt = await env.service.execute("send", {"text": "receipt proof"}, env.context)
+    result = await env.service.execute(
+        "query_chat_history",
+        {
+            "view": "search",
+            "target": {"operation_id": receipt["operation_id"]},
+            "source": {"platform": "telegram"},
+        },
+        env.context,
+    )
+    assert result["receipt_status"] == "succeeded"
+    assert result["receipt_anchor"]["status"] == "unavailable"
+    assert result["events"] == [] and result["sources"] == []
+    assert result.source_event_ids == ()
+
+
+@pytest.mark.parametrize("private", [False, True])
+async def test_empty_entry_name_keeps_real_subject_name_discoverable(database, tmp_path, private):
+    from yuki.identity.db_models import (
+        AccountModel,
+        CanonicalPersonModel,
+        CanonicalSpaceModel,
+        IdentityBindingModel,
+    )
+
+    env = await social_env(database, tmp_path)
+    if private:
+        added = await stored_private_entry(env, "telegram")
+        conversation_id = added.event.canonical_conversation_id
+        async with database.immediate_session() as session:
+            binding = await session.get(IdentityBindingModel, added.binding_id)
+            account = await session.get(AccountModel, binding.account_id)
+            account.display_name = ""
+            (await session.get(CanonicalPersonModel, env.person)).display_name = "Known archive"
+    else:
+        conversation_id = env.context.conversation_id
+        async with database.immediate_session() as session:
+            (await session.get(CanonicalSpaceModel, env.space)).name = "Known archive"
+            binding = await session.scalar(
+                select(SpaceBindingModel).where(SpaceBindingModel.space_id == env.space)
+            )
+            binding.display_name = ""
+    target = {"conversation_id": conversation_id}
+    directory = await env.service.execute(
+        "find_contacts",
+        {"view": "entries", "target": target, "display_name": "Known archive"},
+        env.context,
+    )
+    history = await env.service.execute("query_chat_history", {"target": target}, env.context)
+    assert [row["conversation_id"] for row in directory["items"]] == [conversation_id]
+    assert history["events"][0]["conversation_name"] == "Known archive"

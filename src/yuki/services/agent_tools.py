@@ -66,7 +66,7 @@ from yuki.sandbox.environment_tools import SANDBOX_TOOLS, is_execution
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state
-from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, HistoryQuery, history_schema
+from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, history_schema
 from yuki.services.turn_coordinator import TurnToken
 from yuki.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from yuki.web.models import (
@@ -804,7 +804,7 @@ class AgentToolService:
             if not isinstance(arguments, dict):
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
-                from yuki.social.tools import social_tool_definitions
+                from yuki.social.tools import SOCIAL_TOOL_NAMES
 
                 if name in SANDBOX_TOOLS:
                     from yuki.capabilities.invocation import current_invocation
@@ -906,7 +906,7 @@ class AgentToolService:
                         )
                         return self._result(error=category, detail=detail)
 
-                if name in {tool.name for tool in social_tool_definitions()}:
+                if name in SOCIAL_TOOL_NAMES:
                     from yuki.social.agent_adapter import invoke_social
                     from yuki.social.models import SocialError
 
@@ -955,20 +955,11 @@ class AgentToolService:
                             return await self._database_failure(exc, name=name, runtime=runtime)
                         detail = {
                             "history_receipt_unavailable": (
-                                "该回执不属于当前来源会话，或没有可核验的发送账号"
-                            ),
-                            "history_anchor_unavailable": (
-                                "原事件或定位不可用，使用当前会话的真实 event_id 或原回执"
+                                "该回执不属于当前来源会话，或回执已不存在"
                             ),
                             "history_source_changed": (
                                 "来源授权、代次或隐私状态已变化，未发布旧读取正文"
                             ),
-                            "invalid_history_event_id": (
-                                "event_id 须是当前会话的正整数内部事件 ID"
-                            ),
-                            "history_presence_unavailable": "原账号不可用，未换号读取",
-                            "history_provider_failed": "网关读取失败，不表示没有消息",
-                            "invalid_history_result": "网关历史返回格式无效，不能据此判断会话内容",
                             "invalid_target_id": (
                                 "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
                             ),
@@ -1126,13 +1117,12 @@ class AgentToolService:
         from yuki.social.agent_adapter import invoke_social
         from yuki.social.models import SocialError
 
-        query = HistoryQuery.model_validate(arguments)
         defaults = {
             "limit": self._settings.recent_history_tool_limit,
             "before": self._settings.conversation_history_around_before,
             "after": self._settings.conversation_history_around_after,
         }
-        selected = query.model_dump(mode="json", exclude_none=True)
+        selected = {key: value for key, value in arguments.items() if value is not None}
         for key, value in defaults.items():
             selected.setdefault(key, value)
         try:

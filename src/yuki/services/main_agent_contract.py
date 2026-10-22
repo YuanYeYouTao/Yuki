@@ -107,7 +107,8 @@ class MainAgentContract:
                         # 27: role-independent descriptions and the single SOUL contract.
                         # 28: permanent cross-entry history with explicit source labels.
                         # 29: unified send tool; publication stays an internal delivery step.
-                        "version": 29,
+                        # 30: source filters and paged conversation entry discovery.
+                        "version": 30,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

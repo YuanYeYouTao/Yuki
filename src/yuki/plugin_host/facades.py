@@ -32,6 +32,7 @@ from yuki.admin.models import ControlAuditRef, RuntimeConfigSnapshot
 from yuki.automation.authority import DelegatedAuthority
 from yuki.automation.models import AutomationRecord, TurnOrigin
 from yuki.automation.service import AutomationService
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.scope import runtime_conversation_key
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import (
@@ -42,6 +43,7 @@ from yuki.domain.messages import (
 )
 from yuki.domain.tool_actor import ToolActor
 from yuki.gateway.media import PlatformMediaGateway
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
@@ -91,6 +93,7 @@ from yuki.services.agent_runner import (
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.renderer import sanitize_model_output
 from yuki.services.vision_service import VisionProcessingError, VisionService
+from yuki.social.history_sources import history_delivery_predicates
 from yuki.social.models import OperationStatus, SocialError, SocialReceipt
 from yuki.social.repository import SocialOperationRepository
 from yuki.vision.models import VisualObservation
@@ -904,6 +907,21 @@ class HostPluginContext:
         return result
 
 
+async def _conversation_delivery_predicates(
+    session: AsyncSession, conversation: CanonicalConversationModel
+) -> tuple[Any, ...]:
+    binding: IdentityBindingModel | SpaceBindingModel | None = None
+    if conversation.identity_binding_id is not None:
+        binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+    elif conversation.space_binding_id is not None:
+        binding = await session.get(SpaceBindingModel, conversation.space_binding_id)
+    platform = binding.platform if binding is not None else None
+    if platform is None and conversation.entry_presence_id is not None:
+        presence = await session.get(PresenceModel, conversation.entry_presence_id)
+        platform = presence.platform if presence is not None else None
+    return history_delivery_predicates((conversation.id,) if platform == "acp" else ())
+
+
 class _MessageFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
@@ -926,10 +944,19 @@ class _MessageFacade:
             or ledger is None
         ):
             return None
-        record = await ledger.get_reply_event(
-            inbound.reply_to_event_id,
-            conversation_id=invocation.conversation_id,
-        )
+        async with ledger._database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            conversation = await session.get(CanonicalConversationModel, invocation.conversation_id)
+            if conversation is None:
+                return None
+            record, _, _ = await ledger.history_around(
+                session=session,
+                conversation_id=conversation.id,
+                event_id=inbound.reply_to_event_id,
+                before=0,
+                after=0,
+                predicates=await _conversation_delivery_predicates(session, conversation),
+            )
         return _record_message(record) if record is not None else None
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]:
@@ -947,7 +974,6 @@ class _MessageFacade:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
         from yuki.services.history_query import HistoryQuery
 
         request = HistoryQuery(
@@ -967,6 +993,7 @@ class _MessageFacade:
                 keyword=request.keyword,
                 match=request.match,
                 exclude=request.exclude,
+                predicates=await _conversation_delivery_predicates(session, conversation),
             )
         return tuple(_record_message(row) for row in reversed(page.events))
 

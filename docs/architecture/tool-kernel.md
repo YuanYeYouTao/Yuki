@@ -266,7 +266,10 @@ WorkspaceStore 保不可变发布、媒体、short_state、下载及实际引用
 
 统一 `query_chat_history(view=recent/search/around)` 读取 Yuki 实际参与并已入账、当前来源获准读取的
 跨平台 canonical 原账本。内部目标只选择真实查询范围，不猜主动路由；每条结果标明原 Conversation、平台和作者。
-recent 默认当前 Conversation；search 未给 target 时检索所有当前获准的已入账 Conversation。
+  recent 默认当前 Conversation，显式 source 时浏览该来源集合；search 未给 target 时检索所有当前获准的已入账 Conversation。
+  source 的平台与 private/group 条件可选，与内部 target 取交集，无交集为空，不强制逐级发现。
+  find_contacts 的 entries 视图按真实 Conversation 平铺来源、话题和原阶段状态，沿同一读取范围分页，
+  不继承当前发送资格；subjects 保留人物/群主体定位。完整 schema 仍在部署时一次冻结。
 Person、Space 或 Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原会话。
 sources 提供可读会话名与目录，每条事件保 conversation_id、platform、scope、thread_id，不合并自动上下文。
 `event_id` 定位实际范围内原事件；`operation_id` 沿原发送回执定位真实出站会话及原锚点。
