@@ -76,10 +76,10 @@ class _Item:
         return MemoryRebuildJobOutcome.CLAIMS_APPLIED.value
 
 
-async def _read_batch(
+async def _read_items(
     session: AsyncSession, run_id: int, item_ids: tuple[int, ...]
-) -> tuple[dict[int, _Item], dict[int, Any]]:
-    """Three indexed reads, independent of the number of items in the page."""
+) -> dict[int, _Item]:
+    """Two indexed metadata reads, independent of the page's item count."""
     proposal = MemoryRebuildProposalModel
     counts = {
         int(row.item_id): row
@@ -144,18 +144,7 @@ async def _read_batch(
             rejected=int(aggregate.rejected) if aggregate else 0,
             unfinished=int(aggregate.unfinished) if aggregate else 0,
         )
-    receipts = {
-        int(row.event_id): row
-        for row in await session.execute(
-            select(
-                MemoryJobModel.event_id,
-                MemoryJobModel.status,
-                MemoryJobModel.processing_source,
-                MemoryJobModel.rebuild_run_id,
-            ).where(MemoryJobModel.event_id.in_(tuple(item.event_id for item in items.values())))
-        )
-    }
-    return items, receipts
+    return items
 
 
 async def complete_receipts(
@@ -202,7 +191,7 @@ async def complete_receipts(
         )
         if not ids:
             return 0
-        prepared, _ = await _read_batch(reader, run.id, ids)
+        prepared = await _read_items(reader, run.id, ids)
         selection = MemoryRebuildSelection.model_validate_json(run.selection_json)
         mode = selection.third_party_mode
         include_failed_live_jobs = include_failed_live_jobs and selection.include_failed_live_jobs
@@ -284,7 +273,20 @@ async def complete_receipts(
             )
         ):
             return 0
-        current, receipts = await _read_batch(writer, run.id, ids)
+        current = await _read_items(writer, run.id, ids)
+        receipts = {
+            int(row.event_id): row
+            for row in await writer.execute(
+                select(
+                    MemoryJobModel.event_id,
+                    MemoryJobModel.status,
+                    MemoryJobModel.processing_source,
+                    MemoryJobModel.rebuild_run_id,
+                ).where(
+                    MemoryJobModel.event_id.in_(tuple(item.event_id for item in current.values()))
+                )
+            )
+        }
         changed_references = await changed_trusted_sources(writer, trusted_fences)
         matching_sources: set[int] = set()
         for offset in range(0, len(source_values), 128):

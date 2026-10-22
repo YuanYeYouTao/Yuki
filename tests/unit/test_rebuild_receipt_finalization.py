@@ -182,8 +182,8 @@ async def test_finalization_read_budget_is_per_page_and_second_pass_is_readonly(
             seed.public_id, include_failed_live_jobs=False, limit=128
         )
         assert completed == min(count, 128)
-        # Run lookup/discovery and two three-read batches; no per-item owner,
-        # evidence, proposal-body or receipt SELECTs after the first DML.
+        # Run/source lookup and two metadata batches; receipts are read only in
+        # the writer. No per-item or proposal-body SELECTs after the first DML.
         selects = [statement for statement in statements if statement.startswith("SELECT")]
         assert len(selects) <= 10
         assert not any("CLAIM_JSON" in statement for statement in selects)
@@ -269,7 +269,7 @@ async def test_live_receipt_arriving_after_prepare_is_never_blindly_overwritten(
     expected_job: str,
 ) -> None:
     seed = await _seed(database, 1, include_failed=include_failed)
-    original = receipt_finalization._read_batch
+    original = receipt_finalization._read_items
     injected = False
 
     async def read_and_enqueue(session, run_id, item_ids):
@@ -291,7 +291,7 @@ async def test_live_receipt_arriving_after_prepare_is_never_blindly_overwritten(
                 )
         return result
 
-    monkeypatch.setattr(receipt_finalization, "_read_batch", read_and_enqueue)
+    monkeypatch.setattr(receipt_finalization, "_read_items", read_and_enqueue)
     completed = await MemoryRebuildRepository(database).complete_item_receipts(
         seed.public_id, include_failed_live_jobs=include_failed
     )
@@ -314,7 +314,7 @@ async def test_source_or_review_race_requires_fresh_preparation(
     database: Database, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     seed = await _seed(database, 1, proposals=True)
-    original = receipt_finalization._read_batch
+    original = receipt_finalization._read_items
     injected = False
 
     async def read_and_change(session, run_id, item_ids):
@@ -360,7 +360,7 @@ async def test_source_or_review_race_requires_fresh_preparation(
                 await writer.execute(statement)
         return result
 
-    monkeypatch.setattr(receipt_finalization, "_read_batch", read_and_change)
+    monkeypatch.setattr(receipt_finalization, "_read_items", read_and_change)
     assert (
         await MemoryRebuildRepository(database).complete_item_receipts(
             seed.public_id, include_failed_live_jobs=False
