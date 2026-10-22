@@ -5,8 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy import event, select, update
 from tests.unit.test_memory_v2 import _append_event
 
 from yuki.memory.self_reflection.repository import SelfReflectionRepository
@@ -66,17 +65,15 @@ async def test_paid_completion_recovers_once_without_losing_a_large_tail(
         async with immediate() as writer:
             yield writer
 
-    async with database.engine.connect() as connection:
-        await connection.run_sync(
-            lambda sync: sync.connection.dbapi_connection.run_async(
-                lambda driver: driver._execute(
-                    driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 256
-                )
+    def native_limit(dbapi, _record, _proxy):
+        dbapi.run_async(
+            lambda driver: driver._execute(
+                driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 256
             )
         )
-        monkeypatch.setattr(
-            database, "_sessions", async_sessionmaker(connection, expire_on_commit=False)
-        )
+
+    event.listen(database.engine.sync_engine, "checkout", native_limit)
+    try:
         monkeypatch.setattr(database, "immediate_session", admission)
         assert await repository.recover_stale_runs(started_before=datetime.now(UTC)) == 1
         assert await repository.recover_stale_runs(started_before=datetime.now(UTC)) == 0
@@ -90,3 +87,5 @@ async def test_paid_completion_recovers_once_without_losing_a_large_tail(
             assert state.latest_event_id == tail[-1].id
             assert state.pending_events == len(tail)
             assert state.pending_characters == sum(map(len, contents))
+    finally:
+        event.remove(database.engine.sync_engine, "checkout", native_limit)

@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import event, insert, select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from tests.unit.test_history_missing_body import scene
 
 from yuki.conversation.frozen_fragments import FrozenFragments
@@ -49,9 +48,7 @@ async def _chunks(database):
         )
 
 
-async def test_rebuild_proves_large_existing_selection_with_native_parameter_budget(
-    database, monkeypatch
-):
+async def test_rebuild_proves_large_existing_selection_with_native_parameter_budget(database):
     _ledger, context, _seed = await scene(database, 350)
     repository = PromptProjectionRepository(database)
     fragments = FrozenFragments.load([]).extend_history(context.history_fragments, ())
@@ -61,17 +58,16 @@ async def test_rebuild_proves_large_existing_selection_with_native_parameter_bud
     async with database.read_session() as reader:
         original = list(await reader.scalars(select(ContextSelectionModel.source_key)))
     assert len(original) > 300
-    async with database.engine.connect() as connection:
-        await connection.run_sync(
-            lambda sync: sync.connection.dbapi_connection.run_async(
-                lambda driver: driver._execute(
-                    driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300
-                )
+
+    def native_limit(dbapi, _record, _proxy):
+        dbapi.run_async(
+            lambda driver: driver._execute(
+                driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300
             )
         )
-        monkeypatch.setattr(
-            database, "_sessions", async_sessionmaker(connection, expire_on_commit=False)
-        )
+
+    event.listen(database.engine.sync_engine, "checkout", native_limit)
+    try:
         publication = await _prepare(
             repository, context, fragments, previous, reason="source_changed"
         )
@@ -83,6 +79,8 @@ async def test_rebuild_proves_large_existing_selection_with_native_parameter_bud
             assert set(await reader.scalars(select(ContextSelectionModel.source_key))) == set(
                 original
             )
+    finally:
+        event.remove(database.engine.sync_engine, "checkout", native_limit)
 
 
 async def test_hot_append_does_not_materialize_or_rewrite_the_original_prefix(

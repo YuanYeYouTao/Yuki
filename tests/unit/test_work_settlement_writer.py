@@ -1402,8 +1402,7 @@ async def test_large_owned_completions_keep_original_wait_after_source_changes(
     from contextlib import asynccontextmanager
     from datetime import UTC, datetime
 
-    from sqlalchemy import update
-    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from sqlalchemy import event, update
 
     from yuki.sandbox.db_models import SandboxTaskRunModel
 
@@ -1465,17 +1464,15 @@ async def test_large_owned_completions_keep_original_wait_after_source_changes(
             assert not writing, "historical completion decoded inside writer"
         return loads(value, *args, **kwargs)
 
-    async with database.engine.connect() as connection:
-        await connection.run_sync(
-            lambda sync: sync.connection.dbapi_connection.run_async(
-                lambda driver: driver._execute(
-                    driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 256
-                )
+    def limit_variables(dbapi, _record, _proxy):
+        dbapi.run_async(
+            lambda driver: driver._execute(
+                driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 256
             )
         )
-        monkeypatch.setattr(
-            database, "_sessions", async_sessionmaker(connection, expire_on_commit=False)
-        )
+
+    event.listen(database.engine.sync_engine, "checkout", limit_variables)
+    try:
         monkeypatch.setattr(database, "immediate_session", admission)
         monkeypatch.setattr(json, "loads", decode)
         assert await waiter.deliver_due() == 0
@@ -1494,3 +1491,5 @@ async def test_large_owned_completions_keep_original_wait_after_source_changes(
         assert {c["matched"]["status"] for c in delivered["conditions"]} == {"unknown"}
         pending = await repository.pending(lease, work_id=identity)
         assert len(pending) == 1 and pending[0]["source_key"] == f"wait:{registered['id']}"
+    finally:
+        event.remove(database.engine.sync_engine, "checkout", limit_variables)

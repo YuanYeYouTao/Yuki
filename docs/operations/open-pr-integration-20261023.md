@@ -123,3 +123,12 @@ sdist/wheel 及不安装 Bot 的独立 wheel 检查全部通过。完整主库 u
 新 release 使用原 venv、原 unit 参数与独立状态库；切换 PYTHONPATH，保留仍被环境 bind 的旧 src。
 旧停机仅关闭观察连接，新 recover 接回原容器/执行；实际切换、一致备份和四个 peer 身份核验由后续
 部署记录分别说明，不能从本地或 CI 通过推断已上线。
+
+## 完整单元测试的连接准备修正
+
+`8bc4d437` 的完整 Linux unit 为 3601 passed、4 failed；四项都在 BEGIN 报原连接已关闭。
+三个低参数上限测试把 `Database._sessions` 重绑到同一条外借 AsyncConnection，reader 正确关闭原连接后，
+后续 writer 无法继续借用它。生产 `_sessions` 仅在 Database 构造时绑定自己的 engine，没有这种重绑消费者。
+现用 SQLAlchemy checkout 事件在各次实际 driver 上设置同样的 256/300 参数上限，并在 finally 移除监听；
+同类单次 reader 测试一并修正。不改变产品、原参数上限、来源变化、paid、unknown 与原回执断言。
+三文件先实际 3 failed，修后完整 42 passed；Work 的剩余失败项单独 1 passed。最终完整 CI 另行记录。

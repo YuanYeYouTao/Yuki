@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, event, insert, select, text, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -444,19 +444,18 @@ async def test_history_preparation_version_change_is_source_error(database, monk
         )
 
 
-async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database, monkeypatch):
+async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database):
     ledger, context, _seed = await scene(database, 600)
-    async with database.engine.connect() as connection:
-        await connection.run_sync(
-            lambda sync: sync.connection.dbapi_connection.run_async(
-                lambda driver: driver._execute(
-                    driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300
-                )
+
+    def native_limit(dbapi, _record, _proxy):
+        dbapi.run_async(
+            lambda driver: driver._execute(
+                driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300
             )
         )
-        monkeypatch.setattr(
-            database, "_sessions", async_sessionmaker(connection, expire_on_commit=False)
-        )
+
+    event.listen(database.engine.sync_engine, "checkout", native_limit)
+    try:
         with capture(database) as statements:
             version, records = await ledger.read_scope_missing_history(
                 context.read_version,
@@ -465,6 +464,8 @@ async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database, mon
                 frozen_event_ids=frozenset(),
                 current_event_id=context.current_event_id,
             )
+    finally:
+        event.remove(database.engine.sync_engine, "checkout", native_limit)
     assert version == context.read_version and len(records) == 600
     assert body_rows(statements) == 600 and metadata_rows(statements) == 601
 
