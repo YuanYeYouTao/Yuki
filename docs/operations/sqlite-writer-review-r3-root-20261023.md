@@ -6,8 +6,12 @@ services 由 [A](sqlite-writer-review-r3-a-20261023.md) 补审，Admin/commands/
 [B](sqlite-writer-review-r3-b-20261023.md) 补审；plugin_host、sandbox 由
 [C](sqlite-writer-review-r3-c-20261023.md) 补审。各报告会明确自己的路径与分级，不以一张搜词清单替代源审查。
 
-R3 及补审已收束，最后产品快照为 `d23a487d`；`c0af6e82` 保留为上一完整 48 轮性能快照。
+R3 及补审已收束，SQLite 阶段最后产品快照为 `d23a487d`；`c0af6e82` 保留为上一完整 48 轮性能快照。
 最后 PluginManager、空路径与 eager 调度修改均修复后再读，尚待最终性能确认与全量 CI。
+本报告的 97 个 migration、head `0147` 等是该阶段记录；后续 #494/#497 的 99 个 revision、
+head `0149` 及新增代码审查另见[合流记录](open-pr-integration-20261023.md)。
+合流后的 journal/人物查询删除与 reader 关闭顺序另经独立复读及真实 SQLite 探针，公共 47 项复跑通过；
+实际结果与未达到平均加速的条件见[最终性能记录](sqlite-writer-performance-20261023.md#合流后的最终热路径)。
 
 ## 本轮删除与核查
 

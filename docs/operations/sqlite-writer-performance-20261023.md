@@ -104,7 +104,44 @@ sidecar 的 CPU、RSS、process I/O 与 cgroup device I/O 包含导入和 fixtur
 原 `/ai new` generation fence 保留冷历史，活跃输入仍按原参数投递。
 
 校准 8192 行实际分配 103702528 bytes，三类行数均为 8192、checkpoint 成功；新旧小规模真实链路冒烟通过。
-正式组预先固定为 **212992 行**，不会按版本分别填到某个大小。正式组尚待完整合流源码冻结后执行。
+正式组预先固定为 **212992 行**，不会按版本分别填到某个大小。合流源码 `2f5f7b0d` 已执行完整
+旧→新→新→旧。旧库每轮 2583711744 bytes，新库 2583810048 bytes，约 **2.41 GiB**；实际比线上
+调查的 2.51 GiB 略小。三类历史行数各 212992，真实 FK、FTS、索引与触发器保留，checkpoint 后 WAL
+为零。合成数据只含一个人物、一个会话和 128 种重复模板，规模接近线上，不代表线上内容和归属分布。
+
+每版本 24 个输入全部对应成功回执，workload error 为零；成功回执平均 **530.8→486.6ms（减少 8.3%）**，
+P95 **717.8→837.2ms**，handler 平均 643.0→567.1ms。旧版 10 次 BUSY/BUSY_SNAPSHOT 语句错误，新版零。
+准备历史的 179–188 秒不计入业务测量。该组是 metadata fixture，记录源迁移 head 为旧 0147、新 0149，
+不冒充对线上数据库执行过迁移。
+
+同一冻结提交还执行 chat、chat-cpu2 各一个完整 ABBA，共计 12 轮、144 个输入，全部来源检查与完成关联通过。
+chat 每版本 24 个输入：平均/P95 为 389.5/477.2→393.7/489.7ms；CPU2 为 281.5/340.7→310.4/382.6ms。
+这次短样本分别多 4.2ms 和 28.9ms，和前一组 d23 的改善同时保留，不跨时段挑出较快样本。
+完整材料见 [合流十二轮](../architecture/sqlite-writer-audit-2026-10-22/performance/combined-2f5f7b0d.json)。
+它采用增加 untimed 历史准备后的测量脚本 SHA `4e887c821a1e9ece195c291333d43aa9e27169c66758c40a83256b60a589987b`，
+新旧每轮相同，原业务计时和成功回执关联不变。
+
+## 合流后的最终热路径
+
+三处查询精简后的 `48f621f1` 执行 chat、chat-cpu2 各三组 ABBA，24 轮、288 个输入，全部完成。
+普通聊天平均/P95 为 372.2/471.4→384.9/440.3ms，双核为 281.7/345.9→297.4/363.6ms。
+原材料见 [48f 的二十四轮](../architecture/sqlite-writer-audit-2026-10-22/performance/hot-48f621f1.json)。
+
+随后调整 reader 的原连接关闭顺序，冻结 `8bc4d437` 再执行相同的完整 24 轮、288 个输入。
+每场景、每版本 72 个输入，source/import/成功回执关联全部通过，workload 与 SQLite 错误均为零。
+不把不同时段的旧样本合到一起；以下只比较最后窗口的新旧：
+
+| 场景 | 旧成功回执平均 / P95（ms） | 新成功回执平均 / P95（ms） | 旧 / 新 handler 平均（ms） |
+| --- | ---: | ---: | ---: |
+| chat | 379.3 / 467.9 | 381.6 / 471.2 | 464.9 / 444.7 |
+| chat-cpu2 | 279.0 / 364.9 | 296.5 / 357.5 | 327.1 / 339.8 |
+
+普通聊天成功回执平均多 **2.3ms（0.6%）**，handler 减少 **20.3ms（4.4%）**。
+双核平均仍多 **17.5ms（6.3%）**，P95 减少 **7.4ms**。前一组 d23 的平均改善、48f 的退步以及
+本组结果全部保留；最终不能概括为每个条件下都更快。
+[最后完整二十四轮](../architecture/sqlite-writer-audit-2026-10-22/performance/reader-8bc4d437.json)沿用同一
+`4e887c82…89987b` 测量脚本。后续 `d80b9d8c` 只修独立连接器的 Windows 类型分支，Main 测量的
+`src/yuki` 与 `tests` 没有变化；大历史和内存组仍按各自提交报告，不改写成最后提交的测量。
 
 ## 改动的实际成本
 
@@ -129,6 +166,19 @@ sidecar 的 CPU、RSS、process I/O 与 cgroup device I/O 包含导入和 fixtur
 7. 局部采用 Python 3.12 的 [eager task factory](https://docs.python.org/3.12/library/asyncio-task.html#eager-task-factory)，
    让缓存 checkout、空 flush 等立即完成的操作省去首轮排队与 shield 回调。临时实际调度探针从 4 个 callback
    降到 0；仍创建一个任务，真正 I/O 仍等待原 Future。47 项公共取消/提交/关闭回归及独立 4 项复核通过。
+8. 合流后再次删除 journal 每次保存的前置租约 reader，原 writer 首项仍按同一 fence 与 SQL 时间核验；
+   媒体 refs 直接沿原 `ON CONFLICT` 插入，不先读取全部旧 refs 做差集；模型前人物资格用已有 predicate
+   一次查询原人物与当前归并根的 enabled。没有新增缓存、重试或条件层，原 paid/来源/隐私校验不变。
+   六文件定向首次 77 passed、1 项旧入口计数断言失败；修正该断言后所在文件 18 passed，原 checkpoint、
+   模型次数和预算断言全部保留。独立复核未发现身份、媒体追加或 unknown 重放缺口，收益按后续冻结组另记。
+9. reader 已持有的原 AsyncConnection 先关闭，再结束原 Session，让 SQLAlchemy 在原 root transaction
+   尚挂接时识别已完成的 rollback。真实 worker 探针中，七种 reader 场景每次 native rollback 排队从
+   2 次降为 1 次；有事务时两版都只有一条真实 ROLLBACK，脏 ORM、嵌套、异常、重复取消和连接复用均通过。
+   默认 pool reset 继续保留：真实 deferred-FK COMMIT 失败证明 writer 仍需要它完成清理。
+   [原始探针材料](../architecture/sqlite-writer-audit-2026-10-22/performance/reader-close-native.json)区分 worker
+   排队和实际 SQL；[SQLAlchemy 官方说明](https://docs.sqlalchemy.org/en/20/core/pooling.html#reset-on-return)
+   说明 Connection 与 Pool 的 rollback 分工。该修改后公共生命周期、真实取消/ACK、离线 owner 和
+   Automation 共 47 项通过，原 physical_exit 等待、首取消及 Session 清理全部保留。
 
 ## 如何重跑
 

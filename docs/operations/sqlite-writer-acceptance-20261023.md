@@ -2,7 +2,8 @@
 
 本表对应[任务书](../architecture/Yuki-SQLite统一写入与短事务重构任务书-2026-10-22.md)，记录实际落点与验证材料，不参与运行时判断。
 R3 已完成，固定源码 48+44 轮及真实 512 MiB 对照已归档。用户后续授权合流全部 PR、上线和本机 Codex 连接，
-当前继续完成合流、约 2.5 GiB 历史组及完整 CI；实际合并、部署和连接状态在实施记录分项更新。
+合流、约 2.4 GiB 历史组和最终两组热路径复测已完成；完整 CI、实际合并、部署和连接状态在
+[PR #498](https://github.com/YuanYeYouTao/Yuki/pull/498)分项记录。此表是合流提交时的验证快照。
 
 源码起点是 `c2ce7da66ab54efe192993b9615df48266a62137`。R1、R2、R3 产品快照依次见
 `f8fbe14d`、`1fb34b85`、`c0af6e82`；设计阶段的三次审查不计入实现后复审。
@@ -39,7 +40,7 @@ R3 已完成，固定源码 48+44 轮及真实 512 MiB 对照已归档。用户�
 | W35 | feedback 原 run/seq/selected refs/absence 在 writer 核，完整材料与独立 snapshot 在外 | unit/test_feedback_writer_preparation.py；三轮 C 域报告 |
 | W36 | ModelInvocation/Trace 的队列与 direct fallback 都走公共 writer；诊断失败不推翻已付结果 | unit/test_diagnostic_writer.py、test_diagnostic_source_privacy.py |
 | W37–W39 | Plugin 安装/config/KV/session/notification/grant/job/media 的当前 owner、版本、配额与原 receipt；validator/hook/模型/传输在外；OneBot claim 同 writer 核当前 privileged role；PluginManager DB 故障仍 join 原生产者，保原取消与 phase | unit/test_storage_writer_boundaries.py、test_plugin_notification_idempotency.py、test_notification_preparation_sources.py、test_plugin_known_result_audit.py、test_plugin_runner_isolation.py |
-| W40–W41 | Sandbox 原 request/run/permission/completion 先持久再 ACK；独立 Manager/snapshot 保自己的 owner 与 CAS，Manager 启动失败也关闭原连接/任务 | unit/test_acp_lifecycle_review.py、test_sandbox_manager_startup_owner.py；integration/test_subagent_sdk_recovery.py；C 域报告 |
+| W40–W41 | Sandbox 原 request/run/permission/completion 先持久再 ACK；独立 Manager/snapshot 保自己的 owner 与 CAS，Manager 启动失败也关闭原连接/任务 | unit/test_legacy_acp_receipts.py、test_sandbox_manager_startup_owner.py、test_external_agent_writer_contract.py、test_external_agent_lifecycle.py；integration/test_subagent_sdk_recovery.py；C 域报告 |
 | W42 | Memory 基础事实、关系、目标、job 直接短写；一般主键修改不加通用 Plan | unit/test_memory_writer_boundaries.py、test_job_claim_transactions.py |
 | W43–W45 | Mutation 读准备、同 writer 授权、完整 source/member/absence 证明和原新增 IDs/receipt；operation ID 不接受不同 payload 冒领回执 | unit/test_mutation_snapshot_upgrade.py、test_memory_operation_identity.py、test_memory_count_projection.py |
 | W46 | 删除 Memory apply/prepare_evidence_write、首写升级机制、第二套 BUSY 循环与空 UPDATE；claim 保原 CAS，token 取准入后实际时间 | unit/test_job_claim_transactions.py、test_memory_job_claims.py；R3 Memory |
@@ -49,18 +50,18 @@ R3 已完成，固定源码 48+44 轮及真实 512 MiB 对照已归档。用户�
 | W54–W55 | Rebuild 原 selection/source/target、付费暂存、采用、receipt sweep 与最终 absence 分别核验；保原结果/已完成项 | unit/test_memory_rebuild_writer_boundaries.py、test_rebuild_receipt_finalization.py、test_rebuild_privacy_preparation.py |
 | W56 | 维护只拆独立项；显式 FTS rebuild、整次隐私清退仍原子；FTS writer 不再包掉真实数据库 phase | unit/test_memory_maintenance_evidence_snapshot.py、test_memory_fts_write_outcomes.py；R3 Memory |
 | W57–W58 | 迁完真实消费者后删除旧 factory、snapshot 升级、HintSession、holders/首写/物理 ID 观测、死 People API 和泛型 claim helper | 下文删除账；全仓源码反查与三轮审查 |
-| W59–W60 | head 0147 与 frozen revision 保持；create_schema/guard/index/FTS/FK 核查；offline CLI、schema、Alembic、打包连接明确 close/取消所有权 | unit/test_schema_guard_startup.py、test_offline_database_owners.py；公共 owner R3 |
+| W59–W60 | SQLite 阶段冻结的 97 个 revision/head 0147 不改；最终组合新增历史索引 0148、外部 Agent 0149，共 99 个 revision、单 head 0149；create_schema/guard/index/FTS/FK 与离线 close/取消所有权核查 | unit/test_schema_guard_startup.py、test_offline_database_owners.py、test_migration_0149.py；integration/test_history_scope_indexes.py；公共 owner R3 与合流记录 |
 | W61 | development-contract、Memory/历史/插件/runtime 当前合同与实施记录同步，历史报告保原事实 | 三轮报告、当前架构入口 |
 | W62 | 文件 WAL、多连接、真实线程 barrier、实际 COMMIT 后丢 ACK 和跨领域回归 | 下列 V 对照、Linux/CI 最终结果 |
 | W63 | 同一脚本、同 fixture、同到达计划、固定 Fake Provider/平台，旧→新→新→旧；真成功 Social receipt 关联输入 | scripts/benchmark_sqlite_writer.py；最终性能报告 |
 | W64 | R1/R2/R3 都按全源码清单审实际 DB 与调用者，纯类型/渲染明确排除；发现后修复再复读 | 实施记录三轮矩阵；R3 最后 PluginManager 与 eager delta 已独立复读 |
-| W65 | 最终提交、推送、PR 与 CI 分别记实 | PR #498 已开；用户另授权合并 #494/#497/#498，待合流完整 CI |
-| W66 | 生产上线及自然流量验收 | 已获后续上线授权，当前仅只读 preflight；待合并后 Bot-only 备份/替换/健康/清理，保原自然回执 |
+| W65 | 最终提交、推送、PR 与 CI 分别记实 | #494/#497 原提交已合入 #498 并推送；完整 CI 与合并状态见 PR #498，Desktop #3 已独立合并 |
+| W66 | 生产上线及自然流量验收 | 已获上线授权；需同步必要 Manager 源码并保原环境，再做 Bot-only 容器替换；一致备份/健康/清理、自然回执与本机连接按 PR 后续交付记录 |
 | W67–W68 | Automation task/version/audit 与 occurrence/finish/schedule 原子；准入后 lease 时钟；create_run 丢 ACK 按原 occurrence 结算，不重买模型 | integration/test_automation_lifecycle.py、test_automation_unknown_commit.py |
 | W69 | 根提交确认且释放 owner 后同步发布 CommitHint；已确认 commit 的取消也发布，savepoint 不发布；live span 原显式通知 | unit/test_database_writer.py；公共 owner R3 |
 | W70–W71 | Notification ledger+finish_outbox 合并；旧中间状态据原 receipt 恢复；plugin media 注册未知不直接 unlink | unit/test_notification_preparation_sources.py、test_plugin_notification_idempotency.py；C 域报告 |
 | W72 | 删除观察用 dialect/raw driver patch；仅 SQLiteConnection 保有关闭实际完成事实 | unit/test_database_acquisition_cancellation.py；公共 owner R3 |
-| W73 | web/media 过期清理保无候选 reader 和分页；ASR 预分词及原源重核，不恢复退役索引写 | unit/test_retire_media_snapshots.py、test_derived_text_transactions.py；A 域报告 |
+| W73 | web/media 过期清理保无候选 reader 和分页；ASR 预分词及原源重核，不恢复退役索引写 | integration/test_web_search_read_separation.py；unit/test_conversation_media_cleanup.py、test_derived_text_transactions.py；A 域报告 |
 
 ## 删除账
 

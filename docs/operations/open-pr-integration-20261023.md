@@ -104,3 +104,22 @@ label。已修 machine JSON 在 Windows 管道中的编码差异，并隐藏 ACL
 回归先红后绿。探针只读取隔离 fake 配置/status，没有安装真实 Desktop、启动用户服务、
 driver、模型或登录流程。Desktop 已由主执行流程独立合并为 `72c6cbf3`；本机安装、配对与
 实际服务验收尚未执行。
+
+## 最后交叉检查
+
+合流后删去 journal 保存前重复的租约和旧媒体 refs 读取，模型前人物资格复用原有的单 SQL predicate。
+reader 的公开关闭顺序改为原 Connection 后原 Session，实际 native rollback 队列从两次降为一次，
+writer 的默认 pool reset 保留。原来源、身份、paid、隐私与取消边界完成独立复读；六文件定向首次
+77 passed、1 项旧调用计数断言失败，修正后该文件 18 passed，公共七文件另有 47 passed。
+原材料和全部速度结果见[性能记录](sqlite-writer-performance-20261023.md)。
+
+首次组合 CI 在 Linux/macOS 上指出连接器 ACL 分支的 `CREATE_NO_WINDOW` 类型错误。
+`d80b9d8c` 将原 `os.name` 判断换成与包内其他入口相同的 `sys.platform`，Windows 行为保持。
+修正后 Linux/macOS 各 32 passed、1 项 Windows-only skip，Windows 33 passed；三平台类型检查、
+sdist/wheel 及不安装 Bot 的独立 wheel 检查全部通过。完整主库 unit/integration 与 Native CodeMode
+以 [PR #498](https://github.com/YuanYeYouTao/Yuki/pull/498) 对应源码的 CI 记录为准。
+
+线上只读核查还确认旧 Host Manager 没有 `workspace_copy/result`，需要按现行媒体升级手册同步源码。
+新 release 使用原 venv、原 unit 参数与独立状态库；切换 PYTHONPATH，保留仍被环境 bind 的旧 src。
+旧停机仅关闭观察连接，新 recover 接回原容器/执行；实际切换、一致备份和四个 peer 身份核验由后续
+部署记录分别说明，不能从本地或 CI 通过推断已上线。

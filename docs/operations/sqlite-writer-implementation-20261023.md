@@ -3,10 +3,22 @@
 源码起点：`c2ce7da66ab54efe192993b9615df48266a62137`。分支
 `codex/sqlite-writer-runtime-20261023`。完整范围认[任务书](../architecture/Yuki-SQLite统一写入与短事务重构任务书-2026-10-22.md)。
 
-状态：产品实现与 R1/R2/R3 全范围复审完成，最终产品快照为 `d23a487d`。
-最终全仓 Ruff、mypy 与依赖锁检查通过；44 轮性能确认与真实 512 MiB 对照已完成。
+状态：SQLite 产品实现与 R1/R2/R3 全范围复审完成，该阶段冻结快照为 `d23a487d`。
+该快照全仓 Ruff、mypy 与依赖锁检查通过；44 轮性能确认与真实 512 MiB 对照已完成。
 Linux CI 的 93 项 Native 已通过；integration 首次 831 passed、2 处旧测试调用失败，迁移后定向 23 项通过，最终全量待合流重跑。
 未合并、未部署。任务逐项落点见[交付对照](sqlite-writer-acceptance-20261023.md)，测量见[性能报告](sqlite-writer-performance-20261023.md)。
+
+随后合入 #494、#497 的组合源码冻结为 `2f5f7b0d`，Bot 源码 640 文件、连接器 12 文件类型检查通过；
+迁移为 99 个 revision、单 head `0149`。新增功能和最后交叉复核见[合流记录](open-pr-integration-20261023.md)。
+下文三轮的测试与 646 文件等数字保留各自当时范围，不作为最终组合全量结果。
+
+合流后又在 `48f621f1` 删除 journal 的重复租约/媒体预读，并将模型前人物资格合成原 predicate；
+`8bc4d437` 通过公开 Connection/Session 关闭顺序删掉 reader 的第二次 native rollback。
+默认 pool reset、writer、首取消与物理退出等待保持。六文件定向首次 77 passed、1 处旧尝试次数断言失败；
+修正后所在文件 18 passed，公共 owner 七文件 47 passed。全仓 Ruff、Linux 目标 mypy 和依赖锁检查通过，
+最后公共模块的 mypy/format 再次通过。三轮之后的新 delta 也分别完成独立复读。
+`d80b9d8c` 修复独立连接器 Windows 分支的跨平台类型检查；三平台完整包、构建与独立 wheel 检查通过。
+完整 CI 和合并/生产交付状态见 [PR #498](https://github.com/YuanYeYouTao/Yuki/pull/498)，不以本文快照推断线上状态。
 
 ## 分工
 
@@ -46,7 +58,7 @@ diagnostic_writer、offline_database_owners、database_lifecycle_ownership、aut
 flush/commit/rollback/物理关闭的取消及重复取消、外部 BUSY、commit ACK 丢失、连接复用和应用资源所有权。
 最终局部 eager 调度改动也在该组内；A 独立复读并补跑 4 项既有取消/ACK 回归通过。
 
-最终 `ruff check .`、`mypy src --platform linux`（646 source files）、`uv lock --check --offline`、
+SQLite R3 快照的 `ruff check .`、`mypy src --platform linux`（646 source files）、`uv lock --check --offline`、
 `git diff --check` 均通过。R3 最后删除的两个文件是无消费者的 GroupAdminService 和合入 Memory 的泛型
 job_claim helper。此前逐域验证见各报告，重叠用例不累计为一轮全仓结果。
 
