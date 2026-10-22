@@ -21,12 +21,6 @@ ENVIRONMENT_TOOLS = frozenset(
 SANDBOX_TOOLS = ENVIRONMENT_TOOLS
 
 
-def is_execution(name: str, args: dict[str, Any]) -> bool:
-    return name == "terminal_exec" or (
-        name == "external_agent" and args.get("action") in {"prompt", "queue"}
-    )
-
-
 def tool(
     name: str,
     description: str,

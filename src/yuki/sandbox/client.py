@@ -7,12 +7,12 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from yuki.capabilities.executions import is_execution
 from yuki.domain.messages import ChatTool
 from yuki.sandbox.environment_tools import (
     READ_TOOLS,
     SANDBOX_TOOLS,
     environment_tools,
-    is_execution,
 )
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 

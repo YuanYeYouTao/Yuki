@@ -208,6 +208,7 @@ async def bridge(database, tmp_path):
     cert = ca.issue_cert("localhost", "127.0.0.1")
     cert.cert_chain_pems[0].write_to_path(tmp_path / "server.pem")
     cert.private_key_pem.write_to_path(tmp_path / "server.key")
+    ca.cert_pem.write_to_path(tmp_path / "root-ca.pem")
     context = ssl.create_default_context()
     ca.configure_trust(context)
     listener = socket.socket()
@@ -257,6 +258,7 @@ async def bridge(database, tmp_path):
                 device=device,
                 chat_device=chat_device,
                 ssl=context,
+                ca_file=tmp_path / "root-ca.pem",
                 websocket_url=f"wss://127.0.0.1:{port}/agents/v1/connect",
                 headers={"Authorization": f"Bearer {chat_device['token']}"},
                 source={"actor_person_id": env.person},

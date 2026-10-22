@@ -19,6 +19,7 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from yuki.automation.models import TurnOrigin
+from yuki.capabilities.executions import is_execution
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
@@ -62,7 +63,7 @@ from yuki.persistence.repositories import (
     EventLedgerRepository,
 )
 from yuki.runtime.errors import InvalidTurnContextError
-from yuki.sandbox.environment_tools import SANDBOX_TOOLS, is_execution
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state

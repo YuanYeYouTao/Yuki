@@ -110,3 +110,18 @@ yuki-agent-connector service uninstall
 [`test_external_agent_bridge.py`](../../tests/integration/test_external_agent_bridge.py) 使用真实 HTTPS／WSS、临时 SQLite、真实 Work 控制和可控本机协议对端，覆盖配对、内部 ID、进度／问题／终态可靠入账、精准目标、撤销、断线与原操作恢复；它不调用真实模型或发送 QQ 消息。
 
 独立包分别验证 Codex 原生 RPC、Claude SDK 解析、通用 ACP stdio 回调及 journal。真实 Codex daemon 只读验证、独立 wheel 安装、Windows 用户服务、Linux／macOS 实机、Claude 真实账户与完整服务器到本机付费执行须在交付记录中逐项报告；不把协议替身、版本号或健康检查写成这些验收已经完成。
+
+### 显式真实 Codex 验收
+
+[`test_local_codex_bridge_live.py`](../../tests/integration/test_local_codex_bridge_live.py) 默认跳过。需要真实付费模型验收时，在项目测试环境另装独立连接器，并显式选择用户已经运行的 Codex：
+
+```powershell
+python -m pip install -e packages/yuki-agent-connector
+$env:YUKI_REAL_CODEX_TEST = "1"
+$env:YUKI_CODEX_BINARY = "/path/to/native/codex.exe"
+python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
+```
+
+也可显式指定 `YUKI_CODEX_SOCKET`／`YUKI_CODEX_ENDPOINT` 和结果文件 `YUKI_REAL_CODEX_REPORT`。不设置原 owner 时，由官方 proxy 解析当前 profile；测试不会启动或重启 daemon。
+
+该测试运行真正的 Connector／journal／CodexDriver，经隔离 HTTPS／WSS 和临时业务库，在唯一临时目录中新建自己的原生任务，写入并读回探针文件，核对工具进度、终态与原 Work 私有回执。它只清退自己的原生会话，不触碰用户已有线程；需要原生审批或用户输入时明确报告，不擅自改变审批设置。使用真实模型会产生其正常调用费用。测试成功仍须分别记录版本、文件证据、原回执与原生清退结果，不代表生产服务器或真实 QQ 投递已经上线。

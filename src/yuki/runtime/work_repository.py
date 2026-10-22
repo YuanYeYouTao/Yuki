@@ -2546,8 +2546,8 @@ class WorkRepository:
         request_id: str | None = None,
     ) -> None:
         """Use an owned run receipt; preserve every original invocation and its mutating role."""
+        from yuki.capabilities.executions import is_execution
         from yuki.runtime.effect_outcomes import execution_finished
-        from yuki.sandbox.environment_tools import is_execution
 
         if not execution_finished(outcome) or outcome.get("run_id") != run_id:
             return
