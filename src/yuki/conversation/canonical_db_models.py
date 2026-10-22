@@ -133,6 +133,21 @@ class CanonicalConversationModel(Base):
     __tablename__ = "canonical_conversations"
     __table_args__ = (
         Index("ix_conversations_person", "person_id", sqlite_where=text("person_id IS NOT NULL")),
+        Index(
+            "ix_conversations_space", "space_id", "id", sqlite_where=text("space_id IS NOT NULL")
+        ),
+        Index(
+            "ix_conversations_identity_binding",
+            "identity_binding_id",
+            "id",
+            sqlite_where=text("identity_binding_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_conversations_space_binding",
+            "space_binding_id",
+            "id",
+            sqlite_where=text("space_binding_id IS NOT NULL"),
+        ),
         ForeignKeyConstraint(
             ["person_id"],
             ["persons.id"],

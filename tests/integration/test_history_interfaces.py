@@ -2,15 +2,19 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import event
 from tests.support.event_seed import seed_scoped_event
+from tests.support.social_history_cases import stored_private_entry
 from tests.support.social_identity_cases import social_env
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.audio import AudioTranscript, serialize_transcripts
 from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
@@ -120,6 +124,101 @@ async def test_plugin_history_has_no_old_caps_and_projects_real_asr_and_ids(data
             assert recent[-1].event_id == spoken.id
             original = await host.messages.search_history("row 0", match="phrase")
             assert [item.event_id for item in original] == [rows[0].id]
+    finally:
+        await host.close_host_resources()
+
+
+@pytest.mark.parametrize("platform", ["acp", "qq"])
+@pytest.mark.parametrize("declared_platform", ["", "other-platform"])
+async def test_sdk_history_and_reply_use_actual_entry_delivery_facts(
+    database, tmp_path, platform, declared_platform
+):
+    env = await social_env(database, tmp_path)
+    entry = await stored_private_entry(env, platform)
+    outbound = []
+    now = datetime.now(UTC)
+    for index, status in enumerate((None, "failed", "succeeded")):
+        row = (
+            await seed_scoped_event(
+                env.service.writer,
+                scope=entry.scope,
+                platform_message_id=f"sdk-output-{index}",
+                sender_user_id=entry.scope.bot_user_id,
+                direction="outbound",
+                content=f"SDK output {index}",
+            )
+        ).event
+        outbound.append((row, status))
+        if status is not None:
+            async with database.immediate_session() as session:
+                session.add(
+                    SocialOperationModel(
+                        id=str(uuid4()),
+                        source_turn_id=f"sdk-output-{index}",
+                        tool_call_id="send",
+                        source_conversation_id=row.canonical_conversation_id,
+                        action="send_message",
+                        payload_hash="original-payload",
+                        target_kind="person",
+                        target_id=env.person,
+                        presence_id=entry.scope.presence_id,
+                        status=status,
+                        event_id=row.id,
+                        original_event_id=row.id,
+                        original_conversation_id=row.canonical_conversation_id,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+    async with database.immediate_session() as session:
+        (await session.get(IdentityBindingModel, entry.binding_id)).status = "disabled"
+        (await session.get(PresenceModel, entry.scope.presence_id)).status = "disabled"
+    host = HostPluginContext(
+        plugin_id="test.actual-history-platform",
+        approved_permissions=(
+            PluginPermission.MESSAGE_HISTORY_READ,
+            PluginPermission.MESSAGE_REPLY_READ,
+        ),
+        services=PluginFacadeServices(ledger=EventLedgerRepository(database)),
+    )
+    invocation = PluginInvocation(
+        plugin_id=host.plugin_id,
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id=entry.scope.private_peer_user_id,
+        actor_person_id=env.person,
+        bot_user_id=entry.scope.bot_user_id,
+        person_id=env.person,
+        conversation_id=entry.event.canonical_conversation_id,
+        presence_id=entry.scope.presence_id,
+        platform=declared_platform,
+    )
+    expected = {row.id for row, status in outbound if platform != "acp" or status == "succeeded"}
+    try:
+        with host.bind(invocation):
+            recent = await host.messages.get_recent()
+            assert {row.event_id for row in recent} == {entry.event.id, *expected}
+            found = await host.messages.search_history("SDK output")
+            assert {row.event_id for row in found} == expected
+        for row, status in outbound:
+            inbound = InboundMessage(
+                message_id="actual-current-message",
+                event_type="message",
+                scope_type="private",
+                sender=SenderIdentity(entry.scope.private_peer_user_id),
+                text="reply",
+                bot_user_id=entry.scope.bot_user_id,
+                person_id=env.person,
+                conversation_id=entry.event.canonical_conversation_id,
+                presence_id=entry.scope.presence_id,
+                platform=platform,
+                reply_to_event_id=row.id,
+            )
+            with host.bind(replace(invocation, inbound=inbound)):
+                reply = await host.messages.get_reply()
+            if platform == "acp" and status != "succeeded":
+                assert reply is None
+            else:
+                assert reply is not None and reply.event_id == row.id
     finally:
         await host.close_host_resources()
 

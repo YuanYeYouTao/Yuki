@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import or_, select, text, true
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,7 +35,6 @@ from yuki.identity.db_models import (
     AccountAssignmentModel,
     AccountModel,
     AccountSpaceProfileModel,
-    CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     PresenceModel,
@@ -46,13 +45,12 @@ from yuki.identity.person_identity import (
     current_person_id,
     person_enabled_condition,
     person_family_condition,
-    person_root_id,
     same_person_id,
 )
 from yuki.identity.routing import PresenceRouter, ResolvedSend
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.persistence.database import Database
-from yuki.persistence.models import ChatEventModel, PersonAliasModel
+from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.persistence.unit_of_work import optional_session
 from yuki.services.message_splitter import OutboundMessageSplitter
@@ -317,73 +315,11 @@ class SocialService:
 
     async def contacts(
         self, kind: str, query: str = "", *, exact: bool = False
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
+        from yuki.social.contacts import subject_contacts
+
         async with self.database.sessions() as session:
-            if kind == "person":
-                known = (
-                    select(ChatEventModel.id)
-                    .where(
-                        person_family_condition(
-                            ChatEventModel.author_person_id, CanonicalPersonModel.id
-                        ),
-                        ChatEventModel.direction == "inbound",
-                        ChatEventModel.author_kind == "person",
-                    )
-                    .exists()
-                )
-                name_matches = (
-                    CanonicalPersonModel.display_name == query
-                    if exact
-                    else CanonicalPersonModel.display_name.contains(query, autoescape=True)
-                )
-                alias_matches = (
-                    select(PersonAliasModel.id)
-                    .where(
-                        person_family_condition(
-                            PersonAliasModel.canonical_person_id, CanonicalPersonModel.id
-                        ),
-                        PersonAliasModel.canonical_space_id.is_(None),
-                        PersonAliasModel.alias == query
-                        if exact
-                        else PersonAliasModel.alias.contains(query, autoescape=True),
-                    )
-                    .exists()
-                )
-                candidates = (
-                    select(
-                        CanonicalPersonModel.id,
-                        CanonicalPersonModel.display_name,
-                    )
-                    .where(
-                        CanonicalPersonModel.enabled.is_(True),
-                        CanonicalPersonModel.merged_into_person_id.is_(None),
-                        known,
-                        or_(name_matches, alias_matches) if query else true(),
-                    )
-                    .order_by(CanonicalPersonModel.id)
-                )
-                if not exact:
-                    candidates = candidates.limit(20)
-                rows = (await session.execute(candidates)).all()
-            elif kind == "space":
-                statement = (
-                    select(CanonicalSpaceModel.id, CanonicalSpaceModel.name)
-                    .where(
-                        CanonicalSpaceModel.enabled.is_(True),
-                        CanonicalSpaceModel.name == query
-                        if exact
-                        else CanonicalSpaceModel.name.contains(query, autoescape=True),
-                    )
-                    .order_by(CanonicalSpaceModel.id)
-                )
-                if not exact:
-                    statement = statement.limit(20)
-                rows = (await session.execute(statement)).all()
-            else:
-                raise SocialError("invalid_target_kind")
-        return [
-            {"target_id": str(row[0]), "display_name": str(row[1]), "kind": kind} for row in rows
-        ]
+            return await subject_contacts(session, kind, query, exact=exact)
 
     async def target(
         self, kind: str, args: dict[str, Any], context: SocialContext, *, validate: bool = True
@@ -957,65 +893,18 @@ class SocialService:
                 if choice is not None:
                     return choice
         await self._validate_self_context(context)
-        if name not in {"send_message", "query_chat_history"}:
+        if name not in {"send_message", "query_chat_history"} and not (
+            name == "find_contacts" and args.get("view") == "entries"
+        ):
             await self._validate_person_context(context)
         if name == "query_chat_history":
             from yuki.social.history import read_history
 
             return await read_history(self.database, args, context)
         if name == "find_contacts":
-            kind = str(args.get("kind", "person"))
-            items: list[dict[str, Any]]
-            if args.get("target_id") or args.get("subject_ref"):
-                target = await self.target(kind, args, context)
-                items = [{"target_id": str(target.id), "kind": target.kind}]
-            else:
-                items = [
-                    dict(item)
-                    for item in await self.contacts(kind, str(args.get("display_name", "")))
-                ]
-            async with self.database.sessions() as session:
-                selected_ids = [item["target_id"] for item in items]
-                bindings_by_target: dict[str, list[dict[str, str]]] = {
-                    target_id: [] for target_id in selected_ids
-                }
-                if selected_ids:
-                    model = IdentityBindingModel if kind == "person" else SpaceBindingModel
-                    owner_column = (
-                        IdentityBindingModel.person_id
-                        if kind == "person"
-                        else SpaceBindingModel.space_id
-                    )
-                    bindings = (
-                        await session.execute(
-                            select(
-                                person_root_id(owner_column) if kind == "person" else owner_column,
-                                model.id,
-                                model.platform,
-                            )
-                            .where(
-                                (
-                                    person_root_id(owner_column)
-                                    if kind == "person"
-                                    else owner_column
-                                ).in_(selected_ids),
-                                model.status == "active",
-                            )
-                            .order_by(model.id)
-                        )
-                    ).all()
-                    for owner_id, binding_id, platform in bindings:
-                        bindings_by_target[owner_id].append(
-                            {
-                                "binding_id": binding_id,
-                                "platform": platform,
-                            }
-                        )
-                for item in items:
-                    item["bindings"] = bindings_by_target[item["target_id"]]
-            return (
-                items[0] if args.get("target_id") or args.get("subject_ref") else {"items": items}
-            )
+            from yuki.social.contacts import read_contacts
+
+            return await read_contacts(self, args, context)
         if name == "recall_own_message":
             return await self._recall(args, context)
         if name == "send_message":

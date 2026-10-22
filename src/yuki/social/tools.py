@@ -1,19 +1,10 @@
 """Deployment-stable social schemas; execution lives in the social service."""
 
 from yuki.domain.messages import ChatTool
+from yuki.services.contact_query import contact_schema
 
 
 def social_tool_definitions() -> tuple[ChatTool, ...]:
-    selector: dict[str, object] = {
-        "target_id": {"type": "string", "description": "find_contacts 返回的 canonical ID"},
-        "display_name": {"type": "string", "maxLength": 128},
-        "subject_ref": {
-            "type": "string",
-            "description": (
-                "当前发送者用 current_speaker；也可用 mentioned_user 或 replied_message_author"
-            ),
-        },
-    }
     message: dict[str, object] = {
         "text": {"type": "string"},
         "artifact_id": {"type": "string", "description": "工作区对象 ID，不是路径或 URL"},
@@ -52,14 +43,17 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         )
 
     return (
-        tool(
-            "find_contacts",
-            "查找可联系的人或群。名称歧义必须澄清；成员名单出现不等于认识。",
-            {
-                **selector,
-                "kind": {"type": "string", "enum": ["person", "space"]},
-            },
-            ("kind",),
+        ChatTool(
+            name="find_contacts",
+            schema_version="2",
+            description=(
+                "发现人物、群及历史入口。subjects（默认）以 kind=person/space 查可联系主体；"
+                "entries 按真实 Conversation 平铺历史入口，含旧账号阶段，不要求 kind。"
+                "source 可按平台和 private/group 交集筛选，display_name 按名称包含查询。"
+                "entries 的 target 使用一个内部 ID；结果提供原 Binding/Conversation ID 和话题资料。"
+                "limit 为页大小，按内部 ID 升序，cursor 续查；同名返回候选，不猜目标。"
+            ),
+            parameters=contact_schema(),
         ),
         tool(
             "send_message",
@@ -147,3 +141,6 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             ("event_id",),
         ),
     )
+
+
+SOCIAL_TOOL_NAMES = frozenset(tool.name for tool in social_tool_definitions())

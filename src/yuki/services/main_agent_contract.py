@@ -106,7 +106,8 @@ class MainAgentContract:
                         # 26: one history tool and one entry-independent manifest.
                         # 27: role-independent descriptions and the single SOUL contract.
                         # 28: permanent cross-entry history with explicit source labels.
-                        "version": 28,
+                        # 29: source filters and paged conversation entry discovery.
+                        "version": 29,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import Collection
+from collections.abc import Collection, Coroutine
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
@@ -13,7 +13,7 @@ from typing import Any, cast
 from aiosqlite import Connection as SQLiteConnection
 from sqlalchemy import Integer, and_, column, func, or_, select, table, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncScalarResult, AsyncSession
 from sqlalchemy.orm import aliased
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -47,15 +47,12 @@ from yuki.persistence.repository_records import (
 )
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
+_HISTORY_FETCH_SIZE = 64
 
-async def _history_read(session: AsyncSession, statement: Any, *, single: bool = False) -> Any:
-    """Interrupt this read before its driver/transaction is returned on cancellation."""
-    connection = await session.connection()
-    raw = await connection.get_raw_connection()
-    driver = cast(SQLiteConnection, raw.driver_connection)
-    operation: asyncio.Task[Any] = asyncio.create_task(
-        session.scalar(statement) if single else session.scalars(statement)
-    )
+
+async def _history_read[T](driver: SQLiteConnection, work: Coroutine[Any, Any, T]) -> T:
+    """Interrupt and finish this SQLite operation before propagating cancellation."""
+    operation = asyncio.create_task(work)
     try:
         return await asyncio.shield(operation)
     except asyncio.CancelledError:
@@ -673,7 +670,6 @@ class EventLedgerRepository:
             if keyword or exclude
             else prepare_query(keyword, match, exclude)
         )
-        metadata_candidates = bool(start_at or end_at or has)
         lower = after_event_id or 0
         upper = before_event_id
         if cursor is not None:
@@ -706,21 +702,27 @@ class EventLedgerRepository:
                 )
             )
             # The index retains platform domain classification; record is audio.
+            media = select(ConversationMediaItemModel.source_event_id).where(
+                ConversationMediaItemModel.conversation_id.in_(conversation_id)
+                if isinstance(conversation_id, tuple)
+                else ConversationMediaItemModel.conversation_id == conversation_id,
+                ConversationMediaItemModel.source_snapshot_json.is_(None),
+                ConversationMediaItemModel.kind.in_(kinds),
+            )
             conditions.append(
-                ChatEventModel.id.in_(
-                    select(ConversationMediaItemModel.source_event_id).where(
-                        ConversationMediaItemModel.conversation_id.in_(conversation_id)
-                        if isinstance(conversation_id, tuple)
-                        else ConversationMediaItemModel.conversation_id == conversation_id,
-                        ConversationMediaItemModel.source_snapshot_json.is_(None),
-                        ConversationMediaItemModel.kind.in_(kinds),
-                    )
-                )
+                media.where(
+                    ConversationMediaItemModel.source_event_id == ChatEventModel.id
+                ).exists()
+                if query.terms
+                else ChatEventModel.id.in_(media)
             )
         async with optional_session(self._database, session, write=False) as active:
             with active.no_autoflush:
                 if session is None:
                     await active.execute(text("BEGIN"))
+                connection = await active.connection()
+                raw = await connection.get_raw_connection()
+                driver = cast(SQLiteConnection, raw.driver_connection)
                 family: tuple[str, ...] = ()
                 if person_id is not None:
                     family = await person_family_ids(active, person_id)
@@ -744,84 +746,83 @@ class EventLedgerRepository:
                         for identity in dict.fromkeys(conversations)
                     )
 
-                fts_expression = (
-                    await asyncio.to_thread(scoped_match)
-                    if query.terms and not metadata_candidates
-                    else None
-                )
+                fts_expression = await asyncio.to_thread(scoped_match) if query.terms else None
                 fts = table("chat_history_fts", column("rowid", Integer))
                 candidate_id = fts.c.rowid if fts_expression else ChatEventModel.id
+                conditions.append(candidate_id > lower)
+                if upper is not None:
+                    conditions.append(candidate_id < upper)
+                statement = select(ChatEventModel).where(*conditions)
+                if fts_expression:
+                    statement = statement.select_from(fts).join(
+                        ChatEventModel, ChatEventModel.id == fts.c.rowid
+                    )
+                    statement = statement.where(text("chat_history_fts MATCH :history_match"))
+                    statement = statement.params(history_match=fts_expression)
+                statement = statement.order_by(
+                    candidate_id.desc() if order == "recent" else candidate_id.asc()
+                ).execution_options(yield_per=_HISTORY_FETCH_SIZE)
+                if not query.terms and not query.exclude:
+                    statement = statement.limit(limit + 1)
                 selected: list[EventRecord] = []
                 fields: dict[int, tuple[str, ...]] = {}
-                boundary = upper if order == "recent" else lower
-
                 cancelled = threading.Event()
 
                 def exact_fields(
-                    records: tuple[EventRecord, ...],
-                ) -> tuple[tuple[str, ...] | None, ...]:
-                    matched: list[tuple[str, ...] | None] = []
-                    for row in records:
+                    contents: tuple[tuple[str, str], ...], needed: int
+                ) -> tuple[tuple[int, tuple[str, ...]], ...]:
+                    matched: list[tuple[int, tuple[str, ...]]] = []
+                    for index, (content, audio) in enumerate(contents):
                         if cancelled.is_set():
                             break
-                        matched.append(match_fields(query, row.content, row.audio_transcript))
+                        labels = match_fields(query, content, audio)
+                        if labels is not None:
+                            matched.append((index, labels))
+                            if len(matched) == needed:
+                                break
                     return tuple(matched)
 
-                while len(selected) <= limit:
-                    batch_conditions = [*conditions]
-                    identifier = candidate_id
-                    if order == "recent":
-                        batch_conditions.append(identifier > lower)
-                        if boundary is not None:
-                            batch_conditions.append(identifier < boundary)
-                    else:
-                        batch_conditions.append(identifier > boundary)
-                        if upper is not None:
-                            batch_conditions.append(identifier < upper)
-                    statement = select(ChatEventModel)
-                    if fts_expression:
-                        statement = statement.select_from(fts).join(
-                            ChatEventModel, ChatEventModel.id == fts.c.rowid
-                        )
-                        statement = statement.where(*batch_conditions)
-                        statement = statement.where(text("chat_history_fts MATCH :history_match"))
-                    else:
-                        statement = statement.where(*batch_conditions)
-                    statement = statement.order_by(
-                        candidate_id.desc() if order == "recent" else candidate_id.asc()
-                    ).limit(limit + 1)
-                    if fts_expression:
-                        statement = statement.params(history_match=fts_expression)
-                    rows = (await _history_read(active, statement)).all()
-                    if not rows:
-                        break
-                    records = tuple(_event_record(row) for row in rows)
-                    if query.terms or query.exclude:
-                        try:
-                            matched = await asyncio.to_thread(exact_fields, records)
-                        except asyncio.CancelledError:
-                            cancelled.set()
-                            raise
-                    else:
-                        matched = ((),) * len(records)
-                    for record, labels in zip(records, matched, strict=True):
-                        if labels is not None:
+                stream: AsyncScalarResult[ChatEventModel] | None = None
+
+                async def open_stream() -> AsyncScalarResult[ChatEventModel]:
+                    nonlocal stream
+                    stream = await active.stream_scalars(statement)
+                    return stream
+
+                try:
+                    result = await _history_read(driver, open_stream())
+                    while len(selected) <= limit:
+                        rows = await _history_read(driver, result.fetchmany(_HISTORY_FETCH_SIZE))
+                        if not rows:
+                            break
+                        needed = limit + 1 - len(selected)
+                        if query.terms or query.exclude:
+                            matched = await asyncio.to_thread(
+                                exact_fields,
+                                tuple((row.content, row.audio_transcript) for row in rows),
+                                needed,
+                            )
+                        else:
+                            matched = tuple((index, ()) for index in range(min(len(rows), needed)))
+                        for index, labels in matched:
+                            record = _event_record(rows[index])
                             selected.append(record)
                             fields[record.id] = labels
-                            if len(selected) > limit:
-                                break
-                    boundary = records[-1].id
-                    if len(rows) < limit + 1:
-                        break
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                finally:
+                    if stream is not None:
+                        await stream.close()
                 has_more = len(selected) > limit
                 events = tuple(selected[:limit])
                 contexts: dict[int, EventRecord] = {}
                 if context_before or context_after:
                     for record in events:
-                        _, earlier, later = await self.history_around(
+                        earlier, later = await self._history_neighbors(
                             session=active,
-                            conversation_id=cast(str, record.canonical_conversation_id),
-                            event_id=record.id,
+                            driver=driver,
+                            center=record,
                             before=context_before,
                             after=context_after,
                             event_kind=event_kind,
@@ -859,43 +860,61 @@ class EventLedgerRepository:
                 if session is None:
                     await active.execute(text("BEGIN"))
                 conditions = self._history_conditions(conversation_id, event_kind, predicates)
+                connection = await active.connection()
+                raw = await connection.get_raw_connection()
+                driver = cast(SQLiteConnection, raw.driver_connection)
                 center = await _history_read(
-                    active,
-                    select(ChatEventModel).where(*conditions, ChatEventModel.id == event_id),
-                    single=True,
+                    driver,
+                    active.scalar(
+                        select(ChatEventModel).where(*conditions, ChatEventModel.id == event_id)
+                    ),
                 )
                 if center is None:
                     return None, (), ()
-                earlier = (
-                    await self.query_history(
-                        session=active,
-                        conversation_id=conversation_id,
-                        before_event_id=event_id,
-                        event_kind=event_kind,
-                        predicates=predicates,
-                        limit=before,
-                    )
-                    if before
-                    else None
+                record = _event_record(center)
+                earlier, later = await self._history_neighbors(
+                    session=active,
+                    driver=driver,
+                    center=record,
+                    before=before,
+                    after=after,
+                    event_kind=event_kind,
+                    predicates=predicates,
                 )
-                later = (
-                    await self.query_history(
-                        session=active,
-                        conversation_id=conversation_id,
-                        after_event_id=event_id,
-                        event_kind=event_kind,
-                        predicates=predicates,
-                        limit=after,
-                        order="oldest",
-                    )
-                    if after
-                    else None
+                return record, earlier, later
+
+    async def _history_neighbors(
+        self,
+        *,
+        session: AsyncSession,
+        driver: SQLiteConnection,
+        center: EventRecord,
+        before: int,
+        after: int,
+        event_kind: str,
+        predicates: Collection[Any],
+    ) -> tuple[tuple[EventRecord, ...], tuple[EventRecord, ...]]:
+        conditions = self._history_conditions(
+            cast(str, center.canonical_conversation_id), event_kind, predicates
+        )
+        sides: list[tuple[EventRecord, ...]] = []
+        for count, previous in ((before, True), (after, False)):
+            if not count:
+                sides.append(())
+                continue
+            statement = (
+                select(ChatEventModel)
+                .where(
+                    *conditions,
+                    ChatEventModel.id < center.id if previous else ChatEventModel.id > center.id,
                 )
-                return (
-                    _event_record(center),
-                    tuple(reversed(earlier.events)) if earlier else (),
-                    later.events if later else (),
-                )
+                .order_by(ChatEventModel.id.desc() if previous else ChatEventModel.id.asc())
+                .limit(count)
+            )
+            rows = await _history_read(driver, session.scalars(statement))
+            records = tuple(_event_record(row) for row in rows)
+            sides.append(tuple(reversed(records)) if previous else records)
+        return sides[0], sides[1]
 
     async def hydrate_rebuild_subjects(self, event: EventRecord) -> EventRecord:
         """Read legacy selectors in their actual platform; recorded Person IDs win."""

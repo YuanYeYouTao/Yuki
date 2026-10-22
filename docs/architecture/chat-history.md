@@ -11,12 +11,22 @@ Main 使用 `query_chat_history(view=recent/search/around)`。Social、个人入
 当前 actor、委托范围、插件批准、keeper 及隐私沿原合同；每条结果保留原 Conversation、平台和作者来源。
 `/ai new` 只清理聊天上下文，不删除永久账本或截断显式查询；自动上下文的 starts_after、
 FrozenFragments 与 generation 继续沿原上下文和原执行合同管理。
-recent 未指定 target 时浏览当前 Conversation；search 未指定 target 时一次检索所有当前获准的已入账
-Conversation，不按平台名单枚举。显式 Person、Space 或 Binding 可选择多个真实入口，直接在该集合内
+recent 未指定 target/source 时浏览当前 Conversation；仅给 source 时浏览所选来源集合。
+search 未指定 target 时一次检索所有当前获准的已入账 Conversation，不按平台名单枚举。
+source.platform 为真实平台标识，source.scope 可选 private/group；所有来源条件与 target 取交集，
+未知或无交集时返回空结果，不回退到当前会话或全局。空 source 等同省略。
+显式 Person、Space 或 Binding 可选择多个真实入口，直接在该集合内
 查询，不要求模型逐个挑选候选。around 未指定 target 时由内部 event_id 定位原 Conversation。
 结果的 sources 给出可读会话名与来源目录；每条事件保 conversation_id、platform、scope 和 thread_id。
 跨入口命中作为有来源的工具证据返回，不拼接各 Conversation 的自动上下文。
 人物筛选使用原作者 Person 的当前同人族；账号转移、改名、解绑或无账号不改写旧作者。
+
+`find_contacts(view=subjects|entries)` 默认查询主体；entries 平铺真实 Conversation，提供平台、
+scope、话题、原 Binding/Presence ID 及各自阶段状态。来源按原入口事实读取，legacy 缺失时保未知，
+不按今日主动发送路由猜测。历史入口不要求目标现在启用、Binding active 或曾有真人入站；
+当前 actor、实际委托与插件批准仍在读取处核验，发送沿自己的当前资格执行。
+目录以内部 ID 升序分页，limit 为缺省页大小而非总数上限，cursor 继续取 N+1 页；来源筛选先于分页。
+名称查询没有128字符帽，已知目标可直接使用内部 ID；entries 不要求先选择平台、群私聊和话题层级。
 
 `operation_id` 沿原发送回执定位。`SocialOperation.event_id` 是存活 FK，原事件和 Conversation 另存永久事实；
 原件删除后返回 missing 与原效果状态，不能用 recent 或后来消息代替。回执继续核原来源归属，
@@ -29,6 +39,8 @@ limit 为正整数，没有 50/100 条经验上限；before/after 配置只作�
 
 邻文沿各锚点原 Conversation、event_kind 和读取授权，按锚点 ID 分别有界读取。邻文不继承
 关键词、作者、日期和媒体筛选；与 matches 去重后标记 context，不扫描远隔锚点之间的整段。
+search 的邻文默认0；已核实命中不重查中心，两侧直接读取所需数量，不为侧页多探测N+1。
+around 先定位实际中心，不使用搜索的关键词/作者/日期/附件筛选，中心仍与 target/source 取交集。
 Artifact 的 offset 只翻阅一次调用已经保存的载荷，聊天 cursor 才查询下一批原事件。
 
 ## 字面匹配与索引
@@ -41,13 +53,19 @@ all/any/phrase 与 exclude 均为字面语义，最终精确核验。原文、�
 唯一 `chat_history_fts` 使用 Conversation 前缀的完整 1/2/3-gram、contentless-delete、detail=none。
 每事件最多追加两个稳定原作者词元（Person、author_kind），不复制 gram，不存当前 root、权限
 或 generation。文本和作者条件合成一次 MATCH；人物族只在本页读快照解析一次，原 SQL 再核真实作者。
-日期和媒体条件用现有或必要普通索引缩小候选，再用同一 matcher。没有逐 rowid 重启 MATCH、
-常态补缺查询、扫描预算、缓存结果旁路或运行时索引就绪服务。
+日期、媒体与文字共同组成候选SQL，不因附带元数据关闭FTS。一个请求只执行一次候选语句，
+同一只读快照显式分块读取，精核到N+1真实命中或EOF后关闭游标；假候选不提前解析完整事件JSON。
+没有文字/exclude精核时SQL行即真实命中，SQL直接限制N+1；需要精核时不截断候选。
+有全文候选时媒体用事件ID相关EXISTS；无全文候选时保留媒体IN集合，避免稀疏媒体逐聊天探测。
+没有逐rowid重启MATCH、常态补缺查询、扫描预算、缓存结果旁路或运行时索引就绪服务。
 
 ID 页可 seek 后早停；全文成本取决于真实倒排与精核文字，日期窗口可能需要局部排序。
 仅 exclude、全部 gram 假阳性，或很宽的日期/媒体范围叠加稀有词，最坏仍核完整合法候选集合。
-实验见[查询及维护测量](experiments/chat-history-448-2026-10-22/README.md)，合成读数不冒充线上延迟。
-CPU 转换退出事件循环；取消会中断底层 SQLite 并等待连接清理，独立 OpenCC 本机调用不能硬抢占。
+应用层分块不能消除SQLite首fetch前的引擎排序，单SQL不独立证明更快。
+原测量见[查询及维护测量](experiments/chat-history-448-2026-10-22/README.md)，
+新定位索引/候选流对照见[来源与查询执行测量](experiments/history-source-query-2026-10-22/README.md)，合成读数不冒充线上延迟。
+CPU转换退出事件循环；SQL启动和每次fetch取消会中断同一SQLite driver并等待操作退出、关闭游标。
+调用者提供session时不代提交/回滚，原快照由事务拥有者结束；独立OpenCC本机调用不能硬抢占。
 
 ## 写入与升级
 

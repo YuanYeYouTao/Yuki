@@ -1,0 +1,1595 @@
+{
+  "python": "3.12.15",
+  "sqlite": "3.46.1",
+  "source_sha256": "6d050f81d43de81fc775ccda51129e7be6b6830ccc6ed4a82c8980c9e0b9e54f",
+  "corpus": "4 actual Conversations; repeated gram false positives; one oldest rare hit; 4KiB attachment JSON per row; original template rows excluded by keywords",
+  "vm_excludes_fts_internal_work": true,
+  "rows": [
+    {
+      "events": 5000,
+      "conversations": 4,
+      "database_bytes": 30040064,
+      "cases": [
+        {
+          "case": "rare",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 98.3165090001421,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 96.66967100201873,
+              "first_fetch_ms": 96.98302399920067,
+              "approx_sqlite_vm_1000": 6000,
+              "approx_vm_at_open": 6000,
+              "approx_vm_at_first_fetch": 6000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108036,
+                "VmRSS_kib": 108036
+              },
+              "memory_after": {
+                "VmHWM_kib": 117940,
+                "VmRSS_kib": 117940
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 6.341817002976313,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 4.724431004433427,
+              "first_fetch_ms": 5.111524005769752,
+              "approx_sqlite_vm_1000": 6000,
+              "approx_vm_at_open": 6000,
+              "approx_vm_at_first_fetch": 6000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 117940,
+                "VmRSS_kib": 117940
+              },
+              "memory_after": {
+                "VmHWM_kib": 118056,
+                "VmRSS_kib": 118056
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 4.784209006174933,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 3.8274559992714785,
+              "first_fetch_ms": 4.087825000169687,
+              "approx_sqlite_vm_1000": 6000,
+              "approx_vm_at_open": 6000,
+              "approx_vm_at_first_fetch": 6000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 118056,
+                "VmRSS_kib": 118056
+              },
+              "memory_after": {
+                "VmHWM_kib": 118076,
+                "VmRSS_kib": 118076
+              }
+            }
+          ]
+        },
+        {
+          "case": "rare_wide_date",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 95.53764000156661,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 94.20324300299399,
+              "first_fetch_ms": 94.57216600276297,
+              "approx_sqlite_vm_1000": 6000,
+              "approx_vm_at_open": 6000,
+              "approx_vm_at_first_fetch": 6000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108104,
+                "VmRSS_kib": 108104
+              },
+              "memory_after": {
+                "VmHWM_kib": 118012,
+                "VmRSS_kib": 118012
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 4.40963599976385,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 3.2236379993264563,
+              "first_fetch_ms": 3.656354994745925,
+              "approx_sqlite_vm_1000": 6000,
+              "approx_vm_at_open": 6000,
+              "approx_vm_at_first_fetch": 6000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 118012,
+                "VmRSS_kib": 118012
+              },
+              "memory_after": {
+                "VmHWM_kib": 118124,
+                "VmRSS_kib": 118124
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 3.416045001358725,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 2.581576001830399,
+              "first_fetch_ms": 2.774633001536131,
+              "approx_sqlite_vm_1000": 6000,
+              "approx_vm_at_open": 6000,
+              "approx_vm_at_first_fetch": 6000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 118124,
+                "VmRSS_kib": 118124
+              },
+              "memory_after": {
+                "VmHWM_kib": 118148,
+                "VmRSS_kib": 118148
+              }
+            }
+          ]
+        },
+        {
+          "case": "rare_wide_date_media",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 113.08518699661363,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 111.54510099731851,
+              "first_fetch_ms": 111.95247500290861,
+              "approx_sqlite_vm_1000": 56000,
+              "approx_vm_at_open": 56000,
+              "approx_vm_at_first_fetch": 56000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ],
+                  [
+                    46,
+                    0,
+                    0,
+                    "LIST SUBQUERY 1"
+                  ],
+                  [
+                    49,
+                    46,
+                    0,
+                    "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108064,
+                "VmRSS_kib": 108064
+              },
+              "memory_after": {
+                "VmHWM_kib": 119040,
+                "VmRSS_kib": 119040
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 6.73143000312848,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 5.481339001562446,
+              "first_fetch_ms": 5.90401999943424,
+              "approx_sqlite_vm_1000": 56000,
+              "approx_vm_at_open": 56000,
+              "approx_vm_at_first_fetch": 56000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ],
+                  [
+                    46,
+                    0,
+                    0,
+                    "LIST SUBQUERY 1"
+                  ],
+                  [
+                    49,
+                    46,
+                    0,
+                    "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 119044,
+                "VmRSS_kib": 119044
+              },
+              "memory_after": {
+                "VmHWM_kib": 119152,
+                "VmRSS_kib": 119152
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 6.3752159985597245,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 5.406402997323312,
+              "first_fetch_ms": 5.66604699997697,
+              "approx_sqlite_vm_1000": 56000,
+              "approx_vm_at_open": 56000,
+              "approx_vm_at_first_fetch": 56000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ],
+                  [
+                    46,
+                    0,
+                    0,
+                    "LIST SUBQUERY 1"
+                  ],
+                  [
+                    49,
+                    46,
+                    0,
+                    "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 119152,
+                "VmRSS_kib": 119152
+              },
+              "memory_after": {
+                "VmHWM_kib": 119180,
+                "VmRSS_kib": 119180
+              }
+            }
+          ]
+        },
+        {
+          "case": "common",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 100.03572500136215,
+              "returned": 20,
+              "has_more": true,
+              "sql_count": 1,
+              "verified_rows": 21,
+              "full_event_records": 21,
+              "fetches": 1,
+              "stream_open_ms": 95.9773540016613,
+              "first_fetch_ms": 97.57357600028627,
+              "approx_sqlite_vm_1000": 4000,
+              "approx_vm_at_open": 1000,
+              "approx_vm_at_first_fetch": 4000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108028,
+                "VmRSS_kib": 108028
+              },
+              "memory_after": {
+                "VmHWM_kib": 118896,
+                "VmRSS_kib": 118896
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 6.497720001789276,
+              "returned": 20,
+              "has_more": true,
+              "sql_count": 1,
+              "verified_rows": 21,
+              "full_event_records": 21,
+              "fetches": 1,
+              "stream_open_ms": 3.6064309970242903,
+              "first_fetch_ms": 4.867112998908851,
+              "approx_sqlite_vm_1000": 5000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 118896,
+                "VmRSS_kib": 118896
+              },
+              "memory_after": {
+                "VmHWM_kib": 119136,
+                "VmRSS_kib": 119136
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 6.1744249978801236,
+              "returned": 20,
+              "has_more": true,
+              "sql_count": 1,
+              "verified_rows": 21,
+              "full_event_records": 21,
+              "fetches": 1,
+              "stream_open_ms": 2.8220969979884103,
+              "first_fetch_ms": 4.134310998779256,
+              "approx_sqlite_vm_1000": 5000,
+              "approx_vm_at_open": 1000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 119136,
+                "VmRSS_kib": 119136
+              },
+              "memory_after": {
+                "VmHWM_kib": 119196,
+                "VmRSS_kib": 119196
+              }
+            }
+          ]
+        },
+        {
+          "case": "all_false_positive",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 193.9800899999682,
+              "returned": 0,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 5000,
+              "full_event_records": 0,
+              "fetches": 80,
+              "stream_open_ms": 88.90076899842825,
+              "first_fetch_ms": 90.82964200206334,
+              "approx_sqlite_vm_1000": 297000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108356,
+                "VmRSS_kib": 108356
+              },
+              "memory_after": {
+                "VmHWM_kib": 121100,
+                "VmRSS_kib": 121100
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 119.69890100590419,
+              "returned": 0,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 5000,
+              "full_event_records": 0,
+              "fetches": 80,
+              "stream_open_ms": 3.7535640003625304,
+              "first_fetch_ms": 5.2832420042250305,
+              "approx_sqlite_vm_1000": 297000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 121100,
+                "VmRSS_kib": 121100
+              },
+              "memory_after": {
+                "VmHWM_kib": 121248,
+                "VmRSS_kib": 121248
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 109.62805499730166,
+              "returned": 0,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 5000,
+              "full_event_records": 0,
+              "fetches": 80,
+              "stream_open_ms": 3.2943920014076866,
+              "first_fetch_ms": 4.397892000270076,
+              "approx_sqlite_vm_1000": 297000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 121248,
+                "VmRSS_kib": 121248
+              },
+              "memory_after": {
+                "VmHWM_kib": 121336,
+                "VmRSS_kib": 121336
+              }
+            }
+          ]
+        },
+        {
+          "case": "exclude_only",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 226.19513099925825,
+              "returned": 4,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 5004,
+              "full_event_records": 4,
+              "fetches": 80,
+              "stream_open_ms": 126.54204999853391,
+              "first_fetch_ms": 128.76336800400168,
+              "approx_sqlite_vm_1000": 475000,
+              "approx_vm_at_open": 255000,
+              "approx_vm_at_first_fetch": 258000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+                  ],
+                  [
+                    82,
+                    0,
+                    0,
+                    "USE TEMP B-TREE FOR ORDER BY"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108252,
+                "VmRSS_kib": 108252
+              },
+              "memory_after": {
+                "VmHWM_kib": 122608,
+                "VmRSS_kib": 120940
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 121.457236004062,
+              "returned": 4,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 5004,
+              "full_event_records": 4,
+              "fetches": 80,
+              "stream_open_ms": 24.626063997857273,
+              "first_fetch_ms": 25.934392004273832,
+              "approx_sqlite_vm_1000": 475000,
+              "approx_vm_at_open": 255000,
+              "approx_vm_at_first_fetch": 258000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+                  ],
+                  [
+                    82,
+                    0,
+                    0,
+                    "USE TEMP B-TREE FOR ORDER BY"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 122608,
+                "VmRSS_kib": 120940
+              },
+              "memory_after": {
+                "VmHWM_kib": 123052,
+                "VmRSS_kib": 123052
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 124.88434799888637,
+              "returned": 4,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 5004,
+              "full_event_records": 4,
+              "fetches": 80,
+              "stream_open_ms": 23.687289998633787,
+              "first_fetch_ms": 24.864690996764693,
+              "approx_sqlite_vm_1000": 476000,
+              "approx_vm_at_open": 256000,
+              "approx_vm_at_first_fetch": 259000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+                  ],
+                  [
+                    82,
+                    0,
+                    0,
+                    "USE TEMP B-TREE FOR ORDER BY"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 123052,
+                "VmRSS_kib": 123052
+              },
+              "memory_after": {
+                "VmHWM_kib": 123068,
+                "VmRSS_kib": 123068
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "events": 20000,
+      "conversations": 4,
+      "database_bytes": 113340416,
+      "cases": [
+        {
+          "case": "rare",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 136.66720200126292,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 134.77395600057207,
+              "first_fetch_ms": 135.2647160019842,
+              "approx_sqlite_vm_1000": 4000,
+              "approx_vm_at_open": 4000,
+              "approx_vm_at_first_fetch": 4000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108312,
+                "VmRSS_kib": 108312
+              },
+              "memory_after": {
+                "VmHWM_kib": 118200,
+                "VmRSS_kib": 118200
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 5.798535996291321,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 4.198675997031387,
+              "first_fetch_ms": 4.565096001897473,
+              "approx_sqlite_vm_1000": 4000,
+              "approx_vm_at_open": 4000,
+              "approx_vm_at_first_fetch": 4000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 118200,
+                "VmRSS_kib": 118200
+              },
+              "memory_after": {
+                "VmHWM_kib": 118316,
+                "VmRSS_kib": 118316
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 4.277827996702399,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 3.258664997701999,
+              "first_fetch_ms": 3.4927469969261438,
+              "approx_sqlite_vm_1000": 5000,
+              "approx_vm_at_open": 5000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 118316,
+                "VmRSS_kib": 118316
+              },
+              "memory_after": {
+                "VmHWM_kib": 118336,
+                "VmRSS_kib": 118336
+              }
+            }
+          ]
+        },
+        {
+          "case": "rare_wide_date",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 113.71247500210302,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 112.39006699906895,
+              "first_fetch_ms": 112.74561900063418,
+              "approx_sqlite_vm_1000": 4000,
+              "approx_vm_at_open": 4000,
+              "approx_vm_at_first_fetch": 4000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 107952,
+                "VmRSS_kib": 107952
+              },
+              "memory_after": {
+                "VmHWM_kib": 117884,
+                "VmRSS_kib": 117884
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 5.724478003685363,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 4.487054000492208,
+              "first_fetch_ms": 4.899731000477914,
+              "approx_sqlite_vm_1000": 4000,
+              "approx_vm_at_open": 4000,
+              "approx_vm_at_first_fetch": 4000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 117884,
+                "VmRSS_kib": 117884
+              },
+              "memory_after": {
+                "VmHWM_kib": 117996,
+                "VmRSS_kib": 117996
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 5.159134998393711,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 3.4369979985058308,
+              "first_fetch_ms": 3.885808000632096,
+              "approx_sqlite_vm_1000": 5000,
+              "approx_vm_at_open": 5000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 117996,
+                "VmRSS_kib": 117996
+              },
+              "memory_after": {
+                "VmHWM_kib": 118020,
+                "VmRSS_kib": 118020
+              }
+            }
+          ]
+        },
+        {
+          "case": "rare_wide_date_media",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 114.2384730046615,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 112.75620400556363,
+              "first_fetch_ms": 113.18269400362624,
+              "approx_sqlite_vm_1000": 204000,
+              "approx_vm_at_open": 204000,
+              "approx_vm_at_first_fetch": 204000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ],
+                  [
+                    46,
+                    0,
+                    0,
+                    "LIST SUBQUERY 1"
+                  ],
+                  [
+                    49,
+                    46,
+                    0,
+                    "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108240,
+                "VmRSS_kib": 108240
+              },
+              "memory_after": {
+                "VmHWM_kib": 120076,
+                "VmRSS_kib": 120076
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 21.03539599920623,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 19.433946996286977,
+              "first_fetch_ms": 19.732713997655082,
+              "approx_sqlite_vm_1000": 204000,
+              "approx_vm_at_open": 204000,
+              "approx_vm_at_first_fetch": 204000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ],
+                  [
+                    46,
+                    0,
+                    0,
+                    "LIST SUBQUERY 1"
+                  ],
+                  [
+                    49,
+                    46,
+                    0,
+                    "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 120080,
+                "VmRSS_kib": 120080
+              },
+              "memory_after": {
+                "VmHWM_kib": 120184,
+                "VmRSS_kib": 120184
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 15.071952999278437,
+              "returned": 1,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 1,
+              "full_event_records": 1,
+              "fetches": 2,
+              "stream_open_ms": 12.756071999319829,
+              "first_fetch_ms": 13.475787003699224,
+              "approx_sqlite_vm_1000": 205000,
+              "approx_vm_at_open": 205000,
+              "approx_vm_at_first_fetch": 205000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ],
+                  [
+                    46,
+                    0,
+                    0,
+                    "LIST SUBQUERY 1"
+                  ],
+                  [
+                    49,
+                    46,
+                    0,
+                    "SEARCH conversation_media_items USING INDEX ix_conversation_media_scope_event (conversation_id=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 120184,
+                "VmRSS_kib": 120184
+              },
+              "memory_after": {
+                "VmHWM_kib": 120208,
+                "VmRSS_kib": 120208
+              }
+            }
+          ]
+        },
+        {
+          "case": "common",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 114.50959500507452,
+              "returned": 20,
+              "has_more": true,
+              "sql_count": 1,
+              "verified_rows": 21,
+              "full_event_records": 21,
+              "fetches": 1,
+              "stream_open_ms": 110.93370400340063,
+              "first_fetch_ms": 112.29921000631293,
+              "approx_sqlite_vm_1000": 3000,
+              "approx_vm_at_open": 0,
+              "approx_vm_at_first_fetch": 3000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108320,
+                "VmRSS_kib": 108320
+              },
+              "memory_after": {
+                "VmHWM_kib": 119252,
+                "VmRSS_kib": 119252
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 6.688240006042179,
+              "returned": 20,
+              "has_more": true,
+              "sql_count": 1,
+              "verified_rows": 21,
+              "full_event_records": 21,
+              "fetches": 1,
+              "stream_open_ms": 4.033576005895156,
+              "first_fetch_ms": 5.213137999817263,
+              "approx_sqlite_vm_1000": 5000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 119252,
+                "VmRSS_kib": 119252
+              },
+              "memory_after": {
+                "VmHWM_kib": 119600,
+                "VmRSS_kib": 119600
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 5.867116000445094,
+              "returned": 20,
+              "has_more": true,
+              "sql_count": 1,
+              "verified_rows": 21,
+              "full_event_records": 21,
+              "fetches": 1,
+              "stream_open_ms": 3.204993001418188,
+              "first_fetch_ms": 4.159265001362655,
+              "approx_sqlite_vm_1000": 5000,
+              "approx_vm_at_open": 1000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 119600,
+                "VmRSS_kib": 119600
+              },
+              "memory_after": {
+                "VmHWM_kib": 119696,
+                "VmRSS_kib": 119696
+              }
+            }
+          ]
+        },
+        {
+          "case": "all_false_positive",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 626.9098880002275,
+              "returned": 0,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 20000,
+              "full_event_records": 0,
+              "fetches": 314,
+              "stream_open_ms": 118.60068699752446,
+              "first_fetch_ms": 120.10598499909975,
+              "approx_sqlite_vm_1000": 1181000,
+              "approx_vm_at_open": 1000,
+              "approx_vm_at_first_fetch": 4000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 108124,
+                "VmRSS_kib": 108124
+              },
+              "memory_after": {
+                "VmHWM_kib": 121156,
+                "VmRSS_kib": 121156
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 475.3521250022459,
+              "returned": 0,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 20000,
+              "full_event_records": 0,
+              "fetches": 314,
+              "stream_open_ms": 3.5130360047332942,
+              "first_fetch_ms": 4.896564998489339,
+              "approx_sqlite_vm_1000": 1182000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 121156,
+                "VmRSS_kib": 121156
+              },
+              "memory_after": {
+                "VmHWM_kib": 121460,
+                "VmRSS_kib": 121460
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 490.2261440001894,
+              "returned": 0,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 20000,
+              "full_event_records": 0,
+              "fetches": 314,
+              "stream_open_ms": 3.526624001096934,
+              "first_fetch_ms": 4.679583995311987,
+              "approx_sqlite_vm_1000": 1182000,
+              "approx_vm_at_open": 2000,
+              "approx_vm_at_first_fetch": 5000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+                  ],
+                  [
+                    12,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 121460,
+                "VmRSS_kib": 121460
+              },
+              "memory_after": {
+                "VmHWM_kib": 121516,
+                "VmRSS_kib": 121516
+              }
+            }
+          ]
+        },
+        {
+          "case": "exclude_only",
+          "samples": [
+            {
+              "sample": 0,
+              "process_first_read": true,
+              "elapsed_ms": 711.2342070031445,
+              "returned": 4,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 20004,
+              "full_event_records": 4,
+              "fetches": 314,
+              "stream_open_ms": 234.82113399950322,
+              "first_fetch_ms": 236.40175400214503,
+              "approx_sqlite_vm_1000": 1900000,
+              "approx_vm_at_open": 1020000,
+              "approx_vm_at_first_fetch": 1023000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+                  ],
+                  [
+                    82,
+                    0,
+                    0,
+                    "USE TEMP B-TREE FOR ORDER BY"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 107920,
+                "VmRSS_kib": 107920
+              },
+              "memory_after": {
+                "VmHWM_kib": 122848,
+                "VmRSS_kib": 121016
+              }
+            },
+            {
+              "sample": 1,
+              "process_first_read": false,
+              "elapsed_ms": 613.5187840045546,
+              "returned": 4,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 20004,
+              "full_event_records": 4,
+              "fetches": 314,
+              "stream_open_ms": 109.05079100484727,
+              "first_fetch_ms": 110.44637500162935,
+              "approx_sqlite_vm_1000": 1900000,
+              "approx_vm_at_open": 1020000,
+              "approx_vm_at_first_fetch": 1023000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+                  ],
+                  [
+                    82,
+                    0,
+                    0,
+                    "USE TEMP B-TREE FOR ORDER BY"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 122848,
+                "VmRSS_kib": 121016
+              },
+              "memory_after": {
+                "VmHWM_kib": 123096,
+                "VmRSS_kib": 123096
+              }
+            },
+            {
+              "sample": 2,
+              "process_first_read": false,
+              "elapsed_ms": 613.150429999223,
+              "returned": 4,
+              "has_more": false,
+              "sql_count": 1,
+              "verified_rows": 20004,
+              "full_event_records": 4,
+              "fetches": 314,
+              "stream_open_ms": 157.06577400123933,
+              "first_fetch_ms": 158.03704199788626,
+              "approx_sqlite_vm_1000": 1901000,
+              "approx_vm_at_open": 1021000,
+              "approx_vm_at_first_fetch": 1024000,
+              "plans": [
+                [
+                  [
+                    4,
+                    0,
+                    0,
+                    "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+                  ],
+                  [
+                    82,
+                    0,
+                    0,
+                    "USE TEMP B-TREE FOR ORDER BY"
+                  ]
+                ]
+              ],
+              "memory_before": {
+                "VmHWM_kib": 123096,
+                "VmRSS_kib": 123096
+              },
+              "memory_after": {
+                "VmHWM_kib": 123124,
+                "VmRSS_kib": 123124
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

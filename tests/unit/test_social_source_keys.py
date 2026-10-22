@@ -167,7 +167,9 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
     assert {item["target_id"] for item in matches} == {first, last}
     with pytest.raises(SocialError, match="target_ambiguous"):
         await env.service.target("person", {"display_name": "same"}, env.context)
-    result = await env.service.execute("find_contacts", {"display_name": "same"}, env.context)
+    result = await env.service.execute(
+        "find_contacts", {"kind": "person", "display_name": "same"}, env.context
+    )
     items = {item["target_id"]: item for item in result["items"]}
     assert set(items) == {first, last}
     assert len(items[first]["bindings"]) == 33 and len(items[last]["bindings"]) == 1

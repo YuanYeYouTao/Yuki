@@ -8,7 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class HistoryTarget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=lambda schema: schema.update(
+            oneOf=[{"required": [name]} for name in HistoryTarget.model_fields]
+        ),
+    )
     conversation_id: UUID | None = None
     person_id: UUID | None = None
     space_id: UUID | None = None
@@ -22,10 +27,17 @@ class HistoryTarget(BaseModel):
         return self
 
 
+class HistorySource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    platform: str | None = None
+    scope: Literal["private", "group"] | None = None
+
+
 class HistoryQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     view: Literal["recent", "search", "around"] = "recent"
     target: HistoryTarget | None = None
+    source: HistorySource | None = None
     order: Literal["recent", "oldest"] = "recent"
     keyword: str = ""
     match: Literal["all", "any", "phrase"] = "all"
@@ -55,19 +67,19 @@ class HistoryQuery(BaseModel):
 
 
 def history_schema() -> dict[str, object]:
-    schema = HistoryQuery.model_json_schema()
-    target = schema["$defs"]["HistoryTarget"]
-    target["oneOf"] = [{"required": [name]} for name in HistoryTarget.model_fields]
-    return schema
+    return HistoryQuery.model_json_schema()
 
 
 HISTORY_TOOL_DESCRIPTION = (
     "查询已观察到的聊天账本。recent 读取近期，search 按原文/本人语音、作者、日期或附件筛选，"
     "around 按内部 event_id 读取原会话邻文。target 省略时 recent 浏览当前会话，"
-    "search 搜索所有获准的聊天；"
+    "search 搜索所有获准的聊天。source可按平台及private/group筛选，"
+    "与target取交集；recent仅给source时浏览该来源的会话集合。"
     "显式目标使用一个内部 ID，多入口合并检索并分别标明平台、私聊/群聊、会话名称与话题来源。"
     "可查重开上下文前的永久账本。target.person_id 选择私聊入口，顶层 person_id 筛选原作者。"
     "operation_id 沿原发送回执定位会话和原锚点。cursor 按 order 续查 ID 页；"
-    "before/after 是 around 条数。日期未带时区按 UTC+8，起点包含、终点不含。"
+    "before/after 是 around 条数；around按锚点取邻文，不使用关键词、作者、日期、附件筛选。"
+    "search可用context_before/context_after附带各命中的邻文，默认不读。"
+    "日期未带时区按 UTC+8，起点包含、终点不含。"
     "不调用平台补查，不接受平台消息号。"
 )

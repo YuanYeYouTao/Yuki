@@ -21,6 +21,7 @@ from yuki.runtime.effect_outcomes import current_result_capture
 from yuki.services.history_query import history_schema
 from yuki.services.invocation_service import InvocationService
 from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.social.tools import social_tool_definitions
 from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
@@ -56,7 +57,12 @@ async def source_environment(database, tmp_path, native):
         )
         sources.append(row.event.id)
     env.host.api = project(
-        (*TOOLS, ChatTool("query_chat_history", "history", history_schema())), "manifest-test"
+        (
+            *TOOLS,
+            next(tool for tool in social_tool_definitions() if tool.name == "find_contacts"),
+            ChatTool("query_chat_history", "history", history_schema()),
+        ),
+        "manifest-test",
     )
     store = ToolArtifactRepository(database, tmp_path / "code-artifacts", retention_seconds=600)
     runtime = SimpleNamespace(
@@ -114,6 +120,66 @@ b = await yuki_query_chat_history({'view': 'search', 'keyword': 'source-beta'})
  'padding': 'x' * 3000}
 """
     return env, tuple(sources), store, dispatched, code
+
+
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
+async def test_code_discovers_entries_and_queries_same_source_with_projected_schemas(
+    database, tmp_path, native
+):
+    env, sources, _store, dispatched, _code = await source_environment(database, tmp_path, native)
+    social = env.test_case.env
+    source = {"platform": "qq", "scope": "group"}
+    directory_args = {
+        "view": "entries",
+        "source": source,
+        "target": {"space_id": social.space},
+        "limit": 1,
+    }
+    history_args = {
+        "view": "search",
+        "source": source,
+        "target": {"conversation_id": social.context.conversation_id},
+        "keyword": "source-alpha source-beta",
+        "match": "any",
+    }
+    business = env.host.execute_business
+    observed = []
+
+    async def observe(invocation, side_effecting):
+        raw = await business(invocation, side_effecting)
+        observed.append((invocation.call.function.name, json.loads(raw)["data"]))
+        return raw
+
+    env.host.execute_business = observe
+    if not native:
+        calls = [("yuki_find_contacts", directory_args), ("yuki_query_chat_history", history_args)]
+        env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)
+    code = f"""
+directory = await yuki_find_contacts({directory_args!r})
+entry = directory['data']['items'][0]
+history = await yuki_query_chat_history({{
+    'view': 'search', 'source': {source!r},
+    'target': {{'conversation_id': entry['conversation_id']}},
+    'keyword': 'source-alpha source-beta', 'match': 'any'
+}})
+{{'copied': [row['content'] for row in history['data']['events']], 'padding': 'x' * 3000}}
+"""
+    outer = outer_call(env, code)
+    result = json.loads(await CodeModeDriver(env.host, outer).run())
+    assert result["status"] == "completed" and len(dispatched) == 2
+    assert [name for name, _ in observed] == ["find_contacts", "query_chat_history"]
+    directory, history = (data for _, data in observed)
+    assert len(directory["items"]) == 1
+    entry = directory["items"][0]
+    assert entry["conversation_id"] == social.context.conversation_id
+    assert entry["platform"] == "qq" and entry["scope"] == "group"
+    assert {row["event_id"] for row in history["events"]} == set(sources)
+    assert {row["conversation_id"] for row in history["sources"]} == {entry["conversation_id"]}
+    rows, _, _ = await effect_rows(database, env.control.current["id"])
+    outcome = json.loads(rows[outer.identity.operation_id]["receipt_json"])["outcome"]
+    assert set(outcome["source_event_ids"]) == set(sources)
 
 
 @pytest.mark.parametrize(

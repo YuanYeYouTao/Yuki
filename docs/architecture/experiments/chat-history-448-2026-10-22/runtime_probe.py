@@ -594,13 +594,14 @@ async def cancellation_sample(database):
             await driver.set_progress_handler(progress, 1000)
             try:
                 await _history_read(
-                    session,
-                    text(
-                        "WITH RECURSIVE r(x) AS "
-                        "(VALUES(1) UNION ALL SELECT x+1 FROM r WHERE x<2000000) "
-                        "SELECT sum(x) FROM r"
+                    driver,
+                    session.scalar(
+                        text(
+                            "WITH RECURSIVE r(x) AS "
+                            "(VALUES(1) UNION ALL SELECT x+1 FROM r WHERE x<2000000) "
+                            "SELECT sum(x) FROM r"
+                        )
                     ),
-                    single=True,
                 )
             finally:
                 await driver.set_progress_handler(None, 0)
