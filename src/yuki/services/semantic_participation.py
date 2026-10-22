@@ -77,6 +77,7 @@ if TYPE_CHECKING:
 
     from yuki.domain.messages import ChatResponse
     from yuki.services.agent_tools import ToolRuntime
+    from yuki.services.participation_ordinary import PreparedContinuation
 
 
 def timestamp(value: datetime) -> float:
@@ -257,15 +258,28 @@ class SemanticParticipationService:
 
         return await continuation_for_event(self, event_id)
 
-    async def continuation_current(
-        self,
-        binding: OrdinaryParticipationBinding,
-        *,
-        session: AsyncSession | None = None,
-    ) -> bool:
+    async def continuation_current(self, binding: OrdinaryParticipationBinding) -> bool:
         from yuki.services.participation_ordinary import continuation_current
 
-        return await continuation_current(self, binding, session=session)
+        return await continuation_current(self, binding)
+
+    async def prepare_continuation(
+        self, binding: OrdinaryParticipationBinding
+    ) -> PreparedContinuation | None:
+        from yuki.services.participation_ordinary import prepare_continuation
+
+        return await prepare_continuation(self, binding)
+
+    async def continuation_matches(
+        self,
+        binding: OrdinaryParticipationBinding,
+        prepared: PreparedContinuation | None,
+        *,
+        session: AsyncSession,
+    ) -> bool:
+        from yuki.services.participation_ordinary import continuation_matches
+
+        return await continuation_matches(self, binding, prepared, session=session)
 
     async def runtime_context(self, runtime: ToolRuntime) -> dict[str, Any] | None:
         from yuki.services.participation_ordinary import runtime_context

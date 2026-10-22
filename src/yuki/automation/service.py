@@ -344,6 +344,7 @@ class AutomationService:
         next_run_at = initial_run_at(task.trigger, now, cast(str, task.timezone))
         async with self._repository._database.immediate_session() as session:
             current = await self._manageable_row(existing.id, actor, session)
+            before_hash = current.script_hash
             row = await self._commit_task(
                 definition,
                 automation_id=existing.id,
@@ -363,7 +364,7 @@ class AutomationService:
                 conversation_key,
                 operation="update",
                 automation_id=row.id,
-                before={"script_hash": current.script_hash},
+                before={"script_hash": before_hash},
                 after={"script_hash": row.script_hash},
                 session=session,
             )
@@ -466,10 +467,9 @@ class AutomationService:
         return row
 
     async def pause(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        row = await self.require_manageable(automation_id, actor)
-        creator_person_id = self._canonical_owner(row)
         async with self._repository._database.immediate_session() as session:
-            await self._manageable_row(automation_id, actor, session)
+            current = await self._manageable_row(automation_id, actor, session)
+            creator_person_id = self._canonical_owner(current)
             changed = await self._repository.set_status(
                 automation_id,
                 creator_person_id=creator_person_id,
@@ -488,12 +488,10 @@ class AutomationService:
         return changed
 
     async def resume(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        row = await self.require_manageable(automation_id, actor)
-        creator_person_id = self._canonical_owner(row)
-        now = self._time.clock.now()
-        TaskSpec.model_validate(row.script)
         async with self._repository._database.immediate_session() as session:
             current = await self._manageable_row(automation_id, actor, session)
+            creator_person_id = self._canonical_owner(current)
+            now = self._time.clock.now()
             next_run = current.next_run_at or now
             changed = await self._repository.resume(
                 automation_id,
@@ -513,10 +511,9 @@ class AutomationService:
         return changed
 
     async def cancel(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        row = await self.require_manageable(automation_id, actor)
-        creator_person_id = self._canonical_owner(row)
         async with self._repository._database.immediate_session() as session:
-            await self._manageable_row(automation_id, actor, session)
+            current = await self._manageable_row(automation_id, actor, session)
+            creator_person_id = self._canonical_owner(current)
             changed = await self._repository.cancel(
                 automation_id,
                 creator_person_id=creator_person_id,
@@ -534,11 +531,9 @@ class AutomationService:
         return changed
 
     async def run_now(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        row = await self.require_manageable(automation_id, actor)
-        creator_person_id = self._canonical_owner(row)
-        TaskSpec.model_validate(row.script)
         async with self._repository._database.immediate_session() as session:
-            await self._manageable_row(automation_id, actor, session)
+            current = await self._manageable_row(automation_id, actor, session)
+            creator_person_id = self._canonical_owner(current)
             changed = await self._repository.schedule_now(
                 automation_id,
                 creator_person_id=creator_person_id,

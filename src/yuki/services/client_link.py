@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.client_api.errors import ClientError
@@ -13,6 +14,7 @@ from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.identity.canonical_repository import find_presence
 from yuki.identity.db_models import PresenceModel
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.database import write_failure_committed
 from yuki.services.policies import message_command_text
 
 
@@ -60,6 +62,7 @@ class ClientLinkCommands:
             while True:
                 connection = self.registry.resolve_by_handle(bot).snapshot
                 async with self.identities.database.read_session() as reader:
+                    await reader.execute(text("BEGIN"))
                     presence = await find_presence(
                         reader, connection.external_account_id, platform=connection.platform
                     )
@@ -103,7 +106,10 @@ class ClientLinkCommands:
                                 session=writer,
                             )
                 except CanonicalIdentityError as exc:
-                    if exc.category != "person_merge_preparation_changed":
+                    if (
+                        exc.category != "person_merge_preparation_changed"
+                        or write_failure_committed(exc) is not False
+                    ):
                         raise
                     continue
                 break

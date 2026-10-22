@@ -59,7 +59,7 @@ from yuki.identity.receipt_compat import (
     transport_receipt,
 )
 from yuki.identity.routing import PresenceRouter
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 from yuki.persistence.history_search import prepare_terms
 from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import ChatEventModel
@@ -88,6 +88,7 @@ class InboundPreparation:
     person: PreparedPersonObservation | None
     event: ChatEventModel
     segments: list[dict[str, Any]]
+    record_segments: tuple[dict[str, Any], ...]
     normalized_segments: str
     observed_reply: tuple[dict[str, Any], ...]
     reply_snapshots: dict[int, str]
@@ -237,7 +238,7 @@ class CanonicalIngressUnitOfWork:
                     ),
                     external_event_type=message.event_type,
                 )
-                return _event_record(existing)
+                return _event_record(existing, segments=tuple(original_parts))
             row = ChatEventModel(
                 bot_user_id=message.bot_user_id,
                 platform_message_id=message.message_id,
@@ -286,7 +287,7 @@ class CanonicalIngressUnitOfWork:
                 )
             )
             await session.flush()
-            return _event_record(row)
+            return _event_record(row, segments=tuple(segments))
 
         async with self._database.read_session() as reader:
             await reader.execute(text("BEGIN"))
@@ -351,9 +352,8 @@ class CanonicalIngressUnitOfWork:
             assignment_id=admitted.author_assignment_id,
         )
         segments = _inbound_segments(message, admitted)
-        stored_segments = json.dumps(
-            _inbound_segments(observed_message, admitted), ensure_ascii=False, separators=(",", ":")
-        )
+        record_segments = tuple(_inbound_segments(observed_message, admitted))
+        stored_segments = json.dumps(record_segments, ensure_ascii=False, separators=(",", ":"))
         observed_reply = message.reply_segments if message.reply_to_event_id is None else ()
         return InboundPreparation(
             canonical_event_id=canonical_event_id,
@@ -369,6 +369,7 @@ class CanonicalIngressUnitOfWork:
                 now=_utcnow(),
             ),
             segments=segments,
+            record_segments=record_segments,
             normalized_segments=normalize_live_json(
                 json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
             ),
@@ -543,7 +544,7 @@ class CanonicalIngressUnitOfWork:
                 author_person_id=row.author_person_id,
                 author_kind=row.author_kind,
             )
-            event = _event_record(row)
+            event = _event_record(row, segments=current_prepared.record_segments)
             await touch_canonical_watermarks(
                 session,
                 conversation_id,
@@ -607,8 +608,9 @@ class CanonicalIngressUnitOfWork:
             try:
                 async with self._database.immediate_session() as writer:
                     return await append(writer)
-            except ObservationChanged:
-                # Retry only local preparation; the original event identity stays fixed.
+            except ObservationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 continue
 
     async def append_new_generation(
@@ -790,7 +792,7 @@ async def _reuse_claimed_inbound(
         external_event_type=message.event_type,
     )
     return ScopedAppendResult(
-        event=_event_record(existing),
+        event=_event_record(existing, segments=tuple(original_segments)),
         scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
         created=False,
     )

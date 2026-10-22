@@ -18,6 +18,7 @@ from yuki_participation.self_report import SelfReport
 
 from yuki.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
 from yuki.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
+from yuki.conversation.autonomy_repository import PreparedInitiativeFeedback
 from yuki.conversation.ordinary_admission import OrdinaryAdmission, OrdinaryAdmissionRepository
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
@@ -565,10 +566,10 @@ async def _feedback_current(
     batch: list[str],
     models: dict[str, int],
     model_selection: str,
+    feedback: PreparedInitiativeFeedback,
 ) -> bool:
     """Verify this page's real witnesses; later effects belong to a later page."""
-    runs = await service.repository.get_runs((fact.run.run_id,), session=session)
-    if runs != (fact.run,):
+    if not await service.repository.feedback_run_current(feedback, session=session):
         return False
     privacy = int(
         await session.scalar(
@@ -717,8 +718,18 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
                 _, identity, ordinal = ref.split(":")
                 models[identity] = max(models.get(identity, 0), int(ordinal))
         model_selection = json.dumps([{"id": identity} for identity in models])
+        feedback = service.repository.prepare_feedback(
+            fact.run,
+            sequence=fact.run.feedback_sequence + 1,
+            outcome=outcome,
+            effect_refs=tuple(batch),
+            actual_target_refs=targets,
+            considered_sources=fact.run.sources,
+        )
         async with service.database.immediate_session() as session:
-            if not await _feedback_current(service, session, fact, batch, models, model_selection):
+            if not await _feedback_current(
+                service, session, fact, batch, models, model_selection, feedback
+            ):
                 # Reconciliation will prepare the current factual page next tick;
                 # a changed source never replays the model or external effect.
                 return None
@@ -730,6 +741,7 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
                 actual_target_refs=targets,
                 considered_sources=fact.run.sources,
                 session=session,
+                prepared=feedback,
             )
     async with service.database.read_session() as session:
         await session.execute(text("BEGIN"))

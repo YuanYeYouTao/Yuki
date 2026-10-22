@@ -25,7 +25,5 @@ def memory_job_claim_conditions(job: MemoryJob) -> tuple[ColumnElement[bool], ..
 
 async def fence_memory_job_claim(session: AsyncSession, job: MemoryJob) -> None:
     """Check the original claimant in the already owned IMMEDIATE transaction."""
-    if not await session.scalar(
-        select(MemoryJobModel.id).where(*memory_job_claim_conditions(job))
-    ):
+    if not await session.scalar(select(MemoryJobModel.id).where(*memory_job_claim_conditions(job))):
         raise MemoryJobClaimLost(f"memory job {job.id} claim lost")

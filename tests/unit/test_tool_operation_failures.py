@@ -187,3 +187,78 @@ async def test_connection_failure_has_no_dispatched_effect(monkeypatch):
     )
     assert result["error"] == "sandbox_unavailable"
     assert result["uncertain"] is False
+
+
+@pytest.mark.parametrize("tool", ["terminal_exec", "save_conversation_attachment_to_workspace"])
+@pytest.mark.parametrize("failure_type", [OSError, RuntimeError, ValueError])
+@pytest.mark.parametrize(
+    "phase,confirmed,committed",
+    [("commit", False, None), ("cleanup", True, True), ("cleanup", False, None)],
+)
+async def test_non_sqlalchemy_commit_failure_keeps_real_certainty(
+    database, tool, failure_type, phase, confirmed, committed
+):
+    failure = failure_type("original phase failure")
+    failure.add_note(f"database_write_phase:{phase}")
+    if confirmed:
+        failure.add_note("database_commit:confirmed")
+    tools = AgentToolService(
+        settings=make_settings(database.url),
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+    )
+    backend = SimpleNamespace(execute=AsyncMock(side_effect=failure))
+    tools.sandbox_client = tools.workspace_service = backend
+    runtime = ToolRuntime(
+        inbound=InboundMessage(
+            "original-trigger",
+            "message:private:normal",
+            ScopeType.PRIVATE,
+            SenderIdentity("1001"),
+            "write a file",
+            bot_user_id="8000",
+        ),
+        execution_id="original-execution",
+        conversation_id="original-conversation",
+        target_presence_id="original-presence",
+    )
+    token = current_invocation.set(ToolInvocationContext(runtime, "original-call"))
+    try:
+        result = await tools.execute(tool, "{}", runtime)
+    finally:
+        current_invocation.reset(token)
+    assert not result.ok and result.error_code == "database_failure"
+    assert result.mutation_committed is committed and result.uncertain is (committed is None)
+    assert result.metadata == {"database_write_phase": phase} and not result.retryable
+    backend.execute.assert_awaited_once()
+
+
+async def test_rolled_back_business_value_error_remains_business_error(database):
+    failure = ValueError("bad selected attachment")
+    failure.add_note("database_write_phase:execute")
+    failure.add_note("database_rollback:confirmed")
+    tools = AgentToolService(
+        settings=make_settings(database.url),
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+    )
+    tools.workspace_service = SimpleNamespace(execute=AsyncMock(side_effect=failure))
+    result = await tools.execute(
+        "save_conversation_attachment_to_workspace",
+        "{}",
+        ToolRuntime(
+            inbound=InboundMessage(
+                "trigger",
+                "message:private:normal",
+                ScopeType.PRIVATE,
+                SenderIdentity("1001"),
+                "file",
+                bot_user_id="8000",
+            )
+        ),
+    )
+    assert (
+        result.error_code == "ValueError"
+        and result.mutation_committed is False
+        and not result.uncertain
+    )

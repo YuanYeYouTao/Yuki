@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 
@@ -196,68 +196,77 @@ class SandboxTaskRepository:
                 "external_run_id": event["run_id"],
             }
         )
-        async with self.database.immediate_session() as session:
-            task = (
+        wait_repository = WorkWaitRepository(WorkRepository(self.database))
+        statement = select(
+            SandboxTaskRunModel.run_id,
+            SandboxTaskRunModel.source_conversation_id,
+            func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id").label("peer_id"),
+            func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").label("work_id"),
+            func.json_extract(SandboxTaskRunModel.source_json, "$.generation").label("generation"),
+        ).where(SandboxTaskRunModel.request_id == event["request_id"])
+        while True:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                observed = (await reader.execute(statement)).first()
+                if observed is None:
+                    raise ValueError("unknown_external_agent_request")
+                prepared_wait = await wait_repository.prepare_external_action(
+                    reader, observed.work_id
+                )
+            async with self.database.immediate_session() as session:
+                task = (await session.execute(statement)).first()
+                if task != observed or not await wait_repository.external_action_current(
+                    session, observed.work_id, prepared_wait
+                ):
+                    # No mutation yet: prepare the current original callback and
+                    # wait selection after this empty writer has exited.
+                    continue
+                if task is None:
+                    raise ValueError("unknown_external_agent_request")
+                if task.peer_id != event["peer_id"]:
+                    raise ValueError("external_agent_event_peer_mismatch")
+                if task.run_id not in (None, event["run_id"]):
+                    raise ValueError("external_agent_event_run_mismatch")
                 await session.execute(
-                    select(
-                        SandboxTaskRunModel.run_id,
-                        SandboxTaskRunModel.source_conversation_id,
-                        func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id").label(
-                            "peer_id"
-                        ),
-                        func.json_extract(SandboxTaskRunModel.source_json, "$.work_id").label(
-                            "work_id"
-                        ),
-                        func.json_extract(SandboxTaskRunModel.source_json, "$.generation").label(
-                            "generation"
-                        ),
-                    ).where(SandboxTaskRunModel.request_id == event["request_id"])
+                    update(SandboxTaskRunModel)
+                    .where(SandboxTaskRunModel.request_id == event["request_id"])
+                    .values(run_id=event["run_id"])
                 )
-            ).first()
-            if task is None:
-                raise ValueError("unknown_external_agent_request")
-            if task.peer_id != event["peer_id"]:
-                raise ValueError("external_agent_event_peer_mismatch")
-            if task.run_id not in (None, event["run_id"]):
-                raise ValueError("external_agent_event_run_mismatch")
-            await session.execute(
-                update(SandboxTaskRunModel)
-                .where(SandboxTaskRunModel.request_id == event["request_id"])
-                .values(run_id=event["run_id"])
-            )
-            owner = (
-                (await session.execute(select(work).where(work.c.id == task.work_id)))
-                .mappings()
-                .first()
-            )
-            if owner is None or owner["state"] in TERMINAL:
-                return
-            generation = await session.scalar(
-                select(CanonicalConversationModel.generation).where(
-                    CanonicalConversationModel.id == task.source_conversation_id
+                owner = (
+                    (await session.execute(select(work).where(work.c.id == task.work_id)))
+                    .mappings()
+                    .first()
                 )
-            )
-            if generation != task.generation or generation != owner["generation"]:
-                return
-            created = await session.scalar(
-                insert(inputs)
-                .values(
-                    conversation_id=owner["conversation_id"],
-                    generation=owner["generation"],
-                    source_key=f"acp-permission:{event['peer_id']}:{event['event_id']}",
-                    work_id=owner["id"],
-                    kind="control",
-                    ready=True,
-                    payload_json=payload,
-                    created=datetime.now(UTC).timestamp(),
+                if owner is None or owner["state"] in TERMINAL:
+                    return
+                generation = await session.scalar(
+                    select(CanonicalConversationModel.generation).where(
+                        CanonicalConversationModel.id == task.source_conversation_id
+                    )
                 )
-                .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
-                .returning(inputs.c.id)
-            )
-            if created is not None:
-                await WorkWaitRepository(WorkRepository(self.database)).signal_external_action(
-                    session, owner["id"], event["run_id"]
+                if generation != task.generation or generation != owner["generation"]:
+                    return
+                created = await session.scalar(
+                    insert(inputs)
+                    .values(
+                        conversation_id=owner["conversation_id"],
+                        generation=owner["generation"],
+                        source_key=f"acp-permission:{event['peer_id']}:{event['event_id']}",
+                        work_id=owner["id"],
+                        kind="control",
+                        ready=True,
+                        payload_json=payload,
+                        created=datetime.now(UTC).timestamp(),
+                    )
+                    .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
+                    .returning(inputs.c.id)
                 )
+                if created is not None:
+                    await wait_repository.signal_external_action(
+                        session, owner["id"], event["run_id"], prepared=prepared_wait
+                    )
+
+            return
 
     async def bind_run(self, request_id: str, run_id: str) -> None:
         """Keep a returned/rediscovered Manager identity without changing the source."""

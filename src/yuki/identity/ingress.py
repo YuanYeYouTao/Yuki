@@ -212,9 +212,31 @@ class CanonicalIngressResolver:
             # Only missing target identity/Conversation/alias needs admission.
             # Every route/owner is resolved again from the writer's current rows.
             async with self._database.immediate_session() as writer:
-                return await self._admit(
-                    writer, bot, message, recovered=recovered, allow_write=True
+                result = await self._admit(
+                    writer, bot, message, recovered=recovered, allow_write=True, render_reply=False
                 )
+            if isinstance(result, IngressPreAdmit) and not result.dropped:
+                reply_id = result.message.reply_to_event_id
+                if reply_id is not None:
+                    from yuki.persistence.repository_helpers import _event_record
+
+                    async with self._database.read_session() as reader:
+                        original = await reader.get(ChatEventModel, reply_id)
+                        if (
+                            original is not None
+                            and original.canonical_conversation_id == result.conversation_id
+                        ):
+                            reply = _event_record(original)
+                            result = replace(
+                                result,
+                                message=replace(
+                                    result.message,
+                                    reply_text=reply.perceived_content,
+                                    reply_segments=reply.segments,
+                                    reply_mentions=(),
+                                ),
+                            )
+            return result
 
     async def _admit(
         self,
@@ -224,6 +246,7 @@ class CanonicalIngressResolver:
         *,
         recovered: _ColdIngressRecovery | None = None,
         allow_write: bool = False,
+        render_reply: bool = True,
     ) -> IngressPreAdmit | _ColdIngressRecovery:
         if bot is None:
             return _drop("no_ingress_connection", message)
@@ -525,7 +548,7 @@ class CanonicalIngressResolver:
             canonical_reply_to_yuki=reply_to_yuki,
             canonical_reply_author_kind=reply_author_kind,
         )
-        if reply_event_id is not None:
+        if reply_event_id is not None and render_reply:
             from yuki.persistence.repository_helpers import _event_record
 
             original_reply = await session.get(ChatEventModel, reply_event_id)

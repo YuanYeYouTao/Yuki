@@ -153,6 +153,7 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         database_failure = (
             classify_failure(cause, "journal")
             if isinstance(cause, (SQLAlchemyError, sqlite3.Error))
+            or (cause is not None and write_failure_phase(cause) is not None)
             else None
         )
         return RuntimeFailure(
@@ -169,8 +170,13 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure(
             exc.code,
             "context" if exc.code == "work_journal_source_changed" else stage,
-            exc.code in {"work_journal_source_changed", "work_activation_interrupted"},
-            diagnostics={"category": "work_conflict"},
+            exc.code in {"work_journal_source_changed", "work_activation_interrupted"}
+            and (phase is None or committed is False),
+            certainty=certainty,
+            diagnostics={
+                "category": "work_conflict",
+                **({"database_write_phase": phase} if phase is not None else {}),
+            },
         )
     # An exact Presence lookup can fail before any gateway call when its live
     # connection drops. Restart the original activation after reconnection;
@@ -199,4 +205,9 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
             ),
             diagnostics=exc.diagnostics,
         )
-    return RuntimeFailure(type(exc).__name__, stage)
+    return RuntimeFailure(
+        type(exc).__name__,
+        stage,
+        certainty=certainty,
+        diagnostics={"database_write_phase": phase} if phase is not None else {},
+    )

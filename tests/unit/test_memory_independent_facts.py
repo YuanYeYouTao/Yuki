@@ -3,6 +3,7 @@
 import asyncio
 import sqlite3
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from tests.unit.test_memory_mutation import _context, _event, _service
@@ -135,3 +136,50 @@ async def test_upgrade_preserves_rows_and_allows_independent_same_key(tmp_path, 
         assert db.execute(
             "SELECT COUNT(*) FROM memory_facts WHERE memory_key='same-key'"
         ).fetchone() == (2,)
+
+
+async def test_delete_preference_checks_new_same_key_without_loading_evidence(
+    database, monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import event
+
+    from yuki.memory.repository import MemoryFactRepository
+    from yuki.memory.service import MemoryFactService
+
+    repository = MemoryFactRepository(database)
+    facts = MemoryFactService(repository)
+    await facts.set_preference("1001", "original-key", "first independent fact")
+    original_writer = database.immediate_session
+    prepare = repository.prepare_evidence_rows
+    held, changed = False, False
+
+    async def evidence(*args, **kwargs):
+        assert not held, "delete preference must only read exact candidate IDs in its writer"
+        return await prepare(*args, **kwargs)
+
+    @asynccontextmanager
+    async def phantom_before_admission():
+        nonlocal changed
+        if not changed:
+            changed = True
+            await facts.set_preference("1001", "original-key", "new independent same-key fact")
+        async with original_writer() as writer:
+            yield writer
+
+    def started(_connection, _cursor, statement, *_args):
+        nonlocal held
+        if changed and statement.lstrip().upper().startswith("BEGIN IMMEDIATE"):
+            held = True
+
+    monkeypatch.setattr(repository, "prepare_evidence_rows", evidence)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(database, "immediate_session", phantom_before_admission)
+        event.listen(database.engine.sync_engine, "before_cursor_execute", started)
+        try:
+            with pytest.raises(ValueError, match="multiple facts"):
+                await facts.delete_preference("1001", "original-key")
+        finally:
+            event.remove(database.engine.sync_engine, "before_cursor_execute", started)
+    assert len(await facts.list_preferences("1001")) == 2

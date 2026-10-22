@@ -100,3 +100,45 @@ async def test_locked_fails_original_work_without_resetting_paid_budget(database
         ).one()
     assert json.loads(row[0])["code"] == "sqlite_locked"
     assert row[1] == 0
+
+
+@pytest.mark.parametrize("committed", [True, None])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_non_sqlalchemy_ack_preserves_original_phase_through_journal(committed, wrapped):
+    from yuki.runtime.work_journal import JournalUnavailable
+
+    original = OSError("driver acknowledgement lost")
+    original.add_note(
+        "database_write_phase:cleanup" if committed else "database_write_phase:commit"
+    )
+    if committed:
+        original.add_note("database_commit:confirmed")
+    error = original
+    if wrapped:
+        error = JournalUnavailable("work_journal_unavailable")
+        error.__cause__ = original
+    failure = classify_failure(error)
+    assert failure.certainty == ("committed" if committed else "unknown")
+    assert failure.diagnostics == {"database_write_phase": "cleanup" if committed else "commit"}
+    assert not failure.retryable
+
+
+@pytest.mark.parametrize("committed", [True, None, False])
+def test_work_conflict_preserves_actual_transaction_outcome(committed):
+    from yuki.runtime.work_repository import WorkConflict
+
+    error = WorkConflict("work_journal_source_changed")
+    error.add_note(
+        "database_write_phase:execute"
+        if committed is False
+        else "database_write_phase:cleanup"
+        if committed
+        else "database_write_phase:commit"
+    )
+    if committed is not None:
+        error.add_note("database_commit:confirmed" if committed else "database_rollback:confirmed")
+    failure = classify_failure(error)
+    assert (
+        failure.certainty == {True: "committed", False: "not_committed", None: "unknown"}[committed]
+    )
+    assert failure.retryable is (committed is False)

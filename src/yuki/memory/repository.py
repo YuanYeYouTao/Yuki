@@ -25,6 +25,7 @@ from yuki.memory.enums import (
     MemoryFactRelationType,
     MemoryInvalidationReason,
     MemoryJobStatus,
+    MemoryKind,
     MemoryProcessingSource,
     MemoryRebuildJobOutcome,
     MemoryReviewState,
@@ -367,12 +368,19 @@ class MemoryFactRepository:
             scopes.append((selected, rows))
             identities.update(value for row in rows for value in (row[1], row[2]))
         await self.prepare_evidence_rows(tuple(sorted(identities)), session=session)
+        copies: dict[object, PreparedEvidenceCopy] = {}
+        bundles: dict[tuple[int, ...], tuple[MemoryEvidenceCreate, ...]] = {}
+        session.info["memory_evidence_copies"] = copies
+        session.info["memory_dream_evidence_bundles"] = bundles
         return PreparedMemoryEvidence(
             tuple(sorted(identities)),
-            dict(session.info["memory_evidence_rows"]),
-            session.info.setdefault("memory_evidence_copies", {}),
+            {
+                identity: session.info["memory_evidence_rows"][identity]
+                for identity in sorted(identities)
+            },
+            copies,
             tuple(scopes),
-            session.info.setdefault("memory_dream_evidence_bundles", {}),
+            bundles,
             [],
         )
 
@@ -557,6 +565,40 @@ class MemoryFactRepository:
             session, conditions, order_by=order, limit=max(1, limit) if limit is not None else None
         )
         return await project_memory_fact_rows(session, rows)
+
+    async def preference_ids(
+        self,
+        user_id: str,
+        key: str,
+        *,
+        person_id: str | None,
+        session: AsyncSession,
+    ) -> tuple[int, ...]:
+        """Read only the exact current candidates needed to detect an ambiguous key."""
+        query = MemoryFactQuery(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id=user_id,
+            canonical_subject_person_id=person_id,
+            kind=MemoryKind.PREFERENCE,
+        )
+        return tuple(
+            await session.scalars(
+                select(MemoryFactModel.id)
+                .where(
+                    MemoryFactModel.scope_type == MemoryScopeType.PERSON.value,
+                    *(await self._query_identity_conditions(session, query)),
+                    MemoryFactModel.kind == MemoryKind.PREFERENCE.value,
+                    MemoryFactModel.memory_key == key,
+                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                    MemoryFactModel.review_state != "quarantined",
+                    or_(
+                        MemoryFactModel.valid_until.is_(None),
+                        MemoryFactModel.valid_until > datetime.now(UTC),
+                    ),
+                )
+                .limit(2)
+            )
+        )
 
     async def get_fact(
         self,

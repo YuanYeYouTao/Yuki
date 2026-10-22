@@ -49,6 +49,8 @@ Rebuild 每个 source 的 staging 仍一次提交全部 proposals+item；采用�
 - 固定 selector ID 后新增同 key 事实、独立并发准备 3 passed。
 - `ruff check` Memory 产品通过；`mypy src/yuki/memory` 已通过（仅 pyproject 原 unused-section 提示）。
 - 最后一处 enqueue 改为 writer 内按当前事件资格和原 identity 核验、不加载正文，定向 21 passed；避免将不相关派生正文变化作为 queue 拒绝条件。
+- 最后删除偏好空结果保留只读快路，在另一 writer 已持有时直接返回；writer-boundaries 2 passed、independent facts 2 passed。
+- 独立 `.cache/mypy-memory-b` 的 Memory 全域检查通过；共享 cache 的一次 mypy INTERNAL 未当作产品错误，未删除共享缓存。quiet/control 19 项在 public sessions 删除后再次通过。
 - 三轮实现后交叉审查继续由主任务汇总；这里不把尚未完成的复审写成已验收。
 
 旧 BUSY_SNAPSHOT 专属注入已迁成真实 reader 准备后、writer admission 前的交错。未知提交测试仍核实际原回执；不在已持共享 writer 的 hook 中同步等待另一个 writer。

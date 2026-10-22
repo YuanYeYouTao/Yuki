@@ -239,7 +239,7 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(
         from tests.support.memory_identity import transfer_account
 
         await transfer_account(database, "1001")
-    await database.close()
+    await database.engine.dispose()
 
     def no_new_model(_request):
         raise AssertionError("the original paid preview must be reused after cold restore")

@@ -54,6 +54,7 @@ from yuki.memory.enums import (
 from yuki.memory.models import MemoryEntityTarget, MemoryEvidenceCreate
 from yuki.memory.service import MemoryFactService
 from yuki.memory.validation import normalize_memory_text
+from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -1518,6 +1519,8 @@ class _AgentFacade:
                 resume=(lease, {"text": "[原插件补充资料；不改变执行权限]\n" + text}),
             )
         except WorkConflict as exc:
+            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+                raise
             return PluginResult(ok=False, error_code="work_input_conflict", detail=str(exc))
         finally:
             await repository.release(lease)

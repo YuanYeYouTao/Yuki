@@ -17,7 +17,7 @@
 | 通知 / 文件 | W38–W41/W70/W71；V34/V35/V41/V44/V45 | ledger + finish_outbox 同 writer；四个 supplied ledger 消费者显式 prepare_append；media create 按原 handle 确认，只有确认回滚才 unlink。媒体按 128 个真实候选分页，失败 unlink 不遮挡后页。未知且无登记的文件保留，见下文边界。 |
 | 授权 / 反馈 | W35/W44；V21/V42/V46 | MemoryAdmin 显式 prepare_write、同 writer 复用授权；ClientLink 采用原 request ID 的账号认领准备。反馈完整只读准备，writer 只核本页见证、原 Work/seq/privacy；迟到真实效果阻止过时 no_reply。 |
 | SELF 前台退让 | W49；V46/V47 | 合入旧 quiet 工作区三处精确补丁：executor、main_agent_turns、processor，保同一个活动计数和 best-effort slot。四个 quiet priority 测试通过。Self service/worker 与配置由 B、root 负责。 |
-| 全域验证与三轮复审 | W62–W64；V01–V50 的本域场景 | 第一轮实现与定向自检已完成；宽回归修复后复跑中。三轮全范围交叉复审由 root 待各域收束后轮转，目前未完成，不把定向自检算作三轮。 |
+| 全域验证与三轮复审 | W62–W64；V01–V50 的本域场景 | 第一轮实现与定向自检已完成；宽回归修复后 1215 passed / 36 skipped。三轮全范围交叉复审由 root 待各域收束后轮转，目前未完成，不把定向自检算作三轮。 |
 
 本次不运行真实模型、生产库或平台消息。用户认可当前延迟，性能目标是保交互速度；前后数据
 须用同样到达负载和固定模型/传输行为，不能只以 BUSY 减少或检查项数量称提速。
@@ -69,7 +69,8 @@ FIFO。源码中它们的连接、锁与文件生命周期保留原职责；没�
 | Work owner/compact/delivery/subagent/ACP 七文件 | 109 passed |
 | Work scope/input/protocol/new source/ACP 六文件 | 93 passed |
 | Social concurrency/integrity + Work input/settlement + new source + ACP | 102 passed |
-| 113 文件宽回归初次 | 1250 collected：1187 passed、31 failed、32 skipped；所有失败已定位并修正，最终复跑仍在进行 |
+| 113 文件宽回归初次 | 1250 collected：1187 passed、31 failed、32 skipped；所有失败已定位并修正，最终复跑见下一行 |
+| 113 文件宽回归复验 | 1215 passed、36 skipped、26 warnings，524.70s；新 feedback phantom 场景计入，large subagent result 竞争另单独 1 passed |
 
 宽回归发现的旧测试假设也已具体修改：`Database.close()` 现在是最终停止 owner，测试若
 只要断开连接池再复用同一批服务，使用 `engine.dispose()`；真正生命周期测试不改。
@@ -78,5 +79,5 @@ FIFO。源码中它们的连接、锁与文件生命周期保留原职责；没�
 明确跳过，既有 native Monty、Unix socket 和安全 FD 用例仍按真实环境要求跳过。
 
 本域产品 Ruff 与 compileall 已通过。首次 Windows mypy 的 POSIX 平台属性告警单独识别，
-并修正本次反馈 proof 新增的三处类型问题；Linux 目标类型检查正在运行。性能比较由 root
+并修正本次反馈 proof 新增的三处类型问题；Linux 目标本域类型检查已通过。性能比较由 root
 以同样负载在基线独立 checkout 和当前分支运行，本文尚无延迟结论。

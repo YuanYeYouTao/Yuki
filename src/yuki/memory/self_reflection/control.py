@@ -292,7 +292,7 @@ class ReflectionControlRepository:
                     select(ChatEventModel.id).where(
                         ChatEventModel.id == source_event_id,
                         ChatEventModel.canonical_conversation_id == conversation_id,
-                    ChatEventModel.canonical_event_id == source_identity,
+                        ChatEventModel.canonical_event_id == source_identity,
                     )
                 )
                 is None

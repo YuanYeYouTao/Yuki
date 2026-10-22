@@ -5,7 +5,7 @@ import io
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -363,3 +363,125 @@ async def test_completed_owned_read_survives_natural_expiry(plugin_media, monkey
     finally:
         release.set()
         await asyncio.gather(reading, return_exceptions=True)
+
+
+async def test_concurrent_publications_recheck_the_original_storage_quota(
+    database, plugin_media, monkeypatch
+):
+    import yuki.plugin_host.media_artifacts as media_module
+
+    env = plugin_media
+    publish = media_module._atomic_write
+    ready = Barrier(2)
+
+    def publish_together(*args):
+        publish(*args)
+        ready.wait(5)
+
+    monkeypatch.setattr(media_module, "_atomic_write", publish_together)
+    results = await asyncio.gather(
+        *(
+            env.store.create(
+                plugin_id=env.plugin,
+                data=env.content + b"x" * 600_000,
+                content_type="image/png",
+                filename=f"concurrent-{index}.png",
+                ttl_seconds=60,
+                storage_mb=1,
+            )
+            for index in range(2)
+        ),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(item, PluginPermissionError) for item in results) == 1
+    assert len(tuple(env.path.parent.glob("*-concurrent-*.png"))) == 1
+    async with database.read_session() as reader:
+        rows = tuple(await reader.scalars(select(PluginMediaArtifactModel)))
+    assert len(rows) == 2 and sum(row.byte_size for row in rows) <= 1024 * 1024
+
+
+async def test_publication_expiring_in_writer_queue_is_not_registered(
+    database, plugin_media, monkeypatch
+):
+    import yuki.plugin_host.media_artifacts as media_module
+
+    env = plugin_media
+    clock = SimpleNamespace(now=datetime.now(UTC))
+    published = asyncio.Event()
+    publish = media_module._write_artifact
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock.now if tz is not None else clock.now.replace(tzinfo=None)
+
+    async def notify_publication(*args):
+        await publish(*args)
+        published.set()
+
+    monkeypatch.setattr(media_module, "datetime", Clock)
+    monkeypatch.setattr(media_module, "_write_artifact", notify_publication)
+    async with database.immediate_session():
+        creating = asyncio.create_task(
+            env.store.create(
+                plugin_id=env.plugin,
+                data=env.content,
+                content_type="image/png",
+                filename="expired-in-queue.png",
+                ttl_seconds=60,
+                storage_mb=1,
+            )
+        )
+        async with asyncio.timeout(5):
+            await published.wait()
+        clock.now += timedelta(seconds=61)
+    with pytest.raises(PluginPermissionError, match="already expired"):
+        await creating
+    assert not tuple(env.path.parent.glob("*-expired-in-queue.png"))
+    async with database.read_session() as reader:
+        assert len(tuple(await reader.scalars(select(PluginMediaArtifactModel)))) == 1
+
+
+async def test_cancelled_publication_joins_original_file_worker_before_cleanup(
+    database, plugin_media, monkeypatch
+):
+    import yuki.plugin_host.media_artifacts as media_module
+
+    env = plugin_media
+    publish = media_module._atomic_write
+    started = asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    def held_publication(*args):
+        publish(*args)
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5), "test must release the original file worker"
+
+    monkeypatch.setattr(media_module, "_atomic_write", held_publication)
+    creating = asyncio.create_task(
+        env.store.create(
+            plugin_id=env.plugin,
+            data=env.content,
+            content_type="image/png",
+            filename="cancelled-original.png",
+            ttl_seconds=60,
+            storage_mb=1,
+        )
+    )
+    try:
+        async with asyncio.timeout(5):
+            await started.wait()
+        creating.cancel()
+        await asyncio.sleep(0)
+        creating.cancel()
+        await asyncio.sleep(0)
+        assert not creating.done()
+        assert len(tuple(env.path.parent.glob("*-cancelled-original.png"))) == 1
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await creating
+    assert not tuple(env.path.parent.glob("*-cancelled-original.png"))
+    async with database.read_session() as reader:
+        assert len(tuple(await reader.scalars(select(PluginMediaArtifactModel)))) == 1

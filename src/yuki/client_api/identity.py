@@ -44,7 +44,7 @@ from yuki.identity.person_identity import (
     same_person_id,
 )
 from yuki.persistence.command_receipts import CommandReceiptRepository, aware
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 
 if TYPE_CHECKING:
     from yuki.identity.routing import PresenceRouter
@@ -734,7 +734,9 @@ class ClientIdentityService:
                             session=writer,
                             prepared=prepared,
                         )
-                except PersonMergePreparationChanged:
+                except PersonMergePreparationChanged as exc:
+                    if write_failure_committed(exc) is not False:
+                        raise
                     continue
         if prepared is None:
             raise ValueError("account_claim_preparation_required")

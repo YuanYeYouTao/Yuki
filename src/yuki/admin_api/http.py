@@ -21,7 +21,7 @@ from yuki.admin.queries import AdminQueries
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
-from yuki.client_api.http_errors import install_identity_errors
+from yuki.client_api.http_errors import install_identity_errors, unknown_write_response
 from yuki.client_api.identity import ClientIdentityService
 from yuki.client_api.models import (
     CharacterProfile,
@@ -610,6 +610,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         }
 
     async def domain_error(_request: Any, exc: Any) -> JSONResponse:
+        unknown = unknown_write_response(exc)
+        if unknown is not None:
+            return unknown
         code = exc.problem.code
         status = {
             ProblemCode.UNAUTHENTICATED: 401,
@@ -621,6 +624,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return JSONResponse({"problem": {"code": code.value}}, status_code=status)
 
     async def plugin_error(_request: Any, exc: Any) -> JSONResponse:
+        unknown = unknown_write_response(exc)
+        if unknown is not None:
+            return unknown
         code = (
             exc.category
             if isinstance(exc, (PluginConfigurationError, ConfigFileError))

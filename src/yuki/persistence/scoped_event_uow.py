@@ -105,6 +105,51 @@ class NewGenerationResult:
 class _DerivedTextUpdate:
     event: EventRecord
     source_token: tuple[Any, ...] | None
+    event_values: tuple[Any, ...]
+
+
+_DERIVED_EVENT_FIELDS = (
+    "id",
+    "bot_user_id",
+    "platform_message_id",
+    "scope_type",
+    "sender_user_id",
+    "sender_nickname",
+    "sender_group_card",
+    "direction",
+    "content",
+    "visual_summary",
+    "audio_transcript",
+    "segments_json",
+    "occurred_at",
+    "observed_at",
+    "group_id",
+    "private_peer_user_id",
+    "reply_to_message_id",
+    "reply_to_event_id",
+    "origin",
+    "automation_id",
+    "automation_run_id",
+    "event_kind",
+    "source_plugin_id",
+    "external_source",
+    "external_event_key",
+    "external_event_type",
+    "external_payload_json",
+    "canonical_conversation_id",
+    "canonical_event_id",
+    "author_kind",
+    "author_person_id",
+    "author_presence_id",
+    "author_account_id",
+    "ingress_presence_id",
+    "suppression_status",
+    "caused_by_event_id",
+)
+
+
+def _derived_event_values(row: ChatEventModel) -> tuple[Any, ...]:
+    return tuple(getattr(row, key) for key in _DERIVED_EVENT_FIELDS)
 
 
 def _derived_source_token(conversation: CanonicalConversationModel) -> tuple[Any, ...]:
@@ -478,6 +523,7 @@ class ScopedEventLedgerUnitOfWork:
             return _DerivedTextUpdate(
                 _event_record(row),
                 _derived_source_token(conversation) if conversation is not None else None,
+                _derived_event_values(row),
             )
 
     async def _set_derived_text(
@@ -522,7 +568,7 @@ class ScopedEventLedgerUnitOfWork:
                 if audio and row.audio_transcript:
                     return row.audio_transcript == normalized
                 if (
-                    _event_record(row) != prepared.event
+                    _derived_event_values(row) != prepared.event_values
                     or (_derived_source_token(conversation) if conversation is not None else None)
                     != prepared.source_token
                 ):
@@ -1132,7 +1178,7 @@ class ScopedEventLedgerUnitOfWork:
         if conversation is None:
             raise CanonicalIdentityError("unclassified")
         return ScopedAppendResult(
-            event=_event_record(row),
+            event=_event_record(row, segments=segments, external_payload=external_payload),
             scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
             created=True,
         )

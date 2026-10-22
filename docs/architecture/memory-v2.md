@@ -119,7 +119,7 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   后台 Memory 种子扫描、分页游标和无 ID 候选枚举已删除，主 Agent 的按需查询、自省、Dream 与真实 SELF 来源解析保留。
   内部证据聚合读取全部可读来源，不以固定条数截断历史尾部；原始 confidence/authority
   和来源资格保留。无消费者的完整 lineage 装配入口已删除，原 operation/result/source 账本保留。
-  Memory mutation、Dream 与维护先用 `Database.read_session()` 的显式只读 BEGIN
+  Memory mutation 与 Dream 先用 `Database.read_session()` 的显式只读 BEGIN
   准备实际证据、复制目标和两跳关系，再关闭 reader，进入统一 FIFO 的 `immediate_session()`。
   writer 在取得连接前排队，不把 reader 升级为 writer，也不再由 Memory 自己重试 BUSY。
   当前事务重新核验原证据 ID/字段、来源资格、复制目标与关系成员，不能只比较条数或 fact.updated_at。
@@ -127,7 +127,10 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   同一归并集合用于当前人物权限，原 raw owner、来源和指纹保持原件。
   事实、证据、状态事件与原 mutation/operation/request 回执一次提交；未知提交先读原回执，
   不重跑模型或外部效果，取消继续传播，embedding 调度在提交后。
-  Dream 操作失败先核对原 cluster 的 committed operation 回执，保留实际提交计数和累计预算。
+  偏好按键删除、到期维护只依赖当前小列与关系 SQL，直接在短 writer 处理；不准备证据正文。
+  到期候选写时仍须处于 active/contested 且已到期，不能覆盖发现后形成的 superseded 状态。
+  Dream 操作失败先核对原 cluster 的 committed operation 或 applied preview 回执，
+  空 actions 同样按已应用的原结果恢复，保留实际提交计数和累计预算。
   已保存的 ReflectionCheckpoint 与匹配来源指纹的 Dream ready preview 可继续纯数据库收尾；
   模型额度只约束新的实际 Provider 请求，不阻止原已付结果提交。没有保存的输出不能凭 usage
   重建；未决提交不授予重放资格。
@@ -135,6 +138,10 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   账号换绑本身不改写原 canonical owner，也不单独增加旧计划的拒绝条件。
   Dream 将实际模型输入、选中证据身份与内容及 canonical 分区纳入输入指纹，持久 preview
   复用同一指纹；读阶段核模型输入，writer 复核对应实际来源，证据数量不变不能证明原来源有效。
+  正常运行的新模型输出也先写入现有 ready preview，再按原输入提交；准备或写入失败后复用
+  该原件，不重新购买模型结果。应用精确对应原 preview 身份，与事实变更一起标为 applied。
+  临时工具回执清理保留现存 ReflectionCheckpoint 的 tool_map 实际引用，未写完的普通自省
+  不会因回执到期丢掉已付输出的来源；解除引用后按原到期规则清理。
   准备材料仅供本次领域提交消费，提交或回滚后释放，不增加持久 revision 或事实源。
   后续写入只累计实际新增证据；版本复制同时批量核验原来源与新目标资格，批量插入后
   更新临时计数，写入期间不重新扫描历史。必要的主键、状态、来源／owner 最终
@@ -162,6 +169,9 @@ Hygiene 因缺少有效来源失效的 fact 使用 `invalid_provenance`，与状
 
 Rebuild 提案保存经原 Claim 校验的 canonical Person/Space 目标，第三方目标不等于来源作者。人物遗忘的默认和显式装配都在同一 WAL 读快照准备完整人物族、原账号时段、实际相关源和 selection，
 再进入短 writer 核对实际相关 selection 集合、原 JSON 与来源后清退；包含新匹配行的复核，不以全库隐私 token 或无关 run 变化拒绝写入。
+每次抽取的 proposals、item 与 usage 一次暂存，失败收尾只处理原 extracting 状态，不能把已暂存结果
+改回 pending。最终 receipt sweep 在 writer 核原正文、ASR、segments 等实际输入字段，不能仅凭
+source hash、数量或会话身份推进完成。
 删除覆盖无 Binding 的归并人物，跨平台同号或账号后来的其他真人不扩大删除范围。
 Sandbox 的原私有任务和 continuation 随实际来源清退；其他作者的引用断开但正文保留。
 退役的 SELF 候选保留历史读取；显式遗忘按实际事件和证据引用清退相关候选正文，

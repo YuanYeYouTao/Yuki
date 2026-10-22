@@ -104,7 +104,7 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
 
     activate(settings, path, name="Aurora", soul="新人格{{name}}", revision=2)
     assert "Aurora" in initial()[0].content
-    await database.close()
+    await database.engine.dispose()
     recovered = WorkControl(
         probe.repository, control.lease, control.source_key, control.source, control.validate
     )
@@ -167,7 +167,7 @@ async def test_hot_soul_edit_keeps_lost_paid_dispatch_unknown(database, tmp_path
     original = deepcopy(probe.provider.requests)
     control = probe.control
     activate(settings, path, name="Aurora", soul="新人格{{name}}", revision=2)
-    await database.close()
+    await database.engine.dispose()
     recovered = WorkControl(
         probe.repository, control.lease, control.source_key, control.source, control.validate
     )
@@ -210,7 +210,7 @@ async def test_paired_work_new_business_activation_uses_new_soul(database, tmp_p
     assert original["state"] == "queued" and saved["phase"] == "paired"
     original_requests = deepcopy(provider.requests)
     activate(harness.settings, path, name="Aurora", soul="新人格{{name}}", revision=2)
-    await database.close()
+    await database.engine.dispose()
 
     def finish(request):
         assert "Aurora" in request.messages[0].content

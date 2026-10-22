@@ -134,7 +134,8 @@ async def _scene(
             SimpleNamespace(
                 continuation_for_event=continuation_for_event,
                 binding_for_event=binding_for_event,
-                continuation_current=AsyncMock(return_value=True),
+                prepare_continuation=AsyncMock(),
+                continuation_matches=AsyncMock(return_value=True),
                 on_ordinary_admitted=AsyncMock(),
             )
         )

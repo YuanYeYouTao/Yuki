@@ -342,6 +342,21 @@ class DreamService:
                 run=run,
                 cluster=cluster,
             )
+            preview_public_id = await self._repository.save_preview(
+                cluster_id=cluster.id,
+                source_fingerprint=input_fingerprint,
+                proposal=output,
+                model_calls=calls,
+                source_characters=sum(len(fact.content) for fact in facts),
+                output_characters=self._output_characters(output),
+            )
+            stored = await self._repository.ready_preview(
+                cluster_id=cluster.id,
+                source_fingerprint=input_fingerprint,
+                public_id=preview_public_id,
+            )
+            assert stored is not None
+            preview_id = stored[0]
         operation_public_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
         mutation_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
         async with self._facts.repository.database.read_session() as reader:

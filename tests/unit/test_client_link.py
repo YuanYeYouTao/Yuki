@@ -1,5 +1,6 @@
 """Link commands precede automatic identity creation and never become chat input."""
 
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -15,6 +16,7 @@ from yuki.client_api.db_models import ClientLinkCodeModel
 from yuki.domain.messages import MessageMention
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.services.client_link import ClientLinkCommands
@@ -166,3 +168,37 @@ async def test_connection_cannot_prove_possession_on_another_platform(database):
         assert await find_identity_binding(session, "45454545", platform="telegram") is None
         assert await find_identity_binding(session, "45454545", platform="qq") is None
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
+
+
+@pytest.mark.parametrize("committed", [True, None])
+async def test_link_does_not_reprepare_after_a_commit_acknowledgement_error(
+    database, monkeypatch, committed
+):
+    registry, bot, identities, target, code = await stack(database)
+    handler = ClientLinkCommands(identities, registry)
+    original_writer = database.immediate_session
+    calls = 0
+    error = CanonicalIdentityError("person_merge_preparation_changed")
+    error.add_note("database_write_phase:cleanup" if committed else "database_write_phase:commit")
+    if committed:
+        error.add_note("database_commit:confirmed")
+
+    @asynccontextmanager
+    async def lost_acknowledgement():
+        nonlocal calls
+        calls += 1
+        async with original_writer() as writer:
+            yield writer
+        # The physical commit happened; the caller cannot infer that from a
+        # preparation-change category carried by a failed acknowledgement.
+        raise error
+
+    monkeypatch.setattr(database, "immediate_session", lost_acknowledgement)
+    with pytest.raises(CanonicalIdentityError) as raised:
+        await handler.execute(
+            bot, _message(message_id="ack-lost", user_id="45454545", text=f"/ai link {code}")
+        )
+    assert raised.value is error and calls == 1
+    async with database.read_session() as reader:
+        assert (await find_identity_binding(reader, "45454545")).person_id == target
+        assert (await reader.scalar(select(ClientLinkCodeModel))).used_at is not None

@@ -1177,6 +1177,8 @@ class PresenceRouter:
         async with self._database.immediate_session() as session:
             if await session.get(PersonActiveRouteModel, person_id) is not None:
                 return "conflict"
+            if not await self._candidates_current(session, (winner,), person_id=person_id):
+                return "conflict"
             session.add(
                 PersonActiveRouteModel(
                     person_id=person_id,
@@ -1208,6 +1210,8 @@ class PresenceRouter:
                 if int(route.route_generation) != command_generation:
                     return "conflict"
             elif not _person_matches(route, observed):
+                return "conflict"
+            if not await self._candidates_current(session, unique, person_id=person_id):
                 return "conflict"
             if not unique:
                 # A gateway may reconnect a moment after its WebSocket closes.
@@ -1280,6 +1284,8 @@ class PresenceRouter:
         async with self._database.immediate_session() as session:
             if await session.get(SpaceActiveRouteModel, space_id) is not None:
                 return "conflict"
+            if not await self._candidates_current(session, (winner,), space_id=space_id):
+                return "conflict"
             session.add(
                 SpaceActiveRouteModel(
                     space_id=space_id,
@@ -1312,6 +1318,8 @@ class PresenceRouter:
                     return "conflict"
             elif not _space_matches(route, observed):
                 return "conflict"
+            if not await self._candidates_current(session, unique, space_id=space_id):
+                return "conflict"
             if not unique:
                 # Zero live candidates means temporary unavailability, not an
                 # operator pause. Preserve the route for the reconnecting Presence.
@@ -1338,6 +1346,62 @@ class PresenceRouter:
             route.revision += 1
             route.updated_at = now
             return "taken"
+
+    async def _candidates_current(
+        self,
+        session: AsyncSession,
+        candidates: list[RouteCandidate] | tuple[RouteCandidate, ...],
+        *,
+        person_id: str | None = None,
+        space_id: str | None = None,
+    ) -> bool:
+        """Keep a prepared route tied to its actual current account owners."""
+        if person_id is not None and await current_person_id(session, person_id) != person_id:
+            return False
+        for candidate in candidates:
+            binding = (
+                await session.get(IdentityBindingModel, candidate.binding_id)
+                if person_id is not None
+                else await session.get(SpaceBindingModel, candidate.binding_id)
+            )
+            presence = await session.get(PresenceModel, candidate.presence_id)
+            if (
+                binding is None
+                or binding.status != "active"
+                or binding.platform != candidate.platform
+                or presence is None
+                or not presence.enabled
+                or presence.platform != candidate.platform
+            ):
+                return False
+            if isinstance(binding, IdentityBindingModel):
+                assert person_id is not None
+                if (
+                    binding.external_account_id != candidate.external_target_id
+                    or not await same_person_id(session, binding.person_id, person_id)
+                    or not await session.scalar(
+                        select(current_person_enabled_condition(binding.person_id))
+                    )
+                ):
+                    return False
+            elif (
+                binding.space_id != space_id
+                or binding.external_space_id != candidate.external_target_id
+            ):
+                return False
+            try:
+                connection = self._registry.resolve_active(presence.id)
+                require_capability(
+                    connection, "send_private" if person_id is not None else "send_group"
+                )
+            except RegistryClosed:
+                return False
+            if (
+                connection.snapshot.platform != presence.platform
+                or connection.snapshot.external_account_id != presence.external_account_id
+            ):
+                return False
+        return True
 
     async def _provision_ingest_route(
         self,

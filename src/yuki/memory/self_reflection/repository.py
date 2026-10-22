@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from pydantic import TypeAdapter
-from sqlalchemy import and_, column, func, or_, select, update, values
+from sqlalchemy import and_, column, func, or_, select, text, update, values
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1403,6 +1403,16 @@ class SelfReflectionRepository:
                 MemoryToolReceiptModel.id >= Window.first_receipt_id,
                 MemoryToolReceiptModel.id <= Window.last_receipt_id,
                 MemorySelfReflectionRunModel.status != "completed",
+            )
+            .exists(),
+            ~select(MemorySelfReflectionRunModel.id)
+            .where(
+                MemorySelfReflectionRunModel.checkpoint_json.is_not(None),
+                text(
+                    "EXISTS (SELECT 1 FROM json_each("
+                    "memory_self_reflection_runs.checkpoint_json, '$.tool_map') AS source "
+                    "WHERE json_extract(source.value, '$.id') = memory_tool_receipts.id)"
+                ),
             )
             .exists(),
         )

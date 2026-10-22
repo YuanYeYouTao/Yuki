@@ -1310,38 +1310,24 @@ class MemoryFactService:
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
-            query = MemoryFactQuery(
-                scope_type=MemoryScopeType.PERSON,
-                subject_user_id=user_id,
-                canonical_subject_person_id=person_id,
-                kind=MemoryKind.PREFERENCE,
-            )
-            rows = await self._repository.list_facts(query, memory_key=key, limit=2)
-            if not rows:
-                return False
-            async with self.write_session(tuple(row.id for row in rows)) as writer:
+            async with self._repository.database.read_session() as reader:
+                if not await self._repository.preference_ids(
+                    user_id, key, person_id=person_id, session=reader
+                ):
+                    return False
+            async with self._repository.database.immediate_session() as writer:
                 return await self.delete_preference(
                     user_id, key, person_id=person_id, session=writer
                 )
-        rows = await self._repository.list_facts(
-            MemoryFactQuery(
-                scope_type=MemoryScopeType.PERSON,
-                subject_user_id=user_id,
-                canonical_subject_person_id=person_id,
-                kind=MemoryKind.PREFERENCE,
-            ),
-            memory_key=key,
-            limit=2,
-            session=session,
+        matches = await self._repository.preference_ids(
+            user_id, key, person_id=person_id, session=session
         )
-        matches = rows
         if not matches:
             return False
         if len(matches) != 1:
             raise ValueError("preference key matches multiple facts; select a fact ID")
-        row = matches[0]
         changed = await self._repository.transition(
-            row.id,
+            matches[0],
             status=MemoryStatus.INVALIDATED,
             conflict_state=MemoryConflictState.CLEAR,
             invalidated_reason=MemoryInvalidationReason.USER_RETRACTED,

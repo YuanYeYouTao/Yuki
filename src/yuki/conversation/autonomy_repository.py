@@ -12,13 +12,15 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
+from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.conversation.autonomy_binding import (
     AcceptedInitiative,
@@ -60,6 +62,13 @@ class AutonomyConflict(ValueError):
 class AdmissionResult:
     outcome: str
     run: AcceptedInitiative | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedInitiativeFeedback:
+    run: AcceptedInitiative
+    payload: str
+    source: ColumnElement[bool]
 
 
 def _json(value: Any) -> str:
@@ -631,6 +640,7 @@ class AutonomyRepository:
         effect_refs: tuple[str, ...] = (),
         considered_sources: tuple[InitiativeSource, ...] = (),
         session: AsyncSession | None = None,
+        prepared: PreparedInitiativeFeedback | None = None,
     ) -> AcceptedInitiative:
         """Commit a real host result exactly once, independent of current selector state.
 
@@ -639,29 +649,43 @@ class AutonomyRepository:
         receipts may append to a terminal run, but cannot change its settled state or
         dispatch it again. Identical replay is harmless.
         """
-        if sequence < 1 or outcome not in _OUTCOMES:
-            raise ValueError("initiative_feedback_invalid")
-        for refs in (actual_target_refs, effect_refs):
-            if any(not item for item in refs):
-                raise ValueError("initiative_feedback_refs_invalid")
-        if len(set(considered_sources)) != len(considered_sources):
-            raise ValueError("initiative_feedback_sources_invalid")
-        payload = _json(
-            {
-                "actual_targets": actual_target_refs,
-                "effects": effect_refs,
-                "considered_sources": _source_values(considered_sources),
-            }
-        )
-        async with _feedback_session(self._database, session) as session:
-            row = await session.get(InitiativeRunModel, run_id)
-            if row is None:
+        if prepared is None:
+            if session is not None:
+                raise ValueError("supplied_feedback_requires_preparation")
+            run = await self.get_run(run_id)
+            if run is None:
                 raise AutonomyConflict("initiative_run_missing")
+            prepared = self.prepare_feedback(
+                run,
+                sequence=sequence,
+                outcome=outcome,
+                actual_target_refs=actual_target_refs,
+                effect_refs=effect_refs,
+                considered_sources=considered_sources,
+            )
+        async with _feedback_session(self._database, session) as session:
+            if not await session.scalar(select(prepared.source)):
+                raise AutonomyConflict("initiative_feedback_source_changed")
+            row = await session.scalar(
+                select(InitiativeRunModel)
+                .options(
+                    load_only(
+                        InitiativeRunModel.id,
+                        InitiativeRunModel.state,
+                        InitiativeRunModel.feedback_sequence,
+                        InitiativeRunModel.updated_at,
+                    )
+                )
+                .where(InitiativeRunModel.id == run_id)
+            )
+            assert row is not None
             previous = await session.get(InitiativeFeedbackModel, (run_id, sequence))
             if previous is not None:
-                if previous.outcome != outcome or previous.payload_json != payload:
+                if previous.outcome != outcome or previous.payload_json != prepared.payload:
                     raise AutonomyConflict("initiative_feedback_replay_conflict")
-                return _run(row)
+                return replace(
+                    prepared.run, state=row.state, feedback_sequence=row.feedback_sequence
+                )
             active = row.state in _ACTIVE
             if not active and outcome == "running":
                 raise AutonomyConflict("initiative_run_terminal")
@@ -677,8 +701,81 @@ class AutonomyRepository:
                     run_id=run_id,
                     sequence=sequence,
                     outcome=outcome,
-                    payload_json=payload,
+                    payload_json=prepared.payload,
                     created_at=now,
                 )
             )
-            return _run(row)
+            return replace(prepared.run, state=row.state, feedback_sequence=row.feedback_sequence)
+
+    @staticmethod
+    def prepare_feedback(
+        run: AcceptedInitiative,
+        *,
+        sequence: int,
+        outcome: str,
+        actual_target_refs: tuple[str, ...] = (),
+        effect_refs: tuple[str, ...] = (),
+        considered_sources: tuple[InitiativeSource, ...] = (),
+    ) -> PreparedInitiativeFeedback:
+        if sequence < 1 or outcome not in _OUTCOMES:
+            raise ValueError("initiative_feedback_invalid")
+        for refs in (actual_target_refs, effect_refs):
+            if any(not item for item in refs):
+                raise ValueError("initiative_feedback_refs_invalid")
+        if len(set(considered_sources)) != len(considered_sources):
+            raise ValueError("initiative_feedback_sources_invalid")
+        payload = _json(
+            {
+                "actual_targets": actual_target_refs,
+                "effects": effect_refs,
+                "considered_sources": _source_values(considered_sources),
+            }
+        )
+        row = InitiativeRunModel
+        parts = func.json_each(row.sources_json).table_valued("value")
+        source_values = (
+            select(
+                func.json_group_array(
+                    func.json_array(
+                        func.json_extract(parts.c.value, "$.kind"),
+                        func.json_extract(parts.c.value, "$.source_id"),
+                        func.json_extract(parts.c.value, "$.revision"),
+                    )
+                )
+            )
+            .select_from(parts)
+            .correlate(row)
+            .scalar_subquery()
+        )
+        source = select(row.id).where(
+            row.id == run.run_id,
+            row.proposal_id == run.proposal_id,
+            row.conversation_id == run.conversation_id,
+            row.generation == run.generation,
+            row.space_id == run.space_id,
+            row.presence_id == run.presence_id,
+            row.controller_epoch == run.controller_epoch_at_acceptance,
+            row.owner == run.owner.value,
+            row.target_person_id.is_(run.target_person_id),
+            row.trigger_kind == run.trigger_kind,
+            row.thread_key.is_(run.thread_key),
+            source_values
+            == _json([(ref.kind.value, ref.source_id, ref.revision) for ref in run.sources]),
+            func.json(row.support_refs_json) == func.json(_json(run.support_refs)),
+        )
+        return PreparedInitiativeFeedback(run, payload, source.exists())
+
+    @staticmethod
+    async def feedback_run_current(
+        prepared: PreparedInitiativeFeedback, *, session: AsyncSession
+    ) -> bool:
+        row, run = InitiativeRunModel, prepared.run
+        return bool(
+            await session.scalar(
+                select(prepared.source).where(
+                    row.id == run.run_id,
+                    row.state == run.state,
+                    row.feedback_sequence == run.feedback_sequence,
+                )
+            )
+        )

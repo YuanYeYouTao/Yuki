@@ -989,11 +989,19 @@ class DreamRepository:
                         )
                     )
                 }
+                applied = set(
+                    await session.scalars(
+                        select(MemoryDreamClusterPreviewModel.cluster_id).where(
+                            MemoryDreamClusterPreviewModel.cluster_id.in_(identities),
+                            MemoryDreamClusterPreviewModel.status == "applied",
+                        )
+                    )
+                )
                 now = datetime.now(UTC)
                 for row in rows:
                     row.updated_at = now
                     count = int(committed.get(row.id, 0))
-                    if count:
+                    if count or row.id in applied:
                         row.status = DreamClusterStatus.COMPLETED.value
                         row.operation_count = count
                         row.error_category = "recovered_committed_operation"
@@ -1181,6 +1189,7 @@ class DreamRepository:
         cluster_id: int,
         source_fingerprint: str,
         compatible_fingerprints: frozenset[str] = frozenset(),
+        public_id: str | None = None,
     ) -> tuple[int, str, DreamOutput] | None:
         """Return the exact ready proposal, marking incompatible snapshots stale."""
 
@@ -1198,6 +1207,11 @@ class DreamRepository:
                         .where(
                             MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
                             MemoryDreamClusterPreviewModel.status == "ready",
+                            *(
+                                [MemoryDreamClusterPreviewModel.public_id == public_id]
+                                if public_id is not None
+                                else []
+                            ),
                         )
                         .order_by(MemoryDreamClusterPreviewModel.id.desc())
                     )

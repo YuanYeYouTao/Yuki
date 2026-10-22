@@ -1025,12 +1025,9 @@ class WorkSession:
                 except WorkConflict as exc:
                     if (
                         exc.code != "work_journal_source_changed"
+                        or write_failure_committed(exc) is not False
                         or compaction_versions is not None
                         or self.source_guard is None
-                        or any(
-                            note.startswith(("rollback_failed:", "invalidation_failed:"))
-                            for note in getattr(exc, "__notes__", ())
-                        )
                     ):
                         raise
                     # The failed publication/writer has closed. A conversation

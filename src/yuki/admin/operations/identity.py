@@ -33,6 +33,7 @@ from yuki.identity.routing import PresenceRouter
 from yuki.persistence.command_receipts import (
     CommandSuccess,
 )
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.people_repository import (
     PeopleRepository,
     PersonForgetPreparation,
@@ -129,7 +130,9 @@ class IdentityOperations:
             try:
                 async with self.database.immediate_session() as writer:
                     return await erase(writer, prepared)
-            except PrivacyPreparationChanged:
+            except PrivacyPreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 continue
 
     async def change_person(
@@ -206,7 +209,9 @@ class IdentityOperations:
             try:
                 async with self.database.immediate_session() as writer:
                     return await mutate(writer)
-            except PersonMergePreparationChanged:
+            except PersonMergePreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 continue
 
     async def create_person(

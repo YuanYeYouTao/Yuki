@@ -179,6 +179,40 @@ async def test_dream_worker_applies_paid_preview_at_limit_and_defers_only_new_re
     assert rows[2].status == "skipped" and rows[2].error_category == "budget_deferred"
 
 
+@pytest.mark.parametrize("recovery", ["worker", "restart"])
+async def test_empty_paid_dream_applied_receipt_prevents_model_replay(
+    database, monkeypatch, recovery
+):
+    _facts, dreams, service, run, worker, calls = await _case(database, monkeypatch)
+    original = service._facts.repository.write_session
+    decide = service._decide
+
+    async def empty_decision(*args, **kwargs):
+        await decide(*args, **kwargs)
+        return DreamOutput(), 1
+
+    monkeypatch.setattr(service, "_decide", empty_decision)
+
+    @asynccontextmanager
+    async def uncertain(*args, **kwargs):
+        async with original(*args, **kwargs) as writer:
+            yield writer
+        raise RuntimeError("commit acknowledgement lost")
+
+    monkeypatch.setattr(service._facts.repository, "write_session", uncertain)
+    if recovery == "worker":
+        await worker._drain_active()
+    else:
+        cluster = await dreams.claim_next_cluster(run.public_id)
+        with pytest.raises(RuntimeError, match="acknowledgement"):
+            await service.process_cluster(run, cluster)
+        assert await dreams.reset_processing_after_restart() == 1
+    page = await dreams.run_page(run.public_id)
+    assert page.clusters[0].status == DreamClusterStatus.COMPLETED
+    assert page.clusters[0].operation_count == 0
+    assert len(calls) == 1
+
+
 async def test_job_completion_waits_for_shared_writer_and_rechecks_original_claim(database):
     _, _, ledger, _ = _service(database)
     event = await _event(

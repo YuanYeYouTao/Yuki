@@ -240,7 +240,7 @@ async def test_pending_code_interleave(
                 return version, rows
 
             monkeypatch.setattr(EventLedgerRepository, "read_scope_delta", append_after_selection)
-        await database.close()
+        await database.engine.dispose()
         error = await resumer.resume(await repository.get(first_id))
         assert error is None, error
         await snap("original_work_resumed")

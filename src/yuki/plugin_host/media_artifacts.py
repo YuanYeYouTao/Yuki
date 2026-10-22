@@ -89,7 +89,7 @@ class PluginMediaArtifactStore:
         handle_id = uuid.uuid4().hex
         directory = self._root / _plugin_directory(plugin_id)
         destination = directory / f"{handle_id}-{safe_name}"
-        await asyncio.to_thread(_atomic_write, directory, destination, data)
+        await _write_artifact(directory, destination, data)
         handle = MediaArtifactHandle(
             handle_id=handle_id,
             content_type=mime,
@@ -100,6 +100,18 @@ class PluginMediaArtifactStore:
         )
         try:
             async with self._database.immediate_session() as session:
+                used = int(
+                    await session.scalar(
+                        select(
+                            func.coalesce(func.sum(PluginMediaArtifactModel.byte_size), 0)
+                        ).where(PluginMediaArtifactModel.plugin_id == plugin_id)
+                    )
+                    or 0
+                )
+                if used + len(data) > capacity:
+                    raise PluginPermissionError("plugin media storage quota exceeded")
+                if expires_at <= datetime.now(UTC):
+                    raise PluginPermissionError("media artifact has already expired")
                 session.add(
                     PluginMediaArtifactModel(
                         handle_id=handle_id,
@@ -264,6 +276,39 @@ def _atomic_write(directory: Path, destination: Path, data: bytes) -> None:
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+async def _write_artifact(directory: Path, destination: Path, data: bytes) -> None:
+    worker = asyncio.create_task(asyncio.to_thread(_atomic_write, directory, destination, data))
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        # No registration was attempted. First wait for this exact publication,
+        # then clean up its original file; cancellation does not stop a thread.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        try:
+            worker.result()
+        except Exception as failure:
+            cancelled.add_note(f"plugin_media_publication_failed:{type(failure).__name__}")
+        try:
+            cleanup_worker = asyncio.create_task(
+                asyncio.to_thread(destination.unlink, missing_ok=True)
+            )
+            while not cleanup_worker.done():
+                try:
+                    await asyncio.shield(cleanup_worker)
+                except asyncio.CancelledError:
+                    continue
+            cleanup_worker.result()
+        except Exception as cleanup:
+            cancelled.add_note(f"plugin_media_publication_cleanup_failed:{type(cleanup).__name__}")
+        raise
 
 
 def _resolve_artifact_path(value: str, expected_root: Path) -> tuple[Path, Path, bool]:

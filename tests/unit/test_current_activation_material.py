@@ -82,7 +82,7 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
     assert json.loads((await _saved(database)).payload_json)[: len(json.loads(original))] == (
         json.loads(original)
     )
-    await database.close()
+    await database.engine.dispose()
     await harness.processor.handle(
         replace(message, message_id="after-restart", text="重启后继续"), MemorySender()
     )

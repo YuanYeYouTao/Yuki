@@ -9,10 +9,23 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from yuki.client_api.errors import ClientError
 from yuki.identity.errors import CanonicalIdentityError
-from yuki.persistence.database import write_failure_retryable
+from yuki.persistence.database import (
+    write_failure_committed,
+    write_failure_phase,
+    write_failure_retryable,
+)
+
+
+def unknown_write_response(exc: BaseException) -> JSONResponse | None:
+    if write_failure_phase(exc) is not None and write_failure_committed(exc) is None:
+        return JSONResponse({"problem": {"code": "unknown"}}, status_code=500)
+    return None
 
 
 async def client_error_response(_request: Any, exc: Any) -> JSONResponse:
+    unknown = unknown_write_response(exc)
+    if unknown is not None:
+        return unknown
     status = {
         "unauthenticated": 401,
         "owner_required": 403,
@@ -35,6 +48,9 @@ def install_identity_errors(app: FastAPI) -> None:
     app.add_exception_handler(ClientError, client_error_response)
 
     async def identity_error(_request: Any, exc: Any) -> JSONResponse:
+        unknown = unknown_write_response(exc)
+        if unknown is not None:
+            return unknown
         return JSONResponse(
             {"problem": {"code": exc.category}},
             status_code=(

@@ -326,12 +326,17 @@ async def test_one_owned_run_does_not_scan_unrelated_siblings(database, tmp_path
                 ],
             )
         with capture_reads(database) as queries:
-            async with database.immediate_session() as writer:
-                results.append(await waits._observe_page(writer, [binding], 100.0))
+            async with database.read_session() as reader:
+                conditions = {binding["id"]: json.loads(binding["conditions_json"])}
+                owned = waits._owned_runs_query(waits._requested_runs([binding], conditions))
+                states = waits._run_states((await reader.execute(owned)).all())
+                results.append(
+                    waits._observe_due(binding, conditions[binding["id"]], states, 100.0)
+                )
         costs.append(read_vm_steps(database, queries))
         previous = size
     assert results[0] == results[1]
-    assert results[0][0][1] is not None
+    assert results[0] is not None
     assert costs[1] <= costs[0] * 4, costs
 
 

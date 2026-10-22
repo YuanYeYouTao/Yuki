@@ -867,6 +867,10 @@ class AgentToolService:
                             uncertain=bool(workspace_result.get("uncertain")),
                         )
                     except (WorkspaceError, ValueError, OSError) as exc:
+                        from yuki.persistence.database import write_failure_phase
+
+                        if write_failure_phase(exc) is not None:
+                            raise
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
                         )
@@ -916,6 +920,16 @@ class AgentToolService:
                             )
                         return self._result(data=social_result)
                     except SocialError as exc:
+                        from yuki.persistence.database import (
+                            write_failure_committed,
+                            write_failure_phase,
+                        )
+
+                        if (
+                            write_failure_phase(exc) is not None
+                            and write_failure_committed(exc) is not False
+                        ):
+                            return await self._database_failure(exc, name=name, runtime=runtime)
                         detail = {
                             "history_receipt_unavailable": (
                                 "该回执不属于当前来源会话，或没有可核验的发送账号"
@@ -992,24 +1006,15 @@ class AgentToolService:
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
             except SQLAlchemyError as exc:
-                from yuki.persistence.database import (
-                    write_failure_committed,
-                    write_failure_phase,
-                    write_failure_retryable,
-                )
-
-                committed = write_failure_committed(exc)
-                logger.exception("agent_tool_database_failure tool=%s", name)
-                await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
-                return self._result(
-                    error="database_failure",
-                    detail="数据库操作失败",
-                    retryable=write_failure_retryable(exc),
-                    uncertain=committed is None,
-                    mutation_committed=committed,
-                    metadata={"database_write_phase": write_failure_phase(exc)},
-                )
+                return await self._database_failure(exc, name=name, runtime=runtime)
             except (TypeError, ValueError) as exc:
+                from yuki.persistence.database import write_failure_committed, write_failure_phase
+
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    return await self._database_failure(exc, name=name, runtime=runtime)
                 if name in _OBSERVED_MEMORY_READS:
                     return self._result(
                         error="invalid_arguments",
@@ -1018,10 +1023,39 @@ class AgentToolService:
                     )
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
             except (OSError, RuntimeError) as exc:
+                from yuki.persistence.database import write_failure_phase
+
+                if write_failure_phase(exc) is not None:
+                    return await self._database_failure(exc, name=name, runtime=runtime)
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
             _MEMORY_READ_TOOL.reset(read_tool_token)
             _RUNTIME_SNAPSHOT.reset(token)
+
+    async def _database_failure(
+        self,
+        error: BaseException,
+        *,
+        name: str,
+        runtime: ToolRuntime,
+    ) -> ToolExecutionResult:
+        from yuki.persistence.database import (
+            write_failure_committed,
+            write_failure_phase,
+            write_failure_retryable,
+        )
+
+        committed = write_failure_committed(error)
+        logger.exception("agent_tool_database_failure tool=%s", name)
+        await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
+        return self._result(
+            error="database_failure",
+            detail="数据库操作失败",
+            retryable=write_failure_retryable(error),
+            uncertain=committed is None,
+            mutation_committed=committed,
+            metadata={"database_write_phase": write_failure_phase(error)},
+        )
 
     def _my_capabilities(
         self, arguments: dict[str, Any], runtime: ToolRuntime

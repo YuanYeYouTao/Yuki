@@ -1,6 +1,7 @@
 """Atomic forget preserves valid JSON and rejects stale prepared owners."""
 
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -19,7 +20,7 @@ from yuki.persistence.models import (
     ChatEventModel,
     MemoryRebuildRunModel,
 )
-from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.people_repository import PeopleRepository, PrivacyPreparationChanged
 from yuki.persistence.repositories import EventLedgerRepository
 
 
@@ -68,6 +69,45 @@ async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database
         assert segment == {"qq": "[已删除用户]", "note": 'escaped "[已删除用户]"'}
         audit = await reader.scalar(select(AdminOperationEventModel))
         assert json.loads(audit.before_json) == {"owner": "[已删除用户]", "keep": True}
+
+
+async def test_forget_preserves_unknown_commit_instead_of_repreparing_as_source_change(
+    database, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from yuki.identity.canonical_repository import find_identity_binding
+    from yuki.persistence.database import write_failure_committed, write_failure_phase
+
+    async with database.read_session() as reader:
+        person_id = (await find_identity_binding(reader, "1001")).person_id
+    repository = PeopleRepository(database)
+    prepare = AsyncMock(wraps=repository.prepare_person_forget)
+    monkeypatch.setattr(repository, "prepare_person_forget", prepare)
+    original_writer = database.immediate_session
+    failure = PrivacyPreparationChanged()
+
+    @asynccontextmanager
+    async def lose_ack():
+        async with original_writer() as writer:
+            commit = writer.commit
+
+            async def commit_then_lose_ack():
+                await commit()
+                raise failure
+
+            monkeypatch.setattr(writer, "commit", commit_then_lose_ack)
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", lose_ack)
+    with pytest.raises(PrivacyPreparationChanged) as caught:
+        await repository.delete_person_id(person_id)
+    assert caught.value is failure
+    assert write_failure_phase(failure) == "commit"
+    assert write_failure_committed(failure) is None
+    prepare.assert_awaited_once()
+    async with database.read_session() as reader:
+        assert await reader.get(CanonicalPersonModel, person_id) is None
 
 
 @pytest.mark.parametrize("races", [1, 4])

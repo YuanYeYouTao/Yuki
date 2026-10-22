@@ -232,19 +232,27 @@ async def test_busy_rolls_back_pair_and_does_not_consume_code(personal, database
     ] == person
 
 
+@pytest.mark.parametrize("error_kind", ["sqlalchemy", "client", "identity"])
 async def test_lost_pair_commit_ack_is_unknown_and_code_is_still_one_time(
-    personal, database, monkeypatch
+    personal, database, monkeypatch, error_kind
 ):
     import sqlite3
 
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from yuki.client_api.errors import ClientError
+    from yuki.identity.errors import CanonicalIdentityError
+
     person, code = await person_and_code(personal)
     commit = AsyncSession.commit
 
     async def lost_ack(session):
         await commit(session)
+        if error_kind == "client":
+            raise ClientError("unauthenticated")
+        if error_kind == "identity":
+            raise CanonicalIdentityError("account_observation_changed")
         raise OperationalError(
             "COMMIT", {}, sqlite3.OperationalError("lost commit acknowledgement")
         )

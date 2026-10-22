@@ -36,7 +36,7 @@ from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
 from yuki.domain.messages import ChatImage
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.subagent_schema import children, media, media_refs
 from yuki.runtime.work_recovery_schema import recovery
@@ -805,6 +805,11 @@ class WorkRepository:
                 select(children.c.work_id).where(children.c.work_id == identity)
             )
             if worker is None:
+                result = await session.scalar(
+                    select(func.json_extract(work.c.checkpoint_json, "$.sync_result")).where(
+                        work.c.id == identity
+                    )
+                )
                 await session.execute(
                     insert(inputs)
                     .values(
@@ -821,9 +826,7 @@ class WorkRepository:
                                         "work_id": identity,
                                         "state": row["state"],
                                         "reason": row["reason"],
-                                        "result": json.loads(row["checkpoint_json"]).get(
-                                            "sync_result"
-                                        ),
+                                        "result": result,
                                     }
                                 )
                             }
@@ -1908,10 +1911,14 @@ class WorkRepository:
                     payload,
                     before_publish=admissions.publisher(admission) if admission else None,
                 )
-            except OrdinaryAdmissionDuplicate:
+            except OrdinaryAdmissionDuplicate as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 # The original publisher may have won; never alter a ready receipt.
                 await self.discard_input(identity)
-            except OrdinaryAdmissionConflict:
+            except OrdinaryAdmissionConflict as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 # A derived source may have changed while preparing. Re-read next
                 # maintenance pass; true source withdrawal is checked by that reader.
                 continue

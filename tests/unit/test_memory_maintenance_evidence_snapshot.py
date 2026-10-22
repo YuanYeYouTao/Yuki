@@ -1,4 +1,4 @@
-"""The maintenance batch prepares all history before its first fact write."""
+"""Expiry uses current short SQL and preserves one atomic batch."""
 
 import asyncio
 import sqlite3
@@ -113,26 +113,29 @@ async def test_expiry_extension_and_two_hop_conflicts_follow_current_batch_rows(
     ]
 
 
-@pytest.mark.parametrize("race", [False, True])
-async def test_maintenance_prepares_entire_batch_before_writer(database, monkeypatch, race):
-    _repository, facts, rows, worker = await _case(database, 2)
-    prepare = facts.prepare_write
-    prepared = []
+@pytest.mark.parametrize("changed_status", [None, "superseded"])
+async def test_maintenance_does_not_prepare_evidence_or_expire_superseded_rows(
+    database, monkeypatch, changed_status
+):
+    repository, facts, rows, worker = await _case(database, 2)
+    discover = repository.list_expired_candidates
 
-    async def capture(*args, **kwargs):
-        value = await prepare(*args, **kwargs)
-        if kwargs.get("session") is None:
-            prepared.append(args[0])
-            if race:
-                async with database.immediate_session() as writer:
-                    await writer.execute(
-                        update(MemoryFactModel)
-                        .where(MemoryFactModel.id == rows[0].id)
-                        .values(updated_at=datetime.now(UTC))
-                    )
-        return value
+    async def capture(**kwargs):
+        discovered = await discover(**kwargs)
+        if changed_status is not None:
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    update(MemoryFactModel)
+                    .where(MemoryFactModel.id == rows[0].id)
+                    .values(status=changed_status)
+                )
+        return discovered
 
-    monkeypatch.setattr(facts, "prepare_write", capture)
+    async def no_history(*args, **kwargs):
+        raise AssertionError("expiry does not depend on evidence history")
+
+    monkeypatch.setattr(repository, "list_expired_candidates", capture)
+    monkeypatch.setattr(facts, "prepare_write", no_history)
     body_reads_after_writer = []
     writing = False
 
@@ -157,29 +160,29 @@ async def test_maintenance_prepares_entire_batch_before_writer(database, monkeyp
     event.listen(engine, "commit", reset)
     event.listen(engine, "rollback", reset)
     try:
-        assert await worker.process_once() == 2
+        assert await worker.process_once() == (2 if changed_status is None else 1)
     finally:
         event.remove(engine, "before_cursor_execute", trace)
         event.remove(engine, "commit", reset)
         event.remove(engine, "rollback", reset)
-    assert prepared == [tuple(row.id for row in rows)]
     assert body_reads_after_writer == []
     for row in rows:
-        assert (await facts.get_fact(row.id)).status.value == "invalidated"
+        assert (await facts.get_fact(row.id)).status.value == (
+            changed_status if row.id == rows[0].id and changed_status else "invalidated"
+        )
 
 
 @pytest.mark.parametrize("stop", ["cancel", "close", "complete"])
 async def test_maintenance_waits_for_shared_writer_and_cancels_cleanly(database, monkeypatch, stop):
-    _, facts, rows, worker = await _case(database)
-    prepare, prepared = facts.prepare_write, asyncio.Event()
+    repository, facts, rows, worker = await _case(database)
+    discover, prepared = repository.list_expired_candidates, asyncio.Event()
 
     async def capture(*args, **kwargs):
-        value = await prepare(*args, **kwargs)
-        if kwargs.get("session") is None:
-            prepared.set()
+        value = await discover(*args, **kwargs)
+        prepared.set()
         return value
 
-    monkeypatch.setattr(facts, "prepare_write", capture)
+    monkeypatch.setattr(repository, "list_expired_candidates", capture)
     async with database.immediate_session():
         if stop == "close":
             await worker.start()
@@ -232,8 +235,8 @@ async def test_maintenance_idle_close_allows_existing_start_lifecycle(database):
 async def test_maintenance_unknown_acknowledgement_never_replays_or_reports_success(
     database, monkeypatch, phase, error_type
 ):
-    repository, facts, rows, worker = await _case(database)
-    original, invalidate = repository.write_session, worker._invalidate_candidates
+    _repository, facts, rows, worker = await _case(database)
+    original, invalidate = database.immediate_session, worker._invalidate_candidates
     native = sqlite3.OperationalError("acknowledgement lost")
     native.sqlite_errorcode = 5
     uncertainty = (
@@ -251,9 +254,9 @@ async def test_maintenance_unknown_acknowledgement_never_replays_or_reports_succ
         return count
 
     @asynccontextmanager
-    async def unknown_ack(prepared):
+    async def unknown_ack():
         try:
-            async with original(prepared) as writer:
+            async with original() as writer:
                 yield writer
         except OSError:
             if phase == "rollback":
@@ -262,7 +265,7 @@ async def test_maintenance_unknown_acknowledgement_never_replays_or_reports_succ
         if phase == "commit":
             raise uncertainty
 
-    monkeypatch.setattr(repository, "write_session", unknown_ack)
+    monkeypatch.setattr(database, "immediate_session", unknown_ack)
     monkeypatch.setattr(worker, "_invalidate_candidates", apply)
     with pytest.raises(type(uncertainty)) as caught:
         await worker.process_once()

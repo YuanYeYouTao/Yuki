@@ -82,7 +82,7 @@ async def test_merge_cold_work_observes_original_paired_result_once(
     original_requests = copy.deepcopy(provider.requests)
     root_id = await _merge_original_person(database, env.person)
     assert root_id != env.person
-    await database.close()
+    await database.engine.dispose()
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )
@@ -176,7 +176,7 @@ async def test_merge_cold_work_keeps_lost_paid_response_unknown_without_repurcha
             .values(owner="lost-original-process", lease_until=0)
         )
     await _merge_original_person(database, env.person)
-    await database.close()
+    await database.engine.dispose()
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )

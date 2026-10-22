@@ -400,12 +400,10 @@ class PromptProjectionRepository:
                             ),
                         )
                         .select_from(selected)
-                        .outerjoin(
+                        .join(
                             wanted, selected.source_key == func.json_extract(wanted.c.value, "$[0]")
                         )
-                        .where(
-                            selected.view_key == view_key, selected.source_key.in_(existing_keys)
-                        )
+                        .where(selected.view_key == view_key)
                         .order_by(selected.source_key)
                     )
                 )

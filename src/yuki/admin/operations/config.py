@@ -19,6 +19,7 @@ from yuki.admin.models import AdminActor, ConfigChangeResult
 from yuki.admin.operations.base import CommandExecutor, authorize_current, fail
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.command_receipts import CommandSuccess
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
 
 
@@ -133,7 +134,9 @@ class ConfigOperations:
                 return await self.executor.database_command(
                     principal, command, operation, "control.config.mutate", target, mutate
                 )
-            except ConfigRollbackPreparationChanged:
+            except ConfigRollbackPreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 continue
 
     async def set(

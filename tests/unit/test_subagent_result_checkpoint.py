@@ -55,6 +55,75 @@ async def _completed_child(
     return repo, workers, parent_control, lease, identity, checkpoint
 
 
+async def test_finish_reprepares_large_changed_result_before_entering_writer(
+    database, tmp_path, monkeypatch
+):
+    from contextlib import asynccontextmanager
+    from contextvars import ContextVar
+
+    from yuki.runtime import subagent_repository
+    from yuki.runtime.work_schema_v1 import inputs
+
+    repo, workers, _parent, lease, identity, checkpoint = await _completed_child(database, tmp_path)
+    original = await repo.get(identity)
+    updated = json.dumps(
+        {**checkpoint, "sync_result": "updated original result"}, ensure_ascii=False
+    )
+    original_writer = database.immediate_session
+    writer_active = ContextVar("subagent_result_writer", default=False)
+    loads = json.loads
+    changed = False
+
+    def decode(value):
+        assert not writer_active.get(), "large checkpoint decoded while holding writer"
+        return loads(value)
+
+    @asynccontextmanager
+    async def changed_before_writer():
+        nonlocal changed
+        if not changed:
+            changed = True
+            async with original_writer() as writer:
+                await writer.execute(
+                    update(work)
+                    .where(work.c.id == identity)
+                    .values(
+                        checkpoint_json=updated,
+                        revision=work.c.revision + 1,
+                    )
+                )
+        async with original_writer() as writer:
+            token = writer_active.set(True)
+            try:
+                yield writer
+            finally:
+                writer_active.reset(token)
+
+    monkeypatch.setattr(subagent_repository, "json", SimpleNamespace(loads=decode))
+    monkeypatch.setattr(database, "immediate_session", changed_before_writer)
+    await workers.finish(lease)
+    current = await repo.get(identity)
+    assert (current["model_requests"], current["tool_calls"]) == (
+        original["model_requests"],
+        original["tool_calls"],
+    )
+    async with database.read_session() as reader:
+        row = (
+            (await reader.execute(select(children).where(children.c.work_id == identity)))
+            .mappings()
+            .one()
+        )
+        assert row["notified_revision"] == current["revision"]
+        assert loads(row["result_json"])["text"] == "updated original result"
+        payload = await reader.scalar(
+            select(inputs.c.payload_json).where(
+                inputs.c.source_key == f"worker-result:{identity}:{current['revision']}"
+            )
+        )
+    assert loads(loads(payload)["text"])["text"] == "updated original result"
+    await repo.release(lease)
+
+
 async def test_archive_rechecks_new_active_descendant_after_discovery(
     database, tmp_path, monkeypatch
 ):

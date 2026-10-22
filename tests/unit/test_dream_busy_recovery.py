@@ -89,8 +89,8 @@ async def _case(database, monkeypatch, *, clusters=1):
 async def test_paid_cluster_waits_for_shared_writer_without_model_replay(
     database, monkeypatch, cancel
 ):
-    facts, _dreams, service, _run, worker, calls = await _case(database, monkeypatch)
-    decide, prepare = service._decide, facts.prepare_write
+    _facts, dreams, service, _run, worker, calls = await _case(database, monkeypatch)
+    decide, save = service._decide, dreams.save_preview
     holding, release, prepared = asyncio.Event(), asyncio.Event(), asyncio.Event()
     other = None
 
@@ -108,12 +108,11 @@ async def test_paid_cluster_waits_for_shared_writer_without_model_replay(
         return output
 
     async def capture(*args, **kwargs):
-        value = await prepare(*args, **kwargs)
         prepared.set()
-        return value
+        return await save(*args, **kwargs)
 
     monkeypatch.setattr(service, "_decide", decide_and_hold)
-    monkeypatch.setattr(facts, "prepare_write", capture)
+    monkeypatch.setattr(dreams, "save_preview", capture)
     task = asyncio.create_task(worker._drain_active())
     try:
         await asyncio.wait_for(prepared.wait(), timeout=5)

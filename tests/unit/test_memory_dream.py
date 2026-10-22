@@ -447,6 +447,7 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
     cluster_id = before.clusters[0].id
     assert before_run.model_calls == 1 and before.clusters[0].model_calls == 1
     assert before.clusters[0].status.value == "processing" and not before.operations
+    assert len(await dreams.ready_preview_fingerprints(cluster_id)) == 1
     assert (await facts.get_fact(source.id)).status is MemoryStatus.ACTIVE
     monkeypatch.setattr(facts, "requested_target_owners", resolver)
     worker = DreamWorker(settings=settings, repository=dreams, service=service)
@@ -464,9 +465,9 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
         await asyncio.wait_for(completed.wait(), timeout=5)
         page = await dreams.run_page(run.public_id)
         current_run = await dreams.get_run(run.public_id)
-        assert current_run.public_id == run.public_id and current_run.model_calls == 2
+        assert current_run.public_id == run.public_id and current_run.model_calls == 1
         assert page.clusters[0].id == cluster_id and page.clusters[0].attempts == 2
-        assert page.clusters[0].model_calls == 2 and len(provider.requests) == len(captured) == 2
+        assert page.clusters[0].model_calls == 1 and len(provider.requests) == len(captured) == 1
         assert len(page.operations) == 1
         output = await facts.get_fact(page.operations[0].output_fact_id)
         assert output.id != source.id and output.status is MemoryStatus.ACTIVE

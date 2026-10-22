@@ -31,7 +31,7 @@ async def test_unknown_native_mention_records_account_without_creating_person(da
         mentions=(MessageMention("member", 0, 0, 8, "90002", "Unknown"),),
         segments=({"type": "at", "data": {"qq": "90002", "name": "Unknown"}},),
     )
-    async with database.immediate_session() as session:
+    async with database.read_session() as session:
         binding = await find_space_binding(session, "20001")
         prepared, apply = await prepare_message_account_observations(
             session, message, space_binding_id=binding.id, now=now
@@ -39,7 +39,8 @@ async def test_unknown_native_mention_records_account_without_creating_person(da
         assert not session.new
         assert prepared.mentions[0].account_id
         assert prepared.mentions[0].person_id is None
-        apply()
+    async with database.immediate_session() as session:
+        (await apply(session))()
     async with database.read_session() as session:
         assert (
             await session.scalar(select(func.count()).select_from(CanonicalPersonModel))

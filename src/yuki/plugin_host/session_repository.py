@@ -100,16 +100,16 @@ class PluginAgentSessionRepository:
         now: datetime | None = None,
     ) -> PluginAgentSessionRecord:
         scope_id = _validate_scope(scope_type, scope_id, owner_user_id)
-        timestamp = _aware_utc(now or datetime.now(UTC))
         expiry = _aware_utc(expires_at) if expires_at else None
-        if expiry is not None and expiry <= timestamp:
-            raise ValueError("expires_at must be in the future")
         instructions = _validate_instructions(instructions)
         if persistence not in {"ephemeral", "durable"}:
             raise ValueError("persistence must be ephemeral or durable")
         if context_profile not in {"none", "current_user", "current_group"}:
             raise ValueError("unsupported plugin Agent context profile")
         async with self._database.immediate_session() as session:
+            timestamp = _aware_utc(now or datetime.now(UTC))
+            if expiry is not None and expiry <= timestamp:
+                raise ValueError("expires_at must be in the future")
             person_id, space_id = await resolve_session_owners(
                 session,
                 scope_type=scope_type,
@@ -314,8 +314,8 @@ class PluginAgentSessionRepository:
     ) -> PluginAgentSessionRecord | None:
         """Atomically clear only this plugin session's isolated transcript."""
 
-        timestamp = _aware_utc(now or datetime.now(UTC))
         async with self._database.immediate_session() as session:
+            timestamp = _aware_utc(now or datetime.now(UTC))
             row = await session.scalar(
                 select(PluginAgentSessionModel).where(
                     PluginAgentSessionModel.plugin_id == plugin_id,

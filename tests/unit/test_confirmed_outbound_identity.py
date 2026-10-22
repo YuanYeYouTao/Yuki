@@ -340,6 +340,51 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
         transport=transport,
         effect_gate=ConversationEffectGate(),
     )
+    from yuki.plugin_host.db_models import PluginInstallationModel, PluginNotificationOutboxModel
+    from yuki_plugin_sdk.api import PLUGIN_API_VERSION
+
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        writer.add(
+            PluginInstallationModel(
+                plugin_id=item.plugin_id,
+                name="notification fixture",
+                version="1.0.0",
+                plugin_api=PLUGIN_API_VERSION,
+                yuki_requires="*",
+                manifest_hash="a" * 64,
+                entrypoint="fixture:Plugin",
+                status="running",
+                enabled=True,
+                discovered_at=now,
+                updated_at=now,
+            )
+        )
+        await writer.flush()
+        writer.add(
+            PluginNotificationOutboxModel(
+                id=item.id,
+                notification_id=item.notification_id,
+                part_key="text",
+                source_event_id=item.source_event_id,
+                plugin_id=item.plugin_id,
+                target_type=item.target_type,
+                target_id=item.target_id,
+                bot_user_id=item.bot_user_id,
+                part_type=item.part_type,
+                text=item.text,
+                status="processing",
+                attempts=item.attempts,
+                next_attempt_at=now,
+                created_at=now,
+                updated_at=now,
+                canonical_target_space_id=item.canonical_target_space_id,
+                canonical_presence_id=item.canonical_presence_id,
+                canonical_conversation_id=item.canonical_conversation_id,
+                source_person_id=item.source_person_id,
+                prepared_json=json.dumps(item.prepared),
+            )
+        )
     await worker._record_outbound(item, receipt)
     async with database.immediate_session() as writer:
         original = await writer.scalar(

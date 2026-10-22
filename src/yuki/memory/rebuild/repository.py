@@ -334,12 +334,16 @@ class MemoryRebuildRepository:
         item_id: int,
         event_id: int,
         claims: tuple[tuple[MemoryClaim, Any, str], ...],
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        latency_seconds: float = 0.0,
     ) -> int:
         now = datetime.now(UTC)
         encoded_claims = tuple(
             (claim.model_dump_json(), validated, claim_hash)
             for claim, validated, claim_hash in claims
         )
+        latency_milliseconds = max(0, round(latency_seconds * 1000))
         async with self.database.immediate_session() as session:
             run_row = await session.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
@@ -347,6 +351,9 @@ class MemoryRebuildRepository:
             if run_row is None:
                 raise ValueError("memory rebuild run not found")
             run_id = run_row.id
+            item = await session.get(MemoryRebuildItemModel, item_id)
+            if item is None or item.status != MemoryRebuildItemStatus.EXTRACTING.value:
+                return 0
             staged = 0
             for index, (claim_json, validated, claim_hash) in enumerate(encoded_claims):
                 statement = insert(MemoryRebuildProposalModel).values(
@@ -402,6 +409,18 @@ class MemoryRebuildRepository:
                     error_category=None,
                 )
             )
+            await session.execute(
+                update(MemoryRebuildRunModel)
+                .where(MemoryRebuildRunModel.id == run_id)
+                .values(
+                    extraction_requests=MemoryRebuildRunModel.extraction_requests + 1,
+                    input_tokens=MemoryRebuildRunModel.input_tokens + (input_tokens or 0),
+                    output_tokens=MemoryRebuildRunModel.output_tokens + (output_tokens or 0),
+                    latency_milliseconds=MemoryRebuildRunModel.latency_milliseconds
+                    + latency_milliseconds,
+                    updated_at=now,
+                )
+            )
             return staged
 
     async def fail_item(
@@ -414,7 +433,7 @@ class MemoryRebuildRepository:
         now = datetime.now(UTC)
         async with self.database.immediate_session() as session:
             row = await session.get(MemoryRebuildItemModel, item_id)
-            if row is None:
+            if row is None or row.status != MemoryRebuildItemStatus.EXTRACTING.value:
                 return
             row.error_category = category[:64]
             row.status = MemoryRebuildItemStatus.PENDING.value
@@ -580,35 +599,6 @@ class MemoryRebuildRepository:
             "receipts_completed": receipts,
             "embedding_jobs_created": embedding_jobs_created,
         }
-
-    async def record_model_usage(
-        self,
-        public_id: str,
-        *,
-        extraction_requests: int = 0,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        latency_seconds: float = 0.0,
-    ) -> None:
-        """Persist additive, content-free provider usage for restart-safe status."""
-
-        async with self.database.immediate_session() as session:
-            await session.execute(
-                update(MemoryRebuildRunModel)
-                .where(MemoryRebuildRunModel.public_id == public_id)
-                .values(
-                    extraction_requests=(
-                        MemoryRebuildRunModel.extraction_requests + extraction_requests
-                    ),
-                    input_tokens=MemoryRebuildRunModel.input_tokens + (input_tokens or 0),
-                    output_tokens=MemoryRebuildRunModel.output_tokens + (output_tokens or 0),
-                    latency_milliseconds=(
-                        MemoryRebuildRunModel.latency_milliseconds
-                        + max(0, round(latency_seconds * 1000))
-                    ),
-                    updated_at=datetime.now(UTC),
-                )
-            )
 
     async def review_rows(self, public_id: str, *, offset: int, limit: int) -> tuple[Any, ...]:
         async with self.database.read_session() as session:

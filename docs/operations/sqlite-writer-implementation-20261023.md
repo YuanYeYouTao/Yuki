@@ -46,7 +46,23 @@ barrier覆盖FIFO/排队取消、并行读、autoflush、根提交hint、BEGIN/S
 ## 剩余交付
 
 - 实现后全范围复审，继续修发现的语义缺口和多余机制；全仓旧factory已迁，legacy产品入口已删。
-- 公共关闭/rollback与driver关闭失败验证、剩余测试fixture/API迁移。
+- 公共关闭/rollback与driver关闭失败验证和已发现的fixture/API迁移已完成；继续全域交叉检查调用尾部。
 - Schema及现行合同一致性、同负载基线/新实现性能对照。
 - 实现完成后至少三轮全范围交叉复审；修正实际发现后再查，不以次数替代覆盖。
 - 全局质量/真实行为验证、提交和PR；CI/合并/部署分别报告，本次只授权提PR。
+
+## 实现后的三轮复审
+
+每轮在同一全范围清单上轮转。D 域包含装配、Schema/操作材料和独立资源，不以修改文件清单缩小范围。
+表中 A/B/C 是原实现域；root 的公共边界、Automation、SELF repository 和 WorkWait 作为交叉审查项显式保留。
+
+| 轮次 | 原 A 域 | Memory 与 SELF | 原 C 域 | 公共边界与全局 |
+| --- | --- | --- | --- | --- |
+| R1 | [C 审查](sqlite-writer-review-r1-c-20261023.md) | [A 审查](sqlite-writer-review-r1-a-20261023.md) | [B 审查](sqlite-writer-review-r1-b-20261023.md) | [root 审查](sqlite-writer-review-r1-root-20261023.md) |
+| R2 | 待执行 | 待执行 | 待执行 | 待执行 |
+| R3 | 待执行 | 待执行 | 待执行 | 待执行 |
+
+R1 期间全量 Windows unit 分段检查与 integration 发现的问题、实际修复和复验见各报告，不将分段数字
+相加称作一次全绿。本机 WSL Debian 已准备独立 Python 3.12 环境，Windows 缺 fcntl 的三份媒体回归
+在 Linux 补跑 32 项通过；最终全量与 native CI 另记。R1 修正后，全仓 Ruff、mypy 648 源码和 lock 校验通过。
+性能脚本已按新旧 checkout 做小规模逻辑冒烟，尚无正式 paired 结论。

@@ -30,7 +30,7 @@ from yuki.persistence.command_receipts import (
     CommandSuccess,
     pending_result,
 )
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed, write_failure_phase
 from yuki.persistence.models import AdminOperationEventModel, ChatEventModel
 
 
@@ -302,6 +302,7 @@ class CommandExecutor:
             if (
                 isinstance(exc, ControlCommandError)
                 and exc.problem.code in CACHEABLE_COMMAND_FAILURES
+                and (write_failure_phase(exc) is None or write_failure_committed(exc) is False)
             ):
                 async with self.database.immediate_session() as session:
                     reserved = await self.receipts.load_receipt(session, principal, command)

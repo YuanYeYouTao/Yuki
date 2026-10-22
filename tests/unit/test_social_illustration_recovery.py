@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
@@ -48,6 +49,89 @@ ARGS = {"text": "正文", "emoji": {"goal": "开心"}}
 
 def sends(bot):
     return [(method, args) for method, args in bot.calls if method.startswith("send_")]
+
+
+@pytest.mark.parametrize("text", ["", "正文"])
+async def test_emoji_admission_and_dispatch_keep_original_codecs_outside_writer(
+    database, tmp_path, monkeypatch, text
+):
+    import yuki.social.emoji_intents as intents_module
+
+    env = await social_env(database, tmp_path)
+    delivery, _library = make_delivery(env)
+    writer_active = ContextVar("test_original_emoji_writer", default=False)
+    writer = database.immediate_session
+
+    @asynccontextmanager
+    async def observed_writer():
+        async with writer() as session:
+            token = writer_active.set(True)
+            try:
+                yield session
+            finally:
+                writer_active.reset(token)
+
+    monkeypatch.setattr(database, "immediate_session", observed_writer)
+
+    def checked(operation):
+        def apply(*args, **kwargs):
+            assert not writer_active.get(), "original emoji bodies are prepared on a reader"
+            return operation(*args, **kwargs)
+
+        return apply
+
+    monkeypatch.setattr(intents_module, "encode", checked(intents_module.encode))
+    monkeypatch.setattr(intents_module, "payload_hash", checked(intents_module.payload_hash))
+    monkeypatch.setattr(
+        EmojiIntentRepository, "record", staticmethod(checked(EmojiIntentRepository.record))
+    )
+    result = await env.service.execute("send", {"text": text, "emoji": ARGS["emoji"]}, env.context)
+    assert result["status"] == ("succeeded" if text else "accepted")
+    intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    await delivery._deliver(intent)
+    final = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    assert final.id == intent.id and final.closed
+    assert len(sends(env.bot)) == (2 if text else 1)
+
+
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+async def test_emoji_only_admission_preserves_unknown_commit_and_original_intent(
+    database, tmp_path, monkeypatch, error_type
+):
+    env = await social_env(database, tmp_path)
+    delivery, _library = make_delivery(env)
+    original_writer = database.immediate_session
+    failure = error_type("original admission acknowledgement lost")
+
+    @asynccontextmanager
+    async def lose_acknowledgement():
+        async with original_writer() as writer:
+            commit = writer.commit
+
+            async def commit_without_ack():
+                await commit()
+                raise failure
+
+            monkeypatch.setattr(writer, "commit", commit_without_ack)
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", lose_acknowledgement)
+    arguments = {"emoji": {"goal": "开心"}}
+    result = await env.service.execute("send", arguments, env.context)
+    assert result["status"] == "unknown"
+    assert result["emoji"] == {
+        "status": "unknown",
+        "error": "emoji_admission_unconfirmed",
+        "mutation_committed": None,
+        "database_write_phase": "commit",
+    }
+    assert "database_write_phase:commit" in failure.__notes__
+    original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    assert original is not None and not sends(env.bot)
+    replay = await env.service.execute("send", arguments, env.context)
+    assert replay["status"] == "accepted"
+    assert (await delivery.intents.find(env.context.turn_id, env.context.call_id)).id == original.id
+    assert not sends(env.bot)
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -392,9 +476,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
     assert delivered["delivered_text"] == arguments["text"]
     assert len(sends(env.bot)) == 1
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute(
-            "send", dict(arguments, text="changed request"), env.context
-        )
+        await env.service.execute("send", dict(arguments, text="changed request"), env.context)
 
 
 @pytest.mark.parametrize("phase", ["claim", "finish"])

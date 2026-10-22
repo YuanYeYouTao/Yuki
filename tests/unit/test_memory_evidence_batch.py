@@ -244,3 +244,49 @@ async def test_initiative_receipt_cannot_borrow_a_chat_event_source(database):
             session=writer,
         )
         assert await facts.repository.list_evidence(fact_id, session=writer) == before
+
+
+async def test_separate_preparations_on_one_reader_do_not_share_unrelated_evidence(database):
+    from sqlalchemy import text
+
+    repository = MemoryFactRepository(database)
+    service = MemoryFactService(repository)
+    event = await _append_event(
+        EventLedgerRepository(database), message_id="shared-prepare", content="source"
+    )
+    saved = []
+    for index in range(2):
+        saved.append(
+            await service.remember(
+                MemoryFactCreate(
+                    scope_type="person",
+                    subject_user_id="1001",
+                    memory_key=f"separate-{index}",
+                    category="test",
+                    content=f"fact-{index}",
+                    source_type="automatic",
+                ),
+                evidence=MemoryEvidenceCreate(
+                    event_id=event.id,
+                    source_speaker_user_id="1001",
+                    relation="confirmation",
+                    confidence=1.0,
+                    authority="self_report",
+                    excerpt=f"evidence-{index}",
+                ),
+            )
+        )
+    async with database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        first = await service.prepare_write(
+            (saved[0].id,), copies=(((saved[0].id,), saved[0], None),), session=reader
+        )
+        first_copies = dict(first.copies)
+        second = await service.prepare_write(
+            (saved[1].id,), copies=(((saved[1].id,), saved[1], None),), session=reader
+        )
+    async with repository.write_session(second) as writer:
+        await service.administrator_confirm(saved[1].id, actor_user_id="operator", session=writer)
+    assert set(first.rows) == {saved[0].id} and set(second.rows) == {saved[1].id}
+    assert first.copies == first_copies
+    assert {item.source_ids for item in second.copies.values()} == {(saved[1].id,)}

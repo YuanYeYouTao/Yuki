@@ -16,7 +16,18 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import String, cast, func, literal, select, text, tuple_, update
+from sqlalchemy import (
+    String,
+    cast,
+    column,
+    func,
+    literal,
+    select,
+    text,
+    tuple_,
+    update,
+    values,
+)
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,6 +121,18 @@ class WorkInputMatch:
     kind: Literal["reply", "wait"]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedWaitAction:
+    binding: dict[str, Any] | None
+    conditions: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedEventWaits:
+    bindings: tuple[dict[str, Any], ...]
+    conditions: dict[str, list[dict[str, Any]]]
+
+
 class WorkWaitRepository:
     def __init__(self, repository: WorkRepository) -> None:
         self.repository = repository
@@ -200,7 +223,17 @@ class WorkWaitRepository:
             row = (
                 (
                     await session.execute(
-                        select(work).where(
+                        select(
+                            work.c.id,
+                            work.c.generation,
+                            work.c.state,
+                            func.coalesce(
+                                func.json_extract(work.c.source_json, "$.principal_kind"), "person"
+                            ).label("source_kind"),
+                            func.json_extract(work.c.source_json, "$.actor_person_id").label(
+                                "source_person_id"
+                            ),
+                        ).where(
                             work.c.id == work_id,
                             work.c.conversation_id == lease.conversation_id,
                             work.c.generation == lease.generation,
@@ -213,11 +246,8 @@ class WorkWaitRepository:
             )
             if row is None:
                 raise WorkConflict("wait_work_source_changed")
-            original_source = json.loads(row["source_json"])
-            original_kind = original_source.get("principal_kind", "person")
-            original_principal = (
-                "self" if original_kind == "self" else original_source.get("actor_person_id")
-            )
+            original_kind = row["source_kind"]
+            original_principal = "self" if original_kind == "self" else row["source_person_id"]
             if principal_kind != original_kind or (
                 principal_id != original_principal
                 and not (
@@ -314,7 +344,22 @@ class WorkWaitRepository:
                 )
             )
             for pending_run in pending_runs:
-                await self.signal_external_action(session, work_id, pending_run)
+                await self.signal_external_action(
+                    session,
+                    work_id,
+                    pending_run,
+                    prepared=PreparedWaitAction(
+                        {
+                            "id": identity,
+                            "work_id": work_id,
+                            "conversation_id": lease.conversation_id,
+                            "generation": lease.generation,
+                            "principal_kind": principal_kind,
+                            "principal_id": principal_id,
+                        },
+                        normalized,
+                    ),
+                )
             return {
                 "id": identity,
                 "work_id": work_id,
@@ -324,11 +369,79 @@ class WorkWaitRepository:
                 "deadline": deadline,
             }
 
+    async def prepare_external_action(
+        self, reader: AsyncSession, work_id: str
+    ) -> PreparedWaitAction:
+        row = (
+            (await reader.execute(self._due_query().where(waits.c.work_id == work_id)))
+            .mappings()
+            .first()
+        )
+        return PreparedWaitAction(
+            dict(row) if row is not None else None,
+            json.loads(row["conditions_json"]) if row is not None else [],
+        )
+
+    async def external_action_current(
+        self,
+        writer: AsyncSession,
+        work_id: str,
+        prepared: PreparedWaitAction,
+    ) -> bool:
+        row = (
+            (await writer.execute(self._due_query().where(waits.c.work_id == work_id)))
+            .mappings()
+            .first()
+        )
+        return (dict(row) if row is not None else None) == prepared.binding
+
+    async def prepare_event_waits(
+        self, reader: AsyncSession, conversation_id: str
+    ) -> PreparedEventWaits:
+        rows = tuple(
+            dict(row)
+            for row in (
+                await reader.execute(
+                    self._due_query()
+                    .where(waits.c.conversation_id == conversation_id)
+                    .order_by(waits.c.created, waits.c.id)
+                )
+            ).mappings()
+        )
+        decoded = {row["id"]: json.loads(row["conditions_json"]) for row in rows}
+        for conditions in decoded.values():
+            for condition in conditions:
+                if isinstance(condition.get("matched"), dict):
+                    condition["matched"].pop("text", None)
+        return PreparedEventWaits(rows, decoded)
+
+    async def event_waits_current(
+        self,
+        writer: AsyncSession,
+        conversation_id: str,
+        prepared: PreparedEventWaits,
+    ) -> bool:
+        rows = tuple(
+            dict(row)
+            for row in (
+                await writer.execute(
+                    self._due_query()
+                    .where(waits.c.conversation_id == conversation_id)
+                    .order_by(waits.c.created, waits.c.id)
+                )
+            ).mappings()
+        )
+        return rows == prepared.bindings
+
     async def signal_external_action(
-        self, session: AsyncSession, work_id: str, run_id: str
+        self, session: AsyncSession, work_id: str, run_id: str, *, prepared: PreparedWaitAction
     ) -> None:
         """An original callback interrupts completion waits without satisfying their conditions."""
-        owner = (await session.execute(select(work).where(work.c.id == work_id))).mappings().first()
+        owner = (
+            (await session.execute(select(work.c.state).where(work.c.id == work_id)))
+            .mappings()
+            .first()
+        )
         if owner is None or owner["state"] in {
             "completed",
             "failed",
@@ -337,21 +450,11 @@ class WorkWaitRepository:
             "waiting_user",
         }:
             return
-        binding = (
-            (
-                await session.execute(
-                    select(waits).where(waits.c.work_id == work_id, waits.c.status == "active")
-                )
-            )
-            .mappings()
-            .first()
-        )
+        binding = prepared.binding
         if binding is not None:
-            conditions = json.loads(binding["conditions_json"])
+            conditions = prepared.conditions
             if any(c["kind"] == "owned_run" and c["run_id"] == run_id for c in conditions):
-                await self._deliver(
-                    session, dict(binding), conditions, "requires_action", time.time()
-                )
+                await self._deliver(session, binding, conditions, "requires_action", time.time())
         elif owner["state"] == "waiting_external":
             await session.execute(
                 update(work)
@@ -375,22 +478,36 @@ class WorkWaitRepository:
         source_event_id: int | None = None,
     ) -> int | None:
         original: Any
-        if "work_source_json" in binding:
+        if "work_generation" in binding:
             original = {
                 "generation": binding["work_generation"],
                 "state": binding["work_state"],
-                "source_json": binding["work_source_json"],
+                "source_kind": binding["work_source_kind"],
+                "source_person_id": binding["work_source_person_id"],
             }
             current_generation = binding["current_generation"]
         else:
             original = (
-                (await session.execute(select(work).where(work.c.id == binding["work_id"])))
+                (
+                    await session.execute(
+                        select(
+                            work.c.generation,
+                            work.c.state,
+                            func.coalesce(
+                                func.json_extract(work.c.source_json, "$.principal_kind"), "person"
+                            ).label("source_kind"),
+                            func.json_extract(work.c.source_json, "$.actor_person_id").label(
+                                "source_person_id"
+                            ),
+                        ).where(work.c.id == binding["work_id"])
+                    )
+                )
                 .mappings()
                 .first()
             )
             current_generation = await session.scalar(
                 select(CanonicalConversationModel.generation).where(
-                    CanonicalConversationModel.id == binding["conversation_id"]
+                    CanonicalConversationModel.id == binding["conversation_id"],
                 )
             )
         if (
@@ -405,9 +522,8 @@ class WorkWaitRepository:
                 .values(status="invalidated", updated=now)
             )
             return None
-        source = json.loads(original["source_json"])
-        kind = source.get("principal_kind", "person")
-        principal = "self" if kind == "self" else source.get("actor_person_id")
+        kind = original["source_kind"]
+        principal = "self" if kind == "self" else original["source_person_id"]
         if kind != binding["principal_kind"] or principal != binding["principal_id"]:
             await session.execute(
                 update(waits)
@@ -491,44 +607,96 @@ class WorkWaitRepository:
         *,
         event_id: int,
         kind: str,
-        session: AsyncSession | None = None,
         on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
         prepare_source: Callable[[], Awaitable[bool]] | None = None,
     ) -> int | None:
         if kind not in {"conversation", "plugin_event"}:
             raise ValueError("invalid_wait_event_kind")
-        if session is None:
-            async with self.repository.database.read_session() as observer:
-                event = await observer.get(ChatEventModel, event_id)
-                if event is None or event.canonical_conversation_id is None:
+        async with self.repository.database.read_session() as reader:
+            conversation_id = await reader.scalar(
+                select(ChatEventModel.canonical_conversation_id).where(
+                    ChatEventModel.id == event_id
+                )
+            )
+            if conversation_id is None:
+                return None
+            prepared = await self.prepare_event_waits(reader, conversation_id)
+        return await self._match_prepared_event(
+            event_id=event_id,
+            kind=kind,
+            conversation_id=conversation_id,
+            prepared=prepared,
+            on_delivery=on_delivery,
+            prepare_source=prepare_source,
+        )
+
+    async def _match_prepared_event(
+        self,
+        *,
+        event_id: int,
+        kind: str,
+        conversation_id: str,
+        prepared: PreparedEventWaits,
+        on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None,
+        prepare_source: Callable[[], Awaitable[bool]] | None,
+    ) -> int | None:
+        source_prepared = False
+        while True:
+            matching = any(
+                c["kind"] == kind and c["matched"] is None and event_id > c["after_event_id"]
+                for conditions in prepared.conditions.values()
+                for c in conditions
+            )
+            if not matching:
+                return None
+            if prepare_source is not None and not source_prepared:
+                if not await prepare_source():
                     return None
-                active = list(
-                    await observer.scalars(
-                        select(waits.c.conditions_json).where(
-                            waits.c.conversation_id == event.canonical_conversation_id,
-                            waits.c.status == "active",
-                        )
+                source_prepared = True
+            async with self.repository.database.immediate_session() as writer:
+                if await self.event_waits_current(writer, conversation_id, prepared):
+                    return await self.apply_event(
+                        writer,
+                        event_id=event_id,
+                        kind=kind,
+                        prepared=prepared,
+                        on_delivery=on_delivery,
+                    )
+            async with self.repository.database.read_session() as reader:
+                current_conversation = await reader.scalar(
+                    select(ChatEventModel.canonical_conversation_id).where(
+                        ChatEventModel.id == event_id
                     )
                 )
-                if not active:
+                if current_conversation is None:
                     return None
-            # Prepare media outside the writer, only for an actual wait source.
-            # The writer still rechecks the original wait and event before publishing.
-            if prepare_source is not None:
-                matching = any(
-                    condition["kind"] == kind
-                    and condition["matched"] is None
-                    and event_id > condition["after_event_id"]
-                    for encoded in active
-                    for condition in json.loads(encoded)
-                )
-                if not matching or not await prepare_source():
-                    return None
-            async with self.repository.database.immediate_session() as owned:
-                return await self.match_event(
-                    event_id=event_id, kind=kind, session=owned, on_delivery=on_delivery
-                )
-        event = await session.get(ChatEventModel, event_id)
+                conversation_id = current_conversation
+                prepared = await self.prepare_event_waits(reader, conversation_id)
+
+    async def apply_event(
+        self,
+        session: AsyncSession,
+        *,
+        event_id: int,
+        kind: str,
+        prepared: PreparedEventWaits,
+        on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
+    ) -> int | None:
+        event = (
+            await session.execute(
+                select(
+                    ChatEventModel.id,
+                    ChatEventModel.canonical_conversation_id,
+                    ChatEventModel.suppression_status,
+                    ChatEventModel.direction,
+                    ChatEventModel.event_kind,
+                    ChatEventModel.source_plugin_id,
+                    ChatEventModel.external_resume_wait,
+                    ChatEventModel.external_event_type,
+                    ChatEventModel.external_source,
+                ).where(ChatEventModel.id == event_id)
+            )
+        ).one_or_none()
         if event is None or not event.canonical_conversation_id:
             return None
         if event.suppression_status != "keeper":
@@ -549,29 +717,17 @@ class WorkWaitRepository:
             or not event.external_resume_wait
         ):
             return None
-        rows = (
-            (
-                await session.execute(
-                    select(waits)
-                    .where(
-                        waits.c.conversation_id == event.canonical_conversation_id,
-                        waits.c.generation == conversation.generation,
-                        waits.c.status == "active",
-                    )
-                    .order_by(waits.c.created)
-                )
-            )
-            .mappings()
-            .all()
-        )
+        rows = [
+            row
+            for row in prepared.bindings
+            if row["conversation_id"] == event.canonical_conversation_id
+            and row["generation"] == conversation.generation
+        ]
         now = time.time()
         matched_any = False
         delivered_input: int | None = None
         for binding in rows:
-            conditions = json.loads(binding["conditions_json"])
-            for condition in conditions:
-                if isinstance(condition.get("matched"), dict):
-                    condition["matched"].pop("text", None)
+            conditions = prepared.conditions[binding["id"]]
             changed = False
             for condition in conditions:
                 if (
@@ -650,14 +806,7 @@ class WorkWaitRepository:
             ).one_or_none()
             if source is None or source.canonical_conversation_id is None:
                 return None
-            conditions = tuple(
-                await observer.scalars(
-                    select(waits.c.conditions_json).where(
-                        waits.c.conversation_id == source.canonical_conversation_id,
-                        waits.c.status == "active",
-                    )
-                )
-            )
+            conversation_id = source.canonical_conversation_id
             reply_candidate = (
                 await observer.scalar(
                     select(work.c.id)
@@ -670,24 +819,20 @@ class WorkWaitRepository:
                 if source.reply_to_event_id is not None or source.platform in LOCAL_CLIENT_PLATFORMS
                 else None
             )
+            prepared = await self.prepare_event_waits(observer, conversation_id)
         if reply_candidate is not None:
             async with self.repository.database.immediate_session() as session:
                 explicit = await self.match_user_reply(event_id, session=session)
             if explicit is not None:
                 return WorkInputMatch(explicit, "reply")
-        matching = any(
-            condition["kind"] == "conversation"
-            and condition["matched"] is None
-            and event_id > condition["after_event_id"]
-            for encoded in conditions
-            for condition in json.loads(encoded)
+        matched = await self._match_prepared_event(
+            event_id=event_id,
+            kind="conversation",
+            conversation_id=conversation_id,
+            prepared=prepared,
+            on_delivery=on_delivery,
+            prepare_source=prepare_source,
         )
-        if not matching or (prepare_source is not None and not await prepare_source()):
-            return None
-        async with self.repository.database.immediate_session() as session:
-            matched = await self.match_event(
-                event_id=event_id, kind="conversation", session=session, on_delivery=on_delivery
-            )
         return WorkInputMatch(matched, "wait") if matched is not None else None
 
     async def match_user_reply(
@@ -699,14 +844,14 @@ class WorkWaitRepository:
 
         if session is None:
             async with self.repository.database.read_session() as observer:
-                event = await observer.get(ChatEventModel, event_id)
-                if event is None:
+                source_event = await observer.get(ChatEventModel, event_id)
+                if source_event is None:
                     return None
                 if (
-                    event.reply_to_event_id is None
+                    source_event.reply_to_event_id is None
                     and await observer.scalar(
                         select(PresenceModel.platform).where(
-                            PresenceModel.id == event.ingress_presence_id
+                            PresenceModel.id == source_event.ingress_presence_id
                         )
                     )
                     not in LOCAL_CLIENT_PLATFORMS
@@ -717,7 +862,19 @@ class WorkWaitRepository:
             if session is None
             else nullcontext(session)
         ) as session:
-            event = await session.get(ChatEventModel, event_id)
+            event = (
+                await session.execute(
+                    select(
+                        ChatEventModel.id,
+                        ChatEventModel.direction,
+                        ChatEventModel.event_kind,
+                        ChatEventModel.author_person_id,
+                        ChatEventModel.canonical_conversation_id,
+                        ChatEventModel.reply_to_event_id,
+                        ChatEventModel.ingress_presence_id,
+                    ).where(ChatEventModel.id == event_id)
+                )
+            ).one_or_none()
             if (
                 event is None
                 or event.direction != "inbound"
@@ -804,7 +961,12 @@ class WorkWaitRepository:
                 CanonicalConversationModel.generation.label("current_generation"),
                 work.c.generation.label("work_generation"),
                 work.c.state.label("work_state"),
-                work.c.source_json.label("work_source_json"),
+                func.coalesce(
+                    func.json_extract(work.c.source_json, "$.principal_kind"), "person"
+                ).label("work_source_kind"),
+                func.json_extract(work.c.source_json, "$.actor_person_id").label(
+                    "work_source_person_id"
+                ),
             )
             .select_from(
                 waits.outerjoin(
@@ -868,135 +1030,201 @@ class WorkWaitRepository:
             return conditions, "deadline" if expired and not done else "signal"
         return (conditions, "partial") if changed else None
 
-    @classmethod
-    async def _observe_page(
-        cls, session: AsyncSession, bindings: Any, now: float
-    ) -> list[tuple[Any, tuple[list[dict[str, Any]], str] | None]]:
-        """Locate requested runs and verify ownership along their actual parent chain."""
+    @staticmethod
+    def _requested_runs(bindings: Any, conditions: dict[str, list[dict[str, Any]]]) -> str:
+        pairs = {
+            (row["work_id"], c["run_id"])
+            for row in bindings
+            for c in conditions[row["id"]]
+            if c["kind"] == "owned_run" and c["matched"] is None
+        }
+        return encode_json([{"owner": owner, "run": run} for owner, run in sorted(pairs)])
+
+    @staticmethod
+    def _owned_runs_query(requested_json: str) -> Any:
         from yuki.runtime.work_tree import ancestors
         from yuki.sandbox.db_models import SandboxTaskRunModel
 
-        conditions = {row["id"]: json.loads(row["conditions_json"]) for row in bindings}
-        requested_pairs = {
-            (row["work_id"], condition["run_id"])
-            for row in bindings
-            if row["current_generation"] == row["generation"]
-            and row["work_generation"] == row["generation"]
-            and row["work_state"] not in {None, "completed", "failed", "cancelled"}
-            for condition in conditions[row["id"]]
-            if condition["kind"] == "owned_run" and condition["matched"] is None
-        }
-        states: dict[tuple[str, str], str] = {}
-        if requested_pairs:
-            records = func.json_each(
-                encode_json([{"owner": owner, "run": run} for owner, run in requested_pairs])
-            ).table_valued("value")
-            requested = select(
-                func.json_extract(records.c.value, "$.owner").label("owner_id"),
-                func.json_extract(records.c.value, "$.run").label("run_id"),
-            ).cte("requested_runs")
-            owned_work = (
-                select(
-                    requested.c.owner_id,
-                    requested.c.run_id,
-                    work.c.state,
-                    literal(None).label("completion_json"),
-                    literal(False).label("sandbox"),
-                )
-                .select_from(requested.join(work, work.c.id == requested.c.run_id))
-                .where(requested.c.owner_id.in_(ancestors(requested.c.run_id)))
+        records = func.json_each(requested_json).table_valued("value")
+        requested = select(
+            func.json_extract(records.c.value, "$.owner").label("owner_id"),
+            func.json_extract(records.c.value, "$.run").label("run_id"),
+        ).cte("requested_runs")
+        owned_work = (
+            select(
+                requested.c.owner_id,
+                requested.c.run_id,
+                work.c.state,
+                literal(None).label("completion_json"),
+                literal(False).label("sandbox"),
             )
-            owned_sandbox = (
-                select(
-                    requested.c.owner_id,
-                    requested.c.run_id,
-                    SandboxTaskRunModel.status,
-                    SandboxTaskRunModel.completion_json,
-                    literal(True),
+            .select_from(requested.join(work, work.c.id == requested.c.run_id))
+            .where(requested.c.owner_id.in_(ancestors(requested.c.run_id)))
+        )
+        owned_sandbox = (
+            select(
+                requested.c.owner_id,
+                requested.c.run_id,
+                SandboxTaskRunModel.status,
+                SandboxTaskRunModel.completion_json,
+                literal(True),
+            )
+            .select_from(
+                requested.join(
+                    SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
                 )
+            )
+            .where(
+                requested.c.owner_id.in_(
+                    ancestors(
+                        func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
+                        include_self=True,
+                    )
+                )
+            )
+        )
+        return owned_work.union_all(owned_sandbox)
+
+    @staticmethod
+    def _run_states(rows: Any) -> dict[tuple[str, str], str]:
+        states = {(owner, run): state for owner, run, state, _, sandbox in rows if not sandbox}
+        for owner, run, state, completion, sandbox in rows:
+            if not sandbox or (owner, run) in states:
+                continue
+            if state == "completed" and completion:
+                state = json.loads(completion).get("status", state)
+            states[owner, run] = state
+        return states
+
+    @staticmethod
+    async def _owned_runs_current(session: AsyncSession, query: Any, original: Any) -> bool:
+        current = query.subquery()
+        if not original:
+            return not await session.scalar(select(current).exists().select())
+        columns = tuple(current.c)
+        if await session.scalar(select(func.count()).select_from(current)) != len(original):
+            return False
+        # Keep bind counts below SQLite's native budget even for many owned runs.
+        for start in range(0, len(original), 32):
+            page = original[start : start + 32]
+            expected = (
+                values(*(column(c.key, c.type) for c in columns))
+                .data([tuple(row) for row in page])
+                .cte("prepared_wait_runs")
+            )
+            matched = await session.scalar(
+                select(func.count())
                 .select_from(
-                    requested.join(
-                        SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
+                    current.join(
+                        expected,
+                        (current.c.owner_id == expected.c.owner_id)
+                        & (current.c.run_id == expected.c.run_id)
+                        & (current.c.sandbox == expected.c.sandbox),
                     )
                 )
-                .where(
-                    requested.c.owner_id.in_(
-                        ancestors(
-                            func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
-                            include_self=True,
-                        )
-                    )
-                )
+                .where(*(c.is_not_distinct_from(expected.c[c.key]) for c in columns))
             )
-            rows = (await session.execute(owned_work.union_all(owned_sandbox))).all()
-            work_states = {
-                (owner, run): state for owner, run, state, _, sandbox in rows if not sandbox
-            }
-            states.update(work_states)
-            for owner, run, state, completion, sandbox in rows:
-                if not sandbox or (owner, run) in work_states:
-                    continue
-                if state == "completed" and completion:
-                    state = json.loads(completion).get("status", state)
-                states[owner, run] = state
-        return [
-            (row, cls._observe_due(row, conditions[row["id"]], states, now)) for row in bindings
-        ]
+            if matched != len(page):
+                return False
+        return True
 
     async def deliver_due(self, now: float | None = None) -> int:
-        """Discover changed waits read-only; recheck a bounded batch before writing."""
+        """Prepare conditions and completion bodies, then prove their actual source rows."""
+        from copy import deepcopy
+
         observed_at = time.time() if now is None else now
-        candidates: list[str] = []
+        prepared: dict[str, dict[str, Any]] = {}
+        decoded: dict[str, list[dict[str, Any]]] = {}
+        selected_runs: dict[tuple[str, str, bool], Any] = {}
+        selected_states: dict[tuple[str, str], str] = {}
         cursor: tuple[float, str] | None = None
-        async with self.repository.database.read_session() as discovery:
-            while len(candidates) < 128:
+        async with self.repository.database.read_session() as reader:
+            while len(prepared) < 128:
                 query = self._due_query().order_by(waits.c.created, waits.c.id).limit(128)
                 if cursor is not None:
                     query = query.where(tuple_(waits.c.created, waits.c.id) > cursor)
-                rows = (await discovery.execute(query)).mappings().all()
+                rows = (await reader.execute(query)).mappings().all()
                 if not rows:
                     break
-                for binding, observation in await self._observe_page(discovery, rows, observed_at):
-                    if observation is not None:
-                        candidates.append(binding["id"])
-                        if len(candidates) == 128:
+                page_conditions = {row["id"]: json.loads(row["conditions_json"]) for row in rows}
+                run_query = self._owned_runs_query(self._requested_runs(rows, page_conditions))
+                page_runs = (await reader.execute(run_query)).all()
+                states = self._run_states(page_runs)
+                by_owner: dict[str, list[Any]] = {}
+                for run in page_runs:
+                    by_owner.setdefault(run.owner_id, []).append(run)
+                for binding in rows:
+                    if (
+                        self._observe_due(
+                            binding, deepcopy(page_conditions[binding["id"]]), states, observed_at
+                        )
+                        is not None
+                    ):
+                        prepared[binding["id"]] = dict(binding)
+                        decoded[binding["id"]] = page_conditions[binding["id"]]
+                        for run in by_owner.get(binding["work_id"], ()):
+                            selected_runs[run.owner_id, run.run_id, run.sandbox] = run
+                            selected_states[run.owner_id, run.run_id] = states[
+                                run.owner_id, run.run_id
+                            ]
+                        if len(prepared) == 128:
                             break
                 cursor = rows[-1]["created"], rows[-1]["id"]
                 if len(rows) < 128:
                     break
-        if not candidates:
-            return 0
+            if not prepared:
+                return 0
+        run_query = self._owned_runs_query(self._requested_runs(prepared.values(), decoded))
+        runs = list(selected_runs.values())
         count = 0
-        async with self.repository.database.immediate_session() as session:
-            # Explicit timestamps support deterministic callers; real clock polls
-            # resample only after acquiring the writer reservation.
+        async with self.repository.database.immediate_session() as writer:
+            if not await self._owned_runs_current(writer, run_query, runs):
+                return 0  # Time and owned-run signals remain durable for the next poll.
             current = time.time() if now is None else now
             rows = (
                 (
-                    await session.execute(
+                    await writer.execute(
                         self._due_query()
-                        .where(waits.c.id.in_(candidates))
+                        .where(waits.c.id.in_(tuple(prepared)))
                         .order_by(waits.c.created, waits.c.id)
                     )
                 )
                 .mappings()
                 .all()
             )
-            for binding, observation in await self._observe_page(session, rows, current):
+            for binding in rows:
+                before = prepared[binding["id"]]
+                if any(
+                    binding[key] != before[key]
+                    for key in (
+                        "work_id",
+                        "conversation_id",
+                        "generation",
+                        "principal_kind",
+                        "principal_id",
+                        "mode",
+                        "conditions_json",
+                        "deadline",
+                    )
+                ):
+                    continue
+                observation = self._observe_due(
+                    binding, decoded[binding["id"]], selected_states, current
+                )
                 if observation is None:
                     continue
                 conditions, reason = observation
                 if reason in {"invalidated", "partial"}:
-                    values: dict[str, Any] = {"updated": current}
+                    changes: dict[str, Any] = {"updated": current}
                     if reason == "invalidated":
-                        values["status"] = "invalidated"
+                        changes["status"] = "invalidated"
                     else:
-                        values["conditions_json"] = encode_json(conditions)
-                    await session.execute(
+                        changes["conditions_json"] = encode_json(conditions)
+                    await writer.execute(
                         update(waits)
                         .where(waits.c.id == binding["id"], waits.c.status == "active")
-                        .values(**values)
+                        .values(**changes)
                     )
-                elif await self._deliver(session, dict(binding), conditions, reason, current):
+                elif await self._deliver(writer, dict(binding), conditions, reason, current):
                     count += 1
         return count

@@ -49,7 +49,7 @@ from yuki.identity.person_identity import (
     person_root_id,
     same_person_id,
 )
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
 from yuki.persistence.unit_of_work import optional_session
 
@@ -1133,7 +1133,9 @@ class RuntimeConfigService:
                             session=writer,
                             prepared=prepared,
                         )
-                except ConfigRollbackPreparationChanged:
+                except ConfigRollbackPreparationChanged as exc:
+                    if write_failure_committed(exc) is not False:
+                        raise
                     continue
         if prepared is None:
             raise ValueError("config_rollback_preparation_required")

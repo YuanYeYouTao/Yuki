@@ -52,6 +52,32 @@ class EmojiIntent:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedEmojiIntent:
+    id: str
+    turn_id: str
+    call_id: str
+    conversation_id: str
+    target: SocialTarget
+    payload_hash: str
+    source: dict[str, Any]
+    source_json: str
+    intent_json: str
+    has_text: bool
+
+
+def project_admission(identity: str, error_category: str | None) -> dict[str, Any]:
+    return {
+        "intent_id": identity,
+        "status": "unknown"
+        if error_category == "file_mutation_unknown_read_current_version"
+        else "failed"
+        if error_category is not None
+        else "accepted",
+        **({"error": error_category} if error_category is not None else {}),
+    }
+
+
 def project_intent(intent: EmojiIntent, receipt: dict[str, Any] | None) -> dict[str, Any]:
     publication_unknown = intent.error_category == "file_mutation_unknown_read_current_version"
     if receipt is not None:
@@ -66,15 +92,7 @@ def project_intent(intent: EmojiIntent, receipt: dict[str, Any] | None) -> dict[
             }
         if dispatched:
             return {"intent_id": intent.id, **receipt}
-    return {
-        "intent_id": intent.id,
-        "status": "unknown"
-        if publication_unknown
-        else "failed"
-        if intent.error_category is not None
-        else "accepted",
-        **({"error": intent.error_category} if intent.error_category is not None else {}),
-    }
+    return project_admission(intent.id, intent.error_category)
 
 
 async def validate_source(session: AsyncSession, source: dict[str, Any]) -> None:
@@ -154,8 +172,8 @@ class EmojiIntentRepository:
             raise SocialError("emoji_source_removed")
         return self.record(row)
 
-    async def admit(
-        self,
+    @staticmethod
+    def prepare(
         *,
         turn_id: str,
         call_id: str,
@@ -163,68 +181,77 @@ class EmojiIntentRepository:
         target: SocialTarget,
         arguments: dict[str, Any],
         source: dict[str, Any],
+    ) -> PreparedEmojiIntent:
+        turn_id, call_id = social_source_key(turn_id), social_call_key(call_id)
+        return PreparedEmojiIntent(
+            str(uuid5(NAMESPACE_URL, encode(["social-emoji", turn_id, call_id]))),
+            turn_id,
+            call_id,
+            conversation_id,
+            target,
+            payload_hash("send_message", target, arguments, conversation_id),
+            source,
+            encode(source),
+            encode(arguments["emoji"]),
+            bool(arguments.get("text", "").strip()),
+        )
+
+    async def admit(
+        self,
+        *,
+        prepared: PreparedEmojiIntent,
         work_effect: ResultCapture | None = None,
         session: AsyncSession | None = None,
-    ) -> EmojiIntent:
-        turn_id, call_id = social_source_key(turn_id), social_call_key(call_id)
-        digest = payload_hash("send_message", target, arguments, conversation_id)
-        now = datetime.now(UTC)
+    ) -> dict[str, Any]:
         transaction = (
             self.database.immediate_session()
             if session is None
             else optional_session(self.database, session, write=True)
         )
         async with transaction as session:
-            existing = await session.scalar(
-                select(SocialEmojiIntentModel).where(
-                    SocialEmojiIntentModel.source_turn_id == turn_id,
-                    SocialEmojiIntentModel.tool_call_id == call_id,
-                )
-            )
-            if existing is not None:
-                if existing.payload_hash != digest:
-                    raise SocialError("idempotency_conflict")
-                if work_effect is not None:
-                    from yuki.runtime.work_repository import WorkRepository
-
-                    await WorkRepository.bind_domain_receipt(
-                        session,
-                        work_effect.work_id,
-                        work_effect.effect_key,
-                        f"social-emoji:{existing.id}",
+            existing = (
+                await session.execute(
+                    select(
+                        SocialEmojiIntentModel.id,
+                        SocialEmojiIntentModel.payload_hash,
+                        SocialEmojiIntentModel.error_category,
+                    ).where(
+                        SocialEmojiIntentModel.source_turn_id == prepared.turn_id,
+                        SocialEmojiIntentModel.tool_call_id == prepared.call_id,
                     )
-                return self.record(existing)
-            await validate_source(session, source)
-            await session.execute(
-                insert(SocialEmojiIntentModel).values(
-                    id=str(uuid5(NAMESPACE_URL, encode(["social-emoji", turn_id, call_id]))),
-                    source_turn_id=turn_id,
-                    tool_call_id=call_id,
-                    source_conversation_id=conversation_id,
-                    payload_hash=digest,
-                    target_kind=target.kind,
-                    target_id=str(target.id),
-                    source_json=encode(source),
-                    intent_json=encode(arguments["emoji"]),
-                    closed=False,
-                    created_at=now,
-                    updated_at=now,
                 )
-            )
-            row = await session.scalar(
-                select(SocialEmojiIntentModel).where(
-                    SocialEmojiIntentModel.source_turn_id == turn_id,
-                    SocialEmojiIntentModel.tool_call_id == call_id,
+            ).first()
+            if existing is not None:
+                if existing.payload_hash != prepared.payload_hash:
+                    raise SocialError("idempotency_conflict")
+                identity, error = existing.id, existing.error_category
+            else:
+                await validate_source(session, prepared.source)
+                now = datetime.now(UTC)
+                await session.execute(
+                    insert(SocialEmojiIntentModel).values(
+                        id=prepared.id,
+                        source_turn_id=prepared.turn_id,
+                        tool_call_id=prepared.call_id,
+                        source_conversation_id=prepared.conversation_id,
+                        payload_hash=prepared.payload_hash,
+                        target_kind=prepared.target.kind,
+                        target_id=str(prepared.target.id),
+                        source_json=prepared.source_json,
+                        intent_json=prepared.intent_json,
+                        closed=False,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
-            assert row is not None
+                identity, error = prepared.id, None
             if work_effect is not None:
                 from yuki.runtime.work_repository import WorkRepository
 
                 await WorkRepository.bind_domain_receipt(
-                    session, work_effect.work_id, work_effect.effect_key, f"social-emoji:{row.id}"
+                    session, work_effect.work_id, work_effect.effect_key, f"social-emoji:{identity}"
                 )
-            return self.record(row)
+        return project_admission(identity, error)
 
     @staticmethod
     async def effect_facts(
@@ -344,6 +371,7 @@ class EmojiIntentRepository:
         )
 
     async def select(self, identity: str, selected: dict[str, Any]) -> EmojiIntent:
+        selected_json = encode(selected)
         async with self.database.immediate_session() as session:
             await session.execute(
                 update(SocialEmojiIntentModel)
@@ -352,9 +380,12 @@ class EmojiIntentRepository:
                     SocialEmojiIntentModel.selected_json.is_(None),
                     SocialEmojiIntentModel.closed.is_(False),
                 )
-                .values(selected_json=encode(selected), updated_at=datetime.now(UTC))
+                .values(selected_json=selected_json, updated_at=datetime.now(UTC))
             )
-            return await self.get(identity, session=session)
+            row = await session.get(SocialEmojiIntentModel, identity)
+        if row is None:
+            raise SocialError("emoji_source_removed")
+        return self.record(row)
 
     async def close(
         self,
@@ -373,4 +404,7 @@ class EmojiIntentRepository:
                 )
                 .values(closed=True, error_category=error_category, updated_at=datetime.now(UTC))
             )
-            return await self.get(identity, session=session)
+            row = await session.get(SocialEmojiIntentModel, identity)
+        if row is None:
+            raise SocialError("emoji_source_removed")
+        return self.record(row)

@@ -266,11 +266,11 @@ class ToolArtifactRepository:
                 )
             if int(used or 0) + len(encoded) > self._max_total_bytes:
                 raise ValueError("tool_artifact_capacity")
-            await asyncio.to_thread(self._publish, path, encoded)
-            now = datetime.now(UTC)
+            await self._publish_file(path, encoded)
             # Cancellation can arrive after COMMIT: bounded orphan maintenance
             # owns unregistered files; never unlink a potentially durable ref here.
             async with self._database.immediate_session() as session:
+                now = datetime.now(UTC)
                 if access is not None or source_event_ids:
                     if (
                         access is not None
@@ -312,6 +312,29 @@ class ToolArtifactRepository:
                     )
                 )
         return handle
+
+    async def _publish_file(self, path: Path, encoded: bytes) -> None:
+        worker = asyncio.create_task(asyncio.to_thread(self._publish, path, encoded))
+        cancellation = None
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as error:
+                cancellation = cancellation or error
+            except BaseException as error:
+                if cancellation is not None:
+                    raise cancellation from error
+                raise
+        # Keep the storage owner until the actual filesystem operation exits.
+        # A cancelled publication remains an unregistered UUID for orphan GC.
+        try:
+            worker.result()
+        except BaseException as error:
+            if cancellation is not None:
+                raise cancellation from error
+            raise
+        if cancellation is not None:
+            raise cancellation
 
     @staticmethod
     def _publish(path: Path, encoded: bytes) -> None:

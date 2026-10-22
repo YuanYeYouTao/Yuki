@@ -79,7 +79,7 @@ from yuki.memory.dream.db_models import MemoryDreamClusterModel
 from yuki.memory.rebuild.privacy import PreparedRebuildForget
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.model_runtime.db_models import ModelInvocationModel
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 from yuki.persistence.history_search import prepare_terms
 from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import (
@@ -859,7 +859,9 @@ class PeopleRepository:
             try:
                 async with self._database.immediate_session() as writer:
                     return await self.apply_person_forget(writer, prepared, marker=marker)
-            except PrivacyPreparationChanged:
+            except PrivacyPreparationChanged as exc:
+                if write_failure_committed(exc) is not False:
+                    raise
                 continue
 
     async def prepare_person_forget_resources(

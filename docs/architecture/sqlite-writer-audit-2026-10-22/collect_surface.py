@@ -18,11 +18,12 @@ OUT = Path(__file__).resolve().parent
 DB_IMPORTS = ("sqlalchemy", "sqlite3", "aiosqlite", "alembic")
 DB_HINT = re.compile(
     r"\b(?:Database|AsyncSession|Session|sqlite3|aiosqlite|sessionmaker|"
-    r"immediate_session|apply_snapshot_write|apply_evidence_write|"
+    r"read_session|immediate_session|apply_snapshot_write|apply_evidence_write|"
     r"optional_session|read_snapshot|BEGIN IMMEDIATE|sqlite_master|"
     r"alembic|database_url|session\.execute|session\.commit|session\.flush)\b"
 )
 WRITE_CALLS = {
+    "read_session",
     "immediate_session",
     "apply_snapshot_write",
     "apply_evidence_write",

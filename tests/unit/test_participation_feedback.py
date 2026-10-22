@@ -285,14 +285,14 @@ async def test_retained_wait_releases_new_opportunity_without_revoking_original_
     )
     assert result.outcome == "accepted" and result.run is not None
     assert result.run.run_id != run.run_id
-    retained = await validate_self_initiative(
+    await validate_self_initiative(
         service.database,
         run.run_id,
         conversation_id=run.conversation_id,
         space_id=run.space_id,
         presence_id=run.presence_id,
     )
-    assert retained.state == "running"
+    assert (await service.repository.get_run(run.run_id)).state == "running"
     assert (await service.work.get(task["id"]))["state"] == state
     assert set(r.run_id for r in await service.repository.list_active()) == {
         run.run_id,

@@ -20,6 +20,44 @@ from yuki.social.models import OperationStatus, SocialTarget
 from yuki.social.repository import payload_hash
 
 
+@pytest.mark.parametrize("sequence", [False, True])
+async def test_original_delivery_payload_hashes_are_prepared_before_writer(
+    database, tmp_path, monkeypatch, sequence
+):
+    import yuki.social.repository as social_repository
+
+    env = await social_env(database, tmp_path)
+    original_hash = social_repository.payload_hash
+    original_receipt = social_repository.SocialOperationRepository._receipt
+    hashed = []
+
+    def prepare_hash(*args):
+        assert not database._writer.locked(), "body hashing must precede writer admission"
+        hashed.append(args[0])
+        return original_hash(*args)
+
+    monkeypatch.setattr(social_repository, "payload_hash", prepare_hash)
+
+    def decode_receipt(row, *, include_prepared=True):
+        if include_prepared and row.prepared_json is not None:
+            assert not database._writer.locked(), "original send plans are decoded after the writer"
+        return original_receipt(row, include_prepared=include_prepared)
+
+    monkeypatch.setattr(
+        social_repository.SocialOperationRepository, "_receipt", staticmethod(decode_receipt)
+    )
+    context = replace(
+        env.context,
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20)),
+    )
+    args = {"text": "first\nsecond" if sequence else "one original message"}
+    sent = await env.service.execute("send", args, context)
+    assert sent["status"] == "succeeded" and hashed
+    before = tuple(env.bot.calls)
+    assert await env.service.execute("send", args, context) == sent
+    assert tuple(env.bot.calls) == before
+
+
 @pytest.mark.parametrize("current_entry", [False, True])
 async def test_known_group_route_sends_without_remote_membership_preflight(
     database, tmp_path, current_entry

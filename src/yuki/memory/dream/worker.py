@@ -11,7 +11,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from yuki.config import Settings
-from yuki.memory.dream.db_models import MemoryDreamClusterModel, MemoryDreamOperationModel
+from yuki.memory.dream.db_models import (
+    MemoryDreamClusterModel,
+    MemoryDreamClusterPreviewModel,
+    MemoryDreamOperationModel,
+)
 from yuki.memory.dream.models import (
     DreamClusterPreview,
     DreamClusterStatus,
@@ -234,9 +238,21 @@ class DreamWorker:
                 )
                 or 0
             )
+            applied = await reader.scalar(
+                select(MemoryDreamClusterPreviewModel.id)
+                .where(
+                    MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
+                    MemoryDreamClusterPreviewModel.status == "applied",
+                )
+                .limit(1)
+            )
         await self._repository.finish_cluster(
             cluster_id,
-            status=DreamClusterStatus.COMPLETED if committed else status,
+            status=DreamClusterStatus.COMPLETED if committed or applied is not None else status,
             operation_count=committed,
-            error_category=("recovered_committed_operation" if committed else error_category),
+            error_category=(
+                "recovered_committed_operation"
+                if committed or applied is not None
+                else error_category
+            ),
         )

@@ -85,7 +85,12 @@ async def _complete[T](operation: Awaitable[T]) -> tuple[T, asyncio.CancelledErr
             if cancellation is not None:
                 raise cancellation from error
             raise
-    return pending.result(), cancellation
+    try:
+        return pending.result(), cancellation
+    except BaseException as error:
+        if cancellation is not None:
+            raise cancellation from error
+        raise
 
 
 class Database:

@@ -13,7 +13,7 @@ from sqlalchemy.orm import load_only
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.config import Settings
-from yuki.memory.enums import MemoryInvalidationReason
+from yuki.memory.enums import MemoryInvalidationReason, MemoryStatus
 from yuki.memory.metrics import MemoryLifecycleMetrics
 from yuki.memory.models import MemoryFact
 from yuki.memory.service import MemoryFactService
@@ -107,8 +107,7 @@ class MemoryMaintenanceWorker:
         if not rows:
             return 0
 
-        prepared = await self._facts.prepare_write(tuple(candidate.id for candidate in rows))
-        async with self._facts.repository.write_session(prepared) as writer:
+        async with self._facts.repository.database.immediate_session() as writer:
             changed = await self._invalidate_candidates(rows, now=now, session=writer)
         self.metrics.record_maintenance_success(now)
         return changed
@@ -128,6 +127,9 @@ class MemoryMaintenanceWorker:
                 .options(load_only(MemoryFactModel.status, MemoryFactModel.conflict_state))
                 .where(
                     MemoryFactModel.id.in_(tuple(row.id for row in rows)),
+                    MemoryFactModel.status.in_(
+                        (MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)
+                    ),
                     MemoryFactModel.valid_until <= now,
                 )
             )

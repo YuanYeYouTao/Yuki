@@ -7,7 +7,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
@@ -16,7 +16,7 @@ from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fin
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
 from yuki.gateway.providers.app.ingress import AppGateway
-from yuki.identity.person_identity import same_person_id
+from yuki.identity.person_identity import same_person_condition, same_person_id
 from yuki.persistence.models import AdminOperationEventModel, ChatEventModel
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.work_management import manage_work
@@ -67,22 +67,20 @@ async def associated_work(
         query = select(work).where(
             work.c.source_key == f"event:{event.canonical_conversation_id}:{event.id}",
             work.c.conversation_id == event.canonical_conversation_id,
+            func.json_extract(work.c.source_json, "$.trigger_event_id") == event.id,
+            func.json_extract(work.c.source_json, "$.conversation_id")
+            == event.canonical_conversation_id,
         )
+    query = query.where(
+        func.json_type(work.c.source_json, "$.actor_person_id") == "text",
+        same_person_condition(
+            func.json_extract(work.c.source_json, "$.actor_person_id"), principal.person_id
+        ),
+    )
     found = (await session.execute(query)).mappings().first()
     if found is None:
         return None
-    row = dict(found)
-    source = json.loads(row["source_json"])
-    actor = source.get("actor_person_id")
-    if not isinstance(actor, str) or not await same_person_id(session, actor, principal.person_id):
-        return None
-    if admission is None or admission.work_id is None:
-        if (
-            source.get("trigger_event_id") != event.id
-            or source.get("conversation_id") != event.canonical_conversation_id
-        ):
-            return None
-    return row
+    return dict(found)
 
 
 class ClientPrompts:
@@ -131,49 +129,57 @@ class ClientPrompts:
             if result is not None
             else "processing_failure"
         )
-        async with self.identity.database.immediate_session() as writer:
-            event = await writer.get(ChatEventModel, event_id)
-            if (
-                event is None
-                or event.canonical_conversation_id != principal.conversation_id
-                or event.suppression_status != "keeper"
-                or not event.author_person_id
-                or not await same_person_id(writer, event.author_person_id, principal.person_id)
-            ):
-                return
-            previous = await personal_command(
-                writer,
-                principal.request_person_id,
-                request_id,
-                conversation_id=principal.request_conversation_id,
-            )
-            if previous is not None:
-                return
-            state: dict[str, JsonValue] = {
-                "event_id": event.id,
-                "conversation_id": principal.conversation_id,
-                "outcome": outcome,
-                "handled": result.handled if result is not None else False,
-                "sent_messages": result.sent_messages if result is not None else 0,
-                "error_category": type(error).__name__ if error is not None else None,
-            }
-            await self.identity.receipts.record_personal_command(
-                writer,
-                principal_id=principal.device_id,
-                principal_kind="device",
-                person_id=principal.person_id,
-                request_id=request_id,
-                operation="client.message",
-                operation_ref=principal.conversation_id,
-                payload_hash=fingerprint(
-                    "message", principal.conversation_id, message_payload(event)
-                ),
-                resource_id=str(event.id),
-                result=state,
-                problem_code=outcome if outcome in _FAILED_OUTCOMES else None,
-                request_person_id=principal.request_person_id,
-                request_conversation_id=principal.request_conversation_id,
-            )
+        while True:
+            async with self.identity.database.read_session() as reader:
+                original = await reader.get(ChatEventModel, event_id)
+                if original is None:
+                    return
+                source_segments = original.segments_json
+                bound = fingerprint("message", principal.conversation_id, message_payload(original))
+            async with self.identity.database.immediate_session() as writer:
+                event = await writer.get(ChatEventModel, event_id)
+                if (
+                    event is None
+                    or event.canonical_conversation_id != principal.conversation_id
+                    or event.suppression_status != "keeper"
+                    or not event.author_person_id
+                    or not await same_person_id(writer, event.author_person_id, principal.person_id)
+                ):
+                    return
+                if event.segments_json != source_segments:
+                    continue
+                previous = await personal_command(
+                    writer,
+                    principal.request_person_id,
+                    request_id,
+                    conversation_id=principal.request_conversation_id,
+                )
+                if previous is not None:
+                    return
+                state: dict[str, JsonValue] = {
+                    "event_id": event.id,
+                    "conversation_id": principal.conversation_id,
+                    "outcome": outcome,
+                    "handled": result.handled if result is not None else False,
+                    "sent_messages": result.sent_messages if result is not None else 0,
+                    "error_category": type(error).__name__ if error is not None else None,
+                }
+                await self.identity.receipts.record_personal_command(
+                    writer,
+                    principal_id=principal.device_id,
+                    principal_kind="device",
+                    person_id=principal.person_id,
+                    request_id=request_id,
+                    operation="client.message",
+                    operation_ref=principal.conversation_id,
+                    payload_hash=bound,
+                    resource_id=str(event.id),
+                    result=state,
+                    problem_code=outcome if outcome in _FAILED_OUTCOMES else None,
+                    request_person_id=principal.request_person_id,
+                    request_conversation_id=principal.request_conversation_id,
+                )
+            return
 
     async def projection(
         self,

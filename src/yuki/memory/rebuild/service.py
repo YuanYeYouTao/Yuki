@@ -56,6 +56,7 @@ from yuki.persistence.models import (
     MemoryRebuildRunModel,
 )
 from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.unit_of_work import optional_session
 
 SUBJECT_RESOLVER_VERSION = "1"
 CLAIM_VALIDATOR_VERSION = "2"
@@ -286,9 +287,9 @@ class MemoryRebuildService:
     def active_in_flight_calls(self) -> int:
         return self._active_in_flight_calls
 
-    async def _authorize(self, actor_user_id: str) -> None:
-        async with self.repository.database.read_session() as session:
-            allowed = await person_is_superuser(session, actor_user_id)
+    async def _authorize(self, actor_user_id: str, *, session: AsyncSession | None = None) -> None:
+        async with optional_session(self.repository.database, session, write=False) as active:
+            allowed = await person_is_superuser(active, actor_user_id)
         if not allowed:
             raise PermissionError("memory rebuild requires the current real superuser")
 
@@ -328,28 +329,19 @@ class MemoryRebuildService:
         actor_user_id: str,
         authorize: bool = True,
         session: AsyncSession | None = None,
+        prepared: PreparedRebuildPlan | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            await self._authorize(actor_user_id)
-        self._available()
-        snapshot = await self.ledger.maximum_event_id()
-        statistics = await self.ledger.count_rebuild_candidates(
-            selection,
-            snapshot_max_event_id=snapshot,
-        )
-        selection_json = canonical_json(selection)
-        return await self.repository.create_run(
+            await self._authorize(actor_user_id, session=session)
+        return await plan_rebuild_core(
+            settings=self.settings,
+            repository=self.repository,
+            ledger=self.ledger,
             selection=selection,
-            selection_json=selection_json,
-            selection_hash=hashlib.sha256(selection_json.encode()).hexdigest(),
-            snapshot_max_event_id=snapshot,
-            fingerprint=extraction_fingerprint(
-                self.settings,
-                model_name=self.extractor.model_name,
-            ),
-            statistics=statistics,
             actor_user_id=actor_user_id,
+            model_name=self.extractor.model_name,
             session=session,
+            prepared=prepared,
         )
 
     async def list(self, *, actor_user_id: str) -> tuple[MemoryRebuildRun, ...]:
@@ -375,7 +367,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            await self._authorize(actor_user_id)
+            await self._authorize(actor_user_id, session=session)
         self._available()
         if await self.repository.executing_count(session=session):
             raise RuntimeError("another memory rebuild run is executing")
@@ -420,7 +412,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            await self._authorize(actor_user_id)
+            await self._authorize(actor_user_id, session=session)
         run = await self._require(run_id, session=session)
         if run.status in {
             MemoryRebuildRunStatus.COMPLETED,
@@ -664,13 +656,6 @@ class MemoryRebuildService:
                             tasks.discard(task)
                             if not tasks:
                                 self._in_flight_tasks.pop(run.public_id, None)
-                await self.repository.record_model_usage(
-                    run.public_id,
-                    extraction_requests=1,
-                    input_tokens=extracted.input_tokens,
-                    output_tokens=extracted.output_tokens,
-                    latency_seconds=extracted.latency_seconds,
-                )
                 staged: list[tuple[MemoryClaim, Any, str]] = []
                 for raw_claim in extracted.output.claims:
                     claim = raw_claim
@@ -690,6 +675,9 @@ class MemoryRebuildService:
                     item_id=item_id,
                     event_id=source_event.id,
                     claims=tuple(staged),
+                    input_tokens=extracted.input_tokens,
+                    output_tokens=extracted.output_tokens,
+                    latency_seconds=extracted.latency_seconds,
                 )
             except asyncio.CancelledError:
                 await self.repository.defer_item(item_id, category="cancelled")

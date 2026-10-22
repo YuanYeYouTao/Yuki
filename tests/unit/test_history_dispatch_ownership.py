@@ -142,7 +142,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
 
     # A safe paired root resumes current history and task material, retaining
     # original execution facts while retiring the previous private tool tail.
-    await database.close()
+    await database.engine.dispose()
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )
@@ -369,7 +369,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
             return await compose(**kwargs)
 
         monkeypatch.setattr(chat.runtime.main_turns, "compose", restricted_compose)
-    await database.close()
+    await database.engine.dispose()
     next_message = replace(message, message_id="history-boundary-next", text="继续说明当前状态")
     result = await harness.processor.handle(next_message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 4

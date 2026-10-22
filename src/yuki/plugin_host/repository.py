@@ -619,10 +619,10 @@ class PluginStateRepository:
             raise ValueError("expected_version must be non-negative")
         namespace = _storage_key(namespace, label="state namespace")
         key = _storage_key(key, label="state key")
-        timestamp = _aware_utc(now or datetime.now(UTC))
         expiry = _aware_utc(expires_at) if expires_at is not None else None
         value_json = _json(value)
         async with self._database.immediate_session() as session:
+            timestamp = _aware_utc(now or datetime.now(UTC))
             from yuki.plugin_host.ownership import (
                 CANONICAL_OWNER_MISMATCH,
                 PluginOwnershipError,

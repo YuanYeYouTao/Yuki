@@ -1,13 +1,13 @@
 """Reflection waits for chat and resumes original batches only from real cycles."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from tests.conftest import make_settings
 from tests.unit.test_memory_v2 import _append_event
 
@@ -21,7 +21,9 @@ from yuki.persistence.models import (
 from yuki.persistence.models import (
     MemorySelfReflectionRunModel as Run,
 )
+from yuki.persistence.models import MemoryToolReceiptModel
 from yuki.persistence.repositories import EventLedgerRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
 
 LOCAL = ZoneInfo("Asia/Shanghai")
 SCHEDULED = datetime(2026, 10, 22, 20, tzinfo=LOCAL)
@@ -233,3 +235,38 @@ async def test_close_cancels_quiet_wait_without_holding_writer(database):
     task = worker._task
     await asyncio.wait_for(worker.close(), 2)
     assert task.cancelled() and worker._task is None
+
+
+async def test_cleanup_keeps_ordinary_paid_checkpoint_tool_source(database):
+    worker, repository, service, events = await reflection_worker(database)
+    service.reflect.side_effect = BackgroundModelPreempted("foreground arrived")
+    await worker.process_once(SCHEDULED)
+    batch = service.reflect.await_args.args[0]
+    run_id = batch.run_id
+    for index in range(2):
+        await ToolReceiptRepository(database).record_receipt(
+            provider_id="core",
+            tool_name=f"test-{index}",
+            success=True,
+            error_category=None,
+            trigger_event_id=events[0].id,
+            canonical_conversation_id=events[0].canonical_conversation_id,
+            result_excerpt="actual result",
+        )
+    tools = await repository.tool_receipts(batch)
+    ids = tuple(tool.id for tool in tools)
+    saved = _CHECKPOINT.dump_json(
+        ReflectionCheckpoint({"proposals": [], "episodes": []}, {}, {"tool_1": tools[0]})
+    ).decode()
+    await repository.save_checkpoint(run_id, saved)
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(MemoryToolReceiptModel).values(expires_at=datetime.now(UTC) - timedelta(days=1))
+        )
+    assert await repository.cleanup_receipts() == 1
+    async with database.read_session() as reader:
+        assert tuple(await reader.scalars(select(MemoryToolReceiptModel.id))) == (ids[0],)
+    async with database.immediate_session() as writer:
+        run = await writer.get(Run, run_id)
+        run.checkpoint_json = None
+    assert await repository.cleanup_receipts() == 1

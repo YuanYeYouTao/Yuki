@@ -24,6 +24,7 @@ from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBi
 from yuki.identity.ingress import IngressPreAdmit
 from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.identity.person_state import ObservationChanged
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_management import WorkManagementError, manage_work
@@ -542,7 +543,9 @@ class ClientWorks:
                 try:
                     async with self.database.immediate_session() as writer:
                         outcome = await record_input(writer)
-                except ObservationChanged:
+                except ObservationChanged as exc:
+                    if write_failure_committed(exc) is not False:
+                        raise
                     continue
                 if isinstance(outcome, ClientError):
                     raise outcome

@@ -1038,3 +1038,75 @@ async def test_terminal_work_survives_maintenance_before_late_occurrence_settlem
     assert (await case.repository.run_history(claimed.id))[0] == settled
     assert (await case.repository.get(claimed.id)).run_count == 1
     assert not case.provider.requests
+
+
+@pytest.mark.parametrize("waiting_seconds", [30, 120])
+async def test_renew_uses_admitted_clock_and_never_revives_expired_owner(
+    database,
+    tmp_path,
+    monkeypatch,
+    waiting_seconds,
+):
+    case = await setup_run(database, tmp_path)
+    clock = FakeClock(case.row.next_run_at)
+    claimed = await case.repository.claim_due(
+        worker_id="renew-owner",
+        now=clock.now(),
+        lease_seconds=60,
+        clock=clock.now,
+    )
+    assert len(claimed) == 1
+    original_expiry = await case.repository.claim_expiry(case.row.id, "renew-owner")
+    immediate = database.immediate_session
+    attempted = asyncio.Event()
+
+    @asynccontextmanager
+    async def waiting():
+        attempted.set()
+        async with immediate() as writer:
+            yield writer
+
+    async with immediate():
+        monkeypatch.setattr(database, "immediate_session", waiting)
+        renew = asyncio.create_task(
+            case.repository.renew_claim(
+                case.row.id,
+                "renew-owner",
+                lease_seconds=60,
+                clock=clock.now,
+            )
+        )
+        await attempted.wait()
+        clock.advance(waiting_seconds)
+    renewed = await renew
+    assert renewed is (waiting_seconds < 60)
+    expiry = await case.repository.claim_expiry(case.row.id, "renew-owner")
+    assert expiry == (
+        (clock.now() + timedelta(seconds=60)).timestamp() if renewed else original_expiry
+    )
+
+
+async def test_update_audit_keeps_original_hash_before_orm_publication(database, tmp_path):
+    from yuki.admin.audit import AdminAuditService
+    from yuki.persistence.models import AdminOperationEventModel
+
+    case = await setup_run(database, tmp_path)
+    case.service._audit = AdminAuditService(database)
+    changed = await case.service.update_task(
+        case.row.id,
+        {**case.row.script, "goal": "new task material"},
+        actor=case.actor,
+        conversation_key=case.env.context.conversation_id,
+    )
+    assert changed.script_hash != case.row.script_hash
+    async with database.read_session() as reader:
+        audit = (
+            await reader.scalars(
+                select(AdminOperationEventModel).where(
+                    AdminOperationEventModel.operation == "update",
+                    AdminOperationEventModel.target_id == str(case.row.id),
+                )
+            )
+        ).one()
+        assert json.loads(audit.before_json) == {"script_hash": case.row.script_hash}
+        assert json.loads(audit.after_json) == {"script_hash": changed.script_hash}

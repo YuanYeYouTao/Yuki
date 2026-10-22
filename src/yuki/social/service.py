@@ -1272,10 +1272,24 @@ class SocialService:
     ) -> dict[str, Any]:
         if source is not None and self.emoji_delivery is not None:
             try:
-                return await self.emoji_delivery.admit(args, context, target, source)
-            except SQLAlchemyError:
-                return {"status": "unknown", "error": "emoji_admission_unconfirmed"}
+                return await self.emoji_delivery.admit(
+                    prepared=self.emoji_delivery.prepare_admission(args, context, target, source)
+                )
             except Exception as exc:
+                from yuki.persistence.database import write_failure_committed, write_failure_phase
+
+                phase = write_failure_phase(exc)
+                if isinstance(exc, SQLAlchemyError) or phase is not None:
+                    committed = write_failure_committed(exc)
+                    return {
+                        "status": "not_accepted" if committed is False else "unknown",
+                        "error": "emoji_admission_unconfirmed",
+                        **(
+                            {"mutation_committed": committed, "database_write_phase": phase}
+                            if phase is not None
+                            else {}
+                        ),
+                    }
                 error = str(exc) if isinstance(exc, SocialError) else type(exc).__name__
                 logging.getLogger(__name__).warning(
                     "social_emoji_admission_failed category=%s", error
@@ -1352,6 +1366,15 @@ class SocialService:
             if work_control is not None and name.startswith("send_") and name != "send_file_caption"
             else None
         )
+        prepared_emoji = None
+        if emoji_request is not None and context.sequence_part_index in {None, 0}:
+            assert self.emoji_delivery is not None
+            emoji_arguments, emoji_context = emoji_request
+            source = await self.emoji_delivery.source(emoji_context, route)
+            source["after_operation_id"] = context.parent_operation_id or receipt.operation_id
+            prepared_emoji = self.emoji_delivery.prepare_admission(
+                emoji_arguments, emoji_context, target, source
+            )
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
         with model_detail("social_claim"):
@@ -1419,15 +1442,10 @@ class SocialService:
                     target_id=str(target.id),
                 )
                 await self._validate_reply_route(session, context, target, route)
-                if emoji_request is not None and context.sequence_part_index in {None, 0}:
+                if prepared_emoji is not None:
                     assert self.emoji_delivery is not None
-                    emoji_arguments, emoji_context = emoji_request
-                    source = await self.emoji_delivery.source(emoji_context, route, session=session)
-                    source["after_operation_id"] = (
-                        context.parent_operation_id or receipt.operation_id
-                    )
                     illustration = await self.emoji_delivery.admit(
-                        emoji_arguments, emoji_context, target, source, session=session
+                        prepared=prepared_emoji, session=session
                     )
                 if reservation is not None and work_control is not None:
                     await reserve(
@@ -1573,14 +1591,14 @@ class SocialService:
                             else None,
                             space_binding_id=route.binding_id if target.kind == "space" else None,
                         )
-                    completed = await self.receipts.finish(
+                    settlement = await self.receipts.finish(
                         operation_id,
                         status=OperationStatus.SUCCEEDED,
                         platform_reference=reference,
                         event_id=appended.event.id if appended is not None else None,
                         session=session,
                     )
-                    await self._record_work_delivery(completed, session=session)
+                    await self._record_work_delivery(settlement.receipt, session=session)
         except BaseException as exc:
             try:
                 persisted = await self.receipts.get(operation_id)
@@ -1595,7 +1613,7 @@ class SocialService:
             try:
                 with model_detail("social_settlement"):
                     async with self.database.immediate_session() as session:
-                        completed = await self.receipts.finish(
+                        settlement = await self.receipts.finish(
                             operation_id,
                             status=OperationStatus.SUCCEEDED
                             if confirmed
@@ -1606,7 +1624,7 @@ class SocialService:
                             error_category=None if confirmed else type(exc).__name__[:64],
                             session=session,
                         )
-                        await self._record_work_delivery(completed, session=session)
+                        await self._record_work_delivery(settlement.receipt, session=session)
             except Exception as secondary:
                 exc.add_note(f"social receipt reconciliation deferred: {type(secondary).__name__}")
                 raise exc from secondary
@@ -1617,7 +1635,7 @@ class SocialService:
                 from yuki.execution_trace.recorder import record_confirmed_delivery
 
                 await record_confirmed_delivery(operation_id, appended.event.id)
-        return completed
+        return settlement.result()
 
     async def replay_send(
         self, args: dict[str, Any], context: SocialContext
@@ -1687,7 +1705,7 @@ class SocialService:
                 control,
                 receipt.operation_id,
                 state,
-                receipt.model_dump(mode="json"),
+                receipt.model_dump(mode="json", exclude={"prepared"}),
                 session=session,
             )
         except Exception:

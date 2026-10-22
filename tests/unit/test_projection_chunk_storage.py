@@ -1,11 +1,13 @@
 """Real SQLite append work follows new chunks, with the original publication fence."""
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import event, insert, select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from tests.unit.test_history_missing_body import scene
 
 from yuki.conversation.frozen_fragments import FrozenFragments
@@ -45,6 +47,42 @@ async def _chunks(database):
                 ).order_by(PromptProjectionChunkModel.ordinal)
             )
         )
+
+
+async def test_rebuild_proves_large_existing_selection_with_native_parameter_budget(
+    database, monkeypatch
+):
+    _ledger, context, _seed = await scene(database, 350)
+    repository = PromptProjectionRepository(database)
+    fragments = FrozenFragments.load([]).extend_history(context.history_fragments, ())
+    publication = await _prepare(repository, context, fragments, reason="bootstrap")
+    async with database.immediate_session() as writer:
+        previous = await publication(writer)
+    async with database.read_session() as reader:
+        original = list(await reader.scalars(select(ContextSelectionModel.source_key)))
+    assert len(original) > 300
+    async with database.engine.connect() as connection:
+        await connection.run_sync(
+            lambda sync: sync.connection.dbapi_connection.run_async(
+                lambda driver: driver._execute(
+                    driver._conn.setlimit, sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300
+                )
+            )
+        )
+        monkeypatch.setattr(
+            database, "_sessions", async_sessionmaker(connection, expire_on_commit=False)
+        )
+        publication = await _prepare(
+            repository, context, fragments, previous, reason="source_changed"
+        )
+        async with database.immediate_session() as writer:
+            rebuilt = await publication(writer)
+        assert rebuilt.epoch_id != previous.epoch_id
+        assert tuple(rebuilt.fragments.iter_fragments()) == tuple(fragments.iter_fragments())
+        async with database.read_session() as reader:
+            assert set(await reader.scalars(select(ContextSelectionModel.source_key))) == set(
+                original
+            )
 
 
 async def test_hot_append_does_not_materialize_or_rewrite_the_original_prefix(
@@ -161,9 +199,7 @@ async def test_replacement_stores_current_bytes_and_retires_old_chunks_not_prove
 
 
 def _source(projection=None):
-    return PromptHistorySource(
-        (), projection=projection, timezone="UTC", after_event_id=0
-    )
+    return PromptHistorySource((), projection=projection, timezone="UTC", after_event_id=0)
 
 
 def test_source_metadata_uses_the_same_total_memory_budget_and_lru(database):
