@@ -88,7 +88,6 @@ async def _boundary_scene(database, tmp_path):
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id=message.sender.user_id,
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="ordinary-boundary",
         current_group_id=message.group_id,
         bot_user_id=message.bot_user_id,
@@ -206,7 +205,6 @@ async def test_selected_ordinary_input_keeps_original_activation_and_private_mat
     assert accepted.actor_person_id != scene.owner.actor_person_id
     assert accepted.route == "ordinary" and accepted.work_id is None
     assert scene.runtime.actor_user_id == "10001"
-    assert scene.runtime.delegated_authority is None
     assert scene.runtime.before_model_request.await_count == 2
     scene.hook.assert_awaited_once_with()
     after = await _projection(database)

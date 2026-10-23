@@ -29,7 +29,6 @@ class InvocationContextFactory:
             origin=source.origin,
             actor_user_id=source.actor_user_id,
             actor_is_superuser=source.actor_is_superuser,
-            delegated_authority=None,
             conversation_key=source.conversation_key,
             current_group_id=source.current_group_id,
             bot_user_id=bot,
@@ -51,4 +50,5 @@ class InvocationContextFactory:
             source_event_id=source.effective_trigger_event_id,
             visible_event_ids=source.visible_event_ids,
             preparation_model_requests=source.preparation_model_requests,
+            activation_context=source.activation_context,
         )

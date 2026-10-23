@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from functools import lru_cache
+from types import EllipsisType
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID, uuid4
 
@@ -445,33 +446,69 @@ class FakeNotificationFacade:
 class FakeAutomationFacade:
     def __init__(self) -> None:
         self.tasks: list[dict[str, JsonValue]] = []
+        self._created: dict[str, tuple[dict[str, JsonValue], int | None, str]] = {}
+
+    @staticmethod
+    def _record(row: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+        return {
+            key: row[key]
+            for key in (
+                "task_id",
+                "name",
+                "status",
+                "next_run_at",
+                "last_run_at",
+                "run_count",
+                "max_runs",
+            )
+        }
 
     async def list_current_owner(self) -> tuple[Mapping[str, JsonValue], ...]:
-        return tuple(self.tasks)
-
-    async def create_task(self, task: Mapping[str, JsonValue], *, request_id: str) -> PluginResult:
-        previous = next((row for row in self.tasks if row["request_id"] == request_id), None)
-        if previous is not None:
-            if previous["task"] != dict(task):
-                raise ValueError("automation_creation_key_conflict")
-            return PluginResult(data={"task_id": previous["id"]})
-        task_id = str(uuid4())
-        self.tasks.append(
-            {
-                "id": task_id,
-                "task": dict(task),
-                "request_id": request_id,
-                "status": "active",
-            }
+        return tuple(
+            self._record(row) for row in self.tasks if row["status"] in {"active", "paused"}
         )
-        return PluginResult(data={"task_id": task_id})
 
-    async def update_task(self, task_id: str, task: Mapping[str, JsonValue]) -> PluginResult:
+    async def create_task(
+        self, task: Mapping[str, JsonValue], *, request_id: str, max_runs: int | None = None
+    ) -> PluginResult:
+        previous = self._created.get(request_id)
+        if previous is not None:
+            original, cap, task_id = previous
+            if original != dict(task) or cap != max_runs:
+                raise ValueError("automation_creation_key_conflict")
+            original_row = next(row for row in self.tasks if row["task_id"] == task_id)
+            return PluginResult(data={"automation": self._record(original_row)})
+        task_id = str(len(self.tasks) + 1)
+        row: dict[str, JsonValue] = {
+            "task_id": task_id,
+            "name": task.get("name") or f"自动化 #{task_id}",
+            "status": "active",
+            "next_run_at": None,
+            "last_run_at": None,
+            "run_count": 0,
+            "max_runs": max_runs,
+        }
+        self.tasks.append(row)
+        self._created[request_id] = (dict(task), max_runs, task_id)
+        return PluginResult(data={"automation": self._record(row)})
+
+    async def update_task(
+        self,
+        task_id: str,
+        task: Mapping[str, JsonValue],
+        *,
+        max_runs: int | None | EllipsisType = ...,
+    ) -> PluginResult:
         for row in self.tasks:
-            if row.get("id") == task_id:
-                row["task"] = dict(task)
-                return PluginResult(data={"task_id": task_id})
-        return PluginResult(ok=False, error_code="automation.not_found")
+            if row["task_id"] == task_id:
+                if row["status"] in {"completed", "cancelled"}:
+                    raise ValueError("该任务已经结束，不能更新")
+                if "name" in task:
+                    row["name"] = task["name"] or f"自动化 #{task_id}"
+                if max_runs is not ...:
+                    row["max_runs"] = max_runs
+                return PluginResult(data={"automation": self._record(row)})
+        raise ValueError("自动化任务不存在")
 
     async def pause(self, task_id: str) -> PluginResult:
         return self._set_status(task_id, "paused")
@@ -483,11 +520,29 @@ class FakeAutomationFacade:
         return self._set_status(task_id, "cancelled")
 
     def _set_status(self, task_id: str, status: str) -> PluginResult:
-        for task in self.tasks:
-            if task.get("id") == task_id:
-                task["status"] = status
-                return PluginResult(data={"updated": True})
-        return PluginResult(ok=False, error_code="automation.not_found")
+        for row in self.tasks:
+            if row["task_id"] == task_id:
+                current = row["status"]
+                if status == "cancelled":
+                    changed = current != "cancelled"
+                elif status == "active":
+                    changed = current in {"paused", "failed", "blocked"}
+                else:
+                    changed = current not in {"completed", "cancelled"}
+                if changed:
+                    row["status"] = status
+                return PluginResult(
+                    ok=changed,
+                    data={
+                        "task_id": task_id,
+                        "operation": {"active": "resume", "paused": "pause", "cancelled": "cancel"}[
+                            status
+                        ],
+                    },
+                    error_code=None if changed else "automation.not_changed",
+                    detail="" if changed else "automation state was not changed",
+                )
+        raise ValueError("自动化任务不存在")
 
 
 class FakeConfigFacade:

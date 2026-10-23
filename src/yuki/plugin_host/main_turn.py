@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from contextvars import copy_context
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
@@ -257,7 +258,10 @@ async def _execute_plugin_main_turn(
                 "instruction": actor.instruction,
             }
 
+        activation_context: Callable[[], dict[str, Any]] | None = None
+
         async def validate() -> None:
+            nonlocal activation_context
             if host._require(permission) is not invocation:
                 raise LLMInvalidRequestError("plugin invocation changed before model request")
             from yuki.identity.db_models import (
@@ -327,6 +331,12 @@ async def _execute_plugin_main_turn(
                 )
                 if recovered_actor != actor:
                     raise PluginPermissionError("plugin execution source changed")
+                if isinstance(recovered, AutomationTaskSource):
+
+                    def occurrence_context() -> dict[str, Any]:
+                        return recovered.activation_context(datetime.now(UTC))
+
+                    activation_context = occurrence_context
             if not await ledger.read_version_matches(version):
                 raise ContextBoundaryChanged("plugin Conversation changed before model request")
             if runtime.before_model_request is not None:
@@ -546,9 +556,9 @@ async def _execute_plugin_main_turn(
                             else runtime.runtime_config.agent.max_model_requests,
                         ),
                         origin=runtime.origin,
-                        delegated_authority=runtime.delegated_authority,
                         invocation_goal=instruction,
                         invocation_source=invocation_source,
+                        activation_context=activation_context,
                         before_model_request=validate_and_commit,
                         public_compaction=composition.public_compaction,
                     ),
@@ -573,9 +583,9 @@ async def resume_plugin_work(
     """Host-owned continuation after the original SDK callback has returned."""
     from dataclasses import replace
 
-    from yuki.automation.models import TurnOrigin
     from yuki.domain.messages import InboundMessage, SenderIdentity
     from yuki.plugin_host.facades import PluginInvocation, _agent_dependencies
+    from yuki.runtime.origin import TurnOrigin
     from yuki.runtime.work_activation import activate_work
     from yuki.runtime.work_repository import WorkConflict, WorkRepository
 

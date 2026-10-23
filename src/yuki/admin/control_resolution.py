@@ -42,8 +42,6 @@ SUPERUSER_CAPABILITIES: frozenset[str] = USER_CAPABILITIES | frozenset(
         "control.memory.rebuild",
         "control.memory.dream",
         "control.memory.maintenance",
-        "control.automation.read",
-        "control.automation.mutate",
         "control.plugin.read",
         "control.plugin.mutate",
         "control.operation.read",

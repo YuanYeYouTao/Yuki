@@ -77,7 +77,7 @@ async def host_case(database, tmp_path):
     )
     backend = MainAgentBackend(chat, tool_runtime)
     runtime = SimpleNamespace(
-        work_control=work.control, origin=TurnOrigin.USER_MESSAGE, delegated_authority=None
+        work_control=work.control, origin=TurnOrigin.USER_MESSAGE
     )
     await backend.prepare()
     backend.refresh_catalog(runtime)

@@ -10,10 +10,10 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.codemode_cases import BINARY, TOOLS, worker
 from tests.support.social_identity_cases import social_env
 
-from yuki.automation.models import TurnOrigin
 from yuki.codemode.api_projection import project
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WorkControl, work_control_tools
 from yuki.runtime.work_repository import WorkRepository
 from yuki.services.agent_runner import AgentRuntime
@@ -93,7 +93,6 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="code-runner",
         current_group_id=None,
         bot_user_id="80001",

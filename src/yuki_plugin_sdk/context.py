@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from types import EllipsisType
 from typing import Literal, Protocol
 
 from yuki_plugin_sdk.events import EventEnvelope
@@ -203,10 +204,16 @@ class AutomationFacade(Protocol):
     async def list_current_owner(self) -> tuple[Mapping[str, JsonValue], ...]: ...
 
     async def create_task(
-        self, task: Mapping[str, JsonValue], *, request_id: str
+        self, task: Mapping[str, JsonValue], *, request_id: str, max_runs: int | None = None
     ) -> PluginResult: ...
 
-    async def update_task(self, task_id: str, task: Mapping[str, JsonValue]) -> PluginResult: ...
+    async def update_task(
+        self,
+        task_id: str,
+        task: Mapping[str, JsonValue],
+        *,
+        max_runs: int | None | EllipsisType = ...,
+    ) -> PluginResult: ...
 
     async def pause(self, task_id: str) -> PluginResult: ...
 

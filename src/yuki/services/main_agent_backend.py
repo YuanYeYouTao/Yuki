@@ -655,14 +655,14 @@ class MainAgentBackend(AgentToolBackend):
             reports.append(report)
             session.progress["self_reports"] = reports[-32:]
 
-    @staticmethod
-    def _self_main_run(runtime: AgentRuntime) -> bool:
+    def _self_main_run(self, runtime: AgentRuntime) -> bool:
+        actor = self._runtime.actor_context
         return (
             runtime.origin is RuntimeTurnOrigin.SELF_INITIATIVE
             or (
                 runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
-                and runtime.delegated_authority is not None
-                and runtime.delegated_authority.principal_kind == "self"
+                and actor is not None
+                and actor.principal_kind == "self"
             )
         ) and (runtime.work_control is None or runtime.work_control.lease.work_id is None)
 

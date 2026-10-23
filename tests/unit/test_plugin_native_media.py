@@ -13,7 +13,6 @@ import pytest
 from PIL import Image
 from sqlalchemy import delete, update
 
-from yuki.automation.models import TurnOrigin
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import AttachmentKind, InboundMessage, MessageAttachment, SenderIdentity
@@ -22,6 +21,7 @@ from yuki.plugin_host.db_models import PluginInstallationModel, PluginMediaArtif
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
 from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.native_media import NativeMediaPreparer

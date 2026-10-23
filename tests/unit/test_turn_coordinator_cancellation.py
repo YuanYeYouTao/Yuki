@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from yuki.automation.models import TurnOrigin
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.turn_coordinator import (
     ConversationTurnCoordinator,
     TurnInterruptedError,

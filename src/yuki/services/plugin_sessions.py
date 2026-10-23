@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from yuki.admin.config_service import RuntimeConfigService
-from yuki.automation.models import TurnOrigin
 from yuki.domain.messages import ChatMessage
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.models import ModelTask
@@ -16,6 +15,7 @@ from yuki.plugin_host.session_repository import (
     PluginAgentSessionRecord,
     PluginAgentSessionRepository,
 )
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_runner import AgentRunner, AgentRuntime
 from yuki.services.concurrency import ConcurrencyManager
 
@@ -177,7 +177,6 @@ class PluginAgentSessionService:
                     origin=TurnOrigin.PLUGIN_SESSION,
                     actor_user_id=authority.actor_user_id or "",
                     actor_is_superuser=False,
-                    delegated_authority=None,
                     conversation_key=conversation_key,
                     current_group_id=authority.current_group_id,
                     bot_user_id=self._bot_user_id,

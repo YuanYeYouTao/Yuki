@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
-from yuki.automation.models import TurnOrigin
+from yuki.runtime.origin import TurnOrigin
 
 if TYPE_CHECKING:
     from yuki.persistence.event_repository import ConversationReadVersion

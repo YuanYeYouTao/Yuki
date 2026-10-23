@@ -27,14 +27,13 @@ async def setup_run(
     database,
     tmp_path,
     *,
-    delivery="current_group",
+    recipient="group",
     mode="send",
     principal="person",
     trigger=None,
     max_runs=None,
     privileged=False,
     goal="完成任务",
-    constraints=(),
     work_enabled=True,
     self_memory_enabled=False,
     provider=None,
@@ -44,7 +43,7 @@ async def setup_run(
         async with database.immediate_session() as writer:
             person = await writer.get(CanonicalPersonModel, env.person)
             person.is_superuser = True
-    if delivery == "self_private":
+    if recipient == "person":
         await env.router.cas_takeover_person(env.person)
     turns = 0
 
@@ -53,6 +52,8 @@ async def setup_run(
         turns += 1
         if turns == 1 and mode != "silent":
             args = {"text": "PUBLIC_RESULT"}
+            if recipient == "person":
+                args["target"] = {"kind": "person", "target_id": env.person}
             if mode == "reject":
                 args = {"text": ""}
             return ChatResponse(
@@ -106,9 +107,7 @@ async def setup_run(
         {
             "name": "delivery regression",
             "goal": goal,
-            "constraints": constraints,
             "trigger": trigger or {"type": "after", "seconds": 1},
-            "delivery": {"target": delivery},
         },
         actor=actor,
         conversation_key="group:80001:20001",

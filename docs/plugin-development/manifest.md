@@ -10,7 +10,7 @@ name = "Weather"
 version = "0.1.0"
 description = "天气查询和提醒插件"
 entrypoint = "weather_plugin:WeatherPlugin"
-plugin_api = "7.1"
+plugin_api = "8.0"
 yuki_requires = ">=4.0.0,<5.0"
 
 permissions = [

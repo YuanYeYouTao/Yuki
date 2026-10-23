@@ -1,0 +1,146 @@
+{
+  "layout": "legacy",
+  "create": {
+    "n": 40,
+    "median_ms": 21.231500199064612,
+    "p95_ms": 24.26300011575222
+  },
+  "list_41": {
+    "n": 30,
+    "median_ms": 3.5985501017421484,
+    "p95_ms": 4.2870002798736095
+  },
+  "due_main_fake_provider_ms": 384.8965996876359,
+  "model_requests": 1,
+  "native_messages_sent": 0,
+  "conditions": "Same Windows host, real SQLite/domain services, sequential samples, no paid model or network, 40 tasks with equal full goal; no production latency claim",
+  "claim_to_first_provider_ms": 364.27609995007515,
+  "database_phases": {
+    "create_40": {
+      "sql": {
+        "count": 80,
+        "total_ms": 30.999999959021807
+      },
+      "read_sql": {
+        "count": 480,
+        "total_ms": 296.00000055506825
+      },
+      "other_sql": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "acquire": {
+        "count": 40,
+        "total_ms": 0.0
+      },
+      "commit": {
+        "count": 40,
+        "total_ms": 62.99999915063381
+      },
+      "rollback": {
+        "count": 0,
+        "total_ms": 0
+      },
+      "writer_admission_wait": {
+        "count": 40,
+        "total_ms": 0.0
+      },
+      "writer_connection_acquisition": {
+        "count": 40,
+        "total_ms": 0.0
+      },
+      "writer_transaction": {
+        "count": 40,
+        "total_ms": 532.9999988898635
+      },
+      "writer_cleanup": {
+        "count": 0,
+        "total_ms": 0
+      }
+    },
+    "list_30": {
+      "sql": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "read_sql": {
+        "count": 30,
+        "total_ms": 30.99999949336052
+      },
+      "other_sql": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "acquire": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "commit": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "rollback": {
+        "count": 0,
+        "total_ms": 0
+      },
+      "writer_admission_wait": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "writer_connection_acquisition": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "writer_transaction": {
+        "count": 0,
+        "total_ms": 0.0
+      },
+      "writer_cleanup": {
+        "count": 0,
+        "total_ms": 0
+      }
+    },
+    "due": {
+      "sql": {
+        "count": 10,
+        "total_ms": 0.0
+      },
+      "read_sql": {
+        "count": 88,
+        "total_ms": 79.00000037625432
+      },
+      "other_sql": {
+        "count": 9,
+        "total_ms": 15.999999828636646
+      },
+      "acquire": {
+        "count": 7,
+        "total_ms": 0.0
+      },
+      "commit": {
+        "count": 7,
+        "total_ms": 0.0
+      },
+      "rollback": {
+        "count": 0,
+        "total_ms": 0
+      },
+      "writer_admission_wait": {
+        "count": 7,
+        "total_ms": 0.0
+      },
+      "writer_connection_acquisition": {
+        "count": 7,
+        "total_ms": 0.0
+      },
+      "writer_transaction": {
+        "count": 7,
+        "total_ms": 46.99999978765845
+      },
+      "writer_cleanup": {
+        "count": 0,
+        "total_ms": 0
+      }
+    }
+  }
+}

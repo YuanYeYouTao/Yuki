@@ -8,10 +8,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# TurnOrigin moved to the neutral runtime layer in 3.6.0-R1; this re-export
-# keeps the pre-existing import sites working until they migrate.
-from yuki.runtime.origin import TurnOrigin as TurnOrigin
-
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -25,7 +21,12 @@ class AfterSchedule(StrictModel):
 class OnceSchedule(StrictModel):
     type: Literal["once"]
     local_datetime: datetime
-    timezone: str | None = None
+
+    @model_validator(mode="after")
+    def _absolute_datetime(self) -> OnceSchedule:
+        if self.local_datetime.utcoffset() is None:
+            raise ValueError("once.local_datetime 必须包含 UTC offset")
+        return self
 
 
 class DailySchedule(StrictModel):
@@ -98,13 +99,13 @@ class AutomationRecord(StrictModel):
     last_run_at: datetime | None
     run_count: int
     max_runs: int | None
-    consecutive_failures: int
+    creation_max_runs: int | None = None
     created_at: datetime
     updated_at: datetime
     canonical_creator_person_id: str | None = None
-    canonical_target_person_id: str | None = None
-    canonical_target_space_id: str | None = None
     canonical_presence_id: str | None = None
+    canonical_conversation_id: str | None = None
+    source_event_id: int | None = None
 
 
 class AutomationCreatorIdentity(StrictModel):
@@ -150,3 +151,5 @@ class AutomationRunRecord(StrictModel):
     messages_sent: int
     error_category: str | None
     result_summary: dict[str, Any]
+    delivery: dict[str, Any] = Field(default_factory=dict)
+    definition: dict[str, Any] | None = None

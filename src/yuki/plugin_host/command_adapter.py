@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from yuki.admin.control_resolution import ControlAccess
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.automation.models import TurnOrigin
 from yuki.conversation.scope import plugin_conversation_key
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import InboundMessage
@@ -23,6 +22,7 @@ from yuki.plugin_host.direct_command_router import (
 )
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki.plugin_host.manager import PluginManager
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_tools import ToolRuntime
 from yuki_plugin_sdk.models import PermissionLevel
 from yuki_plugin_sdk.registrar import CommandRegistration

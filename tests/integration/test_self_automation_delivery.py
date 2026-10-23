@@ -56,14 +56,13 @@ async def self_actor(database, env):
     )
 
 
-@pytest.mark.parametrize("delivery", ["none", "current_group"])
-async def test_self_schedule_uses_real_actor_without_preaccepted_work(database, tmp_path, delivery):
+@pytest.mark.parametrize("mode", ["silent", "send"])
+async def test_self_schedule_uses_real_actor_without_preaccepted_work(database, tmp_path, mode):
     case = await setup_run(
         database,
         tmp_path,
         principal="self",
-        delivery=delivery,
-        mode="silent" if delivery == "none" else "send",
+        mode=mode,
     )
     sources = []
     generate = case.worker._generate
@@ -81,7 +80,7 @@ async def test_self_schedule_uses_real_actor_without_preaccepted_work(database, 
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED
     assert len(sources) == 1
-    assert len(sent(case.env)) == (delivery == "current_group")
+    assert len(sent(case.env)) == (mode == "send")
     assert case.provider.requests
     assert not await case.works.active(case.env.context.conversation_id, 1)
     before = len(case.provider.requests)
@@ -99,7 +98,6 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
         database,
         tmp_path,
         principal="self",
-        delivery="none",
         mode="silent",
         self_memory_enabled=True,
     )
@@ -227,7 +225,6 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
         database,
         tmp_path,
         principal="self",
-        delivery="none",
         mode="silent",
         work_enabled=work_enabled,
     )
@@ -393,7 +390,6 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
         database,
         tmp_path,
         principal="self",
-        delivery="none",
         mode="silent",
         self_memory_enabled=True,
         trigger={"type": "interval", "seconds": 60},
@@ -441,7 +437,6 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
             "name": "new definition",
             "goal": "新的任务定义",
             "trigger": {"type": "interval", "seconds": 60},
-            "delivery": {"target": "none"},
         },
         actor=case.actor,
         conversation_key="group:80001:20001",

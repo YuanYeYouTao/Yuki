@@ -25,6 +25,10 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "automations": frozenset(
+        {"canonical_conversation_id", "source_event_id", "creation_source_key", "creation_max_runs"}
+    ),
+    "automation_versions": frozenset({"script_json", "script_hash", "authority_snapshot_json"}),
     "chat_history_fts": frozenset({"tokens"}),
     "chat_event_artifact_refs": frozenset({"event_id", "artifact_id", "version"}),
     "canonical_event_receipts": frozenset(

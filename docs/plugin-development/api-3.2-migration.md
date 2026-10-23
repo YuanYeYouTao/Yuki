@@ -1,6 +1,6 @@
 # Plugin API 3.2 迁移
 
-> 本页保留该版本的历史变更；当前开发和部署只使用 [Plugin API 7.0](api-7.0-migration.md)。
+> 本页保留该版本的历史变更；当前开发和部署使用 [Plugin API 8.0](api-8.0-migration.md)。
 > 本文记录语音退出时的 3.2 历史合同。当前 Host 只接受精确的 7.0；完成本步骤后继续 [API 3.3 迁移](api-3.3-migration.md)及后续步骤，最终按 [API 7.0 迁移](api-7.0-migration.md)更新声明与实际代码。下面的 3.2 示例属于当时版本。
 
 Plugin API 3.2 彻底退出语音合成与 QQ 语音发送 SDK。ASR、历史语音/转写、普通文件上传、

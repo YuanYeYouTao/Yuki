@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import build_harness, make_settings
 
-from yuki.automation.models import TurnOrigin
 from yuki.automation.tools import AutomationToolService
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
 from yuki.domain.tool_actor import ToolActor
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_runner import AgentRuntime
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.main_agent_backend import MainAgentBackend
@@ -131,7 +131,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="1001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="query-test",
         current_group_id=None,
         bot_user_id="8001",

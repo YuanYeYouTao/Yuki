@@ -18,7 +18,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
-from yuki.automation.models import TurnOrigin
 from yuki.capabilities.executions import is_execution
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
@@ -62,6 +61,7 @@ from yuki.persistence.repositories import (
     EventLedgerRepository,
 )
 from yuki.runtime.errors import InvalidTurnContextError
+from yuki.runtime.origin import TurnOrigin
 from yuki.sandbox.environment_tools import SANDBOX_TOOLS
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
@@ -167,6 +167,7 @@ class ToolRuntime:
     target_presence_id: str | None = None
     context_plugin_id: str | None = None
     context_read_contract: str | None = None
+    activation_context: Callable[[], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.inbound is not None:

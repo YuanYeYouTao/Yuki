@@ -341,7 +341,6 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
                     "name": "完整当前合同",
                     "goal": "SCHEDULE_CURRENT_INSTRUCTION",
                     "trigger": {"type": "after", "seconds": 1},
-                    "delivery": {"target": "none"},
                 },
                 actor=ToolActor(
                     user_id="10001",

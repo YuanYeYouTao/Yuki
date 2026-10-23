@@ -1,5 +1,7 @@
 # Plugin API 7.1 历史查询扩展
 
+> 本页保留 7.1 历史变更；当前公开合同见 [API 8.0 迁移](api-8.0-migration.md)。
+
 7.1 是 7.0 的增量合同，原方法仍可调用。Host 加载同一 major 内不高于自身 minor 的插件；7.0 插件可直接在 7.1 运行，无需批改插件声明或改原批准事实。要求 7.2 或不同 major 的插件仍需满足实际合同后再加载。
 
 `messages.get_recent(limit)` 与 `messages.search_history(query, limit)` 统一使用当前 Conversation 的内部 ID 页、原作者及正文/current ASR 匹配；返回仍按账本正序排列。不再有历史查询的 100 条帽、400 字符查询帽或空关键词拒绝。空查询可浏览，`limit` 是正整数，不做静默裁剪。

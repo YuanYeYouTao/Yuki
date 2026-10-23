@@ -57,7 +57,7 @@ def self_execution_origin_sql(execution_id: str) -> str:
         "json_extract(w.source_json,'$.step_id'))"
     )
     return (
-        "SELECT ic.id AS conversation_id, av.canonical_target_space_id AS space_id, "
+        "SELECT ic.id AS conversation_id, ic.space_id AS space_id, "
         "av.canonical_presence_id AS presence_id, ia.external_account_id AS bot_user_id, "
         "json_extract(av.authority_snapshot_json,'$.current_group_id') AS group_id, "
         "ar.created_at AS occurred_at, COALESCE(w.generation,ic.generation) AS generation "
@@ -67,7 +67,7 @@ def self_execution_origin_sql(execution_id: str) -> str:
         "ic.id=json_extract(av.authority_snapshot_json,'$.canonical_conversation_id') "
         "JOIN account_assignments ip ON ip.id=av.canonical_presence_id AND ip.kind='yuki' "
         "JOIN accounts ia ON ia.id=ip.account_id "
-        "JOIN spaces isp ON isp.id=av.canonical_target_space_id "
+        "JOIN spaces isp ON isp.id=ic.space_id "
         f"LEFT JOIN runtime_work w ON w.id={source_execution} "
         "AND w.conversation_id=ic.id "
         "AND COALESCE(json_extract(w.source_json,'$.execution_source.parent_execution_id'),"
@@ -77,7 +77,7 @@ def self_execution_origin_sql(execution_id: str) -> str:
         "ELSE printf('automation:%d:%s:%s',ar.id,"
         f"{step_id},av.script_hash) END "
         "WHERE a.creator_kind='self' "
-        "AND ic.kind='space' AND ic.space_id=av.canonical_target_space_id "
+        "AND ic.kind='space' "
         f"AND ({source_execution}=printf('automation:%d:%s',ar.id,av.script_hash) "
         "OR w.id IS NOT NULL)"
     )

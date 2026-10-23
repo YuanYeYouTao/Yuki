@@ -20,13 +20,13 @@ from tests.support.social_identity_cases import social_env
 from tests.support.work_runner_helpers import case, run, tool
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import ensure_account, replace_assignment
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import activate_work
 from yuki.runtime.work_control import WorkControl, work_control_tools
 from yuki.runtime.work_queries import WorkQueries
@@ -149,7 +149,6 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="delivery-test",
         current_group_id="20001",
         bot_user_id="80001",
@@ -306,7 +305,7 @@ async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_for
     transcript = await again.restore(TurnTranscript(()))
     assert resumed.handoff_work_id is None  # Its own background completion may now resume.
     material = json.loads(transcript.request().messages[-1].content)
-    assert material["goal"] == old["goal"]
+    assert (await resumed.runtime_state())["goal"] == old["goal"]
     assert material["work_id"] == old["id"]
     assert (await repo.get(new["id"]))["model_requests"] == 0
     await repo.release(lease)

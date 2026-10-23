@@ -85,7 +85,6 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
                     "name": "child reminder",
                     "goal": "check later",
                     "trigger": {"type": "after", "seconds": 3600},
-                    "delivery": {"target": "none"},
                 },
             },
         ),
@@ -129,7 +128,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
             case.chat.runtime.runner.main_contract.state.snapshot()[0]["text"]
             == calls[2][1]["text"]
         )
-        assert len(await case.repository.list_for_creator(case.env.person)) == 2
+        assert len(await case.repository.list_current_for_creator(case.env.person)) == 2
         async with database.read_session() as reader:
             owned_effects = list((await reader.execute(select(effects))).mappings())
         assert owned_effects and {row["work_id"] for row in owned_effects} == {child}

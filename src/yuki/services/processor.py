@@ -24,7 +24,6 @@ from yuki.admin.models import (
     RuntimeConfigSnapshot,
 )
 from yuki.asr.service import ASRService, AudioInput
-from yuki.automation.models import TurnOrigin
 from yuki.automation.repository import AutomationRepository
 from yuki.automation.service import AutomationService
 from yuki.automation.worker import AutomationWorker
@@ -82,6 +81,7 @@ from yuki.runtime.observability import (
     bind_runtime_turn,
     new_runtime_turn_id,
 )
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
 from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.chat import ChatService, OutboundSender

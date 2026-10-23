@@ -6,11 +6,11 @@ import pytest
 from tests.conftest import make_settings
 
 from yuki.admin.config_service import RuntimeConfigService
-from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from yuki.plugin_host.extension_registry import ExtensionRegistry
+from yuki.runtime.origin import TurnOrigin
 from yuki_plugin_sdk.models import AdmissionSignal
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import AdmissionSignalRegistration

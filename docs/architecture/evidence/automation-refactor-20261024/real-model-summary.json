@@ -1,0 +1,269 @@
+{
+  "initial_schema": [
+    {
+      "scenario": "relative_reminder",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 3,
+      "task_count": 1,
+      "tool_names": [
+        "automation_query",
+        "time_get_current",
+        "send"
+      ],
+      "sends_count": 1,
+      "usage": [
+        {
+          "prompt_tokens": 13870,
+          "completion_tokens": 823,
+          "cached_prompt_tokens": 2816,
+          "total_tokens": 14693
+        },
+        {
+          "prompt_tokens": 15006,
+          "completion_tokens": 335,
+          "cached_prompt_tokens": 14592,
+          "total_tokens": 15341
+        },
+        {
+          "prompt_tokens": 15582,
+          "completion_tokens": 8,
+          "cached_prompt_tokens": 15232,
+          "total_tokens": 15590
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    },
+    {
+      "scenario": "quiet_internal",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 2,
+      "task_count": 1,
+      "tool_names": [
+        "automation_query"
+      ],
+      "sends_count": 0,
+      "usage": [
+        {
+          "prompt_tokens": 13885,
+          "completion_tokens": 249,
+          "cached_prompt_tokens": 13440,
+          "total_tokens": 14134
+        },
+        {
+          "prompt_tokens": 14340,
+          "completion_tokens": 269,
+          "cached_prompt_tokens": 14080,
+          "total_tokens": 14609
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    },
+    {
+      "scenario": "legitimate_followup",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 3,
+      "task_count": 2,
+      "tool_names": [
+        "automation_query",
+        "time_get_current",
+        "automation_manage"
+      ],
+      "sends_count": 0,
+      "usage": [
+        {
+          "prompt_tokens": 13891,
+          "completion_tokens": 897,
+          "cached_prompt_tokens": 13440,
+          "total_tokens": 14788
+        },
+        {
+          "prompt_tokens": 15121,
+          "completion_tokens": 809,
+          "cached_prompt_tokens": 14720,
+          "total_tokens": 15930
+        },
+        {
+          "prompt_tokens": 16117,
+          "completion_tokens": 269,
+          "cached_prompt_tokens": 15872,
+          "total_tokens": 16386
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    },
+    {
+      "scenario": "cross_platform",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 2,
+      "task_count": 2,
+      "tool_names": [
+        "send"
+      ],
+      "sends_count": 1,
+      "usage": [
+        {
+          "prompt_tokens": 13962,
+          "completion_tokens": 296,
+          "cached_prompt_tokens": 13440,
+          "total_tokens": 14258
+        },
+        {
+          "prompt_tokens": 14549,
+          "completion_tokens": 15,
+          "cached_prompt_tokens": 14208,
+          "total_tokens": 14564
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    }
+  ],
+  "final_schema": [
+    {
+      "scenario": "relative_reminder",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 2,
+      "task_count": 1,
+      "tool_names": [
+        "send"
+      ],
+      "sends_count": 1,
+      "usage": [
+        {
+          "prompt_tokens": 13334,
+          "completion_tokens": 353,
+          "cached_prompt_tokens": 3712,
+          "total_tokens": 13687
+        },
+        {
+          "prompt_tokens": 13974,
+          "completion_tokens": 18,
+          "cached_prompt_tokens": 13568,
+          "total_tokens": 13992
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    },
+    {
+      "scenario": "quiet_internal",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 1,
+      "task_count": 1,
+      "tool_names": [],
+      "sends_count": 0,
+      "usage": [
+        {
+          "prompt_tokens": 13352,
+          "completion_tokens": 294,
+          "cached_prompt_tokens": 12928,
+          "total_tokens": 13646
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    },
+    {
+      "scenario": "legitimate_followup",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 2,
+      "task_count": 2,
+      "tool_names": [
+        "automation_manage"
+      ],
+      "sends_count": 0,
+      "usage": [
+        {
+          "prompt_tokens": 13355,
+          "completion_tokens": 502,
+          "cached_prompt_tokens": 12928,
+          "total_tokens": 13857
+        },
+        {
+          "prompt_tokens": 14032,
+          "completion_tokens": 73,
+          "cached_prompt_tokens": 13824,
+          "total_tokens": 14105
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    },
+    {
+      "scenario": "cross_platform",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "protocol": "chat_completions",
+      "run_status": "succeeded",
+      "model_requests": 5,
+      "task_count": 2,
+      "tool_names": [
+        "find_contacts",
+        "automation_query",
+        "send",
+        "automation_query",
+        "automation_manage"
+      ],
+      "sends_count": 1,
+      "usage": [
+        {
+          "prompt_tokens": 13417,
+          "completion_tokens": 264,
+          "cached_prompt_tokens": 12928,
+          "total_tokens": 13681
+        },
+        {
+          "prompt_tokens": 14090,
+          "completion_tokens": 490,
+          "cached_prompt_tokens": 13568,
+          "total_tokens": 14580
+        },
+        {
+          "prompt_tokens": 14828,
+          "completion_tokens": 248,
+          "cached_prompt_tokens": 14464,
+          "total_tokens": 15076
+        },
+        {
+          "prompt_tokens": 15333,
+          "completion_tokens": 139,
+          "cached_prompt_tokens": 14976,
+          "total_tokens": 15472
+        },
+        {
+          "prompt_tokens": 15559,
+          "completion_tokens": 67,
+          "cached_prompt_tokens": 15360,
+          "total_tokens": 15626
+        }
+      ],
+      "delivery_scope": "local in-memory receiver only; no real QQ/Feishu messages",
+      "profile_adjustment": "local profile tools capability enabled in memory"
+    }
+  ],
+  "final_assertion_correction": "Cross-platform case called automation_manage(cancel), not create. Initial tool-name-only assertion was too broad; original requests/receipts were checked with action=create and task counts, 4 recorded-outcome checks passed without another paid request."
+}

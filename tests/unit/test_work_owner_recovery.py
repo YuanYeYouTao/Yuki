@@ -642,7 +642,6 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     case = await setup_run(
         database,
         tmp_path,
-        delivery="none",
         mode="silent",
         principal=principal,
         trigger={"type": "interval", "seconds": 60} if wait_for_timer else None,
