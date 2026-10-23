@@ -318,7 +318,7 @@ Main 固定合同保持每项固定名称、schema和顺序，各入口共用一
 direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入同一合同；工具数量不作运行准入条件。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
-- `external_agent(action=list/get/watch/prompt/steer/queue/respond/cancel/detach)` 调用本人已授权设备上的原生 Agent。list／get 查询目录、原操作、状态和必要历史，无需 Work；prompt／queue 沿原 Work 登记新操作，watch 只登记监督。steer 追加到指定活跃执行；respond 回答原问题，cancel 精确取消原操作，detach 仅结束监督，不关闭用户会话或 daemon。新调用无 close、peer_id 或服务器 agent_id 别名，不让模型拼接启动程序、环境或 owner endpoint。
+- `external_agent(action=list/get/watch/prompt/steer/queue/respond/cancel/detach)` 调用本人已授权设备上的原生 Agent。list／get 查询目录、原操作、状态和必要历史，无需 Work；prompt／queue 沿原 Work 登记新操作，watch 只登记监督。steer 追加到指定活跃执行；respond 回答原问题，cancel 精确取消原操作，detach 仅结束监督，不关闭用户会话或 daemon。cancel 接纳不等于执行已取消；原 cancel 仍待确认时，读取同 instance/session/native execution 已持久的原执行或监督终态，保留原控制操作 ID。detached 不是原执行终态；自然完成仍报告完成，不改称取消。新调用无 close、peer_id 或服务器 agent_id 别名，不让模型拼接启动程序、环境或 owner endpoint。
 
 公开 device_id／instance_id／session_id／execution_id／operation_id／run_id 均为内部 ID；native ID 仅是适配器引用，不用于重建人物归属。run_id 认 Work 等待，execution_id 认原生执行映射。确认丢失保持原关联，不以 resume、fork 或新 prompt 冒充恢复；原生能力缺失照实返回，不隐式取消重启。原问题回答、纠偏和管理操作记录本次真实 actor 与独立稳定调用键，不复用原 prompt 键。
 

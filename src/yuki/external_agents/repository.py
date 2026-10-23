@@ -227,10 +227,43 @@ class AgentRepository:
             if operation.session_id and native_execution
             else None
         )
+        async with optional_session(self.database, session, write=False) as reader:
+            if (
+                operation.action == "cancel"
+                and result.get("admitted") is True
+                and result.get("pending") is True
+                and operation.native_execution_id is not None
+            ):
+                # Interrupt admission and the original execution's terminal fact can
+                # arrive on different operations (for example, a later watch).
+                terminal = await reader.scalar(
+                    select(AgentOperationModel.result_json)
+                    .where(
+                        AgentOperationModel.instance_id == operation.instance_id,
+                        AgentOperationModel.session_id == operation.session_id,
+                        AgentOperationModel.native_execution_id == operation.native_execution_id,
+                        AgentOperationModel.action.in_(("prompt", "queue", "watch")),
+                        func.json_type(AgentOperationModel.result_json, "$.admitted") == "true",
+                        func.json_type(AgentOperationModel.result_json, "$.pending") == "false",
+                        func.json_extract(AgentOperationModel.result_json, "$.status").in_(
+                            ("completed", "succeeded", "cancelled", "interrupted", "failed")
+                        ),
+                    )
+                    .order_by(AgentOperationModel.created_at.desc())
+                    .limit(1)
+                )
+                if terminal is not None:
+                    native_result = json.loads(terminal)
+                    result = {
+                        **result,
+                        "status": native_result["status"],
+                        "pending": False,
+                        "native_status": native_result["status"],
+                        "error": native_result.get("error"),
+                    }
+            task = await reader.get(SandboxTaskRunModel, operation.id) if operation.run_id else None
         if isinstance(result.get("error"), dict) and "code" in result["error"]:
             result = {**result, "error_detail": result["error"], "error": result["error"]["code"]}
-        async with optional_session(self.database, session, write=False) as reader:
-            task = await reader.get(SandboxTaskRunModel, operation.id) if operation.run_id else None
         if task is not None and task.status == "completed":
             completion = json.loads(task.completion_json or "{}")
             return {
