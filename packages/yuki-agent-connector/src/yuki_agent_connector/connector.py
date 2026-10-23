@@ -145,6 +145,18 @@ class Connector:
                         original, receipt = observation
                         await driver.recover(original, receipt)
                         result = self.journal.operation(arguments["operation_id"])
+            elif command["action"] == "detach":
+                driver = self.drivers.get(command["instance_id"])
+                result = (
+                    await driver.execute(command)
+                    if driver is not None
+                    else {
+                        "admitted": True,
+                        "detached": True,
+                        "pending": False,
+                        "status": "detached",
+                    }
+                )
             else:
                 driver = self.drivers.get(command["instance_id"])
                 if driver is None or command["instance_id"] in self.errors:

@@ -399,10 +399,10 @@ class ClaudeDriver:
                 "unsupported_action", "This SDK does not provide precise native steer/queue"
             )
         if action == "detach":
-            if session:
-                session.watches.pop(arguments["operation_id"], None)
-                if session.operation == arguments["operation_id"]:
-                    session.operation = None
+            for attached in self.sessions.values():
+                attached.watches.pop(arguments["operation_id"], None)
+                if attached.operation == arguments["operation_id"]:
+                    attached.operation = None
             return {
                 "session_id": identity,
                 "status": "completed",

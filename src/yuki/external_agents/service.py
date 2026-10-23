@@ -91,12 +91,14 @@ class ExternalAgentService:
             item["id"] for item in instances if item.get("status") != "unavailable"
         }
 
-    async def _connection(self, instance: AgentInstanceModel) -> DeviceConnection:
+    async def _connection(
+        self, instance: AgentInstanceModel, *, action: str | None = None
+    ) -> DeviceConnection:
         # Recheck the real grant for every native access, including an already-open WSS.
         async with self.database.read_session() as session:
             await self.identity.require_device(session, instance.device_id)
         connection = self.connections.get(instance.device_id)
-        if instance.local_id not in connection.instances:
+        if action != "detach" and instance.local_id not in connection.instances:
             raise DeviceOffline("instance_unavailable")
         return connection
 
@@ -444,7 +446,7 @@ class ExternalAgentService:
         if action in {"detach", "respond"} and owned is None:
             raise ValueError("operation_id_or_execution_id_required")
         try:
-            connection = await self._connection(instance)
+            connection = await self._connection(instance, action=action)
         except DeviceOffline:
             return {"error": "device_offline", "executed": False, "pending": False}
         arguments = {
@@ -547,7 +549,7 @@ class ExternalAgentService:
                     raise
             try:
                 # A queued writer may outlive the authenticated socket snapshot.
-                connection = await self._connection(instance)
+                connection = await self._connection(instance, action=action)
             except (DeviceOffline, ClientError):
                 operation = await self.repository.response(
                     operation.id,
@@ -679,7 +681,7 @@ class ExternalAgentService:
                 action = "cancel"
             try:
                 instance = await self.repository.instance(row.instance_id, row.actor_person_id)
-                connection = await self._connection(instance)
+                connection = await self._connection(instance, action=action)
             except (DeviceOffline, ClientError):
                 results.append({"operation_id": row.id, "status": "unknown", "pending": True})
                 continue

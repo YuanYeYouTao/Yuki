@@ -349,7 +349,10 @@ async def test_session_recovery_follows_latest_turn_instead_of_pinning_previous_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("driver_type", [ClaudeDriver, ACPDriver])
-async def test_sdk_session_watch_survives_terminal_and_detach_stops_original_upload(driver_type):
+@pytest.mark.parametrize("session_known", [True, False])
+async def test_sdk_session_watch_survives_terminal_and_detach_stops_original_upload(
+    driver_type, session_known
+):
     events = []
 
     async def emit(kind, value):
@@ -364,7 +367,6 @@ async def test_sdk_session_watch_survives_terminal_and_detach_stops_original_upl
         )
     else:
         session = Session("session", ".")
-        driver.connection = SimpleNamespace()
     session.execution, session.operation = "A", "prompt"
     session.watches = {"continuous": None, "single": "A"}
     driver.sessions[session.id] = session
@@ -372,7 +374,7 @@ async def test_sdk_session_watch_survives_terminal_and_detach_stops_original_upl
         {
             "id": "detach",
             "action": "detach",
-            "session_id": "session",
+            "session_id": "session" if session_known else None,
             "arguments": {"operation_id": "prompt"},
         }
     )

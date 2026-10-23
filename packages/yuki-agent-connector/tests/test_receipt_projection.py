@@ -246,3 +246,26 @@ async def test_command_journal_failure_closes_transport_and_preserves_uncertain_
         await connector._command(operation(), Socket())
     assert closed[0]["code"] == 1011
     assert journal.operation("watch")["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_driver", [True, False])
+async def test_native_unavailability_does_not_prevent_local_detach(journal, has_driver):
+    journal.begin(operation())
+    journal.complete("watch", {"result": {"status": "running", "pending": True}})
+    connector = Connector(Config("ws://localhost", "device", "fixture"), journal)
+    connector.errors["local"] = "native_disconnected"
+
+    class Driver:
+        async def execute(self, command):
+            assert command["action"] == "detach"
+            return {"status": "detached", "admitted": True, "detached": True, "pending": False}
+
+    if has_driver:
+        connector.drivers["local"] = Driver()
+    response = await connector.dispatch(
+        operation("detach", "detach", arguments={"operation_id": "watch"})
+    )
+    assert response["result"]["status"] == "detached"
+    assert journal.operation("watch")["detached"] is True
+    assert journal.observations() == []

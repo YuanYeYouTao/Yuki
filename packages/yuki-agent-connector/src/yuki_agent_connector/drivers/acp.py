@@ -366,6 +366,17 @@ class ACPDriver:
     async def execute(self, command: dict[str, Any]) -> dict[str, Any]:
         action, arguments = command["action"], command.get("arguments", {})
         identity = command.get("session_id")
+        if action == "detach":
+            for session in self.sessions.values():
+                session.watches.pop(arguments["operation_id"], None)
+                if session.operation == arguments["operation_id"]:
+                    session.operation = None
+            return {
+                "session_id": identity,
+                "status": "completed",
+                "detached": True,
+                "admitted": True,
+            }
         if self.connection is None:
             raise DriverError("owner_disconnected", "Original ACP process is not connected")
         if action == "list":
@@ -478,16 +489,6 @@ class ACPDriver:
                 if command.get("observation_scope") == "session"
                 else "unknown",
                 "pending": active or not expected,
-                "admitted": True,
-            }
-        if action == "detach":
-            session.watches.pop(arguments["operation_id"], None)
-            if session.operation == arguments["operation_id"]:
-                session.operation = None
-            return {
-                "session_id": identity,
-                "status": "completed",
-                "detached": True,
                 "admitted": True,
             }
         if command.get("execution_id") != session.execution:

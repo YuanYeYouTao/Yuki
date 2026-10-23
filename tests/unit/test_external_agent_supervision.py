@@ -168,6 +168,82 @@ async def test_session_watch_response_uses_original_question_turn_and_connection
     assert (await env.repository.operation(observation.id, env.actor)).native_execution_id is None
 
 
+@pytest.mark.parametrize("cleanup", [False, True])
+@pytest.mark.parametrize("device_online", [False, True])
+async def test_native_offline_detach_keeps_real_device_receipt_boundary(
+    case, cleanup, device_online
+):
+    env, _ = await owned(case)
+    env.service = ExternalAgentService(case.db, case.tasks)
+    observation, _ = await prepare(
+        env,
+        identity="offline-watch",
+        action="watch",
+        command={"id": "offline-watch", "action": "watch", "observation_scope": "session"},
+        native_execution_id=None,
+        lease=case.control.lease,
+    )
+    sent = []
+
+    class DetachSocket(Socket):
+        async def send_json(self, value):
+            sent.append(value)
+            assert value["action"] == "detach"
+            assert value["arguments"]["operation_id"] == observation.id
+            connection.respond(
+                {
+                    "id": value["id"],
+                    "result": {
+                        "status": "detached",
+                        "pending": False,
+                        "detached": True,
+                        "admitted": True,
+                        "executed": True,
+                    },
+                }
+            )
+
+    connection = DeviceConnection(env.device["device_id"], DetachSocket())
+    if device_online:
+        await env.service.connect(
+            env.device["device_id"],
+            connection,
+            {
+                "protocol_version": 3,
+                "instances": [
+                    {
+                        "id": "profile",
+                        "driver": "codex",
+                        "status": "unavailable",
+                        "capabilities": [],
+                    }
+                ],
+            },
+        )
+        assert not connection.instances
+        for action in ("prompt", "cancel", "respond"):
+            result = await env.service.execute(
+                {"action": action, "operation_id": observation.id, "prompt": "original"},
+                f"unavailable-{action}",
+                env.source,
+            )
+            assert result["error"] == "device_offline" and result["executed"] is False
+        assert not sent
+    if cleanup:
+        result = (await env.service.cleanup_tasks([observation.id], "cleanup-original"))[0]
+    else:
+        result = await env.service.execute(
+            {"action": "detach", "operation_id": observation.id}, "detach-original", env.source
+        )
+    original = await env.repository.operation(observation.id, env.actor)
+    assert (original.detached_at is not None) is device_online
+    assert len(sent) == int(device_online)
+    if device_online:
+        assert result["status"] == "detached"
+    else:
+        assert result.get("status") != "detached"
+
+
 async def test_get_persists_unknown_snapshot_instead_of_showing_old_running(native):
     operation, _ = await prepare(native)
     await native.repository.response(operation.id, state(1, "running"))
