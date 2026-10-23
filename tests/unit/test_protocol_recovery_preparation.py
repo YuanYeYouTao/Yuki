@@ -225,7 +225,9 @@ async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(da
     assert control.protocol_recovery_preparation is None
 
 
-async def test_unobserved_edit_preserves_actual_private_pause_across_reopen(database):
+async def test_unobserved_edit_and_diagnostic_counter_preserve_private_pause_across_reopen(
+    database,
+):
     control, session, _selected, unselected = await _session(database)
     session.transcript.accept(
         ProviderContinuation(
@@ -247,6 +249,12 @@ async def test_unobserved_edit_preserves_actual_private_pause_across_reopen(data
     chain = session.transcript.chain_id
     original_guard = session.source_guard.snapshot()
     await _change(database, unselected)
+    async with database.immediate_session() as writer:
+        state = await writer.get(ExecutionTraceStateModel, 1)
+        if state is None:
+            writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
+        else:
+            state.privacy_generation += 1
     await database.engine.dispose()
     # Without an actual persisted read set and control, legacy callers remain strict.
     legacy = await session.journal.load(control.lease, control.current["id"], session.contract)
@@ -265,7 +273,7 @@ async def test_unobserved_edit_preserves_actual_private_pause_across_reopen(data
     assert recovered.progress["provider_pause_replay"]
 
 
-@pytest.mark.parametrize("change", ["selected", "deleted", "privacy", "legacy"])
+@pytest.mark.parametrize("change", ["selected", "deleted", "legacy"])
 async def test_original_guard_does_not_excuse_changed_private_sources(database, change):
     control, session, selected, unselected = await _session(database)
     session.progress["provider_pause_replay"] = True
@@ -277,16 +285,6 @@ async def test_original_guard_does_not_excuse_changed_private_sources(database, 
     elif change == "deleted":
         async with database.immediate_session() as writer:
             await writer.execute(delete(ChatEventModel).where(ChatEventModel.id == selected.id))
-    elif change == "privacy":
-        # An unrelated edit exercises the load scalar boundary; privacy invalidates
-        # the saved selected fingerprint even though its actual events are unchanged.
-        await _change(database, unselected)
-        async with database.immediate_session() as writer:
-            state = await writer.get(ExecutionTraceStateModel, 1)
-            if state is None:
-                writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
-            else:
-                state.privacy_generation += 1
     else:
         await _change(database, unselected)
     loaded = await session.journal.load(

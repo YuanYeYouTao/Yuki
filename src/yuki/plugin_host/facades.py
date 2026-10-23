@@ -2509,6 +2509,7 @@ async def _send_social(
             actor=actor,
             conversation_key=invocation.conversation_key,
             inbound=invocation.inbound,
+            runtime_snapshot=invocation.runtime_config,
             initiative_run_id=actor.initiative_run_id,
             automation_run_id=actor.automation_run_id,
             presence_id=invocation.presence_id,

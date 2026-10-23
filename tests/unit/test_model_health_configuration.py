@@ -39,7 +39,9 @@ async def test_flat_values_can_be_empty_when_the_actual_profile_is_configured(
     path = keyed_profiles(tmp_path / "models.toml")
     key = "profile-health-secret-never-in-response"
     if source == "sidecar":
-        model_secrets_path(path).write_bytes(encode_model_secrets({"PROFILE_HEALTH_TEST_KEY": key}))
+        secrets = model_secrets_path(path)
+        secrets.write_bytes(encode_model_secrets({"PROFILE_HEALTH_TEST_KEY": key}))
+        secrets.chmod(0o600)
     else:
         monkeypatch.setenv("PROFILE_HEALTH_TEST_KEY", key)
     settings = make_settings(

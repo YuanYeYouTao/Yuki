@@ -13,6 +13,7 @@ from tests.support.projection import projection_record
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.conversation.projection_models import PromptProjectionModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import (
@@ -232,9 +233,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
 async def _pending_composition(database, tmp_path):
     provider = FakeLLMProvider()
     provider._responder = lambda request: (
-        _tool("send", {"text": "确认。"}, "send")
-        if len(provider.requests) == 1
-        else "已发送。"
+        _tool("send", {"text": "确认。"}, "send") if len(provider.requests) == 1 else "已发送。"
     )
     _, harness, chat, _, message = await _scene(database, tmp_path, provider)
     prepared = []
@@ -423,11 +422,18 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
         runtime,
         read_scope=scope,
         scope_type=ScopeType.GROUP,
+        space_id=env.space,
         runtime_config=await chat._runtime_config.snapshot(),
     )
-    result = (
-        await chat._tools.execute("query_chat_history", '{"view": "recent"}', runtime)
-    ).model_payload()
+    token = current_invocation.set(
+        ToolInvocationContext(runtime=runtime, call_id=owner.call_key("recent-history"))
+    )
+    try:
+        result = (
+            await chat._tools.execute("query_chat_history", '{"view": "recent"}', runtime)
+        ).model_payload()
+    finally:
+        current_invocation.reset(token)
     assert result["ok"], result
     rows = result["data"]["events"]
     assert len(rows) == 25

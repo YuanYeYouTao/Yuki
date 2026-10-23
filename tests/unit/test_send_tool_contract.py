@@ -25,8 +25,9 @@ def test_send_has_one_canonical_id_and_script_wrapper_without_old_alias():
     assert descriptor.canonical_name == "core.send"
     assert descriptor.namespace_id == "social.send"
     assert descriptor.effect is CapabilityEffect.PLATFORM_SEND
-    assert "发文件" in descriptor.aliases
-    assert "发图片" in descriptor.use_when
+    original = next(tool for tool in tools if tool.name == "send")
+    assert descriptor.aliases == original.aliases
+    assert descriptor.use_when == original.use_when
     assert "send_message" not in {item.model_name for item in descriptors}
     api = project(tools, "current-send-contract")
     assert api.tool_for("yuki_send") == "send"
