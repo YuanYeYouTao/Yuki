@@ -50,4 +50,38 @@ Host 七个相关模块 57 项测试通过，覆盖反馈、旧 owner、scope �
 直接恢复、自主 Work 生命周期和参与投影；新增近期回执模块另有 5 项通过。
 补读近期文件附言所引用的旧父回执，只恢复原逻辑身份，不把旧成功发送改成新的效果时间。
 Ruff 与 Linux 目标 Mypy（659 个源码文件）通过。源码与文档已独立复审，
-Host CI、合并、镜像、上线与自然流量证据在完成后分别补记。
+后续交付结果见下文。
+
+## 合并、上线与复审
+
+按用户明确的紧急授权，[PR #507](https://github.com/YuanYeYouTao/Yuki/pull/507) 在 CI
+未结束时合并为 `29a709df`，其 Git tree 与受测源码 `ea36f2b7` 相同。
+合并后的 [Quality 39974196409](https://github.com/YuanYeYouTao/Yuki/actions/runs/39974196409)
+已全部通过。原 PR CI 曾出现 3500 passed、1 failed：开放群语音合并测试依赖两次处理
+都在真实的 200ms 窗口内完成。人工延迟第二条输入至窗外，真实 worker 正确形成两轮；
+同 tree 主线通过不抹掉这次失败。该测试随后改用显式同步安排同窗输入，保留真实 worker、
+ASR、单次 Main 和完整输入断言；不调整生产去抖时长。
+
+停 Bot 后完成一致备份，`quick_check=ok`、schema 0150；没有数据库迁移。
+2026-10-23 23:08:55（UTC+8）仅替换 Bot，运行镜像 `ops-ea36f2b7`，revision 为
+`ea36f2b7d7e9ba65ef13ad3ea19cb9ca60f3b13a`，容器 ID 前缀 `2ec1a905e2f4`，重启次数 0。
+四个同行容器 ID 保持不变。原活跃 Work 身份与 waiting_external 状态保留，累计
+model_requests 765、tool_calls 563、sent_messages 21 均未减少；SELF 已启用并运行。
+
+同一只读探针的部署前 10 秒样本为 CPU 106.97%，livez/healthz 均在 4 秒超时。
+部署后两组为 CPU 41.23%/43.07%，livez 26/32ms，healthz 383/248ms，读写与 QQ 连接正常。
+10 秒非阻塞采样未再出现 feedback replay 热点；原正常 advance 仍有成本，不能把
+所有线程样本数当作 CPU 占比，也不能宣称负载降为零。
+
+复审记录了一个独立的剩余问题：详细 health 曾间歇超过 4–5 秒，实际栈定位到它在
+Memory embedding 健康诊断中逐条读取活跃事实、规范化正文并重新计算 hash。
+这是诊断自身的全文审计成本，本次没有扩大修改此链；随后请求恢复不抹掉慢请求记录。
+
+飞书 App ID、Secret、Domain 原先已写入完整 Compose，旧 Bot 尚未加载；真实只读预检
+确认凭据、机器人身份和长连接地址有效。本次新 Bot 三项实际环境与保存值一致，飞书
+长连接 healthy，QQ 自然重连。没有发测试消息；自然流量只看到原 Work 的开始与结束，
+尚无新入站与新模型回复证据，因此不宣称 QQ、飞书真实收发或新 SELF 模型自省已验收。
+
+健康复核后删除本次备份、上传包、旧飞书配置备份及无引用旧 Bot 镜像，磁盘可用空间
+增加 4,462,182,400 B（约 4.16 GiB）。生产 Build Cache 为 0；采样二进制与临时脚本
+一并清理，业务数据库、媒体、journal、工作区和当前配置保留。
