@@ -57,11 +57,12 @@ async def test_six_inputs_preserve_all_results_indices_and_explicit_thinking(thi
     inputs = tuple(
         visual()[0].model_copy(update={"media_hash": f"input-{index}"}) for index in range(6)
     )
+    indices = (1, 2, 3, 4, 5, 6, 1, 7) if thinking else (1, 1, 3, 7, 5, 6)
     body = json.dumps(
         {
             "items": [
                 {"index": index, "description": f"seen-{index}"}
-                for index in (1, 2, 3, 4, 5, 6, 1, 7)
+                for index in indices
             ]
         }
     )
@@ -79,5 +80,6 @@ async def test_six_inputs_preserve_all_results_indices_and_explicit_thinking(thi
         result = await provider.analyze(
             inputs, "describe", options=VisionAnalysisOptions(thinking_enabled=thinking)
         )
-    assert tuple(item.index for item in result.items) == (1, 2, 3, 4, 5, 6)
-    assert not result.partial_failure
+    expected = (1, 2, 3, 4, 5, 6) if thinking else (1, 3, 5, 6)
+    assert tuple(item.index for item in result.items) == expected
+    assert result.partial_failure is (not thinking)
