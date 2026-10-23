@@ -13,6 +13,16 @@ from sqlalchemy import and_, func, literal_column, or_, select, text, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
+from yuki.client_api.agent_target import (
+    AgentTarget,
+    authorize_target,
+    input_content,
+    stored_target,
+    target_segments,
+)
+from yuki.client_api.agent_target import (
+    input_payload as agent_request_payload,
+)
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
@@ -133,7 +143,15 @@ async def input_result(
         or event.suppression_status != "keeper"
         or event.platform_message_id != principal.message_key(request_id)
         or mailbox["source_key"] != f"client-input:{principal.message_key(request_id)}"
-        or fingerprint("client.work_input", target, {"text": event.content.strip()}) != bound
+        or fingerprint(
+            "client.work_input",
+            target,
+            agent_request_payload(
+                json.loads(event.segments_json)[0]["data"]["text"].strip(),
+                stored_target(json.loads(event.segments_json)),
+            ),
+        )
+        != bound
     ):
         raise ClientError("not_found")
     payload = json.loads(mailbox["payload_json"])
@@ -408,13 +426,20 @@ class ClientWorks:
         return previous
 
     async def submit(
-        self, principal: ClientPrincipal, identity: str, request_id: str, body: str
+        self,
+        principal: ClientPrincipal,
+        identity: str,
+        request_id: str,
+        body: str,
+        agent_target: AgentTarget | None = None,
     ) -> dict[str, Any]:
         body = body.strip()
-        if not body:
+        if not body and agent_target is None:
             raise ClientError("validation_error")
         operation = "client.work_input"
-        bound = fingerprint(operation, identity, {"text": body})
+        bound = fingerprint(operation, identity, agent_request_payload(body, agent_target))
+        original_body = body
+        body = input_content(body, agent_target)
         canonical_event_id = str(uuid4())
         while True:
             lease = None
@@ -428,6 +453,7 @@ class ClientWorks:
                     )
                     if previous is not None:
                         return previous
+                await authorize_target(self.database, principal.person_id, agent_target)
                 waiting = row["state"] in {"waiting_user", "waiting_external", "suspended"}
                 if waiting:
                     lease = await self.repository.acquire(row["conversation_id"], row["generation"])
@@ -443,8 +469,9 @@ class ClientWorks:
                     request_id,
                     body,
                     (
-                        {"type": "text", "data": {"text": body}},
+                        {"type": "text", "data": {"text": original_body}},
                         {"type": "work_input", "data": {"work_id": identity}},
+                        *target_segments(agent_target),
                     ),
                     conversation_id=principal.conversation_id,
                     thread_id=principal.thread_id,

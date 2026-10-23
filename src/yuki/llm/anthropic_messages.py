@@ -57,7 +57,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         return {
             "anthropic-version": "2023-06-01",
             **self._headers,
-            "x-api-key": self._api_key,
+            **({"x-api-key": self._api_key} if self._api_key else {}),
         }
 
     @staticmethod

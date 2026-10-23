@@ -120,6 +120,8 @@ class ExternalAgentService:
                 "label": device.label,
                 "online": self.connections.online(device.id),
             }
+            if instance is None:
+                continue
             available = (
                 self.connections.online(device.id)
                 and instance.local_id in self.connections.get(device.id).instances
@@ -128,6 +130,7 @@ class ExternalAgentService:
                 {
                     **json.loads(instance.catalog_json),
                     "id": instance.id,
+                    "local_id": instance.local_id,
                     "device_id": device.id,
                     "online": available,
                 }

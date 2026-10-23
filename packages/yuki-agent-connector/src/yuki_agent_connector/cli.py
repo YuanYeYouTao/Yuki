@@ -19,6 +19,7 @@ import httpx
 from . import __version__
 from .config import Config, Instance, data_path, private_path
 from .connector import Connector, installation_lock
+from .discovery import candidates, diagnose
 from .drivers import make_driver
 from .journal import Journal
 from .service import UserService
@@ -37,6 +38,7 @@ def parser() -> argparse.ArgumentParser:
     profile = commands.add_parser("instance", help="Manage explicit native installs/profiles")
     profiles = profile.add_subparsers(dest="operation", required=True)
     profiles.add_parser("list")
+    profiles.add_parser("configure", help="Add/update a native instance from one JSON stdin object")
     add = profiles.add_parser("add")
     add.add_argument("--id", default=None)
     add.add_argument("--label", required=True)
@@ -53,6 +55,12 @@ def parser() -> argparse.ArgumentParser:
     doctor.add_argument("--instance")
     status = commands.add_parser("status", help="Local configuration and user service status")
     status.add_argument("--json", action="store_true", help="Print one machine-readable object")
+    discover = commands.add_parser(
+        "discover", help="Read installed Codex locations without starting it"
+    )
+    discover.add_argument("--json", action="store_true")
+    diagnostic = commands.add_parser("diagnose", help="Explicit native handshake; no model task")
+    diagnostic.add_argument("--instance", required=True)
     commands.add_parser("run", help="Run independently of any Desktop UI")
     logs = commands.add_parser("logs")
     logs.add_argument("--lines", type=int, default=60)
@@ -113,7 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     path = (args.config or directory / "config.json").resolve()
     service = UserService(path, directory)
     try:
-        if args.action == "pair":
+        if args.action == "discover":
+            print(json.dumps(candidates(), ensure_ascii=True))
+        elif args.action == "pair":
             if path.exists():
                 raise ValueError(
                     "Already paired; use a separate --data-dir for another device identity"
@@ -160,10 +170,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "status":
             config = Config.load(path) if path.exists() else None
             value = {
+                "version": __version__,
+                "protocol": 3,
+                "runtime": sys.executable,
                 "paired": config is not None,
                 "service": service.state(),
                 "instances": [
-                    {"id": item.id, "label": item.label, "driver": item.driver}
+                    {
+                        "id": item.id,
+                        "label": item.label,
+                        "driver": item.driver,
+                        "command": item.command,
+                        "cwd": item.cwd,
+                    }
                     for item in config.instances
                 ]
                 if config
@@ -171,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
             }
             if config:
                 value["device_id"] = config.device_id
+                value["server"] = (
+                    config.url.removesuffix("/agents/v1/connect")
+                    .replace("wss://", "https://", 1)
+                    .replace("ws://", "http://", 1)
+                )
             print(json.dumps(value, ensure_ascii=args.json, indent=None if args.json else 2))
         else:
             config = Config.load(path)
@@ -188,7 +212,48 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                     return 0
-                if args.operation == "add":
+                if args.operation == "configure":
+                    value = json.load(sys.stdin)
+                    identity = value.get("id") or str(uuid4())
+                    previous = next((i for i in config.instances if i.id == identity), None)
+                    if value.get("id") and previous is None:
+                        raise ValueError("The original instance does not exist")
+                    candidate = next(
+                        (c for c in candidates() if c["id"] == value.get("candidateId")), None
+                    )
+                    if value.get("candidateId") and candidate is None:
+                        raise ValueError("The selected installation is no longer available")
+                    command = candidate["command"] if candidate else value.get("command")
+                    if (
+                        not command
+                        or not Path(command).is_absolute()
+                        or not Path(command).is_file()
+                    ):
+                        raise ValueError("Choose an installed native executable")
+                    if sys.platform == "win32" and Path(command).suffix.lower() != ".exe":
+                        raise ValueError("Choose the native executable, not a shell script")
+                    cwd = Path(value["cwd"])
+                    if not cwd.is_absolute() or not cwd.is_dir():
+                        raise ValueError("Choose an existing project directory")
+                    spec = replace(
+                        previous or Instance(identity, "codex", "", command),
+                        label=value["label"],
+                        command=command,
+                        cwd=str(cwd),
+                        installation=(
+                            candidate["source"]
+                            if candidate
+                            else previous.installation
+                            if previous and command == previous.command
+                            else None
+                        ),
+                    )
+                    config = replace(
+                        config,
+                        instances=[spec if i.id == identity else i for i in config.instances]
+                        + ([] if previous else [spec]),
+                    )
+                elif args.operation == "add":
                     environment = dict(item.split("=", 1) for item in args.env)
                     identity = args.id or str(uuid4())
                     if any(item.id == identity for item in config.instances):
@@ -219,6 +284,11 @@ def main(argv: list[str] | None = None) -> int:
                         asyncio.run(doctor(config, args.instance)), ensure_ascii=False, indent=2
                     )
                 )
+            elif args.action == "diagnose":
+                selected = next((i for i in config.instances if i.id == args.instance), None)
+                if selected is None:
+                    raise ValueError("The original instance does not exist")
+                print(json.dumps(asyncio.run(diagnose(selected)), ensure_ascii=True))
             elif args.action == "run":
                 directory.mkdir(parents=True, exist_ok=True)
                 private_path(directory, directory=True)
@@ -241,6 +311,19 @@ def main(argv: list[str] | None = None) -> int:
                         journal.close()
         return 0
     except (OSError, ValueError, httpx.HTTPError) as exc:
+        if isinstance(exc, httpx.HTTPStatusError):
+            problem = (
+                "connector_authorization_failed"
+                if exc.response.status_code in {401, 403}
+                else "connector_server_error"
+            )
+        elif isinstance(exc, httpx.RequestError):
+            problem = "connector_server_unreachable"
+        elif isinstance(exc, FileNotFoundError):
+            problem = "native_not_installed"
+        else:
+            problem = "connector_configuration_failed"
+        print(json.dumps({"problem": problem}), file=sys.stdout)
         print(f"Connector: {exc}", file=sys.stderr)
         return 1
 

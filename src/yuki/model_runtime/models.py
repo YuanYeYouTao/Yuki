@@ -144,8 +144,6 @@ class ModelProfile(_FrozenModel):
             raise ValueError("headers cannot override authentication or contain line breaks")
         if self.provider.casefold() != "fake" and not self.base_url:
             raise ValueError("base_url is required for non-fake model profiles")
-        if self.provider.casefold() != "fake" and not self.api_key_env:
-            raise ValueError("api_key_env is required for non-fake model profiles")
         if ModelCapability.NATIVE_WEB_SEARCH in self.capabilities and not supports_native_search(
             vendor,
             self.protocol.value,

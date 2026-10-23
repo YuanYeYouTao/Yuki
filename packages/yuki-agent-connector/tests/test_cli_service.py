@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from yuki_agent_connector import cli, config, service
+from yuki_agent_connector import __version__, cli, config, service
 from yuki_agent_connector.config import Config, Instance
 
 
@@ -38,6 +38,9 @@ def test_pair_exchanges_explicit_code_and_status_never_exposes_secrets(
     args = ["--data-dir", str(tmp_path / "device")]
     assert cli.main([*args, "status", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
+        "version": __version__,
+        "protocol": 3,
+        "runtime": sys.executable,
         "paired": False,
         "instances": [],
         "service": {"installed": False, "running": False},
@@ -138,10 +141,20 @@ def test_machine_status_preserves_unicode_through_a_non_utf8_cli_pipe(
     )
     status = json.loads(result.stdout.decode("utf-8"))
     assert status == {
+        "version": __version__,
+        "protocol": 3,
+        "runtime": sys.executable,
+        "server": "https://example.invalid",
         "paired": True,
         "device_id": "isolated-device",
         "instances": [
-            {"id": "original-profile", "label": "家中 Codex", "driver": "codex"},
+            {
+                "id": "original-profile",
+                "label": "家中 Codex",
+                "driver": "codex",
+                "command": "not-executed-native-agent",
+                "cwd": str(Path.home()),
+            },
         ],
         "service": {"installed": False, "running": False},
     }
@@ -188,11 +201,11 @@ def test_user_service_install_lifecycle_keeps_native_and_journal(
         calls.append(command)
         output = '"user","S-1-5-21-1"' if command[0] == "whoami" else ""
         if command[0] == "powershell":
-            output = "4\n"
+            output = json.dumps({"running": True, "executable": sys.executable})
         elif "ActiveState" in command:
-            output = "active\n"
+            output = f"ActiveState=active\nExecStart={{ path={sys.executable} ; }}"
         elif command[:2] == ["launchctl", "print"]:
-            output = "state = running"
+            output = f"state = running\nprogram = {sys.executable}"
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(service, "run", run)
@@ -228,7 +241,7 @@ def test_user_service_install_lifecycle_keeps_native_and_journal(
         assert "User=root" not in unit and "ExecStart=" in unit
         assert all("--user" in call for call in calls if call[0] == "systemctl")
     configured.start()
-    assert configured.state() == {"installed": True, "running": True}
+    assert configured.state() == {"installed": True, "running": True, "executable": sys.executable}
     configured.stop()
     configured.uninstall()
     assert not configured.artifact.exists()

@@ -31,6 +31,7 @@ def create_model_provider(
         provider = OpenAICompatibleProvider(
             base_url=profile.base_url,
             api_key=api_key,
+            api_key_env=profile.api_key_env,
             timeout_seconds=profile.timeout_seconds,
             max_retries=profile.max_retries,
             client=client,
@@ -47,6 +48,7 @@ def create_model_provider(
         provider = native_provider(
             base_url=profile.base_url,
             api_key=api_key,
+            api_key_env=profile.api_key_env,
             timeout_seconds=profile.timeout_seconds,
             max_retries=profile.max_retries,
             client=client,
@@ -58,6 +60,7 @@ def create_model_provider(
         provider = DeepSeekResponsesProvider(
             base_url=profile.base_url,
             api_key=api_key,
+            api_key_env=profile.api_key_env,
             timeout_seconds=profile.timeout_seconds,
             max_retries=profile.max_retries,
             client=client,
@@ -73,6 +76,7 @@ def create_model_provider(
         provider = response_provider(
             base_url=profile.base_url,
             api_key=api_key,
+            api_key_env=profile.api_key_env,
             timeout_seconds=profile.timeout_seconds,
             max_retries=profile.max_retries,
             client=client,
@@ -105,6 +109,7 @@ class ModelClientPool:
         return (
             profile.id in self._injected_profiles
             or profile.provider.casefold() == "fake"
+            or not profile.api_key_env
             or bool(self.api_key_for(profile))
         )
 
@@ -122,7 +127,7 @@ class ModelClientPool:
             provider: LLMProvider = FakeLLMProvider()
         else:
             api_key = self.api_key_for(profile)
-            if not api_key:
+            if profile.api_key_env and not api_key:
                 raise LLMConfigurationError(
                     f"model profile {profile.id} is missing secret environment variable "
                     f"{profile.api_key_env}"

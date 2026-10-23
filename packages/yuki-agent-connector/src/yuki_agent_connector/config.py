@@ -71,6 +71,7 @@ class Instance:
     env: dict[str, str] = field(default_factory=dict)
     socket: str | None = None
     endpoint: str | None = None
+    installation: str | None = None
 
     def environment(self) -> dict[str, str]:
         return {**os.environ, **self.env}

@@ -28,7 +28,9 @@ from yuki.identity.db_models import CanonicalPersonModel
 from yuki.persistence.database import Database
 
 
-async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None:
+async def serve(
+    root: Path, state_file: Path, port: int, base_path: str, *, desktop: bool = False
+) -> None:
     soul_file = root / "character" / "SOUL.md"
     database = Database(f"sqlite+aiosqlite:///{(root / 'yuki.sqlite3').as_posix()}")
     runtime = ApplicationContainer(
@@ -68,12 +70,108 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
 
         owner_code = await issue_code(owner_id)
         nonowner_code = await issue_code(nonowner_id)
+        work_model_gate = asyncio.Event()
+        work_model_gate.set()
+        if desktop:
+            from tests.integration.test_current_material_main_contract import _catalog, _profile
+
+            from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+            from yuki.llm.fake import FakeLLMProvider
+            from yuki.model_runtime.pool import ModelClientPool
+
+            def respond(request):
+                from yuki.runtime.work_activation import current_work_control
+
+                has_receipt = any(
+                    message.role == "tool" or message.tool_calls for message in request.messages
+                )
+                control = current_work_control.get()
+                if (
+                    has_receipt
+                    and control is not None
+                    and control.current is not None
+                    and not control.ending
+                ):
+                    return ChatResponse(
+                        content="",
+                        latency_seconds=0,
+                        tool_calls=(
+                            ToolCall(
+                                str(uuid4()),
+                                ToolFunction(
+                                    "task_control",
+                                    json.dumps(
+                                        {
+                                            "action": "complete",
+                                            "result": "Desktop reference complete",
+                                        }
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                if has_receipt:
+                    return ChatResponse(content="已完成。", latency_seconds=0)
+                return ChatResponse(
+                    content="",
+                    latency_seconds=0,
+                    tool_calls=(
+                        ToolCall(
+                            str(uuid4()),
+                            ToolFunction("send", json.dumps({"text": "Desktop reference reply"})),
+                        ),
+                    ),
+                )
+
+            class DesktopModel(FakeLLMProvider):
+                async def _complete(self, request):
+                    from yuki.runtime.work_activation import current_work_control
+
+                    control = current_work_control.get()
+                    if control is not None and control.current is not None:
+                        await work_model_gate.wait()
+                    return await super()._complete(request)
+
+            runtime.models.apply_catalog(
+                _catalog(_profile()),
+                ModelClientPool(injected_profiles={"main": DesktopModel(respond)}),
+            )
         await runtime.model_invocations.writer.start()
         await runtime.app_gateway.start()
         await runtime._freeze_main_manifest()
         await runtime.work_scheduler.start()
-        api = FastAPI()
+        artifact_state = {}
+        if desktop:
+            from tests.support.desktop_reference_server import publish_artifact
+
+            artifact_state = await publish_artifact(runtime, await issue_code(owner_id))
+            await asyncio.gather(*tuple(runtime.app_gateway.tasks))
+        api = FastAPI(debug=desktop)
         attach_client_api(api, lambda: runtime.client_api)
+        if desktop:
+            from yuki.external_agents.http import attach_external_agent_api
+
+            attach_external_agent_api(api, lambda: runtime.external_agents)
+
+        if desktop:
+
+            @api.post("/__test/work")
+            async def work_fixture() -> dict:
+                from tests.support.desktop_reference_server import seed_work
+
+                return await seed_work(runtime, artifact_state)
+
+        if desktop:
+
+            @api.post("/__test/hold-work")
+            async def hold_work_model() -> dict:
+                work_model_gate.clear()
+                return {"held": True}
+
+            @api.post("/__test/release-work")
+            async def release_work_model() -> dict:
+                work_model_gate.set()
+                return {"held": False}
 
         @api.get("/healthz")
         async def ready() -> dict:
@@ -119,6 +217,7 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
                     "base_url": f"http://127.0.0.1:{actual_port}{base_path}",
                     "owner_pairing_code": owner_code["code"],
                     "nonowner_pairing_code": nonowner_code["code"],
+                    **artifact_state,
                 }
                 await asyncio.to_thread(state_file.write_text, json.dumps(state), encoding="utf-8")
                 print(json.dumps(state), flush=True)

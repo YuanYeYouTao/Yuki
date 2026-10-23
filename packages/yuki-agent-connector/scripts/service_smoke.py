@@ -23,7 +23,7 @@ async def main() -> None:
 
     async def server(socket: Any) -> None:
         hello = json.loads(await socket.recv())
-        assert hello["protocol_version"] == 2 and hello["instances"] == []
+        assert hello["protocol_version"] == 3 and hello["instances"] == []
         connected.set()
         await socket.wait_closed()
 

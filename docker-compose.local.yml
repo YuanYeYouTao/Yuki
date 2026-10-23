@@ -1,0 +1,14 @@
+# Optional, same-computer App-only deployment. The base service remains shared.
+services:
+  bot:
+    image: ${YUKI_LOCAL_IMAGE:-ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}}
+    ports:
+      - "127.0.0.1:${YUKI_LOCAL_PORT:-8080}:8080"
+    volumes: !override
+      - ./data:/app/data
+      - ./character:/app/character
+      - ./workspace:/app/workspace
+      - ./social-transfer:/app/social-transfer
+      - ./config:/app/config:ro
+      - ./webui-config:/app/webui-config:ro
+      - ./plugins:/app/plugins:ro

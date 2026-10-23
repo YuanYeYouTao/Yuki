@@ -32,6 +32,10 @@ class CodexRPC:
         self.initialized = False
 
     async def start(self) -> None:
+        if self.spec.installation:
+            from ..discovery import refresh
+
+            self.spec = refresh(self.spec)
         if self.spec.endpoint:
             self.ws = await connect(self.spec.endpoint, max_size=None, proxy=None)
         else:

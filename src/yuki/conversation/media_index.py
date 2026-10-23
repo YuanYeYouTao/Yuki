@@ -14,7 +14,7 @@ from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.persistence.models import ConversationMediaItemModel
 
-_IGNORED = frozenset({"text", "at", "mention", "face", "reply", "yuki_context"})
+_IGNORED = frozenset({"text", "at", "mention", "face", "reply", "yuki_context", "agent_target"})
 _MEDIA = frozenset({"image", "video", "file", "record", "audio"})
 
 

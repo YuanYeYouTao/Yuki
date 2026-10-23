@@ -78,14 +78,19 @@ class AgentRepository:
         async with self.database.read_session() as session:
             return await self.authorize(session, identity, actor)
 
-    async def catalog(self, actor: str) -> list[tuple[AgentInstanceModel, ClientDeviceModel]]:
+    async def catalog(
+        self, actor: str
+    ) -> list[tuple[AgentInstanceModel | None, ClientDeviceModel]]:
         async with self.database.read_session() as session:
             root = await require_person(session, actor)
             return [
                 (instance, device)
                 for instance, device in await session.execute(
                     select(AgentInstanceModel, ClientDeviceModel)
-                    .join(ClientDeviceModel, AgentInstanceModel.device_id == ClientDeviceModel.id)
+                    .select_from(ClientDeviceModel)
+                    .outerjoin(
+                        AgentInstanceModel, AgentInstanceModel.device_id == ClientDeviceModel.id
+                    )
                     .where(
                         person_family_condition(ClientDeviceModel.person_id, root),
                         ClientDeviceModel.revoked_at.is_(None),
