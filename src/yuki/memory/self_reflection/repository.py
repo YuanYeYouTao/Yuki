@@ -491,7 +491,7 @@ class SelfReflectionRepository:
                     )
                 }
                 # Owner hashing, ASR/body interpretation and counting belong to preparation.
-                prepared: dict[str, dict[str, Any]] = {}
+                prepared: dict[tuple[str | None, str | None], dict[str, Any]] = {}
                 for row in rows:
                     conversation = conversations.get(row.canonical_conversation_id or "")
                     if (
@@ -515,8 +515,9 @@ class SelfReflectionRepository:
                         ).encode()
                     ).hexdigest()
                     item = prepared.setdefault(
-                        key_hash,
+                        (person_id, space_id),
                         dict(
+                            key_hash=key_hash,
                             person_id=person_id,
                             space_id=space_id,
                             bot_user_id=row.bot_user_id,
@@ -570,11 +571,11 @@ class SelfReflectionRepository:
                     continue
                 states = (
                     {
-                        state.conversation_key_hash: state
+                        (state.canonical_person_id, state.canonical_space_id): state
                         for state in await writer.scalars(
                             select(MemorySelfReflectionStateModel).where(
-                                MemorySelfReflectionStateModel.conversation_key_hash.in_(
-                                    tuple(prepared)
+                                or_(
+                                    *(self._owner_state_filter(*owner) for owner in prepared)
                                 )
                             )
                         )
@@ -583,11 +584,11 @@ class SelfReflectionRepository:
                     else {}
                 )
                 now = datetime.now(UTC)
-                for key_hash, item in prepared.items():
-                    state = states.get(key_hash)
+                for owner, item in prepared.items():
+                    state = states.get(owner)
                     if state is None:
                         state = MemorySelfReflectionStateModel(
-                            conversation_key_hash=key_hash,
+                            conversation_key_hash=item["key_hash"],
                             bot_user_id=item["bot_user_id"],
                             canonical_person_id=item["person_id"],
                             canonical_space_id=item["space_id"],
