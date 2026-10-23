@@ -27,7 +27,7 @@ dependencies = [
     "tenacity>=9,<10",
     "tzdata>=2025.2",
     "websockets>=16,<17",
-    "yuki-semantic-participation @ https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/addfcddecb09f93ad8846db508879c451bc4bc47.tar.gz",
+    "yuki-semantic-participation @ https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/79d266918dc6ce19b7d81568565deaed450301d5.tar.gz",
     "tomlkit>=0.13,<1",
     "agent-client-protocol==0.12.1",
     "opencc==1.4.2",

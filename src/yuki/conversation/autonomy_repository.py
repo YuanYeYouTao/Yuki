@@ -495,42 +495,6 @@ class AutonomyRepository:
             ).all()
             return tuple(_run(row) for row in rows)
 
-    async def terminal_page(
-        self, *, after: str = "", ceiling: str | None = None, limit: int = 16
-    ) -> tuple[tuple[str, ...], str, str]:
-        """One stable-ID sweep; the caller's cursor is disposable scheduling state.
-
-        Freeze the upper ID for a sweep. Inserts behind the cursor and rows which
-        become terminal meanwhile are revisited on the next sweep, including old
-        generations. Mutable feedback timestamps never determine scan position.
-        """
-        async with self._database.read_session() as session:
-            if ceiling is None:
-                ceiling = (
-                    await session.scalar(
-                        select(InitiativeRunModel.id)
-                        .order_by(InitiativeRunModel.id.desc())
-                        .limit(1)
-                    )
-                    or ""
-                )
-            rows = (
-                await session.execute(
-                    select(InitiativeRunModel.id, InitiativeRunModel.state)
-                    .where(
-                        InitiativeRunModel.id > after,
-                        InitiativeRunModel.id <= ceiling,
-                    )
-                    .order_by(InitiativeRunModel.id)
-                    .limit(max(1, min(limit, 128)))
-                )
-            ).all()
-            return (
-                tuple(identity for identity, state in rows if state not in _ACTIVE),
-                ceiling,
-                rows[-1][0] if rows else "",
-            )
-
     async def get_runs(
         self,
         run_ids: tuple[str, ...],

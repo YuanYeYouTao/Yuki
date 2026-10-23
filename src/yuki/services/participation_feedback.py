@@ -198,7 +198,7 @@ async def _scope_social_rows(
     service: SemanticParticipationService, conversation_id: str
 ) -> list[SocialOperationModel]:
     async with service.database.read_session() as session:
-        return list(
+        rows = list(
             await session.scalars(
                 select(SocialOperationModel)
                 .where(
@@ -209,6 +209,35 @@ async def _scope_social_rows(
                 .limit(2048)
             )
         )
+        # Recent captions retain the original logical send identity even when
+        # their parent falls outside the time window or the recent-row limit.
+        parents = tuple(
+            {
+                row.source_turn_id.partition(":")[2]
+                for row in rows
+                if row.source_turn_id.startswith("social-caption:")
+            }
+            - {row.id for row in rows}
+        )
+        for start in range(0, len(parents), 128):
+            rows.extend(
+                await session.scalars(
+                    select(SocialOperationModel)
+                    .options(
+                        load_only(
+                            *(getattr(SocialOperationModel, key) for key in _SOCIAL_PROOF_FIELDS),
+                            SocialOperationModel.source_conversation_id,
+                            SocialOperationModel.presence_id,
+                            SocialOperationModel.event_id,
+                        )
+                    )
+                    .where(
+                        SocialOperationModel.id.in_(parents[start : start + 128]),
+                        SocialOperationModel.source_conversation_id == conversation_id,
+                    )
+                )
+            )
+        return rows
 
 
 async def sync_scope_effects(
@@ -744,7 +773,7 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
 async def reconcile_page(
     service: SemanticParticipationService, runs: tuple[AcceptedInitiative | str, ...]
 ) -> None:
-    """Read unchanged rows together; durable feedback precedes one save per controller."""
+    """Settle live work; only newly recorded feedback updates short-lived participation."""
     if not runs:
         return
     facts = []
@@ -770,9 +799,15 @@ async def reconcile_page(
             if fact.task is None and fact.run.state in _ACTIVE:
                 await service._dispatch(fact.run)
                 continue
-            committed = await _commit_pending(service, fact.run.run_id) if fact.changed() else fact
+            if not fact.changed():
+                continue
+            committed = await _commit_pending(service, fact.run.run_id)
             if committed is not None:
-                prepared.append(committed)
+                committed.durable = [
+                    row for row in committed.durable if row.sequence > fact.run.feedback_sequence
+                ]
+                if committed.durable:
+                    prepared.append(committed)
         except Exception as exc:
             failures.append(exc)
     async with service._session_lock:

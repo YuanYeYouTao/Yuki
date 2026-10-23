@@ -164,8 +164,6 @@ class SemanticParticipationService:
         self._dirty_overflows = 0
         self._last_discovery_at = 0.0
         self._discovery_cursor = 0
-        self._terminal_cursor = ""
-        self._terminal_ceiling: str | None = None
         self._model_config_path = (
             model_config_path or settings.semantic_participation_model_config_file
         )
@@ -1306,24 +1304,14 @@ class SemanticParticipationService:
     async def _reconcile_outbox(self) -> None:
         from yuki.services.participation_feedback import reconcile_page
 
-        # Active recovery keeps its original priority. Terminal history gets one
-        # 16-ID page per tick (2s base interval), not an unchanged 128-run tail.
-        # A failed row is retried next sweep; advancing still lets later rows run.
+        # Only live admissions need lifecycle reconciliation. Recent sends are
+        # projected separately from their original Social receipts.
         active = await self.repository.list_active()
-        terminal, ceiling, cursor = await self.repository.terminal_page(
-            after=self._terminal_cursor, ceiling=self._terminal_ceiling, limit=16
-        )
-        self._terminal_ceiling = ceiling
-        self._terminal_cursor = cursor
-        if not cursor or cursor == ceiling:
-            self._terminal_cursor = ""
-            self._terminal_ceiling = None
-        for page in (active, terminal):
-            try:
-                await reconcile_page(self, page)
-            except Exception as exc:
-                self._failures += 1
-                logger.warning("participation_reconcile_failed category=%s", type(exc).__name__)
+        try:
+            await reconcile_page(self, active)
+        except Exception as exc:
+            self._failures += 1
+            logger.warning("participation_reconcile_failed category=%s", type(exc).__name__)
 
     async def tick(self) -> None:
         self._refresh_model_parameters()

@@ -136,7 +136,7 @@ async def test_feedback_preparation_closes_before_writer_and_preserves_original_
     await set_work(database, task, state="completed", model_requests=3)
     receipt = await social(database, run, "original-send")
     original_task = await service.work.get(task["id"])
-    service._terminal_cursor, service._terminal_ceiling, service._failures = "", None, 0
+    service._failures = 0
     original_writer = database.immediate_session
     injected = False
 
@@ -168,14 +168,14 @@ async def test_feedback_preparation_closes_before_writer_and_preserves_original_
         assert (await reader.get(SocialOperationModel, receipt.id)).status == "succeeded"
 
 
-async def test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durable_sequence(
+async def test_feedback_unknown_commit_ack_keeps_receipts_without_rebuilding_short_term_state(
     database, monkeypatch
 ):
     service, item, run, task = await setup(database)
     await set_work(database, task, state="completed", model_requests=3)
     await social(database, run, "original-send")
     original_task = await service.work.get(task["id"])
-    service._terminal_cursor, service._terminal_ceiling, service._failures = "", None, 0
+    service._failures = 0
     original = service.repository.record_feedback
     calls = []
     native = sqlite3.OperationalError("commit acknowledgement lost")
@@ -204,8 +204,8 @@ async def test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durab
     await SemanticParticipationService._reconcile_outbox(service)
     await SemanticParticipationService._reconcile_outbox(service)
     assert calls == [(run.run_id, 1)] and service._failures == 1
-    assert item.controller.state.feedback[run.run_id].outcome == "completed"
-    assert len(item.controller.state.effects) == 4
+    assert run.run_id not in item.controller.state.feedback
+    assert not item.controller.state.effects
     assert await service.work.get(task["id"]) == original_task
     service._dispatch.assert_not_awaited()
     async with database.read_session() as session:
@@ -213,31 +213,72 @@ async def test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durab
 
 
 @pytest.mark.asyncio
-async def test_all_120_compute_charges_page_and_replay_after_checkpoint_loss(database):
+async def test_snapshot_loss_keeps_120_charges_but_only_new_feedback_updates_participation(
+    database,
+):
     service, item, run, task = await setup(database)
     original = item.controller.state.model_copy(deep=True)
-    await set_work(database, task, state="completed", model_requests=120)
-    await reconcile_page(service, (run,))
+    await set_work(database, task, state="running", model_requests=120)
+    service._save.side_effect = RuntimeError("synthetic snapshot commit failure")
+    with pytest.raises(RuntimeError, match="synthetic snapshot commit failure"):
+        await reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
-    assert all(record.effect.kind == "compute" for record in item.controller.state.effects.values())
     async with database.read_session() as session:
         rows = list(await session.scalars(select(InitiativeFeedbackModel)))
         assert len(rows) == 2
         assert sorted(len(json.loads(row.payload_json)["effects"]) for row in rows) == [56, 64]
-    # A stale caller snapshot cannot write the same feedback again.
+
+    # Losing the short-lived projection does not lose or replay paid requests.
+    service._save.side_effect = None
+    service._save.reset_mock()
+    item.controller = Controller.restore(original, time.time())
     await reconcile_page(service, (run,))
+    assert not item.controller.state.effects
+    service._save.assert_not_awaited()
+    assert (await service.work.get(task["id"]))["model_requests"] == 120
+
+    await set_work(database, task, model_requests=121)
+    await reconcile_page(service, (run,))
+    assert set(item.controller.state.effects) == {f"work-model:{task['id']}:121"}
     async with database.read_session() as session:
-        assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 2
-    effects = item.controller.state.effects.copy()
-    item.controller = Controller.restore(original, time.time())
+        assert await session.scalar(select(func.count()).select_from(InitiativeFeedbackModel)) == 3
+    assert (await service.work.get(task["id"]))["model_requests"] == 121
+    service._dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [AutonomyOwner.SEMANTIC, AutonomyOwner.LEGACY])
+async def test_terminal_history_is_not_scanned_but_recent_late_send_keeps_original_owner(
+    database, monkeypatch, owner
+):
+    service, item, run, task = await setup(database, owner=owner)
+    service._failures = 0
+    await set_work(database, task, state="completed", model_requests=120)
+    await social(database, run, "old-confirmed-send", seconds=-3600)
+    item.controller.advance(
+        time.time(), controller_epoch=item.controller.state.epoch, host_available=False
+    )
     await reconcile_page(service, (run,))
-    assert item.controller.state.effects == effects
-    assert item.controller.state.feedback[run.run_id].outcome == "no_reply"
-    # Terminal outbox history cannot recreate an already cleaned-up Work row.
-    service.work.by_source = AsyncMock(return_value=None)
-    item.controller = Controller.restore(original, time.time())
-    await reconcile_page(service, (run,))
-    assert item.controller.state.effects == effects
+    original_work = await service.work.get(task["id"])
+    service._save.reset_mock()
+    read_facts = AsyncMock(side_effect=AssertionError("terminal history must not be loaded"))
+    monkeypatch.setattr(participation_feedback, "_read_facts", read_facts)
+    for _ in range(2):
+        await SemanticParticipationService._reconcile_outbox(service)
+    read_facts.assert_not_awaited()
+    service._save.assert_not_awaited()
+
+    original_effects = set(item.controller.state.effects)
+    await social(database, run, "late-confirmed-send")
+    await sync_scope_effects(service, item)
+    messages = [
+        record
+        for identity, record in item.controller.state.effects.items()
+        if identity not in original_effects and record.effect.kind == "message"
+    ]
+    assert len(messages) == 1 and messages[0].run_ref == run.run_id
+    assert (await service.repository.get_run(run.run_id)).state == "completed"
+    assert await service.work.get(task["id"]) == original_work
     service._dispatch.assert_not_awaited()
 
 
