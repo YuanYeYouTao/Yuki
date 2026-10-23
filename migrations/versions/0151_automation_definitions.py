@@ -239,10 +239,16 @@ def upgrade():
         "CREATE UNIQUE INDEX uq_automation_self_creation_call ON automations (creation_source_key) WHERE creator_kind='self' AND creation_source_key IS NOT NULL"
     )
     for operation in ("INSERT", "UPDATE"):
+        # Preserve the frozen 0141 assignment-role contract when rebuilding
+        # its owner table. Startup compares this actual SQL to that contract.
         op.execute(f"""CREATE TRIGGER trg_automations_canonical_presence_id_kind_{operation.lower()}
-        BEFORE {operation} ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN
-         SELECT RAISE(ABORT,'assignment kind mismatch') WHERE NOT EXISTS
-          (SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki'); END""")
+BEFORE {operation} ON automations
+WHEN NEW.canonical_presence_id IS NOT NULL
+BEGIN
+ SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS (
+  SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki'
+  );
+END""")
     failures = connection.execute(sa.text("PRAGMA foreign_key_check")).fetchall()
     if failures:
         raise RuntimeError(f"automation definition migration foreign key violations: {failures!r}")

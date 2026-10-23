@@ -1,13 +1,19 @@
 """Frozen definition upgrade preserves original identities, bytes and occurrence facts."""
 
+import asyncio
 import importlib
 import json
+import sqlite3
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
+
+from yuki.persistence.schema_guard import require_canonical_schema
 
 
 @pytest.mark.parametrize("interrupt_switch", [False, True])
@@ -277,3 +283,27 @@ def test_single_upgrade_preserves_originals_and_publishes_only_future_definition
         assert latest[4]["version"] > 2
         assert latest[5] == originals["automation_versions"][4]
         assert not connection.execute(text("PRAGMA foreign_key_check")).fetchall()
+
+
+def test_real_0150_upgrade_preserves_role_trigger_and_passes_startup_guard(tmp_path, monkeypatch):
+    path = tmp_path / "real-0150.db"
+    url = f"sqlite+aiosqlite:///{path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0150")
+
+    def role_triggers():
+        with sqlite3.connect(path) as connection:
+            return {
+                name: " ".join(sql.split())
+                for name, sql in connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name LIKE 'trg_automations_canonical_presence_id_kind_%'"
+                )
+            }
+
+    original = role_triggers()
+    assert len(original) == 2
+    command.upgrade(config, "head")
+    assert role_triggers() == original
+    asyncio.run(require_canonical_schema(url))
