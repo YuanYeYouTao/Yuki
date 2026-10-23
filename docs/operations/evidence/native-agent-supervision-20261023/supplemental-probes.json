@@ -1,0 +1,45 @@
+{
+  "synthetic_only": true,
+  "native_calls": 0,
+  "network_calls": 0,
+  "queued_operation_disconnect": {
+    "emitted_events": 0
+  },
+  "missing_original_execution": {
+    "execution_id": "missing-turn",
+    "status": "completed",
+    "pending": false
+  },
+  "loaded_session_second_page": {
+    "error": "not_live",
+    "calls": [
+      {
+        "method": "thread/loaded/list",
+        "params": {}
+      }
+    ]
+  },
+  "detach_prompt_observation": {
+    "observations_before_later_event": 0,
+    "observations_after_later_event": 1,
+    "events_after_detach": 1
+  },
+  "disconnect_projection": {
+    "status": "running",
+    "pending": true,
+    "admitted": true
+  },
+  "terminal_precedence": "completed",
+  "unknown_admission_recovery_selection": {
+    "original_session_known": true,
+    "included_in_observations": false
+  },
+  "claude_normal_eof": {
+    "status": "running",
+    "active": false,
+    "events": 0
+  },
+  "event_sender_failure": {
+    "connection_still_running": true
+  }
+}
