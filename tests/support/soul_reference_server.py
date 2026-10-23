@@ -298,13 +298,7 @@ async def serve(
                     **artifact_state,
                 }
                 await asyncio.to_thread(state_file.write_text, json.dumps(state), encoding="utf-8")
-                if real_model_source is None:
-                    print(json.dumps(state), flush=True)
-                else:
-                    print(
-                        "Isolated real-model backend ready; connection details in state file.",
-                        flush=True,
-                    )
+                print("Isolated backend ready; connection details in state file.", flush=True)
                 await serving
     finally:
         try:
