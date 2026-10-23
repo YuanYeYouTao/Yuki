@@ -62,7 +62,6 @@ from yuki.memory.enums import (
 )
 from yuki.memory.job_claims import fence_memory_job_claim
 from yuki.memory.models import (
-    MemoryCandidate,
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
@@ -2263,13 +2262,7 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("contest_fact_required")
             result = await self._facts.apply_claim(
                 claim,
-                candidates=(
-                    MemoryCandidate(
-                        candidate_ref="candidate_1",
-                        fact=fact,
-                        exact_key=True,
-                    ),
-                ),
+                candidates=(fact,),
                 plan=MemoryResolutionPlan(
                     action=MemoryResolutionAction.CONTEST,
                     existing_fact_id=fact.id,
@@ -2277,7 +2270,6 @@ class MemoryMutationService:
                     new_conflict_state=MemoryConflictState.CONTESTED,
                     relation_types=(MemoryFactRelationType.CONTRADICTS,),
                     reason_code="agent_requested_contest",
-                    create_new_fact=True,
                 ),
                 session=session,
             )

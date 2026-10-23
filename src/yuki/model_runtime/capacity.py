@@ -14,8 +14,6 @@ from yuki.domain.messages import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from yuki.domain.messages import ChatRequest, ChatTool
 
 
@@ -46,14 +44,6 @@ class ModelCapacity:
 
 def _tool_input(tool: ChatTool) -> dict[str, object]:
     return {"name": tool.name, "description": tool.description, "parameters": tool.parameters}
-
-
-def estimate_tools_tokens(tools: Sequence[ChatTool]) -> int:
-    """Count the frozen model declarations, excluding host catalog metadata."""
-    # Schema property names such as data_url are declarations, never media.
-    return estimate_text_tokens(
-        json.dumps([_tool_input(tool) for tool in tools], ensure_ascii=False, default=str)
-    )
 
 
 def _message_input(message: ChatMessage) -> dict[str, object]:

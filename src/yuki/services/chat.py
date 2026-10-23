@@ -272,7 +272,6 @@ class ChatService:
                     repository=memory_repository,
                     lexical_index=SQLiteMemoryFTSIndex(self._ledger._database),
                 ),
-                facts=self._memories,
             )
         self._memory_context = memory_context
         if context_assembler is not None:

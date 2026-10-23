@@ -305,7 +305,6 @@ async def _assemble_wakeup(
     """Run the real actorless ``assemble`` entry for one plugin wakeup."""
 
     assembler = _assembler()
-    assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_snapshot(
             current,
@@ -445,7 +444,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         canonical_conversation_id="conv-stable",
     )
     ordinary = _assembler()
-    ordinary._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     ordinary._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_snapshot(ordinary_event, recent, **checkpoint)
     )
@@ -484,7 +482,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         canonical_conversation_id="conv-stable",
     )
     wakeup = _assembler()
-    wakeup._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_snapshot(external_event, recent, **checkpoint)
     )
@@ -821,7 +818,6 @@ def _covered_external_turn(
         canonical_conversation_id="conv-covered",
     )
     assembler = _assembler()
-    assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
         return_value=_snapshot(
             event,

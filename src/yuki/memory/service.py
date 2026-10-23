@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import Any, Protocol, cast
 
 from sqlalchemy import case, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,14 +20,12 @@ from yuki.memory.enums import (
     MemoryInvalidationReason,
     MemoryKind,
     MemoryResolutionAction,
-    MemoryReviewState,
     MemoryScopeType,
     MemorySourceType,
     MemoryStateAction,
     MemoryStatus,
 )
 from yuki.memory.models import (
-    MemoryCandidate,
     MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
@@ -52,9 +49,6 @@ from yuki.memory.validation import ValidatedMemoryClaim, normalize_memory_text
 from yuki.persistence.models import MemoryFactModel, MemoryFactRelationModel
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    pass
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -317,7 +311,7 @@ class MemoryFactService:
         self,
         claim: ValidatedMemoryClaim,
         *,
-        candidates: tuple[MemoryCandidate, ...],
+        candidates: tuple[MemoryFact, ...],
         plan: MemoryResolutionPlan,
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
@@ -325,19 +319,17 @@ class MemoryFactService:
 
         if session is None:
             async with self.write_session(
-                tuple(item.fact.id for item in candidates), targets=(claim.fact,)
+                tuple(item.id for item in candidates), targets=(claim.fact,)
             ) as owned:
                 result = await self.apply_claim(
                     claim, candidates=candidates, plan=plan, session=owned
                 )
-            if result is not None and plan.create_new_fact:
+            if result is not None:
                 await self.schedule_embedding(result.id)
             return result
         await self._validate_plan(claim, candidates, plan, session=session)
         evidence = claim.evidence
         existing_id = plan.existing_fact_id
-        if plan.action is MemoryResolutionAction.NOOP:
-            return None
         if plan.action is MemoryResolutionAction.CONTEST and existing_id is not None:
             current = await self._repository.get_fact(existing_id, session=session)
             if current is None:
@@ -354,21 +346,13 @@ class MemoryFactService:
                 session=session,
             )
 
-        if not plan.create_new_fact:
-            return (
-                await self._repository.get_fact(existing_id, session=session)
-                if existing_id
-                else None
-            )
         status = plan.new_fact_status or MemoryStatus.ACTIVE
         conflict = plan.new_conflict_state or MemoryConflictState.CLEAR
         prepared = claim.fact.model_copy(update={"status": status, "conflict_state": conflict})
         row = await self._repository.create_fact(
             prepared,
             normalized_content=normalize_memory_text(prepared.content).casefold(),
-            supersedes_id=(
-                existing_id if plan.action is MemoryResolutionAction.SUPERSEDE else None
-            ),
+            supersedes_id=None,
             recorded_at=claim.occurred_at,
             session=session,
         )
@@ -434,12 +418,12 @@ class MemoryFactService:
     async def _validate_plan(
         self,
         claim: ValidatedMemoryClaim,
-        candidates: tuple[MemoryCandidate, ...],
+        candidates: tuple[MemoryFact, ...],
         plan: MemoryResolutionPlan,
         *,
         session: AsyncSession,
     ) -> None:
-        by_id = {candidate.fact.id: candidate.fact for candidate in candidates}
+        by_id = {candidate.id: candidate for candidate in candidates}
         if plan.existing_fact_id is not None and plan.existing_fact_id not in by_id:
             raise ValueError("memory resolution plan references an unbounded candidate")
         if not await self.same_targets((claim.fact, *by_id.values()), session=session):
@@ -513,34 +497,6 @@ class MemoryFactService:
                 subject_user_id=user_id,
                 canonical_subject_person_id=person_id,
             ),
-            session=session,
-        )
-
-    async def add_explicit_person(
-        self,
-        user_id: str,
-        content: str,
-        *,
-        person_id: str | None = None,
-        memory_key: str | None = None,
-        evidence: MemoryEvidenceCreate | None = None,
-        session: AsyncSession | None = None,
-    ) -> MemoryFact:
-        return await self.remember(
-            MemoryFactCreate(
-                scope_type=MemoryScopeType.PERSON,
-                subject_user_id=user_id,
-                canonical_subject_person_id=person_id,
-                kind=MemoryKind.FACT,
-                memory_key=memory_key or f"explicit-{uuid.uuid4()}",
-                category="explicit",
-                content=content,
-                importance=5,
-                confidence=1,
-                source_type=MemorySourceType.EXPLICIT,
-                authority=MemoryAuthority.EXPLICIT,
-            ),
-            evidence=evidence,
             session=session,
         )
 
@@ -687,32 +643,6 @@ class MemoryFactService:
                 session=session,
             )
         return added
-
-    async def refresh_evidence_metadata(
-        self,
-        fact_id: int,
-        *,
-        confirmed_at: datetime,
-        session: AsyncSession,
-        prepared: tuple[MemoryAuthority, float] | None = None,
-        updated_at: datetime | None = None,
-    ) -> None:
-        """Recompute aggregate authority/confidence after controlled evidence removal."""
-
-        if prepared is None:
-            await self._refresh_evidence(fact_id, confirmed_at=confirmed_at, session=session)
-        else:
-            await self._repository.update_confirmation_metadata(
-                fact_id,
-                confirmed_at=confirmed_at,
-                updated_at=updated_at,
-                session=session,
-            )
-
-    async def prepare_evidence_metadata(
-        self, fact: MemoryFact, evidence: tuple[MemoryEvidence, ...]
-    ) -> tuple[MemoryAuthority, float]:
-        return fact.authority, fact.confidence
 
     async def correct_fact(
         self,
@@ -1341,58 +1271,3 @@ class MemoryFactService:
 
     async def list_evidence(self, fact_id: int, *, limit: int = 100) -> tuple[MemoryEvidence, ...]:
         return await self._repository.list_evidence(fact_id, limit=limit)
-
-    async def mark_injected(self, fact_ids: tuple[int, ...]) -> int:
-        """Mark only facts that survived final context budgeting."""
-
-        return await self._repository.mark_injected(fact_ids)
-
-    async def administrator_confirm(
-        self,
-        fact_id: int,
-        *,
-        actor_user_id: str,
-        session: AsyncSession,
-    ) -> MemoryFact | None:
-        """Confirm a fact through the existing state machine without extra evidence."""
-
-        current = await self._repository.get_fact(fact_id, session=session)
-        if current is None or current.status not in {
-            MemoryStatus.ACTIVE,
-            MemoryStatus.CONTESTED,
-        }:
-            return None
-        now = datetime.now(UTC)
-        await self._repository.transition(
-            fact_id,
-            status=current.status,
-            conflict_state=current.conflict_state,
-            invalidated_reason=current.invalidated_reason,
-            action=MemoryStateAction.CONFIRMED,
-            reason_code="administrator_confirm",
-            source_event_id=None,
-            actor_user_id=actor_user_id,
-            session=session,
-        )
-        await self._repository.update_confirmation_metadata(
-            fact_id,
-            confirmed_at=now,
-            session=session,
-        )
-        return await self._repository.get_fact(fact_id, session=session)
-
-    async def administrator_quarantine(
-        self,
-        fact_id: int,
-        *,
-        session: AsyncSession,
-    ) -> MemoryFact | None:
-        current = await self._repository.get_fact(fact_id, session=session)
-        if current is None:
-            return None
-        await self._repository.set_review_state(
-            fact_id,
-            review_state=MemoryReviewState.QUARANTINED,
-            session=session,
-        )
-        return await self._repository.get_fact(fact_id, session=session)

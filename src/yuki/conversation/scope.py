@@ -79,18 +79,6 @@ def plugin_conversation_key(message: InboundMessage, identity: ConversationScope
     return runtime_conversation_key(identity=identity, inbound=message)
 
 
-def turn_covers_scope_key(turn: ConversationTurnSnapshot, scope_key: str) -> bool:
-    """True when ``scope_key`` is this turn's runtime identity or its transport alias."""
-
-    if scope_key == turn.scope_key:
-        return True
-    return turn.transport_scope_key is not None and scope_key == turn.transport_scope_key
-
-
-def snapshot_transport_key(turn: ConversationTurnSnapshot) -> str:
-    return turn.transport_scope_key or turn.scope_key
-
-
 def turn_matches_hydrated_scope(
     turn: ConversationTurnSnapshot,
     *,
@@ -112,7 +100,5 @@ __all__ = [
     "ConversationTurnSnapshot",
     "plugin_conversation_key",
     "runtime_conversation_key",
-    "snapshot_transport_key",
-    "turn_covers_scope_key",
     "turn_matches_hydrated_scope",
 ]

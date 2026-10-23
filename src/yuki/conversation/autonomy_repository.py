@@ -551,18 +551,6 @@ class AutonomyRepository:
                 errors.append(exc)
         return tuple(result)
 
-    async def latest_feedback(self, run_id: str) -> tuple[str, dict[str, Any], datetime] | None:
-        async with self._database.read_session() as session:
-            row = await session.scalar(
-                select(InitiativeFeedbackModel)
-                .where(
-                    InitiativeFeedbackModel.run_id == run_id,
-                )
-                .order_by(InitiativeFeedbackModel.sequence.desc())
-                .limit(1)
-            )
-            return (row.outcome, json.loads(row.payload_json), row.created_at) if row else None
-
     async def list_current_autonomous_scopes(self) -> tuple[tuple[str, int], ...]:
         """Find current group generations, including those missing a selector row."""
         async with self._database.read_session() as session:

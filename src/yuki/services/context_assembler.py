@@ -481,21 +481,3 @@ class ContextAssembler:
             raw_tail_end_event_id=loaded.raw_tail_end_event_id,
             frozen_prefix=loaded.frozen_prefix,
         )
-
-    async def _ensure_turn_generation(
-        self,
-        scope: ConversationScope,
-        turn: ConversationTurnSnapshot,
-    ) -> None:
-        """Check the original canonical identity before selecting source bodies."""
-
-        state = await self._scopes.get(scope, expected_turn=turn)
-        if state is None:
-            raise ConversationCoverageError("conversation scope does not exist")
-        if not turn_matches_hydrated_scope(
-            turn,
-            conversation_id=state.id,
-            generation=state.generation,
-            runtime_key=state.runtime_scope_key,
-        ):
-            raise ConversationCoverageError("turn generation changed before prompt snapshot")

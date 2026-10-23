@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, or_, select, text, update
@@ -15,9 +14,6 @@ from sqlalchemy.exc import IntegrityError
 
 from yuki.persistence.database import Database
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
-
-if TYPE_CHECKING:
-    from yuki.config import Settings
 
 
 def canonical_json(value: Any, *, limit: int) -> str:
@@ -28,27 +24,8 @@ def canonical_json(value: Any, *, limit: int) -> str:
 
 
 class SandboxTaskRepository:
-    def __init__(
-        self,
-        database: Database,
-        *,
-        settings: Settings | None = None,
-        lookup_plugin_host: Callable[[str], Any] | None = None,
-    ) -> None:
+    def __init__(self, database: Database) -> None:
         self.database = database
-        self._settings = settings
-        self._lookup_plugin_host = lookup_plugin_host
-
-    async def validate_source(self, task: SandboxTaskRunModel, request_id: str) -> None:
-        from yuki.services.execution_sources import recover_execution_source
-
-        await recover_execution_source(
-            self.database,
-            task.source_conversation_id,
-            json.loads(task.source_json),
-            request_id=request_id,
-            lookup_plugin_host=self._lookup_plugin_host,
-        )
 
     async def prepare(
         self, request_id: str, arguments: dict[str, Any], source: dict[str, Any]
@@ -146,18 +123,6 @@ class SandboxTaskRepository:
                     select(SandboxTaskRunModel).where(SandboxTaskRunModel.run_id == run_id)
                 ),
             )
-
-    async def checkpoint(self, request_id: str, progress: dict[str, Any]) -> None:
-        payload = canonical_json(progress, limit=16384)
-        async with self.database.immediate_session() as session:
-            changed = await session.scalar(
-                update(SandboxTaskRunModel)
-                .where(SandboxTaskRunModel.request_id == request_id)
-                .values(progress_json=payload)
-                .returning(SandboxTaskRunModel.request_id)
-            )
-            if changed is None:
-                raise ValueError("sandbox_task_source_deleted")
 
     async def by_peer(self, peer_id: str) -> SandboxTaskRunModel | None:
         async with self.database.read_session() as session:

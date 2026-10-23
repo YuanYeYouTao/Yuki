@@ -3,8 +3,6 @@
 from typing import Any
 
 from sqlalchemy import Index, func, literal_column, text
-from sqlalchemy.dialects import sqlite
-from sqlalchemy.schema import CreateIndex
 
 from yuki.runtime.work_schema_v1 import WORK_STATES, inputs, work
 
@@ -16,13 +14,6 @@ SOURCE_SCOPE_FIELDS = (
     "execution_boundary",
     "principal_kind",
     "initiative_run_id",
-)
-
-QUERY_INDEX_NAMES = (
-    "ix_runtime_work_query_scope_updated",
-    "ix_runtime_work_query_updated",
-    "ix_runtime_work_query_state_updated",
-    "ix_runtime_work_ready_scope",
 )
 
 INPUT_REPAIR_INDEX_NAME = "ix_runtime_work_inputs_abandoned"
@@ -79,11 +70,3 @@ Index(
     work.c.updated.desc(),
     work.c.id.desc(),
 )
-
-
-def query_index_sql() -> dict[str, str]:
-    return {
-        index.name: str(CreateIndex(index).compile(dialect=sqlite.dialect()))
-        for index in work.indexes
-        if index.name in QUERY_INDEX_NAMES
-    }

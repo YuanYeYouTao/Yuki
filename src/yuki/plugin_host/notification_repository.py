@@ -274,19 +274,9 @@ class PluginNotificationRepository:
     ) -> BackgroundTargetGrantView:
         async with self._database.read_session() as reader:
             await reader.execute(text("BEGIN"))
-            person_id, space_id = await _grant_owners(
-                reader, created_by_user_id=created_by_user_id, target=target
-            )
+            await _grant_owners(reader, created_by_user_id=created_by_user_id, target=target)
             prepared_conversation = await _target_conversation(reader, target)
             prepared_presence = await _grant_presence(reader, prepared_conversation, presence_id)
-            await find_grant_lineage(
-                reader,
-                plugin_id=plugin_id,
-                target_type=target.target_type,
-                person_id=person_id,
-                space_id=space_id,
-                conversation_id=prepared_conversation.id,
-            )
             target = target.model_copy(update={"conversation_id": prepared_conversation.id})
             presence_id = prepared_presence.id
         async with self._database.immediate_session() as session:
@@ -1394,28 +1384,6 @@ class PluginNotificationRepository:
         if category is not None or result is None:
             raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
         return result
-
-    async def ensure_resolved_transport_alias(
-        self,
-        *,
-        conversation_id: str,
-        transport_key: str,
-    ) -> None:
-        """Attach the current Presence key as a secondary alias. Primary stays frozen."""
-
-        from yuki.conversation.hydrate import ensure_legacy_alias
-
-        async with self._database.immediate_session() as session:
-            conversation = await require_live_conversation(session, conversation_id)
-            try:
-                await ensure_legacy_alias(
-                    session,
-                    conversation_id=conversation.id,
-                    scope_key=transport_key,
-                    primary=False,
-                )
-            except CanonicalIdentityError as exc:
-                raise plugin_ownership_error(exc) from None
 
 
 def queued_work_error_category(exc: PluginOwnershipError, row: object) -> str:

@@ -117,14 +117,14 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
             await release.wait()
 
     if first_commit == "merge":
-        find = notifications.find_grant_lineage
+        prepare_presence = notifications._grant_presence
 
         async def prepared_grant(*args, **kwargs):
-            result = await find(*args, **kwargs)
+            result = await prepare_presence(*args, **kwargs)
             await wait_after_preparation()
             return result
 
-        monkeypatch.setattr(notifications, "find_grant_lineage", prepared_grant)
+        monkeypatch.setattr(notifications, "_grant_presence", prepared_grant)
     else:
         prepare = env.router.prepare_person_merge_routes
 

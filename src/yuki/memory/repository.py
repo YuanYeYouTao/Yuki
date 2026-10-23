@@ -930,22 +930,6 @@ class MemoryFactRepository:
             )
             return await project_memory_fact_rows(session, rows)
 
-    async def mark_injected(self, fact_ids: tuple[int, ...]) -> int:
-        unique_ids = tuple(dict.fromkeys(fact_ids))
-        if not unique_ids:
-            return 0
-        async with self._database.immediate_session() as session:
-            result = await session.execute(
-                update(MemoryFactModel)
-                .where(
-                    MemoryFactModel.id.in_(unique_ids),
-                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-                    MemoryFactModel.review_state != "quarantined",
-                )
-                .values(last_injected_at=datetime.now(UTC))
-            )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
-
     async def create_fact(
         self,
         fact: MemoryFact | MemoryFactCreate,
@@ -1089,21 +1073,6 @@ class MemoryFactRepository:
                 updated_at=updated_at or datetime.now(UTC),
             )
         )
-
-    async def set_review_state(
-        self,
-        fact_id: int,
-        *,
-        review_state: MemoryReviewState,
-        session: AsyncSession,
-    ) -> bool:
-        row = await session.get(MemoryFactModel, fact_id)
-        if row is None:
-            return False
-        row.review_state = review_state.value
-        row.updated_at = datetime.now(UTC)
-        await session.flush()
-        return True
 
     async def restore_confirmation_metadata(
         self,

@@ -177,12 +177,16 @@ async def test_message_history_filters_external_before_limit(database: Database)
         direction="inbound",
         content="after external",
     )
-    rows = await ledger.list_scope_recent(
+    version, rows = await ledger.read_scope_context(
         ConversationScope.private("8000", "1001"),
         limit=2,
         message_only=True,
     )
     assert [row.content for row in rows] == ["before external", "after external"]
+    assert version.conversation_id == _conversation_id
+    assert await ledger.read_version_matches(version)
+    delta_version, delta = await ledger.read_scope_delta(version.scope, after_event_id=0, limit=2)
+    assert delta_version == version and delta == rows
     searched = await ledger.query_history(
         conversation_id=_conversation_id,
         keyword="external",

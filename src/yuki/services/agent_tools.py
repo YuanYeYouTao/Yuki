@@ -434,7 +434,6 @@ class AgentToolService:
                     repository=self._memory_repository,
                     lexical_index=SQLiteMemoryFTSIndex(ledger._database),
                 ),
-                facts=memories,
             )
         self._memory_context = memory_context
         self._memory_mutations = memory_mutations

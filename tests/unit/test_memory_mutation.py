@@ -288,6 +288,63 @@ def _context(event: EventRecord) -> MemoryMutationContext:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_in_plan", [False, True])
+async def test_claim_plan_cannot_reference_an_unbound_id_or_another_owner(
+    database: Database, candidate_in_plan: bool
+) -> None:
+    _mutations, facts, ledger, _processor = _service(database)
+    event = await _event(
+        ledger, message_id="claim-plan-owner", sender_user_id="1001", content="我喜欢绿色"
+    )
+    original = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="2002" if candidate_in_plan else "1001",
+            memory_key="color:favorite",
+            category="preference",
+            content="喜欢蓝色",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    claim = ValidatedMemoryClaim(
+        operation=MemoryClaimOperation.ASSERT,
+        fact=MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            memory_key="color:favorite",
+            category="preference",
+            content="喜欢绿色",
+            source_type=MemorySourceType.EXPLICIT,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=event.id,
+            source_speaker_user_id="1001",
+            relation=MemoryEvidenceRelation.SELF_STATEMENT,
+            excerpt="我喜欢绿色",
+        ),
+        subject_is_speaker=True,
+        occurred_at=event.occurred_at,
+    )
+    with pytest.raises(
+        ValueError, match="crosses identity targets" if candidate_in_plan else "unbounded candidate"
+    ):
+        await facts.apply_claim(
+            claim,
+            candidates=(original,) if candidate_in_plan else (),
+            plan=MemoryResolutionPlan(
+                action=MemoryResolutionAction.CONTEST,
+                existing_fact_id=original.id,
+                new_fact_status=MemoryStatus.CONTESTED,
+                new_conflict_state=MemoryConflictState.CONTESTED,
+                reason_code="explicit_contest",
+            ),
+        )
+    assert await facts.get_fact(original.id) == original
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 1
+
+
+@pytest.mark.asyncio
 async def test_mutation_selector_cannot_cross_resolved_identity_target(database: Database) -> None:
     service, facts, ledger, _processor = _service(database)
     other = await facts.remember(
@@ -1139,7 +1196,6 @@ async def test_contested_claim_is_enqueued_after_commit(database: Database) -> N
         candidates=(),
         plan=MemoryResolutionPlan(
             action=MemoryResolutionAction.CREATE,
-            create_new_fact=True,
             new_fact_status=MemoryStatus.CONTESTED,
             new_conflict_state=MemoryConflictState.CONTESTED,
             reason_code="test_contested",

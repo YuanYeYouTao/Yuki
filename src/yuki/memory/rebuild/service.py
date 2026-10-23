@@ -118,59 +118,6 @@ async def plan_rebuild_core(
     )
 
 
-async def start_rebuild_core(
-    repository: MemoryRebuildRepository,
-    run_id: str,
-    *,
-    settings: Settings,
-    session: AsyncSession | None = None,
-) -> MemoryRebuildRun:
-    if not settings.memory_rebuild_enabled:
-        raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
-    if await repository.executing_count(session=session):
-        raise RuntimeError("another memory rebuild run is executing")
-    changed = await repository.transition(
-        run_id,
-        expected={MemoryRebuildRunStatus.PLANNED},
-        status=MemoryRebuildRunStatus.EXTRACTING,
-        session=session,
-    )
-    if not changed:
-        raise ValueError("run is not in planned state")
-    run = await repository.get_run(run_id, session=session)
-    if run is None:
-        raise ValueError("memory rebuild run not found")
-    return run
-
-
-async def cancel_rebuild_core(
-    repository: MemoryRebuildRepository,
-    run_id: str,
-    *,
-    session: AsyncSession | None = None,
-) -> MemoryRebuildRun:
-    run = await repository.get_run(run_id, session=session)
-    if run is None:
-        raise ValueError("memory rebuild run not found")
-    if run.status in {
-        MemoryRebuildRunStatus.COMPLETED,
-        MemoryRebuildRunStatus.CANCELLED,
-    }:
-        return run
-    changed = await repository.transition(
-        run_id,
-        expected={run.status},
-        status=MemoryRebuildRunStatus.CANCELLED,
-        session=session,
-    )
-    if not changed:
-        raise RuntimeError("memory rebuild state changed concurrently")
-    current = await repository.get_run(run_id, session=session)
-    if current is None:
-        raise ValueError("memory rebuild run not found")
-    return current
-
-
 def extraction_fingerprint(settings: Settings, *, model_name: str | None = None) -> str:
     payload = {
         "task": ModelTask.MEMORY_EXTRACTION.value,

@@ -1754,7 +1754,6 @@ class MessageProcessor:
         await self._memory_worker.enqueue(
             record.id,
             record.scope.key,
-            content_characters=len(record.evidence_content),
         )
 
     async def _record_ordinary_participation(

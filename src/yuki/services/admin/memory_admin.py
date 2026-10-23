@@ -122,7 +122,6 @@ class MemoryAdminService:
                 repository=memories.repository,
                 lexical_index=self._memory_index,
             ),
-            facts=memories,
         )
         self._runtime_config = runtime_config or RuntimeConfigService(
             settings=settings,

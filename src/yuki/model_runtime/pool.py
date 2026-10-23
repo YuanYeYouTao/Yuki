@@ -135,12 +135,6 @@ class ModelClientPool:
         self._clients[key] = provider
         return provider
 
-    @property
-    def connection_pool_count(self) -> int:
-        """Expose a content-free diagnostic for reuse tests and health output."""
-
-        return len(self._connection_pools)
-
     async def close(self) -> None:
         closed: set[int] = set()
         errors: list[BaseException] = []

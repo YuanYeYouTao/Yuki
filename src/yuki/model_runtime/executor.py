@@ -574,7 +574,6 @@ class TaskModelExecutor:
                     profile_id=profile.id,
                     provider=profile.provider,
                     model=profile.model,
-                    original_failure=exc,
                     success=False,
                     prompt_tokens=reported_tokens("prompt_tokens"),
                     completion_tokens=reported_tokens("completion_tokens"),
@@ -659,9 +658,7 @@ class TaskModelExecutor:
             )
         return response
 
-    async def _record_invocation(
-        self, *, original_failure: Exception | None = None, **values: Any
-    ) -> None:
+    async def _record_invocation(self, **values: Any) -> None:
         if self._invocations is None:
             return
         try:

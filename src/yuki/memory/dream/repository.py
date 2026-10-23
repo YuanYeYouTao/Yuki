@@ -891,45 +891,6 @@ class DreamRepository:
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
-    async def defer_pending(self, public_id: str) -> int:
-        """Skip this slot without checkpointing facts; the next plan selects them again."""
-        now = datetime.now(UTC)
-        async with self.database.immediate_session() as session:
-            run_id = await session.scalar(
-                select(MemoryDreamRunModel.id).where(MemoryDreamRunModel.public_id == public_id)
-            )
-            if run_id is None:
-                return 0
-            result = await session.execute(
-                update(MemoryDreamClusterModel)
-                .where(
-                    MemoryDreamClusterModel.run_id == run_id,
-                    MemoryDreamClusterModel.status == DreamClusterStatus.PENDING.value,
-                )
-                .values(
-                    status=DreamClusterStatus.SKIPPED.value,
-                    error_category="budget_deferred",
-                    completed_at=now,
-                    updated_at=now,
-                )
-            )
-            count = int(cast(CursorResult[Any], result).rowcount or 0)
-            run = await session.get(MemoryDreamRunModel, run_id)
-            if run is not None and count:
-                run.statistics_json = func.json_set(
-                    MemoryDreamRunModel.statistics_json,
-                    "$.budget_deferred_clusters",
-                    func.coalesce(
-                        func.json_extract(
-                            MemoryDreamRunModel.statistics_json, "$.budget_deferred_clusters"
-                        ),
-                        0,
-                    )
-                    + count,
-                )
-                run.updated_at = now
-        return count
-
     async def reset_processing_after_restart(self) -> int:
         """Recover bounded batches from committed operations, without replaying effects."""
         recovered = 0
