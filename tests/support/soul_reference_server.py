@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import json
 import os
-import socket
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -273,18 +272,16 @@ async def serve(
 
         http = FastAPI()
         http.mount(base_path or "/", api)
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", port))
+        config = uvicorn.Config(
+            http,
+            host="127.0.0.1",
+            port=port,
+            log_level="critical",
+            timeout_graceful_shutdown=1,
+        )
+        with config.bind_socket() as listener:
             actual_port = listener.getsockname()[1]
-            server = uvicorn.Server(
-                uvicorn.Config(
-                    http,
-                    host="127.0.0.1",
-                    port=actual_port,
-                    log_level="critical",
-                    timeout_graceful_shutdown=1,
-                )
-            )
+            server = uvicorn.Server(config)
             async with asyncio.TaskGroup() as tasks:
                 serving = tasks.create_task(server.serve(sockets=[listener]))
                 while not server.started:
