@@ -86,6 +86,19 @@ async def _wait_for_worker(service: AutonomousGroupService, scope_key: str) -> N
         await asyncio.sleep(0)
 
 
+def _hold_worker_window(worker: AutonomousGroupService, monkeypatch) -> asyncio.Event:
+    """Finish arranging inputs before the real quiet-window worker can run."""
+    release = asyncio.Event()
+    after_silence = worker._after_silence
+
+    async def wait_for_inputs(scope_key: str) -> None:
+        await release.wait()
+        await after_silence(scope_key)
+
+    monkeypatch.setattr(worker, "_after_silence", wait_for_inputs)
+    return release
+
+
 async def test_worker_attempts_only_latest_source_and_ignores_older_classification() -> None:
     service = _service(_policy(debounce=0.05))
     attempts: list[int] = []
@@ -185,11 +198,14 @@ async def _admissions(database) -> list[OrdinaryTurnAdmissionModel]:
         return list((await session.scalars(select(OrdinaryTurnAdmissionModel))).all())
 
 
-async def test_open_floor_fragments_admit_one_turn_for_latest_source(database, tmp_path):
+async def test_open_floor_fragments_admit_one_turn_for_latest_source(
+    database, tmp_path, monkeypatch
+):
     provider = FakeLLMProvider()
     _env, harness, autonomous, message = await _open_group_scene(
         database, tmp_path, provider, debounce=0.2
     )
+    release = _hold_worker_window(autonomous, monkeypatch)
     sender = MemorySender()
     fragments = [
         message(index, text) for index, text in enumerate(("我想问", "那个", "明天几点开会"))
@@ -207,6 +223,7 @@ async def test_open_floor_fragments_admit_one_turn_for_latest_source(database, t
     assert resent.reason == "group_observed"
     assert coordinator._states[key].version == version
 
+    release.set()
     await _wait_for_worker(autonomous, key)
     admitted = await _admissions(database)
     assert [row.event_id for row in admitted] == [latest]
@@ -214,11 +231,14 @@ async def test_open_floor_fragments_admit_one_turn_for_latest_source(database, t
     await autonomous.close()
 
 
-async def test_explicit_call_during_window_cancels_pending_open_source(database, tmp_path):
+async def test_explicit_call_during_window_cancels_pending_open_source(
+    database, tmp_path, monkeypatch
+):
     provider = FakeLLMProvider()
     _env, harness, autonomous, message = await _open_group_scene(
         database, tmp_path, provider, debounce=0.2
     )
+    release = _hold_worker_window(autonomous, monkeypatch)
     sender = MemorySender()
     assert (await harness.processor.handle(message(1, "在吗"), sender)).reason == (
         "ordinary_deferred"
@@ -226,6 +246,7 @@ async def test_explicit_call_during_window_cancels_pending_open_source(database,
     pending = next(iter(harness.processor._observed_human_turns.values()))
     direct = await harness.processor.handle(message(2, "帮我看看", mention=True), sender)
     assert direct.reason == "chat"
+    release.set()
     await _wait_for_worker(autonomous, pending.snapshot.scope_key)
 
     admitted = await _admissions(database)
@@ -234,11 +255,14 @@ async def test_explicit_call_during_window_cancels_pending_open_source(database,
     await autonomous.close()
 
 
-async def test_open_floor_rechecks_require_mention_when_window_closes(database, tmp_path):
+async def test_open_floor_rechecks_require_mention_when_window_closes(
+    database, tmp_path, monkeypatch
+):
     provider = FakeLLMProvider()
     env, harness, autonomous, message = await _open_group_scene(
         database, tmp_path, provider, debounce=0.2
     )
+    release = _hold_worker_window(autonomous, monkeypatch)
     assert (await harness.processor.handle(message(1, "有人吗"), MemorySender())).reason == (
         "ordinary_deferred"
     )
@@ -249,6 +273,7 @@ async def test_open_floor_rechecks_require_mention_when_window_closes(database, 
             .where(CanonicalSpaceModel.id == env.space)
             .values(require_mention=True)
         )
+    release.set()
     await _wait_for_worker(autonomous, pending.snapshot.scope_key)
 
     assert await _admissions(database) == [] and provider.requests == []
@@ -461,11 +486,14 @@ async def test_original_wait_prepares_voice_and_memory_before_publication(
         await worker.close()
 
 
-async def test_open_floor_merge_keeps_prior_voice_in_actual_main_input(database, tmp_path):
+async def test_open_floor_merge_keeps_prior_voice_in_actual_main_input(
+    database, tmp_path, monkeypatch
+):
     provider = FakeLLMProvider(lambda _: "NO_REPLY")
     _env, harness, worker, message = await _open_group_scene(
         database, tmp_path, provider, debounce=0.2
     )
+    release = _hold_worker_window(worker, monkeypatch)
     service = _asr(harness.processor)
     try:
         assert (await harness.processor.handle(_voice(message(1, "")), MemorySender())).reason == (
@@ -475,6 +503,7 @@ async def test_open_floor_merge_keeps_prior_voice_in_actual_main_input(database,
         assert (
             await harness.processor.handle(message(2, "请按刚才语音的要求处理"), MemorySender())
         ).reason == "ordinary_deferred"
+        release.set()
         await _wait_for_worker(worker, observed.snapshot.scope_key)
         event = await harness.ledger.get_event(observed.record.id)
         assert VOICE_REQUIREMENT in event.audio_transcript
