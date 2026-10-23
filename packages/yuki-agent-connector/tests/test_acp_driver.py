@@ -60,7 +60,11 @@ async def test_real_acp_stdio_permissions_local_files_terminal_and_negotiation(
                     "action": "respond",
                     "session_id": prompt["session_id"],
                     "execution_id": prompt["execution_id"],
-                    "arguments": {"permission_id": "11", "option_id": "made-up"},
+                    "arguments": {
+                        "connection_id": driver.owner,
+                        "permission_id": "11",
+                        "option_id": "made-up",
+                    },
                 }
             )
         await driver.execute(
@@ -69,7 +73,11 @@ async def test_real_acp_stdio_permissions_local_files_terminal_and_negotiation(
                 "action": "respond",
                 "session_id": prompt["session_id"],
                 "execution_id": prompt["execution_id"],
-                "arguments": {"permission_id": 11, "option_id": "allow-original"},
+                "arguments": {
+                    "connection_id": driver.owner,
+                    "permission_id": 11,
+                    "option_id": "allow-original",
+                },
             }
         )
         kind, completed = await asyncio.wait_for(events.get(), 5)

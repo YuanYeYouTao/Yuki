@@ -98,17 +98,25 @@ Real provider tests, OS service tests and source-level fake protocol tests remai
 distinct acceptance evidence.
 
 
-### Connector 0.2.0 / wire protocol 2
+### Connector 0.3.0 / wire protocol 3
 
-Bot and Connector must be updated to a matching revision. The WebSocket hello now uses
-`protocol_version: 2`; version 1 is rejected rather than treated as compatible. Device,
-instance, native session, execution, operation IDs and the original journal remain unchanged.
-Each native instance starts and recovers independently. A ready sibling can connect immediately;
-later readiness is sent through the same connection's catalog update without replacing its owner.
+Update Bot and Connector together. Keep the original journal and device identity. The hello uses
+`protocol_version: 3`. Existing watches retain their original execution scope; a new watch with only
+a session ID follows that session across turns. Supplying an execution ID watches that turn alone.
+Detaching stops observation, not the native session.
 
-One original durable event is the in-flight credit and commit/ACK unit. RPC responses keep using
-the independent socket reader while that event waits for SQLite. The connector reads its original
-journal by sequence and sends the stored JSON, then advances only after its ACK. Disconnects replay
-only unacknowledged records; they never redispatch native operations. This bounds transport backlog
-materialization at the cost of one commit/ACK round trip per event; it is not an execution limit.
-Explicit server `receive_events([...])` calls still commit or roll back the whole supplied list.
+The local journal reduces native facts into one receipt projection. Events carry `sequence` and
+`operation_state`; query and command responses return the same projection with `state_sequence`.
+A lost stream becomes unknown without erasing confirmed admission. Late progress cannot reopen a
+terminal observation. Unknown dispatches are reconciled using the original IDs, never resubmitted.
+
+Codex reconnects to the selected owner and restores observations from the journal. Native questions
+belong to the connection that issued them. Claude SDK and ACP report loss of their owned execution
+streams without pretending they can recover an inaccessible process. Native readiness is separate
+from the device WebSocket connection.
+
+Events stream from the original journal by sequence, using WebSocket backpressure. Commit ACKs prune
+originals without imposing a round trip before every send. Failure of the event sender, catalog sender
+or reader ends that connection. An acknowledged old-protocol event whose ACK was lost remains the same
+fact after upgrade; replay does not duplicate its Work input. Complete diffs are no longer pushed as
+progress; file paths, command results, plans, questions and native tool milestones remain available.

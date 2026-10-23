@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from itertools import count
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -30,6 +31,7 @@ from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunM
 from yuki.sandbox.task_repository import SandboxTaskRepository
 
 case = work_case
+sequences = count(1)
 
 
 async def register_device(database, person_id, *, label="computer"):
@@ -95,7 +97,7 @@ async def connect(env, connection, *, profiles=("profile",)):
         env.device["device_id"],
         connection,
         {
-            "protocol_version": 2,
+            "protocol_version": 3,
             "instances": [
                 {"id": local_id, "driver": "codex", "capabilities": ["get", "steer"]}
                 for local_id in profiles
@@ -115,6 +117,19 @@ def event(identity="event-one", *, operation="original-operation", **changes):
         "payload": {"message": "tests started"},
     }
     result.update(changes)
+    sequence = result.setdefault("sequence", next(sequences))
+    result.setdefault(
+        "operation_state",
+        {
+            "status": "running",
+            "admitted": True,
+            **(result["payload"] if isinstance(result["payload"], dict) else {}),
+            "session_id": result.get("session_id"),
+            "execution_id": result.get("execution_id"),
+            "pending": result["kind"] != "completed",
+            "state_sequence": sequence,
+        },
+    )
     return result
 
 
@@ -213,7 +228,7 @@ async def test_connector_cannot_mix_another_credential_with_its_original_device_
         await native.service.connect(
             native.device["device_id"],
             connection,
-            {"protocol_version": 2, "device_id": str(uuid4()), "instances": []},
+            {"protocol_version": 3, "device_id": str(uuid4()), "instances": []},
         )
     assert not native.service.connections.online(native.device["device_id"])
 
@@ -566,7 +581,8 @@ async def test_detach_settles_only_supervision_and_does_not_cancel_native(
             assert json.loads(task.completion_json)["native_status"] == "running"
             assert json.loads(task.completion_json)["operation_status"] == "detached"
     assert [command["action"] for command in commands] == ["watch", "detach"]
-    assert original.native_execution_id == "native-turn"
+    assert original.native_execution_id is None
+    assert json.loads(original.command_json)["observation_scope"] == "session"
 
 
 async def test_late_admission_and_terminal_replay_cannot_undo_original_completion(database, case):

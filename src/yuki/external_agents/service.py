@@ -18,7 +18,12 @@ from yuki.external_agents.db_models import (
     AgentSessionModel,
 )
 from yuki.external_agents.identity import ConnectorIdentityService
-from yuki.external_agents.repository import AgentRepository, encode, execution_key
+from yuki.external_agents.repository import (
+    AgentRepository,
+    encode,
+    execution_key,
+    session_observation,
+)
 from yuki.external_agents.transport import DeviceConnection, DeviceConnections, DeviceOffline
 from yuki.persistence.database import Database
 from yuki.runtime.work_activation import current_work_control
@@ -40,10 +45,16 @@ class ExternalAgentService:
     async def close(self) -> None:
         # Closing Yuki's transport never sends native cancel or closes a user daemon.
         errors: list[BaseException] = []
+        connections = self.connections.active()
         try:
             await self.connections.close()
         except BaseException as close_error:
             errors.append(close_error)
+        for connection in connections:
+            try:
+                await self.repository.connection_event(connection.device_id, connection.id, False)
+            except BaseException as close_error:
+                errors.append(close_error)
         results = await asyncio.gather(*self._retiring.values(), return_exceptions=True)
         errors.extend(result for result in results if isinstance(result, BaseException))
         if errors:
@@ -60,12 +71,17 @@ class ExternalAgentService:
     async def connect(
         self, device_id: str, connection: DeviceConnection, hello: dict[str, Any]
     ) -> None:
-        if hello.get("protocol_version") != 2 or not isinstance(hello.get("instances"), list):
+        if hello.get("protocol_version") != 3 or not isinstance(hello.get("instances"), list):
             raise ValueError("unsupported_connector_protocol")
         if hello.get("device_id", device_id) != device_id:
             raise ValueError("external_agent_device_mismatch")
         await self.update_catalog(device_id, connection, hello["instances"])
         await self.connections.attach(connection)
+        await self.repository.connection_event(device_id, connection.id, True)
+
+    async def disconnect(self, connection: DeviceConnection) -> None:
+        if self.connections.detach(connection):
+            await self.repository.connection_event(connection.device_id, connection.id, False)
 
     async def update_catalog(
         self, device_id: str, connection: DeviceConnection, instances: list[dict[str, Any]]
@@ -119,20 +135,30 @@ class ExternalAgentService:
 
     async def _view(self, operation: AgentOperationModel) -> dict[str, Any]:
         result = json.loads(operation.result_json or "{}")
+        native_execution = (
+            result.get("execution_id")
+            if session_observation(operation)
+            else operation.native_execution_id
+        )
         native = {
             "session_id": result.get("session_id"),
-            "execution_id": operation.native_execution_id,
+            "execution_id": native_execution,
         }
         execution_id = (
-            execution_key(operation.session_id, operation.native_execution_id)
-            if operation.session_id and operation.native_execution_id
+            execution_key(operation.session_id, native_execution)
+            if operation.session_id and native_execution
             else None
         )
-        if isinstance(result.get("error"), dict):
+        if isinstance(result.get("error"), dict) and "code" in result["error"]:
             result = {**result, "error_detail": result["error"], "error": result["error"]["code"]}
         async with self.database.read_session() as session:
             task = (
                 await session.get(SandboxTaskRunModel, operation.id) if operation.run_id else None
+            )
+            instance = (
+                await session.get(AgentInstanceModel, operation.instance_id)
+                if result.get("pending", True)
+                else None
             )
         if task is not None and task.status == "completed":
             completion = json.loads(task.completion_json or "{}")
@@ -147,7 +173,7 @@ class ExternalAgentService:
                 "native_reference": native,
                 "execution_id": execution_id,
             }
-        return {
+        view = {
             **result,
             "kind": "external_agent",
             "operation_id": operation.id,
@@ -162,6 +188,23 @@ class ExternalAgentService:
             "uncertain": not bool(result) or result.get("status") == "unknown",
             "admitted": result.get("admitted") is True,
             "ownership": "observe" if operation.action == "watch" else "execute",
+        }
+        if view["pending"]:
+            if instance is not None and not self.connections.online(instance.device_id):
+                return self._unavailable_view(view, "device_offline")
+        return view
+
+    @staticmethod
+    def _unavailable_view(
+        view: dict[str, Any], reason: str, *, device_online: bool = False
+    ) -> dict[str, Any]:
+        return {
+            **view,
+            "last_confirmed": view.get("last_confirmed", dict(view)),
+            "status": "unknown",
+            "uncertain": True,
+            "observation_error": reason,
+            "device_online": device_online,
         }
 
     async def _list(self, args: dict[str, Any], request_id: str, actor: str) -> dict[str, Any]:
@@ -207,9 +250,9 @@ class ExternalAgentService:
                 bound_execution = await self.repository.native_execution(
                     args["execution_id"], actor
                 )
-                if (operation.session_id, operation.native_execution_id) != (
-                    bound_execution.session_id,
-                    bound_execution.native_id,
+                if operation.session_id != bound_execution.session_id or (
+                    not session_observation(operation)
+                    and operation.native_execution_id != bound_execution.native_id
                 ):
                     raise ValueError("external_agent_target_mismatch")
             view = await self._view(operation)
@@ -217,8 +260,8 @@ class ExternalAgentService:
                 instance = await self.repository.instance(operation.instance_id, actor)
                 try:
                     connection = await self._connection(instance)
-                except (DeviceOffline, ClientError):
-                    view["device_online"] = False
+                except (DeviceOffline, ClientError) as error:
+                    view = self._unavailable_view(view, str(error))
                 else:
                     try:
                         result = await connection.request(
@@ -230,15 +273,18 @@ class ExternalAgentService:
                                 "arguments": {"operation_id": operation.id},
                             }
                         )
-                    except (DeviceOffline, OSError):
-                        view["device_online"] = False
+                    except (DeviceOffline, OSError) as error:
+                        view = self._unavailable_view(view, str(error))
                     else:
                         # Absence of a journal result never authorizes another dispatch.
                         status = result.get("status")
-                        if isinstance(status, str) and status not in {"unknown", "not_found"}:
+                        if isinstance(status, str) and status != "not_found":
                             operation = await self.repository.response(operation.id, result)
                             view = await self._view(operation)
                         else:
+                            view = self._unavailable_view(
+                                view, status or "query_failed", device_online=True
+                            )
                             view["uncertain"] = True
                             view["reconciliation_status"] = status or "query_failed"
             events = await self.repository.event_page(operation.id, args.get("cursor", 0))
@@ -370,7 +416,10 @@ class ExternalAgentService:
         if execution is not None:
             if owned is not None and (
                 owned.session_id != execution.session_id
-                or owned.native_execution_id != execution.native_id
+                or (
+                    not session_observation(owned)
+                    and owned.native_execution_id != execution.native_id
+                )
             ):
                 raise ValueError("external_agent_target_mismatch")
             session_id = execution.session_id
@@ -414,7 +463,13 @@ class ExternalAgentService:
                 "permission_id",
             }
         }
-        native_execution = owned.native_execution_id if owned is not None else None
+        native_execution = (
+            json.loads(owned.result_json or "{}").get("execution_id")
+            if owned is not None and session_observation(owned)
+            else owned.native_execution_id
+            if owned is not None
+            else None
+        )
         if execution is not None:
             native_execution = execution.native_id
         if owned is not None:
@@ -434,8 +489,13 @@ class ExternalAgentService:
                 if event.kind not in {"permission", "question"}:
                     raise ValueError("external_agent_question_not_found")
                 native_question = event_data["payload"]["native_request_id"]
+                question_execution = event_data.get("execution_id")
+                if execution is not None and execution.native_id != question_execution:
+                    raise ValueError("external_agent_target_mismatch")
+                native_execution = question_execution
             arguments["permission_id"] = native_question
             arguments["native_request_id"] = native_question
+            arguments["connection_id"] = event_data["payload"].get("connection_id")
         if action == "cancel" and owned is not None:
             queued = json.loads(owned.result_json or "{}").get("queued_submission_id")
             if queued is not None:
@@ -448,6 +508,11 @@ class ExternalAgentService:
             "arguments": arguments,
             **({"session_id": native_session.native_id} if native_session else {}),
             **({"execution_id": native_execution} if native_execution else {}),
+            **(
+                {"observation_scope": "execution" if native_execution else "session"}
+                if action == "watch"
+                else {}
+            ),
         }
         operation, created = await self.repository.prepare(
             identity=request_id,
@@ -557,7 +622,7 @@ class ExternalAgentService:
                     "$.session_id",
                     func.json_extract(original, "$.session_id"),
                     "$.execution_id",
-                    row.native_execution_id,
+                    func.json_extract(original, "$.execution_id"),
                 )
                 # Both operation and owned completion derive from this same
                 # original row before its result is updated.

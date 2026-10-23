@@ -40,14 +40,19 @@ async def test_large_native_payload_preserves_null_arrays_booleans_and_internal_
         "execution_id": "native-turn",
     }
     await env.repository.response(operation.id, response)
+    progress = event("progress", payload={"admitted": True, "status": None})
+    question_event = event(
+        "question", kind="permission", payload={"native_request_id": "native-q", **detail}
+    )
+    for item in (progress, question_event):
+        item["operation_state"] = {
+            **response,
+            "status": None,
+            "state_sequence": item["sequence"],
+        }
     await env.repository.receive_events(
         env.device["device_id"],
-        [
-            event("progress", payload={"admitted": True, "status": None}),
-            event(
-                "question", kind="permission", payload={"native_request_id": "native-q", **detail}
-            ),
-        ],
+        [progress, question_event],
     )
     current = await env.repository.operation(operation.id, env.actor)
     stored = json.loads(current.result_json)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Protocol
+from uuid import uuid4
 
 
 class DeviceOffline(ConnectionError):
@@ -19,6 +20,7 @@ class JsonSocket(Protocol):
 class DeviceConnection:
     def __init__(self, device_id: str, socket: JsonSocket) -> None:
         self.device_id = device_id
+        self.id = str(uuid4())
         self.socket = socket
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.instances: set[str] = set()
@@ -80,10 +82,15 @@ class DeviceConnections:
             previous.disconnected()
             await previous.socket.close(code=1000, reason="connection_replaced")
 
-    def detach(self, connection: DeviceConnection) -> None:
-        if self._devices.get(connection.device_id) is connection:
+    def detach(self, connection: DeviceConnection) -> bool:
+        current = self._devices.get(connection.device_id) is connection
+        if current:
             self._devices.pop(connection.device_id)
         connection.disconnected()
+        return current
+
+    def active(self) -> tuple[DeviceConnection, ...]:
+        return tuple(self._devices.values())
 
     async def close(self) -> None:
         connections = tuple(self._devices.values())

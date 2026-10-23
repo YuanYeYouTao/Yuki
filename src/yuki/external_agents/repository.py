@@ -49,6 +49,13 @@ def execution_key(session_id: str, native_id: str) -> str:
     return str(uuid5(UUID(session_id), f"execution:{native_id}"))
 
 
+def session_observation(operation: AgentOperationModel) -> bool:
+    return (
+        operation.action == "watch"
+        and json.loads(operation.command_json).get("observation_scope") == "session"
+    )
+
+
 class AgentRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -298,54 +305,68 @@ class AgentRepository:
             if previous.get("pending") is False or encode(previous) == serialized:
                 return original
         async with self.database.immediate_session() as session:
-            current = (
-                await session.execute(
-                    select(
-                        AgentOperationModel,
-                        func.json_type(AgentOperationModel.result_json, "$.pending"),
-                    ).where(AgentOperationModel.id == identity)
-                )
-            ).first()
-            if current is None:
+            row = await session.get(AgentOperationModel, identity)
+            if row is None:
                 raise ValueError("external_agent_not_found")
-            row, pending_type = cast(AgentOperationModel, current[0]), current[1]
-            # A delayed admission response must not overwrite an already committed terminal fact.
-            if pending_type == "false":
-                return row
-            row.result_json = serialized
-            native_id = result.get("session_id")
-            if isinstance(native_id, str):
-                internal = session_key(row.instance_id, native_id)
-                if row.session_id not in (None, internal):
-                    raise ValueError("external_agent_response_session_mismatch")
-                await session.execute(
-                    insert(AgentSessionModel)
-                    .values(id=internal, instance_id=row.instance_id, native_id=native_id)
-                    .on_conflict_do_nothing()
-                )
-                row.session_id = internal
-            if isinstance(result.get("execution_id"), str):
-                if row.native_execution_id not in (None, result["execution_id"]):
-                    raise ValueError("external_agent_response_execution_mismatch")
-                row.native_execution_id = result["execution_id"]
-                if row.session_id is not None:
-                    await self._execution(session, row.session_id, row.native_execution_id)
-            if row.run_id:
-                await session.execute(
-                    update(SandboxTaskRunModel)
-                    .where(
-                        SandboxTaskRunModel.request_id == row.id,
-                        SandboxTaskRunModel.status == "waiting",
-                    )
-                    .values(
-                        progress_json=func.json_set(
-                            SandboxTaskRunModel.progress_json, "$.session_id", row.session_id
-                        )
-                    )
-                )
-                if result.get("pending") is False:
-                    await self._complete(session, row, result, serialized)
+            await self._bind_native(session, row, result)
+            await self._project(session, row, result, serialized)
             return row
+
+    async def _bind_native(
+        self, session: AsyncSession, row: AgentOperationModel, native: dict[str, Any]
+    ) -> None:
+        native_id = native.get("session_id")
+        if isinstance(native_id, str):
+            internal = session_key(row.instance_id, native_id)
+            if row.session_id not in (None, internal):
+                raise ValueError("external_agent_response_session_mismatch")
+            await session.execute(
+                insert(AgentSessionModel)
+                .values(id=internal, instance_id=row.instance_id, native_id=native_id)
+                .on_conflict_do_nothing()
+            )
+            row.session_id = internal
+        execution = native.get("execution_id")
+        if isinstance(execution, str):
+            if not session_observation(row):
+                if row.native_execution_id not in (None, execution):
+                    raise ValueError("external_agent_response_execution_mismatch")
+                row.native_execution_id = execution
+            if row.session_id is not None:
+                await self._execution(session, row.session_id, execution)
+
+    async def _project(
+        self,
+        session: AsyncSession,
+        row: AgentOperationModel,
+        result: dict[str, Any],
+        serialized: str,
+    ) -> None:
+        previous = json.loads(row.result_json or "{}")
+        # The connector owns reduction; the server only orders its original receipts.
+        if row.detached_at is not None or previous.get("pending") is False:
+            return
+        if (
+            "state_sequence" in previous
+            and result.get("state_sequence", -1) <= previous["state_sequence"]
+        ):
+            return
+        row.result_json = serialized
+        if row.run_id:
+            await session.execute(
+                update(SandboxTaskRunModel)
+                .where(
+                    SandboxTaskRunModel.request_id == row.id,
+                    SandboxTaskRunModel.status == "waiting",
+                )
+                .values(
+                    progress_json=func.json_set(
+                        SandboxTaskRunModel.progress_json, "$.session_id", row.session_id
+                    )
+                )
+            )
+            if result.get("pending") is False:
+                await self._complete(session, row, result, serialized)
 
     @staticmethod
     async def _complete(
@@ -400,13 +421,7 @@ class AgentRepository:
             "$.pending",
             func.json("false"),
             "$.admitted",
-            func.json(
-                "true"
-                if payload.get("admitted") is True
-                or native_status
-                in {"completed", "succeeded", "cancelled", "interrupted", "detached"}
-                else "false"
-            ),
+            func.json("true" if payload.get("admitted") is True else "false"),
         )
         completed = await session.scalar(
             update(SandboxTaskRunModel)
@@ -430,31 +445,37 @@ class AgentRepository:
 
     async def receive_events(self, device_id: str, events: list[dict[str, Any]]) -> None:
         # Decode/serialize before taking the writer. No model, native RPC or network under it.
-        prepared: list[tuple[dict[str, Any], str, Any, Any, Any]] = []
+        prepared: list[tuple[dict[str, Any], str, str, Any, Any, Any]] = []
         for event in events:
             if event.get("kind") == "delta":
                 continue
             payload = event.get("payload", {})
+            original_wire = encode(
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key not in {"sequence", "operation_state"}
+                }
+            )
             if not isinstance(payload, dict):
                 # Unowned/replayed facts keep their existing transport receipt
                 # semantics. Only an active operation consumes this payload.
-                prepared.append((event, encode(event), None, None, None))
+                prepared.append((event, encode(event), original_wire, None, None, None))
                 continue
-            terminal = {
-                **payload,
-                "session_id": event.get("session_id"),
-                "execution_id": event.get("execution_id"),
-                "pending": False,
-            }
+            state = event.get("operation_state")
             input_json = encode(
                 {
                     "kind": "external_agent_event",
                     "operation_id": event.get("operation_id"),
                     "event": event["kind"],
                     "payload": payload,
+                    "native_reference": {
+                        "session_id": event.get("session_id"),
+                        "execution_id": event.get("execution_id"),
+                    },
                 }
             )
-            prepared.append((event, encode(event), terminal, encode(terminal), input_json))
+            prepared.append((event, encode(event), original_wire, state, encode(state), input_json))
         if not prepared:
             return
         wait_repository = WorkWaitRepository(WorkRepository(self.database))
@@ -489,7 +510,7 @@ class AgentRepository:
                         break
                 if changed:
                     continue
-                for event, payload_json, terminal, terminal_json, input_json in prepared:
+                for event, payload_json, original_wire, state, state_json, input_json in prepared:
                     instance = await session.scalar(
                         select(AgentInstanceModel).where(
                             AgentInstanceModel.device_id == device_id,
@@ -531,70 +552,62 @@ class AgentRepository:
                         .returning(AgentEventModel.id)
                     )
                     if added is None:
-                        original = await session.scalar(
-                            select(AgentEventModel.payload_json).where(
-                                AgentEventModel.device_id == device_id,
-                                AgentEventModel.event_id == event["event_id"],
+                        original = (
+                            await session.execute(
+                                select(
+                                    AgentEventModel.payload_json,
+                                    func.json_type(AgentEventModel.payload_json, "$.sequence"),
+                                    func.json_type(
+                                        AgentEventModel.payload_json, "$.operation_state"
+                                    ),
+                                ).where(
+                                    AgentEventModel.device_id == device_id,
+                                    AgentEventModel.event_id == event["event_id"],
+                                )
                             )
+                        ).one()
+                        # An upgrade can add projection metadata to a v2 fact whose
+                        # original commit succeeded but ACK was lost. Keep that row.
+                        same_legacy_fact = (
+                            original[1] is None
+                            and original[2] is None
+                            and original[0] == original_wire
                         )
-                        if original != payload_json:
+                        if original[0] != payload_json and not same_legacy_fact:
                             raise ValueError("external_agent_event_conflict")
                         continue
                     if operation is None or operation.detached_at is not None:
                         continue
-                    native_id = event.get("session_id")
-                    if isinstance(native_id, str):
-                        internal_id = session_key(instance.id, native_id)
-                        if operation.session_id not in (None, internal_id):
-                            raise ValueError("external_agent_event_session_mismatch")
-                        await session.execute(
-                            insert(AgentSessionModel)
-                            .values(id=internal_id, instance_id=instance.id, native_id=native_id)
-                            .on_conflict_do_nothing()
-                        )
-                        operation.session_id = internal_id
-                    execution = event.get("execution_id")
-                    if isinstance(execution, str):
-                        if operation.native_execution_id not in (None, execution):
-                            raise ValueError("external_agent_event_execution_mismatch")
-                        operation.native_execution_id = execution
-                        if operation.session_id is not None:
-                            await self._execution(session, operation.session_id, execution)
                     payload = event.get("payload", {})
-                    if not isinstance(payload, dict):
+                    if (
+                        not isinstance(payload, dict)
+                        or not isinstance(state, dict)
+                        or not isinstance(event.get("sequence"), int)
+                        or state.get("state_sequence") != event["sequence"]
+                    ):
                         raise ValueError("invalid_external_agent_event")
-                    if event["kind"] == "completed":
-                        if pending_type != "false":
-                            operation.result_json = terminal_json
-                            await self._complete(session, operation, terminal, terminal_json)
-                    else:
-                        if payload.get("admitted") is True and pending_type != "false":
-                            # A native acceptance fact repairs a lost RPC reply, never resubmits it.
-                            await session.execute(
-                                update(AgentOperationModel)
-                                .where(AgentOperationModel.id == operation.id)
-                                .values(
-                                    result_json=func.json_set(
-                                        func.coalesce(AgentOperationModel.result_json, "{}"),
-                                        "$.admitted",
-                                        func.json("true"),
-                                        "$.pending",
-                                        func.json("true"),
-                                        "$.status",
-                                        payload.get("status", "running"),
-                                        "$.session_id",
-                                        native_id,
-                                        "$.execution_id",
-                                        execution,
-                                    )
-                                )
-                                .execution_options(synchronize_session=False)
-                            )
+                    await self._bind_native(session, operation, event)
+                    if any(
+                        state.get(key) is not None and state[key] != event.get(key)
+                        for key in ("session_id", "execution_id")
+                    ):
+                        await self._bind_native(session, operation, state)
+                    await self._project(session, operation, state, state_json)
+                    if state.get("pending") is not False and pending_type != "false":
+                        native_execution = event.get("execution_id")
                         await self._input(
                             session,
                             operation,
                             event["event_id"],
-                            input_json,
+                            func.json_set(
+                                input_json,
+                                "$.session_id",
+                                operation.session_id,
+                                "$.execution_id",
+                                execution_key(operation.session_id, native_execution)
+                                if operation.session_id and native_execution
+                                else None,
+                            ),
                             prepared_waits=prepared_waits,
                             permission_id=str(added)
                             if event["kind"] in {"permission", "question"}
@@ -602,12 +615,67 @@ class AgentRepository:
                         )
             return
 
+    async def connection_event(self, device_id: str, connection_id: str, online: bool) -> None:
+        """Record transport facts in original Work inputs, never in native receipts."""
+        query = (
+            select(AgentOperationModel)
+            .join(AgentInstanceModel, AgentInstanceModel.id == AgentOperationModel.instance_id)
+            .join(work, work.c.id == AgentOperationModel.work_id)
+            .where(
+                AgentInstanceModel.device_id == device_id,
+                work.c.state.not_in(TERMINAL),
+                AgentOperationModel.run_id.is_not(None),
+                AgentOperationModel.detached_at.is_(None),
+                func.coalesce(func.json_type(AgentOperationModel.result_json, "$.pending"), "")
+                != "false",
+            )
+        )
+        waits = WorkWaitRepository(WorkRepository(self.database))
+        kind = "device_connected" if online else "device_offline"
+        event_id = f"transport:{connection_id}:{kind}"
+        input_json = encode(
+            {"kind": "external_agent_transport", "event": kind, "device_id": device_id}
+        )
+        while True:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                operations = list(await reader.scalars(query))
+                prepared = {
+                    cast(str, row.work_id): await waits.prepare_external_action(
+                        reader, cast(str, row.work_id)
+                    )
+                    for row in operations
+                }
+            if not operations:
+                return
+            async with self.database.immediate_session() as writer:
+                current = list(await writer.scalars(query))
+                if {row.id for row in current} != {row.id for row in operations}:
+                    continue
+                changed = False
+                for work_id, waiting in prepared.items():
+                    if not await waits.external_action_current(writer, work_id, waiting):
+                        changed = True
+                        break
+                if changed:
+                    continue
+                for row in current:
+                    await self._input(
+                        writer,
+                        row,
+                        event_id,
+                        input_json,
+                        prepared_waits=prepared,
+                        permission_id=None,
+                    )
+            return
+
     async def _input(
         self,
         session: AsyncSession,
         operation: AgentOperationModel,
         event_id: str,
-        input_json: str,
+        input_json: Any,
         *,
         prepared_waits: dict[str, PreparedWaitAction],
         permission_id: str | None,
@@ -640,7 +708,9 @@ class AgentRepository:
             await require_person(session, operation.actor_person_id)
         except ClientError:
             return
-        text = func.json_set(input_json, "$.run_id", operation.run_id)
+        text = func.json_set(
+            input_json, "$.run_id", operation.run_id, "$.operation_id", operation.id
+        )
         if permission_id is not None:
             text = func.json_set(text, "$.permission_id", permission_id)
         # Work stores text containing the original structured event, not a JSON
@@ -674,9 +744,17 @@ class AgentRepository:
 
     async def event_page(self, operation_id: str, cursor: int) -> list[dict[str, Any]]:
         async with self.database.read_session() as session:
+            instance_id = cast(
+                str,
+                await session.scalar(
+                    select(AgentOperationModel.instance_id).where(
+                        AgentOperationModel.id == operation_id
+                    )
+                ),
+            )
             return [
                 {
-                    **json.loads(row.payload_json),
+                    **self._event_view(json.loads(row.payload_json), instance_id),
                     "cursor": row.id,
                     **(
                         {"permission_id": str(row.id)}
@@ -693,3 +771,32 @@ class AgentRepository:
                     .limit(100)
                 )
             ]
+
+    @staticmethod
+    def _event_view(event: dict[str, Any], instance_id: str) -> dict[str, Any]:
+        native_session = event.get("session_id")
+        native_execution = event.get("execution_id")
+        internal_session = session_key(instance_id, native_session) if native_session else None
+        result = {
+            **event,
+            "instance_id": instance_id,
+            "session_id": internal_session,
+            "execution_id": execution_key(internal_session, native_execution)
+            if internal_session and native_execution
+            else None,
+            "native_reference": {"session_id": native_session, "execution_id": native_execution},
+        }
+        if "operation_state" in result:
+            state = result["operation_state"]
+            result["operation_state"] = {
+                **state,
+                "session_id": session_key(instance_id, state["session_id"])
+                if state.get("session_id")
+                else None,
+                "execution_id": execution_key(
+                    session_key(instance_id, state["session_id"]), state["execution_id"]
+                )
+                if state.get("session_id") and state.get("execution_id")
+                else None,
+            }
+        return result

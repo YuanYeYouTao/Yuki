@@ -168,6 +168,7 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
                 "session_id": session_id,
                 "execution_id": execution_id,
                 "arguments": {
+                    "connection_id": question["payload"]["connection_id"],
                     "permission_id": "original-question",
                     "response": {"behavior": "allow", "answers": {"Proceed?": "yes"}},
                 },

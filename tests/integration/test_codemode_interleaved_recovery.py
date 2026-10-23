@@ -57,7 +57,6 @@ async def test_pending_code_interleave(
                 dict(
                     action="accept",
                     goal="W1" if n == 1 else "W2",
-                    reporting="quiet",
                 ),
                 "accept-" + str(n),
             )
@@ -94,7 +93,7 @@ async def test_pending_code_interleave(
         if n == 7:
             return _tool(
                 "task_control",
-                {"action": "update", "reporting": "quiet"},
+                {"action": "update"},
                 "post-resume-safe-control",
             )
         if n == 9:

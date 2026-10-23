@@ -98,15 +98,6 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                     },
                     "goal": {"type": "string"},
                     "context_note": note_schema,
-                    "reporting": {
-                        "type": "string",
-                        "enum": ["interactive", "quiet"],
-                        "description": (
-                            "交互式任务用 interactive，有实质进展、阻塞或完成时简短报告。"
-                            "用户要求安静、SELF 自主工作或后台维护用 quiet；新真人追问仍需处理。"
-                            "update 可只修改此字段，不改变目标或等待。"
-                        ),
-                    },
                     "work_id": {
                         "type": "string",
                         "maxLength": 36,
@@ -182,23 +173,6 @@ class WorkControl:
             actor_person_id=access.actor_person_id,
             principal_kind=access.principal_kind,
             read_scope=access.read_scope,
-        )
-
-    @property
-    def communication(self) -> dict[str, Any]:
-        if self.current is None:
-            return {}
-        return dict(json.loads(self.current["checkpoint_json"]).get("communication", {}))
-
-    @property
-    def reporting(self) -> str | None:
-        return self.communication.get("reporting")
-
-    async def patch_communication(self, **updates: Any) -> None:
-        if self.current is None:
-            raise ValueError("no_active_work")
-        self.current = await self.repository.patch_communication(
-            self.lease, self.current["id"], updates
         )
 
     async def pending(self) -> list[dict[str, Any]]:
@@ -708,8 +682,6 @@ class WorkControl:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
-        if action in {"accept", "update"} and "reporting" in args:
-            self.repository.encode_communication_updates({"reporting": args["reporting"]})
         if action in {"get", "list"}:
             from yuki.runtime.work_queries import WorkQueries
 
@@ -870,7 +842,6 @@ class WorkControl:
                     source=self.source,
                     prepared_source_json=source_json,
                     goal=goal,
-                    reporting=args.get("reporting"),
                 )
                 if self.requests_started and admitted["model_requests"] == 0:
                     await charge(writer, admitted["id"], models=self.requests_started, tools=0)
@@ -950,12 +921,7 @@ class WorkControl:
                 from yuki.runtime.work_context_note import validate_note
 
                 note_plan = await validate_note(self, args["context_note"])
-            if goal is None:
-                if "reporting" not in args and "context_note" not in args:
-                    raise ValueError("work_goal_required")
-                if "reporting" in args:
-                    await self.patch_communication(reporting=args["reporting"])
-            else:
+            if goal is not None:
                 if not isinstance(goal, str) or not goal.strip():
                     raise ValueError("work_goal_required")
                 self.current = await self.repository.transition(
@@ -966,8 +932,6 @@ class WorkControl:
                     goal=goal,
                 )
                 await self.retire_accepted()
-                if "reporting" in args:
-                    await self.patch_communication(reporting=args["reporting"])
             if "context_note" in args:
                 await self.update_context_note(args["context_note"], call_key, note_plan)
         elif action == "wait":
@@ -1109,7 +1073,6 @@ class WorkControl:
             source=source,
             goal=goal,
             handoff_from=self.current["id"],
-            reporting=args.get("reporting"),
         )
         self.handoff_work_id = queued["id"]
         return {
@@ -1131,8 +1094,6 @@ class WorkControl:
         }
         if active is not None:
             state.update(work_id=active["id"], goal=active["goal"])
-            if self.reporting is not None:
-                state["reporting"] = self.reporting
             return state
 
         from yuki.runtime.work_queries import WorkQueries

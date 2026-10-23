@@ -41,7 +41,6 @@ async def _running_work(database, tmp_path, *, interactive=False, goal="answer")
             {
                 "action": "accept",
                 "goal": goal,
-                **({"reporting": "interactive"} if interactive else {}),
             },
             "accept",
         )
@@ -168,7 +167,7 @@ async def test_answer_completion_does_not_require_send_classification(database, 
 
 
 @pytest.mark.asyncio
-async def test_reporting_can_be_quiet_without_changing_goal_or_wait(database, tmp_path):
+async def test_retired_update_is_noop_without_changing_goal_or_wait(database, tmp_path):
     repository, _lease, control = await _running_work(database, tmp_path, interactive=True)
     assert json.loads(
         await control.execute(
@@ -180,31 +179,14 @@ async def test_reporting_can_be_quiet_without_changing_goal_or_wait(database, tm
     result = json.loads(
         await control.execute("task_control", {"action": "update", "reporting": "quiet"}, "quiet")
     )
-    assert result["ok"] and control.reporting == "quiet"
-    after = await repository.get(control.current["id"])
-    assert after["goal"] == before["goal"]
-    assert after["state"] == before["state"] == "waiting_user"
-
-    invalid = json.loads(
-        await control.execute(
-            "task_control",
-            {"action": "update", "goal": "must not be written", "reporting": "unsupported"},
-            "invalid-reporting",
-        )
-    )
-    assert not invalid["ok"] and invalid["error"] == "work_reporting_invalid"
-    assert (await repository.get(control.current["id"]))["goal"] == before["goal"]
+    assert result["ok"]
+    assert await repository.get(control.current["id"]) == before
+    assert "reporting" not in await control.runtime_state()
 
 
 @pytest.mark.asyncio
-async def test_caller_can_select_reporting_without_changing_delivery_contract(database, tmp_path):
+async def test_caller_completion_preserves_delivery_contract(database, tmp_path):
     repository, _lease, control = await _running_work(database, tmp_path)
-    result = json.loads(
-        await control.execute(
-            "task_control", {"action": "update", "reporting": "interactive"}, "reporting"
-        )
-    )
-    assert result["ok"] and control.reporting == "interactive"
     before = await repository.get(control.current["id"])
     assert json.loads(before["source_json"])["delivery_contract"] == "return_to_caller"
     assert json.loads(
@@ -340,7 +322,7 @@ async def test_auxiliary_input_does_not_withdraw_accepted_completion(database, t
 
 
 @pytest.mark.asyncio
-async def test_optional_note_reporting_and_null_result_do_not_veto_completion(database, tmp_path):
+async def test_optional_note_and_null_result_do_not_veto_completion(database, tmp_path):
     repository, _lease, control = await _running_work(database, tmp_path)
     result = json.loads(
         await control.execute(
@@ -349,7 +331,6 @@ async def test_optional_note_reporting_and_null_result_do_not_veto_completion(da
                 "action": "complete",
                 "result": None,
                 "context_note": {"facts": [{"text": "draft", "refs": ["goal"]}]},
-                "reporting": "interactive",
             },
             "complete-with-optional-fields",
         )

@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import json
 import socket
-from typing import Any, ClassVar
+from collections.abc import AsyncIterator
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
 
 from .. import __version__
 from ..config import Instance
@@ -25,6 +27,9 @@ class CodexRPC:
         self.relays: list[asyncio.Task[None]] = []
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.pipe: asyncio.StreamWriter | None = None
+        self.connection_id = str(uuid4())
+        self.stopping = False
+        self.initialized = False
 
     async def start(self) -> None:
         if self.spec.endpoint:
@@ -60,7 +65,6 @@ class CodexRPC:
             except BaseException:
                 client.close()
                 relay.close()
-                await self.stop()
                 raise
         self.reader = asyncio.create_task(self._receive())
         await self.call(
@@ -70,6 +74,7 @@ class CodexRPC:
                 "capabilities": {"experimentalApi": True},
             },
         )
+        self.initialized = True
         await self.send({"method": "initialized"})
 
     @staticmethod
@@ -86,7 +91,12 @@ class CodexRPC:
     async def send(self, message: dict[str, Any]) -> None:
         if self.ws is None:
             raise DriverError("owner_disconnected", "Native owner is not connected")
-        await self.ws.send(json.dumps(message, ensure_ascii=False))
+        try:
+            await self.ws.send(json.dumps(message, ensure_ascii=False))
+        except ConnectionClosed as exc:
+            raise DriverError(
+                "unknown", "Native connection lost; query the original execution", uncertain=True
+            ) from exc
 
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         key = str(uuid4())
@@ -100,11 +110,14 @@ class CodexRPC:
 
     async def _receive(self) -> None:
         assert self.ws is not None
+        error_type = "EOF"
         try:
             async for raw in self.ws:
                 message = json.loads(raw)
                 future = self.pending.get(str(message.get("id")))
                 if future is not None and "method" not in message:
+                    if future.done():
+                        continue  # The caller cancelled this RPC while its response was in flight.
                     if "error" in message:
                         future.set_exception(
                             DriverError(
@@ -123,15 +136,7 @@ class CodexRPC:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await self.notify(
-                {
-                    "method": "connector/ownerDisconnected",
-                    "params": {
-                        "error_type": type(exc).__name__,
-                        "reason": "native_event_stream_lost",
-                    },
-                }
-            )
+            error_type = type(exc).__name__
         finally:
             for future in self.pending.values():
                 if not future.done():
@@ -142,8 +147,20 @@ class CodexRPC:
                             uncertain=True,
                         )
                     )
+            if not self.stopping and self.initialized:
+                await self.notify(
+                    {
+                        "method": "connector/ownerDisconnected",
+                        "params": {
+                            "error_type": error_type,
+                            "reason": "native_event_stream_lost",
+                            "stream_gap": True,
+                        },
+                    }
+                )
 
     async def stop(self) -> None:
+        self.stopping = True
         if self.ws is not None:
             await self.ws.close()
         if self.reader is not None:
@@ -170,6 +187,15 @@ def native_status(thread: dict[str, Any]) -> str:
     )
 
 
+def turn_status(turn: dict[str, Any]) -> str:
+    return {
+        "inProgress": "running",
+        "completed": "completed",
+        "failed": "failed",
+        "interrupted": "cancelled",
+    }.get(turn.get("status", ""), "unknown")
+
+
 def item_view(item: dict[str, Any]) -> dict[str, Any] | None:
     kind = item.get("type")
     fields = {
@@ -178,6 +204,16 @@ def item_view(item: dict[str, Any]) -> dict[str, Any] | None:
         "commandExecution": ("id", "type", "command", "cwd", "status", "exitCode", "durationMs"),
         "fileChange": ("id", "type", "status"),
         "mcpToolCall": ("id", "type", "server", "tool", "status"),
+        "dynamicToolCall": ("id", "type", "namespace", "tool", "status", "success"),
+        "collabAgentToolCall": (
+            "id",
+            "type",
+            "tool",
+            "status",
+            "senderThreadId",
+            "receiverThreadIds",
+            "agentsStates",
+        ),
         "webSearch": ("id", "type", "query", "status"),
         "plan": ("id", "type", "text"),
     }.get(str(kind))
@@ -228,97 +264,199 @@ class CodexDriver:
         self.pending_prompts: dict[str, str] = {}
         self.buffered: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.requests: dict[str, dict[str, Any]] = {}
+        self.queue_sessions: dict[str, str] = {}
+        self.owner: asyncio.Task[None] | None = None
+        self.ready: asyncio.Future[None] | None = None
+        self.recoveries: dict[str, asyncio.Task[None]] = {}
 
     async def start(self) -> None:
-        await self.rpc.start()
+        self.ready = asyncio.get_running_loop().create_future()
+        self.owner = asyncio.create_task(self._serve())
+        await self.ready
+
+    async def _serve(self) -> None:
+        assert self.ready is not None
+        while True:
+            try:
+                await self.rpc.start()
+                if not self.ready.done():
+                    self.ready.set_result(None)
+                else:
+                    await self.emit("connection", {"status": "available"})
+                assert self.rpc.reader is not None
+                await self.rpc.reader
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self.emit(
+                    "connection", {"status": "unavailable", "error_type": type(exc).__name__}
+                )
+            finally:
+                await self.rpc.stop()
+            await asyncio.sleep(1)
+            self.rpc = CodexRPC(self.spec, self._notification)
 
     async def stop(self) -> None:
-        await self.rpc.stop()
+        self.rpc.stopping = True
+        recoveries = list(self.recoveries.values())
+        for task in recoveries:
+            task.cancel()
+        await asyncio.gather(*recoveries, return_exceptions=True)
+        if self.owner is not None:
+            self.owner.cancel()
+            await asyncio.gather(self.owner, return_exceptions=True)
+        else:
+            await self.rpc.stop()
+
+    async def _loaded(self, session: str) -> bool:
+        cursor = None
+        while True:
+            page = await self.rpc.call("thread/loaded/list", {"cursor": cursor})
+            if session in page.get("data", []):
+                return True
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return False
+
+    async def _turns(
+        self, session: str, *, items: str = "notLoaded"
+    ) -> AsyncIterator[dict[str, Any]]:
+        cursor = None
+        while True:
+            page = await self.rpc.call(
+                "thread/turns/list",
+                {
+                    "threadId": session,
+                    "cursor": cursor,
+                    "itemsView": items,
+                    "sortDirection": "desc",
+                },
+            )
+            for turn in page.get("data", []):
+                yield turn
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return
+
+    async def _find_turn(
+        self, session: str, execution: str | None = None, *, client_id: str | None = None
+    ) -> dict[str, Any] | None:
+        async for turn in self._turns(session, items="full" if client_id else "notLoaded"):
+            if (
+                turn["id"] == execution
+                if execution
+                else any(
+                    item.get("type") == "userMessage" and item.get("clientId") == client_id
+                    for item in turn.get("items", [])
+                )
+                if client_id
+                else turn.get("status") == "inProgress"
+            ):
+                return turn
+        return None
 
     async def recover(self, command: dict[str, Any], result: dict[str, Any]) -> None:
-        session, execution = result["session_id"], result.get("execution_id")
         operation = command["id"]
+        task = self.recoveries.get(operation)
+        if task is None:
+            task = asyncio.create_task(self._recover(command, result))
+            self.recoveries[operation] = task
         try:
-            if command["action"] == "watch" and not execution:
-                raise DriverError(
-                    "observation_gap", "Original first execution cannot be proven after restart"
-                )
-            thread = (
-                await self.rpc.call(
-                    "thread/read",
-                    {
-                        "threadId": session,
-                        "includeTurns": True,
-                    },
-                )
-            )["thread"]
-            original = next(
-                (turn for turn in thread.get("turns", []) if turn["id"] == execution), None
-            )
-            state = "unknown"
-            if command["action"] == "queue" and not execution:
-                matches = [
-                    turn
-                    for turn in thread.get("turns", [])
-                    if any(
-                        item.get("type") == "userMessage" and item.get("clientId") == operation
-                        for item in turn.get("items", [])
+            await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            assert current is not None
+            if current.cancelling():
+                raise
+        finally:
+            if self.recoveries.get(operation) is task:
+                self.recoveries.pop(operation)
+
+    async def _recover(self, command: dict[str, Any], result: dict[str, Any]) -> None:
+        session = result.get("session_id") or command.get("session_id")
+        execution, operation = (
+            result.get("execution_id") or command.get("execution_id"),
+            command["id"],
+        )
+        if not session:
+            return
+        session_scope = (
+            command["action"] == "watch" and command.get("observation_scope") == "session"
+        )
+        try:
+            if command["action"] == "watch":
+                if not session_scope and not execution:
+                    raise DriverError(
+                        "observation_gap", "Original first execution cannot be proven"
                     )
-                ]
-                if len(matches) == 1:
-                    original = matches[0]
-                    execution = original["id"]
-                elif not matches:
-                    cursor = None
-                    while True:
-                        page = await self.rpc.call(
-                            "thread/queue/list", {"threadId": session, "cursor": cursor}
-                        )
-                        queued = next(
-                            (
-                                item
-                                for item in page.get("data", [])
-                                if item["id"] == result.get("queued_submission_id")
-                            ),
-                            None,
-                        )
-                        if queued:
-                            self.queue_operations[operation] = queued["id"]
-                            state = "queued"
-                            break
-                        cursor = page.get("nextCursor")
-                        if not cursor:
-                            break
+                self.watches[operation] = session
+                self.watch_turns[operation] = None if session_scope else execution
+            if session_scope:
+                original = None
+                async for latest in self._turns(session):
+                    original = latest
+                    break
+            else:
+                original = await self._find_turn(
+                    session,
+                    execution,
+                    client_id=operation
+                    if not execution and command["action"] in {"prompt", "queue"}
+                    else None,
+                )
+            state = "unknown"
             if original:
                 execution = original["id"]
-                if command["action"] == "watch":
-                    self.watches[operation] = session
-                    self.watch_turns[operation] = execution
-                else:
+                state = turn_status(original)
+                if command["action"] != "watch":
                     self.turn_operations[execution] = operation
                     self.turn_sessions[execution] = session
-                state = {
-                    "inProgress": "running",
-                    "completed": "completed",
-                    "failed": "failed",
-                    "interrupted": "cancelled",
-                }.get(original["status"], "unknown")
-            if original and original["status"] in {"completed", "failed", "interrupted"}:
-                await self._notification(
-                    {
-                        "method": "turn/completed",
-                        "params": {
-                            "threadId": session,
-                            "turn": original,
-                        },
-                    }
-                )
-                return
-            loaded = await self.rpc.call("thread/loaded/list", {})
-            live = session in loaded.get("data", [])
-            if live and state in {"running", "queued"}:
+                if state in {"completed", "failed", "cancelled"}:
+                    if not session_scope:
+                        await self.emit(
+                            "completed",
+                            {
+                                "session_id": session,
+                                "execution_id": execution,
+                                "operation_id": operation,
+                                "snapshot_sequence": result.get("state_sequence", 0),
+                                "payload": {"status": state, "pending": False, "admitted": True},
+                            },
+                        )
+                        self.turn_operations.pop(execution, None)
+                        self.turn_sessions.pop(execution, None)
+                        self.watches.pop(operation, None)
+                        self.watch_turns.pop(operation, None)
+                        return
+            elif command["action"] == "queue":
+                cursor = None
+                while True:
+                    page = await self.rpc.call(
+                        "thread/queue/list", {"threadId": session, "cursor": cursor}
+                    )
+                    queued = next(
+                        (
+                            item
+                            for item in page.get("data", [])
+                            if item["id"] == result.get("queued_submission_id")
+                            or item.get("clientUserMessageId") == operation
+                        ),
+                        None,
+                    )
+                    if queued:
+                        self.queue_operations[operation] = queued["id"]
+                        self.queue_sessions[operation] = session
+                        state = "queued"
+                        break
+                    cursor = page.get("nextCursor")
+                    if not cursor:
+                        break
+            live = await self._loaded(session)
+            if live:
                 await self.rpc.call("thread/resume", {"threadId": session, "excludeTurns": True})
-            elif state == "running":
+                if session_scope and state != "running":
+                    state = "idle"
+            elif state in {"running", "queued"} or session_scope:
                 state = "unknown"
             await self.emit(
                 "progress",
@@ -326,10 +464,22 @@ class CodexDriver:
                     "session_id": session,
                     "execution_id": execution,
                     "operation_id": operation,
+                    "snapshot_sequence": result.get("state_sequence", 0),
                     "payload": {
                         "status": state,
-                        "reason": "connector_restarted_native_snapshot_restored",
-                        "stream_gap": True,
+                        "pending": True,
+                        **(
+                            {"execution_status": turn_status(original)}
+                            if session_scope and original
+                            else {}
+                        ),
+                        "reason": "native_snapshot_restored",
+                        "stream_gap": not live,
+                        **(
+                            {"admitted": True}
+                            if original or state == "queued" or (session_scope and live)
+                            else {}
+                        ),
                     },
                 },
             )
@@ -340,8 +490,10 @@ class CodexDriver:
                     "session_id": session,
                     "execution_id": execution,
                     "operation_id": operation,
+                    "snapshot_sequence": result.get("state_sequence", 0),
                     "payload": {
                         "status": "unknown",
+                        "pending": True,
                         "reason": "native_reconciliation_unavailable",
                         "error_code": exc.code,
                         "stream_gap": True,
@@ -355,13 +507,15 @@ class CodexDriver:
         session = params.get("threadId")
         turn = params.get("turnId") or params.get("turn", {}).get("id")
         if method == "connector/ownerDisconnected":
+            self.requests.clear()
+            await self.emit("connection", {"status": "unavailable", **params})
             for operation, session_id in self.watches.items():
                 await self.emit(
                     "progress",
                     {
                         "session_id": session_id,
                         "operation_id": operation,
-                        "payload": {"status": "unknown", **params},
+                        "payload": {"status": "unknown", "pending": True, **params},
                     },
                 )
             for turn_id, operation in self.turn_operations.items():
@@ -371,9 +525,19 @@ class CodexDriver:
                         "execution_id": turn_id,
                         "session_id": self.turn_sessions.get(turn_id),
                         "operation_id": operation,
-                        "payload": {"status": "unknown", **params},
+                        "payload": {"status": "unknown", "pending": True, **params},
                     },
                 )
+            for operation, session_id in self.queue_sessions.items():
+                if operation in self.queue_operations:
+                    await self.emit(
+                        "progress",
+                        {
+                            "session_id": session_id,
+                            "operation_id": operation,
+                            "payload": {"status": "unknown", "pending": True, **params},
+                        },
+                    )
             return
         if method == "serverRequest/resolved":
             resolved = self.requests.pop(str(params.get("requestId")), None)
@@ -383,11 +547,12 @@ class CodexDriver:
         operations = {
             op
             for op, sid in self.watches.items()
-            if sid == session and self.watch_turns.get(op) in {None, turn}
+            if sid == session and self.watch_turns.get(op) in {None, "", turn}
         }
         if turn:
             for operation in operations:
-                self.watch_turns[operation] = turn
+                if self.watch_turns.get(operation) == "":
+                    self.watch_turns[operation] = turn
         item = params.get("item", {})
         if item.get("type") == "userMessage" and item.get("clientId"):
             client_id = item["clientId"]
@@ -395,6 +560,7 @@ class CodexDriver:
                 self.turn_operations[turn] = client_id
                 self.turn_sessions[turn] = session
                 self.queue_operations.pop(client_id, None)
+                self.queue_sessions.pop(client_id, None)
                 for earlier in self.buffered.pop((session, turn), []):
                     await self._notification(earlier)
         if turn in self.turn_operations:
@@ -411,7 +577,6 @@ class CodexDriver:
                         "turn/completed",
                         "item/completed",
                         "turn/plan/updated",
-                        "turn/diff/updated",
                     }
                 )
             ):
@@ -424,7 +589,10 @@ class CodexDriver:
             self.requests[key] = message
             kind = "question" if "UserInput" in method or "elicitation" in method else "permission"
             payload.update(
-                permission_id=key, native_request_id=message["id"], native_request=params
+                permission_id=key,
+                native_request_id=message["id"],
+                native_request=params,
+                connection_id=self.rpc.connection_id,
             )
         elif method == "turn/completed":
             kind = "completed"
@@ -450,16 +618,10 @@ class CodexDriver:
         elif method == "item/completed":
             item = params.get("item", {})
             # Reasoning is neither a milestone nor a public report.
-            if item.get("type") not in {
-                "agentMessage",
-                "commandExecution",
-                "fileChange",
-                "mcpToolCall",
-                "webSearch",
-                "plan",
-            }:
+            view = item_view(item)
+            if view is None or item.get("type") == "userMessage":
                 return
-            payload.update(item=item_view(item))
+            payload.update(item=view)
             if "text" in item:
                 payload["text"] = item["text"]
         elif method == "turn/started":
@@ -477,37 +639,45 @@ class CodexDriver:
             )
         elif method in {
             "turn/plan/updated",
-            "turn/diff/updated",
             "serverRequest/resolved",
         }:
             payload["native"] = params
-            if "diff" in params:
-                payload["diff"] = params["diff"]
-        elif method == "connector/ownerDisconnected":
-            payload.update(params)
         else:
             return  # deltas and duplicate status are not durable milestones
         for operation in operations:
+            continuous = operation in self.watches and self.watch_turns.get(operation) is None
+            event_payload = payload
+            event_kind = kind
+            if method == "turn/completed" and continuous:
+                event_kind = "progress"
+                event_payload = {
+                    **payload,
+                    "execution_status": payload["status"],
+                    "status": "idle",
+                    "pending": True,
+                }
             await self.emit(
-                kind,
+                event_kind,
                 {
                     "session_id": session,
                     "execution_id": turn,
                     "operation_id": operation,
-                    "payload": payload,
+                    "payload": event_payload,
                 },
             )
         if method == "turn/completed":
             self.turn_operations.pop(turn, None)
             self.turn_sessions.pop(turn, None)
             for operation in operations:
+                if self.pending_prompts.get(session) == operation:
+                    self.pending_prompts.pop(session)
                 if self.watch_turns.get(operation) == turn:
                     self.watches.pop(operation, None)
                     self.watch_turns.pop(operation, None)
 
     async def execute(self, command: dict[str, Any]) -> dict[str, Any]:
         action, arguments = command["action"], command.get("arguments", {})
-        session, execution = command.get("session_id"), command.get("execution_id")
+        session, execution = cast(str, command.get("session_id")), command.get("execution_id")
         operation = command["id"]
         if action == "list":
             result = await self.rpc.call(
@@ -531,8 +701,22 @@ class CodexDriver:
                 "next_cursor": result.get("nextCursor"),
             }
         if action == "detach":
-            self.watches.pop(arguments["operation_id"], None)
-            self.watch_turns.pop(arguments["operation_id"], None)
+            detached = arguments["operation_id"]
+            recovery = self.recoveries.pop(detached, None)
+            if recovery is not None:
+                recovery.cancel()
+                await asyncio.gather(recovery, return_exceptions=True)
+            self.watches.pop(detached, None)
+            self.watch_turns.pop(detached, None)
+            self.queue_operations.pop(detached, None)
+            self.queue_sessions.pop(detached, None)
+            for turn_id, owner in list(self.turn_operations.items()):
+                if owner == detached:
+                    self.turn_operations.pop(turn_id)
+                    self.turn_sessions.pop(turn_id, None)
+            for session_id, owner in list(self.pending_prompts.items()):
+                if owner == detached:
+                    self.pending_prompts.pop(session_id)
             return {
                 "status": "completed",
                 "session_id": session,
@@ -541,107 +725,74 @@ class CodexDriver:
             }
         if action == "get":
             original = (
-                await self.rpc.call(
-                    "thread/read",
-                    {
-                        "threadId": session,
-                        "includeTurns": True,
-                    },
-                )
+                await self.rpc.call("thread/read", {"threadId": session, "includeTurns": False})
             )["thread"]
-            turns = original.get("turns", [])
             selected = (
-                next((item for item in turns if item["id"] == execution), None)
-                if execution
-                else next(
-                    (item for item in reversed(turns) if item.get("status") == "inProgress"),
-                    None,
-                )
+                await self._find_turn(session, execution)
+                if execution or native_status(original) == "running"
+                else None
             )
-            state = native_status(original)
-            if selected:
-                state = {
-                    "inProgress": "running",
-                    "completed": "completed",
-                    "failed": "failed",
-                    "interrupted": "cancelled",
-                }.get(selected.get("status"), "unknown")
-            if not arguments.get("include_history"):
-                original.pop("turns", None)
-            else:
-                original["turns"] = [turn_view(turn) for turn in turns]
+            state = (
+                turn_status(selected)
+                if selected
+                else ("unknown" if execution else native_status(original))
+            )
+            if arguments.get("include_history"):
+                original["turns"] = [
+                    turn_view(turn) async for turn in self._turns(session, items="full")
+                ]
             result = {
                 "session_id": session,
                 "execution_id": selected["id"] if selected else execution,
                 "status": state,
                 "native": original,
-                "pending": state == "running",
+                "pending": state in {"running", "unknown"},
             }
+            if execution and selected is None:
+                result["reason"] = "execution_not_found"
             return result
         if action == "watch":
-            # read does not load a thread. resume attaches this client to the
-            # same daemon-owned thread; it does not create a new thread/turn.
-            loaded = await self.rpc.call("thread/loaded/list", {})
-            if session not in loaded.get("data", []):
+            if not await self._loaded(session):
                 raise DriverError(
                     "not_live", "Session is stored but not loaded in this native owner"
                 )
-            assert isinstance(session, str)
+            session_scope = command.get("observation_scope") == "session"
             self.watches[operation] = session
-            self.watch_turns[operation] = execution
+            self.watch_turns[operation] = None if session_scope else execution or ""
             try:
                 thread = (
                     await self.rpc.call(
-                        "thread/resume",
-                        {
-                            "threadId": session,
-                            "excludeTurns": False,
-                        },
+                        "thread/resume", {"threadId": session, "excludeTurns": True}
                     )
                 )["thread"]
+                selected = (
+                    await self._find_turn(session, execution)
+                    if execution or native_status(thread) == "running"
+                    else None
+                )
             except BaseException:
                 self.watches.pop(operation, None)
                 self.watch_turns.pop(operation, None)
                 raise
-            active = next(
-                (
-                    turn
-                    for turn in reversed(thread.get("turns", []))
-                    if turn.get("status") == "inProgress"
-                ),
-                None,
-            )
-            selected = (
-                next((turn for turn in thread.get("turns", []) if turn["id"] == execution), None)
-                if execution
-                else active
-            )
             if execution and selected is None:
                 self.watches.pop(operation, None)
                 self.watch_turns.pop(operation, None)
                 raise DriverError(
                     "execution_not_found", "Original native execution is not in this session"
                 )
-            terminal = selected is not None and selected.get("status") in {
-                "completed",
-                "failed",
-                "interrupted",
-            }
+            state = turn_status(selected) if selected else "idle" if session_scope else "unknown"
+            terminal = state in {"completed", "failed", "cancelled"} and not session_scope
             if terminal:
                 self.watches.pop(operation, None)
                 self.watch_turns.pop(operation, None)
-            elif selected:
+            elif selected and not session_scope:
                 self.watch_turns[operation] = selected["id"]
             return {
                 "session_id": session,
                 "execution_id": selected["id"] if selected else None,
-                "status": (
-                    {"completed": "completed", "failed": "failed", "interrupted": "cancelled"}.get(
-                        selected.get("status"), "running"
-                    )
-                    if selected
-                    else "unknown"
-                ),
+                "status": "idle"
+                if session_scope and state in {"completed", "failed", "cancelled"}
+                else state,
                 "pending": not terminal,
                 "admitted": True,
             }
@@ -679,10 +830,11 @@ class CodexDriver:
                     },
                 )
                 execution = result["turn"]["id"]
-                self.turn_operations[execution] = operation
-                self.turn_sessions[execution] = session
-                for earlier in self.buffered.pop((session, execution), []):
-                    await self._notification(earlier)
+                if self.pending_prompts.get(session) == operation:
+                    self.turn_operations[execution] = operation
+                    self.turn_sessions[execution] = session
+                    for earlier in self.buffered.pop((session, execution), []):
+                        await self._notification(earlier)
             finally:
                 self.pending_prompts.pop(session, None)
                 for candidate in [key for key in self.buffered if key[0] == session]:
@@ -715,6 +867,7 @@ class CodexDriver:
             }
         if action == "queue":
             self.queue_operations[operation] = ""
+            self.queue_sessions[operation] = session
             result = await self.rpc.call(
                 "thread/queue/add",
                 {
@@ -762,6 +915,7 @@ class CodexDriver:
                 )
                 if original_operation:
                     self.queue_operations.pop(original_operation, None)
+                    self.queue_sessions.pop(original_operation, None)
                     await self.emit(
                         "completed",
                         {
@@ -793,6 +947,10 @@ class CodexDriver:
                 "admitted": True,
             }
         if action == "respond":
+            if arguments.get("connection_id") != self.rpc.connection_id:
+                raise DriverError(
+                    "request_resolved", "Original native connection is no longer current"
+                )
             key = str(arguments["permission_id"])
             request = self.requests.get(key)
             if request is None:

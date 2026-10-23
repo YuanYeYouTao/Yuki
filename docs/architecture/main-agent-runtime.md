@@ -45,8 +45,8 @@ Main 恢复同样登记活动。SELF 自省沿原 best-effort 后台名额退让
 `no_active_work` 只表示本轮没有激活的 Work，不表示过去未接纳工作或工具失败。
 没有当前 Work 时，`recent_work` 保留最近一项当前来源可见 Work 的真实 ID、状态和目标短线索，
 用于识别已有工作，避免重复创建；三项执行计数和创建者等详情使用既有查询工具按需读取。
-有当前 Work 时保留其完整目标与已设置的汇报模式，不混入另一项工作的状态。
-未设置的 work ID、goal、reporting 和空 `available_work` 不占常驻提示。
+有当前 Work 时保留其完整目标，不混入另一项工作的状态。
+未设置的 work ID、goal 和空 `available_work` 不占常驻提示。
 `available_work` 至多 16 项，只提供内部 ID、状态、目标摘录、创建者显示名和 `has_wait`。
 两种目录投影的目标摘录最多 160 字符，available 目录显示名最多 64 字符；`goal_complete=false` 明确表示
 摘录不完整，不能代替原目标。读取使用有界 SQL 最小投影，不逐项预载完整等待 JSON。
@@ -212,7 +212,7 @@ delivery.target 是任务要求与原目标，不裁剪工具或制造另一套�
 
 `task_control(complete)` 可在同一次调用中携带真实内部 `result`。工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
-绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
+绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason 和 context_note 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
 主任务的 `need_input.reason` 是内部等待资料，不会自动变成平台提问；需要用户补充时，先用 `send` 交付问题，再登记等待。
 子任务直接 `need_input(reason=问题)`，Host 会通过父子通信发送问题并按原回执决定是否等待，无需再单独提问；底层等价方式是 `subagent_control(action=message, ask=true)`。
@@ -499,12 +499,8 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 给未知调用重新派发资格。原 Work effect 与 Social 操作之间的真实归属继续核验。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
-较长的用户交互任务可在 `task_control.accept` 声明 `reporting=interactive`；
-省略沿用原节奏，`quiet` 用于用户要求安静、SELF 自主工作及后台维护。主 Agent 合同固定包含可选字段，
-不按每次任务修改 schema。reporting 不改变原来源的发送权限。
-`update` 仅改变 reporting 时不修改目标或解除等待；quiet 与 interactive 可按任务需要调整。
-该元数据保存于原 checkpoint 的
-有界 `communication` 子路径，原 wait/need_input/fail 检查点不会擦除它。
+任务的沟通要求沿原 goal、用户追加输入与 context_note 保留，不另外保存汇报模式。
+用户要求安静、SELF 自主工作和后台维护按原指令安静处理，新追问照常响应。
 
 沟通由 Agent 在原循环决定，send 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
 同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送或脚本停止。

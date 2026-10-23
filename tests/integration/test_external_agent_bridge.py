@@ -58,6 +58,8 @@ class NativeComputer:
         self.reader = None
         self.ready = asyncio.Event()
         self.catalog_ready = asyncio.Event()
+        self.sequence = 0
+        self.sent_events = {}
 
     async def start(self):
         self.socket = await connect(
@@ -70,7 +72,7 @@ class NativeComputer:
             json.dumps(
                 {
                     "type": "hello",
-                    "protocol_version": 2,
+                    "protocol_version": 3,
                     "instances": [
                         {
                             "id": self.local_id,
@@ -176,6 +178,7 @@ class NativeComputer:
             pass
 
     async def event(self, operation_id, kind, payload, *, event_id=None):
+        self.sequence += 1
         event = {
             "type": "event",
             "event_id": event_id or str(uuid4()),
@@ -185,7 +188,17 @@ class NativeComputer:
             "execution_id": self.native_execution,
             "kind": kind,
             "payload": payload,
+            "sequence": self.sequence,
+            "operation_state": {
+                **self.results.get(operation_id, {}),
+                **payload,
+                "session_id": self.native_session,
+                "execution_id": self.native_execution,
+                "pending": kind != "completed",
+                "state_sequence": self.sequence,
+            },
         }
+        event = self.sent_events.setdefault(event["event_id"], event)
         await self.socket.send(json.dumps(event))
         async with asyncio.timeout(5):
             assert await self.acknowledged.get() == event["event_id"]

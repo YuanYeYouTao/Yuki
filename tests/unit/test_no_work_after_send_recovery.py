@@ -37,7 +37,6 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                         {
                             "action": "accept",
                             "goal": "检查",
-                            "reporting": "interactive",
                         },
                     )
                 ]

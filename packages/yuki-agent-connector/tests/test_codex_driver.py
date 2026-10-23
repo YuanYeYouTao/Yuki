@@ -41,6 +41,8 @@ class Owner:
                 result = {"userAgent": "fake-codex-0.163.0"}
             elif method == "thread/list":
                 result = {"data": [thread]}
+            elif method == "thread/turns/list":
+                result = {"data": thread["turns"]}
             elif method == "thread/loaded/list":
                 result = {"data": ["thread"]}
             elif method in {"thread/read", "thread/resume", "thread/start"}:
@@ -209,6 +211,7 @@ async def test_native_request_exact_original_and_cannot_answer_twice(tmp_path: P
                     "respond",
                     execution="turn",
                     permission_id="17",
+                    connection_id=driver.rpc.connection_id,
                     response={"answers": {"q": {"answers": ["yes"]}}},
                 )
             )
@@ -218,7 +221,13 @@ async def test_native_request_exact_original_and_cannot_answer_twice(tmp_path: P
             }
             with pytest.raises(DriverError, match="resolved"):
                 await driver.execute(
-                    command("respond", execution="turn", permission_id="17", answers={})
+                    command(
+                        "respond",
+                        execution="turn",
+                        permission_id="17",
+                        connection_id=driver.rpc.connection_id,
+                        answers={},
+                    )
                 )
         finally:
             await driver.stop()
@@ -366,17 +375,10 @@ async def test_explicit_old_execution_watch_does_not_attach_the_current_differen
     async def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "thread/loaded/list":
             return {"data": ["thread"]}
-        assert method == "thread/resume"
-        return {
-            "thread": {
-                "id": "thread",
-                "status": {"type": "active"},
-                "turns": [
-                    {"id": "A", "status": "completed"},
-                    {"id": "B", "status": "inProgress"},
-                ],
-            }
-        }
+        if method == "thread/resume":
+            return {"thread": {"id": "thread"}}
+        assert method == "thread/turns/list"
+        return {"data": [{"id": "A", "status": "completed"}, {"id": "B", "status": "inProgress"}]}
 
     driver.rpc = SimpleNamespace(call=call)  # type: ignore[assignment]
     original = await driver.execute(command("watch", execution="A"))
@@ -440,20 +442,16 @@ async def test_recover_exact_original_turn_cannot_take_current_other_turn_state(
     driver = CodexDriver(Instance("c", "codex", "c", "unused", cwd=str(tmp_path)), emit)
 
     async def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
-        assert method == "thread/read"
+        assert method == "thread/turns/list"
         return {
-            "thread": {
-                "id": "thread",
-                "status": {"type": "active"},
-                "turns": [
-                    {
-                        "id": "A",
-                        "status": "completed",
-                        "items": [{"type": "userMessage", "clientId": "original"}],
-                    },
-                    {"id": "B", "status": "inProgress", "items": []},
-                ],
-            }
+            "data": [
+                {
+                    "id": "A",
+                    "status": "completed",
+                    "items": [{"type": "userMessage", "clientId": "original"}],
+                },
+                {"id": "B", "status": "inProgress", "items": []},
+            ]
         }
 
     driver.rpc = SimpleNamespace(call=call)  # type: ignore[assignment]
@@ -562,4 +560,4 @@ async def test_start_progress_preserves_identity_without_native_items_or_repeate
             },
         }
     )
-    assert events[-1]["payload"]["diff"] == "necessary diff"
+    assert "necessary diff" not in json.dumps(events)

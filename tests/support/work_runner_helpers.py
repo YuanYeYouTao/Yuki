@@ -22,7 +22,7 @@ def tool(name, args=None, identity=None):
     return ToolCall(identity or name, ToolFunction(name, json.dumps(args or {})))
 
 
-async def case(database, tmp_path, responses, *, reporting="interactive", send_status="succeeded"):
+async def case(database, tmp_path, responses, *, send_status="succeeded"):
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
@@ -38,7 +38,6 @@ async def case(database, tmp_path, responses, *, reporting="interactive", send_s
         source_key="report-runner",
         source=source,
         goal="调查并修复",
-        reporting=reporting,
     )
     scripted = iter(responses)
     provider = FakeLLMProvider(lambda _: next(scripted))

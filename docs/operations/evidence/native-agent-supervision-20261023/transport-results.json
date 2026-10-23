@@ -1,0 +1,126 @@
+{
+  "baseline": "8aef3f0b",
+  "method": "Same precommitted burst. In-process send/ACK peer with configured ACK delay, real SQLite FULL journal. Allocations are traced Python transport allocations; append duration includes serialization and commit, not server writer hold. Real TLS transport covered separately.",
+  "results": [
+    {
+      "variant": "baseline",
+      "events": 0,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 0.22769998759031296,
+      "ack_p50_ms": 0,
+      "ack_p95_ms": 0,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 9961,
+      "durable_append_p50_ms": 0,
+      "durable_append_p95_ms": 0
+    },
+    {
+      "variant": "candidate",
+      "events": 0,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 0.29349979013204575,
+      "ack_p50_ms": 0,
+      "ack_p95_ms": 0,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 5242,
+      "durable_append_p50_ms": 0,
+      "durable_append_p95_ms": 0
+    },
+    {
+      "variant": "baseline",
+      "events": 1,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 0.5538002587854862,
+      "ack_p50_ms": 0.48610009253025055,
+      "ack_p95_ms": 0.48610009253025055,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 8801,
+      "durable_append_p50_ms": 0.6081000901758671,
+      "durable_append_p95_ms": 0.6081000901758671
+    },
+    {
+      "variant": "candidate",
+      "events": 1,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 0.5570999346673489,
+      "ack_p50_ms": 0.5067000165581703,
+      "ack_p95_ms": 0.5067000165581703,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 8958,
+      "durable_append_p50_ms": 0.34900009632110596,
+      "durable_append_p95_ms": 0.34900009632110596
+    },
+    {
+      "variant": "baseline",
+      "events": 100,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 38.237799890339375,
+      "ack_p50_ms": 19.810300320386887,
+      "ack_p95_ms": 36.33740032091737,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 30422,
+      "durable_append_p50_ms": 0.3113001585006714,
+      "durable_append_p95_ms": 0.4354999400675297
+    },
+    {
+      "variant": "candidate",
+      "events": 100,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 38.23440009728074,
+      "ack_p50_ms": 19.713700283318758,
+      "ack_p95_ms": 36.51680005714297,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 27011,
+      "durable_append_p50_ms": 0.3570998087525368,
+      "durable_append_p95_ms": 0.4870002157986164
+    },
+    {
+      "variant": "baseline",
+      "events": 10000,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 4448.455600067973,
+      "ack_p50_ms": 2364.528200123459,
+      "ack_p95_ms": 4256.106799934059,
+      "cpu_ms": 375.0,
+      "peak_transport_allocated_bytes": 350088,
+      "durable_append_p50_ms": 0.2997000701725483,
+      "durable_append_p95_ms": 0.4428001120686531
+    },
+    {
+      "variant": "candidate",
+      "events": 10000,
+      "simulated_ack_rtt_ms": 0,
+      "drain_ms": 4050.0233001075685,
+      "ack_p50_ms": 2010.7009001076221,
+      "ack_p95_ms": 3802.6866000145674,
+      "cpu_ms": 125.0,
+      "peak_transport_allocated_bytes": 354785,
+      "durable_append_p50_ms": 0.3573000431060791,
+      "durable_append_p95_ms": 0.5882000550627708
+    },
+    {
+      "variant": "baseline",
+      "events": 100,
+      "simulated_ack_rtt_ms": 50.0,
+      "drain_ms": 6205.7403000071645,
+      "ack_p50_ms": 3116.140200290829,
+      "ack_p95_ms": 5896.4333003386855,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 30310,
+      "durable_append_p50_ms": 0.5366001278162003,
+      "durable_append_p95_ms": 0.8215000852942467
+    },
+    {
+      "variant": "candidate",
+      "events": 100,
+      "simulated_ack_rtt_ms": 50.0,
+      "drain_ms": 442.9995999671519,
+      "ack_p50_ms": 260.33469988033175,
+      "ack_p95_ms": 427.140099927783,
+      "cpu_ms": 0.0,
+      "peak_transport_allocated_bytes": 413247,
+      "durable_append_p50_ms": 3.394399769604206,
+      "durable_append_p95_ms": 6.266599986702204
+    }
+  ]
+}

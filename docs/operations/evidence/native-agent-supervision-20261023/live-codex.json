@@ -1,0 +1,21 @@
+{
+  "codex_version": "codex-cli 0.164.0",
+  "connector_version": "0.3.0",
+  "transport": "TLS WebSocket",
+  "status": "succeeded",
+  "operation_id": "9f8abb71-ba81-406e-8b51-fbe8e63258e6",
+  "work_id": "3d872ddf-a3c3-45db-92e2-f890b4d5ec26",
+  "run_id": "b26d2e8d-ae4a-5b7a-901e-775a7ec9f9ac",
+  "session_id": "82a9dd14-38a0-55c4-9b91-4363f22891ee",
+  "native_execution_confirmed": true,
+  "event_count": 8,
+  "tool_milestones": 2,
+  "successful_command_receipts": 2,
+  "failed_command_receipts": 0,
+  "file_sha256": "7068e75291d429e101940b82768685fa8092df7ededc8f4695bc2f0222efb2bf",
+  "completion_forwarded_to_original_work": true,
+  "cache_usage": "unknown",
+  "isolated_approvals": [
+    4
+  ]
+}

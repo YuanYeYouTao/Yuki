@@ -67,9 +67,9 @@ def test_events_are_committed_before_send_and_ack_prunes_only_original(journal: 
     }
     journal.append(event)
     journal.append(event)
-    assert json.loads(journal.next_event()[2]) == event
+    assert all(json.loads(journal.next_event()[2])[key] == value for key, value in event.items())
     journal.ack("another-event")
-    assert json.loads(journal.next_event()[2]) == event
+    assert all(json.loads(journal.next_event()[2])[key] == value for key, value in event.items())
     journal.ack("e1")
     assert journal.next_event() is None
     assert journal.operation(original["id"])["status"] == "completed"
@@ -304,7 +304,7 @@ async def test_unknown_control_is_never_admitted_or_used_to_detach(journal: Jour
 
 
 @pytest.mark.asyncio
-async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacked_sequence(journal):
+async def test_pipeline_sends_backlog_before_ack_and_replays_only_unacked_sequence(journal):
     connector = Connector(Config("ws://localhost/", "device", "fixture"), journal)
     connector.drivers["local"] = FakeDriver()
     originals = [
@@ -326,23 +326,21 @@ async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacke
         connections += 1
         await socket.recv()  # Current connection hello.
         if connections == 1:
-            first = json.loads(await socket.recv())
-            assert first == originals[0]
-            # Do not acknowledge the event yet: its DB commit is deliberately slow.
+            # The entire backlog can cross the wire before its commit ACKs return.
+            batch = [json.loads(await socket.recv()) for _ in originals]
+            assert [item["event_id"] for item in batch] == [item["event_id"] for item in originals]
+            first = batch[0]
             await socket.send(json.dumps(command("read-during-ack", "get")))
             response = json.loads(await socket.recv())
             assert response["type"] == "response" and response["id"] == "read-during-ack"
             assert json.loads(journal.next_event()[2]) == first
             await socket.send(json.dumps({"type": "ack", "event_id": first["event_id"]}))
             await socket.send(json.dumps({"type": "ack", "event_id": first["event_id"]}))
-            second = json.loads(await socket.recv())
-            assert second == originals[1]
-            await socket.send(json.dumps({"type": "ack", "event_id": first["event_id"]}))
             await socket.close()  # Commit/ACK observation is lost for the second original.
         else:
             for original in originals[1:]:
                 current = json.loads(await socket.recv())
-                assert current == original
+                assert all(current[key] == value for key, value in original.items())
                 await socket.send(json.dumps({"type": "ack", "event_id": current["event_id"]}))
             all_acked.set()
             await socket.wait_closed()
@@ -351,7 +349,7 @@ async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacke
         url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
         async with connect(url) as socket:
             await connector.connection(socket)
-        assert json.loads(journal.next_event()[2]) == originals[1]
+        assert json.loads(journal.next_event()[2])["event_id"] == originals[1]["event_id"]
         async with connect(url) as socket:
             running = asyncio.create_task(connector.connection(socket))
             await asyncio.wait_for(all_acked.wait(), 5)
