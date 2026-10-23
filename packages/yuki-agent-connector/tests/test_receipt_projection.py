@@ -269,3 +269,22 @@ async def test_native_unavailability_does_not_prevent_local_detach(journal, has_
     assert response["result"]["status"] == "detached"
     assert journal.operation("watch")["detached"] is True
     assert journal.observations() == []
+
+
+@pytest.mark.asyncio
+async def test_rejected_native_command_returns_same_ordered_receipt_as_get(journal):
+    from yuki_agent_connector.drivers import DriverError
+
+    class Driver:
+        async def execute(self, command):
+            raise DriverError("unsupported_action", "Native capability unavailable")
+
+    connector = Connector(Config("ws://localhost", "device", "fixture"), journal)
+    connector.drivers["local"] = Driver()
+    response = await connector.dispatch(operation())
+    assert response["result"] == journal.operation("watch")
+    assert response["result"]["status"] == "failed"
+    assert response["result"]["pending"] is False
+    assert response["result"]["admitted"] is False
+    assert response["result"]["state_sequence"] > 0
+    assert response["result"]["error"]["code"] == "unsupported_action"

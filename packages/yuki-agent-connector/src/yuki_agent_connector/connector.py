@@ -222,8 +222,7 @@ class Connector:
             }
         if recorded:
             self.journal.complete(key, response)
-            if "result" in response:
-                response["result"] = self.journal.operation(key)
+            response = {"type": "response", "id": key, "result": self.journal.operation(key)}
         return response
 
     async def _command(self, command: dict[str, Any], websocket: ClientConnection) -> None:
