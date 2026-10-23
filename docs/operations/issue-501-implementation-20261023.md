@@ -2,7 +2,7 @@
 
 日期：2026-10-23。对应[任务书](../architecture/Yuki-501原调用身份与回执恢复删减修复任务书-2026-10-23.md)。
 
-本地实现和实现后交叉复审已完成；PR、CI、合并、生产部署分别记录。调研固定在 `8aef3f0b`，施工中用户合并 #502，实施分支已更新到 `dad3c4564a6c297b5dcc2c2c54c44229776b0f2d`，重新核对原生监督、拒绝结果、在线查询与新测试 fixture。
+本地实现和实现后交叉复审已完成，[PR #504](https://github.com/YuanYeYouTao/Yuki/pull/504) 已提交；CI、合并、生产部署分别记录。调研固定在 `8aef3f0b`，施工中用户合并 #502，实施分支已更新到 `dad3c4564a6c297b5dcc2c2c54c44229776b0f2d`，重新核对原生监督、拒绝结果、在线查询与新测试 fixture。最终交付分支又纳入 #503 的 `90e60b6850389a0a60341290277a38fb0559f99d`，保留原自省 owner 游标修复及原生事件测试修正。
 
 ## 实际改动
 
@@ -27,7 +27,7 @@
 4. 已接纳控制可能同时携带 pending/unknown 原生观察。复用既有 `execution_evidence` 区分控制接纳与执行终态，使模型顶层和内部证据一致；原领域 data 保留原观察。该组合由持久仓库实验验证，未声称线上已发生。
 5. 字段改名遗漏一个测试中的 `current_invocation` 别名消费者。修正后重新扫描真实访问点，不改 Social/Provider 的合法同名字段。
 
-三路最终复审未发现剩余阻断项。#502 的纯结果投影和当前连接在线判断已按职责分开，持续监督 execution 投影及原拒绝结果保留。
+本任务三路源码最终复审未发现剩余阻断项。#502 的纯结果投影和当前连接在线判断已按职责分开，持续监督 execution 投影及原拒绝结果保留。
 
 ## 验证
 
@@ -40,15 +40,30 @@
 - `test_work_domain_receipts.py`：19 passed。原成功、contested、无变化、拒绝、processing、缺失/错引用，以及 native 控制/归属/观察矩阵。
 - `test_domain_receipt_recovery.py`：4 passed。实际 Main/worker 与 Code 恢复消费，原来源、父子关系、预算、配对和效果语义。
 - 上述两模块与 `test_tool_effect_audit.py` 联合：35 passed。
-- 身份、Social、目录/历史及字段消费者扩大回归：14 个模块 169 passed；Linux 全量与原生二进制 CI 待 PR 验证。
+- 身份、Social、目录/历史及字段消费者扩大回归：14 个模块 169 passed。
+- PR 首轮 Linux integration：879 passed、1 skipped（显式付费真实 Codex）、94 deselected；Native CodeMode：94 passed，真实隔离检查通过。
+- PR 首轮 unit：3491 passed、1 failed。失败为 `test_sticker_library.py::test_concurrent_first_create_has_one_optional_caption`，测试桥的文件复制与生产不同，修复与复审另列下文；不能将首轮写成全绿。
 
 最初扩大回归曾有 1 failed、163 passed、42 skipped；失败是已修正的测试旧字段访问。Windows 的 POSIX workspace 与原生 Monty 参数跳过，不能视为通过；Linux 全量与原生二进制测试以本 PR CI 为准。已有 SQLAlchemy 循环外键排序 warning 未由本次引入。
 
 恢复测试重建真实的领域提交后、Work T3 前持久边界；Runner、WorkSession、CodeModeDriver、领域仓库真实执行，模型和 Code VM 为确定性替身。没有做 OS kill、真实模型/设备或 QQ 消息测试，离线绿灯不等于自然流量验收。
 
+## 首轮 CI 的测试桥修复
+
+首轮 unit 的唯一失败来自图库目标文件的并发读取：`LocalDirectoryBridge.workspace_copy`
+用 `write_bytes()` 原地截断重写，而生产使用 `FileWorkspace.copy()` 的临时文件与原子替换。
+测试桥现直接复用真实复制方法，删除自制复制和返回值；并发测试先一次性准备稳定共享原件，
+保留两个不同请求的并发收藏及单次 caption 断言。没有修改图库生产代码、关闭完整性检查、
+串行化两次收藏或增加自动重试。
+
+WSL Debian 的独立锁定 Python 3.12 环境运行整份 `test_sticker_library.py`：35 passed；
+另以 30 个独立临时目录运行同一并发案例：30/30 通过。该验证证明修正后的真实复制桥
+正常并发通过，不证明任意人为文件替换时序都必须成功；实际文件在读取中发生变化时，
+原检查仍可拒绝。独立 POSIX 定点实验还确认，同内容原子替换也可能使旧 FD 的链接数与 ctime 改变，从而触发保守拒绝；它是既有可选 collection 边界，不由 #501 引入，本次未扩大修改生产文件完整性规则。修复经过另一名 agent 独立复核后随 PR 重跑最终 CI。
+
 ## 代码量与交付
 
-相对 #502 主线，生产源码增加 294 行、删除 172 行，净增 122 行（16 个文件）；测试增加 965 行、删除 18 行。文档及归档探针约增加 940 行，主要是之前未提交的任务书、调查与证据，本身不计入运行代码。新增的是缺失的领域读取和结果接线；删掉的是重复 active 裁决、纯投影副本和 Code 恢复分支。净增落在调研估算内，但行数不是验收门槛，不能宣称总代码减少。
+相对 #503 主线，生产源码增加 294 行、删除 172 行，净增 122 行（16 个文件）；测试增加 988 行、删除 37 行。文档及归档探针约增加 955 行，主要是之前未提交的任务书、调查与证据，本身不计入运行代码。新增的是缺失的领域读取和结果接线；删掉的是重复 active 裁决、纯投影副本和 Code 恢复分支。净增落在调研估算内，但行数不是验收门槛，不能宣称总代码减少。
 
 本修复无新 schema/协议；部署基线含 #502 的迁移 0150、Connector 0.3.0/协议 3。生产若尚未升级，需保留其配套条件。部署继续 Bot-only、先备份、保留 peers，不发送真实 QQ 测试消息；健康验证后清理旧备份、临时包和无引用旧镜像/可重建缓存。
 
