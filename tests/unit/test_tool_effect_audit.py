@@ -128,7 +128,6 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         origin=actor.origin,
         actor_user_id=actor.user_id,
         actor_is_superuser=runtime.actor_is_superuser,
-        delegated_authority=None,
         conversation_key=runtime.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,

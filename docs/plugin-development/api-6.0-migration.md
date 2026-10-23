@@ -1,6 +1,6 @@
 # Plugin API 6.0 迁移
 
-> 本页保留 6.0 的历史变更；当前合同见 [Plugin API 7.0](api-7.0-migration.md)。
+> 本页保留 6.0 的历史变更；当前合同见 [Plugin API 8.0](api-8.0-migration.md)。
 
 Host 只加载精确声明 `plugin_api = "6.0"` 的插件。产品版本与 Plugin API 分别演进；本次升级不提供 5.0 在线兼容对象或旧工具执行器。
 

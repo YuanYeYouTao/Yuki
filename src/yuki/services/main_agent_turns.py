@@ -13,7 +13,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.automation.models import TurnOrigin
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.ordinary_admission import (
@@ -30,6 +29,7 @@ from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_tasks import ActivationTasks
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_source_guard import WorkSourceGuard
 from yuki.services.agent_runner import (

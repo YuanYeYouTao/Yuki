@@ -92,7 +92,6 @@ async def _runtime(database, control, initial, provider, *, contract_workspace=N
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="capacity-test",
         current_group_id=None,
         bot_user_id="80001",

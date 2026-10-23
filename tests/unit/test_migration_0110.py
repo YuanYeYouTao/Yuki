@@ -1,5 +1,6 @@
 """Frozen 0109 facts upgrade without importing a retired runtime or account ORM."""
 
+import hashlib
 import json
 import sqlite3
 from uuid import uuid4
@@ -7,8 +8,6 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-
-from yuki.automation.task_spec import TaskSpec, canonical_task_hash
 
 
 def insert_row(connection, table, values):
@@ -369,8 +368,15 @@ def test_legacy_publication_keeps_hash_receipts_and_archives_original_main_work(
         )
         assert json.loads(current[3]["script_json"])["goal"] == json_instruction
         for index in (0, 1, 3):
-            task = TaskSpec.model_validate_json(current[index]["script_json"])
-            assert current[index]["script_hash"] == canonical_task_hash(task)
+            task = json.loads(current[index]["script_json"])
+            assert (
+                current[index]["script_hash"]
+                == hashlib.sha256(
+                    json.dumps(
+                        task, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+            )
             authority = json.loads(current[index]["authority_snapshot_json"])
             assert "granted_capabilities" not in authority
             assert authority["canonical_creator_person_id"] == person

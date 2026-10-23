@@ -22,7 +22,7 @@ from yuki.services.main_agent_backend import MainAgentBackend
 async def test_automation_commit_ack_loss_survives_the_real_main_binding(
     database, tmp_path, monkeypatch, action
 ):
-    case = await setup_run(database, tmp_path, delivery="none")
+    case = await setup_run(database, tmp_path)
     actor = replace(case.actor, event_id=None, execution_id="new-host-execution")
     config = await case.chat._runtime_config.snapshot()
     runtime = ToolRuntime(
@@ -40,7 +40,6 @@ async def test_automation_commit_ack_loss_survives_the_real_main_binding(
         origin=actor.origin,
         actor_user_id=actor.user_id,
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key=runtime.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,

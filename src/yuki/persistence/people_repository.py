@@ -79,6 +79,7 @@ from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import (
     AdminOperationEventModel,
     AutomationModel,
+    AutomationVersionModel,
     ChatEventModel,
     MembershipModel,
     MemoryClaimCandidateEvidenceModel,
@@ -1594,7 +1595,16 @@ class PeopleRepository:
         await session.execute(
             delete(AutomationModel).where(
                 or_(
-                    AutomationModel.canonical_target_person_id.in_(person_ids),
+                    AutomationModel.id.in_(
+                        select(AutomationVersionModel.automation_id).where(
+                            AutomationVersionModel.canonical_target_person_id.in_(person_ids)
+                        )
+                    ),
+                    AutomationModel.canonical_conversation_id.in_(
+                        select(CanonicalConversationModel.id).where(
+                            CanonicalConversationModel.person_id.in_(person_ids)
+                        )
+                    ),
                     AutomationModel.canonical_creator_person_id.in_(person_ids),
                 )
             )

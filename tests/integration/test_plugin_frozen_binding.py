@@ -146,7 +146,6 @@ async def run(*, native_child=False):
                 origin=TurnOrigin.USER_MESSAGE,
                 actor_user_id=tr.actor_user_id,
                 actor_is_superuser=False,
-                delegated_authority=None,
                 conversation_key=tr.conversation_key,
                 current_group_id=None,
                 bot_user_id=tr.inbound.bot_user_id,

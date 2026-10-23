@@ -1,0 +1,46 @@
+{
+  "linux_before": {
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "sqlite": "3.46.1",
+    "before_mismatches": [],
+    "after_mismatches": {
+      "trg_automations_canonical_presence_id_kind_insert": {
+        "expected": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_insert BEFORE INSERT ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END",
+        "actual": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_insert BEFORE INSERT ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'assignment kind mismatch') WHERE NOT EXISTS (SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki'); END",
+        "before": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_insert BEFORE INSERT ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END"
+      },
+      "trg_automations_canonical_presence_id_kind_update": {
+        "expected": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_update BEFORE UPDATE ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END",
+        "actual": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_update BEFORE UPDATE ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'assignment kind mismatch') WHERE NOT EXISTS (SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki'); END",
+        "before": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_update BEFORE UPDATE ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END"
+      }
+    },
+    "guard": "CanonicalSchemaError: database projection invalidation trigger is missing or changed"
+  },
+  "linux_after": {
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "sqlite": "3.46.1",
+    "before_mismatches": [],
+    "after_mismatches": {},
+    "guard": "passed"
+  },
+  "windows_before": {
+    "platform": "Windows-11-10.0.22631-SP0",
+    "sqlite": "3.53.1",
+    "before_mismatches": [],
+    "after_mismatches": {
+      "trg_automations_canonical_presence_id_kind_insert": {
+        "expected": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_insert BEFORE INSERT ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END",
+        "actual": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_insert BEFORE INSERT ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'assignment kind mismatch') WHERE NOT EXISTS (SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki'); END",
+        "before": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_insert BEFORE INSERT ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END"
+      },
+      "trg_automations_canonical_presence_id_kind_update": {
+        "expected": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_update BEFORE UPDATE ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END",
+        "actual": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_update BEFORE UPDATE ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'assignment kind mismatch') WHERE NOT EXISTS (SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki'); END",
+        "before": "CREATE TRIGGER trg_automations_canonical_presence_id_kind_update BEFORE UPDATE ON automations WHEN NEW.canonical_presence_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS ( SELECT 1 FROM account_assignments WHERE id=NEW.canonical_presence_id AND kind='yuki' ); END"
+      }
+    },
+    "guard": "CanonicalSchemaError: database projection invalidation trigger is missing or changed"
+  },
+  "fix": "Restore the original frozen 0141 role-trigger SQL in 0151; no startup guard changes."
+}

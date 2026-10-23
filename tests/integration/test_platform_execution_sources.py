@@ -73,7 +73,6 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
             "name": "App reminder",
             "goal": "remind me of tea",
             "trigger": {"type": "after", "seconds": 3600},
-            "delivery": {"target": "self_private"},
         }
     }
     results = []
@@ -96,11 +95,9 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
     async with database.read_session() as reader:
         row = (await reader.scalars(select(AutomationModel))).one()
     assert results and results[0]["ok"]
-    assert row.canonical_creator_person_id == row.canonical_target_person_id == person
-    assert (
-        json.loads(row.authority_snapshot_json)["canonical_conversation_id"]
-        == principal.conversation_id
-    )
+    assert row.canonical_creator_person_id == person
+    assert row.canonical_conversation_id == principal.conversation_id
+    assert row.source_event_id is not None
     from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
     async with database.read_session() as reader:
@@ -586,7 +583,6 @@ async def test_group_migration_preserves_original_work_and_native_send(
                 "name": "original schedule",
                 "goal": "original purpose",
                 "trigger": {"type": "after", "seconds": 3600},
-                "delivery": {"target": "current_group"},
             },
             actor=actor,
             conversation_key="original-scene",

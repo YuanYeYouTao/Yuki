@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -153,6 +154,26 @@ class AutomationTaskSource:
     origin: str = TurnOrigin.SCHEDULED_AUTOMATION.value
     event_id: None = None
     actor_is_superuser: bool = False
+    automation_id: int | None = None
+    automation_created_at: datetime | None = None
+    scheduled_for: datetime | None = None
+
+    def activation_context(self, now: datetime) -> dict[str, Any]:
+        return {
+            "origin": self.origin,
+            "automation_id": self.automation_id,
+            "run_id": self.automation_run_id,
+            "creator": {"kind": self.principal_kind, "person_id": self.actor_person_id},
+            "source": {"conversation_id": self.conversation_id, "platform": self.platform},
+            "created_at": self.automation_created_at.isoformat()
+            if self.automation_created_at
+            else None,
+            "scheduled_for": self.scheduled_for.isoformat() if self.scheduled_for else None,
+            "current_time": now.isoformat(),
+            "instruction": (
+                "本次安排已经到期，继续完成这次发生尚未完成的工作；原话中的相对时间属于原安排。"
+            ),
+        }
 
     def actor(self, execution_id: str) -> ToolActor:
         return ToolActor(
@@ -380,6 +401,13 @@ async def recover_automation_source(
             presence.platform,
             conversation.thread_id,
             actor_is_superuser=actor_is_superuser,
+            automation_id=owner.id,
+            automation_created_at=owner.created_at,
+            scheduled_for=(
+                run.scheduled_for.replace(tzinfo=UTC)
+                if run.scheduled_for.tzinfo is None
+                else run.scheduled_for.astimezone(UTC)
+            ),
         )
 
 

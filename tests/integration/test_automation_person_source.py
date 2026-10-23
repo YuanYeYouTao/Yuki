@@ -25,7 +25,6 @@ async def test_after_merge_creation_keeps_raw_actor_and_does_not_borrow_root(dat
         "name": "original actor after merge",
         "goal": "read internally",
         "trigger": {"type": "after", "seconds": 1},
-        "delivery": {"target": "current_group"},
     }
     newer = await case.service.create_task(
         payload,

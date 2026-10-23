@@ -17,7 +17,6 @@ from tests.support.legacy_conversation_seed import (
 )
 from tests.support.social_identity_cases import social_env
 
-from yuki.automation.authority import DelegatedAuthority, PermissionLevel
 from yuki.automation.repository import AutomationRepository
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
@@ -323,12 +322,12 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
         database = Database(url)
         try:
             env = await frozen_social_env(database)
-            authority = DelegatedAuthority(
+            authority = dict(
                 creator_user_id="10001",
                 bot_user_id="80001",
                 created_from_message_id="1",
                 created_at=started.isoformat(),
-                permission_level=PermissionLevel.USER,
+                permission_level="user",
                 granted_capabilities=("yuki.agent",),
                 capability_schema_versions={"yuki.agent": 1},
                 current_group_id="20001",
@@ -356,7 +355,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                         "schedule": json.dumps(script["schedule"]),
                         "script": json.dumps(script),
                         "hash": script_hash,
-                        "authority": authority.model_dump_json(),
+                        "authority": json.dumps(authority),
                         "future": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
                         "started": started.isoformat(),
                         "person": env.person,
@@ -480,8 +479,10 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                 1, scheduled_for=current.next_run_at, actual_started_at=datetime.now(UTC)
             )
             accepted = await repository.get_for_run(admitted.id)
-            assert admitted.version_id != 1 and accepted.script["goal"] == "original target"
-            assert accepted.canonical_target_space_id == current.canonical_target_space_id
+            assert admitted.version_id != 1
+            assert accepted.script["goal"].startswith("original target\n\n")
+            assert "原交付要求" in accepted.script["goal"]
+            assert accepted.canonical_conversation_id == current.canonical_conversation_id
             assert accepted.authority_snapshot == current.authority_snapshot
             async with database.read_session() as reader:
                 assert (await reader.get(AutomationVersionModel, 1)).authority_snapshot_json is None

@@ -364,8 +364,8 @@ class Settings(BaseSettings):
 
     automation_enabled: bool = False
     default_timezone: str = "Asia/Shanghai"
-    automation_poll_seconds: float = 2.0
-    automation_lease_seconds: int = 120
+    automation_poll_seconds: float = Field(default=2.0, gt=0)
+    automation_lease_seconds: int = Field(default=120, gt=0)
 
     @field_validator("web_search_depth")
     @classmethod

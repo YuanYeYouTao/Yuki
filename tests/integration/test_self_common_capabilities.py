@@ -97,7 +97,7 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
     assert receipt.event_id is not None
     await env.service.execute(
         "query_chat_history",
-        {'view': 'recent', 'event_kind': 'all', 'target': {'operation_id': operation}},
+        {"view": "recent", "event_kind": "all", "target": {"operation_id": operation}},
         replace(context, call_id="history"),
     )
     await env.service.execute(
@@ -129,6 +129,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
             return_value=SimpleNamespace(
                 id=7,
                 name="plan",
+                max_runs=None,
                 status=SimpleNamespace(value="active"),
                 next_run_at=None,
                 last_run_at=None,
@@ -161,7 +162,12 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
             music = await host.onebot.send_music_card(provider="netease", resource_id="123")
             assert music.ok
             await host.automation.create_task(
-                {"name": "plan", "goal": "保留完整目标"}, request_id="original-plan"
+                {
+                    "name": "plan",
+                    "goal": "保留完整目标",
+                    "trigger": {"type": "after", "seconds": 1},
+                },
+                request_id="original-plan",
             )
         assert automation.create_task.await_args.kwargs["actor"] is actor
         receipt = await env.service.receipts.get(music.data["operation_id"])

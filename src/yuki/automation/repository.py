@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter
 from sqlalchemy import and_, false, func, or_, select, true, update
@@ -14,7 +15,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.automation.authority import DelegatedAuthority
+from yuki.automation.authority import AutomationScene
 from yuki.automation.models import (
     AutomationCreatorIdentity,
     AutomationDirectoryEntry,
@@ -49,21 +50,19 @@ class PreparedTaskDefinition:
     """The encoded task/version and its original public values, prepared before writing."""
 
     task: TaskSpec
-    authority: DelegatedAuthority
+    authority: AutomationScene
     script_json: str
-    schedule_json: str
     authority_json: str
     script_hash: str
     script: dict[str, Any]
     authority_snapshot: dict[str, Any]
 
     @classmethod
-    def prepare(cls, task: TaskSpec, authority: DelegatedAuthority) -> PreparedTaskDefinition:
+    def prepare(cls, task: TaskSpec, authority: AutomationScene) -> PreparedTaskDefinition:
         return cls(
             task,
             authority,
             task.model_dump_json(exclude_none=True),
-            task.trigger.model_dump_json(exclude_none=True),
             authority.model_dump_json(),
             canonical_task_hash(task),
             task.model_dump(mode="json", exclude_none=True),
@@ -95,38 +94,25 @@ class AutomationRepository:
         next_run_at: datetime,
         now: datetime,
         creation_source_key: str | None = None,
+        source_event_id: int | None = None,
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
-        task, authority = definition.task, definition.authority
-        script_json = definition.script_json
-        schedule_json = definition.schedule_json
-        authority_json = definition.authority_json
+        authority = definition.authority
         timestamp = _aware_utc(now)
-        transaction = (
-            self._database.immediate_session()
-            if session is None
-            else optional_session(self._database, session, write=True)
-        )
-        async with transaction as active:
+        async with optional_session(self._database, session, write=True) as active:
             if creation_source_key is not None:
-                previous = await active.scalar(
-                    select(AutomationModel)
-                    .where(
-                        self._owner_clause(creator_person_id),
-                        AutomationModel.creation_source_key == creation_source_key,
-                    )
-                    .order_by(AutomationModel.id)
-                    .limit(1)
+                previous = await self.get_by_creation_key(
+                    creator_person_id, creation_source_key, session=active
                 )
                 if previous is not None:
                     initial_hash = await self.initial_script_hash(previous.id, session=active)
-                    if initial_hash != definition.script_hash or previous.max_runs != max_runs:
+                    if (
+                        initial_hash != definition.script_hash
+                        or previous.creation_max_runs != max_runs
+                    ):
                         raise ValueError("automation_creation_key_conflict")
-                    return _automation_record(previous)
-            if creator_person_id == "self":
-                if authority.principal_kind != "self":
-                    raise ValueError("invalid_self_automation_authority")
-            else:
+                    return previous
+            if creator_person_id != "self":
                 creator = await active.get(CanonicalPersonModel, creator_person_id)
                 if (
                     creator is None
@@ -135,10 +121,10 @@ class AutomationRepository:
                     or not await same_person_id(
                         active, authority.canonical_creator_person_id, creator_person_id
                     )
-                    or authority.principal_kind != "person"
                 ):
                     raise ValueError("创建者没有对应的永久主体")
-            target_person, target_space = _canonical_send_targets(task, authority)
+            if authority.principal_kind != ("self" if creator_person_id == "self" else "person"):
+                raise ValueError("invalid_automation_owner")
             presence = await active.get(PresenceModel, authority.canonical_presence_id)
             if presence is None:
                 raise ValueError("automation_presence_unavailable")
@@ -146,21 +132,16 @@ class AutomationRepository:
                 creator_kind=authority.principal_kind,
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,
-                name=task.name,
                 status=AutomationStatus.ACTIVE.value,
-                timezone=task.timezone,
-                schedule_json=schedule_json,
-                script_json=script_json,
-                script_hash=definition.script_hash,
-                required_capabilities_json="[]",
-                authority_snapshot_json=authority_json,
                 created_from_message_id=authority.created_from_message_id,
                 creation_source_key=creation_source_key,
+                source_event_id=source_event_id,
+                canonical_conversation_id=authority.canonical_conversation_id,
                 next_run_at=next_run_at,
                 last_run_at=None,
                 run_count=0,
                 max_runs=max_runs,
-                consecutive_failures=0,
+                creation_max_runs=max_runs,
                 claimed_by=None,
                 claimed_until=None,
                 created_at=timestamp,
@@ -168,8 +149,6 @@ class AutomationRepository:
                 canonical_creator_person_id=None
                 if creator_person_id == "self"
                 else creator_person_id,
-                canonical_target_person_id=target_person,
-                canonical_target_space_id=target_space,
                 canonical_presence_id=presence.id,
             )
             active.add(row)
@@ -177,32 +156,32 @@ class AutomationRepository:
             version = AutomationVersionModel(
                 automation_id=row.id,
                 version=1,
-                script_json=script_json,
+                script_json=definition.script_json,
                 script_hash=definition.script_hash,
-                authority_snapshot_json=authority_json,
-                canonical_target_person_id=target_person,
-                canonical_target_space_id=target_space,
+                authority_snapshot_json=definition.authority_json,
                 canonical_presence_id=presence.id,
-                updated_by=authority.creator_user_id,
+                updated_by="",
                 created_at=timestamp,
             )
             active.add(version)
             await active.flush()
-            return _automation_record(row, version.id, definition=definition)
+            return _automation_record(row, version, definition=definition)
 
     async def get(
         self, automation_id: int, *, session: AsyncSession | None = None
     ) -> AutomationRecord | None:
         async with optional_session(self._database, session, write=False) as active:
-            row = await active.get(AutomationModel, automation_id)
-            version_id = await _current_version_id(active, automation_id)
-        return _automation_record(row, version_id) if row is not None else None
+            pair = (
+                await active.execute(
+                    _definition_statement().where(AutomationModel.id == automation_id)
+                )
+            ).one_or_none()
+        return _automation_record(*pair) if pair else None
 
     async def get_for_run(
         self, run_id: int | None, *, session: AsyncSession | None = None
     ) -> AutomationRecord | None:
-        """Read the accepted definition through its original immutable version."""
-
+        """Read only the immutable definition accepted by this occurrence."""
         async with optional_session(self._database, session, write=False) as active:
             pair = (
                 await active.execute(
@@ -217,44 +196,23 @@ class AutomationRepository:
                     .where(AutomationRunModel.id == run_id)
                 )
             ).one_or_none()
-        if pair is None:
+        if pair is None or pair[1].authority_snapshot_json is None:
             return None
-        owner, version = pair
-        if version.authority_snapshot_json is None:
-            return None
-        script = json.loads(version.script_json)
-        return _automation_record(owner, version.id).model_copy(
-            update={
-                "script": script,
-                "name": script["name"],
-                "timezone": script["timezone"],
-                "schedule": TypeAdapter(Schedule).validate_python(
-                    script.get("trigger", script.get("schedule"))
-                ),
-                "script_hash": version.script_hash,
-                "authority_snapshot": json.loads(version.authority_snapshot_json),
-                "canonical_target_person_id": version.canonical_target_person_id,
-                "canonical_target_space_id": version.canonical_target_space_id,
-                "canonical_presence_id": version.canonical_presence_id,
-            }
-        )
+        return _automation_record(*pair)
 
     async def get_by_creation_key(
-        self,
-        creator_person_id: str,
-        creation_source_key: str,
-        *,
-        session: AsyncSession | None = None,
+        self, creator_person_id: str, key: str, *, session: AsyncSession | None = None
     ) -> AutomationRecord | None:
-        """Resolve a delegated create retry without producing another task."""
-
-        query = select(AutomationModel).where(
-            self._owner_clause(creator_person_id),
-            AutomationModel.creation_source_key == creation_source_key,
-        )
         async with optional_session(self._database, session, write=False) as active:
-            row = await active.scalar(query.order_by(AutomationModel.id.asc()).limit(1))
-        return _automation_record(row) if row is not None else None
+            pair = (
+                await active.execute(
+                    _definition_statement().where(
+                        self._owner_clause(creator_person_id),
+                        AutomationModel.creation_source_key == key,
+                    )
+                )
+            ).first()
+        return _automation_record(*pair) if pair else None
 
     async def initial_script_hash(
         self, automation_id: int, *, session: AsyncSession | None = None
@@ -271,153 +229,77 @@ class AutomationRepository:
                 ),
             )
 
-    async def list_for_creator(
-        self,
-        creator_person_id: str,
-        *,
-        include_terminal: bool = True,
-        limit: int = 100,
-    ) -> tuple[AutomationRecord, ...]:
-        query = select(AutomationModel).where(self._owner_clause(creator_person_id))
-        if not include_terminal:
-            query = query.where(
-                AutomationModel.status.in_(
-                    [AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value]
-                )
-            )
+    async def original_creation(
+        self, automation_id: int
+    ) -> tuple[dict[str, Any], dict[str, Any], str] | None:
         async with self._database.read_session() as session:
-            rows = (
-                await session.scalars(
-                    query.order_by(AutomationModel.updated_at.desc()).limit(max(1, min(limit, 200)))
-                )
-            ).all()
-        return tuple(_automation_record(row) for row in rows)
+            version = await session.scalar(
+                select(AutomationVersionModel)
+                .where(AutomationVersionModel.automation_id == automation_id)
+                .order_by(AutomationVersionModel.version)
+                .limit(1)
+            )
+        if version is None:
+            return None
+        return (
+            json.loads(version.script_json),
+            json.loads(version.authority_snapshot_json) if version.authority_snapshot_json else {},
+            version.script_hash,
+        )
 
     async def list_directory(
-        self,
-        *,
-        statuses: tuple[AutomationStatus, ...],
-        limit: int = 50,
-        offset: int = 0,
-        include_script: bool = False,
+        self, *, statuses: tuple[AutomationStatus, ...], limit: int = 50, offset: int = 0
     ) -> tuple[AutomationDirectoryEntry, ...]:
-        """List a bounded, owner-independent task directory for the main Agent."""
-
-        query = _directory_statement(include_script=include_script).where(
+        query = _directory_statement().where(
             AutomationModel.status.in_([status.value for status in statuses])
         )
         current = set(statuses) <= {AutomationStatus.ACTIVE, AutomationStatus.PAUSED}
         order = (
-            (
-                AutomationModel.next_run_at.is_(None),
-                AutomationModel.next_run_at.asc(),
-                AutomationModel.id.asc(),
-            )
+            (AutomationModel.next_run_at.is_(None), AutomationModel.next_run_at, AutomationModel.id)
             if current
             else (AutomationModel.updated_at.desc(), AutomationModel.id.desc())
         )
         async with self._database.read_session() as session:
-            rows = (
-                await session.execute(
-                    query.order_by(*order).offset(max(0, offset)).limit(max(1, min(limit, 101)))
-                )
-            ).all()
-        return tuple(
-            _automation_directory_entry(row, include_script=include_script) for row in rows
-        )
-
-    async def get_directory_entry(self, automation_id: int) -> AutomationDirectoryEntry | None:
-        """Read one task and its creator projection in a single database query."""
-
-        query = _directory_statement().where(AutomationModel.id == automation_id)
-        async with self._database.read_session() as session:
-            row = (await session.execute(query)).one_or_none()
-        if row is None:
-            return None
-        return _automation_directory_entry(row)
-
-    async def find_equivalent_directory_entries(
-        self, task: TaskSpec, *, max_runs: int | None
-    ) -> tuple[AutomationDirectoryEntry, ...]:
-        """Stream each current plan once and return matching directory entries."""
-
-        expected = task.model_dump(mode="json", exclude={"name"}, exclude_none=True)
-        query = (
-            _directory_statement(include_script=True)
-            .where(
-                AutomationModel.status.in_(
-                    (AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value)
-                ),
-                AutomationModel.max_runs == max_runs,
-            )
-            .order_by(
-                AutomationModel.next_run_at.is_(None),
-                AutomationModel.next_run_at,
-                AutomationModel.id,
-            )
-        )
-        async with self._database.read_session() as session:
-            matches = []
-            async for row in await session.stream(query.execution_options(yield_per=128)):
-                actual = json.loads(row[0].script_json)
-                actual.pop("name", None)
-                if actual == expected:
-                    matches.append(_automation_directory_entry(row, include_script=True))
-            return tuple(matches)
+            rows = (await session.execute(query.order_by(*order).offset(offset).limit(limit))).all()
+        return tuple(_automation_directory_entry(row) for row in rows)
 
     async def list_current_for_creator(
-        self,
-        creator_person_id: str,
-        *,
-        limit: int = 100,
+        self, creator_person_id: str, *, limit: int = 100
     ) -> tuple[AutomationRecord, ...]:
-        """List schedulable tasks only, ordered for stable presentation."""
-
-        query = (
-            select(AutomationModel)
-            .where(
-                self._owner_clause(creator_person_id),
-                AutomationModel.status.in_(
-                    [AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value]
-                ),
-            )
-            .order_by(
-                AutomationModel.next_run_at.is_(None),
-                AutomationModel.next_run_at.asc(),
-                AutomationModel.id.asc(),
-            )
-            .limit(max(1, min(limit, 200)))
-        )
         async with self._database.read_session() as session:
-            rows = (await session.scalars(query)).all()
-        return tuple(_automation_record(row) for row in rows)
+            rows = (
+                await session.execute(
+                    _definition_statement()
+                    .where(
+                        self._owner_clause(creator_person_id),
+                        AutomationModel.status.in_(("active", "paused")),
+                    )
+                    .order_by(
+                        AutomationModel.next_run_at.is_(None),
+                        AutomationModel.next_run_at,
+                        AutomationModel.id,
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        return tuple(_automation_record(*row) for row in rows)
 
     async def list_terminal_for_creator(
-        self,
-        creator_person_id: str,
-        *,
-        limit: int = 100,
+        self, creator_person_id: str, *, limit: int = 100
     ) -> tuple[AutomationRecord, ...]:
-        """List completed, cancelled, failed, or blocked tasks as history."""
-
-        terminal = [
-            AutomationStatus.COMPLETED.value,
-            AutomationStatus.CANCELLED.value,
-            AutomationStatus.FAILED.value,
-            AutomationStatus.BLOCKED.value,
-        ]
-        query = (
-            select(AutomationModel)
-            .where(
-                self._owner_clause(creator_person_id),
-                AutomationModel.status.in_(terminal),
-            )
-            .order_by(AutomationModel.updated_at.desc(), AutomationModel.id.desc())
-            .limit(max(1, min(limit, 200)))
-        )
         async with self._database.read_session() as session:
-            rows = (await session.scalars(query)).all()
-        return tuple(_automation_record(row) for row in rows)
+            rows = (
+                await session.execute(
+                    _definition_statement()
+                    .where(
+                        self._owner_clause(creator_person_id),
+                        AutomationModel.status.in_(("completed", "cancelled", "failed", "blocked")),
+                    )
+                    .order_by(AutomationModel.updated_at.desc(), AutomationModel.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        return tuple(_automation_record(*row) for row in rows)
 
     async def active_count(
         self, creator_person_id: str | None = None, *, session: AsyncSession | None = None
@@ -511,7 +393,6 @@ class AutomationRepository:
                 .values(
                     status=AutomationStatus.ACTIVE.value,
                     next_run_at=_aware_utc(next_run_at),
-                    consecutive_failures=0,
                     updated_at=_aware_utc(now),
                 )
             )
@@ -552,35 +433,18 @@ class AutomationRepository:
         definition: PreparedTaskDefinition,
         now: datetime,
         next_run_at: datetime | None = None,
+        max_runs: int | None = None,
+        max_runs_set: bool = False,
         session: AsyncSession | None = None,
     ) -> AutomationRecord | None:
-        task, authority = definition.task, definition.authority
         timestamp = _aware_utc(now)
         async with optional_session(self._database, session, write=True) as active:
-            if creator_person_id == "self":
-                if authority.principal_kind != "self":
-                    raise ValueError("invalid_self_automation_authority")
-            else:
-                authority_creator = await active.get(CanonicalPersonModel, creator_person_id)
-                if (
-                    authority_creator is None
-                    or authority.canonical_creator_person_id is None
-                    or not await same_person_id(
-                        active, authority.canonical_creator_person_id, creator_person_id
-                    )
-                    or authority.principal_kind != "person"
-                ):
-                    raise ValueError("更新授权与自动化永久创建者不一致")
             row = await active.scalar(
                 select(AutomationModel).where(
-                    AutomationModel.id == automation_id,
-                    self._owner_clause(creator_person_id),
+                    AutomationModel.id == automation_id, self._owner_clause(creator_person_id)
                 )
             )
-            if row is None or row.status in {
-                AutomationStatus.CANCELLED.value,
-                AutomationStatus.COMPLETED.value,
-            }:
+            if row is None or row.status in {"cancelled", "completed"}:
                 return None
             latest_version = int(
                 await active.scalar(
@@ -590,36 +454,36 @@ class AutomationRepository:
                 )
                 or 0
             )
-            script_json = definition.script_json
-            row.name = task.name
-            row.timezone = cast(str, task.timezone)
-            row.schedule_json = definition.schedule_json
-            row.script_json = script_json
-            row.script_hash = definition.script_hash
-            row.required_capabilities_json = "[]"
-            row.authority_snapshot_json = definition.authority_json
             if next_run_at is not None:
                 row.next_run_at = next_run_at
-            row.consecutive_failures = 0
+            if max_runs_set:
+                row.max_runs = max_runs
+                if max_runs is not None and row.run_count >= max_runs:
+                    running = await active.scalar(
+                        select(AutomationRunModel.id)
+                        .where(
+                            AutomationRunModel.automation_id == automation_id,
+                            AutomationRunModel.status == RunStatus.RUNNING.value,
+                        )
+                        .limit(1)
+                    )
+                    if running is None:
+                        row.status = AutomationStatus.COMPLETED.value
+                        row.next_run_at = None
             row.updated_at = timestamp
-            target_person, target_space = _canonical_send_targets(task, authority)
-            row.canonical_target_person_id = target_person
-            row.canonical_target_space_id = target_space
             version = AutomationVersionModel(
                 automation_id=automation_id,
                 version=latest_version + 1,
-                script_json=script_json,
+                script_json=definition.script_json,
                 script_hash=definition.script_hash,
                 authority_snapshot_json=definition.authority_json,
-                canonical_target_person_id=target_person,
-                canonical_target_space_id=target_space,
                 canonical_presence_id=row.canonical_presence_id,
-                updated_by=authority.creator_user_id,
+                updated_by="",
                 created_at=timestamp,
             )
             active.add(version)
             await active.flush()
-            return _automation_record(row, version.id, definition=definition)
+            return _automation_record(row, version, definition=definition)
 
     async def claim_due(
         self,
@@ -693,12 +557,12 @@ class AutomationRepository:
                     .group_by(AutomationVersionModel.automation_id)
                     .subquery()
                 )
-                versions: dict[int, int] = (
+                versions: dict[int, AutomationVersionModel] = (
                     dict(
                         (
                             await session.execute(
                                 select(
-                                    AutomationVersionModel.automation_id, AutomationVersionModel.id
+                                    AutomationVersionModel.automation_id, AutomationVersionModel
                                 ).join(
                                     latest,
                                     and_(
@@ -719,7 +583,7 @@ class AutomationRepository:
             # their original JSON only after commit has positively completed.
             by_id = {row.id: row for row in rows}
             claimed.extend(
-                _automation_record(by_id[identity], versions.get(identity))
+                _automation_record(by_id[identity], versions[identity])
                 for identity in page
                 if identity in by_id
             )
@@ -827,27 +691,13 @@ class AutomationRepository:
                     or 0
                 )
                 if owner.run_count + admitted >= owner.max_runs:
+                    if admitted == 0:
+                        owner.status = AutomationStatus.COMPLETED.value
+                        owner.next_run_at = None
                     return None
             version = await session.get(AutomationVersionModel, version_id or current_version)
             if version is None:
                 raise ValueError("automation_version_unavailable")
-            if version.authority_snapshot_json is None:
-                # This is a new admission from the retained current definition,
-                # never a reconstruction of an already accepted historical run.
-                version = AutomationVersionModel(
-                    automation_id=owner.id,
-                    version=version.version + 1,
-                    script_json=owner.script_json,
-                    script_hash=owner.script_hash,
-                    authority_snapshot_json=owner.authority_snapshot_json,
-                    canonical_target_person_id=owner.canonical_target_person_id,
-                    canonical_target_space_id=owner.canonical_target_space_id,
-                    canonical_presence_id=owner.canonical_presence_id,
-                    updated_by=owner.creator_user_id,
-                    created_at=started,
-                )
-                session.add(version)
-                await session.flush()
             run_id = await session.scalar(
                 insert(AutomationRunModel)
                 .values(
@@ -858,7 +708,6 @@ class AutomationRepository:
                     finished_at=None,
                     status=RunStatus.RUNNING.value,
                     idempotency_key=key,
-                    steps_completed=0,
                     llm_calls=0,
                     tool_calls=0,
                     messages_sent=0,
@@ -915,7 +764,6 @@ class AutomationRepository:
             await self.finish_run(
                 run.id,
                 status=RunStatus.UNCERTAIN,
-                steps_completed=run.steps_completed,
                 llm_calls=run.llm_calls,
                 tool_calls=run.tool_calls,
                 messages_sent=run.messages_sent,
@@ -991,12 +839,15 @@ class AutomationRepository:
                     "failed": RunStatus.FAILED,
                     "cancelled": RunStatus.CANCELLED,
                 }[row["state"]],
-                steps_completed=0,
                 llm_calls=row["model_requests"],
                 tool_calls=row["tool_calls"],
                 messages_sent=row["sent_messages"],
                 error_category=None if row["state"] == "completed" else row["state"],
-                summary={"work_id": row["work_id"], "work_state": row["state"]},
+                summary={
+                    "work_id": row["work_id"],
+                    "work_state": row["state"],
+                    "messages_sent_semantics": "work_delivery_reservations",
+                },
                 finished_at=datetime.now(UTC),
             )
 
@@ -1005,7 +856,6 @@ class AutomationRepository:
         run_id: int,
         *,
         status: RunStatus,
-        steps_completed: int,
         llm_calls: int,
         tool_calls: int,
         messages_sent: int,
@@ -1046,7 +896,9 @@ class AutomationRepository:
             ).one_or_none()
         next_scheduled = (
             schedule_after_completion(
-                TypeAdapter(Schedule).validate_json(accepted.schedule),
+                schedule_from_script(
+                    {"trigger": json.loads(accepted.schedule), "timezone": accepted.timezone}
+                ),
                 _aware_utc(accepted.scheduled_for),
                 timestamp,
                 accepted.timezone,
@@ -1058,7 +910,6 @@ class AutomationRepository:
             run = await active.get(AutomationRunModel, run_id)
             if run is None:
                 return False
-            steps_completed = max(steps_completed, run.steps_completed)
             llm_calls = max(llm_calls, run.llm_calls)
             tool_calls = max(tool_calls, run.tool_calls)
             messages_sent = max(messages_sent, run.messages_sent)
@@ -1075,7 +926,6 @@ class AutomationRepository:
                 )
                 .values(
                     status=status.value,
-                    steps_completed=steps_completed,
                     llm_calls=llm_calls,
                     tool_calls=tool_calls,
                     messages_sent=messages_sent,
@@ -1092,9 +942,6 @@ class AutomationRepository:
             row.last_run_at = timestamp
             row.run_count += 1
             row.updated_at = timestamp
-            row.consecutive_failures = (
-                0 if status is RunStatus.SUCCEEDED else row.consecutive_failures + 1
-            )
             if row.status in {AutomationStatus.CANCELLED.value, AutomationStatus.COMPLETED.value}:
                 return True
             if (
@@ -1125,17 +972,26 @@ class AutomationRepository:
         automation_id: int,
         *,
         limit: int = 20,
+        offset: int = 0,
     ) -> tuple[AutomationRunRecord, ...]:
         async with self._database.read_session() as session:
             rows = (
-                await session.scalars(
-                    select(AutomationRunModel)
+                await session.execute(
+                    select(AutomationRunModel, AutomationVersionModel.script_json)
+                    .outerjoin(
+                        AutomationVersionModel,
+                        AutomationVersionModel.id == AutomationRunModel.version_id,
+                    )
                     .where(AutomationRunModel.automation_id == automation_id)
-                    .order_by(AutomationRunModel.created_at.desc())
-                    .limit(max(1, min(limit, 100)))
+                    .order_by(AutomationRunModel.created_at.desc(), AutomationRunModel.id.desc())
+                    .offset(offset)
+                    .limit(limit)
                 )
             ).all()
-        return tuple(_run_record(row) for row in rows)
+        return tuple(
+            _run_record(row, definition=json.loads(raw) if raw is not None else None)
+            for row, raw in rows
+        )
 
     async def latest_run_at(self) -> datetime | None:
         async with self._database.read_session() as session:
@@ -1150,18 +1006,6 @@ class AutomationRepository:
             )
 
 
-def _canonical_send_targets(
-    task: TaskSpec,
-    authority: DelegatedAuthority,
-) -> tuple[str | None, str | None]:
-    if task.delivery.target != "self_private" and authority.canonical_space_id:
-        return None, authority.canonical_space_id
-    target_person = authority.canonical_creator_person_id
-    if target_person is None:
-        raise ValueError("发送目标没有对应的永久主体")
-    return target_person, None
-
-
 async def _current_version_id(session: AsyncSession, automation_id: int) -> int | None:
     return cast(
         int | None,
@@ -1174,89 +1018,127 @@ async def _current_version_id(session: AsyncSession, automation_id: int) -> int 
     )
 
 
+def _latest_version_clause() -> Any:
+    latest = (
+        select(func.max(AutomationVersionModel.version))
+        .where(AutomationVersionModel.automation_id == AutomationModel.id)
+        .correlate(AutomationModel)
+        .scalar_subquery()
+    )
+    return and_(
+        AutomationVersionModel.automation_id == AutomationModel.id,
+        AutomationVersionModel.version == latest,
+    )
+
+
+def _definition_statement() -> Any:
+    return select(AutomationModel, AutomationVersionModel).join(
+        AutomationVersionModel, _latest_version_clause()
+    )
+
+
+def task_timezone(script: dict[str, Any]) -> str:
+    trigger = script.get("trigger", script.get("schedule", {}))
+    return str(trigger.get("timezone") or script.get("timezone") or "Asia/Shanghai")
+
+
+def schedule_from_script(script: dict[str, Any]) -> Schedule:
+    raw = dict(script.get("trigger", script.get("schedule", {})))
+    if raw.get("type") == "once":
+        value = raw["local_datetime"]
+        dt = datetime.fromisoformat(value) if isinstance(value, str) else value
+        if dt.utcoffset() is None:
+            dt = dt.replace(tzinfo=ZoneInfo(task_timezone(script)), fold=0)
+        raw["local_datetime"] = dt
+        raw.pop("timezone", None)
+    return TypeAdapter(Schedule).validate_python(raw)
+
+
 def _automation_record(
     row: AutomationModel,
-    version_id: int | None = None,
+    version: AutomationVersionModel,
     *,
     definition: PreparedTaskDefinition | None = None,
 ) -> AutomationRecord:
+    script = definition.script if definition else json.loads(version.script_json)
+    scene = (
+        definition.authority_snapshot
+        if definition
+        else (
+            json.loads(version.authority_snapshot_json) if version.authority_snapshot_json else {}
+        )
+    )
     return AutomationRecord(
         id=row.id,
-        version_id=version_id,
+        version_id=version.id,
         claimed_by=row.claimed_by,
         creator_kind=row.creator_kind,
         creator_user_id=row.creator_user_id,
         bot_user_id=row.bot_user_id,
-        name=row.name,
+        name=script.get("name") or f"自动化 #{row.id}",
         status=AutomationStatus(row.status),
-        timezone=row.timezone,
-        script=definition.script if definition is not None else json.loads(row.script_json),
-        schedule=definition.task.trigger
-        if definition is not None
-        else TypeAdapter(Schedule).validate_json(row.schedule_json),
-        script_hash=row.script_hash,
-        authority_snapshot=definition.authority_snapshot
-        if definition is not None
-        else json.loads(row.authority_snapshot_json),
+        timezone=task_timezone(script),
+        script=script,
+        schedule=definition.task.trigger if definition else schedule_from_script(script),
+        script_hash=version.script_hash,
+        authority_snapshot=scene,
         created_from_message_id=row.created_from_message_id,
         next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
         last_run_at=_aware_utc(row.last_run_at) if row.last_run_at else None,
         run_count=row.run_count,
         max_runs=row.max_runs,
-        consecutive_failures=row.consecutive_failures,
+        creation_max_runs=row.creation_max_runs,
         created_at=_aware_utc(row.created_at),
         updated_at=_aware_utc(row.updated_at),
         canonical_creator_person_id=row.canonical_creator_person_id,
-        canonical_target_person_id=row.canonical_target_person_id,
-        canonical_target_space_id=row.canonical_target_space_id,
-        canonical_presence_id=row.canonical_presence_id,
+        canonical_presence_id=version.canonical_presence_id,
+        canonical_conversation_id=scene.get("canonical_conversation_id"),
+        source_event_id=row.source_event_id,
     )
 
 
-def _directory_statement(*, include_script: bool = False) -> Any:
-    columns = (
-        [AutomationModel]
-        if include_script
-        else [getattr(AutomationModel, field) for field in AutomationDirectoryRecord.model_fields]
-    )
-    return select(
-        *columns,
-        CanonicalPersonModel.display_name,
-        person_root_id(AutomationModel.canonical_creator_person_id),
-    ).outerjoin(
-        CanonicalPersonModel,
-        CanonicalPersonModel.id == person_root_id(AutomationModel.canonical_creator_person_id),
-    )
-
-
-def _automation_directory_entry(
-    row: Any, *, include_script: bool = False
-) -> AutomationDirectoryEntry:
-    record = (
-        _automation_record(row[0])
-        if include_script
-        else AutomationDirectoryRecord(
-            **{
-                field: getattr(row, field)
-                for field in AutomationDirectoryRecord.model_fields
-                if field != "next_run_at"
-            },
-            next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
+def _directory_statement() -> Any:
+    return (
+        select(
+            AutomationModel,
+            func.json_extract(AutomationVersionModel.script_json, "$.name").label("name"),
+            CanonicalPersonModel.display_name,
+            person_root_id(AutomationModel.canonical_creator_person_id),
+        )
+        .join(AutomationVersionModel, _latest_version_clause())
+        .outerjoin(
+            CanonicalPersonModel,
+            CanonicalPersonModel.id == person_root_id(AutomationModel.canonical_creator_person_id),
         )
     )
-    display_name = row[-2]
+
+
+def _automation_directory_entry(row: Any) -> AutomationDirectoryEntry:
+    owner = row[0]
+    record = AutomationDirectoryRecord(
+        id=owner.id,
+        creator_kind=owner.creator_kind,
+        creator_user_id=owner.creator_user_id,
+        canonical_creator_person_id=owner.canonical_creator_person_id,
+        name=row.name or f"自动化 #{owner.id}",
+        status=AutomationStatus(owner.status),
+        timezone="Asia/Shanghai",
+        next_run_at=_aware_utc(owner.next_run_at) if owner.next_run_at else None,
+    )
     return AutomationDirectoryEntry(
         record=record,
         creator=AutomationCreatorIdentity(
             person_id=row[-1],
-            external_account_id=record.creator_user_id,
-            display_name="SELF" if record.creator_kind == "self" else display_name or None,
-            kind=record.creator_kind,
+            external_account_id=owner.creator_user_id,
+            display_name="SELF" if owner.creator_kind == "self" else row[-2] or None,
+            kind=owner.creator_kind,
         ),
     )
 
 
-def _run_record(row: AutomationRunModel) -> AutomationRunRecord:
+def _run_record(
+    row: AutomationRunModel, *, definition: dict[str, Any] | None = None
+) -> AutomationRunRecord:
     return AutomationRunRecord(
         id=row.id,
         version_id=row.version_id,
@@ -1271,6 +1153,7 @@ def _run_record(row: AutomationRunModel) -> AutomationRunRecord:
         messages_sent=row.messages_sent,
         error_category=row.error_category,
         result_summary=json.loads(row.result_summary_json or "{}"),
+        definition=definition,
     )
 
 

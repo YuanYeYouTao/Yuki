@@ -12,7 +12,6 @@ from tests.unit.test_memory_mutation import _event, _service
 
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.models import AdminActor
-from yuki.automation.models import TurnOrigin
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.llm.fake import FakeLLMProvider
@@ -20,6 +19,7 @@ from yuki.memory.mutation.models import MemoryMutationRequestBasis
 from yuki.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.plugin_host.facades import HostPluginContext
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission

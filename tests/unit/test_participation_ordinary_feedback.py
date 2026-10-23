@@ -60,7 +60,6 @@ async def ordinary_backend(database, content, *, callback=None):
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="ordinary-sparse-feedback",
         current_group_id="20001",
         bot_user_id="80001",

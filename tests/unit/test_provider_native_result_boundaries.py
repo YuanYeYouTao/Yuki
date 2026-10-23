@@ -329,7 +329,7 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
     database, tmp_path, monkeypatch, native_event, checkpoint_failure
 ):
     """An unused declaration permits empty final; a live native call remains real."""
-    case = await setup_run(database, tmp_path, delivery="current_group")
+    case = await setup_run(database, tmp_path, recipient="group")
     chat = _native_caller(case, monkeypatch)
     original_run = chat.runtime.main_turns.run
     caller = []
@@ -452,7 +452,7 @@ async def test_caller_send_then_complete_result_ends_without_third_request(
     database, tmp_path, monkeypatch
 ):
     """send -> complete(result): the accepted completion ends the activation."""
-    case = await setup_run(database, tmp_path, delivery="current_group")
+    case = await setup_run(database, tmp_path, recipient="group")
     chat = _native_caller(case, monkeypatch)
     outputs = [
         native_response(
@@ -911,7 +911,6 @@ async def test_runner_preserves_paid_native_boundary_without_requeue_or_local_ex
             origin=TurnOrigin.USER_MESSAGE,
             actor_user_id="1001",
             actor_is_superuser=False,
-            delegated_authority=None,
             conversation_key="native-boundary",
             current_group_id=None,
             bot_user_id="9999",
@@ -1105,7 +1104,6 @@ async def test_native_transport_unknown_fails_original_activation_without_automa
             origin=TurnOrigin.USER_MESSAGE,
             actor_user_id="1001",
             actor_is_superuser=False,
-            delegated_authority=None,
             conversation_key="native-transport",
             current_group_id=None,
             bot_user_id="9999",

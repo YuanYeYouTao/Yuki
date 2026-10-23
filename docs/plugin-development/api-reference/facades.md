@@ -45,12 +45,12 @@ memory.delete(memory_id) -> PluginResult
 
 ```
 
-`memory.search()` 在 Plugin API 7.0 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
+`memory.search()` 在 Plugin API 8.0 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
 真实人物或群，随后 FTS 与可选 Embedding 都只在该 SQL 硬过滤范围内召回，并由确定性 RRF
 融合。插件不能选择 Provider/profile、获取原始向量、提交 FTS 语法、通过关键词改变
 `subject_id`，也不会在无匹配时回退加载全部事实。返回记录只包含有界的
 `retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。Embedding 关闭或故障时
-自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `7.0`。
+自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `8.0`。
 
 返回记录的 `user_id` / `subject_user_id` 表示内部 Person，`group_id` 表示内部 Space；
 不适用的主体字段为 `None`。这些值可以直接交回同一授权范围的 `list_person()`、
@@ -80,7 +80,7 @@ SDK Fake 现在使用相同的 `person:<int>` / 结果 shape；修正创建新 I
 superseded，不原地改写旧正文；`memory.delete()` 会以
 `plugin_explicit_invalidation` 将事实标记为 invalidated，不物理删除事实、证据或状态历史。
 插件不能设置 authority、status、conflict_state、supersedes_id，也不能跨人物/群合并或解决
-冲突。这些写入语义保留在当前 Plugin API 7.0 中，不代表 Host 兼容旧 1.x 插件。
+冲突。这些写入语义保留在当前 Plugin API 8.0 中，不代表 Host 兼容旧 1.x 插件。
 
 Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list_person`、`list_group`、
 `search`、`add`、`update`、`delete`。插件不能访问原始向量、历史 rebuild、质量 fixture、全局
@@ -151,14 +151,17 @@ Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的 
 
 ```python
 automation.list_current_owner() -> tuple[Mapping, ...]
-automation.create_task(task: Mapping[str, JsonValue], *, request_id: str) -> PluginResult
-automation.update_task(task_id, task: Mapping[str, JsonValue]) -> PluginResult
+automation.create_task(task: Mapping[str, JsonValue], *, request_id: str, max_runs: int | None = None) -> PluginResult
+automation.update_task(task_id, task: Mapping[str, JsonValue], *, max_runs=...) -> PluginResult
 automation.pause(task_id) -> PluginResult
 automation.resume(task_id) -> PluginResult
 automation.cancel(task_id) -> PluginResult
 ```
 
-task 使用共同 Main 安排定义：name、goal、trigger、timezone、constraints 和 delivery.target。
+task 只要求完整 goal 和 trigger，可选公开 name；不再传 version、constraints、delivery 或 task 级 timezone。
+max_runs 位于调用参数，create 缺省/null 不限；update 缺省保留、null 解除、正整数修改。
+name 在 create 缺省/null 为中性名称，update 缺省保留/null 清除。返回 data.automation，task_id 是整数型字符串。
+完整时间、幂等和迁移说明见[定时安排](../automation.md)。
 Facade 复用 Host 原 actor 与会话，SELF 不需要制造真人入站消息。
 
 ## Config / Secret / Storage

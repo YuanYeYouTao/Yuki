@@ -1,4 +1,6 @@
-# Plugin API 7.0 迁移
+# Plugin API 7.0 历史迁移
+
+> 本页保留 7.0 历史变更；当前合同见 [Plugin API 8.0](api-8.0-migration.md)。
 
 Host 只加载精确声明 `plugin_api = "7.0"` 的插件。独立会话的公开 feature 为 `plugin.agent_session.v2`；其他能力和真实批准权限不变。
 

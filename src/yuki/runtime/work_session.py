@@ -528,7 +528,7 @@ class WorkSession:
         return (tool_result_evidence(assistant, results, call_key=self.call_key),)
 
     async def _append_business_material(self) -> None:
-        """Current task requirements and receipts, never its creation-time chat."""
+        """Private requirements and receipts; runtime_context supplies the current goal."""
         assert self.control.current is not None and self.transcript is not None
         from yuki.runtime.work_context_note import visible_context_note
 
@@ -561,7 +561,6 @@ class WorkSession:
                     {
                         "kind": "work_current_material",
                         "work_id": self.control.current["id"],
-                        "goal": self.control.current["goal"],
                         "task_material": material,
                         "original_inputs": task_inputs,
                         "original_request": original_request if needs_original else None,

@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from types import EllipsisType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import UUID
 
@@ -29,8 +30,7 @@ from yuki.adapters.onebot.sender import parse_onebot_send_receipt
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.control_resolution import ControlAccess
 from yuki.admin.models import ControlAuditRef, RuntimeConfigSnapshot
-from yuki.automation.authority import DelegatedAuthority
-from yuki.automation.models import AutomationRecord, TurnOrigin
+from yuki.automation.models import AutomationRecord
 from yuki.automation.service import AutomationService
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.scope import runtime_conversation_key
@@ -82,6 +82,7 @@ from yuki.plugin_host.ownership import PluginOwnershipError
 from yuki.plugin_host.secrets import BoundSecretsFacade
 from yuki.plugin_host.session_facade import BoundAgentSessionFacade
 from yuki.plugin_host.storage import BoundStorageFacade
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
 from yuki.services.agent_runner import (
     AgentRunner,
@@ -278,7 +279,6 @@ class PluginInvocation:
     inbound: InboundMessage | None = field(default=None, repr=False)
     gateway: OneBotFacadeGateway | None = field(default=None, repr=False)
     runtime_config: RuntimeConfigSnapshot | None = field(default=None, repr=False)
-    delegated_authority: DelegatedAuthority | None = field(default=None, repr=False)
     source_event_id: int | None = None
     legacy_conversation_key: str | None = None
     person_id: str | None = None
@@ -339,8 +339,6 @@ class PluginInvocation:
             return self.actor.group_id
         if self.inbound is not None:
             return self.inbound.group_id
-        if self.delegated_authority is not None:
-            return self.delegated_authority.current_group_id
         return None
 
     @property
@@ -648,10 +646,6 @@ class HostPluginContext:
             runtime_config=cast(
                 RuntimeConfigSnapshot | None,
                 getattr(runtime, "runtime_config", None),
-            ),
-            delegated_authority=cast(
-                DelegatedAuthority | None,
-                getattr(runtime, "delegated_authority", None),
             ),
         )
         return self.bind(invocation)
@@ -1909,6 +1903,7 @@ class _AutomationFacade:
         task: Mapping[str, JsonValue],
         *,
         request_id: str,
+        max_runs: int | None = None,
     ) -> PluginResult:
         invocation = self._host._require(
             PluginPermission.AUTOMATION_MANAGE_SELF,
@@ -1929,10 +1924,17 @@ class _AutomationFacade:
             actor=actor,
             conversation_key=invocation.conversation_key,
             creation_source_key=identity,
+            max_runs=max_runs,
         )
         return PluginResult(data={"automation": _automation_record(row)})
 
-    async def update_task(self, task_id: str, task: Mapping[str, JsonValue]) -> PluginResult:
+    async def update_task(
+        self,
+        task_id: str,
+        task: Mapping[str, JsonValue],
+        *,
+        max_runs: int | None | EllipsisType = ...,
+    ) -> PluginResult:
         invocation = self._host._require(PluginPermission.AUTOMATION_MANAGE_SELF, mutation=True)
         assert invocation is not None
         service = _require_service(self._host._services.automation, "automation")
@@ -1941,6 +1943,7 @@ class _AutomationFacade:
             dict(task),
             actor=_invocation_actor(invocation),
             conversation_key=invocation.conversation_key,
+            **({"max_runs": max_runs} if max_runs is not ... else {}),
         )
         return PluginResult(data={"automation": _automation_record(row)})
 
@@ -2420,7 +2423,6 @@ async def _agent_dependencies(
         origin=TurnOrigin.PLUGIN_SESSION,
         actor_user_id=invocation.actor_user_id,
         actor_is_superuser=await host._is_real_superuser(invocation),
-        delegated_authority=invocation.delegated_authority,
         conversation_key=invocation.conversation_key,
         current_group_id=invocation.current_group_id,
         bot_user_id=invocation.bot_user_id,
@@ -3044,6 +3046,7 @@ def _automation_record(row: AutomationRecord) -> dict[str, JsonValue]:
         "next_run_at": row.next_run_at.isoformat() if row.next_run_at else None,
         "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
         "run_count": row.run_count,
+        "max_runs": row.max_runs,
     }
 
 

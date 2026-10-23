@@ -15,12 +15,12 @@ from yuki.runtime.work_schema_v1 import work
 from yuki.social.db_models import SocialOperationModel
 
 
-@pytest.mark.parametrize("delivery", ["current_group", "self_private", "none"])
+@pytest.mark.parametrize("recipient", ["group", "person"])
 @pytest.mark.parametrize("accept_work", [False, True])
 async def test_person_notification_uses_real_target_and_only_explicit_send(
-    database, tmp_path, delivery, accept_work
+    database, tmp_path, recipient, accept_work
 ):
-    case = await setup_run(database, tmp_path, delivery=delivery, mode="silent")
+    case = await setup_run(database, tmp_path, recipient=recipient, mode="silent")
     text = "PUBLIC_EXPLICIT_SEND"
 
     def respond(request):
@@ -34,11 +34,9 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
                     )
                 )
             arguments = {"text": text}
-            if delivery == "self_private":
+            if recipient == "person":
                 arguments["target"] = {"kind": "person", "target_id": case.env.person}
-            calls.append(
-                ToolCall("explicit-send", ToolFunction("send", json.dumps(arguments)))
-            )
+            calls.append(ToolCall("explicit-send", ToolFunction("send", json.dumps(arguments))))
             return ChatResponse("", 0, tool_calls=tuple(calls))
         if accept_work:
             return ChatResponse(
@@ -64,7 +62,7 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
     assert "PUBLIC_EXPLICIT_SEND" in str(sent(case.env))
     assert "INTERNAL_FINAL" not in str(sent(case.env))
     assert [action for action, _ in case.env.bot.calls if action.startswith("send_")] == [
-        "send_private_msg" if delivery == "self_private" else "send_group_msg"
+        "send_private_msg" if recipient == "person" else "send_group_msg"
     ]
     async with database.read_session() as reader:
         rows = list((await reader.execute(select(work))).mappings())
@@ -95,9 +93,7 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
 async def test_quiet_internal_completion_needs_no_work_or_transport(
     database, tmp_path, work_enabled
 ):
-    case = await setup_run(
-        database, tmp_path, delivery="none", mode="silent", work_enabled=work_enabled
-    )
+    case = await setup_run(database, tmp_path, mode="silent", work_enabled=work_enabled)
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED and result.llm_calls == 1
@@ -182,7 +178,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
     database, tmp_path
 ):
     text = "完整提醒原文：" + "A" * 13000 + "PRIVATE_BODY_TAIL"
-    case = await setup_run(database, tmp_path, delivery="self_private", mode="silent", goal=text)
+    case = await setup_run(database, tmp_path, recipient="person", mode="silent", goal=text)
     await seed_scoped_event(
         case.env.service.writer,
         scope=ConversationScope.private("80001", "10001"),

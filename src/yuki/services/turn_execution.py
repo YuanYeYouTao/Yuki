@@ -19,7 +19,6 @@ from yuki.agent_core import (
     run_agent_loop,
 )
 from yuki.agent_core.model_boundary import LoopSignal
-from yuki.automation.models import TurnOrigin
 from yuki.capabilities.coordinator import (
     CoordinatedToolResult,
 )
@@ -51,6 +50,7 @@ from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.executor import PreparedModelInput
 from yuki.model_runtime.models import ModelCapability, ModelExecutionPriority
 from yuki.runtime.execution_receipts import current_receipts
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WorkControl, WorkInputsPreparing
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.agent_runner import (
@@ -863,6 +863,8 @@ class TurnExecution:
             replace(message, content="\n\n" + (message.content or "") + "\n\n") for message in host
         )
         state = await control.runtime_state() if control is not None else {}
+        if self.runtime.activation_context is not None:
+            state.update(self.runtime.activation_context())
         participation = await self._participation_context(0)
         if participation:
             state["participation"] = participation

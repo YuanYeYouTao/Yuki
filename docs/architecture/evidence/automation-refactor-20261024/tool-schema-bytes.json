@@ -1,0 +1,14 @@
+{
+  "old": {
+    "automation_query": 2813,
+    "automation_manage": 3116,
+    "time_get_current": 192,
+    "total": 6121
+  },
+  "new": {
+    "automation_query": 1018,
+    "automation_manage": 3676,
+    "time_get_current": 192,
+    "total": 4886
+  }
+}

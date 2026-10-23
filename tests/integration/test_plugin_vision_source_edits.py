@@ -13,10 +13,10 @@ from tests.support.native_media_cases import (
 )
 from tests.support.native_media_cases import native_media_env as native_media_env
 
-from yuki.automation.models import TurnOrigin
 from yuki.gateway.providers.telegram_ingress import normalize_message
 from yuki.persistence.media_repository import MediaAnalysisRepository
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolver
 from yuki.services.vision_rate_limit import VisionRateLimiter

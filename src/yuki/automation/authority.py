@@ -6,7 +6,7 @@ from enum import StrEnum
 
 from pydantic import ConfigDict, model_validator
 
-from yuki.automation.models import StrictModel, TurnOrigin
+from yuki.automation.models import StrictModel
 from yuki_plugin_sdk.models import PermissionLevel as SdkPermissionLevel
 
 
@@ -16,15 +16,11 @@ class PermissionLevel(StrEnum):
     SELF = "self"
 
 
-class DelegatedAuthority(StrictModel):
+class AutomationScene(StrictModel):
     creator_user_id: str
     bot_user_id: str
     created_from_message_id: str
-    created_at: str
-    permission_level: PermissionLevel
     model_config = ConfigDict(extra="ignore", frozen=True)
-    authority_version: int = 1
-    origin: TurnOrigin = TurnOrigin.SCHEDULED_AUTOMATION
     current_group_id: str | None = None
     principal_kind: str = "person"
     canonical_creator_person_id: str | None = None
@@ -34,11 +30,10 @@ class DelegatedAuthority(StrictModel):
     canonical_space_id: str | None = None
 
     @model_validator(mode="after")
-    def _valid_principal(self) -> DelegatedAuthority:
+    def _valid_principal(self) -> AutomationScene:
         if self.principal_kind == "self":
             if (
-                self.permission_level is not PermissionLevel.SELF
-                or self.creator_user_id
+                self.creator_user_id
                 or self.created_from_message_id
                 or not self.current_group_id
                 or not self.canonical_conversation_id
@@ -47,7 +42,7 @@ class DelegatedAuthority(StrictModel):
                 or not self.canonical_space_id
             ):
                 raise ValueError("invalid_self_automation_authority")
-        elif self.principal_kind != "person" or self.permission_level is PermissionLevel.SELF:
+        elif self.principal_kind != "person":
             raise ValueError("invalid_person_automation_authority")
         return self
 

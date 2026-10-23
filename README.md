@@ -122,7 +122,7 @@ uv run pytest
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | 人物、账号、空间和会话 |
 | [飞书与 Lark 接入](docs/operations/feishu.zh-CN.md) | 自建应用、群消息权限、长连接和媒体 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话和执行上下文整理 |
-| [Plugin API 7.1](docs/plugin-development/index.md) | 插件开发与 SDK |
+| [Plugin API 8.0](docs/plugin-development/index.md) | 插件开发与 SDK |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答和恢复 |
 | [CHANGELOG](CHANGELOG.md) | 历史版本变化 |
 

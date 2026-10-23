@@ -80,43 +80,39 @@ async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[s
             generation = await bump_canonical_generation(
                 session, conversation_id, event_id=floor, force=True
             )
+            from yuki.automation.repository import _latest_version_clause
+
             automations = (
-                await session.scalars(
-                    select(AutomationModel).where(
+                await session.execute(
+                    select(AutomationModel, AutomationVersionModel)
+                    .join(AutomationVersionModel, _latest_version_clause())
+                    .where(
                         AutomationModel.creator_kind == "self",
                         AutomationModel.status.in_(("active", "paused")),
+                        AutomationModel.canonical_conversation_id == conversation_id,
                         func.json_extract(
-                            AutomationModel.authority_snapshot_json, "$.canonical_conversation_id"
-                        )
-                        == conversation_id,
-                        func.json_extract(
-                            AutomationModel.authority_snapshot_json, "$.conversation_generation"
+                            AutomationVersionModel.authority_snapshot_json,
+                            "$.conversation_generation",
                         )
                         == prior,
                     )
                 )
             ).all()
-            for automation in automations:
-                authority = json.loads(automation.authority_snapshot_json)
+            for automation, version in automations:
+                authority = json.loads(version.authority_snapshot_json)
                 authority["conversation_generation"] = generation
-                automation.authority_snapshot_json = json.dumps(
-                    authority, ensure_ascii=False, separators=(",", ":")
-                )
-                version = await session.scalar(
-                    select(func.max(AutomationVersionModel.version)).where(
-                        AutomationVersionModel.automation_id == automation.id
-                    )
-                )
                 session.add(
                     AutomationVersionModel(
                         automation_id=automation.id,
-                        version=int(version or 0) + 1,
-                        script_json=automation.script_json,
-                        script_hash=automation.script_hash,
-                        authority_snapshot_json=automation.authority_snapshot_json,
-                        canonical_target_person_id=automation.canonical_target_person_id,
-                        canonical_target_space_id=automation.canonical_target_space_id,
-                        canonical_presence_id=automation.canonical_presence_id,
+                        version=version.version + 1,
+                        script_json=version.script_json,
+                        script_hash=version.script_hash,
+                        authority_snapshot_json=json.dumps(
+                            authority, ensure_ascii=False, separators=(",", ":")
+                        ),
+                        canonical_target_person_id=version.canonical_target_person_id,
+                        canonical_target_space_id=version.canonical_target_space_id,
+                        canonical_presence_id=version.canonical_presence_id,
                         updated_by="system:canonical_generation_reset",
                         created_at=datetime.now(UTC),
                     )

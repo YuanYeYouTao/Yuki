@@ -29,7 +29,7 @@ UPDATED_GOAL = "Check original scheduled history"
 async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     database, tmp_path, principal, monkeypatch
 ):
-    case = await setup_run(database, tmp_path, delivery="none", principal=principal)
+    case = await setup_run(database, tmp_path, principal=principal)
     case.chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "artifacts", retention_seconds=60, max_artifact_bytes=100000
     )
@@ -45,6 +45,17 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
         ):
             worker_requests += 1
             if worker_requests == 1:
+                block = next(
+                    message.content
+                    for message in request.messages
+                    if "<runtime_context>\n" in (message.content or "")
+                )
+                facts = json.loads(
+                    block.split("<runtime_context>\n", 1)[1].split("\n</runtime_context>", 1)[0]
+                )
+                assert facts["origin"] == "scheduled_automation"
+                assert facts["automation_id"] == case.row.id and facts["run_id"] == case.run.id
+                assert facts["creator"]["kind"] == principal
                 return ChatResponse(
                     "",
                     0,
@@ -645,7 +656,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     from yuki.runtime.work_budget_schema import budgets
     from yuki.runtime.work_scheduler import WorkScheduler
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent", privileged=True)
+    case = await setup_run(database, tmp_path, mode="silent", privileged=True)
     settings = case.settings
     assert await case.env.router.cas_takeover_person(case.env.person) == "taken"
 

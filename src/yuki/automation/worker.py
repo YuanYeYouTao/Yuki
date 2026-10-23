@@ -202,7 +202,6 @@ class AutomationWorker:
                 await self._repository.finish_run(
                     run.id,
                     status=RunStatus.BLOCKED,
-                    steps_completed=0,
                     llm_calls=0,
                     tool_calls=0,
                     messages_sent=0,
@@ -309,6 +308,9 @@ class AutomationWorker:
                             space_id=recovered.target_space_id,
                             external_target_id=recovered.external_target_id,
                             sandbox_source=source,
+                            activation_context=lambda: recovered.activation_context(
+                                self._time.clock.now()
+                            ),
                         ),
                     )
                 if control.current is not None:
@@ -318,12 +320,14 @@ class AutomationWorker:
                     await self._repository.finish_run(
                         run.id,
                         status=RunStatus.FAILED if failure else RunStatus.SUCCEEDED,
-                        steps_completed=0,
                         llm_calls=result.model_requests,
                         tool_calls=result.tool_calls_used,
                         messages_sent=result.messages_sent,
                         error_category=failure.code if failure else None,
-                        summary={"result": result.text},
+                        summary={
+                            "result": result.text,
+                            "messages_sent_semantics": "social_successful_parts",
+                        },
                         finished_at=self._time.clock.now(),
                     )
             finally:

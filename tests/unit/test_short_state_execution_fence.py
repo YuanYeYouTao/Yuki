@@ -47,7 +47,6 @@ async def test_short_state_cannot_write_under_obsolete_or_closed_execution(
         origin=actor.origin,
         actor_user_id=actor.user_id,
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key=tools.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,

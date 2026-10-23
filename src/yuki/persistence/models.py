@@ -1621,29 +1621,18 @@ class AutomationModel(Base):
             name="ck_automations_status",
         ),
         CheckConstraint("run_count >= 0", name="ck_automations_run_count"),
-        CheckConstraint("consecutive_failures >= 0", name="ck_automations_consecutive_failures"),
         CheckConstraint(
             "((creator_kind = 'person' AND (canonical_creator_person_id IS NOT NULL OR "
             "status IN ('completed', 'cancelled', 'failed', 'blocked'))) OR "
             "(creator_kind = 'self' AND canonical_creator_person_id IS NULL "
-            "AND creator_user_id = '' AND created_from_message_id = '' "
-            "AND canonical_target_person_id IS NULL)) AND "
-            "((status IN ('active', 'paused') "
-            "AND ((canonical_target_person_id IS NOT NULL "
-            "AND canonical_target_space_id IS NULL) OR "
-            "(canonical_target_person_id IS NULL "
-            "AND canonical_target_space_id IS NOT NULL))) OR "
-            "(status IN ('completed', 'cancelled', 'failed', 'blocked') "
-            "AND NOT (canonical_target_person_id IS NOT NULL "
-            "AND canonical_target_space_id IS NOT NULL)))",
+            "AND creator_user_id = '' AND created_from_message_id = ''))",
             name="ck_automations_canonical_owner",
         ),
         Index("ix_automations_status_next", "status", "next_run_at"),
         Index("ix_automations_creator_updated", "creator_user_id", "updated_at"),
         Index("ix_automations_claim", "claimed_until", "claimed_by"),
         Index("ix_automations_canonical_creator_person_id", "canonical_creator_person_id"),
-        Index("ix_automations_canonical_target_person_id", "canonical_target_person_id"),
-        Index("ix_automations_canonical_target_space_id", "canonical_target_space_id"),
+        Index("ix_automations_canonical_conversation_id", "canonical_conversation_id"),
         Index("ix_automations_canonical_presence_id", "canonical_presence_id"),
         Index(
             "uq_automation_creation_call",
@@ -1666,21 +1655,14 @@ class AutomationModel(Base):
     )
     creator_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    schedule_json: Mapped[str] = mapped_column(Text, nullable=False)
-    script_json: Mapped[str] = mapped_column(Text, nullable=False)
-    script_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    required_capabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
-    authority_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_from_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
     creation_source_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     run_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    creation_max_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -1690,16 +1672,10 @@ class AutomationModel(Base):
         ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
-    canonical_target_person_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), nullable=True
     )
-    canonical_target_space_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )
+    source_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
@@ -1743,7 +1719,9 @@ class AutomationVersionModel(Base):
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT")
     )
-    updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_by: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     automation: Mapped[AutomationModel] = relationship(back_populates="versions")
