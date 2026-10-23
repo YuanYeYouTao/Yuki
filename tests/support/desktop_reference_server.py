@@ -9,6 +9,53 @@ from uuid import uuid4
 from tests.support.soul_reference_server import serve
 
 
+def load_real_models(source: Path):
+    """Read only the selected model catalog and credentials, never its runtime database."""
+    import tomllib
+
+    import tomlkit
+    from dotenv import dotenv_values
+
+    from yuki.model_runtime.models import ModelTask
+    from yuki.model_runtime.pool import ModelClientPool
+    from yuki.model_runtime.profiles import parse_model_profile_catalog
+    from yuki.web.models import WebMode
+
+    environment = {
+        key: value for key, value in dotenv_values(source / ".env").items() if value is not None
+    }
+    path = Path(environment.get("MODEL_PROFILES_FILE", "webui-config/model_profiles.toml"))
+    if not path.is_absolute():
+        path = source / path
+    # This opt-in acceptance uses one explicitly selected real Main connection;
+    # no maintenance workers run and no old deployment routes are imported.
+    document = tomllib.loads(path.read_text("utf-8"))
+    main_id = document["routes"]["chat_agent"]
+    document["profiles"] = {main_id: document["profiles"][main_id]}
+    document["routes"] = {task.value: main_id for task in ModelTask}
+    document.pop("search_backend", None)
+    document.pop("search_connection", None)
+    for profile in document["profiles"].values():
+        profile["capabilities"] = [
+            capability
+            for capability in profile.get("capabilities", [])
+            if capability != "native_web_search"
+        ]
+        profile.pop("search_mode", None)
+        profile.pop("search_connection", None)
+    catalog = parse_model_profile_catalog(
+        tomlkit.dumps(document),
+        environment=environment,
+        web_mode=WebMode.DISABLED,
+    )
+    credentials = {
+        profile.api_key_env: environment[profile.api_key_env]
+        for profile in catalog.profiles.values()
+        if profile.api_key_env and profile.api_key_env in environment
+    }
+    return catalog, ModelClientPool(secret_overrides=credentials)
+
+
 class ControlledASR:
     """Replace only the paid provider; resolution, decoding and persistence stay real."""
 
@@ -169,6 +216,7 @@ def main() -> None:
     parser.add_argument("--state-file", required=True, type=Path)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--base-path", default="/role/test")
+    parser.add_argument("--real-model-source", type=Path)
     args = parser.parse_args()
     root, state = args.root.resolve(), args.state_file.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -178,7 +226,16 @@ def main() -> None:
     soul.parent.mkdir(parents=True, exist_ok=True)
     if not soul.exists():
         soul.write_text("你是 {{name}}。\n", encoding="utf-8")
-    asyncio.run(serve(root, state, args.port, args.base_path.rstrip("/"), desktop=True))
+    asyncio.run(
+        serve(
+            root,
+            state,
+            args.port,
+            args.base_path.rstrip("/"),
+            desktop=True,
+            real_model_source=args.real_model_source.resolve() if args.real_model_source else None,
+        )
+    )
 
 
 if __name__ == "__main__":

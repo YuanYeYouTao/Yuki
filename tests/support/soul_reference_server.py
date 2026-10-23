@@ -29,7 +29,13 @@ from yuki.persistence.database import Database
 
 
 async def serve(
-    root: Path, state_file: Path, port: int, base_path: str, *, desktop: bool = False
+    root: Path,
+    state_file: Path,
+    port: int,
+    base_path: str,
+    *,
+    desktop: bool = False,
+    real_model_source: Path | None = None,
 ) -> None:
     soul_file = root / "character" / "SOUL.md"
     database = Database(f"sqlite+aiosqlite:///{(root / 'yuki.sqlite3').as_posix()}")
@@ -45,7 +51,8 @@ async def serve(
             social_transfer_directory=root / "transfer",
             runtime_work_enabled=True,
             telegram_bot_token="",
-            asr_enabled=desktop,
+            asr_enabled=desktop and real_model_source is None,
+            web_mode="disabled" if real_model_source is not None else "native",
         ),
         database=database,
     )
@@ -73,7 +80,7 @@ async def serve(
         nonowner_code = await issue_code(nonowner_id)
         work_model_gate = asyncio.Event()
         work_model_gate.set()
-        if desktop:
+        if desktop and real_model_source is None:
             from tests.support.desktop_reference_server import ControlledASR
 
             asr_provider = ControlledASR()
@@ -141,12 +148,17 @@ async def serve(
                 _catalog(_profile()),
                 ModelClientPool(injected_profiles={"main": DesktopModel(respond)}),
             )
+        elif real_model_source is not None:
+            from tests.support.desktop_reference_server import load_real_models
+
+            catalog, pool = load_real_models(real_model_source)
+            runtime.models.apply_catalog(catalog, pool)
         await runtime.model_invocations.writer.start()
         await runtime.app_gateway.start()
         await runtime._freeze_main_manifest()
         await runtime.work_scheduler.start()
         artifact_state = {}
-        if desktop:
+        if desktop and real_model_source is None:
             from tests.support.desktop_reference_server import publish_artifact
 
             artifact_state = await publish_artifact(runtime, await issue_code(owner_id))
@@ -158,7 +170,7 @@ async def serve(
 
             attach_external_agent_api(api, lambda: runtime.external_agents)
 
-        if desktop:
+        if desktop and real_model_source is None:
             from types import SimpleNamespace
 
             qq_bot = SimpleNamespace(self_id="8000")
@@ -197,7 +209,7 @@ async def serve(
 
                 return await seed_work(runtime, artifact_state)
 
-        if desktop:
+        if desktop and real_model_source is None:
 
             @api.post("/__test/hold-work")
             async def hold_work_model() -> dict:
@@ -256,7 +268,13 @@ async def serve(
                     **artifact_state,
                 }
                 await asyncio.to_thread(state_file.write_text, json.dumps(state), encoding="utf-8")
-                print(json.dumps(state), flush=True)
+                if real_model_source is None:
+                    print(json.dumps(state), flush=True)
+                else:
+                    print(
+                        "Isolated real-model backend ready; connection details in state file.",
+                        flush=True,
+                    )
                 await serving
     finally:
         try:
