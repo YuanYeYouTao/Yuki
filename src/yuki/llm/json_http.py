@@ -49,6 +49,7 @@ class JSONHTTPProvider(LLMProvider):
         *,
         base_url: str,
         api_key: str,
+        api_key_env: str | None = None,
         timeout_seconds: float,
         max_retries: int,
         client: httpx.AsyncClient | None = None,
@@ -58,6 +59,7 @@ class JSONHTTPProvider(LLMProvider):
         if provider_name is not None:
             self.provider_name = provider_name
         self._api_key = api_key
+        self._api_key_env = api_key_env
         self._max_retries = max_retries
         self._headers = dict(headers or {})
         self._owns_client = client is None
@@ -80,7 +82,10 @@ class JSONHTTPProvider(LLMProvider):
         return "chat/completions"
 
     def _request_headers(self) -> dict[str, str]:
-        return {**self._headers, "Authorization": f"Bearer {self._api_key}"}
+        return {
+            **self._headers,
+            **({"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}),
+        }
 
     @staticmethod
     def _usage_diagnostics(payload: dict[str, Any]) -> dict[str, object]:
@@ -191,7 +196,7 @@ class JSONHTTPProvider(LLMProvider):
 
         from yuki.runtime.work_activation import current_work_control
 
-        if not self._api_key or not request.model:
+        if not request.model or (self._api_key_env != "" and not self._api_key):
             raise LLMConfigurationError("LLM is not configured")
         started = time.perf_counter()
         # Provider-executed tools have no local receipt for uncertain transport outcomes.

@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -122,14 +123,23 @@ def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str
     if environment.get("CONTROL_OPERATORS_FILE", "").strip():
         return None
     environment["CONTROL_OPERATORS_FILE"] = "config/control-operators.toml"
-    if (paths.root / environment["CONTROL_OPERATORS_FILE"]).is_file():
-        return None
+    policy_path = paths.root / environment["CONTROL_OPERATORS_FILE"]
+    existing_policy = policy_path.is_file()
+    if existing_policy:
+        policy = tomllib.loads(policy_path.read_text(encoding="utf-8"))
+        if not any(
+            operator.get("token_env") == "YUKI_CONTROL_OPERATOR_TOKEN"
+            for operator in policy.get("operators", [])
+        ):
+            return None
     token = environment.get("YUKI_CONTROL_OPERATOR_TOKEN", "").strip()
     if not token or token.casefold().startswith("replace-with-"):
         token = secrets.token_urlsafe(32)
         environment["YUKI_CONTROL_OPERATOR_TOKEN"] = token
     if token and (not token.isascii() or not 32 <= len(token) <= 4096):
         raise SetupValidationError("YUKI_CONTROL_OPERATOR_TOKEN 必须是至少 32 字符的 ASCII 凭据")
+    if existing_policy:
+        return None
     return tomlkit.dumps(
         {
             "operators": [
@@ -265,6 +275,7 @@ def build_model_profiles(
     main_protocol: str,
     flash_enabled: bool,
     main_provider: str | None = None,
+    main_api_key_env: str = "LLM_API_KEY",
     main_search_mode: ModelSearchMode | None = None,
     environment: Mapping[str, str] | None = None,
     web_mode: WebMode = WebMode.NATIVE,
@@ -294,7 +305,7 @@ def build_model_profiles(
         f'provider = "{provider}"',
         f'protocol = "{main_protocol}"',
         'base_url_env = "LLM_BASE_URL"',
-        'api_key_env = "LLM_API_KEY"',
+        f"api_key_env = {json.dumps(main_api_key_env)}",
         'model_env = "LLM_MODEL"',
         "timeout_seconds = 120.0",
         "max_retries = 2",
@@ -365,13 +376,6 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
     environment["MODEL_PROFILES_FILE"] = str(paths.model_profiles.resolve())
     environment["YUKI_VERSION"] = __version__
     _validate_gateway_configuration(environment)
-    _validate_credentials_and_endpoints(
-        environment,
-        flash_enabled=any(
-            marker in configuration.model_profiles
-            for marker in ("[profiles.background_tasks]", "[profiles.flash]")
-        ),
-    )
     payload = _settings_payload(environment)
     try:
         settings = Settings.model_validate(payload)
@@ -414,7 +418,7 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
             ):
                 search_profiles.append(effective_search_profile(catalog, backend))
             for profile in search_profiles:
-                if not _configured_value(
+                if profile.api_key_env and not _configured_value(
                     secrets.get(profile.api_key_env, environment.get(profile.api_key_env, ""))
                 ):
                     raise SetupValidationError("独立搜索连接缺少 API Key")
@@ -424,6 +428,16 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
                 and not _configured_value(settings.tavily_api_key or "")
             ):
                 raise SetupValidationError("外部搜索需要 Tavily 密钥")
+        _validate_credentials_and_endpoints(
+            environment,
+            main_api_key_env=catalog.profiles[
+                catalog.routes[ModelTask.CHAT_AGENT].profile_id
+            ].api_key_env,
+            flash_enabled=any(
+                marker in configuration.model_profiles
+                for marker in ("[profiles.background_tasks]", "[profiles.flash]")
+            ),
+        )
     except ValueError as exc:
         raise SetupValidationError(str(exc)) from exc
     return settings
@@ -440,7 +454,7 @@ def initialize_soul(paths: SetupPaths) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-            if os.name != "nt":
+            if sys.platform != "win32":
                 os.fchmod(stream.fileno(), 0o640)
     except FileExistsError:
         return
@@ -486,6 +500,9 @@ def commit_configuration(
     )
     if existing_deployment and configuration_changed:
         targets[paths.restart_required] = b"configuration-changed\n"
+    # A first setup is runnable only after its policy and profiles are present.
+    # Keep .env last so an interrupted first install can use the same setup again.
+    targets[paths.env] = targets.pop(paths.env)
     for path in targets:
         previous.setdefault(path, path.read_bytes() if path.is_file() else None)
     backup = _create_backup(
@@ -899,8 +916,9 @@ def _validate_credentials_and_endpoints(
     environment: Mapping[str, str],
     *,
     flash_enabled: bool,
+    main_api_key_env: str,
 ) -> None:
-    required = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    required = ("LLM_BASE_URL", "LLM_MODEL", *((main_api_key_env,) if main_api_key_env else ()))
     missing = [name for name in required if not _configured_value(environment.get(name, ""))]
     if missing:
         raise SetupValidationError("基础配置本地验证失败，缺少：" + ", ".join(missing))

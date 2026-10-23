@@ -67,6 +67,27 @@ class Settings(BaseSettings):
     )
 
     admin_api_url: str = "http://127.0.0.1:8080"
+    client_public_url: str = ""
+
+    @field_validator("client_public_url")
+    @classmethod
+    def validate_client_public_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        value = value.strip().rstrip("/")
+        if value:
+            url = urlsplit(value)
+            if (
+                url.scheme not in {"http", "https"}
+                or not url.hostname
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+            ):
+                raise ValueError("CLIENT_PUBLIC_URL must be a client HTTP(S) base URL")
+        return value
+
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"

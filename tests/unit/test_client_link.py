@@ -84,6 +84,20 @@ async def test_native_bot_address_without_argument_issues_a_real_link_code(datab
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
 
 
+async def test_configured_public_url_generates_the_original_private_chat_code_link(database):
+    from urllib.parse import parse_qs, urlsplit
+
+    registry, bot, identities, person, _ = await stack(database)
+    handler = ClientLinkCommands(identities, registry, "https://public.example/role/one")
+    response = await handler.execute(bot, _message(message_id="public-link", text="/ai link"))
+    link = response.split("绑定链接：", 1)[1]
+    query = parse_qs(urlsplit(link).query)
+    assert query["server"] == ["https://public.example/role/one"]
+    assert query["code"][0] in response.splitlines()[0]
+    result = await identities.pair(query["code"][0], "desktop")
+    assert (await identities.authenticate(result["token"])).person_id == person
+
+
 @pytest.mark.parametrize("native_member", [False, True])
 def test_literal_or_other_member_address_is_not_a_link_request(native_member):
     incoming = _message(message_id="literal-link", text="@Renamed /ai link")

@@ -6,15 +6,26 @@ import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Annotated, Any
+from uuid import uuid4
 
-from fastapi import APIRouter, FastAPI, Header, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, SecretStr
+from sqlalchemy import and_, or_, select
 
+from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.http_errors import install_identity_errors
+from yuki.client_api.responses import (
+    NativeDirectory,
+    NativeOperation,
+    NativeOperations,
+    NativeSessions,
+)
+from yuki.external_agents.db_models import AgentInstanceModel, AgentOperationModel
 from yuki.external_agents.service import ExternalAgentService
 from yuki.external_agents.transport import DeviceConnection
-from yuki.identity.credentials import DeviceCredentials, DevicePrincipal
+from yuki.identity.credentials import DeviceCredentials, DevicePrincipal, require_person
+from yuki.identity.person_identity import person_family_condition
 
 
 class ConnectorPairBody(BaseModel):
@@ -44,14 +55,18 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
     async def pair(body: ConnectorPairBody) -> dict[str, Any]:
         return await resolve().identity.pair(body.code.get_secret_value(), body.device_label)
 
-    @router.get("/devices")
+    @router.get("/devices", response_model=NativeDirectory, response_model_exclude_unset=True)
     async def devices(
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, Any]:
         principal = await person(authorization)
         return await resolve().catalog(principal.source_person_id)
 
-    @router.get("/operations/{operation_id}")
+    @router.get(
+        "/operations/{operation_id}",
+        response_model=NativeOperation,
+        response_model_exclude_unset=True,
+    )
     async def operation(
         operation_id: str,
         cursor: int = 0,
@@ -59,15 +74,86 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
     ) -> dict[str, Any]:
         principal = await person(authorization)
         try:
-            return await resolve().execute(
+            result = await resolve().execute(
                 {"action": "get", "operation_id": operation_id, "cursor": cursor},
                 f"http-read:{operation_id}:{cursor}",
+                {"actor_person_id": principal.source_person_id},
+            )
+            return {**result, "operation_id": operation_id}
+        except ValueError as error:
+            if str(error) == "external_agent_not_found":
+                raise ClientError("not_found") from None
+            raise
+
+    @router.get(
+        "/instances/{instance_id}/sessions",
+        response_model=NativeSessions,
+        response_model_exclude_unset=True,
+    )
+    async def sessions(
+        instance_id: str,
+        cursor: str | None = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        try:
+            return await resolve().execute(
+                {"action": "list", "instance_id": instance_id, "native_cursor": cursor},
+                f"http-list:{uuid4()}",
                 {"actor_person_id": principal.source_person_id},
             )
         except ValueError as error:
             if str(error) == "external_agent_not_found":
                 raise ClientError("not_found") from None
             raise
+
+    @router.get("/operations", response_model=NativeOperations, response_model_exclude_unset=True)
+    async def operations(
+        work_id: str | None = None,
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1)] = 50,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        service = resolve()
+        previous = None
+        if cursor is not None:
+            try:
+                previous = await service.repository.operation(cursor, principal.source_person_id)
+            except ValueError:
+                raise ClientError("not_found") from None
+        async with service.database.read_session() as reader:
+            actor = await require_person(reader, principal.source_person_id)
+            statement = (
+                select(AgentOperationModel)
+                .join(AgentInstanceModel, AgentInstanceModel.id == AgentOperationModel.instance_id)
+                .join(ClientDeviceModel, ClientDeviceModel.id == AgentInstanceModel.device_id)
+                .where(person_family_condition(ClientDeviceModel.person_id, actor))
+                .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
+            )
+            if work_id is not None:
+                statement = statement.where(AgentOperationModel.work_id == work_id)
+            if previous is not None:
+                statement = statement.where(
+                    or_(
+                        AgentOperationModel.created_at > previous.created_at,
+                        and_(
+                            AgentOperationModel.created_at == previous.created_at,
+                            AgentOperationModel.id > previous.id,
+                        ),
+                    )
+                )
+            rows = list(await reader.scalars(statement.limit(limit + 1)))
+        items = [
+            {
+                **await service._view(row),
+                "operation_id": row.id,
+                "work_id": row.work_id,
+                "action": row.action,
+            }
+            for row in rows[:limit]
+        ]
+        return {"items": items, "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
 
     @router.websocket("/connect")
     async def connect(socket: WebSocket) -> None:
@@ -103,7 +189,12 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
             hello = await socket.receive_json()
             if hello.get("type") != "hello":
                 raise ValueError("connector_hello_required")
-            await service.connect(principal.device_id, connection, hello)
+            try:
+                await service.connect(principal.device_id, connection, hello)
+            except ValueError as error:
+                if str(error) == "unsupported_connector_protocol":
+                    await socket.close(code=1008, reason="unsupported_connector_protocol")
+                raise
             while True:
                 message = await socket.receive_json()
                 kind = message.get("type")

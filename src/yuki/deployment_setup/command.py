@@ -96,7 +96,15 @@ def add_setup_parser(
     setup.add_argument(
         "setup_action",
         nargs="?",
-        choices=("configure", "validate", "apply-pending", "verify", "environment-check"),
+        choices=(
+            "configure",
+            "validate",
+            "apply-pending",
+            "verify",
+            "environment-check",
+            "desktop-configure",
+            "desktop-pair",
+        ),
         default="configure",
     )
     setup.add_argument("--deployment-root", type=Path, default=Path.cwd())
@@ -111,6 +119,25 @@ def run_setup_command(args: argparse.Namespace) -> int:
     try:
         load_http_environment(paths.env)
         action = str(args.setup_action)
+        if action in {"desktop-configure", "desktop-pair"}:
+            from yuki.deployment_setup.desktop import (
+                DesktopConfiguration,
+                DesktopPairing,
+                configure,
+                pair,
+                read_input,
+                write_result,
+            )
+
+            with _working_directory(paths.root):
+                if action == "desktop-configure":
+                    result = configure(
+                        paths, DesktopConfiguration.model_validate_json(read_input())
+                    )
+                else:
+                    result = asyncio.run(pair(DesktopPairing.model_validate_json(read_input())))
+            write_result(result)
+            return 0
         if action == "environment-check":
             from yuki.deployment_setup.environment_check import check_environment
 

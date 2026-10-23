@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
+from yuki.client_api.agent_target import stored_target, target_data
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
@@ -45,11 +46,13 @@ _TERMINAL_WORK = frozenset({"completed", "failed", "cancelled"})
 
 def message_payload(event: ChatEventModel) -> dict[str, Any]:
     segments = json.loads(event.segments_json)
+    target = stored_target(segments)
     return {
         "text": segments[0]["data"]["text"],
         "attachments": [
             part["data"]["media_id"] for part in segments if part.get("data", {}).get("media_id")
         ],
+        **({"agent_target": target_data(target)} if target is not None else {}),
     }
 
 

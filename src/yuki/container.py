@@ -492,7 +492,9 @@ class ApplicationContainer:
         from yuki.client_api.http import ClientApi
         from yuki.services.client_link import ClientLinkCommands
 
-        self.client_links = ClientLinkCommands(self.client_identity, self.gateway_registry)
+        self.client_links = ClientLinkCommands(
+            self.client_identity, self.gateway_registry, self.settings.client_public_url
+        )
         self.chat.set_plugin_tools(self.plugin_tools)
         from yuki.services.semantic_participation import SemanticParticipationService
 

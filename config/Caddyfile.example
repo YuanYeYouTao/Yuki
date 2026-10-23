@@ -1,0 +1,3 @@
+{$YUKI_PUBLIC_HOST} {
+    reverse_proxy bot:8080
+}
