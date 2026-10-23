@@ -12,6 +12,9 @@ App/TG 来源不依赖 QQ Binding。账号换绑、同人合并、改名和新�
 不因同人合并拼接批次或重编已付输出。其它按需 Memory 查询的可见范围和本人权限按 Person 归并集合读取，
 source 与 visibility 分别核验；原事件、工具回执及执行身份始终保持原件。
 
+新事件按原 Person/Space 查找已有扫描状态。历史 `conversation_key_hash` 继续连接原 run 与
+未完成窗口，不能用今天重算的 hash 判断状态是否存在，也不为修复扫描而重写历史 hash 或回执。
+
 自省只根据本批新事件、实际工具回执、共享核心人格及必要衔接上下文创建新的 SELF 资料与经历。
 不加载已有 SELF facts、旧 Episode 或 pending candidate，也不承担旧事实维护。
 去重、合并、重组和冲突整理沿既有 Dream；Main、命令与管理入口仍可明确纠正、失效或恢复指定事实。
