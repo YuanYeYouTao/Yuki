@@ -34,6 +34,16 @@
 
 真实 Codex 验证使用当前用户的 `codex-cli 0.164.0`，在独立临时目录和新原生线程运行两条精确 PowerShell 命令。经过实际 TLS WebSocket、Connector、SQLite、原生审批和工具执行，文件写入/读回、原执行终态及原 Work continuation 均通过。只清退测试自己的线程，没有操作用户已有线程或发送真实 QQ 消息。缓存字段未提供，记录为 unknown。最终原始证据在同目录的 live JSON 中保存。
 
+## 真实 Main 汇报回放
+
+复用已有 ApplicationContainer/Main 测试入口，使用本机已有的 Flash profile（`deepseek-v4-flash`）发真实模型请求。原生断流/恢复事实及 socket 由隔离夹具提供，投递使用内存 Bot，没有真实 QQ 消息。
+
+最终一次回放从旧 quiet checkpoint、原 Work 和最新真人催进度继续：模型自主调用一次 send，3 段内存投递均成功，原 call_id 与后续模型请求中的 succeeded 回执完整配对；然后登记原 run 等待，Work 保持 waiting_external，没有重派或结束监督。旧 reporting 已清理。
+
+最终组 5 次调用，输入 93,060、输出 1,882、缓存输入 89,728 tokens（5/5 次均有缓存字段，96.42%）。包含两次夹具准备不完整的试跑，共 18 次调用、输入 334,569、输出 5,550、缓存输入 308,992。两次试跑也成功发送，但后续等待未正确保留，因此没有算作整轮验收通过；全部摘要保存在 `real-main-reporting.json`。这些数值是本次回放，不是生产缓存率。
+
+本机 pro 配置启用了当前合同不支持的 native search，因此回放用了已有 Flash endpoint/model/key，并仅在内存 profile 副本声明 Main 所需 tools 能力。没有改用户配置，也没有输出凭据。
+
 ## 三轮复审
 
 1. 逐条核原身份、状态和恢复链：补齐原 command 顶层身份；修 early progress 先于 admission 时状态被 unknown 覆盖；给响应也分配持久序号；修旧事件已提交但 ACK 丢失的升级回放。
