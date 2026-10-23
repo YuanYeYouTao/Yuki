@@ -2,7 +2,7 @@
 
 日期：2026-10-23。对应[任务书](../architecture/Yuki-501原调用身份与回执恢复删减修复任务书-2026-10-23.md)。
 
-本地实现和实现后交叉复审已完成，[PR #504](https://github.com/YuanYeYouTao/Yuki/pull/504) 已提交；CI、合并、生产部署分别记录。调研固定在 `8aef3f0b`，施工中用户合并 #502，实施分支已更新到 `dad3c4564a6c297b5dcc2c2c54c44229776b0f2d`，重新核对原生监督、拒绝结果、在线查询与新测试 fixture。最终交付分支又纳入 #503 的 `90e60b6850389a0a60341290277a38fb0559f99d`，保留原自省 owner 游标修复及原生事件测试修正。
+D01–D06、实现后交叉复审、最终 CI、[PR #504](https://github.com/YuanYeYouTao/Yuki/pull/504) 合并与 Bot-only 上线闭环已完成，配套 Connector 已通过服务端接纳，上线后清理已完成。自省沿用原配置关闭，真实业务验收边界另列。调研固定在 `8aef3f0b`，施工中用户合并 #502，实施分支已更新到 `dad3c4564a6c297b5dcc2c2c54c44229776b0f2d`，重新核对原生监督、拒绝结果、在线查询与新测试 fixture。最终交付分支又纳入 #503 的 `90e60b6850389a0a60341290277a38fb0559f99d`，保留原自省 owner 游标修复及原生事件测试修正。
 
 ## 实际改动
 
@@ -44,6 +44,17 @@
 - PR 首轮 Linux integration：879 passed、1 skipped（显式付费真实 Codex）、94 deselected；Native CodeMode：94 passed，真实隔离检查通过。
 - PR 首轮 unit：3491 passed、1 failed。失败为 `test_sticker_library.py::test_concurrent_first_create_has_one_optional_caption`，测试桥的文件复制与生产不同，修复与复审另列下文；不能将首轮写成全绿。
 
+最终提交 `d9ce2a1385c094aa0e2425773e30c0793d2d2bd0` 已包含 #503 与测试桥修复，[Quality run 39950928666](https://github.com/YuanYeYouTao/Yuki/actions/runs/39950928666) 全部通过：
+
+| 最终 CI | 实际结果 |
+| --- | --- |
+| [Unit](https://github.com/YuanYeYouTao/Yuki/actions/runs/39950928666/job/120404904962) | 3494 passed，893 warnings，1105.06 秒 |
+| [Integration](https://github.com/YuanYeYouTao/Yuki/actions/runs/39950928666/job/120404905278) | 879 passed、1 skipped、94 deselected，38 warnings，599.45 秒；唯一 skipped 为需显式付费授权的真实 Codex 测试 |
+| [Native CodeMode](https://github.com/YuanYeYouTao/Yuki/actions/runs/39950928666/job/120404905072) | 94 passed、4374 deselected，2 warnings，52.05 秒；实际原生构建与隔离验证通过，原进程全部退出 |
+| 静态检查与三平台 Connector | checks、Linux、macOS、Windows Connector 均通过 |
+
+这里的 deselected 是 workflow 按 `native_worker` 分组选择测试，不是失败或跳过原生验证。以上是最终提交的独立结果，不与前述包含关系不一的本地测试数累加。
+
 最初扩大回归曾有 1 failed、163 passed、42 skipped；失败是已修正的测试旧字段访问。Windows 的 POSIX workspace 与原生 Monty 参数跳过，不能视为通过；Linux 全量与原生二进制测试以本 PR CI 为准。已有 SQLAlchemy 循环外键排序 warning 未由本次引入。
 
 恢复测试重建真实的领域提交后、Work T3 前持久边界；Runner、WorkSession、CodeModeDriver、领域仓库真实执行，模型和 Code VM 为确定性替身。没有做 OS kill、真实模型/设备或 QQ 消息测试，离线绿灯不等于自然流量验收。
@@ -63,8 +74,28 @@ WSL Debian 的独立锁定 Python 3.12 环境运行整份 `test_sticker_library.
 
 ## 代码量与交付
 
-相对 #503 主线，生产源码增加 294 行、删除 172 行，净增 122 行（16 个文件）；测试增加 988 行、删除 37 行。文档及归档探针约增加 955 行，主要是之前未提交的任务书、调查与证据，本身不计入运行代码。新增的是缺失的领域读取和结果接线；删掉的是重复 active 裁决、纯投影副本和 Code 恢复分支。净增落在调研估算内，但行数不是验收门槛，不能宣称总代码减少。
+PR #504 最终提交 `d9ce2a13` 相对 #503 主线，生产源码增加 294 行、删除 172 行，净增 122 行（16 个文件）；测试增加 988 行、删除 37 行。该提交的文档及归档探针约增加 955 行，主要是之前未提交的任务书、调查与证据，本身不计入运行代码；不包含随后 delivery-record 分支追加的交付记录。新增的是缺失的领域读取和结果接线；删掉的是重复 active 裁决、纯投影副本和 Code 恢复分支。净增落在调研估算内，但行数不是验收门槛，不能宣称总代码减少。
 
 本修复无新 schema/协议；部署基线含 #502 的迁移 0150、Connector 0.3.0/协议 3。生产若尚未升级，需保留其配套条件。部署继续 Bot-only、先备份、保留 peers，不发送真实 QQ 测试消息；健康验证后清理旧备份、临时包和无引用旧镜像/可重建缓存。
 
-提交、PR、CI、合并 SHA、镜像、备份、线上健康和清理证据待实际操作后追加，不提前写成已上线。
+PR #504 于 2026-10-23 20:27:28（UTC+08）合并，主线提交为 `985bf6fe3d45becbbd7dd893165c83e2a0a53f1b`。它与最终受测提交 `d9ce2a1385c094aa0e2425773e30c0793d2d2bd0` 的 Git tree 均为 `83f52838b3d2edbb68e085e5a2c8c7bcaaf0eac6`，逐文件差异为空。运行镜像与容器核验结果另列下表，源码 tree 一致本身不代替部署验收。
+
+#503 修复了启动扫描按今日 hash 查找历史自省状态而漏掉同一 Person/Space、继而撞 owner 唯一约束的问题。私聊和群聊回归保留原 state ID、历史 hash、游标及原 run，并验证失败窗口继续使用原 run 和完成后的待处理尾部；该修复已进入上述最终 CI。它覆盖这一具体启动失败原因，不代表所有自省异常均已排除。线上仍需核对 `memory_self_reflection_started` 和详细健康状态，启动成功也不等于真实模型自省已经完成。
+
+## 生产切换、清理与验收边界
+
+| 项目 | 已取得的事实 |
+| --- | --- |
+| 停机备份 | 一致备份 `integrity_check=ok`、`foreign_key_check=[]`，备份数据库 revision 为 0149 |
+| 实际数据库 | 随本次部署基线迁移至 0150；该迁移来自 #502，不是 #501 新增 |
+| Bot 镜像 | 标签 `ops-d9ce2a13`，镜像 ID `sha256:d71968571bf878ca0df1adeee371563aa0d64c77fcfbb1696cfc1752aec8fd61`，revision 为 `d9ce2a13` |
+| 容器启动 | 新 Bot ID 前缀 `eedec83b`，`StartedAt=2026-10-23T13:21:46.486031317Z`，即本地 21:21:46；`RestartCount=0` |
+| 基础健康 | live 为 alive；详细 health 的 status/database/read 为 ok，writer accepting，OneBot 已连接，Work/automation running。后续复查 Bot 保持 healthy、restarts=0，未见启动 traceback |
+| 服务范围 | 只替换 Bot，四个同行容器 ID 保持不变 |
+| #502 配套 Connector | 本机原 0.1／协议 1 已升级为 0.3／协议 3 并实际运行；原配置 hash 与 8 个 operation 保留，SSH 与两个原生 Codex daemon 未动，没有重派原操作。原 2 个 watch ID 均保留，按迁移合同保持 execution 范围 |
+| 服务端接纳 | 2026-10-23 13:22:27 UTC（本地 21:22:27），`service.connect` 在协议 3 校验、catalog 和 attach 后写入 `device_connected`；目录有 1 个 Codex available、error_type 为 null，同秒收到原生 progress。这些证据证明原连接与进度通路恢复，不代表新任务完成 |
+| #503 自省 | 沿用旧 Compose 显式设置 `MEMORY_SELF_REFLECTION_ENABLED=false`，当前 health 的 enabled/running 均为 false。修复源码和测试已交付，但在线 worker 启动尚未验收；已询问用户是否恢复启用，尚未收到新选择，因此保持原配置，不属于 D01–D06 实现缺项 |
+| 清理对象 | 核对引用后已删除本次备份（占用 4038238208 B）、上传包（占用 255025152 B，归档文件长度 255020839 B）和无引用旧 `ops-0aa3e08b` 镜像；Docker Build Cache 原为 0，没有将不存在的缓存计为回收。本机 Connector 临时备份已删除 343585 B；旧 uv runtime 仍被 SSH 引用，因此保留 |
+| 清理结果 | 磁盘可用空间增加 4483842048 B，约 4.18 GiB／4.48 GB；当前可用 22174961664 B。四个同行容器仍为原 ID，原媒体、数据库、journal 和工作区保留 |
+
+代码与部署闭环已经完成；没有新建原生测试任务、没有发送 QQ 测试消息，也未创建正式 Release。已有自然连接与 progress 不外推为真实模型自省、新原生任务完成或线上 #501 恢复效果通过。TCP 连通、协议接纳、Worker 启动与真实任务完成分别记录，不以基础健康代替业务效果。
