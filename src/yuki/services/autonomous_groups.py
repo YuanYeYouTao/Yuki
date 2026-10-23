@@ -12,7 +12,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import ConversationRuntimeConfig, RuntimeConfigSnapshot
-from yuki.automation.models import TurnOrigin
 from yuki.conversation.features import AdmissionFeatureBuilder
 from yuki.conversation.participation import (
     AdmissionSignalHint,
@@ -27,6 +26,7 @@ from yuki.runtime.observability import (
     bind_runtime_turn,
     new_runtime_turn_id,
 )
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.chat import ChatService
 from yuki.services.plugin_events import content_free_turn_payload, publish_notification
 from yuki.services.turn_coordinator import (

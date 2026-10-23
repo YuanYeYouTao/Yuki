@@ -12,7 +12,7 @@ from tests.support.automation_unified_delivery_helpers import setup_run
 from yuki.automation.models import DailySchedule, OnceSchedule, RunStatus
 from yuki.automation.task_spec import TaskSpec, canonical_task_hash
 from yuki.llm.gemini import GeminiProvider
-from yuki.persistence.models import AutomationModel, AutomationVersionModel
+from yuki.persistence.models import AutomationVersionModel
 from yuki.runtime.work_schema_v1 import work
 from yuki.time.schedules import _resolve_local, initial_run_at, next_run_at
 
@@ -54,16 +54,11 @@ async def gemini_wire():
 async def test_long_task_persists_and_reaches_original_main_agent(database, tmp_path, gemini_wire):
     provider, requests = gemini_wire
     goal = "完整目标：" + "待处理资料" * 600
-    constraints = [
-        "占位资料，不要输出：" + "A" * 5600 + "\nTAIL_MARKER=YUKI_AUTO_TAIL_OK_731",
-        *[f"条件 {i}" for i in range(13)],
-    ]
-    case = await setup_run(
-        database, tmp_path, provider=provider, delivery="none", goal=goal, constraints=constraints
-    )
-    expected = {"goal": goal, "constraints": constraints, "delivery": "none"}
+    goal += "\n占位资料，不要输出：" + "A" * 5600
+    goal += "\nTAIL_MARKER=YUKI_AUTO_TAIL_OK_731\n" + "\n".join(f"条件 {i}" for i in range(13))
+    case = await setup_run(database, tmp_path, provider=provider, goal=goal)
     instruction = TaskSpec.model_validate(case.row.script).instruction()
-    assert json.loads(instruction) == expected
+    assert instruction == goal
     original_due = case.row.next_run_at
     updated = await case.service.update_task(
         case.row.id,
@@ -77,6 +72,7 @@ async def test_long_task_persists_and_reaches_original_main_agent(database, tmp_
     assert result.status is RunStatus.SUCCEEDED and result.llm_calls == 1
     assert result.version_id == updated.version_id
     assert len(requests) == 1
+
     submitted = [
         part["text"]
         for message in requests[0]["contents"]
@@ -84,18 +80,55 @@ async def test_long_task_persists_and_reaches_original_main_agent(database, tmp_
         if message["role"] == "user" and "text" in part and instruction in part["text"]
     ]
     assert len(submitted) == 1
-    declaration, _ = json.JSONDecoder().raw_decode(submitted[0], submitted[0].index(instruction))
-    assert declaration == expected
-    assert declaration["constraints"][0].endswith("\nTAIL_MARKER=YUKI_AUTO_TAIL_OK_731")
+    assert submitted[0].endswith(goal)
+    assert submitted[0].count(goal) == 1
     async with database.read_session() as reader:
-        stored = await reader.get(AutomationModel, case.row.id)
         saved = await reader.get(AutomationVersionModel, result.version_id)
-        assert json.loads(stored.script_json) == json.loads(saved.script_json) == updated.script
+        assert json.loads(saved.script_json) == updated.script
         assert saved.script_hash == canonical_task_hash(TaskSpec.model_validate(updated.script))
         assert not list(await reader.scalars(select(work.c.id)))
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
     assert await case.dispatch() == result
     assert len(requests) == 1
+
+
+async def test_due_http_retry_keeps_original_runtime_context_bytes(database, tmp_path):
+    requests = []
+    case = None
+
+    def receive(request):
+        requests.append(request.content)
+        if len(requests) == 1:
+            case.clock.advance(10)
+            return httpx.Response(503, json={"error": {"message": "temporary upstream failure"}})
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": "内部任务结束"}]},
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.test/v1beta/", transport=httpx.MockTransport(receive)
+    ) as client:
+        provider = GeminiProvider(
+            base_url="https://wire.test/v1beta/",
+            api_key="offline-test",
+            timeout_seconds=10,
+            max_retries=1,
+            client=client,
+        )
+        case = await setup_run(database, tmp_path, provider=provider, goal="静默处理原定目标")
+        case.clock.advance(2)
+        result = await case.dispatch()
+    assert result.status is RunStatus.SUCCEEDED
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert b"<runtime_context>" in requests[0]
 
 
 @pytest.mark.parametrize(
@@ -106,6 +139,9 @@ async def test_long_task_persists_and_reaches_original_main_agent(database, tmp_
         {"steps": []},
         {"limits": {"max_llm_calls": 1}},
         {"delivery": {"target": "none", "text": "旧旁路"}},
+        {"constraints": ["独立要求"]},
+        {"version": 1},
+        {"timezone": "UTC"},
     ],
 )
 def test_future_task_schema_has_only_timing_target_and_complete_request(retired):
@@ -120,10 +156,10 @@ def test_future_task_schema_has_only_timing_target_and_complete_request(retired)
         )
 
 
-def test_naive_once_and_local_iso_preserve_subsecond_instant():
-    value = datetime(2026, 10, 11, 8, 0, 0, 750000)
-    schedule = OnceSchedule(type="once", local_datetime=value, timezone=" UTC ")
-    expected = value.replace(tzinfo=UTC)
+def test_once_offset_preserves_subsecond_instant():
+    value = datetime(2026, 10, 11, 8, 0, 0, 750000, tzinfo=UTC)
+    schedule = OnceSchedule(type="once", local_datetime=value)
+    expected = value
     assert initial_run_at(schedule, expected.replace(microsecond=500000), "UTC") == expected
     assert _resolve_local(value, " UTC ") == expected
     assert _resolve_local(expected, "UTC") == expected

@@ -24,19 +24,26 @@ async def test_offline_reset_is_idempotent_and_rebinds_only_the_current_self_gen
         )
         generation, floor = conversation.generation, conversation.last_event_id
     unrelated = {key: value for key, value in original.items() if key != "id"}
-    other_authority = json.loads(original["authority_snapshot_json"])
+    other_authority = json.loads(version["authority_snapshot_json"])
     other_authority["conversation_generation"] = generation + 5
-    unrelated.update(
-        name="different accepted generation",
-        creation_source_key=None,
-        authority_snapshot_json=json.dumps(other_authority),
-    )
+    unrelated.update(creation_source_key=None)
     async with database.immediate_session() as writer:
         other_id = (
             await writer.execute(
                 insert(AutomationModel).values(**unrelated).returning(AutomationModel.id)
             )
         ).scalar_one()
+        writer.add(
+            AutomationVersionModel(
+                automation_id=other_id,
+                **{
+                    key: value
+                    for key, value in version.items()
+                    if key not in {"id", "automation_id", "authority_snapshot_json"}
+                },
+                authority_snapshot_json=json.dumps(other_authority),
+            )
+        )
 
     preview = await reset_all(database, "offline-regression", apply=False)
     assert preview["newly_reset"] == preview["self_automations_rebound"] == 0
@@ -53,22 +60,20 @@ async def test_offline_reset_is_idempotent_and_rebinds_only_the_current_self_gen
         )
         assert conversation.generation == generation + 1
         assert conversation.starts_after_event_id == floor
-        current = await reader.get(AutomationModel, case.row.id)
-        assert (
-            json.loads(current.authority_snapshot_json)["conversation_generation"] == generation + 1
-        )
-        other = await reader.get(AutomationModel, other_id)
-        assert other.authority_snapshot_json == unrelated["authority_snapshot_json"]
+        current = await case.repository.get(case.row.id, session=reader)
+        assert current.authority_snapshot["conversation_generation"] == generation + 1
+        other = await case.repository.get(other_id, session=reader)
+        assert other.authority_snapshot == other_authority
         versions = list(
             (
                 await reader.execute(
-                    select(AutomationVersionModel.__table__).order_by(
-                        AutomationVersionModel.version
-                    )
+                    select(AutomationVersionModel.__table__)
+                    .where(AutomationVersionModel.automation_id == case.row.id)
+                    .order_by(AutomationVersionModel.version)
                 )
             ).mappings()
         )
         assert len(versions) == 2 and dict(versions[0]) == version
         assert versions[1]["version"] == version["version"] + 1
         assert versions[1]["script_json"] == version["script_json"]
-        assert versions[1]["authority_snapshot_json"] == current.authority_snapshot_json
+        assert json.loads(versions[1]["authority_snapshot_json"]) == current.authority_snapshot

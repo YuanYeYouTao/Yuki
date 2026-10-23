@@ -422,24 +422,25 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         category="automation",
         display_name="查看自动化完成历史",
         description=(
-            "通过 automation_query(view=completed) 或 /ai automation completed 单独列出已结束任务。"
+            "通过 /ai automation completed 列出本人已结束安排；"
+            "模型目录通过 list 的真实生命周期筛选。"
         ),
         minimum_level=PermissionLevel.USER,
         mutating=False,
         target_scopes=("self",),
     ),
     CapabilityDescriptor(
-        id="command:automation.get:global",
+        id="command:automation.get:self",
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="查看自动化",
         description=(
-            "自然语言工具可按稳定 ID 查看包含创建者身份的任务安全摘要；"
-            "/ai automation show 对普通用户保持 owner 范围，超级管理员可查看全部任务。"
+            "automation_query(view=get) 和 /ai automation show 按稳定 ID 读取完整任务定义；"
+            "普通用户读取本人任务，超级管理员可以读取全部任务。"
         ),
         minimum_level=PermissionLevel.USER,
         mutating=False,
-        target_scopes=("global",),
+        target_scopes=("self",),
     ),
     CapabilityDescriptor(
         id="command:automation.update:self",
@@ -450,16 +451,6 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         minimum_level=PermissionLevel.USER,
         mutating=True,
         target_scopes=("self", "current_group"),
-    ),
-    CapabilityDescriptor(
-        id="command:automation.diagnose:self",
-        kind=CapabilityKind.COMMAND,
-        category="automation",
-        display_name="诊断自动化创建",
-        description="读取本人最近的脱敏创建结果，核实任务是否真正持久化。",
-        minimum_level=PermissionLevel.USER,
-        mutating=False,
-        target_scopes=("self",),
     ),
     *(
         CapabilityDescriptor(

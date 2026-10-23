@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from yuki.automation.service import AutomationService
 from yuki.config import Settings
 from yuki.conversation.scope import runtime_conversation_key
@@ -56,8 +58,8 @@ class AutomationCommandHandler:
                 return "格式：/ai automation completed"
             rows = await self._automation.list_completed(message.person_id)
             if not rows:
-                return "完成历史为空。"
-            lines = ["最近完成历史："]
+                return "已结束历史为空。"
+            lines = ["最近已结束安排："]
             lines.extend(
                 f"[ID {row.id}] [{row.status.value}] {row.name}；最后运行："
                 f"{local_text(row.last_run_at, row.timezone)}（{row.timezone}）"
@@ -72,11 +74,13 @@ class AutomationCommandHandler:
             actor = ToolActor.from_inbound(message)
             if operation == "show":
                 current = await self._automation.require_manageable(automation_id, actor)
+                cap = current.max_runs if current.max_runs is not None else "不限"
                 return (
                     f"自动化 ID：{automation_id}\n名称：{current.name}\n"
                     f"状态：{current.status.value}\n时区：{current.timezone}\n下次："
                     f"{local_text(current.next_run_at, current.timezone)}\n"
-                    "到期由主 Agent 执行完整任务。"
+                    f"累计发生：{current.run_count}；次数上限：{cap}\n"
+                    f"完整定义：{json.dumps(current.script, ensure_ascii=False)}"
                 )
             if operation == "history":
                 current, history_rows = await self._automation.history(automation_id, actor=actor)
@@ -116,6 +120,6 @@ class AutomationCommandHandler:
                     conversation_key=conversation_key,
                 )
                 return "任务已进入待执行队列。" if changed else "该任务不能立即执行。"
-        except ValueError as exc:
+        except (PermissionError, ValueError) as exc:
             return str(exc)
         return "可用操作：list、completed、show、pause、resume、cancel、run、history。"

@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.automation.models import TurnOrigin
 from yuki.capabilities import (
     CapabilityTrustSource,
     InProcessToolProvider,
@@ -71,6 +70,7 @@ from yuki.persistence.repositories import (
 from yuki.persistence.repository_records import EventRecord
 from yuki.runtime.context_preparation import prepare_context
 from yuki.runtime.observability import identifier_hash
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from yuki.runtime.trigger import (
     ExternalEventTurnTrigger,

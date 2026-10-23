@@ -27,7 +27,6 @@ from yuki.application.modules import (
     PluginModule,
     WebModule,
 )
-from yuki.automation.models import TurnOrigin
 from yuki.config import Settings
 from yuki.domain.messages import InboundMessage
 from yuki.gateway.providers import builtin_provider_catalog
@@ -58,6 +57,7 @@ from yuki.plugin_host.notification_repository import PluginNotificationRepositor
 from yuki.plugin_host.secrets import BoundSecretsFacade
 from yuki.plugin_host.session_facade import BoundAgentSessionFacade
 from yuki.plugin_host.storage import BoundStorageFacade
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.command_service import CommandService
 from yuki.services.concurrency import ConcurrencyManager

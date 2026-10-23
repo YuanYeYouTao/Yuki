@@ -59,7 +59,7 @@ Memory V2 的写入统一经过 Host 的正式 Memory mutation 边界和 `Memory
 每次调用保留自己的原操作 ID、当前资格与持久回执，不用同一事件替代不同调用的身份。
 旧事件级插件回执不能证明逐调用归属时，只保留原确认/未知事实，不改键、不猜测对应调用或补跑。
 插件 update 创建修正版本，delete 只做显式失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 7.0。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 8.0。
 Memory 记录中的 `user_id` / `subject_user_id` 和 `group_id` 同样是内部 Person / Space，
 可在原授权范围继续作为查询参数；它们不是平台账号或群号。
 

@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -284,7 +285,7 @@ class WorkResumer:
                 )
 
                 await self.services.generate_origin(
-                    content=recovered.content,
+                    content="继续原 Work，当前目标和执行状态见本轮运行资料。",
                     identity=scene.identity,
                     runtime=runtime,
                     turn_token=scene.token,
@@ -303,6 +304,7 @@ class WorkResumer:
                         person_id=recovered.actor_person_id,
                         space_id=recovered.target_space_id,
                         sandbox_source={**source, "work_id": item["id"]},
+                        activation_context=lambda: recovered.activation_context(datetime.now(UTC)),
                     ),
                 )
         from yuki.automation.repository import AutomationRepository

@@ -327,7 +327,7 @@ direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入�
 声明、说明和顺序在部署冻结，direct／Code Mode／Script API 共用；设备目录和实际能力变化只影响查询结果。执行处核当前 Person 与设备授予；operator、平台超管和聊天 token 不自动获得电脑控制权。重要问题和进度沿原 Work 私有输入，交付仍走 send／Social。旧 ACP close／peer／prompt 回执按原事实读取，不接收新调用别名。
 
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
-- `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
+- `automation_query(view=list/get/history)` 提供全局安全摘要与获准的完整定义/发生历史；list 支持真实生命周期/all，list/history 使用实际 limit 和数字 offset cursor。get/history 按真实 owner/超管授权。`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原 owner、版本、创建键与调度回执；完整 task 仅 goal/trigger 必填、name 可选，max_runs 缺省/null/整数按创建与更新合同贯通。
 - `query_chat_history(view=recent/search/around)` 读取真实获准的原账本集合；recent 默认当前入口，search 默认全部获准入口，around 按内部 event_id 定位原会话。search 使用 start_at/end_at，around 使用 before/after 条数；内部目标解析与共享读取内核统一，入口授权认各自真实来源。
 - `read_memory(view=fact/evidence)` 保原scope与观察事实；`subagent_control(action=message)` 保原父子ID、ask/reply_to、运行中补充和resume区别。
 

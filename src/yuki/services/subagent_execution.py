@@ -9,6 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -324,6 +325,9 @@ class SubagentExecution:
                             ).encode()
                         ).hexdigest()
                         if delegated
+                        else None,
+                        activation_context=(lambda: recovered.activation_context(datetime.now(UTC)))
+                        if isinstance(recovered, AutomationTaskSource)
                         else None,
                     )
                     runner = self.services.runner

@@ -11,7 +11,6 @@ import pytest
 from jsonschema import Draft202012Validator
 from tests.conftest import build_harness, make_settings
 
-from yuki.automation.models import TurnOrigin
 from yuki.conversation.prompt_history import PromptHistorySource
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_models import ConversationCoverageError
@@ -26,6 +25,7 @@ from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repository_records import EventRecord
 from yuki.prompting.contracts import core_contract
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.trigger import ExternalEventTurnTrigger
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.context_assembler import (

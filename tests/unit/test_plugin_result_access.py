@@ -244,7 +244,7 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(data
     from yuki.memory.models import MemoryFactCreate
     from yuki.tool_results.artifacts import ToolArtifactRepository
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent", work_enabled=False)
+    case = await setup_run(database, tmp_path, mode="silent", work_enabled=False)
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
     case.chat._tool_artifacts = store
     original = "original person fact " + "长期资料" * 300 + "MEMORY_BODY_TAIL"
@@ -297,7 +297,7 @@ async def test_scheduled_main_does_not_redeclare_retired_raw_tool_for_admin(
 
     from yuki.automation.models import RunStatus
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent", privileged=False)
+    case = await setup_run(database, tmp_path, mode="silent", privileged=False)
     if promoted:
         from yuki.identity.db_models import CanonicalPersonModel
 

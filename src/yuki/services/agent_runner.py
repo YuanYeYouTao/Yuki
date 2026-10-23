@@ -11,8 +11,6 @@ from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.automation.authority import DelegatedAuthority
-from yuki.automation.models import TurnOrigin
 from yuki.capabilities.coordinator import (
     MISSING_TOOL_RESULT,
     CoordinatedToolBackend,
@@ -49,6 +47,7 @@ from yuki.runtime.effect_outcomes import (
     current_result_capture,
 )
 from yuki.runtime.execution_receipts import ExecutionReceipts, current_receipts
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WORK_CONTROL_NAMES, WorkControl
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.concurrency import ConcurrencyManager
@@ -99,7 +98,6 @@ class AgentRuntime:
     origin: TurnOrigin
     actor_user_id: str
     actor_is_superuser: bool
-    delegated_authority: DelegatedAuthority | None
     conversation_key: str
     current_group_id: str | None
     bot_user_id: str
@@ -127,6 +125,7 @@ class AgentRuntime:
     observation_boundary: ContextBoundaryReader | None = None
     public_compaction: PublicCompactContext | None = None
     compact_focus: str | None = None
+    activation_context: Callable[[], dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)

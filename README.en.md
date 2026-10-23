@@ -123,7 +123,7 @@ uv run pytest
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | People, accounts, spaces and conversations |
 | [Feishu and Lark setup](docs/operations/feishu.zh-CN.md) | Custom apps, message permissions, long connections and media |
 | [Conversation compact](docs/architecture/conversation-compact.md) | Long conversations and task context |
-| [Plugin API 7.1](docs/plugin-development/index.md) | Plugin development and SDK |
+| [Plugin API 8.0](docs/plugin-development/index.md) | Plugin development and SDK |
 | [Persistent subagents](docs/architecture/persistent-subagents.md) | Task trees, parent-child questions and recovery |
 | [CHANGELOG](CHANGELOG.md) | Earlier versions |
 

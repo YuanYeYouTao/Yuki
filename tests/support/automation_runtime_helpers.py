@@ -21,8 +21,6 @@ def _script() -> TaskSpec:
         {
             "name": "一次提醒",
             "goal": "提醒本人：测试",
-            "timezone": "Asia/Shanghai",
             "trigger": {"type": "after", "seconds": 1},
-            "delivery": {"target": "self_private"},
         }
     )

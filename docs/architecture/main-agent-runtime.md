@@ -80,7 +80,11 @@ Main 的系统约束、
 本轮资料每次准备当前有效值，放在当前触发消息的正文前面；首次激活新建的 Work 运行状态块同样前置，以 `<runtime_context>` / `</runtime_context>` 包裹，固定系统约束说明其中是程序提供的本轮系统运行资料、不是任何人的发言，并保留前后双换行，当前正文在最后。标签只说明资料来源，消息角色仍为 user。资料包含本轮 Work 状态、可见工作线索，以及原入场或 Work 场景绑定的局部参与反馈；为空无标签。它不进入公共 FrozenFragments、自动 dynamic_snapshot、观察或摘要，不再保存首份、变化差量、移除流水和最后展示值。一个 Conversation 的公共投影只冻结实际采用的原事件渲染，保名字、引用、AT与附件事实；当前说话人、入口和个人偏好不建立另一份公共历史。
 
 Provider 会话元数据沿真实 canonical conversation、generation 和已有 Work ID 传递。未接纳 Work 的主请求使用 main 分支，接纳后沿原 Work 分支；公共及私有 compact 继承原请求的身份。通用结构化请求与原生搜索辅助请求在已有 Work 控制器时沿原租约传递身份；独立结构化请求可透传已知元数据，没有明确来源时保持空值。该元数据只进入 HTTP header，正文和固定工具合同保持原有装配。
-时间、完整 participation 状态、管理权限证明、最近投递包装及空视觉观察不默认注入。
+普通主轮不默认注入时间、完整 participation 状态、管理权限证明、最近投递包装及空视觉观察。
+定时新激活在同一运行资料块说明原创建者、原 Conversation/平台、automation/run、真实创建时间、
+scheduled_for 和本次可信时间快照，明确当前目标已经到期，不把原相对时间从现在重新起算。
+资料在首个合法新请求准备时冻结，工具往返和 HTTP 重试不重复追加或回写旧请求；原恢复 transcript
+沿原初始化跳过合同接续。它不包含第二份完整目标，也不进入公共历史或固定系统前缀。
 执行仍核验当前身份和授权；真实媒体、附件错误、聊天时间线及发送回执保留在原入口。
 当前 Work 状态沿原私有有序输入尾部接入。工具往返与恢复保原签名、调用/回执配对和初始请求，不将新运行块插回已经增长的轨迹前面。
 有 Work 和无 Work 的 Main 均在本来需要的下一次正常请求前，经 `AgentToolBackend.participation_context(runtime)` 读取相关参与事实：`participation` 下的原讨论和对象、自身意愿、语义判断及原来源顺序。只投影已有 SelfReport、UnitSemanticReview 和未释放的相关 Boundary，不复制概率、队列、人物列表或新建第三份刹车状态。反馈沿原有序输入尾部追加；已付请求、冻结前缀和初始运行块不改写。原生 pause 或 opaque 精确续接不能插入时，留待下个合法业务请求。反馈不进入业务 mailbox，不单独唤醒 Main 或购买确认请求，也不否决发送、已接纳输入或原任务；后端收起尚未选择的普通机会，本体结合当前交流决定是否继续闲聊。
@@ -199,7 +203,9 @@ Work 或假 initiative。`join/stay/quiet` 不必逐轮填写，没报不清空�
 真实发送效果保持原 Space/person 投递目标，讨论关联只使用原持久入场/source；来源失效或
 绑定缺失就保持未知，不能从后来当前话题补造。查询和反馈沿原主执行链，不增加逐轮审核模型。
 
-定时定义只保存 name、完整 goal/constraints、trigger、timezone 与 delivery.target。
+定时定义只要求完整 goal 和 trigger，name 是可选显示标签。具体收件人、渠道、内容和通知约定
+属于同一完整 goal，不另设 constraints、delivery、固定 version 或 task 级 timezone。
+after/interval 认相对秒数，once 必须包含 UTC offset，daily/weekly 的有效时区固化在 trigger 中。
 固定文字提醒也作为完整要求到点激活同一个 Main；没有静态直送、Compiler、专属能力
 注册表、steps、模板、save_as 或外层步骤解释器。原目标 Conversation、scope、generation
 及 run ID 构成本次真实来源，不生成真人 Inbound。群和私聊都复用共同历史准备；不再有
@@ -214,7 +220,11 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 定时入口不强制 Host accept，也不为工具、沙箱或环境增加先登记 Work 的门槛。
 真正需要持久工作时由 Main 沿普通 task_control 接纳；已接纳工作按原 Work ID、私有
 检查点、真实预算和效果回执接续。模型最终文字只作内部结束，QQ 可见内容必须显式发送。
-delivery.target 是任务要求与原目标，不裁剪工具或制造另一套静默 Agent。
+首次到期正文是接纳版本的完整 goal，不再给模型一份自动化配置 JSON。
+已有 Work 的当前目标认 Work.goal，复用当前运行状态投影；原安排以 version/run 引用溯源，
+不再插入第二份原 goal。源 Conversation 保留上下文和真实授权，实际投递统一使用 send 的真实
+target/binding，省略 target 仍是当前源会话；明确指定其他人的入口时使用已查明的稳定目标。
+内部任务和提醒共用同一 Main，不裁剪工具、不强制发送，也不禁止合法安排独立后续事项。
 
 `task_control(complete)` 可在同一次调用中携带真实内部 `result`。工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
@@ -237,8 +247,10 @@ Social 回执来源键保留旧键；较长的完整内部身份沿共同 SHA256
 自动化意图和自然语言时间由主 Agent 根据真实请求与上下文解释；歧义由 Agent 澄清。
 后端不使用关键词或正则判断是否应创建任务、不重新解析原话中的时间，也不按成功措辞拦截正文。
 后端继续校验结构化 trigger、时区、当前主体权限、目标来源及幂等；Agent 以持久化回执和真实 ID 报告结果。
-`automation_query(view=list)` 提供不按当前发言人过滤的全局任务简表，默认只列 active，并返回创建者的稳定
-Person ID、外部账号 ID 和当前可用显示名；`automation_query(view=get)` 使用相同的创建者投影。读取不授予修改权限，
+`automation_query(view=list)` 提供不按当前发言人过滤的全局安全简表，默认只列 active，按 status 查询其他
+真实生命周期或 all，并返回创建者的稳定身份。未命名任务用中性 ID 标签，不从私有 goal 生成标题。
+`automation_query(view=get/history)` 按原创建者或当前超管资格返回完整定义、原版本和发生结果。
+读取目录不授予私有正文读取或修改权限，
 更新、暂停、恢复、取消、立即运行和执行历史按真实 actor 授权：普通用户只能管理自己的任务，
 超级管理员可以管理全部任务。管理员更新不改变 canonical 创建者，后续执行仍按原创建者的当前权限
 重新核验，不能借一次管理操作永久提升任务权限。当前群自动化目录不再常驻注入；需要时按需调用原工具核实。
@@ -440,8 +452,11 @@ prompt／queue 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操�
 所有 Main 激活使用同一部署配置的模型/工具段预算。持久工作仅记入原根 Work 账本，
 同一次发生不再叠加定时 limits、timeout、第二 run 预算或二次扣费。根 Work 的既存
 累计值、明确有限预算和真实 Provider 超时仍保持；恢复不清零，不为升级取得新额度。
-发生记录在真实根 Work 终态后投影其计数并安排下一次时间；没有 Work 的激活结算其
-实际返回计数，丢进程或未知执行保留 uncertain，不重跑模型或工具猜测结果。
+发生记录在真实根 Work 终态后结算并安排下一次时间；没有 Work 的激活结算其实际返回计数。
+历史 messages_sent 的无 Work 成功分片口径和 Work 投递预留口径不能混称送达数。查询从原 Social
+操作/分片回执解释成功、失败和未知，预留及待派发认原 Work 意图，不改预算或预留数来修正展示。
+确定无 send 且无意图时是已知零发送，有派发或预留但缺确认则保持未知。丢进程或未知执行保留
+uncertain，不重跑模型或工具猜测结果。
 
 主模型请求在 `TaskModelExecutor` 统一接纳；AutomationWorker 不再按模型池 N−1 限制整项任务。
 后台与维护请求合计不超过
@@ -555,8 +570,8 @@ AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果
 0071 为 SELF 自动化增添可判别创建者和唯一调用键，并增添 SELF 时区、Work 等待绑定与
 插件恢复选择字段；原 Person 任务和运行回执不重建身份。
 同一 Host 调用重放和并发提交只登记一次，参数冲突明确拒绝；同事件的两个合法调用不合并。
-automation_query(view=list) 的 match_task 按完整目标、约束、时间及交付要求查询等价待执行项，忽略显示名称；
-只返回候选，不自动合并或阻止用户要求的另一个实例，不猜测近义自然语言。
+创建调用恢复只认原调用键、原参数和领域回执，已确认结果先于新 schema 校验读取。
+同一事件的不同合法调用不合并，不以自然语言或结构等价查询代替原创建回执。
 迁移保留既有 run、Work 的消耗与旧步骤原件；缺恢复所有者的旧 SDK/自动化 work 明确暂停并保留原因。
 迁移不重跑旧日记、不清除原 work、artifact、预算或交付回执。
 

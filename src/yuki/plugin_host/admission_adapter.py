@@ -11,11 +11,11 @@ from datetime import UTC, datetime
 from typing import cast
 
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.automation.models import TurnOrigin
 from yuki.conversation.scope import plugin_conversation_key
 from yuki.domain.messages import InboundMessage, mention_snapshots, snapshot_mention_segments
 from yuki.plugin_host.canonical_projection import projection_from_inbound
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.runtime.origin import TurnOrigin
 from yuki_plugin_sdk.models import (
     AdmissionSignal as SdkAdmissionSignal,
 )

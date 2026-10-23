@@ -13,6 +13,8 @@ DENIED_CAPABILITY_ID: Final[str] = "control.denied"
 CONTROL_CAPABILITY_IDS: Final[frozenset[str]] = frozenset(
     {
         "control.audit.read",
+        # Retired automation endpoints: read existing operator declarations only.
+        # No current execution consumer or default grant uses these names.
         "control.automation.content.read",
         "control.automation.mutate",
         "control.automation.read",

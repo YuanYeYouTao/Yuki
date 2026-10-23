@@ -70,7 +70,10 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
     async with database.read_session() as reader:
         old = await reader.get(AutomationVersionModel, case.row.version_id)
         original = (old.script_json, old.script_hash, old.created_at)
-    task = {**case.row.script, "timezone": "America/New_York"}
+    task = {
+        **case.row.script,
+        "trigger": {"type": "daily", "hour": 9, "minute": 0, "timezone": "America/New_York"},
+    }
     current = await case.service.update_task(
         case.row.id, task, actor=case.actor, conversation_key="group:80001:20001"
     )
@@ -86,7 +89,7 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
         )
     )
     case.provider._responder = lambda _: next(responses)
-    case.clock.advance(2)
+    case.clock.value = current.next_run_at + timedelta(seconds=1)
     run = await case.dispatch()
     assert run.status is RunStatus.SUCCEEDED
     names = {tool.name for tool in case.provider.requests[0].tools}
@@ -108,17 +111,17 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
 
 
 @pytest.mark.parametrize(
-    ("principal", "delivery"),
-    [("person", "none"), ("self", "none"), ("person", "self_private")],
+    ("principal", "recipient"),
+    [("person", "group"), ("self", "group"), ("person", "person")],
 )
 async def test_paused_send_route_does_not_block_internal_main_read(
-    database, tmp_path, principal, delivery
+    database, tmp_path, principal, recipient
 ):
     case = await setup_run(
         database,
         tmp_path,
         principal=principal,
-        delivery=delivery,
+        recipient=recipient,
         mode="silent",
         goal="读取当前时间并内部结束，不发送消息",
     )
@@ -133,11 +136,11 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     case.provider._responder = lambda _: next(responses)
     async with database.immediate_session() as writer:
         route = await writer.get(
-            PersonActiveRouteModel if delivery == "self_private" else SpaceActiveRouteModel,
-            case.env.person if delivery == "self_private" else case.env.space,
+            PersonActiveRouteModel if recipient == "person" else SpaceActiveRouteModel,
+            case.env.person if recipient == "person" else case.env.space,
         )
         route.paused = True
-        if delivery != "self_private":
+        if recipient != "person":
             # A later sending route is not this task's execution target/presence.
             alternate = await ensure_space(writer, "20002")
             alternate_presence = await ensure_presence(writer, "80002")
@@ -148,7 +151,7 @@ async def test_paused_send_route_does_not_block_internal_main_read(
             await writer.flush()
             route.space_binding_id = binding.id
             route.presence_id = alternate_presence
-    if delivery != "self_private":
+    if recipient != "person":
         case.env.registry.connect(
             Bot("80002"), provider_id="snowluma", presence_id=alternate_presence
         )
@@ -168,7 +171,7 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     assert sources[0].principal_kind == principal
     assert (
         sources[0].group_id == "20001"
-    )  # execution keeps the original scene, independent of delivery
+    )  # execution keeps the original scene, independent of recipient route
     assert sources[0].space_id == case.env.space
     assert not sent(case.env)
     results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
@@ -184,7 +187,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
         database,
         tmp_path,
         principal="self",
-        delivery="current_group",
+        recipient="group",
         mode="silent",
         trigger={"type": "interval", "seconds": 60},
     )
@@ -271,7 +274,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
 
 @pytest.mark.parametrize("saved_owner", [True, False], ids=["original-work", "missing-owner"])
 async def test_original_run_settles_only_its_saved_pending_work(database, tmp_path, saved_owner):
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case = await setup_run(database, tmp_path, mode="silent")
     raw = {
         "version": 1,
         "name": "original two-agent steps",
@@ -293,15 +296,11 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
         json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     async with database.immediate_session() as writer:
-        for table, identity in (
-            (AutomationModel, case.row.id),
-            (AutomationVersionModel, case.row.version_id),
-        ):
-            await writer.execute(
-                update(table)
-                .where(table.id == identity)
-                .values(script_json=raw_json, script_hash=saved_hash)
-            )
+        await writer.execute(
+            update(AutomationVersionModel)
+            .where(AutomationVersionModel.id == case.row.version_id)
+            .values(script_json=raw_json, script_hash=saved_hash)
+        )
     case.clock.advance(2)
     claimed = (
         await case.repository.claim_due(
@@ -479,7 +478,11 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
     settled = (await case.repository.run_history(claimed.id))[0]
     if saved_owner:
         assert settled.status is RunStatus.SUCCEEDED
-        assert settled.result_summary == {"work_id": pending["id"], "work_state": "completed"}
+        assert settled.result_summary == {
+            "work_id": pending["id"],
+            "work_state": "completed",
+            "messages_sent_semantics": "work_delivery_reservations",
+        }
         assert (settled.steps_completed, settled.llm_calls, settled.messages_sent) == (1, 2, 1)
         assert (await case.repository.get(claimed.id)).run_count == 1
     else:
@@ -499,7 +502,6 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
     case = await setup_run(
         database,
         tmp_path,
-        delivery="none",
         mode="silent",
         trigger={"type": "interval", "seconds": 60},
         max_runs=2,
@@ -568,7 +570,7 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
 
 @pytest.mark.parametrize("action", ["pause", "cancel"])
 async def test_schedule_management_preserves_already_accepted_work(database, tmp_path, action):
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case = await setup_run(database, tmp_path, mode="silent")
     case.provider._responder = lambda _: calls(
         ("accept", {"action": "accept", "goal": "原始完整任务"}),
         ("wait", {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]}),
@@ -613,7 +615,6 @@ async def test_terminal_occurrence_consumes_explicit_max_runs_once(database, tmp
     }
     payload = dict(
         status=status,
-        steps_completed=0,
         llm_calls=2,
         tool_calls=3,
         messages_sent=0,
@@ -653,7 +654,6 @@ async def test_cancelled_occurrence_does_not_cancel_next_recurring_arrangement(d
     await case.repository.finish_run(
         first.id,
         status=RunStatus.CANCELLED,
-        steps_completed=0,
         llm_calls=1,
         tool_calls=1,
         messages_sent=0,
@@ -792,40 +792,10 @@ async def test_claim_lease_starts_after_competing_writer_releases(database, tmp_
     assert not case.provider.requests and not sent(case.env)
 
 
-async def test_ordinary_directory_does_not_parse_execution_payloads(database, tmp_path):
-    from json import JSONDecodeError
-
-    from sqlalchemy import update
-    from tests.support.automation_unified_delivery_helpers import setup_run
-
-    from yuki.automation.models import AutomationStatus
-    from yuki.persistence.models import AutomationModel
-
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
-    async with database.immediate_session() as writer:
-        await writer.execute(
-            update(AutomationModel)
-            .where(AutomationModel.id == case.row.id)
-            .values(
-                script_json="unreadable execution IR",
-                required_capabilities_json="unreadable capabilities",
-                authority_snapshot_json="unreadable authority",
-            )
-        )
-    entry = await case.repository.get_directory_entry(case.row.id)
-    assert entry.record.name == case.row.name and entry.creator.person_id == case.env.person
-    directory = await case.repository.list_directory(statuses=(AutomationStatus.ACTIVE,))
-    assert [item.record.id for item in directory] == [case.row.id]
-    with pytest.raises(JSONDecodeError):
-        await case.repository.list_directory(
-            statuses=(AutomationStatus.ACTIVE,), include_script=True
-        )
-
-
-async def test_batch_claimers_accept_disjoint_sets_and_keep_running_and_versionless_rows(
+async def test_batch_claimers_accept_disjoint_sets_and_original_versions(
     database, tmp_path, monkeypatch
 ):
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case = await setup_run(database, tmp_path, mode="silent")
     clock = FakeClock(case.row.next_run_at)
     async with database.read_session() as reader:
         definition = await reader.get(AutomationModel, case.row.id)
@@ -846,18 +816,17 @@ async def test_batch_claimers_accept_disjoint_sets_and_keep_running_and_versionl
             .where(AutomationModel.id == case.row.id)
             .values(status="paused", next_run_at=None)
         )
-        for identity in (2, 3, 4):
+        for identity in (2, 3):
             await writer.execute(
                 insert(AutomationModel).values(
                     id=identity, **{**definition_values, "next_run_at": clock.now()}
                 )
             )
-            if identity != 4:
-                await writer.execute(
-                    insert(AutomationVersionModel).values(
-                        **{**version_values, "automation_id": identity}
-                    )
+            await writer.execute(
+                insert(AutomationVersionModel).values(
+                    **{**version_values, "automation_id": identity}
                 )
+            )
     original_writer = database.immediate_session
     both_discovered = asyncio.Event()
     arriving = 0
@@ -882,9 +851,9 @@ async def test_batch_claimers_accept_disjoint_sets_and_keep_running_and_versionl
         )
     )
     first_ids, second_ids = {row.id for row in first}, {row.id for row in second}
-    assert not first_ids & second_ids and first_ids | second_ids == {2, 3, 4}
+    assert not first_ids & second_ids and first_ids | second_ids == {2, 3}
     accepted = {row.id: row for row in (*first, *second)}
-    assert accepted[4].version_id is None
+    assert all(row.version_id is not None for row in accepted.values())
     assert all(row.script == case.row.script for row in accepted.values())
     assert await case.repository.run_history(case.row.id) == ()
     assert not case.provider.requests and not sent(case.env)
@@ -896,7 +865,7 @@ async def test_claim_parses_only_after_successful_commit(
 ):
     import yuki.automation.repository as automation_repository
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case = await setup_run(database, tmp_path, mode="silent")
     original_writer = database.immediate_session
     original_record = automation_repository._automation_record
     committed = False
@@ -932,38 +901,6 @@ async def test_claim_parses_only_after_successful_commit(
     async with database.read_session() as reader:
         original = await reader.get(AutomationModel, case.row.id)
         assert original.claimed_by == "original-claim"
-    assert not case.provider.requests and not sent(case.env)
-
-
-async def test_equivalent_directory_match_reaches_the_actual_tail(database, tmp_path):
-    case = await setup_run(database, tmp_path, mode="silent")
-    requested = {
-        "name": "完整候选名称" * 40,
-        "goal": "only the last plan matches",
-        "trigger": {"type": "after", "seconds": 60},
-        "delivery": {"target": "current_group"},
-    }
-    for index in range(101):
-        await case.service.create_task(
-            {**requested, "goal": f"another target {index}"},
-            actor=case.actor,
-            conversation_key="group:80001:20001",
-            creation_source_key=f"directory:{index}",
-        )
-    target = await case.service.create_task(
-        requested,
-        actor=case.actor,
-        conversation_key="group:80001:20001",
-        creation_source_key="directory:tail",
-    )
-    matches = await case.service.find_equivalent_directory_entries(requested, actor=case.actor)
-    assert [entry.record.id for entry in matches] == [target.id]
-    assert (
-        await case.service.find_equivalent_directory_entries(
-            requested, actor=case.actor, max_runs=1
-        )
-        == ()
-    )
     assert not case.provider.requests and not sent(case.env)
 
 
@@ -1008,7 +945,7 @@ async def test_automation_preflight_failure_records_one_blocked_occurrence(
 async def test_private_automation_uses_resolved_account_instead_of_frozen_creator(
     database, tmp_path
 ):
-    case = await setup_run(database, tmp_path, mode="silent", delivery="self_private")
+    case = await setup_run(database, tmp_path, mode="silent", recipient="person")
     async with database.immediate_session() as writer:
         await writer.execute(
             update(AutomationModel)
@@ -1024,7 +961,7 @@ async def test_private_automation_uses_resolved_account_instead_of_frozen_creato
 async def test_terminal_work_survives_maintenance_before_late_occurrence_settlement(
     database, tmp_path
 ):
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case = await setup_run(database, tmp_path, mode="silent")
     case.clock.advance(2)
     claimed = (
         await case.repository.claim_due(
@@ -1067,7 +1004,11 @@ async def test_terminal_work_survives_maintenance_before_late_occurrence_settlem
     await case.repository.settle_work_occurrences()
     settled = (await case.repository.run_history(claimed.id))[0]
     assert settled.status is RunStatus.SUCCEEDED
-    assert settled.result_summary == {"work_id": original["id"], "work_state": "completed"}
+    assert settled.result_summary == {
+        "work_id": original["id"],
+        "work_state": "completed",
+        "messages_sent_semantics": "work_delivery_reservations",
+    }
     assert settled.llm_calls == 1
     await case.repository.settle_work_occurrences()
     assert (await case.repository.run_history(claimed.id))[0] == settled

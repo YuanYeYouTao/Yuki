@@ -16,7 +16,6 @@ from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.event_seed import seed_event
 from tests.support.service_dependencies import tool_dependencies
 
-from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
@@ -80,6 +79,7 @@ from yuki.persistence.repositories import (
     PeopleRepository,
 )
 from yuki.persistence.repository_records import EventRecord
+from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_tools import AgentToolService, ToolRuntime
 
 

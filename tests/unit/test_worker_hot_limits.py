@@ -17,7 +17,7 @@ from yuki.tool_results.artifacts import ToolArtifactRepository
 async def test_child_obeys_hot_limit_without_resetting_original_work(
     database, tmp_path, limit_kind, limit
 ):
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent")
+    case = await setup_run(database, tmp_path, mode="silent")
     case.chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "artifacts", retention_seconds=60, max_artifact_bytes=100000
     )

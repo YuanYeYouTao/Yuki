@@ -31,6 +31,10 @@ async def test_every_restart_declaration_reaches_actual_startup_settings(databas
         ("memory.self_reflection_enabled", "memory_self_reflection_enabled", False),
         ("memory.rebuild_enabled", "memory_rebuild_enabled", False),
         ("memory.dream_schedule_hour", "memory_dream_schedule_hour", 4),
+        ("automation.poll_seconds", "automation_poll_seconds", 0.01),
+        ("automation.poll_seconds", "automation_poll_seconds", 120),
+        ("automation.lease_seconds", "automation_lease_seconds", 1),
+        ("automation.lease_seconds", "automation_lease_seconds", 7200),
     ],
 )
 async def test_saved_restart_setting_is_activated_by_new_settings(database, key, field, value):
@@ -57,7 +61,11 @@ async def test_saved_restart_setting_is_activated_by_new_settings(database, key,
             **await restarted_runtime.startup_settings_updates(),
         },
     )
-    assert str(getattr(restarted, field)) == str(value)
+    if field.startswith("automation_"):
+        assert getattr(restarted, field) == value
+        assert getattr(restarted.automation, field) == value
+    else:
+        assert str(getattr(restarted, field)) == str(value)
 
 
 @pytest.mark.parametrize(
@@ -114,3 +122,42 @@ async def test_vision_image_count_has_the_same_explicit_value_in_settings_and_ho
     assert saved.success and not saved.pending_restart
     assert runtime.registry.convert(runtime.registry.get("vision.max_images_per_turn"), 6) == 6
     assert settings.vision_max_images_per_turn == 6
+
+
+@pytest.mark.parametrize(
+    "key,field,value",
+    [
+        ("automation.poll_seconds", "automation_poll_seconds", 0),
+        ("automation.poll_seconds", "automation_poll_seconds", -0.01),
+        ("automation.lease_seconds", "automation_lease_seconds", 0),
+        ("automation.lease_seconds", "automation_lease_seconds", -1),
+        ("automation.lease_seconds", "automation_lease_seconds", 1.5),
+    ],
+)
+async def test_automation_config_write_and_settings_share_only_structural_limits(
+    database, key, field, value
+):
+    settings = make_settings(database.url)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **{**settings.model_dump(), field: value})
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    with pytest.raises(ValueError):
+        runtime.registry.convert(runtime.registry.get(key), value)
+    saved = await runtime.set_override(
+        key,
+        value,
+        scope_type="global",
+        scope_id="",
+        actor_user_id="test",
+        trigger_message_id="automation-positive-contract",
+    )
+    assert not saved.success and saved.error_category == "validation_error"
+    restarted_runtime = RuntimeConfigService(settings=settings, database=database)
+    await restarted_runtime.initialize()
+    restarted = Settings(
+        _env_file=None,
+        **{**settings.model_dump(), **await restarted_runtime.startup_settings_updates()},
+    )
+    assert getattr(restarted, field) == getattr(settings, field)
+    assert getattr(restarted.automation, field) == getattr(settings, field)

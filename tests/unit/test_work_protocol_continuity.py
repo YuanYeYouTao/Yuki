@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -64,6 +64,7 @@ from yuki.runtime.work_schema_v1 import journal
 from yuki.services.agent_runner import AgentRunResult, AgentRuntime
 from yuki.services.main_agent_turns import MainAgentTurnService
 from yuki.services.native_tool_binder import NativeToolBinder
+from yuki.services.turn_execution import TurnExecution
 from yuki.services.turn_transcript import TurnTranscript
 from yuki.social.models import OperationStatus, SocialTarget
 from yuki.social.repository import SocialOperationRepository
@@ -110,6 +111,29 @@ async def _control(database, tmp_path, *, worker=False):
         )
         control.current = current
     return control
+
+
+async def preserve_paid_activation(control, session, transcript):
+    """Exercise the new material supplier against a real restored protocol."""
+    control.session = session
+    supplier = Mock(side_effect=AssertionError("paid protocol cannot receive new activation facts"))
+    runtime = SimpleNamespace(
+        origin=TurnOrigin.SCHEDULED_AUTOMATION,
+        visible_event_ids=frozenset(),
+        work_control=control,
+        activation_context=supplier,
+    )
+    execution = TurnExecution(
+        SimpleNamespace(),
+        (ChatMessage("user", "new activation must not replace paid input"),),
+        runtime,
+        None,
+    )
+    execution.state.transcript = transcript
+    original = transcript.entries()
+    assert not await execution._finalize_initial_layout()
+    supplier.assert_not_called()
+    assert execution.state.transcript.entries() == original
 
 
 async def test_new_work_reuses_prepared_object_marked_for_deletion(database, tmp_path):
@@ -297,7 +321,7 @@ async def test_root_resume_uses_current_chat_and_task_material(
         task.content not in (message.content or "") for message in restored.request().messages
     )
     material = json.loads(restored.request().messages[-1].content)
-    assert material["goal"] == "retain the actual task"
+    assert (await control.runtime_state())["goal"] == "retain the actual task"
     assert material["original_request"] == {"event_id": 1, "text": "hello"}
     assert material["execution_evidence"][0]["run_id"] == "original-execution"
     if contract_changed:
@@ -658,7 +682,7 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
         assert all(message.response_item is None for message in sequence.messages)
         assert sequence.messages[0].content == "New Gemini contract"
         material = json.loads(sequence.messages[-1].content)
-        assert material["goal"] == "retain the actual task"
+        assert (await resumed_control.runtime_state())["goal"] == "retain the actual task"
         assert material["original_request"] == {"event_id": 1, "text": "hello"}
         assert not any(task.content in (message.content or "") for message in sequence.messages)
         assert any("run-fixed" in (message.content or "") for message in sequence.messages)
@@ -872,7 +896,6 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             origin=TurnOrigin.USER_MESSAGE,
             actor_user_id="1001",
             actor_is_superuser=False,
-            delegated_authority=None,
             conversation_key="cutover-runner",
             current_group_id=None,
             bot_user_id="9999",
@@ -1127,10 +1150,12 @@ async def test_native_checkpoint_replays_exact_http_after_sqlite_restart(
 
         await capture(transcript)
         await first.save("paired")
-        restored = await WorkSession(control, "unchanged-profile").restore(
+        resumed_session = WorkSession(control, "unchanged-profile")
+        restored = await resumed_session.restore(
             TurnTranscript((ChatMessage("user", "new wakeup"),))
         )
         assert restored.chain_id == transcript.chain_id
+        await preserve_paid_activation(control, resumed_session, restored)
         await capture(restored)
     assert captured[0] == captured[1]
     assert b"original-signature" in captured[1] and b"original-execution" in captured[1]
@@ -1324,8 +1349,10 @@ async def test_responses_journal_replays_identical_http_bytes(database, tmp_path
 
         await capture(transcript)
         await first.save("paired")
-        restored = await WorkSession(control, "same").restore(TurnTranscript(()))
+        resumed_session = WorkSession(control, "same")
+        restored = await resumed_session.restore(TurnTranscript(()))
         assert restored.chain_id == transcript.chain_id
+        await preserve_paid_activation(control, resumed_session, restored)
         await capture(restored)
     assert captured[0] == captured[1]
     await control.repository.release(control.lease)
@@ -1345,7 +1372,6 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="1001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="main",
         current_group_id=None,
         bot_user_id="9999",
@@ -1396,7 +1422,7 @@ async def test_original_trigger_requirements_survive_goal_rewrite_and_business_r
     restored = await resumed.restore(TurnTranscript(fresh))
     assert restored.request().messages[:2] == fresh
     material = json.loads(restored.request().messages[-1].content)
-    assert material["goal"] == "Verify the source"
+    assert (await control.runtime_state())["goal"] == "Verify the source"
     assert material["original_request"] == {"event_id": event_id, "text": original}
     current_initial = restored.request().messages
     for _ in range(20):

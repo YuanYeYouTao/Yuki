@@ -1,6 +1,6 @@
 # Plugin API 3.3 迁移
 
-> 本页保留该版本的历史变更；当前开发和部署只使用 [Plugin API 7.0](api-7.0-migration.md)。
+> 本页保留该版本的历史变更；当前开发和部署使用 [Plugin API 8.0](api-8.0-migration.md)。
 > 本文记录 3.3 的历史接口变化；当前 Host 只接受精确的 7.0。完成本步骤后继续 [API 3.4 迁移](api-3.4-migration.md)，再按 [API 7.0 迁移](api-7.0-migration.md)更新最终声明与实际代码。下面的 3.3 声明属于当时版本。
 3.3版本使用 `plugin_api = "3.3"` 声明。先完成 [3.2 语音退役](api-3.2-migration.md)，再移除 `ctx.llm`、`LLMFacade`、`llm.generate` 和 `llm.generate_with_context`。主 Agent 统一使用 `ctx.agent.run(instruction, context_profile="none", ...)`，返回 `PluginResult`；当前人物或群资料分别选择 `current_user`、`current_group` 并核对对应读取权限。
 

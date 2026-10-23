@@ -9,9 +9,9 @@ from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
-from yuki.automation.models import TurnOrigin
 from yuki.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
 from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.subagent_tools import subagent_tools
 from yuki.runtime.work_control import WorkControl, work_control_tools
 from yuki.runtime.work_repository import WorkRepository
@@ -83,7 +83,6 @@ async def case(database, tmp_path, responses, *, send_status="succeeded"):
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
         actor_is_superuser=False,
-        delegated_authority=None,
         conversation_key="report-runner",
         current_group_id=None,
         bot_user_id="80001",

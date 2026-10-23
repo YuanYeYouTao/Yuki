@@ -15,7 +15,9 @@ from yuki.automation.models import (
 from yuki.time.service import validate_timezone
 
 
-def initial_run_at(schedule: Schedule, now_utc: datetime, script_timezone: str) -> datetime:
+def initial_run_at(
+    schedule: Schedule, now_utc: datetime, script_timezone: str = "Asia/Shanghai"
+) -> datetime:
     """Calculate the first unique UTC execution instant at creation time."""
 
     now = _as_utc(now_utc)
@@ -24,15 +26,16 @@ def initial_run_at(schedule: Schedule, now_utc: datetime, script_timezone: str) 
     if isinstance(schedule, IntervalSchedule):
         return now + timedelta(seconds=schedule.seconds)
     if isinstance(schedule, OnceSchedule):
-        zone_name = schedule.timezone or script_timezone
-        candidate = _resolve_local(schedule.local_datetime, zone_name)
+        candidate = schedule.local_datetime.astimezone(UTC)
         if candidate <= now:
             raise ValueError("once 的执行时间必须晚于当前可信时间")
         return candidate
     return next_run_at(schedule, now, script_timezone)
 
 
-def next_run_at(schedule: Schedule, after_utc: datetime, script_timezone: str) -> datetime:
+def next_run_at(
+    schedule: Schedule, after_utc: datetime, script_timezone: str = "Asia/Shanghai"
+) -> datetime:
     """Return the first scheduled instant strictly after ``after_utc``."""
 
     after = _as_utc(after_utc)
@@ -65,7 +68,7 @@ def schedule_after_completion(
     schedule: Schedule,
     scheduled_for: datetime,
     now_utc: datetime,
-    script_timezone: str,
+    script_timezone: str = "Asia/Shanghai",
 ) -> datetime | None:
     """Advance periodic schedules directly to one future slot without catch-up storms."""
 
