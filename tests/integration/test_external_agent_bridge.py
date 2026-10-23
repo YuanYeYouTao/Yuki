@@ -321,7 +321,7 @@ async def directory(bridge):
     return instance, result["sessions"][0]["id"]
 
 
-async def test_tls_pair_directory_and_native_execution_ids_remain_internal(bridge):
+async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_connection(bridge):
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
@@ -340,6 +340,42 @@ async def test_tls_pair_directory_and_native_execution_ids_remain_internal(bridg
             assert await reader.scalar(select(func.count()).select_from(AgentOperationModel)) == 0
             assert await reader.scalar(select(func.count()).select_from(SandboxTaskRunModel)) == 0
         assert [item["action"] for item in computer.commands] == ["list", "get"]
+        connection = bridge.service.connections.get(bridge.device["device_id"])
+        rows = [
+            {
+                "id": computer.local_id,
+                "label": "Original",
+                "driver": "codex",
+                "capabilities": ["list", "get"],
+                "status": "available",
+            },
+            {
+                "id": "later-instance",
+                "label": "Starting",
+                "driver": "codex",
+                "capabilities": [],
+                "status": "unavailable",
+            },
+        ]
+        for available in (False, True):
+            if available:
+                rows[1] = {**rows[1], "capabilities": ["list", "get"], "status": "available"}
+            computer.catalog_ready.clear()
+            await computer.socket.send(json.dumps({"type": "catalog", "instances": rows}))
+            await asyncio.wait_for(computer.catalog_ready.wait(), 5)
+            catalog = await bridge.service.catalog(bridge.env.person)
+            later = next(item for item in catalog["instances"] if item["label"] == "Starting")
+            assert later["online"] is available
+            assert connection is bridge.service.connections.get(bridge.device["device_id"])
+            if not available:
+                identity = later["id"]
+            else:
+                assert later["id"] == identity
+                listed = await bridge.service.execute(
+                    {"action": "list", "instance_id": identity}, str(uuid4()), bridge.source
+                )
+                assert listed["sessions"]
+                assert computer.commands[-1]["instance_id"] == "later-instance"
     finally:
         await computer.close()
 
@@ -809,49 +845,6 @@ async def test_native_pagination_and_explicit_history_do_not_share_server_event_
         assert history["history"] == [{"text": "Explicit original history"}]
         assert computer.commands[-1]["arguments"]["include_history"] is True
         assert computer.commands[-1]["arguments"]["cursor"] == "opaque-history-page"
-    finally:
-        await computer.close()
-
-
-async def test_later_ready_catalog_keeps_original_device_instance_and_live_connection(bridge):
-    computer = await NativeComputer(bridge).start()
-    try:
-        connection = bridge.service.connections.get(bridge.device["device_id"])
-        rows = [
-            {
-                "id": computer.local_id,
-                "label": "Original",
-                "driver": "codex",
-                "capabilities": ["list", "get"],
-                "status": "available",
-            },
-            {
-                "id": "later-instance",
-                "label": "Starting",
-                "driver": "codex",
-                "capabilities": [],
-                "status": "unavailable",
-            },
-        ]
-        for available in (False, True):
-            if available:
-                rows[1] = {**rows[1], "capabilities": ["list", "get"], "status": "available"}
-            computer.catalog_ready.clear()
-            await computer.socket.send(json.dumps({"type": "catalog", "instances": rows}))
-            await asyncio.wait_for(computer.catalog_ready.wait(), 5)
-            catalog = await bridge.service.catalog(bridge.env.person)
-            later = next(item for item in catalog["instances"] if item["label"] == "Starting")
-            assert later["online"] is available
-            assert connection is bridge.service.connections.get(bridge.device["device_id"])
-            if not available:
-                identity = later["id"]
-            else:
-                assert later["id"] == identity
-                listed = await bridge.service.execute(
-                    {"action": "list", "instance_id": identity}, str(uuid4()), bridge.source
-                )
-                assert listed["sessions"]
-                assert computer.commands[-1]["instance_id"] == "later-instance"
     finally:
         await computer.close()
 

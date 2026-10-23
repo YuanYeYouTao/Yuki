@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import event as sql_event
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from tests.conftest import make_settings
@@ -374,17 +373,7 @@ async def test_unadmitted_same_person_invitation_keeps_release_after_newer_sourc
             # actual stop boundary and SeenSource remain retained facts.
             item.controller.state.events.pop(stop.ref.event_id)
 
-        statements = []
-
-        def capture(_connection, _cursor, statement, _parameters, _context, _many):
-            statements.append(statement)
-
-        sql_event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-        try:
-            identity = await actor_identity(host, item)
-        finally:
-            sql_event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-        assert len(statements) == 1
+        identity = await actor_identity(host, item)
         assert {identity(row.author_person_id) for row in (a, b, c)} == {c.author_person_id}
 
         async with database.immediate_session() as writer:
@@ -399,9 +388,7 @@ async def test_unadmitted_same_person_invitation_keeps_release_after_newer_sourc
         assert item.controller.state.events[invitation_b.ref.event_id].author == b.author_person_id
         assert remaining.author == a.author_person_id
         for row in (a, b, c):
-            assert (
-                await host.ledger.get_event(row.id)
-            ).author_person_id == row.author_person_id
+            assert (await host.ledger.get_event(row.id)).author_person_id == row.author_person_id
         assert not host._observer.calls
     finally:
         await host.close()

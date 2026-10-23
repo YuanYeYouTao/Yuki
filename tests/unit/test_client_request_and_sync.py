@@ -26,9 +26,15 @@ admin = admin_fixture
 app_env = app_fixture
 
 
-@pytest.mark.parametrize("other_device", [False, True])
-@pytest.mark.parametrize("operation", ["upload", "cancel"])
-@pytest.mark.parametrize("first_operation", ["message", "command"])
+@pytest.mark.parametrize(
+    ("other_device", "operation", "first_operation"),
+    [
+        (False, "upload", "message"),
+        (True, "cancel", "message"),
+        (False, "cancel", "command"),
+        (True, "upload", "command"),
+    ],
+)
 async def test_message_and_command_share_one_atomic_person_request(
     app_env, database, monkeypatch, other_device, operation, first_operation
 ):
@@ -162,7 +168,10 @@ async def append_history(env, database, principal, texts):
     rows = []
     for text in texts:
         message = env.gateway.message(
-            binding, str(uuid4()), text, ({"type": "text", "data": {"text": text}},),
+            binding,
+            str(uuid4()),
+            text,
+            ({"type": "text", "data": {"text": text}},),
             conversation_id=principal.conversation_id,
         )
         admitted = await env.gateway.processor._canonical_ingress.pre_admit(

@@ -74,14 +74,13 @@ async def test_explicit_gemini_transcription_sends_original_multipart_audio():
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("protocol", ["chat_completions", "audio_transcriptions"])
 @pytest.mark.parametrize(
-    ("status", "error"),
+    ("protocol", "status", "error"),
     [
-        (401, "not_configured"),
-        (403, "not_configured"),
-        (429, "rate_limited"),
-        (500, "provider_failed"),
+        ("chat_completions", 401, "not_configured"),
+        ("audio_transcriptions", 403, "not_configured"),
+        ("chat_completions", 429, "rate_limited"),
+        ("audio_transcriptions", 500, "provider_failed"),
     ],
 )
 async def test_protocol_failures_keep_original_category_without_retry(protocol, status, error):
@@ -120,8 +119,7 @@ async def test_invalid_transcript_retains_error_contract(protocol, transcript, e
             await provider.transcribe(b"mp3")
 
 
-@pytest.mark.parametrize("with_protocol", [False, True])
-async def test_all_asr_restart_settings_activate_after_new_startup(database, with_protocol):
+async def test_all_asr_restart_settings_activate_after_new_startup(database):
     settings = make_settings(database.url)
     current = RuntimeConfigService(settings=settings, database=database)
     await current.initialize()
@@ -134,9 +132,8 @@ async def test_all_asr_restart_settings_activate_after_new_startup(database, wit
         "max_duration_seconds": 120,
         "global_concurrency": 3,
         "queue_max_pending": 10,
+        "protocol": "audio_transcriptions",
     }
-    if with_protocol:
-        desired["protocol"] = "audio_transcriptions"
     for key, value in desired.items():
         changed = await current.set_override(
             "asr." + key,

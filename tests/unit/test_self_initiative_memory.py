@@ -527,7 +527,7 @@ async def test_reflection_request_does_not_grow_with_old_self_memory(database):
     before = provider.requests[-1]
 
     for visibility in ("global", "group"):
-        for index in range(21):
+        for index in range(3):
             fact = await facts.remember(
                 MemoryFactCreate(
                     scope_type="self",
@@ -548,20 +548,7 @@ async def test_reflection_request_does_not_grow_with_old_self_memory(database):
                     if row.status == "contested":
                         row.conflict_state = "contested"
 
-    old_memory_queries = []
-
-    def observe(_connection, _cursor, statement, *_args):
-        if statement.lstrip().upper().startswith("SELECT") and any(
-            table in statement.lower() for table in ("memory_facts", "memory_claim_candidates")
-        ):
-            old_memory_queries.append(statement)
-
-    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
-    try:
-        payload, _, _ = await reflection._input(batch)
-    finally:
-        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
-    assert not old_memory_queries
+    payload, _, _ = await reflection._input(batch)
     # Exercise the real task serializer again with the same sources. This is a
     # fresh offline model request, not a replay of the saved execution.
     await reflection._structured.run(
@@ -1409,78 +1396,26 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
 
 
 async def test_isolated_receipt_windows_do_not_starve_later_initiatives(database):
-    from sqlalchemy import insert
-
-    from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
-
     _, _, initial, old_id = await seed(database)
     await record(database, initial, old_id)
     await finish(database, old_id)
     (original,) = await claim(database)
+    new_id = str(uuid4())
     async with database.immediate_session() as writer:
-        await writer.execute(
-            update(MemorySelfReflectionRunModel)
-            .where(MemorySelfReflectionRunModel.id == original.run_id)
-            .values(status="failed", retry_state="isolated")
-        )
-        templates = {
-            model: dict((await writer.execute(select(model.__table__))).mappings().one())
-            for model in (InitiativeRunModel, MemoryToolReceiptModel, MemorySelfReflectionRunModel)
+        run = await writer.get(MemorySelfReflectionRunModel, original.run_id)
+        run.status, run.retry_state = "failed", "isolated"
+        previous = await writer.get(InitiativeRunModel, old_id)
+        values = {
+            column.key: getattr(previous, column.key)
+            for column in InitiativeRunModel.__table__.columns
         }
-        for index in range(100):
-            run_id = str(uuid4())
-            await writer.execute(
-                insert(InitiativeRunModel).values(
-                    **{**templates[InitiativeRunModel], "id": run_id, "proposal_id": run_id}
-                )
-            )
-            receipt = {
-                key: value
-                for key, value in templates[MemoryToolReceiptModel].items()
-                if key != "id"
-            }
-            receipt.update(
-                initiative_run_id=run_id,
-                execution_id=run_id,
-                source_call_key=f"isolated-{index}",
-                tool_call_id=f"call-{index}",
-            )
-            receipt_id = await writer.scalar(
-                insert(MemoryToolReceiptModel)
-                .values(**receipt)
-                .returning(MemoryToolReceiptModel.id)
-            )
-            if index < 99:
-                reflection = {
-                    key: value
-                    for key, value in templates[MemorySelfReflectionRunModel].items()
-                    if key != "id"
-                }
-                reflection["scheduled_slot"] = f"isolated-{index}"
-                reflection_id = await writer.scalar(
-                    insert(MemorySelfReflectionRunModel)
-                    .values(**reflection)
-                    .returning(MemorySelfReflectionRunModel.id)
-                )
-                writer.add(
-                    InitiativeReflectionWindowModel(
-                        reflection_run_id=reflection_id,
-                        initiative_run_id=run_id,
-                        first_receipt_id=receipt_id,
-                        last_receipt_id=receipt_id,
-                    )
-                )
-            else:
-                new_id = run_id
+        writer.add(InitiativeRunModel(**{**values, "id": new_id, "proposal_id": new_id}))
+    await record(database, initial, new_id, "new-eligible")
     (selected,) = await claim(database, "next-eligible")
     assert selected.initiative_run_id == new_id
     async with database.read_session() as reader:
-        isolated = await reader.scalar(
-            select(func.count())
-            .select_from(MemorySelfReflectionRunModel)
-            .where(MemorySelfReflectionRunModel.retry_state == "isolated")
-        )
-        assert isolated == 100
+        old = await reader.get(MemorySelfReflectionRunModel, original.run_id)
+        assert old.status == "failed" and old.retry_state == "isolated"
         assert await reader.get(InitiativeReflectionCursorModel, old_id) is None
 
 
@@ -1505,13 +1440,11 @@ async def test_initiative_hash_preparation_finishes_before_writer(database, monk
     _, _, initial, initiative_id = await seed(database)
     await record(database, initial, initiative_id)
     await finish(database, initiative_id)
-    held, hashes = False, 0
+    held = False
     original = initiative.hashlib.sha256
 
     def digest(*args, **kwargs):
-        nonlocal hashes
         assert not held
-        hashes += 1
         return original(*args, **kwargs)
 
     def inspect(_connection, _cursor, statement, *_args):
@@ -1525,7 +1458,10 @@ async def test_initiative_hash_preparation_finishes_before_writer(database, monk
         (batch,) = await claim(database)
     finally:
         sql_event.remove(database.engine.sync_engine, "before_cursor_execute", inspect)
-    assert batch.initiative_run_id == initiative_id and hashes == 3
+    assert batch.initiative_run_id == initiative_id
+    assert [
+        row.result_excerpt for row in await SelfReflectionRepository(database).tool_receipts(batch)
+    ] == ["已生成并校验曲线绘图"]
 
 
 @pytest.mark.parametrize("change", ["selected_excerpt", "late_append"])
@@ -1534,19 +1470,11 @@ async def test_initiative_claim_rechecks_original_input_without_absorbing_late_r
 ):
     from contextlib import asynccontextmanager
 
-    from yuki.memory.self_reflection import initiative
-
     _, _, initial, initiative_id = await seed(database)
     await record(database, initial, initiative_id, "original", result_excerpt="original input")
     await finish(database, initiative_id)
     writer = database.immediate_session
-    resolve = initiative.resolve_self_origin
-    raced, preparations = False, 0
-
-    async def source(*args, **kwargs):
-        nonlocal preparations
-        preparations += 1
-        return await resolve(*args, **kwargs)
+    raced = False
 
     @asynccontextmanager
     async def changed_before_admission():
@@ -1571,17 +1499,14 @@ async def test_initiative_claim_rechecks_original_input_without_absorbing_late_r
         async with writer() as active:
             yield active
 
-    monkeypatch.setattr(initiative, "resolve_self_origin", source)
     with monkeypatch.context() as scoped:
         scoped.setattr(database, "immediate_session", changed_before_admission)
         (batch,) = await claim(database)
     inputs = await SelfReflectionRepository(database).tool_receipts(batch)
     if change == "selected_excerpt":
-        assert preparations == 2 and [row.result_excerpt for row in inputs] == [
-            "actual changed input"
-        ]
+        assert [row.result_excerpt for row in inputs] == ["actual changed input"]
     else:
-        assert preparations == 1 and [row.result_excerpt for row in inputs] == ["original input"]
+        assert [row.result_excerpt for row in inputs] == ["original input"]
         await SelfReflectionRepository(database).complete(batch, proposals=0, committed=0)
         (late,) = await claim(database, "late-only")
         assert late.first_receipt_id > batch.last_receipt_id

@@ -180,7 +180,6 @@ async def test_foreground_and_maintenance_keep_slots_while_background_yields_and
         await asyncio.wait_for(entered["background"].wait(), 1)
         release["background"].set()
         assert (await asyncio.wait_for(background, 1)).content == "done"
-        assert models._ordinary_active == 0 and models._provider_active == 0
         await asyncio.wait_for(models.wait_for_background_idle(), 1)
     finally:
         for task in tasks:

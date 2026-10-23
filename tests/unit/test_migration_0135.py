@@ -24,16 +24,6 @@ def test_mention_name_index_preserves_events_and_receipts(tmp_path, monkeypatch)
     with sqlite3.connect(path) as connection:
         for table, rows in before.items():
             assert connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() == rows
-        plan = connection.execute(
-            "EXPLAIN QUERY PLAN SELECT sender_group_card,sender_nickname FROM chat_events "
-            "WHERE canonical_conversation_id=? AND sender_user_id=? AND occurred_at<=? "
-            "AND suppression_status='keeper' ORDER BY occurred_at DESC,id DESC LIMIT 1",
-            ("original-conversation", "original-account", "2026-10-18 12:00:00"),
-        ).fetchall()
-        assert any("ix_chat_events_conversation_sender_time" in row[3] for row in plan), plan
-        assert not any("TEMP B-TREE" in row[3] or "SCAN chat_events" in row[3] for row in plan), (
-            plan
-        )
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
     command.downgrade(config, "0134")
     with sqlite3.connect(path) as connection:

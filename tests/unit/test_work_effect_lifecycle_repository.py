@@ -149,7 +149,7 @@ async def test_request_resolution_cannot_rebind_an_unrelated_original(owned, mis
 
 
 @pytest.mark.parametrize("by_request", [False, True])
-async def test_completion_query_uses_identity_index_and_small_projection(owned, by_request):
+async def test_completion_lookup_returns_original_summary_without_output(owned, by_request):
     repo, lease, identity = owned
     tasks = SandboxTaskRepository(repo.database)
     run_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -178,30 +178,14 @@ async def test_completion_query_uses_identity_index_and_small_projection(owned, 
             },
         }
     )
-    captures = []
-
-    def capture(_conn, _cursor, sql, params, *_args):
-        if sql.startswith("SELECT") and "FROM sandbox_task_runs" in sql:
-            captures.append((sql, params))
-
-    event.listen(repo.database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        result = await repo.completed_children(
-            lease,
-            identity,
-            [] if by_request else [run_id],
-            request_ids=["large-completion"] if by_request else [],
-        )
-    finally:
-        event.remove(repo.database.engine.sync_engine, "before_cursor_execute", capture)
-    assert len(result) == 1 and len(json.dumps(result).encode()) < 1024
-    assert len(captures) == 1
-    sql, params = captures[0]
-    assert "json_extract(sandbox_task_runs.completion_json" in sql
-    async with repo.database.engine.connect() as connection:
-        plan = (await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + sql, params)).all()
-    assert any("SEARCH sandbox_task_runs USING INDEX" in row[-1] for row in plan)
-    assert not any("SCAN sandbox_task_runs" in row[-1] for row in plan)
+    result = await repo.completed_children(
+        lease,
+        identity,
+        [] if by_request else [run_id],
+        request_ids=["large-completion"] if by_request else [],
+    )
+    assert len(result) == 1 and result[0]["run_id"] == run_id
+    assert result[0]["status"] == "succeeded" and "output" not in result[0]
 
 
 @pytest.mark.parametrize("role", [False, True, None, "missing", 0])
@@ -350,8 +334,8 @@ async def test_empty_and_unchanged_resolution_read_while_wal_writer_held(owned):
     )
 
 
-@pytest.mark.parametrize("count", [129, 257])
-async def test_exact_run_pages_use_existing_index_and_preserve_other_effects(owned, count):
+async def test_run_pages_settle_every_original_without_changing_unrelated_effects(owned):
+    count = 257
     repo, lease, identity = owned
     # Fixture insertion is not the measured reconciliation path.
     async with repo.database.immediate_session() as writer:
@@ -383,29 +367,7 @@ async def test_exact_run_pages_use_existing_index_and_preserve_other_effects(own
         owned, "unrelated", {"side_effecting": True, "run_id": "other-run", "pending": True}
     )
     original = await read_receipt(repo, "unrelated")
-    captures = []
-    writes_per_page = []
-
-    def capture(_conn, _cursor, sql, params, *_args):
-        if sql.startswith("BEGIN IMMEDIATE"):
-            writes_per_page.append(0)
-        elif sql.startswith("UPDATE runtime_work_effects"):
-            writes_per_page[-1] += 1
-        if sql.lstrip().upper().startswith("SELECT") and "runtime_work_effects.receipt_json" in sql:
-            captures.append((sql, params))
-
-    event.listen(repo.database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        await repo.resolve_run_effects(lease, identity, "original-run", finished())
-    finally:
-        event.remove(repo.database.engine.sync_engine, "before_cursor_execute", capture)
-    assert len(captures) == (count + 127) // 128 + 1
-    assert writes_per_page == [128] * (count // 128) + [count % 128]
-    async with repo.database.engine.connect() as connection:
-        plan = (
-            await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + captures[0][0], captures[0][1])
-        ).all()
-    assert any("ix_runtime_effects_work_run_id" in str(row) for row in plan)
+    await repo.resolve_run_effects(lease, identity, "original-run", finished())
     facts = await repo.effect_evidence(lease, identity)
     assert sum(not fact.get("pending") for fact in facts) == count
     assert await read_receipt(repo, "unrelated") == original

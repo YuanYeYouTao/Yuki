@@ -14,7 +14,6 @@ from yuki.health import build_health_payload
 from yuki.llm.base import LLMConfigurationError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.executor import TaskModelExecutor
-from yuki.model_runtime.models import ModelTask
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.model_runtime.profiles import load_model_profile_catalog
 from yuki.model_runtime.routes import ModelRouter
@@ -52,23 +51,23 @@ async def test_flat_values_can_be_empty_when_the_actual_profile_is_configured(
         llm_model="",
         llm_api_key="",
     )
-    requests = []
 
     async def unexpected_http(*args, **kwargs):
-        requests.append((args, kwargs))
         raise AssertionError("health must not call the model")
 
     monkeypatch.setattr(httpx.AsyncClient, "send", unexpected_http)
-    lifecycle = LifecycleRegistry()
     model = ModelRuntimeModule(
-        settings.model_runtime, database, lifecycle=lifecycle, web_settings=settings.web
+        settings.model_runtime,
+        database,
+        lifecycle=LifecycleRegistry(),
+        web_settings=settings.web,
     ).build()
     container = health_container(database, None)
     container.settings, container.models = settings, model.executor
     try:
         payload = await build_health_payload(container)
         assert payload["llm_configured"] is True
-        assert key not in json.dumps(payload) and requests == []
+        assert key not in json.dumps(payload)
     finally:
         await model.executor.close()
 
@@ -104,9 +103,5 @@ async def test_configured_projection_reads_the_current_pool_even_inside_an_old_r
         models.apply_catalog(new_catalog, ModelClientPool(injected_profiles={"main": injected}))
         assert (await build_health_payload(container))["llm_configured"]
         assert injected.requests == []
-        invalid = new_catalog.model_copy(update={"routes": {}})
-        models.apply_catalog(invalid, ModelClientPool())
-        with pytest.raises(KeyError):
-            models.configured(ModelTask.CHAT_AGENT)
     finally:
         await models.close()

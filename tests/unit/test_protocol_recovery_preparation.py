@@ -71,8 +71,10 @@ async def as_child(control, original):
     return child, child.session
 
 
-@pytest.mark.parametrize("kind", ["pause", "child", "paired_native", "paired_native_root"])
-@pytest.mark.parametrize("read_history", [False, True])
+@pytest.mark.parametrize(
+    ("kind", "read_history"),
+    [("pause", False), ("child", True), ("paired_native", True), ("paired_native_root", False)],
+)
 async def test_public_preparation_does_not_publish_or_replace_original_paid_sources(
     database, tmp_path, kind, read_history
 ):

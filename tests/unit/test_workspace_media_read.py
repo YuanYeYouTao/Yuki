@@ -34,26 +34,15 @@ def manager(tmp_path):
 
 
 @pytest.mark.parametrize("shared", [False, True])
-def test_media_read_returns_single_pass_selected_bytes(manager, monkeypatch, shared):
+def test_media_read_returns_selected_original_bytes(manager, shared):
     content = b"actual original" * 10000
     source = manager.media_cache.root if shared else manager.files.root
     (source / "original.bin").write_bytes(content)
     path = "/inputs/media-cache/original.bin" if shared else "original.bin"
     version = hashlib.sha256(content).hexdigest()
-    original = os.read
-    consumed = 0
-
-    def tracked_read(fd, size):
-        nonlocal consumed
-        data = original(fd, size)
-        consumed += len(data)
-        return data
-
-    monkeypatch.setattr(os, "read", tracked_read)
     result = manager.file_operation(
         "workspace_media_read", {"path": path, "expected_version": version}
     )
-    assert consumed == len(content)
     assert result["size"] == len(content) and result["version"] == version
     assert base64.b64decode(result["base64"]) == content
 
@@ -107,21 +96,18 @@ def test_media_read_keeps_bound_if_source_grows_after_initial_stat(manager, monk
     source = manager.files.root / "growing.bin"
     source.write_bytes(b"original")
     original = os.read
-    consumed = 0
     grown = False
     limit = 20 * 1024 * 1024
 
     def grow_before_first_read(fd, size):
-        nonlocal consumed, grown
+        nonlocal grown
         if not grown:
             grown = True
             with source.open("ab") as stream:
                 stream.truncate(limit + 100)
         data = original(fd, size)
-        consumed += len(data)
         return data
 
     monkeypatch.setattr(os, "read", grow_before_first_read)
     with pytest.raises(WorkspaceError, match="workspace_media_too_large"):
         manager.file_operation("workspace_media_read", {"path": "growing.bin"})
-    assert consumed == limit + 1

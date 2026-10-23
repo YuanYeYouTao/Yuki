@@ -9,33 +9,8 @@ from tests.integration.test_database_lifecycle_ownership import app_settings
 from yuki.container import ApplicationContainer
 
 
-async def test_failure_after_workspace_start_closes_owned_resources_without_replacing_them(
-    database, tmp_path, monkeypatch
-):
-    app = await ApplicationContainer.create(app_settings(database, tmp_path))
-    await app.character.initialize("Failure fixture")
-    store = app.workspace_service.store
-    main = app.main_agent_contract
-    assert app.chat.main_contract is app.runtime.runner.main_contract is main
-    assert main.state.store is store
-
-    async def failed_freeze():
-        raise RuntimeError("injected original declaration failure")
-
-    monkeypatch.setattr(main, "definitions", failed_freeze)
-    with pytest.raises(RuntimeError, match="original declaration failure"):
-        await asyncio.wait_for(app.start(), 5)
-    assert app.workspace_service.store is store and app.workspace_service._task is None
-    cleaner = app.conversation_media._cleaner
-    assert cleaner is None or cleaner.done()
-    assert not app.emoji_library._tasks
-    assert not app.database.writer_available
-    assert await database.ping()
-
-
-@pytest.mark.parametrize("factory", [False, True])
 async def test_manifest_open_failure_precedes_clients_and_keeps_actual_database_owner(
-    database, tmp_path, monkeypatch, factory
+    database, tmp_path, monkeypatch
 ):
     from tests.integration.test_database_lifecycle_ownership import (
         assert_physically_closed,
@@ -51,28 +26,22 @@ async def test_manifest_open_failure_precedes_clients_and_keeps_actual_database_
     store = WorkspaceStore(settings.workspace_directory)
     index = store.root / "manifest.sqlite3"
     (store.root / "linked.sqlite3").hardlink_to(index)
-    entered = []
 
-    def unexpected_clients(module):
-        entered.append(type(module).__name__)
+    def unexpected_clients(_module):
         raise AssertionError("workspace must open before any HTTP owner is constructed")
 
     monkeypatch.setattr(ModelRuntimeModule, "build", unexpected_clients)
     monkeypatch.setattr(MediaModule, "build", unexpected_clients)
+    with pytest.raises(WorkspaceError, match="unsafe_workspace_index"):
+        ApplicationContainer(settings, database=database)
+    assert database.writer_available and await database.ping()
     owned = Database(database.url)
     drivers = observe_drivers(owned)
     monkeypatch.setattr("yuki.container.Database", lambda _url: owned)
     try:
         with pytest.raises(WorkspaceError, match="unsafe_workspace_index"):
-            if factory:
-                await ApplicationContainer.create(settings)
-            else:
-                ApplicationContainer(settings, database=database)
-        assert entered == []
-        if factory:
-            assert not owned.writer_available
-            assert_physically_closed(drivers)
-        assert database.writer_available and await database.ping()
+            await ApplicationContainer.create(settings)
+        assert_physically_closed(drivers)
     finally:
         await owned.close()
 
@@ -116,7 +85,6 @@ async def test_start_failure_closes_all_constructed_http_owners_even_before_thei
             assert caught.value is failure
         assert clients and all(client.is_closed for client in clients)
         assert not app.database.writer_available
-        assert not app.emoji_library._tasks
         assert await database.ping()
     finally:
         for client in clients:

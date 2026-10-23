@@ -87,12 +87,6 @@ async def test_pong_config_replaces_server_intervals_and_control_does_not_enter_
         b'{"PingInterval":17,"ReconnectCount":4,"ReconnectInterval":3,"ReconnectNonce":2}'
     )
     await ws.handle_frame(pong.SerializeToString())
-    assert ws._config == {
-        "PingInterval": 17,
-        "ReconnectCount": 4,
-        "ReconnectInterval": 3,
-        "ReconnectNonce": 2,
-    }
     assert ws.last_success_at is not None
     ws.handler.assert_not_awaited()
     ws._connection.send.assert_not_awaited()

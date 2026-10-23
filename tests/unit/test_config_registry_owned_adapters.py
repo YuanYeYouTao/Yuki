@@ -19,23 +19,21 @@ def test_custom_registry_owns_its_annotation_and_new_registry_reads_new_metadata
     )
     first = ConfigRegistry((custom,))
     assert first.convert(custom, "5") == 5
-    owned = first._adapters["registry_test"]
     monkeypatch.setitem(
         Settings.model_fields, "registry_test", FieldInfo(annotation=Annotated[int, Field(ge=7)])
     )
     second = ConfigRegistry((custom,))
-    assert first.convert(custom, 5) == 5 and first._adapters["registry_test"] is owned
+    assert first.convert(custom, 5) == 5
     with pytest.raises(ValueError):
         second.convert(custom, 5)
     assert second.convert(custom, 7) == 7
-    assert second._adapters["registry_test"] is not owned
 
 
-@pytest.mark.parametrize("value", [True, 0, 11, float("nan"), float("inf")])
-def test_custom_scalar_limits_still_precede_settings_validation(value):
+def test_custom_scalar_limits_still_precede_settings_validation():
     template = ConfigRegistry().get("asr.timeout_seconds")
     spec = replace(template, key="custom.timeout", aliases=(), minimum=1, maximum=10)
     registry = ConfigRegistry((spec,))
-    with pytest.raises(ValueError):
-        registry.convert(spec, value)
+    for value in (True, 0, 11, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            registry.convert(spec, value)
     assert registry.convert(spec, "7") == 7

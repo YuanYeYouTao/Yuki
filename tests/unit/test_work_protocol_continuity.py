@@ -1167,7 +1167,6 @@ async def test_retired_compaction_anchor_does_not_block_original_recovery(
     resumed = WorkSession(control, "changed" if contract_changed else "same")
     refreshed = await resumed.restore(TurnTranscript((task,)))
     assert refreshed.request().messages[0] == task
-    assert "compaction_anchor" not in resumed.__dict__
     await control.repository.release(control.lease)
 
 

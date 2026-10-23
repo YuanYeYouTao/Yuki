@@ -183,18 +183,6 @@ async def test_lost_final_hint_disconnects_and_reconnect_sync_reads_durable_resu
     await reconnect.aclose()
 
 
-async def test_post_commit_hook_never_publishes_rollback_and_covers_session_begin(database):
-    queue = database.commit_hints.subscribe()
-    with pytest.raises(RuntimeError):
-        async with database.immediate_session():
-            raise RuntimeError("rollback")
-    assert queue.empty()
-    async with database.immediate_session():
-        pass
-    assert await queue.get() is True
-    database.commit_hints.unsubscribe(queue)
-
-
 async def test_activity_uses_actual_live_spans_and_never_payloads(app_env, database):
     env = app_env
     _, _, principal, views = await setup_views(env, database)

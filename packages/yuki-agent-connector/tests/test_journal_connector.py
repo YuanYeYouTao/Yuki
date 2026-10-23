@@ -320,7 +320,6 @@ async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacke
         journal.append(event)
     connections = 0
     all_acked = asyncio.Event()
-    seen = []
 
     async def peer(socket):
         nonlocal connections
@@ -344,7 +343,6 @@ async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacke
             for original in originals[1:]:
                 current = json.loads(await socket.recv())
                 assert current == original
-                seen.append(current["event_id"])
                 await socket.send(json.dumps({"type": "ack", "event_id": current["event_id"]}))
             all_acked.set()
             await socket.wait_closed()
@@ -359,5 +357,4 @@ async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacke
             await asyncio.wait_for(all_acked.wait(), 5)
             await socket.close()
             await running
-    assert seen == [item["event_id"] for item in originals[1:]]
     assert journal.next_event() is None

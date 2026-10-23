@@ -45,18 +45,13 @@ def admin_for(database):
     )
 
 
-@pytest.mark.parametrize("operation", ["correct", "invalidate", "restore", "merge"])
-async def test_missing_fact_keeps_original_noop_without_secondary_write(database, operation):
+async def test_missing_facts_keep_original_noops_without_secondary_writes(database):
     admin, _, _ = admin_for(database)
     actor = AdminActor("9000", True, "missing", "private:9000", person_id=await _admin(database))
-    if operation == "correct":
-        assert await admin.correct_fact(actor, 999999, "correction") is None
-    elif operation == "invalidate":
-        assert await admin.invalidate_fact(actor, 999999) is False
-    elif operation == "restore":
-        assert await admin.restore_fact(actor, 999999) is None
-    else:
-        assert await admin.merge_facts(actor, 999999, 999998) is None
+    assert await admin.correct_fact(actor, 999999, "correction") is None
+    assert await admin.invalidate_fact(actor, 999999) is False
+    assert await admin.restore_fact(actor, 999999) is None
+    assert await admin.merge_facts(actor, 999999, 999998) is None
     async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
         assert (
@@ -64,10 +59,7 @@ async def test_missing_fact_keeps_original_noop_without_secondary_write(database
         )
 
 
-@pytest.mark.parametrize("rollback", [False, True])
-async def test_correction_copies_other_event_evidence_and_rolls_back_as_one_unit(
-    database, rollback
-):
+async def test_correction_rolls_back_then_copies_original_evidence_on_retry(database):
     admin, facts, ledger = admin_for(database)
     source = await _event(
         ledger, message_id="first-fact", sender_user_id="1001", content="source one"
@@ -89,37 +81,30 @@ async def test_correction_copies_other_event_evidence_and_rolls_back_as_one_unit
         if sql.startswith("INSERT INTO memory_evidence "):
             raise RuntimeError("original evidence commit failure")
 
-    if rollback:
-        sql_event.listen(database.engine.sync_engine, "after_cursor_execute", fail_after_evidence)
-        try:
-            with pytest.raises(RuntimeError, match="original evidence commit failure"):
-                await admin.correct_fact(
-                    trigger(correction, "original:correct"),
-                    original.id,
-                    "new fact",
-                    confidence=0.62,
-                )
-        finally:
-            sql_event.remove(
-                database.engine.sync_engine, "after_cursor_execute", fail_after_evidence
+    sql_event.listen(database.engine.sync_engine, "after_cursor_execute", fail_after_evidence)
+    try:
+        with pytest.raises(RuntimeError, match="original evidence commit failure"):
+            await admin.correct_fact(
+                trigger(correction, "original:correct"), original.id, "new fact", confidence=0.62
             )
-        assert await facts.get_fact(original.id) == original
-        async with database.read_session() as reader:
-            assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 1
-            assert (
-                await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
-                == 1
-            )
-    else:
-        revised = await admin.correct_fact(
-            trigger(correction, "original:correct"), original.id, "new fact", confidence=0.62
+    finally:
+        sql_event.remove(database.engine.sync_engine, "after_cursor_execute", fail_after_evidence)
+    assert await facts.get_fact(original.id) == original
+    assert await facts.list_evidence(original.id) == original_evidence
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 1
+        assert (
+            await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 1
         )
-        assert revised.id != original.id and revised.confidence == 0.62
-        evidence = {item.event_id: item for item in await facts.list_evidence(revised.id)}
-        assert set(evidence) == {source.id, correction.id}
-        assert evidence[source.id].confidence == 0.37
-        assert evidence[correction.id].confidence == 0.62
-        assert evidence[correction.id].relation.value == "correction"
+    revised = await admin.correct_fact(
+        trigger(correction, "original:correct"), original.id, "new fact", confidence=0.62
+    )
+    assert revised.id != original.id and revised.confidence == 0.62
+    evidence = {item.event_id: item for item in await facts.list_evidence(revised.id)}
+    assert set(evidence) == {source.id, correction.id}
+    assert evidence[source.id].confidence == 0.37
+    assert evidence[correction.id].confidence == 0.62
+    assert evidence[correction.id].relation.value == "correction"
     assert await facts.list_evidence(original.id) == original_evidence
 
 

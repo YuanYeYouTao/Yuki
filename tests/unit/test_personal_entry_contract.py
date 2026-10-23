@@ -45,20 +45,11 @@ async def read_personal_history(database, runtime, args):
     )
 
 
-async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(app_env, database):
+async def test_app_model_reads_own_other_entry_without_rewriting_work(app_env, database):
     env = app_env
     device, person = await owner(env, database)
     original = await seeded(env, database)
     principal = await env.identity.authenticate(device["token"])
-    contract = env.harness.processor._chat.runtime.runner.main_contract
-    platform = await contract.definitions()
-    app = await contract.definitions()
-    assert app == platform
-    assert "read_personal_entry" not in {tool.name for tool in app}
-    assert "query_chat_history" in {tool.name for tool in app}
-    modified = await contract.definitions()
-    modified[0].parameters["tampered"] = True
-    assert all("tampered" not in item.parameters for item in await contract.definitions())
     async with database.read_session() as session:
         binding = await find_identity_binding(session, "1001")
     captured = []
@@ -208,11 +199,7 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
         )
 
 
-async def test_app_input_keeps_qq_work_contract_and_one_code_view(app_env, database, tmp_path):
-    from yuki.services.main_agent_contract import MainAgentContract
-    from yuki.workspace.short_state import ShortState
-    from yuki.workspace.store import WorkspaceStore
-
+async def test_app_input_preserves_original_qq_work_recovery_contract(app_env, database):
     env = app_env
     device, _ = await owner(env, database)
     original = await seeded(env, database, group=True, state="waiting_user")
@@ -226,15 +213,6 @@ async def test_app_input_keeps_qq_work_contract_and_one_code_view(app_env, datab
     )
     assert response.status_code == 200, response.text
     assert before == await chat.runtime.main_turns.recovery_contract(config)
-    code = MainAgentContract(
-        chat, ShortState(WorkspaceStore(tmp_path / "code-state")), code_enabled=True
-    )
-    base = await code.model_definitions()
-    app = await code.model_definitions()
-    assert base == app
-    assert "query_chat_history" in {tool.name for tool in base}
-    assert "read_personal_entry" not in code.script_api.schemas
-    assert "query_chat_history" in code.script_api.schemas
 
 
 async def test_cross_entry_file_caption_retains_selected_binding(app_env, database):

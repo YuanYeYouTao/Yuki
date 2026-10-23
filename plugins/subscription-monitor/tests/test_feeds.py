@@ -189,9 +189,8 @@ def test_unsafe_xml_and_non_feed_responses_fail(body: str) -> None:
 
 
 @pytest.mark.parametrize("format_name", ["rss", "atom", "json"])
-@pytest.mark.parametrize("duplicate", [False, True])
-def test_large_feeds_keep_all_unique_entries_and_deduplicate_original_ids(format_name, duplicate):
-    identities = ["same" if duplicate else f"item-{index}" for index in range(201)]
+def test_large_feeds_keep_all_unique_entries_and_deduplicate_original_ids(format_name):
+    identities = [f"item-{index}" for index in range(201)] + ["item-0"]
     if format_name == "rss":
         body = (
             '<rss version="2.0"><channel>'
@@ -215,7 +214,7 @@ def test_large_feeds_keep_all_unique_entries_and_deduplicate_original_ids(format
             }
         )
     result = parse_feed(body, source_url=SOURCE)
-    assert [entry.id for entry in result] == list(dict.fromkeys(identities))
+    assert [entry.id for entry in result] == identities[:-1]
 
 
 def test_oversize_response_fails_and_projection_fields_are_bounded() -> None:

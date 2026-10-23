@@ -8,7 +8,7 @@ from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin
 from tests.unit.test_app_messages import app_env as app_env
-from tests.unit.test_client_projection_costs import principal_for
+from tests.unit.test_client_works import owner as client_owner
 
 from yuki.client_api.works import ClientWorks
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -27,7 +27,8 @@ from yuki.runtime.work_repository import WorkRepository
 async def test_work_card_keeps_original_space_binding_after_telegram_group_migration(
     app_env, telegram_env, database
 ):
-    principal = await principal_for(app_env, database)
+    device, _ = await client_owner(app_env, database)
+    principal = await app_env.identity.authenticate(device["token"])
     now = datetime.now(UTC)
     async with database.immediate_session() as writer:
         owner = await writer.get(CanonicalPersonModel, principal.person_id)

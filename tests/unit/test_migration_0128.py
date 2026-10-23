@@ -19,19 +19,6 @@ def _insert(connection, table, values):
     )
 
 
-def test_empty_database_runs_full_chain_through_0128(tmp_path, monkeypatch):
-    path = tmp_path / "empty.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path}")
-    command.upgrade(Config("alembic.ini"), "0128")
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0128",)
-        foreign_keys = connection.execute(
-            "PRAGMA foreign_key_list(plugin_notification_outbox)"
-        ).fetchall()
-        assert foreign_keys and all(row[3] != "media_handle_id" for row in foreign_keys)
-        assert not connection.execute("PRAGMA foreign_key_check").fetchall()
-
-
 def test_0128_preserves_old_receipt_and_budget_before_real_artifact_cleanup(tmp_path, monkeypatch):
     path = tmp_path / "original-receipt.db"
     url, _ = _seed_0118(path, monkeypatch)

@@ -25,7 +25,6 @@ from yuki.identity.db_models import AccountModel, CanonicalPersonModel, Identity
 from yuki.persistence.models import ChatEventModel
 from yuki.services.agent_tools import ToolRuntime
 from yuki.social.agent_adapter import invoke_social
-from yuki.social.models import SocialError
 
 
 async def invoke(env, arguments, *, account="10001"):
@@ -150,13 +149,6 @@ async def test_same_person_exact_account_does_not_follow_current_speaker(
     assert result["status"] == "succeeded"
     sent = [params for method, params in env.bot.calls if method == "send_group_msg"]
     assert sent[-1]["message"][1] == {"type": "at", "data": {"qq": account}}
-
-
-async def test_retired_subject_shortcut_is_rejected_as_input(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    with pytest.raises(SocialError, match="invalid_message_arguments"):
-        await invoke(env, {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]})
-    assert not any(method == "send_group_msg" for method, _ in env.bot.calls)
 
 
 @pytest.mark.parametrize("native", ["10001", "10003"])

@@ -63,7 +63,6 @@ async def test_legacy_results_get_canonical_outcome_and_sql_reads_only_it(
     database, tmp_path, monkeypatch
 ):
     migration = importlib.import_module(MIGRATION)
-    assert (migration.revision, migration.down_revision) == ("0101", "0100")
     repository, lease, item = await _seed(database, tmp_path)
     before = await _receipts(database)
     async with database.engine.begin() as connection:

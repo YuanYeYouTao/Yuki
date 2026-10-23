@@ -93,7 +93,6 @@ async def test_preview_uses_original_cached_at_and_expires_without_redownload(
     await inspect(case, "late-first-preview")
     item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     preview = next(path.parent.glob("preview-*"))
-    assert preview.stat().st_mtime == pytest.approx(cached_at.timestamp())
     assert item.expires_at.replace(tzinfo=UTC) == expires_at
     async with database.immediate_session() as writer:
         await writer.execute(

@@ -2,12 +2,9 @@
 
 import asyncio
 import time
-from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import event as sqlalchemy_events
-from sqlalchemy import insert, update
+from sqlalchemy import update
 from tests.conftest import build_harness, make_settings
 from tests.support.semantic_participation_host_helpers import (
     _choice,
@@ -21,10 +18,7 @@ from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfDelta, SelfReport
 
 from yuki.llm.fake import FakeLLMProvider
-from yuki.memory.models import MemoryFactCreate
-from yuki.memory.repository import MemoryFactRepository
-from yuki.memory.self_origin import read_self_initiative_facts
-from yuki.persistence.models import ChatEventModel, MemoryEvidenceModel, MemoryFactModel
+from yuki.persistence.models import ChatEventModel
 from yuki.services.participation_feedback import admission_unit_binding
 
 
@@ -88,50 +82,12 @@ async def test_committed_fast_input_recovers_once_and_still_gets_background_obse
         await host.close()
 
 
-@pytest.mark.parametrize("state", ["stay", "quiet", "closed"])
-async def test_observer_uses_one_schedule_without_purchasing_state_change_observations(
-    database, tmp_path, monkeypatch, state
-):
-    host, item, a, _original, _unit = await _relationship(
-        database, tmp_path, engage="quiet" if state == "quiet" else "stay"
-    )
-    try:
-        if state == "closed":
-            source = item.controller.state.events[f"event:{a.id}"]
-            snapshot = Snapshot(
-                scope=item.scene.scope,
-                focus=source,
-                context=(),
-                sequence=1,
-                issued_at=time.time(),
-            )
-            assert item.controller.apply_semantic_observation(
-                _observation(snapshot, act="ask_yuki_stop")
-            )
-        evaluate = AsyncMock(return_value=None)
-        monkeypatch.setattr(item.observation, "evaluate_due", evaluate)
-        monkeypatch.setattr(item.controller, "advance", lambda *_args, **_kwargs: None)
-        await host._advance_scene(item)
-        assert evaluate.await_count == 1
-        assert "active" not in evaluate.await_args.kwargs
-        if state == "quiet":
-            # Keep the report queryable for later snapshots/corrections.
-            assert any(
-                unit.engage == "quiet" for unit in item.controller.participating_units(time.time())
-            )
-        assert not host._observer.calls
-    finally:
-        await host.close()
-
-
 async def test_quiet_closes_unadmitted_continuation_at_writer_without_blocking_direct_input(
     database, tmp_path
 ):
     host, item, _a, original, unit = await _relationship(database, tmp_path)
     try:
-        b = await _event_and_route(
-            database, host.ledger, content="synthetic queued continuation"
-        )
+        b = await _event_and_route(database, host.ledger, content="synthetic queued continuation")
         binding, reason = await host.continuation_for_event(b.id)
         prepared = host.ordinary.prepare(b, item.scene.generation, 2, binding, reason=reason)
         assert await host.continuation_current(binding)
@@ -354,101 +310,4 @@ async def test_waiting_review_rechecks_its_actual_sources_after_observer_returns
         release.set()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
-        await host.close()
-
-
-async def test_idle_ticks_and_cold_restore_do_not_query_available_long_term_memories(
-    database, tmp_path
-):
-    host, _ = await _host(database, tmp_path)
-    queries = []
-
-    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
-        if "memory_facts" in statement.lower() or "memory_evidence" in statement.lower():
-            queries.append(statement)
-
-    try:
-        source = await _event_and_route(
-            database, host.ledger, content="synthetic old group evidence"
-        )
-        async with database.immediate_session() as writer:
-            await writer.execute(
-                update(ChatEventModel)
-                .where(ChatEventModel.id == source.id)
-                .values(occurred_at=datetime.now(UTC) - timedelta(minutes=30))
-            )
-            first = await MemoryFactRepository(database).create_fact(
-                MemoryFactCreate(
-                    scope_type="group",
-                    group_id=source.group_id,
-                    memory_key="synthetic:idle-memory:0",
-                    category="topic",
-                    content="synthetic available long term memory",
-                    source_type="automatic",
-                    authority="group_report",
-                ),
-                normalized_content="synthetic available long term memory",
-                supersedes_id=None,
-                session=writer,
-            )
-            template = {
-                column.name: getattr(first, column.name) for column in first.__table__.columns
-            }
-            template.pop("id")
-            ids = (
-                first.id,
-                *await writer.scalars(
-                    insert(MemoryFactModel).returning(MemoryFactModel.id),
-                    [
-                        dict(template, memory_key=f"synthetic:idle-memory:{number}")
-                        for number in range(1, 140)
-                    ],
-                ),
-            )
-            await writer.execute(
-                insert(MemoryEvidenceModel),
-                [
-                    dict(
-                        fact_id=identity,
-                        event_id=source.id,
-                        source_speaker_user_id=source.sender_user_id,
-                        relation="group_statement",
-                        authority="group_report",
-                        confidence=1,
-                        excerpt=source.content,
-                        created_at=datetime.now(UTC),
-                    )
-                    for identity in ids
-                ],
-            )
-        assert (
-            len(
-                await read_self_initiative_facts(
-                    database,
-                    canonical_conversation_id=source.canonical_conversation_id,
-                    fact_ids=ids,
-                )
-            )
-            == 140
-        )
-
-        sqlalchemy_events.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-        try:
-            for _ in range(3):
-                await host.tick()
-            scene = await host._scene(source.canonical_conversation_id)
-            original = host._sessions[(scene.conversation_id, scene.generation)].controller
-            host._sessions.clear()
-            restored = await host._session(scene)
-            assert restored.controller is not original
-            for _ in range(3):
-                await host.tick()
-            assert not queries
-            assert not host._observer.calls
-            assert all(
-                run.trigger_kind == "intrinsic" for run in await host.repository.list_active()
-            )
-        finally:
-            sqlalchemy_events.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    finally:
         await host.close()

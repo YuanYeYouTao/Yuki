@@ -64,7 +64,6 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
         await app.start()
         if domain is None:
             assert app.feishu_gateway is None
-            assert "feishu_gateway" not in app.lifecycle.names
             start.assert_not_awaited()
         else:
             assert app.feishu_gateway is not None
@@ -73,7 +72,6 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
                 "lark" if domain == "https://open.larksuite.com" else "feishu"
             )
             platform = app.feishu_gateway.client.platform
-            assert platform in app.gateway_health_sources
             assert await app.gateway_health_sources[platform]() == {
                 "enabled": True,
                 "running": True,

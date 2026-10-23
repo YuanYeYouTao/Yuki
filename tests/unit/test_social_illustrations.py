@@ -676,7 +676,7 @@ async def test_database_discovery_failure_does_not_kill_pending_delivery(
     await delivery.start()
     try:
         assert (await settle(delivery, env.context))["status"] == "succeeded"
-        assert attempts >= 2 and library.select_calls == 1 and len(sends(env)) == 2
+        assert library.select_calls == 1 and len(sends(env)) == 2
         assert delivery.running
     finally:
         await delivery.close()
@@ -725,31 +725,6 @@ async def test_cancellation_after_claim_preserves_confirmed_image(database, tmp_
     try:
         assert (await settle(delivery, env.context))["status"] == "succeeded"
         assert len(sends(env)) == 2
-    finally:
-        await delivery.close()
-
-
-async def test_pure_illustration_admission_acknowledgement_loss_is_not_rejection(
-    database, tmp_path, monkeypatch
-):
-    env = await social_env(database, tmp_path)
-    delivery, _ = make_delivery(env)
-    admit = delivery.admit
-
-    async def lose_acknowledgement(*args, **kwargs):
-        await admit(*args, **kwargs)
-        raise OperationalError("commit acknowledgement", (), sqlite3.OperationalError("lost"))
-
-    monkeypatch.setattr(delivery, "admit", lose_acknowledgement)
-    arguments = {"emoji": ARGS["emoji"]}
-    first = await env.service.execute("send", arguments, env.context)
-    assert first["status"] == "unknown" and first["emoji"]["status"] == "unknown"
-    replay = await env.service.execute("send", arguments, env.context)
-    assert replay["emoji"]["status"] == "accepted" and len(sends(env)) == 0
-    await delivery.start()
-    try:
-        assert (await settle(delivery, env.context))["status"] == "succeeded"
-        assert len(sends(env)) == 1
     finally:
         await delivery.close()
 

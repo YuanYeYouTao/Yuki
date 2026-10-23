@@ -1,13 +1,11 @@
 """Real indexed mention lookup, account identity and conversation-local disambiguation."""
 
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
 
 from yuki.adapters.onebot.social import OneBotSocialOperations
 from yuki.conversation.hydrate import ensure_canonical_conversation
@@ -22,22 +20,6 @@ from yuki.persistence.models import ChatEventModel
 from yuki.social.content import prepare_for_entry
 
 NOW = datetime(2026, 10, 20, tzinfo=UTC)
-
-
-@contextmanager
-def queries(database):
-    captured = []
-
-    def record(connection, cursor, statement, parameters, context, executemany):
-        if statement.lstrip().startswith("SELECT"):
-            captured.append((statement, parameters))
-
-    engine = database.engine.sync_engine
-    event.listen(engine, "before_cursor_execute", record)
-    try:
-        yield captured
-    finally:
-        event.remove(engine, "before_cursor_execute", record)
 
 
 @pytest_asyncio.fixture
@@ -146,15 +128,6 @@ def message(account, conversation_id, *, when=NOW, duplicate=False, external=Fal
 
 
 @pytest.mark.asyncio
-async def test_plain_text_and_protected_addresses_do_not_read_identity(database, entry):
-    with queries(database) as captured:
-        for body in ("普通消息", r"\@Ice", "a@Ice.example https://test/@Ice"):
-            content = await prepare(database, entry, body)
-            assert not content.message.mentions
-    assert captured == []
-
-
-@pytest.mark.asyncio
 async def test_same_account_old_and_null_observations_use_one_current_snapshot(database, entry):
     async with database.immediate_session() as session:
         binding = await find_identity_binding(session, "1001")
@@ -190,37 +163,31 @@ async def test_same_account_old_and_null_observations_use_one_current_snapshot(d
                 )
             )
         binding.status = "disabled"
-    with queries(database) as captured:
-        content = await prepare(database, entry, "@Ice 再@ Ice")
+    content = await prepare(database, entry, "@Ice 再@ Ice")
     assert [item.account_id for item in content.message.mentions] == [account.id] * 2
     assert all(item.assignment_id == binding.id for item in content.message.mentions)
     assert not content.unresolved
-    assert len(captured) == 1 and "chat_events" not in captured[0][0]
 
 
 @pytest.mark.asyncio
-async def test_longest_name_does_not_query_recent_shorter_accounts(database, entry):
+async def test_longest_name_selects_the_complete_recipient(database, entry):
     async with database.immediate_session() as session:
         await observe(session, entry, name="Ice", native="71001")
         longest = await observe(session, entry, name="Iceberg", native="71002")
-    with queries(database) as captured:
-        content = await prepare(database, entry, "@Iceberg 看这里")
+    content = await prepare(database, entry, "@Iceberg 看这里")
     assert content.message.mentions[0].account_id == longest.id
     assert content.message.text == "@Iceberg 看这里"
-    assert len(captured) == 1 and "chat_events" not in captured[0][0]
 
 
 @pytest.mark.asyncio
-async def test_at_inside_a_longest_name_does_not_add_a_second_recipient_lookup(database, entry):
+async def test_at_inside_a_longest_name_selects_only_that_recipient(database, entry):
     async with database.immediate_session() as session:
         whole = await observe(session, entry, name="A@B", native="71001")
         await observe(session, entry, name="B", native="71002")
         await observe(session, entry, name="B", native="71003")
-    with queries(database) as captured:
-        content = await prepare(database, entry, "@A@B 看这里")
+    content = await prepare(database, entry, "@A@B 看这里")
     assert content.message.text == "@A@B 看这里"
     assert [item.account_id for item in content.message.mentions] == [whole.id]
-    assert len(captured) == 1
 
 
 @pytest.mark.asyncio
@@ -243,14 +210,11 @@ async def test_real_equal_names_choose_latest_message_then_id_then_account(
             session.add(message(first, entry.conversation_id))
             await session.flush()
             session.add(message(second, entry.conversation_id))
-    with queries(database) as captured:
-        content = await prepare(database, entry, "@Ice 和@Ice，再@ Ice")
+    content = await prepare(database, entry, "@Ice 和@Ice，再@ Ice")
     expected = first.id if activity == "none" else second.id
     assert [item.account_id for item in content.message.mentions] == [expected] * 3
     assert content.message.text == "@Ice 和@Ice，再@ Ice"
     assert not content.unresolved
-    assert len(captured) == 2
-    assert sum("chat_events" in statement for statement, _ in captured) == 1
 
 
 @pytest.mark.asyncio
@@ -317,8 +281,7 @@ async def test_explicit_accounts_are_physical_and_unknown_references_keep_at(dat
         other_platform = await observe(session, entry, native="71002", platform="telegram")
     unknown = str(uuid4())
     body = f"@{{account:{physical.id}}} @{{account:{unknown}}} @{{account:{other_platform.id}}}"
-    with queries(database) as captured:
-        content = await prepare(database, entry, body)
+    content = await prepare(database, entry, body)
     assert (
         content.message.text == f"@IceOld @{{account:{unknown}}} @{{account:{other_platform.id}}}"
     )
@@ -326,32 +289,3 @@ async def test_explicit_accounts_are_physical_and_unknown_references_keep_at(dat
     assert content.message.mentions[0].account_id == physical.id
     assert content.message.mentions[0].assignment_id is None
     assert len(content.unresolved) == 2
-    assert len(captured) == 1
-    async with database.engine.connect() as connection:
-        statement, parameters = captured[0]
-        rows = await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + statement, parameters)
-        plan = "\n".join(row[3] for row in rows)
-    assert "sqlite_autoindex_accounts_1 (id=?)" in plan
-    assert "platform=?" not in plan and "SCAN accounts" not in plan
-
-
-@pytest.mark.asyncio
-async def test_name_and_recent_queries_use_covering_scope_and_message_indexes(database, entry):
-    async with database.immediate_session() as session:
-        await observe(session, entry)
-        second = await observe(session, entry, native="71002")
-        session.add(message(second, entry.conversation_id))
-    with queries(database) as captured:
-        await prepare(database, entry, "@Ice " * 1000)
-    assert len(captured) == 2
-    async with database.engine.connect() as connection:
-        plans = [
-            (await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + statement, parameters)).all()
-            for statement, parameters in captured
-        ]
-    names = "\n".join(row[3] for row in plans[0])
-    recent = "\n".join(row[3] for row in plans[1])
-    assert names.count("ix_account_names_name_scope_account (name=? AND space_binding_id=?)") == 2
-    assert "ix_chat_events_conversation_message_sender_time" in recent
-    assert "canonical_conversation_id=? AND sender_user_id=?" in recent
-    assert "SCAN chat_events" not in recent

@@ -100,9 +100,9 @@ def test_failed_candidate_keeps_pending_until_original_committed_head():
     assert tuple(captured.event_ids) == (1, 2, 3, 4)
 
 
-def test_tail_current_dense_group_visits_only_fresh_body(monkeypatch):
+def test_appended_event_delta_excludes_the_current_input():
     at = datetime(2026, 10, 18, tzinfo=UTC)
-    rows = tuple(_event(i, at) for i in range(1, 1001))
+    rows = tuple(_event(i, at) for i in range(1, 4))
     renderer = ChatEventPromptRenderer(rows)
     groups, singles = renderer.main_agent_history_views(rows)
     frozen = FrozenFragments.load([]).extend_history(
@@ -110,26 +110,17 @@ def test_tail_current_dense_group_visits_only_fresh_body(monkeypatch):
         tuple((ids, message) for _, ids, message in singles),
     )
     source = _source(rows, frozen)
-    added = (_event(1001, at), _event(1002, at))
-    source.extend(added, through_event_id=1002)
-    visited = []
-    original = ChatEventPromptRenderer.reference_message
-
-    def observe(self, row, **kwargs):
-        visited.append(row.id)
-        return original(self, row, **kwargs)
-
-    monkeypatch.setattr(ChatEventPromptRenderer, "reference_message", observe)
+    added = (_event(4, at), _event(5, at))
+    source.extend(added, through_event_id=5)
     groups, singles = source.render(
         added,
-        references=source.capture(1002),
-        through_event_id=1002,
-        current_event_id=1002,
+        references=source.capture(5),
+        through_event_id=5,
+        current_event_id=5,
     )
-    assert visited == [1001]
-    assert groups == singles and groups[0][0] == (1001,)
+    assert groups == singles and groups[0][0] == (4,)
     delta = frozen.extend_history(groups, singles).delta_from(frozen)
-    assert len(delta) == len(delta[0]) == 1 and delta[0][0].event_ids == (1001,)
+    assert len(delta) == len(delta[0]) == 1 and delta[0][0].event_ids == (4,)
 
 
 def test_unsubmitted_non_tail_current_does_not_replace_the_full_raw_group_index():
@@ -173,27 +164,3 @@ def test_unsubmitted_non_tail_current_does_not_replace_the_full_raw_group_index(
         )[0]
         == groups
     )
-
-
-def test_source_memory_accounting_tracks_metadata_without_retaining_body_payload():
-    at = datetime(2026, 10, 18, tzinfo=UTC)
-    frozen = FrozenFragments.load([])
-    source = _source(
-        (
-            replace(
-                _event(1, at, "x" * 100000),
-                segments=(
-                    {
-                        "type": "mention",
-                        "data": {"display_name": "名", "account_id": "original-account"},
-                    },
-                ),
-            ),
-        ),
-        frozen,
-    )
-    first = source.estimated_bytes
-    metadata = source.capture(1).get(1)
-    assert metadata.content == "" and metadata.segments == () and metadata.external_payload is None
-    source.extend((_event(2, at, "y" * 100000),), through_event_id=2)
-    assert first < source.estimated_bytes < first + 20000

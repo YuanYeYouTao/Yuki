@@ -72,8 +72,7 @@ async def test_original_activation_keeps_its_provider_when_a_new_work_reuses_the
         )
 
 
-@pytest.mark.parametrize("cancellations", [2, 4])
-async def test_runtime_drain_keeps_cleanup_protected_from_repeated_cancel(cancellations):
+async def test_runtime_drain_keeps_cleanup_protected_from_repeated_cancel():
     from yuki.runtime.activation_tasks import ActivationTasks
 
     tasks = ActivationTasks()
@@ -100,7 +99,7 @@ async def test_runtime_drain_keeps_cleanup_protected_from_repeated_cancel(cancel
     closing = asyncio.create_task(close())
     await cleaning.wait()
     try:
-        for index in range(cancellations):
+        for index in range(2):
             closing.cancel(f"close-{index}")
             await asyncio.sleep(0)
             assert not database_closed.is_set()

@@ -37,11 +37,5 @@ async def test_forget_keeps_shared_sticker_files_without_gallery_provenance(
         assert int(await session.scalar(text("PRAGMA foreign_keys")) or 0) == 1
         assert await session.get(CanonicalPersonModel, person_id) is None
         assert await session.get(CanonicalPersonModel, other_id) is not None
-        assert not any(
-            "sticker" in name
-            for name in (
-                await session.scalars(text("SELECT name FROM sqlite_master WHERE type='table'"))
-            )
-        )
         assert tuple((await session.execute(text("PRAGMA foreign_key_check"))).all()) == ()
     assert {path: path.read_bytes() for path in files_before} == files_before

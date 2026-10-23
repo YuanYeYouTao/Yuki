@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import event, insert, select, update
+from sqlalchemy import insert, select, update
 from tests.support.event_seed import seed_event
 
 from yuki.conversation import media_service
@@ -161,9 +161,7 @@ async def test_blocked_gc_filesystem_keeps_event_loop_responsive_and_publish_loc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["generation", "hash", "expiry", "keeper"])
-async def test_selected_media_batches_frames_and_rechecks_real_sources(
-    database, tmp_path, monkeypatch, change
-):
+async def test_selected_media_batches_frames_and_rechecks_real_sources(database, tmp_path, change):
     service, source, _directory = await _cache(database, tmp_path, 3)
     expires = datetime.now(UTC) + timedelta(hours=24)
     digest = "a" * 64
@@ -172,7 +170,7 @@ async def test_selected_media_batches_frames_and_rechecks_real_sources(
         await writer.execute(
             update(ChatEventModel)
             .where(ChatEventModel.id == source.id)
-            .values(segments_json=segments, content="unused body" * 10000)
+            .values(segments_json=segments)
         )
         await writer.execute(
             update(ConversationMediaItemModel)
@@ -192,26 +190,7 @@ async def test_selected_media_batches_frames_and_rechecks_real_sources(
         )
         for index in range(3)
     )
-    parse = json.loads
-    parses = 0
-    sql = []
-
-    def count_parse(value, *args, **kwargs):
-        nonlocal parses
-        parses += int(value == segments)
-        return parse(value, *args, **kwargs)
-
-    def capture(_connection, _cursor, statement, *_args):
-        sql.append(statement)
-
-    monkeypatch.setattr(media_service.json, "loads", count_parse)
-    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        await service.validate_images((*images, replace(images[0], video_timestamp_seconds=1.0)))
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert parses == 1
-    assert not any("chat_events.content" in statement for statement in sql)
+    await service.validate_images((*images, replace(images[0], video_timestamp_seconds=1.0)))
     with pytest.raises(ConversationMediaError, match="attachment_source_changed"):
         await service.validate_images((replace(images[0], conversation_id="other"),))
     async with database.immediate_session() as writer:

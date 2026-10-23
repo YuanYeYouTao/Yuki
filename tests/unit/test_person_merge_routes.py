@@ -22,8 +22,17 @@ from yuki.identity.routing import PresenceRouter
 from yuki.persistence.people_repository import PeopleRepository
 
 
-@pytest.mark.parametrize("target_state", ["live", "missing", "disabled_binding", "paused"])
-@pytest.mark.parametrize("source_live", [False, True])
+@pytest.mark.parametrize(
+    ("target_state", "source_live"),
+    [
+        ("live", True),
+        ("paused", False),
+        ("missing", False),
+        ("missing", True),
+        ("disabled_binding", False),
+        ("disabled_binding", True),
+    ],
+)
 @pytest.mark.parametrize("entry", ["admin", "claim"])
 async def test_merge_keeps_live_target_or_inherits_only_available_source(
     database, target_state, source_live, entry

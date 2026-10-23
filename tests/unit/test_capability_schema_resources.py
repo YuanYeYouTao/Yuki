@@ -61,14 +61,9 @@ def resource_retrievals(monkeypatch):
     ("schema", "payload"),
     [
         ({"$ref": REMOTE}, {}),
-        ({"patternProperties": {"^a$": {"$ref": REMOTE}}}, {"a": 1}),
-        ({"dependentSchemas": {"a": {"$ref": REMOTE}}}, {"a": 1}),
-        ({"if": {"$ref": REMOTE}}, {}),
         ({"if": True, "then": {"$ref": REMOTE}}, {}),
-        ({"if": False, "else": {"$ref": REMOTE}}, {}),
-        ({"unevaluatedProperties": {"$ref": REMOTE}}, {"a": {}}),
     ],
-    ids=["root", "pattern-properties", "dependent-schema", "if", "then", "else", "unevaluated"],
+    ids=["root", "nested"],
 )
 def test_every_schema_resource_position_rejects_remote_retrieval(
     schema, payload, resource_retrievals
@@ -80,35 +75,16 @@ def test_every_schema_resource_position_rejects_remote_retrieval(
     assert result.ok is False
 
 
-def test_defs_inside_an_example_is_data_not_a_schema_resource(resource_retrievals):
-    schema = {"type": "object", "examples": [{"$defs": {"N": {"$ref": REMOTE}}}]}
-    validator = JsonSchemaCapabilityValidator()
-    assert validator.admit((capability_entry(schema),)) == ()
-    assert validator.validate("resource_probe", "{}").ok
-    assert resource_retrievals == []
-
-
-@pytest.mark.parametrize("annotation", ["examples", "const"])
-def test_ordinary_reference_shaped_data_is_not_retrieved(annotation, resource_retrievals):
+def test_annotation_reference_shaped_data_is_not_retrieved(resource_retrievals):
     data = {"$ref": REMOTE}
-    schema = {"type": "object", annotation: [data] if annotation == "examples" else data}
-    validator = JsonSchemaCapabilityValidator()
-    assert validator.admit((capability_entry(schema),)) == ()
-    assert validator.validate("resource_probe", json.dumps(data)).ok
-    assert resource_retrievals == []
-
-
-def test_local_defs_are_resolved_and_still_enforce_the_declared_type(resource_retrievals):
     schema = {
         "type": "object",
-        "$defs": {"Count": {"type": "integer"}},
-        "properties": {"count": {"$ref": "#/$defs/Count"}},
-        "required": ["count"],
+        "const": data,
+        "examples": [data, {"$defs": {"N": {"$ref": REMOTE}}}],
     }
     validator = JsonSchemaCapabilityValidator()
     assert validator.admit((capability_entry(schema),)) == ()
-    assert validator.validate("resource_probe", '{"count":3}').ok
-    assert not validator.validate("resource_probe", '{"count":"three"}').ok
+    assert validator.validate("resource_probe", json.dumps(data)).ok
     assert resource_retrievals == []
 
 

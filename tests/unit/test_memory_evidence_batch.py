@@ -3,7 +3,6 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import insert, select
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.unit.test_memory_v2 import _append_event
@@ -20,8 +19,8 @@ from yuki.persistence.models import (
 from yuki.persistence.repositories import EventLedgerRepository
 
 
-@pytest.mark.parametrize("size", [1, 64, 1000])
-async def test_evidence_order_limit_and_counts_are_preserved(database, size):
+async def test_evidence_order_limit_and_counts_are_preserved(database):
+    size = 1000
     repository = MemoryFactRepository(database)
     facts = MemoryFactService(repository)
     source = await _append_event(EventLedgerRepository(database), message_id="seed", content="seed")

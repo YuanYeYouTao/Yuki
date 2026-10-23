@@ -484,12 +484,17 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "owner_state", ["active", "space_disabled", "person_disabled", "bindings_disabled"]
-)
-@pytest.mark.parametrize("scope_type", [MemoryScopeType.PERSON_GROUP, MemoryScopeType.SELF])
-@pytest.mark.parametrize(
-    "operation",
-    [DreamOperationType.SYNTHESIZE, DreamOperationType.KEEP, DreamOperationType.CONTEST],
+    ("operation", "scope_type", "owner_state"),
+    [
+        (DreamOperationType.SYNTHESIZE, MemoryScopeType.PERSON_GROUP, "active"),
+        (DreamOperationType.KEEP, MemoryScopeType.SELF, "active"),
+        (DreamOperationType.CONTEST, MemoryScopeType.PERSON_GROUP, "active"),
+        *[
+            (DreamOperationType.SYNTHESIZE, scope, state)
+            for scope in (MemoryScopeType.PERSON_GROUP, MemoryScopeType.SELF)
+            for state in ("space_disabled", "person_disabled", "bindings_disabled")
+        ],
+    ],
 )
 async def test_single_source_dream_uses_saved_model_output_and_original_receipt(
     database, operation, owner_state, scope_type

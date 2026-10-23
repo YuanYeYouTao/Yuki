@@ -386,17 +386,8 @@ def test_destructive_uses_actual_permissions() -> None:
     assert refused == ()
 
 
-def test_catalog_entry_round_trip_for_security_fixtures() -> None:
-    catalog = UnifiedToolCatalog(
-        entries=(_entry(_descriptor("web_search", namespace="web.search")),),
-    )
-    assert catalog.by_model_name("web_search") is not None
-    assert catalog.by_model_name("missing") is None
-
-
 def _runtime(
     *entries: UnifiedToolCatalogEntry,
-    append_only: bool = True,
     memory_view: MemoryCapabilityView | None = None,
 ) -> TurnCapabilityRuntime:
     catalog = UnifiedToolCatalog(entries=entries)
@@ -432,7 +423,6 @@ def test_complete_catalog_keeps_execution_authorized() -> None:
         ),
     )
     # Construction projects current execution authority over the frozen schemas.
-    assert runtime.validate_call("web_search", '{"query":"x"}') == (True, None)
     assert {entry.descriptor.capability_id for entry in runtime.authorized_catalog.entries} == {
         "web_search",
         "memory_change",
@@ -478,16 +468,6 @@ def test_memory_revision_changes_only_execution_grants_and_denial_wins() -> None
     # The same revision is not re-projected.
     runtime.sync_memory_view(_memory_view(2))
     assert runtime.callable_capability_ids() == {"web_search"}
-
-
-def test_memory_sync_refreshes_existing_grants() -> None:
-    runtime = _runtime(
-        _entry(_descriptor("web_search", namespace="web.search")),
-        _entry(_descriptor("memory_change", namespace="memory.state.write")),
-    )
-    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
-    runtime.sync_memory_view(_memory_view(1))
-    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
 
 
 def test_compiled_schema_view_is_shared_while_current_grants_stay_independent():

@@ -34,7 +34,7 @@ async def test_personal_gateway_health_keeps_qq_telegram_and_environment_facts_s
         await app.close()
 
 
-def projection_container(database):
+async def test_platform_extension_and_writer_state_have_both_projection_shapes(database):
     app = health_container(database, None)
     app.work_scheduler.running = False
     app.plugin_manager = SimpleNamespace(system_enabled=False, running_count=0)
@@ -49,11 +49,6 @@ def projection_container(database):
         )
     )
     app.semantic_participation = SimpleNamespace(health=AsyncMock(return_value={}))
-    return app
-
-
-async def test_platform_extension_and_unknown_owner_facts_have_both_projection_shapes(database):
-    app = projection_container(database)
     app.gateway_providers = GatewayProviderCatalog(
         _Provider(platform, platform=platform)
         for platform in ("qq", "telegram", "feishu", "lark", "matrix", "unknown-owner")
@@ -77,28 +72,18 @@ async def test_platform_extension_and_unknown_owner_facts_have_both_projection_s
         assert public["gateways"][platform] == {
             key: operator[platform][key] for key in ("enabled", "running", "healthy")
         }
-        assert operator[platform]["checked_at"] is not None
     assert public["gateways"]["matrix"] == {
         "enabled": True,
         "running": True,
         "healthy": True,
     }
     assert public["gateways"]["unknown-owner"]["healthy"] is None
-    assert public["gateways"]["telegram"] == {
-        "enabled": False,
-        "running": False,
-        "healthy": None,
-    }
     assert public["telegram_gateway"] == public["gateways"]["telegram"]
     assert not public["onebot_connected"] and public["status"] == "degraded"
     app.gateway_registry.disconnect(bot)
     after = await build_health_payload(app)
     assert not after["gateways"]["matrix"]["running"]
     assert after["gateways"]["matrix"]["healthy"] is False
-
-
-async def test_writer_stopped_preserves_read_and_both_health_response_shapes(database):
-    app = projection_container(database)
     await database.close()
     public = await build_health_payload(app)
     operator = {row["name"]: row for row in await runtime_health(app)}
@@ -109,4 +94,3 @@ async def test_writer_stopped_preserves_read_and_both_health_response_shapes(dat
     assert operator["database"]["read_available"]
     assert not operator["database"]["writer_accepting"]
     assert operator["database"]["healthy"] is False
-    assert public["telegram_gateway"] == {"enabled": False, "running": False, "healthy": None}

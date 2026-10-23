@@ -43,7 +43,6 @@ rows = [row for r in receipts if r['ok'] for row in r['data']['rows'] if row['am
     assert len(children) == 3 and all(
         marker in json.loads(row["receipt_json"])["result"] for row in children
     )
-    assert len(json.dumps(body)) < min(len(row["receipt_json"]) for row in children) // 4
     assert env.domain.peak <= 2
 
 

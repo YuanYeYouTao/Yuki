@@ -74,9 +74,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
                 "",
                 0,
                 tool_calls=(
-                    ToolCall(
-                        "original-send", ToolFunction("send", '{"text":"已收到更新。"}')
-                    ),
+                    ToolCall("original-send", ToolFunction("send", '{"text":"已收到更新。"}')),
                 ),
             ),
             ChatResponse("", 0),
@@ -238,10 +236,7 @@ async def test_archive_identity_rejection_keeps_original_typed_outcome_without_a
         current_result_capture.reset(token)
 
 
-@pytest.mark.parametrize("work_enabled", [False, True])
-async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
-    database, tmp_path, work_enabled
-):
+async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(database, tmp_path):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
     from yuki.automation.models import RunStatus
@@ -249,9 +244,7 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
     from yuki.memory.models import MemoryFactCreate
     from yuki.tool_results.artifacts import ToolArtifactRepository
 
-    case = await setup_run(
-        database, tmp_path, delivery="none", mode="silent", work_enabled=work_enabled
-    )
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent", work_enabled=False)
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
     case.chat._tool_artifacts = store
     original = "original person fact " + "长期资料" * 300 + "MEMORY_BODY_TAIL"

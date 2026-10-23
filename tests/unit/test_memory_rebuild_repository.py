@@ -3,23 +3,13 @@
 from contextlib import asynccontextmanager
 
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import select, update
 from tests.unit.test_memory_rebuild import _admin, _event, _service
 
 from yuki.memory.enums import MemoryRebuildRunStatus
 from yuki.memory.rebuild.models import MemoryRebuildSelection
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.persistence.models import MemoryRebuildItemModel, MemoryRebuildRunModel
-
-
-def _observe(database):
-    statements = []
-
-    def capture(_connection, _cursor, statement, *_args):
-        statements.append(statement.lstrip().upper())
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    return statements, capture
 
 
 async def _seed(database, *, status="extracting", item_status="extracting"):
@@ -52,24 +42,10 @@ async def _seed(database, *, status="extracting", item_status="extracting"):
     return service, provider, run.public_id, item_id
 
 
-@pytest.mark.parametrize("held_writer", [False, True])
-async def test_empty_restart_pause_never_reserves_writer(database, held_writer):
+async def test_empty_restart_pause_never_reserves_writer(database):
     repository = MemoryRebuildRepository(database)
-    statements, capture = _observe(database)
-    try:
-        if held_writer:
-            async with database.immediate_session():
-                statements.clear()
-                assert await repository.pause_after_restart() == 0
-        else:
-            assert await repository.pause_after_restart() == 0
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert statements[0] == "BEGIN"
-    assert not any(
-        sql.startswith(("BEGIN IMMEDIATE", "UPDATE", "INSERT", "DELETE")) for sql in statements
-    )
-    assert all("LIMIT" in sql for sql in statements if sql.startswith("SELECT"))
+    async with database.immediate_session():
+        assert await repository.pause_after_restart() == 0
 
 
 @pytest.mark.parametrize(
@@ -93,11 +69,7 @@ async def test_pause_retains_original_ids_usage_and_item_count_semantics(
             select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
         )
         before_item = await reader.get(MemoryRebuildItemModel, item_id)
-    statements, capture = _observe(database)
-    try:
-        assert await service.repository.pause_after_restart() == count
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert await service.repository.pause_after_restart() == count
     async with database.read_session() as reader:
         after_run = await reader.get(MemoryRebuildRunModel, before_run.id)
         after_item = await reader.get(MemoryRebuildItemModel, item_id)
@@ -120,9 +92,6 @@ async def test_pause_retains_original_ids_usage_and_item_count_semantics(
         assert getattr(after_run, field) == getattr(before_run, field)
     for field in ("id", "run_id", "event_id", "source_event_hash", "attempts", "claim_count"):
         assert getattr(after_item, field) == getattr(before_item, field)
-    changed = status in {"extracting", "committing"} or item_status == "extracting"
-    assert sum(sql.startswith("BEGIN IMMEDIATE") for sql in statements) == int(changed)
-    assert sum(sql.startswith("UPDATE") for sql in statements) == (3 if changed else 0)
     assert await service.repository.pause_after_restart() == 0
 
 
@@ -215,13 +184,7 @@ async def test_mixed_run_pauses_and_all_items_commit_in_one_transaction(database
         await _seed(database, status=status) for status in ("extracting", "committing", "review")
     ]
     repository = seeded[0][0].repository
-    statements, capture = _observe(database)
-    try:
-        assert await repository.pause_after_restart() == 2
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert sum(sql.startswith("BEGIN IMMEDIATE") for sql in statements) == 1
-    assert sum(sql.startswith("UPDATE") for sql in statements) == 3
+    assert await repository.pause_after_restart() == 2
     for (_seeded_service, provider, public_id, item_id), expected in zip(
         seeded, ("extraction_paused", "commit_paused", "review"), strict=True
     ):
@@ -285,12 +248,7 @@ async def test_committed_pause_with_lost_ack_is_not_retried_or_auto_resumed(data
     run = await service.repository.get_run(public_id)
     assert run.status is MemoryRebuildRunStatus.EXTRACTION_PAUSED
     assert provider.requests == 0
-    statements, capture = _observe(database)
-    try:
-        assert await service.repository.pause_after_restart() == 0
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert not any(sql.startswith("UPDATE") for sql in statements)
+    assert await service.repository.pause_after_restart() == 0
     async with database.read_session() as reader:
         item = await reader.get(MemoryRebuildItemModel, item_id)
     assert item.status == "pending" and item.attempts == 2

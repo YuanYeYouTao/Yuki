@@ -78,9 +78,20 @@ async def counts(database):
         return tuple(values)
 
 
-async def test_profile_purge_atomically_cascades_old_jobs_and_vectors(database):
+async def test_profile_purge_rolls_back_then_atomically_cascades_old_profiles(database):
     runtime, admin, actor = await scene(database)
+
+    def fail_after_delete(_conn, _cursor, sql, *_args):
+        if sql.startswith("DELETE FROM memory_embedding_profiles"):
+            raise RuntimeError("original profile delete failure")
+
     try:
+        event.listen(database.engine.sync_engine, "after_cursor_execute", fail_after_delete)
+        try:
+            with pytest.raises(RuntimeError, match="original profile delete failure"):
+                await admin.embedding_purge_old(actor)
+        finally:
+            event.remove(database.engine.sync_engine, "after_cursor_execute", fail_after_delete)
         assert await counts(database) == (2, 2, 2)
         assert await admin.embedding_purge_old(actor) == 1
         assert await counts(database) == (1, 1, 1)
@@ -123,37 +134,19 @@ async def test_revoke_ahead_in_fifo_prevents_original_actor_purge(database, monk
         await runtime.close()
 
 
-@pytest.mark.parametrize("disabled", [False, True])
-async def test_purge_keeps_original_person_after_same_human_merge(database, disabled):
+async def test_purge_keeps_original_person_qualification_after_same_human_merge(database):
     runtime, admin, actor = await scene(database)
     try:
         async with database.immediate_session() as writer:
             target = await ensure_person(writer, "new-admin-entry")
             await merge_persons(writer, actor.person_id, target)
-            (await writer.get(CanonicalPersonModel, actor.person_id)).enabled = not disabled
-        if disabled:
-            with pytest.raises(PermissionError):
-                await admin.embedding_purge_old(actor)
-            assert await counts(database) == (2, 2, 2)
-        else:
-            assert await admin.embedding_purge_old(actor) == 1
-            assert await counts(database) == (1, 1, 1)
-    finally:
-        await runtime.close()
-
-
-async def test_failed_profile_delete_rolls_back_its_cascades(database):
-    runtime, admin, actor = await scene(database)
-
-    def fail_after_delete(_conn, _cursor, sql, *_args):
-        if sql.startswith("DELETE FROM memory_embedding_profiles"):
-            raise RuntimeError("original profile delete failure")
-
-    event.listen(database.engine.sync_engine, "after_cursor_execute", fail_after_delete)
-    try:
-        with pytest.raises(RuntimeError, match="original profile delete failure"):
+            (await writer.get(CanonicalPersonModel, actor.person_id)).enabled = False
+        with pytest.raises(PermissionError):
             await admin.embedding_purge_old(actor)
+        assert await counts(database) == (2, 2, 2)
+        async with database.immediate_session() as writer:
+            (await writer.get(CanonicalPersonModel, actor.person_id)).enabled = True
+        assert await admin.embedding_purge_old(actor) == 1
+        assert await counts(database) == (1, 1, 1)
     finally:
-        event.remove(database.engine.sync_engine, "after_cursor_execute", fail_after_delete)
         await runtime.close()
-    assert await counts(database) == (2, 2, 2)

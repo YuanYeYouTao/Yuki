@@ -49,9 +49,8 @@ ARGS = {"text": "正文", "emoji": {"goal": "开心"}}
 
 
 @pytest.mark.parametrize("phase", ["selection", "claim"])
-@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
 async def test_emoji_worker_resumes_original_receipt_after_real_commit_ack_loss(
-    database, tmp_path, monkeypatch, phase, error_type
+    database, tmp_path, monkeypatch, phase
 ):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
@@ -83,7 +82,7 @@ async def test_emoji_worker_resumes_original_receipt_after_real_commit_ack_loss(
         await commit(session)
         if targeted and not fired:
             fired = True
-            raise error_type("original emoji commit acknowledgement lost")
+            raise RuntimeError("original emoji commit acknowledgement lost")
 
     monkeypatch.setattr(delivery.intents, "select", select_original)
     monkeypatch.setattr(env.service.receipts, "claim", claim_original)
@@ -148,14 +147,13 @@ async def test_emoji_admission_and_dispatch_keep_original_codecs_outside_writer(
     assert len(sends(env.bot)) == (2 if text else 1)
 
 
-@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
 async def test_emoji_only_admission_preserves_unknown_commit_and_original_intent(
-    database, tmp_path, monkeypatch, error_type
+    database, tmp_path, monkeypatch
 ):
     env = await social_env(database, tmp_path)
     delivery, _library = make_delivery(env)
     original_writer = database.immediate_session
-    failure = error_type("original admission acknowledgement lost")
+    failure = RuntimeError("original admission acknowledgement lost")
 
     @asynccontextmanager
     async def lose_acknowledgement():
@@ -693,7 +691,6 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
                 .values(closed=False, error_category="late_preparation_error")
             )
         projected = await delivery.project(env.context)
-        assert projected["status"] == ("uncertain" if uncertain else "succeeded")
         assert projected["status"] == ("uncertain" if uncertain else "succeeded")
         async with database.read_session() as session:
             recovered = await EmojiIntentRepository.effect_facts(

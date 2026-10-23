@@ -14,20 +14,7 @@ from yuki.conversation.canonical_db_models import (
 from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.services.policies import CommandName, parse_command
-
-
-def test_retired_emoji_pool_is_not_offered_as_management_capability():
-    from yuki.admin.permission_catalog import PermissionCatalogService
-    from yuki.domain.tool_actor import ToolActor
-
-    report = PermissionCatalogService().report_for_actor(
-        ToolActor.from_inbound(message("/ai capabilities emoji")),
-        category="emoji",
-        actor_is_superuser=True,
-    )
-    capabilities = {item.id: item for item in report.capabilities}
-    assert not capabilities
+from yuki.services.policies import CommandName
 
 
 def test_permission_directory_accepts_the_complete_search_text():
@@ -212,18 +199,6 @@ async def test_manual_group_compact_rechecks_role_after_build(database, tmp_path
     )
     assert result.handled and "需要当前超级管理员资格" in sender.messages[-1].text
     assert not harness.provider.requests
-
-
-def test_retired_management_syntax_has_no_command_alias():
-    for name in ("on", "off", "private", "group", "config", "model", "emoji"):
-        assert parse_command(f"/ai {name} anything", "Yuki")[0] is None
-    assert parse_command("/ai admin group current enable", "Yuki") == (
-        CommandName.ADMIN,
-        "group current enable",
-        True,
-    )
-    assert parse_command("/ai forgetme", "Yuki")[0] is CommandName.FORGETME
-    assert parse_command("/ai plugin run sample echo hello", "Yuki")[0] is CommandName.PLUGIN
 
 
 async def test_authorized_config_command_with_image_is_executed(database):

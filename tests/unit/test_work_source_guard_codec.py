@@ -1,6 +1,5 @@
 """New source proofs omit diagnostics; original paid codec2 stays original."""
 
-import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -9,6 +8,7 @@ from sqlalchemy import select, update
 from tests.unit.test_admin_api import admin as admin
 from tests.unit.test_client_works import app_env as app_env
 from tests.unit.test_client_works import bearer, guard_for, owner, seeded
+from tests.unit.test_work_journal_source_retry import _saved, _session
 from tests.unit.test_work_source_guard import _event_and_route, _guard
 
 from yuki.domain.messages import ChatMessage, ProviderContinuation, ToolCall, ToolFunction
@@ -18,10 +18,9 @@ from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.runtime.context_preparation import select_protocol_recovery
-from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_journal import JournalUnavailable
 from yuki.runtime.work_repository import WorkConflict
-from yuki.runtime.work_schema_v1 import effects, journal
+from yuki.runtime.work_schema_v1 import effects
 from yuki.runtime.work_session import WorkSession
 from yuki.runtime.work_source_guard import WorkSourceGuard
 from yuki.services.turn_transcript import TurnTranscript
@@ -36,25 +35,10 @@ async def advance_diagnostic_privacy(database):
             state.privacy_generation += 1
 
 
-@pytest.mark.parametrize("codec", [2, 3])
-async def test_diagnostic_counter_is_only_a_legacy_plain_source_dependency(database, codec):
-    source = await _event_and_route(database, EventLedgerRepository(database))
-    guard, control = await _guard(database, source)
-    guard.codec = codec
-    assert await guard.check(control)
-    saved = json.loads(json.dumps(guard.snapshot()))
-    await advance_diagnostic_privacy(database)
-    restored = WorkSourceGuard.restore(saved)
-    assert await restored.check(control) is (codec == 3)
-    assert restored.snapshot() == guard.snapshot()
-    assert restored.codec == codec
-    await control.repository.release(control.lease)
-
-
 async def test_forget_accountless_unrelated_person_does_not_change_plain_work_sources(database):
     source = await _event_and_route(database, EventLedgerRepository(database))
     guard, control = await _guard(database, source)
-    assert guard.codec == 3 and await guard.check(control)
+    assert await guard.check(control)
     original = guard.snapshot()
     unrelated = str(uuid4())
     now = datetime.now(UTC)
@@ -117,33 +101,15 @@ async def test_accepted_cross_input_ignores_diagnostics_but_keeps_its_real_row_p
     await original.repository.release(original.lease)
 
 
-@pytest.mark.parametrize("phase", ["response", "dispatched"])
-@pytest.mark.parametrize("counter_changed", [False, True])
+@pytest.mark.parametrize(
+    ("phase", "counter_changed"), [("response", False), ("response", True), ("dispatched", True)]
+)
 async def test_codec2_paid_and_unknown_checkpoints_do_not_gain_reexecution(
     database, phase, counter_changed
 ):
-    source = await _event_and_route(database, EventLedgerRepository(database))
-    guard, original = await _guard(database, source)
-
-    async def validate():
-        assert await original.repository.valid(original.lease)
-
-    control = WorkControl(
-        original.repository,
-        original.lease,
-        "original-codec2-call",
-        {"trigger_event_id": source.id},
-        validate,
-    )
-    control.current = await control.repository.accept(
-        control.lease,
-        source_key=control.source_key,
-        source=control.source,
-        goal="original paid work",
-    )
-    first = WorkSession(control, "original-contract")
-    control.session = first
-    transcript = await first.restore(TurnTranscript((ChatMessage("user", "original request"),)))
+    control, first, _source, _unselected = await _session(database)
+    transcript = first.transcript
+    guard = WorkSourceGuard(first.source_guard.version)
     guard.codec = 2
     assert await guard.check(control)
     first.source_guard = guard
@@ -158,45 +124,28 @@ async def test_codec2_paid_and_unknown_checkpoints_do_not_gain_reexecution(
         )
     call = ToolCall("original-call", ToolFunction("send", '{"text":"original"}'))
     await first.save(phase, (call,) if phase == "response" else ())
-    async with database.read_session() as reader:
-        before = dict(
-            (
-                await reader.execute(
-                    select(journal).where(journal.c.work_id == control.current["id"])
-                )
-            )
-            .mappings()
-            .one()
-        )
+    before = await _saved(database, control)
     budget = await control.repository.get(control.current["id"])
     if counter_changed:
         await advance_diagnostic_privacy(database)
     if phase == "dispatched":
         with pytest.raises(JournalUnavailable, match="work_response_not_persisted"):
-            await select_protocol_recovery(control, "original-contract")
+            await select_protocol_recovery(control, first.contract)
     elif counter_changed:
         # codec2 did not store its old counter separately. Preserve that unresolved
         # original proof instead of certifying today's sources or buying a response.
         with pytest.raises(WorkConflict, match="work_source_changed"):
-            await select_protocol_recovery(control, "original-contract")
+            await select_protocol_recovery(control, first.contract)
     else:
-        selected = await select_protocol_recovery(control, "original-contract")
+        selected = await select_protocol_recovery(control, first.contract)
         assert selected is not None and selected.guard.codec == 2
         control.protocol_recovery_preparation = selected
-        resumed = WorkSession(control, "original-contract")
+        resumed = WorkSession(control, first.contract)
         restored = await resumed.restore(TurnTranscript((ChatMessage("user", "today"),)))
         assert restored.request() == transcript.request()
         assert resumed.call_key("original-call") == first.call_key("original-call")
+    after = await _saved(database, control)
     async with database.read_session() as reader:
-        after = dict(
-            (
-                await reader.execute(
-                    select(journal).where(journal.c.work_id == control.current["id"])
-                )
-            )
-            .mappings()
-            .one()
-        )
         assert not (await reader.execute(select(effects))).all()
     assert after == before
     current = await control.repository.get(control.current["id"])

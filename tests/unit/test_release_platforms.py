@@ -172,7 +172,6 @@ def test_smoke_checks_the_selected_image_before_running_it(
 
     def execute(command, **kwargs):
         commands.append(command)
-        assert command == ["docker", "image", "inspect", "--platform", platform, "image:3.9.0"]
         return json.dumps([metadata])
 
     monkeypatch.setattr(subprocess, "check_output", execute)

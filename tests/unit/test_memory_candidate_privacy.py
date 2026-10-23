@@ -3,7 +3,6 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 from tests.support.event_seed import seed_event, seed_scoped_event
 from tests.unit.test_memory_v2 import _append_event
@@ -58,29 +57,39 @@ def _values(row):
     return {column.name: getattr(row, column.name) for column in row.__table__.columns}
 
 
-@pytest.mark.parametrize("status", ["pending", "accepted", "rejected", "expired"])
-async def test_forget_erases_historical_candidate_body_in_every_original_status(database, status):
+async def test_forget_erases_historical_candidate_body_in_every_original_status(database):
     ledger = EventLedgerRepository(database)
     erased = await _append_event(ledger, message_id="erased-private", content="原私人评价")
     retained = await _append_event(
         ledger, message_id="retained-private", user_id="1002", content="其他人物原资料"
     )
-    erased_candidate = await _candidate(database, erased, status=status)
-    retained_candidate = await _candidate(database, retained, status=status)
+    candidates = [
+        (
+            await _candidate(database, erased, status=status),
+            await _candidate(database, retained, status=status),
+        )
+        for status in ("pending", "accepted", "rejected", "expired")
+    ]
     async with database.read_session() as reader:
-        before = _values(await reader.get(MemoryClaimCandidateModel, retained_candidate))
+        before = {
+            key: _values(await reader.get(MemoryClaimCandidateModel, key)) for _, key in candidates
+        }
     assert await PeopleRepository(database).delete_person_id(erased.author_person_id)
     async with database.read_session() as reader:
         assert await reader.get(ChatEventModel, erased.id) is None
-        assert await reader.get(MemoryClaimCandidateModel, erased_candidate) is None
-        assert not list(
-            await reader.scalars(
-                select(MemoryClaimCandidateEvidenceModel).where(
-                    MemoryClaimCandidateEvidenceModel.candidate_id == erased_candidate
+        for erased_candidate, retained_candidate in candidates:
+            assert await reader.get(MemoryClaimCandidateModel, erased_candidate) is None
+            assert not list(
+                await reader.scalars(
+                    select(MemoryClaimCandidateEvidenceModel).where(
+                        MemoryClaimCandidateEvidenceModel.candidate_id == erased_candidate
+                    )
                 )
             )
-        )
-        assert _values(await reader.get(MemoryClaimCandidateModel, retained_candidate)) == before
+            assert (
+                _values(await reader.get(MemoryClaimCandidateModel, retained_candidate))
+                == before[retained_candidate]
+            )
         assert (await reader.get(ChatEventModel, retained.id)).content == "其他人物原资料"
 
 

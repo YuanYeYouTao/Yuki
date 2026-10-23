@@ -29,7 +29,6 @@ async def test_telegram_typing_uses_native_chat_and_original_topic_without_stop_
     async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
         client = TelegramClient("offline-token", client=transport)
         activity = TelegramProvider().activity(client, target)
-        assert activity.refresh_interval_seconds == 4
 
         await activity.start()
         await activity.start()
@@ -62,7 +61,7 @@ async def test_telegram_typing_failure_is_not_replayed_or_replaced_by_a_message(
 async def test_qq_private_typing_and_cancel_use_original_account_and_native_status():
     bot = SimpleNamespace(call_api=AsyncMock())
     activity = SnowLumaProvider().activity(bot, TransportTarget("person", "123456"))
-    assert activity is not None and activity.refresh_interval_seconds == 4
+    assert activity is not None
 
     await activity.start()
     await activity.stop()

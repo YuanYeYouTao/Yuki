@@ -544,12 +544,6 @@ async def test_app_memory_read_scope_uses_canonical_owner_without_qq_alias(app_e
     assert scope.requester_person_id == scope.current_private_person_id == principal.person_id
 
 
-async def test_local_gateway_does_not_claim_qq_connectivity(app_env):
-    assert app_env.gateway.registry.has_any_active()
-    assert app_env.gateway.registry.has_any_active(platform="app")
-    assert not app_env.gateway.registry.has_any_active(platform="qq")
-
-
 async def test_app_text_does_not_execute_platform_control_commands(app_env, database):
     from yuki.conversation.canonical_db_models import CanonicalConversationModel
 

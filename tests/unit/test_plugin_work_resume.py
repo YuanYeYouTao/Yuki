@@ -62,6 +62,10 @@ async def test_resume_keeps_original_outcome_when_release_fails(
                     await host.agent.resume(identity, text, request_id="original-answer")
                 assert raised.value is original
                 assert any("lease release failed" in note for note in original.__notes__)
+        if business == "success":
+            with host.invocation_scope(host.plugin_id, source):
+                replay = await host.agent.resume(identity, text, request_id="original-answer")
+                assert replay.ok
         async with database.read_session() as reader:
             rows = list(
                 (
@@ -80,16 +84,5 @@ async def test_resume_keeps_original_outcome_when_release_fails(
             before["tool_calls"],
         )
         assert len(provider.requests) == 1
-        if business == "success":
-            with host.invocation_scope(host.plugin_id, source):
-                replay = await host.agent.resume(identity, text, request_id="original-answer")
-                assert replay.ok
-            async with database.read_session() as reader:
-                repeated = list(
-                    await reader.scalars(
-                        select(inputs.c.id).where(inputs.c.source_key == answers[0]["source_key"])
-                    )
-                )
-            assert repeated == [answers[0]["id"]]
     finally:
         await host.close_host_resources()

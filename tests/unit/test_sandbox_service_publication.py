@@ -13,66 +13,64 @@ from yuki.sandbox import persistent
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX environment runtime")
 
 
-@pytest.mark.parametrize("failure_stage", ["owner_update", "after_commit"])
-async def test_service_publication_is_atomic_across_fault_and_database_reopen(
-    tmp_path, monkeypatch, failure_stage
+async def test_service_publication_rolls_back_before_commit_and_recovers_original_after_commit(
+    tmp_path, monkeypatch
 ):
     manager = manager_at(tmp_path)
     await manager.service({"action": "register", "name": "original", "command": "sleep 1"})
     with manager.db:
         manager.db.execute("UPDATE environment_services SET enabled=1")
-    if failure_stage == "owner_update":
-        manager.db.execute(
-            "CREATE TRIGGER publication_failure BEFORE UPDATE OF run_id ON environment_services "
-            "BEGIN SELECT RAISE(ABORT, 'owner publication fault'); END"
-        )
-    else:
-
-        class FailedQueue:
-            def put_nowait(self, value):
-                raise RuntimeError("queue publication interrupted after commit")
-
-        manager.queue = FailedQueue()
-    with pytest.raises((sqlite3.IntegrityError, RuntimeError)):
+    manager.db.execute(
+        "CREATE TRIGGER publication_failure BEFORE UPDATE OF run_id ON environment_services "
+        "BEGIN SELECT RAISE(ABORT, 'owner publication fault'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="owner publication fault"):
         await manager.restore_services()
-    expected = int(failure_stage == "after_commit")
-    jobs = manager.db.execute("SELECT id FROM jobs").fetchall()
     service = manager.db.execute("SELECT * FROM environment_services").fetchone()
-    assert len(jobs) == manager.db.execute("SELECT COUNT(*) FROM environment_jobs").fetchone()[0]
-    assert len(jobs) == expected
-    assert service["attempts"] == expected
-    assert service["run_id"] == (jobs[0][0] if jobs else None)
+    assert not manager.db.execute("SELECT id FROM jobs").fetchall()
+    assert not manager.db.execute("SELECT id FROM environment_jobs").fetchall()
+    assert service["run_id"] is None and service["attempts"] == 0
     with manager.db:
-        manager.db.execute("DROP TRIGGER IF EXISTS publication_failure")
+        manager.db.execute("DROP TRIGGER publication_failure")
+
+    class FailedQueue:
+        def put_nowait(self, value):
+            raise RuntimeError("queue publication interrupted after commit")
+
+    manager.queue = FailedQueue()
+    with pytest.raises(RuntimeError, match="queue publication interrupted after commit"):
+        await manager.restore_services()
+    original = manager.db.execute("SELECT * FROM environment_services").fetchone()
+    identity = original["run_id"]
+    assert identity and original["attempts"] == 1
+    assert [row[0] for row in manager.db.execute("SELECT id FROM jobs")] == [identity]
+    assert [row[0] for row in manager.db.execute("SELECT id FROM environment_jobs")] == [identity]
     await manager.close()
 
     manager = manager_at(tmp_path)
     try:
-        if failure_stage == "owner_update":
-            await manager.restore_services()
-        original = manager.db.execute("SELECT * FROM environment_services").fetchone()
-        assert original["run_id"] and original["attempts"] == 1
-        if os.name == "posix":
-            current = {
+        manager.inspect_container = AsyncMock(
+            return_value={
                 "Id": "original-environment",
                 "State": {"Running": True, "StartedAt": "original-start"},
                 "HostConfig": {"RestartPolicy": {"Name": "no"}},
                 "NetworkSettings": {"Networks": {"egress": {"IPAddress": "172.30.0.2"}}},
             }
-            manager.inspect_container = AsyncMock(return_value=current)
-            manager.command = AsyncMock(return_value=(0, b""))
-            monkeypatch.setattr(
-                persistent, "Execd", lambda *_: SimpleNamespace(request=AsyncMock(return_value={}))
-            )
-            # Reconstruct the worker's original queued run without starting a native process.
-            manager.queue = persistent.asyncio.Queue()
-            await manager.recover()
-            assert manager.queue.get_nowait() == original["run_id"]
-            manager.command.assert_not_awaited()
+        )
+        manager.command = AsyncMock(return_value=(0, b""))
+        monkeypatch.setattr(
+            persistent, "Execd", lambda *_: SimpleNamespace(request=AsyncMock(return_value={}))
+        )
+        # Recover the original queued run without starting a native process.
+        await manager.recover()
+        assert manager.queue.get_nowait() == identity
+        manager.command.assert_not_awaited()
         await manager.restore_services()
-        assert manager.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
-        assert manager.db.execute("SELECT COUNT(*) FROM environment_jobs").fetchone()[0] == 1
+        assert [row[0] for row in manager.db.execute("SELECT id FROM jobs")] == [identity]
+        assert [row[0] for row in manager.db.execute("SELECT id FROM environment_jobs")] == [
+            identity
+        ]
         restored = manager.db.execute("SELECT * FROM environment_services").fetchone()
-        assert restored["run_id"] == original["run_id"] and restored["attempts"] == 1
+        assert restored["run_id"] == identity and restored["attempts"] == 1
     finally:
         await manager.close()

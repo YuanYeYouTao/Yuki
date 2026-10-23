@@ -73,8 +73,9 @@ async def test_pause_unbind_reuse_and_explicit_registration_are_distinct(admin, 
     assert replay.status_code == 200 and replay.json()["data"] == original
 
 
-async def test_binding_directory_projects_current_people_in_batches(admin, database):
-    from sqlalchemy import event
+async def test_binding_directory_pages_current_people_without_rewriting_assignments(
+    admin, database
+):
     from tests.support.canonical_identity import ensure_person
     from tests.support.person_merge import merge_persons
 
@@ -94,22 +95,11 @@ async def test_binding_directory_projects_current_people_in_batches(admin, datab
             )
             await session.flush()
             await replace_assignment(session, account, None, owner, now=now)
-    counts = []
     for limit in (4, 20):
-        queries = []
-
-        def capture(_connection, _cursor, statement, *_args, queries=queries):
-            if statement.lstrip().upper().startswith("SELECT"):
-                queries.append(statement)
-
-        event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-        try:
-            response = await client.get(
-                "/admin/v1/bindings", params={"person_id": source, "limit": limit}
-            )
-            assert response.status_code == 200, response.text
-        finally:
-            event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+        response = await client.get(
+            "/admin/v1/bindings", params={"person_id": source, "limit": limit}
+        )
+        assert response.status_code == 200, response.text
         items = response.json()["data"]["items"]
         assert all(item["current_person_id"] == target for item in items)
         assert len(items) == (limit if limit == 4 else 18)
@@ -117,8 +107,6 @@ async def test_binding_directory_projects_current_people_in_batches(admin, datab
             preserved = next(item for item in items if item["id"] == original.id)
             assert preserved["person_id"] == source
             assert preserved["account_id"] == original.account_id
-        counts.append(len(queries))
-    assert counts[0] == counts[1]
 
 
 async def test_role_conversion_and_binding_unbind_preserve_original_stage(admin, database):

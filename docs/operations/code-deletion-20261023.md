@@ -48,6 +48,8 @@ fixture 迁移见[升级说明](../upgrade-code-deletion-20261023.md)及其英�
 ## 验证与基线
 
 各批按所属模块回归，集成后再执行全量；不将重叠定向结果相加为独立覆盖数量。
+下表为源码实施阶段、测试精简前保存的日志。用户随后追加了[全仓测试精简](test-cleanup-20261023.md)，
+498 文件清单逐项检查，净减 4,204 行；最终新 head 的执行结果单独记录。
 
 | 范围 | 已保存的本地定向证据 |
 | --- | --- |
@@ -67,6 +69,11 @@ fixture 迁移见[升级说明](../upgrade-code-deletion-20261023.md)及其英�
 Native 94 passed；三系统 Connector 通过。**这些旧 head 结果不替代 B2–B6 最终 head 的全量验证。**
 最终全量 unit/integration、Native、三系统 Connector 与 lint/type 检查通过后在 PR 中逐项记录。
 本地日志和原始 JSON/XML 保存在 `.cache/b1-validation/` 与 `.cache/deletion-all/`。
+
+中间提交 `ae45ba14` 的完整全量发现 unit 4 项、integration 1 项失败，已保存原红基线。
+`1cff2d50` 修复 SDK 发送遗漏原 invocation 配置快照；历史 fixture 接真实调用上下文，
+sidecar fixture 补原 0600 权限，旧诊断 counter/退役词表断言按 F03/F23 迁移。
+聚合回执、产品权限和恢复规则没有放宽。测试精简单独提交后重新跑最终 head 全量，旧绿或红日志都不替代它。
 
 Windows 上既有 POSIX/fcntl 用例不冒称通过，Linux 对应回归及 CI 单独验证。
 Native 以 CI 构建的 pinned Monty、真实隔离和原执行回执回归为准。无真实模型、订阅端点、

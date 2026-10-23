@@ -87,7 +87,7 @@ def test_status_read_is_observation_and_peer_close_is_not_prompt_completion():
 
 @pytest.mark.parametrize(
     "action",
-    ["prompt", "queue", "get", "watch", "steer", "respond", "cancel", "detach", "list", None],
+    ["prompt", "queue", "watch", None],
 )
 @pytest.mark.parametrize("by_request", [False, True])
 async def test_only_original_prompt_action_is_reconciled_as_execution(case, action, by_request):

@@ -4,7 +4,7 @@ import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,7 +23,7 @@ from yuki.llm.gemini import GeminiProvider
 from yuki.model_runtime.models import ModelProfile, ModelProtocol
 from yuki.web.base import WebSearchError
 from yuki.web.bridge_state import BridgeState
-from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.models import WebSearchRequest, WebSearchSource
 from yuki.web.native_bridge import NativeSearchBridge
 from yuki.web.page_extractor import DirectPageExtractor
 
@@ -103,28 +103,6 @@ async def test_selected_profile_and_user_constraints_reach_only_search_request(t
         recorded = invocations.record.call_args.kwargs
         assert recorded["profile_id"] == bridge.profile.id and recorded["native_search_requested"]
         assert recorded["prompt_tokens"] == 100 and recorded["cached_prompt_tokens"] == 70
-    finally:
-        await bridge.close()
-
-
-@pytest.mark.parametrize(
-    "legacy_provider", ["gemini_native_bridge", "deepseek_anthropic", "tavily"]
-)
-async def test_legacy_search_or_fallback_cache_never_becomes_native_evidence(
-    tmp_path, legacy_provider
-):
-    legacy = WebSearchResponse(
-        "same query",
-        (WebSearchSource("old", "old", "https://old.example/", "old.example", "", ""),),
-        None,
-        0,
-        provider=legacy_provider,
-    )
-    bridge, provider = _bridge(tmp_path, state=SimpleNamespace(access=Mock(return_value=legacy)))
-    try:
-        result = await bridge.search(WebSearchRequest("same query"))
-        assert len(provider.requests) == 1
-        assert result.sources[0].url == "https://example.com/original"
     finally:
         await bridge.close()
 

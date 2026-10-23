@@ -110,10 +110,10 @@ async def test_forget_preserves_unknown_commit_instead_of_repreparing_as_source_
         assert await reader.get(CanonicalPersonModel, person_id) is None
 
 
-@pytest.mark.parametrize("races", [1, 4])
 async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
-    database, monkeypatch, races
+    database, monkeypatch
 ):
+    races = 4
     seeded = await _seed(database, 1, proposals=True)
     rebuilds = MemoryRebuildRepository(database)
     prepare = rebuilds.prepare_forget_people

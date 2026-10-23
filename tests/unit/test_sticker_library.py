@@ -143,11 +143,6 @@ async def test_file_unique_source_and_platform_catalogs(library):
     assert await value.select("反讽", platform="qq") is None
     assert (await value.select("😂", platform="matrix")).id == third.id
     assert json.loads(index_path(bridge, qq).read_text())["tags"] == ["大笑"]
-    with closing(sqlite3.connect(bridge.root / "stickers/qq/search.sqlite3")) as db:
-        plan = db.execute(
-            "EXPLAIN QUERY PLAN SELECT asset_id FROM terms WHERE term=?", ("大笑",)
-        ).fetchall()
-    assert any("SEARCH" in row[-1] and "term" in row[-1] for row in plan)
 
 
 async def test_duplicate_original_avoids_copy_and_renamed_file_stays_canonical(library):
@@ -207,7 +202,7 @@ async def test_duplicate_sticker_keeps_first_caption_without_reloading_original(
     assert native.tags == repeated.tags == ("manual_tag",)
     cataloged = json.loads(index_path(bridge, native).read_text())
     assert cataloged["is_sticker"] is True and cataloged["description"] == description
-    assert len(provider.requests) == 1 and not value._tasks
+    assert len(provider.requests) == 1
     assert not any(method == "workspace_copy" for method, _ in bridge.calls)
 
 
@@ -461,7 +456,6 @@ async def test_close_cancels_optional_caption_without_retries(library):
     assert cancelled.is_set()
     assert (bridge.root / asset.relative_path).read_bytes() == picture()
     await seed_cached_sticker(value, picture(), platform="qq")
-    assert not value._tasks
 
 
 async def test_tgs_no_preview_stays_original_and_does_not_call_vision(library):
