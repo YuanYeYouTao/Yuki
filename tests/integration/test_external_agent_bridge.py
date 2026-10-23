@@ -751,7 +751,15 @@ async def test_conflicting_operation_and_execution_never_redirects_cancel_to_ano
             await second.close()
 
 
-async def test_conflicting_duplicate_event_is_not_acknowledged_or_applied(bridge):
+async def test_conflicting_duplicate_event_is_not_acknowledged_or_applied(bridge, monkeypatch):
+    disconnected = asyncio.Event()
+    disconnect = ExternalAgentService.disconnect
+
+    async def finish_disconnect(service, connection):
+        await disconnect(service, connection)
+        disconnected.set()
+
+    monkeypatch.setattr(ExternalAgentService, "disconnect", finish_disconnect)
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
@@ -772,22 +780,37 @@ async def test_conflicting_duplicate_event_is_not_acknowledged_or_applied(bridge
                 json.dumps({**original, "payload": {"text": "Changed fact"}})
             )
             await asyncio.wait_for(computer.reader, 5)
+            await asyncio.wait_for(disconnected.wait(), 5)
             assert computer.acknowledged.empty()
             async with bridge.database.read_session() as reader:
                 events = list(await reader.scalars(select(AgentEventModel)))
                 assert len(events) == 1
                 assert json.loads(events[0].payload_json)["payload"]["text"] == "Original fact"
-                assert (
-                    await reader.scalar(
-                        select(func.count())
-                        .select_from(inputs)
-                        .where(
-                            inputs.c.work_id == control.current["id"],
-                            inputs.c.kind == "control",
+                private = list(
+                    (
+                        await reader.execute(
+                            select(inputs).where(
+                                inputs.c.work_id == control.current["id"],
+                                inputs.c.kind == "control",
+                            )
                         )
-                    )
-                    == 1
+                    ).mappings()
                 )
+            original_inputs = [
+                item
+                for item in private
+                if item["source_key"] == f"external-agent:{original['event_id']}:{operation_id}"
+            ]
+            assert len(original_inputs) == 1
+            facts = [json.loads(json.loads(item["payload_json"])["text"]) for item in private]
+            event_facts = [fact for fact in facts if fact["kind"] == "external_agent_event"]
+            assert len(event_facts) == 1
+            assert event_facts[0]["payload"] == {"text": "Original fact"}
+            assert sorted((fact["kind"], fact["event"]) for fact in facts) == [
+                ("external_agent_event", "progress"),
+                ("external_agent_transport", "device_offline"),
+            ]
+            assert all("Changed fact" not in item["payload_json"] for item in private)
     finally:
         await computer.close()
 
