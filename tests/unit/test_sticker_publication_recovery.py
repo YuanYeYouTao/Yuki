@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from tests.support.service_dependencies import workspace_service
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import artifact_ids
 
@@ -18,7 +19,6 @@ from yuki.emoji.media import extension
 from yuki.emoji.sticker_index import StickerIndex
 from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.persistent import PersistentManager
-from yuki.workspace.service import WorkspaceService
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Actual Manager FDs require POSIX")
 ARGS = {"text": "body", "emoji": {"goal": "happy"}}
@@ -41,7 +41,7 @@ async def manual_library(database, tmp_path):
                 return await owner.manager.sticker_index(args)
             return await owner.manager.file_request(method, args, request_id)
 
-    workspace = WorkspaceService(env.store)
+    workspace = workspace_service(env.store)
     workspace.sandbox = Bridge()
     first_library, second_library = EmojiLibrary(workspace), EmojiLibrary(workspace)
     first = EmojiDeliveryService(env.service, first_library)

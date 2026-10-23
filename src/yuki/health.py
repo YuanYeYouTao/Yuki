@@ -7,6 +7,8 @@ from typing import TypedDict
 
 from yuki import __version__
 from yuki.container import ApplicationContainer
+from yuki.gateway.health import platform_health
+from yuki.model_runtime import ModelTask
 
 
 class HealthPayload(TypedDict):
@@ -24,6 +26,7 @@ class HealthPayload(TypedDict):
     asr: dict[str, object]
     onebot_connected: bool
     telegram_gateway: dict[str, object]
+    gateways: dict[str, dict[str, object]]
     automation_enabled: bool
     automation_worker_running: bool
     active_automation_count: int
@@ -68,9 +71,16 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     )
     self_reflection_health = await container.memory_self_reflection_worker.health()
     dream_health = await container.memory_dream_worker.health()
+    gateways = await platform_health(
+        container.database,
+        container.gateway_providers,
+        container.gateway_registry,
+        container.gateway_health_sources,
+    )
+    telegram = gateways.get("telegram")
     telegram_health: dict[str, object] = (
-        await container.telegram_gateway.health()
-        if container.telegram_gateway is not None
+        telegram.owner
+        if telegram is not None and telegram.owner is not None
         else {"enabled": False, "running": False, "healthy": None}
     )
     return HealthPayload(
@@ -78,7 +88,11 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         if database_ok
         and container.database.writer_available
         and background_health["running"]
-        and (not telegram_health["enabled"] or telegram_health["healthy"])
+        and all(
+            not item.owner["enabled"] or item.owner["healthy"]
+            for item in gateways.values()
+            if item.owner is not None
+        )
         else "degraded",
         version=__version__,
         database="ok" if database_ok and container.database.writer_available else "unavailable",
@@ -89,12 +103,13 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
             if container.database.sqlite_diagnostics is not None
             else {"available": False}
         ),
-        llm_configured=container.settings.llm_configured,
+        llm_configured=container.models.configured(ModelTask.CHAT_AGENT),
         web_configured=container.settings.web_configured,
         vision_configured=container.settings.vision_configured,
         asr=container.asr.health(),
-        onebot_connected=container.onebot_connected(),
+        onebot_connected=gateways["qq"].connected if "qq" in gateways else False,
         telegram_gateway=telegram_health,
+        gateways={platform: facts.summary() for platform, facts in gateways.items()},
         automation_enabled=container.settings.automation_enabled,
         automation_worker_running=container.automation_worker.running,
         active_automation_count=await container.automation_repository.active_count(),

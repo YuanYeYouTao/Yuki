@@ -289,23 +289,6 @@ class EventLedgerRepository:
             ).all()
         return tuple(_event_record(row) for row in rows)
 
-    async def find_by_platform_message(
-        self,
-        *,
-        bot_user_id: str,
-        platform_message_id: str,
-    ) -> EventRecord | None:
-        """Return one exact locally observed event without widening its conversation scope."""
-
-        async with self._database.read_session() as session:
-            row = await session.scalar(
-                select(ChatEventModel).where(
-                    ChatEventModel.bot_user_id == bot_user_id,
-                    ChatEventModel.platform_message_id == platform_message_id,
-                )
-            )
-        return _event_record(row) if row is not None else None
-
     async def get_event(self, event_id: int) -> EventRecord | None:
         """Return one exact ledger event by its internal immutable identifier."""
 
@@ -391,34 +374,6 @@ class EventLedgerRepository:
             ).all()
             return version, tuple(_event_record(row) for row in rows)
 
-    async def list_scope_recent(
-        self,
-        scope: ConversationScope,
-        *,
-        after_event_id: int = 0,
-        limit: int,
-        message_only: bool = False,
-    ) -> tuple[EventRecord, ...]:
-        """Read the newest events from the canonical Conversation behind an alias."""
-
-        async with self._database.read_session() as session:
-            await session.execute(text("BEGIN"))
-            version = await _read_version(session, scope)
-            if version.conversation_id is None:
-                return ()
-            query = select(ChatEventModel).where(
-                ChatEventModel.canonical_conversation_id == version.conversation_id,
-                keeper_event_clause(),
-                ChatEventModel.id > max(0, after_event_id, version.starts_after_event_id),
-            )
-            if message_only:
-                query = query.where(ChatEventModel.event_kind == "message")
-            rows = list(
-                (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
-            )
-        rows.reverse()
-        return tuple(_event_record(row) for row in rows)
-
     async def list_recent_activity(
         self,
         scope: ConversationScope,
@@ -484,38 +439,6 @@ class EventLedgerRepository:
         rows.reverse()
         return tuple(_event_record(row) for row in rows)
 
-    async def list_scope_after(
-        self,
-        scope: ConversationScope,
-        *,
-        after_event_id: int,
-        through_event_id: int | None = None,
-        limit: int,
-        message_only: bool = False,
-    ) -> tuple[EventRecord, ...]:
-        async with self._database.read_session() as session:
-            await session.execute(text("BEGIN"))
-            version = await _read_version(session, scope)
-            if version.conversation_id is None:
-                return ()
-            query = select(ChatEventModel).where(
-                ChatEventModel.canonical_conversation_id == version.conversation_id,
-                keeper_event_clause(),
-                ChatEventModel.id > max(after_event_id, version.starts_after_event_id),
-            )
-            if message_only:
-                query = query.where(ChatEventModel.event_kind == "message")
-            if through_event_id is not None:
-                query = query.where(ChatEventModel.id <= through_event_id)
-            rows = list(
-                (
-                    await session.scalars(
-                        query.order_by(ChatEventModel.id.asc()).limit(max(1, limit))
-                    )
-                ).all()
-            )
-        return tuple(_event_record(row) for row in rows)
-
     async def read_scope_missing_history(
         self,
         expected: ConversationReadVersion,
@@ -577,44 +500,6 @@ class EventLedgerRepository:
                 # An excluded-only page must still advance to the next unseen ID.
                 after = identities[-1]
             return version, tuple(records)
-
-    async def count_scope_range(
-        self,
-        scope: ConversationScope,
-        *,
-        after_event_id: int,
-        through_event_id: int,
-    ) -> int:
-        async with self._database.read_session() as session:
-            conversation_id = await _conversation_id_for_scope(session, scope)
-            if conversation_id is None:
-                return 0
-            return int(
-                await session.scalar(
-                    select(func.count(ChatEventModel.id)).where(
-                        ChatEventModel.canonical_conversation_id == conversation_id,
-                        keeper_event_clause(),
-                        ChatEventModel.id > after_event_id,
-                        ChatEventModel.id <= through_event_id,
-                    )
-                )
-                or 0
-            )
-
-    async def maximum_scope_event_id(self, scope: ConversationScope) -> int:
-        async with self._database.read_session() as session:
-            conversation_id = await _conversation_id_for_scope(session, scope)
-            if conversation_id is None:
-                return 0
-            return int(
-                await session.scalar(
-                    select(func.max(ChatEventModel.id)).where(
-                        ChatEventModel.canonical_conversation_id == conversation_id,
-                        keeper_event_clause(),
-                    )
-                )
-                or 0
-            )
 
     @staticmethod
     def _history_conditions(

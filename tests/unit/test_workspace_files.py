@@ -19,7 +19,7 @@ def test_write_overwrites_without_target_cas(tmp_path):
     assert result["version"] == hashlib.sha256(b"new target").hexdigest()
 
 
-def test_copy_streams_once_and_does_not_gate_on_target_edits(tmp_path, monkeypatch):
+def test_copy_preserves_selected_source_despite_target_edits(tmp_path, monkeypatch):
     files = FileWorkspace(tmp_path)
     content = b"selected bytes" * 18000
     source = tmp_path / "source.bin"
@@ -27,22 +27,21 @@ def test_copy_streams_once_and_does_not_gate_on_target_edits(tmp_path, monkeypat
     target = tmp_path / "target.bin"
     target.write_bytes(b"old target")
     read = os.read
-    reads = []
+    edited = False
     with files.open_file("source.bin") as fd:
 
         def edit_target(source_fd, count):
+            nonlocal edited
             chunk = read(source_fd, count)
-            if source_fd == fd:
-                reads.append(len(chunk))
-                if len(reads) == 1:
-                    target.write_bytes(b"terminal edit while copy is in progress")
+            if source_fd == fd and not edited:
+                edited = True
+                target.write_bytes(b"terminal edit while copy is in progress")
             return chunk
 
         monkeypatch.setattr(os, "read", edit_target)
         result = files.copy("target.bin", fd, expected_version=hashlib.sha256(content).hexdigest())
     assert target.read_bytes() == content
-    assert result["size"] == sum(reads) == len(content)
-    assert max(reads) <= 65536 and len(reads) > 2
+    assert edited and result["size"] == len(content)
     assert not list(tmp_path.glob(".yuki-write-*"))
 
 

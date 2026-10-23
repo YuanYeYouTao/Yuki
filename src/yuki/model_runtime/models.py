@@ -30,7 +30,6 @@ class ModelExecutionPriority(StrEnum):
 
     FOREGROUND = "foreground"
     BACKGROUND = "background"
-    EXCLUSIVE = "exclusive"
     BEST_EFFORT_BACKGROUND = "best_effort_background"
     MAINTENANCE = "maintenance"
     REQUIRED = "required"

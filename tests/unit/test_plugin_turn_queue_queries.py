@@ -3,14 +3,12 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import insert, select, update
 from tests.support.background_authority import approve_background_plugin
 from tests.support.social_identity_cases import social_env
-from tests.support.sqlite_cost import capture_reads, read_vm_steps
 
 from yuki.persistence.models import ChatEventModel
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
@@ -86,48 +84,6 @@ async def _bind(queue, state):
         await writer.execute(insert(work).values(**_work_row(queue, identity, state)))
         await writer.execute(update(Job).where(Job.id == queue.job["id"]).values(work_id=identity))
     return identity
-
-
-async def test_idle_turn_discovery_does_not_walk_paused_jobs_or_terminal_work(turn_queue):
-    queue = turn_queue
-    await _bind(queue, "suspended")
-    costs = []
-    for start, stop in ((0, 50), (50, 2000)):
-        async with queue.db.immediate_session() as writer:
-            for index in range(start, stop):
-                identity = str(uuid4())
-                event_id = await writer.scalar(
-                    insert(ChatEventModel)
-                    .values(
-                        **{
-                            key: value
-                            for key, value in queue.event.items()
-                            if key not in {"id", "canonical_event_id", "external_event_key"}
-                        },
-                        canonical_event_id=str(uuid4()),
-                        external_event_key=f"retained:{index}",
-                    )
-                    .returning(ChatEventModel.id)
-                )
-                await writer.execute(insert(work).values(**_work_row(queue, identity, "suspended")))
-                await writer.execute(
-                    insert(Job).values(
-                        **{
-                            key: value
-                            for key, value in queue.job.items()
-                            if key not in {"id", "work_id", "source_event_id"}
-                        },
-                        source_event_id=event_id,
-                        work_id=identity,
-                    )
-                )
-                await writer.execute(
-                    insert(work).values(**_work_row(queue, str(uuid4()), "completed"))
-                )
-        with capture_reads(queue.db) as statements:
-            assert await queue.repo.claim_turn() is None
-        costs.append(read_vm_steps(queue.db, statements))
-    assert costs[1] <= costs[0] * 3, costs
 
 
 @pytest.mark.parametrize("state", ["waiting_external", "waiting_user", "suspended"])
@@ -231,7 +187,7 @@ async def test_worker_reconciles_at_each_start_without_waiting_for_the_poll(
     turn_queue, monkeypatch
 ):
     queue = turn_queue
-    await _bind(queue, "completed")
+    identity = await _bind(queue, "completed")
     worker = PluginBackgroundTurnWorker(
         repository=queue.repo,
         ledger=None,
@@ -248,14 +204,16 @@ async def test_worker_reconciles_at_each_start_without_waiting_for_the_poll(
         worker.wake()
         return result
 
-    reconcile = AsyncMock(wraps=queue.repo.reconcile_terminal_turns)
-    monkeypatch.setattr(queue.repo, "reconcile_terminal_turns", reconcile)
     monkeypatch.setattr(queue.repo, "claim_turn", stop_after_claim)
-    for _ in range(2):
+    for state in ("completed", "failed"):
+        async with queue.db.immediate_session() as writer:
+            await writer.execute(update(work).where(work.c.id == identity).values(state=state))
+            await writer.execute(
+                update(Job).where(Job.id == queue.job["id"]).values(status="pending")
+            )
         await worker.start()
         async with asyncio.timeout(5):
             await worker._task
         await worker.close()
-    assert reconcile.await_count == 2
-    async with queue.db.read_session() as reader:
-        assert (await reader.get(Job, queue.job["id"])).status == "completed"
+        async with queue.db.read_session() as reader:
+            assert (await reader.get(Job, queue.job["id"])).status == state

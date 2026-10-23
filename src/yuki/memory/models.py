@@ -258,12 +258,6 @@ class MemoryFactStateEvent(_MemoryModel):
     created_at: datetime
 
 
-class MemoryCandidate(_MemoryModel):
-    candidate_ref: str = Field(pattern=r"^candidate_[1-9][0-9]*$")
-    fact: MemoryFact
-    exact_key: bool = False
-
-
 class MemoryResolutionPlan(_MemoryModel):
     action: MemoryResolutionAction
     existing_fact_id: int | None = Field(default=None, gt=0)
@@ -271,7 +265,6 @@ class MemoryResolutionPlan(_MemoryModel):
     new_conflict_state: MemoryConflictState | None = None
     relation_types: tuple[MemoryFactRelationType, ...] = ()
     reason_code: str
-    create_new_fact: bool = False
 
 
 class MemoryConsistencyHealth(_MemoryModel):

@@ -100,6 +100,14 @@ class ModelClientPool:
         secret = self._secret_overrides.get(profile.api_key_env)
         return os.getenv(profile.api_key_env, "") if secret is None else secret
 
+    def configured(self, profile: ModelProfile) -> bool:
+        """Project this pool's selected injection or credential without model I/O."""
+        return (
+            profile.id in self._injected_profiles
+            or profile.provider.casefold() == "fake"
+            or bool(self.api_key_for(profile))
+        )
+
     def get(self, profile: ModelProfile, *, timeout_seconds: float | None = None) -> LLMProvider:
         injected = self._injected_profiles.get(profile.id)
         if injected is not None:
@@ -134,12 +142,6 @@ class ModelClientPool:
             provider = create_model_provider(profile, api_key, client=connection_pool)
         self._clients[key] = provider
         return provider
-
-    @property
-    def connection_pool_count(self) -> int:
-        """Expose a content-free diagnostic for reuse tests and health output."""
-
-        return len(self._connection_pools)
 
     async def close(self) -> None:
         closed: set[int] = set()

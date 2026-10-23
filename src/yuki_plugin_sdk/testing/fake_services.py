@@ -7,7 +7,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID, uuid4
 
 from yuki_plugin_sdk.events import EventEnvelope
@@ -175,16 +175,21 @@ class FakeMemoryFacade:
         self.people: dict[str, list[dict[str, JsonValue]]] = {}
         self.groups: dict[str, list[dict[str, JsonValue]]] = {}
         self.records: dict[str, dict[str, JsonValue]] = {}
+        self._next_fact_id = 1
 
     async def list_person(
         self, user_id: str, limit: int = 20
     ) -> tuple[Mapping[str, JsonValue], ...]:
-        return tuple(self.people.get(user_id, ())[-limit:])
+        return tuple(row for row in self.people.get(user_id, ()) if row.get("status") == "active")[
+            -limit:
+        ]
 
     async def list_group(
         self, group_id: str, limit: int = 20
     ) -> tuple[Mapping[str, JsonValue], ...]:
-        return tuple(self.groups.get(group_id, ())[-limit:])
+        return tuple(row for row in self.groups.get(group_id, ()) if row.get("status") == "active")[
+            -limit:
+        ]
 
     async def search(
         self,
@@ -199,8 +204,38 @@ class FakeMemoryFacade:
         return tuple(
             item
             for item in source.get(subject_id, ())
-            if needle in str(item.get("content", "")).casefold()
+            if item.get("status") == "active" and needle in str(item.get("content", "")).casefold()
         )[:limit]
+
+    def _append(
+        self, subject_id: str, content: str, confidence: float, *, source_type: str, authority: str
+    ) -> dict[str, JsonValue]:
+        fact_id = self._next_fact_id
+        self._next_fact_id += 1
+        now = datetime.now(UTC).isoformat()
+        record: dict[str, JsonValue] = {
+            "memory_id": f"person:{fact_id}",
+            "fact_id": fact_id,
+            "scope_type": "person",
+            "kind": "fact",
+            "category": "explicit",
+            "content": " ".join(content.split()).strip(),
+            "importance": 5,
+            "confidence": confidence,
+            "source_type": source_type,
+            "status": "active",
+            "authority": authority,
+            "conflict_state": "clear",
+            "evidence_count": 1,
+            "last_confirmed_at": now,
+            "updated_at": now,
+            "user_id": subject_id,
+            "group_id": None,
+            "subject_user_id": subject_id,
+        }
+        self.records[f"person:{fact_id}"] = record
+        self.people.setdefault(subject_id, []).append(record)
+        return record
 
     async def add(
         self,
@@ -212,20 +247,20 @@ class FakeMemoryFacade:
         confidence: float,
         source_event_ids: tuple[str, ...] = (),
     ) -> PluginResult:
-        memory_id = str(uuid4())
-        record: dict[str, JsonValue] = {
-            "id": memory_id,
-            "scope_type": scope_type,
-            "subject_id": subject_id,
-            "content": content,
-            "source_type": source_type,
-            "confidence": confidence,
-            "source_event_ids": list(source_event_ids),
-        }
-        self.records[memory_id] = record
-        target = self.people if scope_type == "person" else self.groups
-        target.setdefault(subject_id, []).append(record)
-        return PluginResult(data={"memory_id": memory_id})
+        if scope_type != "person":
+            return PluginResult(
+                ok=False,
+                error_code="feature.unavailable",
+                detail="group memory writes need a reviewed group-memory service",
+            )
+        if source_type not in {"automatic", "plugin"}:
+            raise ValueError("plugin memory source_type must be automatic or plugin")
+        if not 0 <= confidence <= 1:
+            raise ValueError("confidence must be between zero and one")
+        record = self._append(
+            subject_id, content, confidence, source_type="automatic", authority="self_report"
+        )
+        return PluginResult(data={"memory": record.copy()})
 
     async def update(
         self,
@@ -235,20 +270,30 @@ class FakeMemoryFacade:
         confidence: float | None = None,
     ) -> PluginResult:
         record = self.records.get(memory_id)
-        if record is None:
-            return PluginResult(ok=False, error_code="memory.not_found")
-        record["content"] = content
-        if confidence is not None:
-            record["confidence"] = confidence
-        return PluginResult(data={"updated": True})
+        if record is None or record.get("status") != "active":
+            return PluginResult(
+                ok=False, error_code="memory.not_found", data={"memory_id": memory_id}
+            )
+        if confidence is not None and not 0 <= confidence <= 1:
+            raise ValueError("confidence must be between zero and one")
+        replacement = self._append(
+            str(record["user_id"]),
+            content,
+            cast(float, record["confidence"]) if confidence is None else confidence,
+            source_type="explicit",
+            authority="explicit",
+        )
+        record["status"] = "superseded"
+        return PluginResult(data={"memory_id": replacement["memory_id"]})
 
     async def delete(self, memory_id: str) -> PluginResult:
-        record = self.records.pop(memory_id, None)
-        if record is None:
-            return PluginResult(ok=False, error_code="memory.not_found")
-        for collection in (*self.people.values(), *self.groups.values()):
-            collection[:] = [item for item in collection if item.get("id") != memory_id]
-        return PluginResult(data={"deleted": True})
+        record = self.records.get(memory_id)
+        if record is None or record.get("status") != "active":
+            return PluginResult(
+                ok=False, error_code="memory.not_found", data={"memory_id": memory_id}
+            )
+        record["status"] = "invalidated"
+        return PluginResult(data={"memory_id": memory_id})
 
 
 class FakeAgentFacade:

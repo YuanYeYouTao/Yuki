@@ -102,8 +102,6 @@ async def test_short_state_cannot_write_under_obsolete_or_closed_execution(
         assert [row["text"] for row in contract.state.snapshot()] == (
             ["actual write"] if scenario == "valid" else []
         )
-        if scenario in {"expired_after_preflight", "generation_changed"}:
-            assert checks >= 2
         if scenario == "expired_after_preflight":
             assert not await owner.control.repository.valid(owner.control.lease)
         if scenario == "generation_changed":

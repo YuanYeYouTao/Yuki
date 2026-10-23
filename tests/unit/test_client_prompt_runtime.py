@@ -105,13 +105,10 @@ async def test_terminal_receipt_prepares_original_payload_before_writer(
     active = ContextVar("terminal_receipt_writer", default=False)
     writer = database.immediate_session
     payload = prompts_module.message_payload
-    preparations = 0
     intervened = False
 
     def prepared_payload(*args):
-        nonlocal preparations
         assert not active.get(), "terminal receipt decoded its source inside writer"
-        preparations += 1
         return payload(*args)
 
     @asynccontextmanager
@@ -141,7 +138,6 @@ async def test_terminal_receipt_prepares_original_payload_before_writer(
         SimpleNamespace(reason="chat", handled=True, sent_messages=1),
         None,
     )
-    assert preparations == (2 if changed else 1)
     assert len(env.calls) == calls_before
     facts = await ClientRequests(env.identity, prompts=prompts).get(principal, request_id)
     assert facts["turn"] == {"state": "ended", "outcome": "chat"}

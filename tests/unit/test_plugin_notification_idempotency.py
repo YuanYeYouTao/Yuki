@@ -28,9 +28,6 @@ from yuki.plugin_host.db_models import (
 )
 from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
 from yuki.plugin_host.notification_manifest import (
-    canonical_json,
-    canonical_occurred_at,
-    is_sha256_digest,
     media_part_key,
 )
 from yuki.plugin_host.notification_repository import PluginNotificationRepository
@@ -421,24 +418,14 @@ async def test_exact_retry_is_read_only_and_deduplicated(database: Database) -> 
     assert second.deduplicated is True
     assert second.notification_id == first.notification_id
     assert second.source_event_id == first.source_event_id
-    assert await _state(database) == before
-
-
-@pytest.mark.asyncio
-async def test_canonical_payload_key_order_retries_without_new_work(database: Database) -> None:
-    repository = await _install(database)
-    first = await repository.publish(
-        plugin_id=_PLUGIN_ID,
-        request=_request(payload={"b": 1, "a": 2}),
-    )
-    before = await _state(database)
-    second = await repository.publish(
-        plugin_id=_PLUGIN_ID,
-        request=_request(payload={"a": 2, "b": 1}),
-    )
-    assert second.deduplicated is True
-    assert second.source_event_id == first.source_event_id
-    assert await _state(database) == before
+    for request in (
+        _request(payload={"name": "alpha", "id": 7}),
+        _request(occurred_at=datetime(2026, 8, 26, 23, tzinfo=timezone(timedelta(hours=8)))),
+        _request(occurred_at=_NOW.replace(tzinfo=None)),
+    ):
+        replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+        assert replay.deduplicated and replay.source_event_id == first.source_event_id
+        assert await _state(database) == before
 
 
 @pytest.mark.asyncio
@@ -588,20 +575,12 @@ async def test_new_media_part_key_uses_index_and_sha(database: Database) -> None
     assert parts[0][1] == "handle-new"
     assert "handle-new" not in parts[0][0]
     assert receipt.delivery_enqueued is True
-
-
-@pytest.mark.asyncio
-async def test_same_handle_and_sha_retry_does_not_enqueue_again(database: Database) -> None:
-    repository = await _install(database)
-    digest = _sha(b"same-bytes")
-    await _add_artifact(database, handle_id="handle-same", digest=digest)
-    request = _request(media_handles=("handle-same",))
-    first = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
     before = await _state(database)
-    second = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
-    assert second.deduplicated is True
-    assert second.delivery_enqueued is False
-    assert second.source_event_id == first.source_event_id
+    replay = await repository.publish(
+        plugin_id=_PLUGIN_ID, request=_request(media_handles=("handle-new",))
+    )
+    assert replay.deduplicated and not replay.delivery_enqueued
+    assert replay.source_event_id == receipt.source_event_id
     assert await _state(database) == before
 
 
@@ -884,21 +863,13 @@ async def test_invalid_media_rolls_back_first_publish(database: Database) -> Non
     assert await _count(database, ChatEventModel) == 0
 
 
-def test_canonical_json_and_utc_tokens_are_stable() -> None:
-    digest = _sha(b"bytes")
-    naive = datetime(2026, 8, 26, 15, 0, 0)
-    offset = datetime(2026, 8, 26, 23, 0, 0, tzinfo=timezone(timedelta(hours=8)))
-    assert canonical_json({"b": 1, "a": 2}) == canonical_json({"a": 2, "b": 1})
-    assert canonical_occurred_at(naive) == canonical_occurred_at(_NOW)
-    assert canonical_occurred_at(offset) == canonical_occurred_at(_NOW)
-    key = media_part_key(index=0, sha256=digest)
-    assert key == f"media:0:{digest}"
-    assert is_sha256_digest(digest)
-
-
-def test_canonical_json_rejects_non_finite_numbers() -> None:
+async def test_non_finite_publication_payload_is_rejected_before_write(database):
+    repository = await _install(database)
     with pytest.raises(ValueError, match="JSON compliant"):
-        canonical_json({"value": float("nan")})
+        await repository.publish(
+            plugin_id=_PLUGIN_ID, request=_request(payload={"value": float("nan")})
+        )
+    assert await _state(database) == ((), (), ())
 
 
 @pytest.mark.asyncio
@@ -937,21 +908,6 @@ async def test_integrity_error_rolls_back_without_retry(
         )
     assert calls == 1
     assert await _state(database) == ((), (), ())
-
-
-@pytest.mark.asyncio
-async def test_equivalent_utc_occurred_at_deduplicates(database: Database) -> None:
-    repository = await _install(database)
-    first = await repository.publish(plugin_id=_PLUGIN_ID, request=_request())
-    before = await _state(database)
-    offset = datetime(2026, 8, 26, 23, tzinfo=timezone(timedelta(hours=8)))
-    second = await repository.publish(
-        plugin_id=_PLUGIN_ID,
-        request=_request(occurred_at=offset),
-    )
-    assert second.deduplicated is True
-    assert second.source_event_id == first.source_event_id
-    assert await _state(database) == before
 
 
 @pytest.mark.asyncio

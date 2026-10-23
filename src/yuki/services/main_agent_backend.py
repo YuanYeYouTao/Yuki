@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from yuki.capabilities import (
     AuthorityContext,
@@ -45,6 +45,7 @@ from yuki_plugin_sdk.permissions import PluginPermission
 if TYPE_CHECKING:
     from yuki.plugin_host.facades import HostPluginContext
     from yuki.services.chat import ChatService
+    from yuki.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +122,9 @@ class MainAgentBackend(AgentToolBackend):
         del runtime
         if self._capability_runtime is not None:
             return
+        contract = cast("MainAgentContract", self._service.runtime.runner.main_contract)
+        await contract.definitions()
         capability_runtime = self._install_capability_runtime()
-        capability_runtime.initial_exposure()
         self._catalog = capability_runtime.authorized_catalog
 
     def _memory(self) -> Any:
@@ -173,7 +175,6 @@ class MainAgentBackend(AgentToolBackend):
             self._catalog = self._capability_runtime.authorized_catalog
             return self._capability_runtime
         capability_runtime = self._install_capability_runtime()
-        capability_runtime.initial_exposure()
         self._catalog = capability_runtime.authorized_catalog
         return capability_runtime
 
@@ -208,9 +209,12 @@ class MainAgentBackend(AgentToolBackend):
             memory_view=memory_view,
             artifact_available=self._service._tool_artifacts is not None,
         )
+        contract = cast("MainAgentContract", self._service.runtime.runner.main_contract)
+        schemas = contract.schema_view
         self._capability_runtime = TurnCapabilityRuntime(
             registry=snapshot,
             policy_context=policy_context,
+            schemas=schemas,
         )
         return self._capability_runtime
 
@@ -594,8 +598,7 @@ class MainAgentBackend(AgentToolBackend):
             host._require(permission, require_invocation=False)
 
     async def participation_context(self, runtime: AgentRuntime) -> dict[str, Any] | None:
-        reader = self._service.participation_runtime_context
-        return await reader(self._request_runtime()) if reader is not None else None
+        return await self._service.participation_runtime_context(self._request_runtime())
 
     async def observe_response(self, response: Any, runtime: AgentRuntime) -> None:
         """Apply sparse own-state evidence, using the original main-turn binding."""
@@ -609,24 +612,22 @@ class MainAgentBackend(AgentToolBackend):
         if delta is None:
             return
         if runtime.origin is RuntimeTurnOrigin.USER_MESSAGE and self._runtime.inbound is not None:
-            observe_main = getattr(self._service, "observe_main_response", None)
-            if callable(observe_main):
-                sequence = (
-                    max(1, control.session.sequence)
-                    if control is not None and control.session is not None
-                    else self._response_sequence
+            sequence = (
+                max(1, control.session.sequence)
+                if control is not None and control.session is not None
+                else self._response_sequence
+            )
+            try:
+                await self._service.observe_main_response(
+                    replace(self._runtime, visible_event_ids=runtime.visible_event_ids),
+                    sequence,
+                    response,
+                    delta,
                 )
-                try:
-                    await observe_main(
-                        replace(self._runtime, visible_event_ids=runtime.visible_event_ids),
-                        sequence,
-                        response,
-                        delta,
-                    )
-                except Exception as exc:
-                    # Own-state is derived evidence. A failed checkpoint does not
-                    # invalidate a delivered message or justify replaying the turn.
-                    logger.warning("participation_main_hint_failed category=%s", type(exc).__name__)
+            except Exception as exc:
+                # Own-state is derived evidence. A failed checkpoint does not
+                # invalidate a delivered message or justify replaying the turn.
+                logger.warning("participation_main_hint_failed category=%s", type(exc).__name__)
             return
         if (
             not self._runtime.initiative_run_id

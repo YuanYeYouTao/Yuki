@@ -378,16 +378,20 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
             {**control.source, "read_scope": json.dumps({"memory": []})},
         )
     )
+    note = {"version": 2, "facts": [{"text": "", "refs": ["goal", "goal"]}], "future": True}
+    await repository.checkpoint(lease, identity, None, models=3, tools=1)
+    control.current = await repository.get(identity)
     result = json.loads(
         await control.execute(
             "task_control",
-            {"action": "update", "context_note": {"facts": [{"text": "saved", "refs": ["goal"]}]}},
+            {"action": "update", "context_note": note},
             "save-optional-note",
         )
     )
     assert result["ok"]
     saved = json.loads((await repository.get(identity))["checkpoint_json"])["context_note"]
-    assert saved["payload"]["facts"][0]["text"] == "saved"
+    assert saved["payload"]["facts"] == note["facts"]
+    assert saved["payload"]["version"] == note["version"]
     async with database.read_session() as reader:
         assert not await reader.scalar(
             select(ContextObservationModel.id).where(
@@ -402,7 +406,7 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
     await control.settle(pending_inputs=False)
     final = await repository.get(identity)
     assert final["id"] == identity and final["state"] == "completed"
-    assert final["model_requests"] == 0
+    assert final["model_requests"] == 3
 
 
 @pytest.mark.asyncio

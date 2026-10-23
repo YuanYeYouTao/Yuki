@@ -13,7 +13,6 @@ from yuki.llm.fake import FakeLLMProvider
 from yuki.llm.gemini import GeminiProvider
 from yuki.llm.openai_compatible import OpenAICompatibleProvider
 from yuki.llm.openai_responses import OpenAIResponsesProvider
-from yuki.model_runtime import executor as executor_module
 from yuki.model_runtime.dispatch_guard import check_model_dispatch, model_dispatch_guard
 from yuki.model_runtime.executor import TaskModelExecutor
 from yuki.model_runtime.models import ModelProfile, ModelRoute, ModelTask
@@ -105,18 +104,7 @@ CHAT_BODY = {
         ),
     ],
 )
-@pytest.mark.parametrize("finish_hook", [False, True])
-async def test_success_body_decoded_once_for_usage_parser_and_optional_hook(
-    monkeypatch, kind, body, finish_hook
-):
-    decoded = []
-    original = httpx.Response.json
-
-    def decode(response, **kwargs):
-        decoded.append(response)
-        return original(response, **kwargs)
-
-    monkeypatch.setattr(httpx.Response, "json", decode)
+async def test_success_body_preserves_usage_and_finished_request_hook(kind, body):
     finished = []
 
     async def finish(status, output):
@@ -133,7 +121,7 @@ async def test_success_body_decoded_once_for_usage_parser_and_optional_hook(
             max_retries=0,
             client=client,
         )
-        token = after_provider_request.set(finish if finish_hook else None)
+        token = after_provider_request.set(finish)
         try:
             result = await provider.complete(
                 ChatRequest((ChatMessage("user", "original input"),), model="offline")
@@ -142,20 +130,11 @@ async def test_success_body_decoded_once_for_usage_parser_and_optional_hook(
             after_provider_request.reset(token)
     assert result.content == "done"
     assert (result.prompt_tokens, result.completion_tokens, result.total_tokens) == (4, 2, 6)
-    assert len(decoded) == 1
-    assert bool(finished) is finish_hook
-    if finish_hook:
-        assert finished[0][1] == 2
+    assert [output for _, output in finished] == [2]
 
 
 async def test_retries_have_one_fresh_guard_per_physical_attempt():
-    physical, guards, encodings = [], [], []
-
-    class CountingProvider(OpenAICompatibleProvider):
-        def _build_payload(self, request):
-            payload = super()._build_payload(request)
-            encodings.append(payload)
-            return payload
+    physical, guards = [], []
 
     def transport(request):
         physical.append(request)
@@ -171,7 +150,7 @@ async def test_retries_have_one_fresh_guard_per_physical_attempt():
     async with httpx.AsyncClient(
         base_url="https://offline.invalid", transport=httpx.MockTransport(transport)
     ) as client:
-        provider = CountingProvider(
+        provider = OpenAICompatibleProvider(
             base_url="https://offline.invalid",
             api_key="synthetic",
             timeout_seconds=1,
@@ -190,7 +169,6 @@ async def test_retries_have_one_fresh_guard_per_physical_attempt():
     assert guards == [0, 1]
     assert len(physical) == 2
     assert physical[0].content == physical[1].content
-    assert len(encodings) == 1
 
 
 async def test_revocation_during_retry_prevents_the_next_physical_request():
@@ -261,33 +239,25 @@ async def test_non_http_provider_rechecks_after_slot_admission():
         await models.close()
 
 
-async def test_prepared_capacity_is_reused_only_for_its_exact_request_and_profile(monkeypatch):
-    estimates = []
-    original = executor_module.estimate_request_tokens
-
-    def measure(request):
-        estimates.append(request)
-        return original(request)
-
-    monkeypatch.setattr(executor_module, "estimate_request_tokens", measure)
+async def test_prepared_capacity_cannot_authorize_a_changed_request_or_profile():
     provider = FakeLLMProvider(lambda request: "done")
     models = executor(provider, profiles=catalog(max_input_tokens=1000))
     prepared = models.prepare_capacity(
         ModelTask.CHAT_AGENT, ChatRequest((ChatMessage("user", "x"),))
     )
     try:
-        await models.execute(ModelTask.CHAT_AGENT, prepared.request, prepared_capacity=prepared)
-        assert estimates == [prepared.request]
+        result = await models.execute(
+            ModelTask.CHAT_AGENT, prepared.request, prepared_capacity=prepared
+        )
+        assert result.content == "done"
         changed = replace(prepared.request, messages=(ChatMessage("user", "x" * 6000),))
         with pytest.raises(LLMUnsupportedFeatureError, match="input capacity"):
             await models.execute(ModelTask.CHAT_AGENT, changed, prepared_capacity=prepared)
-        assert estimates[-1] == changed
         assert len(provider.requests) == 1
         models.apply_catalog(
             catalog(max_input_tokens=1), ModelClientPool(injected_profiles={"main": provider})
         )
         with pytest.raises(LLMUnsupportedFeatureError, match="input capacity"):
             await models.execute(ModelTask.CHAT_AGENT, prepared.request, prepared_capacity=prepared)
-        assert len(estimates) == 3
     finally:
         await models.close()

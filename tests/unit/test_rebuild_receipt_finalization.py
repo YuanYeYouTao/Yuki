@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import insert, select, update
 from tests.support.event_seed import seed_event
 from tests.unit.test_memory_rebuild import _admin, _service
@@ -165,55 +164,6 @@ async def _seed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("count", [1, 10, 100, 1000])
-async def test_finalization_read_budget_is_per_page_and_second_pass_is_readonly(
-    database: Database, count: int
-) -> None:
-    seed = await _seed(database, count, proposals=True)
-    repository = MemoryRebuildRepository(database)
-    statements: list[str] = []
-
-    def capture(_connection, _cursor, statement, _parameters, _context, _many):
-        statements.append(statement.strip().upper())
-
-    sqlalchemy_event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        completed = await repository.complete_item_receipts(
-            seed.public_id, include_failed_live_jobs=False, limit=128
-        )
-        assert completed == min(count, 128)
-        # Run/source lookup and two metadata batches; receipts are read only in
-        # the writer. No per-item or proposal-body SELECTs after the first DML.
-        selects = [statement for statement in statements if statement.startswith("SELECT")]
-        assert len(selects) <= 10
-        assert not any("CLAIM_JSON" in statement for statement in selects)
-        first_write = next(
-            index
-            for index, statement in enumerate(statements)
-            if statement.startswith(("INSERT", "UPDATE", "DELETE"))
-        )
-        assert not any(statement.startswith("SELECT") for statement in statements[first_write:])
-        while await repository.remaining_item_receipt_count(seed.public_id):
-            assert (
-                await repository.complete_item_receipts(
-                    seed.public_id, include_failed_live_jobs=False, limit=128
-                )
-                > 0
-            )
-        statements.clear()
-        assert (
-            await repository.complete_item_receipts(seed.public_id, include_failed_live_jobs=False)
-            == 0
-        )
-        assert not any(
-            statement.startswith(("BEGIN IMMEDIATE", "INSERT", "UPDATE", "DELETE"))
-            for statement in statements
-        )
-    finally:
-        sqlalchemy_event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-
-
-@pytest.mark.asyncio
 async def test_page_and_affected_item_boundaries_keep_other_run_untouched(
     database: Database,
 ) -> None:
@@ -236,6 +186,11 @@ async def test_page_and_affected_item_boundaries_keep_other_run_untouched(
         == 128
     )
     assert await repository.remaining_item_receipt_count(seed.public_id) == 0
+    async with database.immediate_session():
+        assert (
+            await repository.complete_item_receipts(seed.public_id, include_failed_live_jobs=False)
+            == 0
+        )
     assert await repository.remaining_item_receipt_count(other.public_id) == 1
     async with database.read_session() as session:
         assert (

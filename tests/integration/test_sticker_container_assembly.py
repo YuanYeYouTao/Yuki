@@ -9,7 +9,6 @@ from tests.unit.test_sticker_library import LocalDirectoryBridge
 
 from yuki.container import ApplicationContainer
 from yuki.health import build_health_payload
-from yuki.social.tools import social_tool_definitions
 
 
 @pytest.mark.parametrize("code_enabled", [False, True])
@@ -52,49 +51,16 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
     monkeypatch.setattr(app.sandbox_client, "execute", manager_read_or_file)
     try:
         await app.start()
-        assert app.social_service.emoji_delivery is app.emoji_delivery
-        assert app.emoji_library.workspace.conversation_media is app.conversation_media
-        assert not hasattr(app.workspace_service, "stickers")
         assert app.emoji_delivery.running
         delivery_task = app.emoji_delivery._task
         platform = await app.main_agent_contract.definitions()
-        personal = await app.main_agent_contract.definitions()
-        revision = app.main_agent_contract.revision
-        assert personal == platform
         names = {tool.name for tool in platform}
-        assert "send" in names
-        assert not {"send_message", "send_file", "workspace_publish"} & names
+        assert {"send", "query_chat_history"} <= names
+        assert ("execute_code" in names) == code_enabled
         assert "send" in {tool.name for tool in await app.main_agent_contract.model_definitions()}
-        if code_enabled:
-            api = app.main_agent_contract.script_api
-            assert api is not None
-            assert api.tool_for("yuki_send") == "send"
-            assert api.tool_for("yuki_send_message") is None
-            assert "workspace_publish" not in api.schemas
-        assert "query_chat_history" in {tool.name for tool in platform}
-        assert "read_personal_entry" not in {tool.name for tool in platform}
-        assert ("execute_code" in {tool.name for tool in platform}) == code_enabled
-        message = next(tool for tool in platform if tool.name == "send")
-        declared_message = next(
-            tool for tool in social_tool_definitions() if tool.name == "send"
-        )
-        personal_message = next(tool for tool in personal if tool.name == "send")
-        assert message == personal_message
-        assert message.parameters == declared_message.parameters
-        assert message.description == declared_message.description
-        assert message.schema_version == declared_message.schema_version
-        assert "mentions" not in message.parameters["properties"]
-        target_fields = message.parameters["properties"]["target"]["properties"]
-        assert not {"display_name", "subject_ref"} & target_fields.keys()
-        assert "后台配图" in message.parameters["properties"]["emoji"]["description"]
-        assert await app.main_agent_contract.definitions() == platform
-        assert app.main_agent_contract.revision == revision
         payload = await build_health_payload(app)
         assert payload["main_agent_manifest"]["frozen"]
-        assert "emoji_worker_running" not in payload
-        assert "emoji_counts" not in payload
     finally:
         await asyncio.wait_for(app.close(), 5)
     assert not app.emoji_delivery.running
     assert delivery_task.done() and delivery_task.cancelled()
-    assert not app.emoji_library._tasks

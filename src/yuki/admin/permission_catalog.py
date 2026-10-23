@@ -172,35 +172,6 @@ class CapabilityReport:
             ],
         }
 
-    def to_compact_dict(self) -> dict[str, object]:
-        """Return every capability ID in a bounded, non-redundant tool payload."""
-
-        groups: dict[str, dict[str, list[dict[str, object]]]] = {}
-        for descriptor in self.capabilities:
-            kind = descriptor.kind.value
-            group = groups.setdefault(descriptor.category, {})
-            item: dict[str, object] = {"id": descriptor.id}
-            if descriptor.mutating:
-                item["mutating"] = True
-            if descriptor.target_scopes:
-                item["scopes"] = list(descriptor.target_scopes)
-            if descriptor.apply_mode is not None:
-                item["apply_mode"] = descriptor.apply_mode
-            # Detailed type/range metadata is available from the focused view. Repeating
-            # it for every configuration makes the complete capability index exceed the
-            # bounded tool-result budget as the registry grows.
-            group.setdefault(kind, []).append(item)
-
-        full = self.to_dict()
-        return {
-            "actor_user_id": full["actor_user_id"],
-            "permission_level": full["permission_level"],
-            "permission_rank": full["permission_rank"],
-            "permission_source": full["permission_source"],
-            "counts": full["counts"],
-            "groups": groups,
-        }
-
     def to_model_dict(
         self,
         mode: Literal["summary", "focused", "full"] = "summary",

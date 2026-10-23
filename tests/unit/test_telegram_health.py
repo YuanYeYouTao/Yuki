@@ -28,6 +28,10 @@ def health_container(database, gateway):
         database=database,
         settings=make_settings(database.url),
         telegram_gateway=gateway,
+        gateway_providers=builtin_provider_catalog(),
+        gateway_registry=GatewayConnectionRegistry(providers=builtin_provider_catalog()),
+        gateway_health_sources={"telegram": gateway.health} if gateway is not None else {},
+        models=SimpleNamespace(configured=lambda task: True),
         plugin_background_turns=SimpleNamespace(health=AsyncMock(return_value={"running": True})),
         memory_embeddings=SimpleNamespace(
             health=AsyncMock(

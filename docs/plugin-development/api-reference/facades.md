@@ -57,6 +57,20 @@ memory.delete(memory_id) -> PluginResult
 `list_group()`、`search(subject_id=...)` 或 People/Group Facade，不返回 QQ 兼容投影。
 `fact_id` 和 `memory_id` 标识原事实，与人物、群和平台账号 ID 分开。
 
+`add` 返回 `data.memory`，其中 `memory_id=person:<fact_id>`；`update` 返回新版本的
+`data.memory_id`，`delete` 返回被失效原件的 `data.memory_id`。`confidence` 进入本次实际
+fact 和 evidence；`update(confidence=None)` 沿原 fact 的值，不强制改成 1。现有来源证据按
+真实范围核验，`source_event_ids` 只能引用当前真实事件，不能用其他事件补造出处。
+
+`add` 的 `source_type=automatic` 表示自动记录；`plugin` 表示插件生产者，不等于用户显式
+指令，两者均沿真实来源形成 automatic 事实。插件身份记录于原 mutation receipt，
+不另造持久 `plugin` 来源枚举。公开 `update` 仍是显式 correction 操作；后台、第三方等来源的
+具体 authority 继续由真实 owner、来源和既有 provenance 规则决定，参数不能授予权限。
+
+SDK Fake 现在使用相同的 `person:<int>` / 结果 shape；修正创建新 ID 并保留旧记录，
+删除只失效，不再给旧 UUID 或原地修改行为保留别名。插件测试应从 `add.data.memory.memory_id`
+读取原 ID，并从 `update.data.memory_id` 接续新版本；Fake 不模拟 Host 的授权/恢复引擎。
+
 从 Yuki `3.0.0b2` 开始，`memory.update()` 会创建 explicit correction 新版本并让旧 fact 进入
 superseded，不原地改写旧正文；`memory.delete()` 会以
 `plugin_explicit_invalidation` 将事实标记为 invalidated，不物理删除事实、证据或状态历史。

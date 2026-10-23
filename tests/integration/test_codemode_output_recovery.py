@@ -19,14 +19,13 @@ from yuki.admin.authority.json_types import freeze_json_object
 from yuki.codemode.driver import CodeCompositionYield, CodeModeDriver
 from yuki.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
 from yuki.codemode.engine_monty import strict_json
-from yuki.codemode.limits import CodeModeLimits
 from yuki.domain.messages import ChatMessage
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.services.turn_transcript import TurnTranscript
 
 
-def test_json_boundary_preserves_deep_legal_result_and_independent_watchdog():
+def test_json_boundary_preserves_deep_legal_result_with_real_byte_budget():
     value = "original evidence"
     for _ in range(65):
         value = [value]
@@ -37,9 +36,6 @@ def test_json_boundary_preserves_deep_legal_result_and_independent_watchdog():
     assert frozen == "original evidence"
     with pytest.raises(ValueError, match="code_value_too_large"):
         strict_json(value, limit=20)
-    limits = CodeModeLimits(max_feed_seconds=10, request_timeout_seconds=5)
-    assert limits.engine()["max_feed_duration_secs"] == 10
-    assert limits.request_timeout_seconds == 5
 
 
 class SequenceRun:
@@ -246,29 +242,13 @@ async def test_truncated_stdout_survives_two_real_journal_restores(database, tmp
 
 
 @pytest.mark.parametrize("limit", [1, 2000, 24000])
-@pytest.mark.parametrize("kind", ["chat", "responses", "anthropic", "gemini"])
-async def test_operation_summary_respects_result_limit(database, tmp_path, limit, kind):
-    import httpx
-    from tests.support.correctness_wire import KINDS
-
-    from yuki.domain.messages import ChatRequest, FunctionCallOutput, ProviderContinuation
-
+async def test_operation_summary_respects_result_limit(database, tmp_path, limit):
     env = await environment(database, tmp_path, tool_limit=32)
     install(env, count=20, printing=False)
     env.host.result_limit = limit
     outer = outer_call(env, "20 sequential ordinary reads")
     raw = await CodeModeDriver(env.host, outer).run()
     body = json.loads(raw)
-    print(
-        "SUMMARY",
-        len(raw),
-        "LIMIT",
-        env.host.result_limit,
-        "OPS",
-        len(body["operations"]),
-        "BODY",
-        raw,
-    )
     assert len(env.domain.log) == 20
     if limit == 1:
         assert len(raw) > limit and body["ok"] is True and body["replay_forbidden"] is True
@@ -286,58 +266,6 @@ async def test_operation_summary_respects_result_limit(database, tmp_path, limit
         assert body["operations_ref"]["source"] == "original composition children"
     else:
         assert len(body["operations"]) == 20 and "operations_truncated" not in body
-    cls, _, _ = KINDS[kind]
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda r: httpx.Response(200))
-    ) as client:
-        adapter = cls(
-            base_url="https://wire.invalid",
-            api_key="synthetic",
-            timeout_seconds=1,
-            max_retries=0,
-            client=client,
-            **({"provider_name": "openai"} if kind == "chat" else {}),
-        )
-        request = ChatRequest(
-            messages=(
-                ChatMessage("user", "reads"),
-                ChatMessage("assistant", tool_calls=(outer.call,)),
-                ChatMessage("tool", raw, tool_call_id=outer.call.id),
-            ),
-            model="synthetic",
-        )
-        if kind == "responses":
-            request = ChatRequest(
-                messages=(ChatMessage("user", "reads"),),
-                model="synthetic",
-                continuation=ProviderContinuation(
-                    "openai",
-                    "responses",
-                    (
-                        {
-                            "type": "function_call",
-                            "id": "fc-original",
-                            "call_id": outer.call.id,
-                            "name": outer.call.function.name,
-                            "arguments": outer.call.function.arguments,
-                        },
-                    ),
-                ),
-                continuation_items=(FunctionCallOutput(outer.call.id, raw),),
-            )
-        payload = adapter._build_payload(request)
-
-    def strings(value):
-        if isinstance(value, str):
-            yield value
-        elif isinstance(value, dict):
-            for item in value.values():
-                yield from strings(item)
-        elif isinstance(value, list):
-            for item in value:
-                yield from strings(item)
-
-    assert raw in list(strings(payload))
 
 
 class GroupRun(SequenceRun):

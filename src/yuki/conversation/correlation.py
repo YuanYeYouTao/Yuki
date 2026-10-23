@@ -69,18 +69,6 @@ async def stamp_conversation_correlation(
         row.canonical_conversation_id = conversation_id
 
 
-async def resolve_conversation_id_for_event(
-    session: AsyncSession,
-    event_id: int | None,
-) -> str | None:
-    if event_id is None:
-        return None
-    event = await session.get(ChatEventModel, event_id)
-    if event is None:
-        return None
-    return await try_live_conversation_id(session, event.canonical_conversation_id)
-
-
 async def load_correlated_chat_event(
     session: AsyncSession,
     *,
@@ -109,7 +97,6 @@ __all__ = [
     "MISSING_CANONICAL_CONVERSATION",
     "load_correlated_chat_event",
     "require_live_conversation",
-    "resolve_conversation_id_for_event",
     "stamp_conversation_correlation",
     "try_live_conversation_id",
 ]

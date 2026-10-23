@@ -272,7 +272,7 @@ async def test_unavailable_hello_keeps_failure_fact_without_dispatching_to_missi
         native.device["device_id"],
         connection,
         {
-            "protocol_version": 1,
+            "protocol_version": 2,
             "instances": [
                 {
                     "id": "profile",

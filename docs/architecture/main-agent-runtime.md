@@ -12,6 +12,9 @@ Work/子任务调度器生命周期。Chat、SELF、定时和插件主调用使�
 通过共同的真实来源入口装配本轮材料，再调用共享 TurnService、Runner 与固定合同。
 Runtime 不持有单一当前 Conversation；每次调用仍显式传递其原来源、权限、场景和执行 ID。
 插件注册完成后冻结主工具清单，再启动 Runtime 的恢复调度器和插件后台主调用。
+Chat 在构造时持有该固定合同及实际 short_state、参与反馈和响应观察依赖；Workspace、媒体、
+Sandbox、Social 与 Emoji 依真实依赖顺序构造，不依赖启动后的 None 槽回填。
+Participation 接收实际领域服务与 bound method，各领域事务和生命周期仍归原 owner。
 legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 真实 QQ 小范围社交效果验收仍需单独记录。
 
@@ -361,6 +364,11 @@ writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取�
 未决私有协议恢复在公共历史准备前核原 journal、固定合同和持久来源依赖；合法时复用原
 协议，不准备最终不会派发的新公共窗口。业务恢复使用当前获准聊天与任务材料，最近一次
 私有 compact 检查点仍归原 Work。整理在完整往返边界建立新链，来源冲突不重购已付响应。
+新 Work source guard 使用 codec 3：普通事件来源按实际 owner、输入、版本和引用核验，
+不绑定无关的诊断 privacy counter；存在 observation 依赖时仍核原隐私依赖。
+旧 codec 2 继续按原完整指纹和原计数围栏读取，不原地升级或用当前上下文重新认证。
+旧已付来源无法证明有效时保留原 Work、journal、预算和回执，沿原恢复失败处理；
+不得借此重新购买响应、重派 unknown 调用或重发已提交效果。
 Work 输入准备恢复使用 pending 且 ready 为 false 的部分索引发现有界候选；空轮询
 不读取已消费或取消输入的历史页，也不申请 writer。准备 owner 不同或超过原 120 秒
 时限的判定不变，unknown owner 的 SQL NULL 语义不变；取得 writer 后按原 ID、

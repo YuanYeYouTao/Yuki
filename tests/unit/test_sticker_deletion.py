@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -59,9 +58,7 @@ async def test_rebuild_removes_metadata_and_cache_when_original_is_gone(
         original.unlink()
     await value.rebuild()
     assert not index_path(bridge, asset).exists()
-    with sqlite3.connect(bridge.root / "stickers/qq/search.sqlite3") as db:
-        assert db.execute("SELECT 1 FROM assets WHERE id=?", (asset.id,)).fetchone() is None
-        assert db.execute("SELECT 1 FROM terms WHERE asset_id=?", (asset.id,)).fetchone() is None
+    assert await value.select("removed", platform="qq") is None
 
 
 @pytest.mark.parametrize("duplicate", (False, True))
@@ -138,6 +135,5 @@ async def test_metadata_update_removes_previous_asset_from_cache(library, rename
     updated = await _media_io(engine.update, metadata.relative_to(bridge.root).as_posix())
     assert updated["asset"]["id"] != asset.id
     assert not index_path(bridge, asset).exists()
-    with sqlite3.connect(bridge.root / "stickers/qq/search.sqlite3") as db:
-        assert db.execute("SELECT 1 FROM assets WHERE id=?", (asset.id,)).fetchone() is None
-        assert db.execute("SELECT 1 FROM terms WHERE asset_id=?", (asset.id,)).fetchone() is None
+    selected = await value.select("old", platform="qq")
+    assert selected is not None and selected.id == updated["asset"]["id"]

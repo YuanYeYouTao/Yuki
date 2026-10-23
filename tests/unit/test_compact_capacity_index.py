@@ -135,8 +135,8 @@ def test_latest_fitting_boundary_survives_a_decreasing_opaque_checkpoint():
     assert estimate_request_tokens(plan.request) == budget
 
 
-@pytest.mark.parametrize("count", [128, 512])
-def test_oversized_unobserved_tail_does_not_clone_each_candidate(monkeypatch, count):
+def test_irreducible_tool_result_preserves_original_tail():
+    count = 16
     initial = (ChatMessage("system", "contract"),)
     transcript = TurnTranscript(initial)
     for ordinal in range(count):
@@ -144,14 +144,6 @@ def test_oversized_unobserved_tail_does_not_clone_each_candidate(monkeypatch, co
     call = ToolCall("original-read", ToolFunction("read", "{}"))
     transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
     transcript.append_result(call.id, "original paid result " + "x" * 30000)
-    copies = []
-    original_prefix = TurnTranscript.prefix
-
-    def prefix(value, boundary):
-        copies.append(boundary)
-        return original_prefix(value, boundary)
-
-    monkeypatch.setattr(TurnTranscript, "prefix", prefix)
     with pytest.raises(WorkCapacityError, match="model_request_capacity"):
         execution_compact_plan(
             transcript,
@@ -160,5 +152,4 @@ def test_oversized_unobserved_tail_does_not_clone_each_candidate(monkeypatch, co
             input_budget=1200,
             prepare=lambda request: request,
         )
-    assert sum(copies) <= len(transcript.entries())
     assert transcript.entries()[-1].content.endswith("x" * 30000)

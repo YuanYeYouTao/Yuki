@@ -200,9 +200,6 @@ class TaskModelExecutor:
         self._priority_condition = asyncio.Condition()
         self._ordinary_active = 0
         self._foreground_waiting = 0
-        self._exclusive_active = 0
-        self._exclusive_waiting = 0
-        self._exclusive_slot = asyncio.Lock()
         self._background_slot = asyncio.Lock()
         self._background_provider_task: asyncio.Task[ChatResponse] | None = None
         self._maintenance_slot = asyncio.Lock()
@@ -211,6 +208,11 @@ class TaskModelExecutor:
     @property
     def router(self) -> ModelRouter:
         return self._router
+
+    def configured(self, task: ModelTask) -> bool:
+        """Report current route/credential configuration without probing a provider."""
+        _route, profile = self._router.route(task)
+        return self._pool.configured(profile)
 
     @asynccontextmanager
     async def foreground_activity(self) -> AsyncIterator[None]:
@@ -245,8 +247,6 @@ class TaskModelExecutor:
                 and self._foreground_turns_active == 0
                 and self._ordinary_active == 0
                 and self._foreground_waiting == 0
-                and self._exclusive_active == 0
-                and self._exclusive_waiting == 0
                 and self._maintenance_provider_task is None
             ):
                 return
@@ -574,7 +574,6 @@ class TaskModelExecutor:
                     profile_id=profile.id,
                     provider=profile.provider,
                     model=profile.model,
-                    original_failure=exc,
                     success=False,
                     prompt_tokens=reported_tokens("prompt_tokens"),
                     completion_tokens=reported_tokens("completion_tokens"),
@@ -659,9 +658,7 @@ class TaskModelExecutor:
             )
         return response
 
-    async def _record_invocation(
-        self, *, original_failure: Exception | None = None, **values: Any
-    ) -> None:
+    async def _record_invocation(self, **values: Any) -> None:
         if self._invocations is None:
             return
         try:
@@ -690,8 +687,6 @@ class TaskModelExecutor:
     ) -> ChatResponse:
         if priority is ModelExecutionPriority.BEST_EFFORT_BACKGROUND:
             return await self._execute_background_provider(provider, request)
-        if priority is ModelExecutionPriority.EXCLUSIVE:
-            return await self._execute_exclusive_provider(provider, request)
         if priority is ModelExecutionPriority.MAINTENANCE:
             return await self._execute_maintenance_provider(provider, request)
         if priority is ModelExecutionPriority.BACKGROUND:
@@ -721,17 +716,11 @@ class TaskModelExecutor:
                     self._cancel_best_effort_background()
                 self._priority_condition.notify_all()
                 await self._priority_condition.wait_for(
-                    lambda: (
-                        self._exclusive_active == 0
-                        and self._exclusive_waiting == 0
-                        and (not background or self._foreground_waiting == 0)
-                    )
+                    lambda: not background or self._foreground_waiting == 0
                 )
                 if waiting:
                     self._foreground_waiting -= 1
                     waiting = False
-                # Ordinary calls include durable background work: exclusive
-                # operations drain them rather than cancelling their execution.
                 self._ordinary_active += 1
                 active = True
                 self._priority_condition.notify_all()
@@ -745,44 +734,6 @@ class TaskModelExecutor:
                 elif waiting:
                     self._foreground_waiting -= 1
                 self._priority_condition.notify_all()
-
-    async def _execute_exclusive_provider(
-        self,
-        provider: ModelCompleter,
-        request: ChatRequest,
-    ) -> ChatResponse:
-        async with self._exclusive_slot:
-            waiting = False
-            active = False
-            try:
-                async with self._priority_condition:
-                    self._exclusive_waiting += 1
-                    waiting = True
-                    self._cancel_best_effort_background()
-                    maintenance = self._maintenance_provider_task
-                    if maintenance is not None and not maintenance.done():
-                        maintenance.cancel()
-                    self._priority_condition.notify_all()
-                    await self._priority_condition.wait_for(
-                        lambda: (
-                            self._ordinary_active == 0
-                            and self._maintenance_provider_task is None
-                            and self._background_provider_task is None
-                        )
-                    )
-                    self._exclusive_waiting -= 1
-                    waiting = False
-                    self._exclusive_active += 1
-                    active = True
-                    self._priority_condition.notify_all()
-                return await self._complete_provider(provider, request)
-            finally:
-                async with self._priority_condition:
-                    if active:
-                        self._exclusive_active -= 1
-                    elif waiting:
-                        self._exclusive_waiting -= 1
-                    self._priority_condition.notify_all()
 
     async def _execute_background_provider(
         self,
@@ -816,9 +767,6 @@ class TaskModelExecutor:
         # One protected maintenance call globally; remaining slots serve chat.
         async with self._maintenance_slot:
             async with self._priority_condition:
-                await self._priority_condition.wait_for(
-                    lambda: self._exclusive_active == 0 and self._exclusive_waiting == 0
-                )
                 task = asyncio.create_task(
                     self._complete_provider(provider, request, background=True)
                 )
@@ -829,9 +777,7 @@ class TaskModelExecutor:
                 current = asyncio.current_task()
                 if current is not None and current.cancelling():
                     raise
-                raise BackgroundModelPreempted(
-                    "maintenance cancelled by exclusive operation"
-                ) from exc
+                raise BackgroundModelPreempted("maintenance model request cancelled") from exc
             finally:
                 async with self._priority_condition:
                     self._maintenance_provider_task = None

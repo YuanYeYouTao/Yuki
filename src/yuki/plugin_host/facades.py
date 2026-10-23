@@ -47,13 +47,12 @@ from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBi
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
-    MemoryAuthority,
-    MemoryEvidenceRelation,
     MemoryInvalidationReason,
     MemoryScopeType,
     MemoryTargetRole,
 )
-from yuki.memory.models import MemoryEntityTarget, MemoryEvidenceCreate
+from yuki.memory.models import MemoryEntityTarget
+from yuki.memory.mutation.models import MemoryMutationRequestBasis
 from yuki.memory.service import MemoryFactService
 from yuki.memory.validation import normalize_memory_text
 from yuki.persistence.database import write_failure_committed, write_failure_phase
@@ -1349,19 +1348,6 @@ class _MemoryFacade:
                 raise PluginPermissionError("plugins may only write the current person's memory")
         normalized = _bounded_text(content, maximum=4_000, field_name="content")
         _validate_memory_metadata(invocation, source_type, confidence, source_event_ids)
-        evidence = (
-            MemoryEvidenceCreate(
-                event_id=invocation.source_event_id,
-                source_speaker_user_id=invocation.actor_user_id,
-                relation=MemoryEvidenceRelation.EXPLICIT_COMMAND,
-                authority=MemoryAuthority.EXPLICIT,
-                excerpt=normalize_memory_text(
-                    invocation.inbound.text if invocation.inbound is not None else "",
-                ),
-            )
-            if source_event_ids and invocation.source_event_id is not None
-            else None
-        )
         service = _require_service(self._host._services.memory_admin, "memory mutation")
         row = await service.add_memory(
             _memory_mutation_subject(
@@ -1370,8 +1356,9 @@ class _MemoryFacade:
             ),
             target,
             normalized,
-            evidence=evidence,
             target_person_id=target,
+            confidence=confidence,
+            request_basis=MemoryMutationRequestBasis.AGENT_INITIATED,
         )
         await self._host._audit(
             invocation,
@@ -1412,6 +1399,7 @@ class _MemoryFacade:
                 ),
                 numeric_id,
                 expected,
+                confidence=current.confidence if confidence is None else confidence,
             )
             visible = await _visible_person_projection_fact(
                 memories,
@@ -1523,7 +1511,8 @@ class _AgentFacade:
         current = await self.result(work_id)
         if not current.ok or current.data.get("state") in {"completed", "cancelled", "failed"}:
             return current
-        text = _bounded_text(text, maximum=12_000, field_name="text")
+        if not text.strip() or len(text) > 12_000:
+            raise ValueError("text must contain 1 to 12000 characters")
         request_id = _bounded_text(request_id, maximum=128, field_name="request_id")
         from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
@@ -1547,12 +1536,35 @@ class _AgentFacade:
                 work_id=work_id,
                 resume=(lease, {"text": "[原插件补充资料；不改变执行权限]\n" + text}),
             )
-        except WorkConflict as exc:
-            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
+        except BaseException as original_error:
+            try:
+                await repository.release(lease)
+            except asyncio.CancelledError:
                 raise
-            return PluginResult(ok=False, error_code="work_input_conflict", detail=str(exc))
-        finally:
-            await repository.release(lease)
+            except Exception as cleanup_error:
+                original_error.add_note(
+                    f"plugin input lease release failed: {type(cleanup_error).__name__}"
+                )
+            if isinstance(original_error, WorkConflict):
+                if (
+                    write_failure_phase(original_error) is not None
+                    and write_failure_committed(original_error) is not False
+                ):
+                    raise
+                return PluginResult(
+                    ok=False, error_code="work_input_conflict", detail=str(original_error)
+                )
+            raise
+        else:
+            try:
+                await repository.release(lease)
+            except asyncio.CancelledError:
+                raise
+            except Exception as cleanup_error:
+                self._host.logger.warning(
+                    "plugin_work_input_lease_release_failed category=%s",
+                    type(cleanup_error).__name__,
+                )
         return await self.result(work_id)
 
     async def run(
@@ -2497,6 +2509,7 @@ async def _send_social(
             actor=actor,
             conversation_key=invocation.conversation_key,
             inbound=invocation.inbound,
+            runtime_snapshot=invocation.runtime_config,
             initiative_run_id=actor.initiative_run_id,
             automation_run_id=actor.automation_run_id,
             presence_id=invocation.presence_id,
@@ -2515,7 +2528,7 @@ async def _send_social(
             args.update(artifact_id=artifact_id, attachment_kind="image")
             import tempfile
 
-            store = _require_service(social.workspace, "artifact delivery")
+            store = social.workspace_service.store
             prior = await social.receipts.find(state.identity, call_id)
             if prior is not None:
                 source = await asyncio.to_thread(store.snapshot_source, artifact_id)
@@ -2993,6 +3006,7 @@ def _memory_mutation_subject(
         actor_is_superuser=is_superuser,
         person_id=invocation.actor_person_id,
         operation_id=state.next_memory_call(),
+        turn_origin=invocation.origin.value,
     )
 
 

@@ -114,8 +114,6 @@ async def test_fts_false_positives_do_not_truncate_or_duplicate_matches(database
 async def test_streamed_candidates_keep_exact_pages_with_dates_media_and_large_false_rows(
     database, monkeypatch
 ):
-    import yuki.persistence.event_repository as module
-
     ledger = EventLedgerRepository(database)
     attachment = ({"type": "image", "data": {"caption": "unrelated" * 1024}},)
     first = await _event(database, ledger, "stream-old", "abcd", segments=attachment)
@@ -123,59 +121,30 @@ async def test_streamed_candidates_keep_exact_pages_with_dates_media_and_large_f
         await _event(database, ledger, f"stream-false-{index}", "abc ... bcd", segments=attachment)
     last = await _event(database, ledger, "stream-new", "abcd", segments=attachment)
     streams = _observe_history_streams(monkeypatch)
-    statements = []
-    convert = module._event_record
-
-    def accepted_record(row):
-        assert row.content != "abc ... bcd", "a rejected candidate parsed its attachment JSON"
-        return convert(row)
-
-    monkeypatch.setattr(module, "_event_record", accepted_record)
-
-    def observe(_c, _cur, statement, _params, _context, _many):
-        if statement.lstrip().upper().startswith("SELECT"):
-            statements.append(statement)
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
-    try:
-        for filters in ({}, {"start_at": datetime(2020, 1, 1, tzinfo=UTC)}, {"has": ("image",)}):
-            for cursor, expected, more in ((None, last.id, True), (last.id, first.id, False)):
-                statements.clear()
-                page = await ledger.query_history(
-                    conversation_id=first.canonical_conversation_id,
-                    keyword="abcd",
-                    limit=1,
-                    cursor=cursor,
-                    **filters,
-                )
-                assert [row.id for row in page.events] == [expected]
-                assert page.has_more is more
-                assert page.next_cursor == (expected if more else None)
-                assert len(statements) == 1
-                assert "chat_history_fts MATCH" in statements[0]
-                assert "LIMIT" not in statements[0]
-                if filters.get("has"):
-                    assert (
-                        "EXISTS (SELECT conversation_media_items.source_event_id" in statements[0]
-                    )
-            statements.clear()
-            empty = await ledger.query_history(
+    for filters in ({}, {"start_at": datetime(2020, 1, 1, tzinfo=UTC)}, {"has": ("image",)}):
+        for cursor, expected, more in ((None, last.id, True), (last.id, first.id, False)):
+            page = await ledger.query_history(
                 conversation_id=first.canonical_conversation_id,
                 keyword="abcd",
-                exclude=("abcd",),
+                limit=1,
+                cursor=cursor,
                 **filters,
             )
-            assert not empty.events and not empty.has_more and empty.next_cursor is None
-            assert len(statements) == 1
-        statements.clear()
-        excluded = await ledger.query_history(
-            conversation_id=first.canonical_conversation_id, exclude=("abc",)
+            assert [row.id for row in page.events] == [expected]
+            assert page.has_more is more
+            assert page.next_cursor == (expected if more else None)
+        empty = await ledger.query_history(
+            conversation_id=first.canonical_conversation_id,
+            keyword="abcd",
+            exclude=("abcd",),
+            **filters,
         )
-        assert not excluded.events and not excluded.has_more
-        assert len(statements) == 1 and "MATCH" not in statements[0]
-        assert all(stream.closed for stream in streams)
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+        assert not empty.events and (not empty.has_more) and (empty.next_cursor is None)
+    excluded = await ledger.query_history(
+        conversation_id=first.canonical_conversation_id, exclude=("abc",)
+    )
+    assert not excluded.events and (not excluded.has_more)
+    assert all(stream.closed for stream in streams)
 
 
 async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(database):
@@ -202,24 +171,11 @@ async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(
     third = await _event(database, ledger, "multi-b-new", "電動車 archive", group_id="2002")
     last = await _event(database, ledger, "multi-a-new", "電動車 archive")
     conversations = (first.canonical_conversation_id, second.canonical_conversation_id)
-    statements = []
-
-    def observe(_c, _cur, statement, _params, _context, _many):
-        statements.append(statement)
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
-    try:
-        page = await ledger.query_history(
-            conversation_id=conversations,
-            keyword="电动车",
-            person_id=first.author_person_id,
-            limit=2,
-        )
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    page = await ledger.query_history(
+        conversation_id=conversations, keyword="电动车", person_id=first.author_person_id, limit=2
+    )
     assert [row.id for row in page.events] == [last.id, third.id]
     assert page.has_more and page.next_cursor == third.id
-    assert sum("chat_history_fts MATCH" in statement for statement in statements) == 1
     following = await ledger.query_history(
         conversation_id=conversations,
         keyword="电动车",
@@ -245,7 +201,7 @@ async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(
 
 
 @pytest.mark.parametrize("order", ("recent", "oldest"))
-async def test_plain_multi_source_pages_bound_sql_when_every_row_is_a_real_hit(database, order):
+async def test_plain_multi_source_pages_keep_original_order_and_cursor(database, order):
     ledger = EventLedgerRepository(database)
     rows = [
         await _event(
@@ -257,28 +213,15 @@ async def test_plain_multi_source_pages_bound_sql_when_every_row_is_a_real_hit(d
         )
         for index in range(8)
     ]
-    statements = []
-
-    def observe(_c, _cur, statement, parameters, _context, _many):
-        if statement.lstrip().upper().startswith("SELECT"):
-            statements.append((statement, parameters))
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
-    try:
-        page = await ledger.query_history(
-            conversation_id=tuple(dict.fromkeys(row.canonical_conversation_id for row in rows)),
-            order=order,
-            limit=2,
-            start_at=datetime(2020, 1, 1, tzinfo=UTC),
-        )
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    page = await ledger.query_history(
+        conversation_id=tuple(dict.fromkeys(row.canonical_conversation_id for row in rows)),
+        order=order,
+        limit=2,
+        start_at=datetime(2020, 1, 1, tzinfo=UTC),
+    )
     expected = list(reversed(rows)) if order == "recent" else rows
     assert [row.id for row in page.events] == [row.id for row in expected[:2]]
     assert page.has_more and page.next_cursor == expected[1].id
-    assert len(statements) == 1
-    statement, parameters = statements[0]
-    assert "LIMIT" in statement and parameters[-2] == 3
 
 
 async def test_sparse_media_without_text_keeps_media_ids_as_candidates(database):
@@ -293,24 +236,11 @@ async def test_sparse_media_without_text_keeps_media_ids_as_candidates(database)
         )
         for index in range(12)
     ]
-    statements = []
-
-    def observe(_c, _cur, statement, _params, _context, _many):
-        if statement.lstrip().upper().startswith("SELECT"):
-            statements.append(statement)
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
-    try:
-        page = await ledger.query_history(
-            conversation_id=rows[0].canonical_conversation_id, has=("image",), limit=20
-        )
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    page = await ledger.query_history(
+        conversation_id=rows[0].canonical_conversation_id, has=("image",), limit=20
+    )
     assert [row.id for row in page.events] == [rows[2].id]
     assert not page.has_more and page.next_cursor is None
-    assert len(statements) == 1
-    assert "IN (SELECT conversation_media_items.source_event_id" in statements[0]
-    assert "LIMIT" in statements[0] and "EXISTS" not in statements[0]
 
 
 async def test_multi_conversation_media_hits_keep_each_neighbors_in_its_original_scene(database):

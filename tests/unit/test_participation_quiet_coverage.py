@@ -49,14 +49,14 @@ async def test_quiet_only_covers_observed_same_actor_inputs_in_its_original_acti
 ):
     host, item, a, original, unit = await _relationship(database, tmp_path)
     try:
-        b = await _event_and_route(database, host.app.ledger, content="selected observed B")
+        b = await _event_and_route(database, host.ledger, content="selected observed B")
         await _admit(host, item, original, b)
         c = None
         if other_input != "none":
-            c = await _event_and_route(database, host.app.ledger, content="not covered C")
+            c = await _event_and_route(database, host.ledger, content="not covered C")
             await _admit(host, item, original, c, same_activation=other_input == "unobserved")
         d, _ = await seed_event(
-            host.app.ledger,
+            host.ledger,
             bot_user_id=a.bot_user_id,
             platform_message_id=str(uuid4()),
             scope_type=ScopeType.GROUP,

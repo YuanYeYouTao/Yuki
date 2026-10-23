@@ -41,7 +41,7 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
     _facts, source, _reflection_run, _batch, fact_id = await reflection_fact(database)
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        event = await _event_and_route(database, host.app.ledger, group=source.group_id)
+        event = await _event_and_route(database, host.ledger, group=source.group_id)
         item = await _item(host, event)
         binding = await host._binding(item)
         (fact,) = await read_self_initiative_facts(
@@ -99,7 +99,7 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
                 )
             receipt = await social(database, run, "synthetic-old-send")
             own, _ = await seed_event(
-                host.app.ledger,
+                host.ledger,
                 bot_user_id=event.bot_user_id,
                 platform_message_id=str(uuid4()),
                 scope_type=ScopeType.GROUP,
@@ -158,7 +158,7 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
             assert len(state.effects) == 3
 
             reply, _ = await seed_event(
-                host.app.ledger,
+                host.ledger,
                 bot_user_id=event.bot_user_id,
                 platform_message_id=str(uuid4()),
                 scope_type=ScopeType.GROUP,
@@ -219,7 +219,7 @@ async def test_legacy_ordinary_memory_basis_uses_current_exact_authorized_source
     facts, source, _run, _batch, fact_id = await reflection_fact(database)
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        a = await _event_and_route(database, host.app.ledger, group=source.group_id)
+        a = await _event_and_route(database, host.ledger, group=source.group_id)
         item = await _item(host, a)
         event = item.controller.state.events[f"event:{a.id}"]
         fact = await facts.get_fact(fact_id)

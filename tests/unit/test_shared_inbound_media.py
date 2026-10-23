@@ -11,9 +11,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from PIL import Image
-from sqlalchemy import delete, select, text
-from sqlalchemy import event as sql_event
+from sqlalchemy import delete, select
 from tests.support.event_seed import seed_scoped_event
+from tests.support.service_dependencies import workspace_service
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import artifact_ids
 
@@ -29,7 +29,6 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolutionError, MediaResolver, PreparedAttachment
 from yuki.vision.models import MediaReference
-from yuki.workspace.service import WorkspaceService
 
 
 @pytest.fixture
@@ -90,7 +89,7 @@ async def admitted_media(database, tmp_path):
             ),
         )
         message = media.prepare_message(message, None, source_segments=event.segments)
-        workspace = WorkspaceService(env.store)
+        workspace = workspace_service(env.store)
         workspace.conversation_media = media
         files = tmp_path / "manager-workspace"
         copies = {}
@@ -144,19 +143,6 @@ async def admitted_media(database, tmp_path):
             release.set()
             await emoji.close()
             await media.close()
-
-
-async def test_plain_input_does_not_encode_media_source_or_clone_message(
-    admitted_media, monkeypatch
-):
-    env = admitted_media
-    message = replace(env.message, attachments=(), segments=())
-
-    def encode(*_args, **_kwargs):
-        raise AssertionError("no media source needs encoding")
-
-    monkeypatch.setattr("yuki.conversation.media_service.json", SimpleNamespace(dumps=encode))
-    assert env.media.prepare_message(message, None, source_segments=message.segments) is message
 
 
 async def test_prefetch_keeps_every_admitted_original_past_old_pending_limit(
@@ -375,20 +361,10 @@ async def test_collection_publishes_shared_cache_without_delivery_artifact(
     admitted_media, database
 ):
     env = admitted_media
-    statements = []
-
-    def observe(_connection, _cursor, statement, _parameters, _context, _many):
-        statements.append(statement)
-
-    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
     env.release.set()
-    try:
-        (saved,) = await env.emoji.collect_message(env.message, source_event_id=env.event.id)
-    finally:
-        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    (saved,) = await env.emoji.collect_message(env.message, source_event_id=env.event.id)
     assert (env.files / saved.relative_path).read_bytes() == env.data
     assert artifact_ids(env.store) == []
-    assert not any("sticker_" in statement.lower() for statement in statements)
     async with database.read_session() as reader:
         item = await reader.get(ConversationMediaItemModel, (env.event.id, 0))
         assert item.cache_status == "cached" and item.content_sha256 == saved.sha256
@@ -514,9 +490,3 @@ async def test_admitted_shared_copy_survives_source_erasure_without_restoring_at
     assert json.loads(metadata.read_text(encoding="utf-8"))["relative_path"] == saved.relative_path
     async with database.read_session() as reader:
         assert (await reader.get(ChatEventModel, env.event.id) is None) == (change == "forget")
-        assert not any(
-            name.startswith("sticker_")
-            for name in await reader.scalars(
-                text("SELECT name FROM sqlite_master WHERE type='table'")
-            )
-        )

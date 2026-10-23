@@ -871,25 +871,6 @@ class MemoryRebuildRepository:
                 or 0
             )
 
-    async def failed_commit_count(self, public_id: str) -> int:
-        async with self.database.read_session() as session:
-            return int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(MemoryRebuildProposalModel)
-                    .join(
-                        MemoryRebuildRunModel,
-                        MemoryRebuildRunModel.id == MemoryRebuildProposalModel.run_id,
-                    )
-                    .where(
-                        MemoryRebuildRunModel.public_id == public_id,
-                        MemoryRebuildProposalModel.commit_status
-                        == MemoryRebuildCommitStatus.FAILED.value,
-                    )
-                )
-                or 0
-            )
-
     async def reset_failed(
         self, public_id: str, *, session: AsyncSession | None = None
     ) -> MemoryRebuildRunStatus:

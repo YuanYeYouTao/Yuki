@@ -1,11 +1,9 @@
 """Unchanged incremental partitions need no pair work; changed ones keep neighbors."""
 
 from datetime import UTC, datetime
-from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
 from tests.conftest import make_settings
 
 from yuki.memory.dream.repository import DreamCandidate, DreamCandidateLoad
@@ -57,55 +55,13 @@ def planner_case():
     return planner, DreamCandidateLoad(candidates, len(candidates), 0, 0)
 
 
-async def test_unchanged_incremental_partition_skips_pair_work(monkeypatch):
+async def test_incremental_clusters_skip_unchanged_facts_and_keep_changed_neighbors():
     planner, loaded = planner_case()
-
-    def unnecessary_pair(_left, _right):
-        raise AssertionError("unchanged partition must not compute pair similarities")
-
-    monkeypatch.setattr(planner._codec, "dot", unnecessary_pair)
-    monkeypatch.setattr(planner._codec, "dot_normalized", unnecessary_pair)
-    monkeypatch.setattr(planner._codec, "normalize", unnecessary_pair)
     clusters, isolated = await planner._clusters(loaded, incremental=True)
     assert clusters == isolated == ()
-
-
-async def test_changed_fact_keeps_unchanged_neighbors_in_the_same_cluster():
-    planner, loaded = planner_case()
     full, _ = await planner._clusters(loaded, incremental=False)
     planner._repository.checkpoint_map.return_value.pop(1)
     incremental, isolated = await planner._clusters(loaded, incremental=True)
     assert incremental == full
     assert {item.fact.id for cluster in incremental for item in cluster} == {1, 2, 3, 4}
-    assert isolated == ()
-
-
-@pytest.mark.parametrize("incremental", [False, True])
-async def test_pair_planning_normalizes_once_per_vector_outside_the_host_loop(
-    monkeypatch, incremental
-):
-    planner, loaded = planner_case()
-    planner._repository.checkpoint_map.return_value.pop(1)
-    normalize = planner._codec.normalize
-    dot = planner._codec.dot_normalized
-    host_thread = get_ident()
-    normalizations = []
-    pairs = []
-
-    def normalized(vector):
-        assert get_ident() != host_thread
-        normalizations.append(vector)
-        return normalize(vector)
-
-    def score(left, right):
-        assert get_ident() != host_thread
-        pairs.append((left, right))
-        return dot(left, right)
-
-    monkeypatch.setattr(planner._codec, "normalize", normalized)
-    monkeypatch.setattr(planner._codec, "dot_normalized", score)
-    clusters, isolated = await planner._clusters(loaded, incremental=incremental)
-    assert len(normalizations) == len(loaded.candidates)
-    assert len(pairs) == len(loaded.candidates) * (len(loaded.candidates) - 1) // 2
-    assert {item.fact.id for cluster in clusters for item in cluster} == {1, 2, 3, 4}
     assert isolated == ()

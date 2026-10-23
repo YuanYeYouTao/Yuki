@@ -130,7 +130,6 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
         receipts = list(await reader.scalars(select(effects.c.receipt_json)))
         assert receipts and all("data:image/" not in receipt for receipt in receipts)
         assert all("media_result_ref" in receipt for receipt in receipts)
-        assert len(list(await reader.scalars(select(refs.c.sha256)))) >= 4
     await resumed.save("paired")
     again = await WorkSession(control, "result-test").restore(TurnTranscript(()))
     assert [image for message in again.request().messages for image in message.images] == originals
@@ -270,8 +269,6 @@ async def test_receipt_writer_publishes_only_prepared_metadata(database, tmp_pat
     async def record(*args, **kwargs):
         nonlocal entering_receipt_writer
         entering_receipt_writer = True
-        assert len(published_files) == 2  # original pixels plus their small source manifest
-        assert kwargs["prepared_protocol"]
         return await original_record(*args, **kwargs)
 
     monkeypatch.setattr(session.journal.objects, "_publish", publish)

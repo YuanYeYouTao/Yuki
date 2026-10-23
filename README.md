@@ -97,6 +97,8 @@ uv run yuki --help
 
 当前命令统一为 `yuki`，服务入口为 `yuki-bot`。从 3.9 迁移的步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。QQ 使用 SnowLuma；仅使用飞书、Lark、Telegram 或个人客户端时，无需配置 QQ 账号。
 
+后续开发的 B1–B6 代码清理包含连接器 `0.2.0` / WSS 协议 `2` 配套升级、Memory Fake 结果修正及旧 CLI/Python 表面撤销，见[兼容与升级说明](docs/upgrade-code-deletion-20261023.md)。这不代表新的正式 Release 或已部署状态。
+
 4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。当前开发源码为 schema **0148**、Plugin API **7.1**、manifest **30**；聊天历史支持平台/群私聊组合筛选、可分页的原入口/话题发现，显式查询可读取重开上下文前的记录。
 
 旧库的正文索引转换需要停业务写入，完成升级后再启动 Bot；本次0148仅增加来源定位索引，不重建全文。升级前备份数据库、配置、插件和工作文件，详见[现行历史读取合同](docs/architecture/chat-history.md)、[原实施记录](docs/operations/chat-history-448-implementation-20261022.md)与[来源及执行优化任务书](docs/architecture/Yuki-聊天来源发现与检索执行删减优化任务书-2026-10-22.md)。

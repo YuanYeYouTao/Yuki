@@ -70,3 +70,45 @@ async def test_original_activation_keeps_its_provider_when_a_new_work_reuses_the
         await asyncio.gather(
             original, *([newer] if newer is not None else []), return_exceptions=True
         )
+
+
+async def test_runtime_drain_keeps_cleanup_protected_from_repeated_cancel():
+    from yuki.runtime.activation_tasks import ActivationTasks
+
+    tasks = ActivationTasks()
+    entered, cleaning, release, cleaned, database_closed = (asyncio.Event() for _ in range(5))
+
+    async def work():
+        with tasks.track(), tasks.track():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+                cleaned.set()
+
+    async def close():
+        try:
+            await tasks.drain()
+        finally:
+            database_closed.set()
+
+    owner = asyncio.create_task(work())
+    await entered.wait()
+    closing = asyncio.create_task(close())
+    await cleaning.wait()
+    try:
+        for index in range(2):
+            closing.cancel(f"close-{index}")
+            await asyncio.sleep(0)
+            assert not database_closed.is_set()
+            assert not owner.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError, match="close-0"):
+            await closing
+        assert cleaned.is_set() and database_closed.is_set()
+        assert owner.cancelled() and tasks.active_count == 0 and not tasks.accepting
+    finally:
+        release.set()
+        await asyncio.gather(owner, closing, return_exceptions=True)

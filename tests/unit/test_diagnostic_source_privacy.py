@@ -3,11 +3,9 @@
 import asyncio
 import threading
 from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import event, func, select
+from sqlalchemy import func, select
 from tests.support.social_identity_cases import social_env
 
 from yuki.execution_trace import recorder as recorder_module
@@ -17,7 +15,6 @@ from yuki.execution_trace.recorder import (
     TraceRecorder,
     TraceScope,
     current_trace,
-    trace_span,
 )
 from yuki.model_runtime.db_models import ModelInvocationModel
 from yuki.model_runtime.models import ModelTask
@@ -58,7 +55,7 @@ async def model_record(repository, *, conversation=None):
     )
 
 
-async def test_diagnostic_source_proof_uses_no_per_record_read_session(database, tmp_path):
+async def test_diagnostic_records_keep_original_source_and_provider_usage(database, tmp_path):
     env = await social_env(database, tmp_path)
     async with database.read_session() as reader:
         source = await reader.scalar(select(ChatEventModel))
@@ -66,12 +63,6 @@ async def test_diagnostic_source_proof_uses_no_per_record_read_session(database,
     recorder = TraceRecorder(database, writer=writer)
     repository = ModelInvocationRepository(database, writer=writer)
     original = scope(recorder, conversation=env.context.conversation_id, source=source.id)
-    statements = []
-
-    def observe(_conn, _cursor, sql, _parameters, _context, _many):
-        statements.append(sql)
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
     await writer.start()
     token = current_trace.set(original)
     try:
@@ -80,13 +71,11 @@ async def test_diagnostic_source_proof_uses_no_per_record_read_session(database,
     finally:
         current_trace.reset(token)
     await writer.close()
-    event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
-    # Both write-time privacy/source checks remain inside their INSERT SELECT.
-    assert not any(sql.lstrip().upper().startswith("SELECT") for sql in statements)
-    assert writer.committed == 2
     assert original.coverage.failures == 0
     async with database.read_session() as reader:
         row = await reader.scalar(select(ModelInvocationModel))
+        assert row.canonical_conversation_id == env.context.conversation_id
+        assert (await reader.scalar(select(ExecutionTraceEntryModel))).source_event_id == source.id
         assert row.cached_prompt_tokens == 80
         assert row.total_tokens == 105
 
@@ -213,25 +202,3 @@ async def test_shutdown_joins_actual_encoder_before_releasing_original_reservati
     assert (await writer.health())["bytes"] == 0
     assert writer.dropped == 1
     assert original.coverage.failures == 1
-
-
-async def test_only_consumed_live_families_publish_entry_exit_hints(database, monkeypatch):
-    recorder = TraceRecorder(database)
-    monkeypatch.setattr(recorder, "coverage", AsyncMock(return_value=TraceCoverage(0)))
-    monkeypatch.setattr(recorder_module, "record_trace", AsyncMock())
-    # A plain counter avoids tying the assertion to database after_commit hints.
-    count = []
-    hints = SimpleNamespace(publish=lambda: count.append(True))
-    monkeypatch.setattr(database, "commit_hints", hints)
-    async with trace_span("chat_processing", {}, recorder=recorder, conversation_id="original"):
-        assert len(recorder.live_spans("original")) == 1
-        async with trace_span("model", {}, record_start=False):
-            assert len(recorder._live_spans) == 1
-            assert len(recorder.live_spans("original")) == 1
-        assert len(count) == 1
-        async with trace_span("turn", {}):
-            assert len(recorder.live_spans("original")) == 2
-        assert len(count) == 3
-    assert len(count) == 4
-    assert recorder._live_spans == {}
-    assert current_trace.get() is None

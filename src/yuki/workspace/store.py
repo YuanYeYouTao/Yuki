@@ -33,42 +33,41 @@ class PreparedArtifact:
 class WorkspaceStore:
     def __init__(self, root: Path) -> None:
         self.root = root.absolute()
+        self._initialize()
 
-    @contextmanager
-    def _transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
+    def _index(self) -> Path:
         if self.root.is_symlink() or self.root.resolve() != self.root:
             raise WorkspaceError("unsafe_workspace_root")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         index = self.root / "manifest.sqlite3"
         if index.is_symlink() or (index.exists() and index.stat().st_nlink != 1):
             raise WorkspaceError("unsafe_workspace_index")
-        with closing(sqlite3.connect(index, timeout=5)) as db:
-            db.row_factory = sqlite3.Row
-            tables = {
-                row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            }
-            if not {"artifacts", "artifact_snapshots"} <= tables:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, "
-                    "name TEXT NOT NULL, "
-                    "blob TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, "
-                    "revision INTEGER NOT NULL, created_at REAL NOT NULL, "
-                    "modified_at REAL NOT NULL, expires_at REAL NOT NULL)"
-                )
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS artifact_snapshots "
-                    "(id TEXT PRIMARY KEY, source_key TEXT)"
-                )
-                db.commit()
+        return index
+
+    def _initialize(self) -> None:
+        """Open this owner's manifest and atomically upgrade its stored schema."""
+        with self._transaction() as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, "
+                "name TEXT NOT NULL, blob TEXT NOT NULL, sha256 TEXT NOT NULL, "
+                "size INTEGER NOT NULL, revision INTEGER NOT NULL, "
+                "created_at REAL NOT NULL, modified_at REAL NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS artifact_snapshots "
+                "(id TEXT PRIMARY KEY, source_key TEXT)"
+            )
             if "source_key" not in {
                 row[1] for row in db.execute("PRAGMA table_info(artifact_snapshots)")
             }:
-                db.execute("BEGIN IMMEDIATE")
-                if "source_key" not in {
-                    row[1] for row in db.execute("PRAGMA table_info(artifact_snapshots)")
-                }:
-                    db.execute("ALTER TABLE artifact_snapshots ADD COLUMN source_key TEXT")
-                db.commit()
+                db.execute("ALTER TABLE artifact_snapshots ADD COLUMN source_key TEXT")
+            if "expires_at" in {row[1] for row in db.execute("PRAGMA table_info(artifacts)")}:
+                db.execute("ALTER TABLE artifacts DROP COLUMN expires_at")
+
+    @contextmanager
+    def _transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
+        with closing(sqlite3.connect(self._index(), timeout=5)) as db:
+            db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             try:
                 yield db
@@ -109,8 +108,6 @@ class WorkspaceStore:
         ).fetchone()
         if row is None:
             raise WorkspaceError("artifact_not_found")
-        if row["expires_at"] <= time.time():
-            raise WorkspaceError("artifact_expired")
         return cast(sqlite3.Row, row)
 
     @staticmethod
@@ -123,7 +120,6 @@ class WorkspaceStore:
             "revision": row["revision"],
             "created_at": row["created_at"],
             "modified_at": row["modified_at"],
-            "expires_at": None if row["expires_at"] >= 253402300799 else row["expires_at"],
             "immutable": bool(row["immutable"]),
         }
 
@@ -153,8 +149,6 @@ class WorkspaceStore:
                 invalid.append((row["id"], row["blob"], row["revision"]))
         candidates = list(self.root.glob("*.blob"))
         with self._transaction() as db:
-            # Preserve still-present snapshots written before permanent storage.
-            db.execute("UPDATE artifacts SET expires_at=253402300799 WHERE expires_at<253402300799")
             db.executemany("DELETE FROM artifacts WHERE id=? AND blob=? AND revision=?", invalid)
             db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
             referenced = {row[0] for row in db.execute("SELECT blob FROM artifacts")}
@@ -215,9 +209,8 @@ class WorkspaceStore:
         if not stat.S_ISREG(before.st_mode):
             raise WorkspaceError("unsafe_artifact")
         identity, blob = self._id(artifact_id) if artifact_id else str(uuid4()), f"{uuid4()}.blob"
-        # Initialize and validate the existing manifest before preparing the file.
-        with self._transaction(write=False):
-            pass
+        # Check the original manifest path before preparing an unpublished file.
+        self._index()
         path = self.root / f"{uuid4()}.pending"
         digest = hashlib.sha256()
         total = 0
@@ -261,8 +254,8 @@ class WorkspaceStore:
                     now = time.time()
                     db.execute(
                         "INSERT INTO artifacts "
-                        "(id,name,blob,sha256,size,revision,created_at,modified_at,expires_at) "
-                        "VALUES (?,?,?,?,?,1,?,?,?)",
+                        "(id,name,blob,sha256,size,revision,created_at,modified_at) "
+                        "VALUES (?,?,?,?,?,1,?,?)",
                         (
                             identity,
                             name,
@@ -271,7 +264,6 @@ class WorkspaceStore:
                             total,
                             now,
                             now,
-                            253402300799,
                         ),
                     )
                     db.execute(

@@ -21,12 +21,12 @@ from yuki.social.db_models import SocialEmojiIntentModel
 from yuki.social.repository import sequence_prefix
 
 
-def split_context(context):
+def split_context(context, *, hard_max_messages=4):
     return replace(
         context,
         runtime_snapshot=SimpleNamespace(
             reply=SimpleNamespace(
-                hard_max_messages=4,
+                hard_max_messages=hard_max_messages,
                 max_qq_message_chars=200,
                 delay_min_seconds=0,
                 delay_max_seconds=0,
@@ -47,7 +47,7 @@ async def test_plain_text_never_wakes_optional_illustration_queue(
     delivery, library = make_delivery(env)
     wake = Mock(wraps=delivery.wake)
     monkeypatch.setattr(delivery, "wake", wake)
-    context = split_context(env.context) if split else env.context
+    context = split_context(env.context, hard_max_messages=4 if split else 1)
     result = await env.service.execute("send", {"text": "first\nsecond"}, context)
     assert result["status"] == "succeeded"
     assert len(messages(env)) == (2 if split else 1)
@@ -135,9 +135,8 @@ async def test_confirmed_text_interruption_recovers_only_original_illustration(
         await delivery.close()
 
 
-@pytest.mark.parametrize("blocked_count", [1, 100])
 async def test_inflight_text_does_not_release_image_or_block_another_intent(
-    database, tmp_path, monkeypatch, blocked_count
+    database, tmp_path, monkeypatch
 ):
     env = await social_env(database, tmp_path)
     delivery, _ = make_delivery(env)
@@ -159,47 +158,43 @@ async def test_inflight_text_does_not_release_image_or_block_another_intent(
     monkeypatch.setattr(env.bot, "call_api", hold_text)
     await delivery.start()
     sending = asyncio.create_task(
-        env.service.execute(
-            "send", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context
-        )
+        env.service.execute("send", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context)
     )
     try:
         await asyncio.wait_for(first.wait(), 3)
         intent = await delivery.intents.find(context.turn_id, context.call_id)
         assert intent is not None
-        if blocked_count > 1:
-            async with database.immediate_session() as session:
-                original = await session.get(SocialEmojiIntentModel, intent.id)
-                for index in range(blocked_count - 1):
-                    session.add(
-                        SocialEmojiIntentModel(
-                            id=str(uuid4()),
-                            source_turn_id=f"pending-text-{index}",
-                            tool_call_id="image",
-                            source_conversation_id=original.source_conversation_id,
-                            payload_hash=original.payload_hash,
-                            target_kind=original.target_kind,
-                            target_id=original.target_id,
-                            source_json=original.source_json,
-                            intent_json=original.intent_json,
-                            closed=False,
-                            created_at=original.created_at,
-                            updated_at=original.updated_at,
-                        )
+        async with database.immediate_session() as session:
+            original = await session.get(SocialEmojiIntentModel, intent.id)
+            for index in range(99):
+                session.add(
+                    SocialEmojiIntentModel(
+                        id=str(uuid4()),
+                        source_turn_id=f"pending-text-{index}",
+                        tool_call_id="image",
+                        source_conversation_id=original.source_conversation_id,
+                        payload_hash=original.payload_hash,
+                        target_kind=original.target_kind,
+                        target_id=original.target_id,
+                        source_json=original.source_json,
+                        intent_json=original.intent_json,
+                        closed=False,
+                        created_at=original.created_at,
+                        updated_at=original.updated_at,
                     )
+                )
         independent = replace(context, call_id="independent")
         await env.service.execute("send", {"emoji": {"goal": "fast"}}, independent)
         assert (await settle(delivery, independent))["status"] == "succeeded"
         assert len(messages(env)) == 1  # Only the independent image.
-        if blocked_count > 1:
-            from sqlalchemy import delete
+        from sqlalchemy import delete
 
-            async with database.immediate_session() as session:
-                await session.execute(
-                    delete(SocialEmojiIntentModel).where(
-                        SocialEmojiIntentModel.source_turn_id.startswith("pending-text-")
-                    )
+        async with database.immediate_session() as session:
+            await session.execute(
+                delete(SocialEmojiIntentModel).where(
+                    SocialEmojiIntentModel.source_turn_id.startswith("pending-text-")
                 )
+            )
         release_first.set()
         await asyncio.wait_for(second.wait(), 3)
         assert not (await delivery.intents.find(context.turn_id, context.call_id)).closed

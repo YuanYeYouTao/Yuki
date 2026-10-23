@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 
@@ -119,31 +119,6 @@ class MediaAnalysisRepository:
             row = (await session.scalars(statement.returning(MediaAnalysisModel))).one()
             record = self._record(row)
         return record
-
-    async def associate_event(
-        self,
-        analysis_id: int,
-        *,
-        source_event_id: int,
-        segment_index: int,
-    ) -> bool:
-        """Attach an unowned cache row once; never move it between ledger events."""
-
-        if segment_index < 0:
-            raise ValueError("segment_index must be non-negative")
-        async with self._database.immediate_session() as session:
-            result = await session.execute(
-                update(MediaAnalysisModel)
-                .where(
-                    MediaAnalysisModel.id == analysis_id,
-                    MediaAnalysisModel.source_event_id.is_(None),
-                )
-                .values(
-                    source_event_id=source_event_id,
-                    segment_index=segment_index,
-                )
-            )
-            return bool(cast(CursorResult[Any], result).rowcount)
 
     async def cleanup_expired(self, *, now: datetime | None = None, limit: int = 128) -> int:
         """Delete cache rows whose expiry has been reached."""

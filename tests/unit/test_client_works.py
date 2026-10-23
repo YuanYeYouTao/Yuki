@@ -698,39 +698,6 @@ async def test_input_committed_before_completion_keeps_original_work_runnable(ap
     await original.repository.release(original.lease)
 
 
-async def test_completion_between_preparation_and_writer_creates_no_input(
-    app_env, database, monkeypatch
-):
-    env = app_env
-    device, _ = await owner(env, database)
-    original = await seeded(env, database)
-    pre_admit = env.gateway.processor._canonical_ingress.pre_admit
-
-    async def completing(*args, **kwargs):
-        admitted = await pre_admit(*args, **kwargs)
-        async with database.immediate_session() as session:
-            await session.execute(
-                update(work)
-                .where(work.c.id == original.row["id"])
-                .values(state="completed", revision=work.c.revision + 1)
-            )
-        return admitted
-
-    monkeypatch.setattr(env.gateway.processor._canonical_ingress, "pre_admit", completing)
-    response = await env.client.post(
-        f"/client/v1/works/{original.row['id']}/inputs",
-        json={"request_id": str(uuid4()), "text": "arrived too late"},
-        headers=bearer(device["token"]),
-    )
-    assert response.status_code == 409 and response.json()["problem"] == {
-        "code": "precondition_failed",
-        "state": "completed",
-    }
-    async with database.read_session() as session:
-        assert await session.scalar(select(func.count(inputs.c.id))) == 0
-        assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
-
-
 @pytest.mark.parametrize("completion_first", [False, True])
 async def test_group_cancel_and_completion_preserve_original_winner(
     app_env, database, completion_first

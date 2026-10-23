@@ -147,7 +147,6 @@ class MemoryClaimProcessor:
                     new_fact_status=MemoryStatus.INVALIDATED,
                     new_conflict_state=MemoryConflictState.CLEAR,
                     reason_code="historical_expired",
-                    create_new_fact=True,
                 ),
                 action=MemoryResolutionAction.INVALIDATE,
                 reason_code="historical_expired",
@@ -157,7 +156,6 @@ class MemoryClaimProcessor:
             plan=MemoryResolutionPlan(
                 action=MemoryResolutionAction.CREATE,
                 reason_code="independent_claim",
-                create_new_fact=True,
             ),
             action=MemoryResolutionAction.CREATE,
             reason_code="independent_claim",

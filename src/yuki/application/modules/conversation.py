@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.permission_catalog import PermissionCatalogService
@@ -12,6 +14,7 @@ from yuki.application.modules.persistence import PersistenceBundle
 from yuki.capabilities import ToolArtifactWriter
 from yuki.config import Settings
 from yuki.conversation.features import AdmissionFeatureBuilder
+from yuki.external_agents.service import ExternalAgentService
 from yuki.memory.dream.repository import DreamRepository
 from yuki.memory.dream.service import DreamService
 from yuki.memory.dream.worker import DreamWorker
@@ -25,7 +28,8 @@ from yuki.memory.self_reflection.repository import SelfReflectionRepository
 from yuki.memory.self_reflection.service import SelfReflectionService
 from yuki.memory.self_reflection.worker import SelfReflectionWorker
 from yuki.memory.worker import MemoryWorker
-from yuki.services.agent_tools import AgentToolService
+from yuki.sandbox.client import SandboxClient
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
 from yuki.services.chat import ChatService, ToolReceiptRecorder
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.effect_gate import ConversationEffectGate
@@ -34,7 +38,10 @@ from yuki.services.prompt_composer import PromptComposer
 from yuki.services.prompt_registry import PromptRegistry
 from yuki.services.rate_limit import SlidingWindowRateLimiter
 from yuki.services.turn_coordinator import ConversationTurnCoordinator
+from yuki.social.service import SocialService
 from yuki.web.base import WebSearchProvider
+from yuki.workspace.service import WorkspaceService
+from yuki.workspace.short_state import ShortState
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +74,13 @@ class ConversationModule:
         effect_gate: ConversationEffectGate,
         web_provider: WebSearchProvider | None,
         memory_embeddings: MemoryEmbeddingRuntime,
+        social: SocialService,
+        workspace: WorkspaceService,
+        sandbox: SandboxClient,
+        external_agents: ExternalAgentService,
+        short_state: ShortState,
+        observe_main_response: Callable[..., Awaitable[None]],
+        participation_runtime_context: Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]],
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_receipts: ToolReceiptRecorder | None = None,
         processing_status: ProcessingStatusService | None = None,
@@ -81,6 +95,13 @@ class ConversationModule:
         self._effect_gate = effect_gate
         self._web_provider = web_provider
         self._memory_embeddings = memory_embeddings
+        self._social = social
+        self._workspace = workspace
+        self._sandbox = sandbox
+        self._external_agents = external_agents
+        self._short_state = short_state
+        self._observe_main_response = observe_main_response
+        self._participation_runtime_context = participation_runtime_context
         self._tool_artifacts = tool_artifacts
         self._tool_receipts = tool_receipts
         self._processing_status = processing_status
@@ -111,6 +132,10 @@ class ConversationModule:
             settings=settings,
             ledger=persistence.ledger,
             memories=persistence.memories,
+            social_service=self._social,
+            workspace_service=self._workspace,
+            sandbox_client=self._sandbox,
+            external_agent_service=self._external_agents,
             memory_context=persistence.memory_context,
             memory_mutations=memory_mutations,
             web_provider=self._web_provider,
@@ -128,6 +153,9 @@ class ConversationModule:
             memory_partition_lookup=DatabaseMemoryPartitionLookup(persistence.database),
             tools=agent_tools,
             runtime_config=self._runtime_config,
+            short_state=self._short_state,
+            observe_main_response=self._observe_main_response,
+            participation_runtime_context=self._participation_runtime_context,
             prompt_composer=PromptComposer(settings, prompt_registry),
             turn_coordinator=self._turns,
             tool_artifacts=self._tool_artifacts,
@@ -156,6 +184,7 @@ class ConversationModule:
         self_reflection_repository = SelfReflectionRepository(persistence.database)
         memory_self_reflection_worker = SelfReflectionWorker(
             settings=settings,
+            social=self._social,
             repository=self_reflection_repository,
             service=SelfReflectionService(
                 settings=settings,

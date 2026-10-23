@@ -27,18 +27,6 @@ OutputT = TypeVar("OutputT", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
-def tool_free_json_format(
-    mode: StructuredOutputMode, *, name: str, schema: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Render the selected native schema format; validate text JSON locally otherwise."""
-    if mode is not StructuredOutputMode.JSON_SCHEMA:
-        return None
-    return {
-        "type": "json_schema",
-        "json_schema": {"name": name, "strict": True, "schema": schema},
-    }
-
-
 class StructuredTaskError(RuntimeError):
     """A structured request did not produce exactly one valid result."""
 

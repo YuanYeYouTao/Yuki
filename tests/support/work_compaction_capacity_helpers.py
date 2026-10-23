@@ -14,7 +14,7 @@ from yuki.domain.messages import (
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
-from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_runner import AgentRunner, AgentRuntime
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.turn_transcript import TurnTranscript
 from yuki.workspace.short_state import ShortState
@@ -79,10 +79,15 @@ def _grow(transcript):
 async def _runtime(database, control, initial, provider, *, contract_workspace=None, **settings):
     harness = build_harness(database, make_settings(database.url, **settings), provider)
     chat = harness.processor._chat
+    contract = None
     if contract_workspace is not None:
-        chat.runtime.runner.main_contract = MainAgentContract(
-            chat, ShortState(WorkspaceStore(contract_workspace))
-        )
+        contract = MainAgentContract(chat, ShortState(WorkspaceStore(contract_workspace)))
+    runner = AgentRunner(
+        chat._models,
+        harness.concurrency,
+        main_contract=contract,
+        code_mode_settings=harness.settings,
+    )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="10001",
@@ -98,4 +103,4 @@ async def _runtime(database, control, initial, provider, *, contract_workspace=N
         max_model_requests=1,
         work_control=control,
     )
-    return chat.runtime.runner, runtime
+    return runner, runtime

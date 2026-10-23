@@ -168,11 +168,12 @@ async def test_transfer_erases_only_selected_person_and_source_period(database, 
             assert later.history_starts_at == later.created_at
         later_event = await append(database, "third owner")
         assert later_event.author_person_id == later_person
-        assert (
-            await EventLedgerRepository(database).list_scope_recent(
-                ConversationScope.private("8000", "1001"), limit=20
-            )
-        )[0].id == later_event.id
+        ledger = EventLedgerRepository(database)
+        version, rows = await ledger.read_scope_context(
+            ConversationScope.private("8000", "1001"), limit=20
+        )
+        assert [row.id for row in rows] == [later_event.id]
+        assert await ledger.read_version_matches(version)
         assert await people.delete_person_id(later_person)
         async with database.read_session() as session:
             assert values(await session.get(ChatEventModel, survivor_event)) == snapshot

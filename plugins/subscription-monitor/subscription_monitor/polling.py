@@ -26,8 +26,8 @@ class FeedState(StrictModel):
     url: str = ""
     initialized: bool = False
     seen: tuple[str, ...] = Field(default=(), max_length=MAX_SEEN)
-    unmarked: tuple[str, ...] = Field(default=(), max_length=200)
-    pending: tuple[PublishNotificationRequest, ...] = Field(default=(), max_length=800)
+    unmarked: tuple[str, ...] = ()
+    pending: tuple[PublishNotificationRequest, ...] = ()
     etag: str = ""
     last_modified: str = ""
     next_poll_at: datetime | None = None

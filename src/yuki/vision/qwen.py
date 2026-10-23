@@ -138,11 +138,6 @@ class _ObservationPayload(BaseModel):
     items: list[_ItemPayload] = Field(default_factory=list)
     overall_description: str = ""
 
-    @field_validator("items", mode="before")
-    @classmethod
-    def _bounded_items(cls, value: Any) -> list[Any]:
-        return value[:5] if isinstance(value, list) else []
-
     @field_validator("overall_description", mode="before")
     @classmethod
     def _bounded_overall(cls, value: Any) -> str:

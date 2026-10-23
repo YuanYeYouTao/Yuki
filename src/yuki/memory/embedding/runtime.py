@@ -148,8 +148,9 @@ class MemoryEmbeddingRuntime:
             raise RuntimeError("memory embedding is not enabled")
         return await self.jobs.reconcile(force=True, actor_person_id=actor_person_id)
 
-    async def purge_old(self) -> int:
+    async def purge_old(self, *, actor_person_id: str) -> int:
         if self.jobs is None or self._profile_id is None:
             raise RuntimeError("memory embedding is not enabled")
-        await self.jobs.delete_for_old_profiles()
-        return await self.repository.purge_old_profiles(current_profile_id=self._profile_id)
+        return await self.repository.purge_old_profiles(
+            current_profile_id=self._profile_id, actor_person_id=actor_person_id
+        )

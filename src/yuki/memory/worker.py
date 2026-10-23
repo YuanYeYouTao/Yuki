@@ -115,10 +115,7 @@ class MemoryWorker:
         self,
         event_id: int,
         conversation_key: str,
-        *,
-        content_characters: int = 0,
     ) -> bool:
-        del content_characters
         created, _batch_key = await self._jobs.enqueue_resolved(event_id, conversation_key)
         if created:
             # A wake is only a DB readiness check, not a model call. No process-local

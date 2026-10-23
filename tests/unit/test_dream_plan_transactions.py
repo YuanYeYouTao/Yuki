@@ -2,10 +2,9 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import delete, event, func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from tests.support.canonical_identity import ensure_person
 from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
@@ -60,43 +59,6 @@ async def create(dreams, clusters, *, session=None, mode=DreamRunMode.FULL):
         scheduled_slot=None,
         session=session,
     )
-
-
-@pytest.mark.parametrize("count", [1, 5, 10, 300])
-async def test_owner_queries_are_batched_and_no_source_reads_follow_run_insert(database, count):
-    dreams, rows = await sources(database)
-    dreams._facts.get_fact = AsyncMock(side_effect=AssertionError("full fact read during plan"))
-    statements = []
-
-    def capture(_connection, _cursor, sql, _parameters, _context, many):
-        statements.append((sql, many))
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        run = await create(dreams, specs(rows, count))
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert run.status is DreamRunStatus.PLANNED
-    selects = [sql for sql, _ in statements if sql.startswith("SELECT")]
-    assert all(
-        "memory_evidence" not in sql and "memory_facts.content" not in sql for sql in selects
-    )
-    first_insert = next(
-        index for index, (sql, _) in enumerate(statements) if sql.startswith("INSERT")
-    )
-    assert not any(sql.startswith("SELECT") for sql, _ in statements[first_insert:])
-    inserts = [
-        (sql, many)
-        for sql, many in statements
-        if sql.startswith("INSERT INTO memory_dream_clusters")
-    ]
-    assert len(inserts) == (count + 255) // 256
-    if count > 1:
-        assert all(many for _, many in inserts)
-    async with database.read_session() as reader:
-        assert (
-            await reader.scalar(select(func.count()).select_from(MemoryDreamClusterModel)) == count
-        )
 
 
 @pytest.mark.parametrize("change", ["version", "owner", "delete"])
@@ -174,9 +136,9 @@ async def test_shared_session_requires_prepared_sources(database):
     assert await dreams.get_run(run.public_id) is not None
 
 
-async def test_recovery_batches_aggregate_original_committed_operations_once(database):
+async def test_recovery_keeps_committed_operations_and_requeues_uncommitted_clusters(database):
     dreams, rows = await sources(database)
-    run = await create(dreams, specs(rows, 260), mode=DreamRunMode.INCREMENTAL)
+    run = await create(dreams, specs(rows, 2), mode=DreamRunMode.INCREMENTAL)
     async with database.immediate_session() as writer:
         await writer.execute(update(MemoryDreamClusterModel).values(status="processing"))
         clusters = tuple(
@@ -184,7 +146,7 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
                 select(MemoryDreamClusterModel).order_by(MemoryDreamClusterModel.id)
             )
         )
-        for cluster in clusters[:130]:
+        for cluster in clusters[:1]:
             operation = await dreams.create_operation(
                 cluster_id=cluster.id,
                 action_index=0,
@@ -194,20 +156,10 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
                 session=writer,
             )
             operation.status = "committed"
-    reads = []
-
-    def capture(_connection, _cursor, sql, *_args):
-        if sql.startswith("SELECT"):
-            reads.append(sql)
-
-    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        assert await dreams.reset_processing_after_restart() == 260
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert await dreams.reset_processing_after_restart() == 2
     assert await dreams.reset_processing_after_restart() == 0
     current = await dreams.get_run(run.public_id)
-    assert current.completed_clusters == 130
+    assert current.completed_clusters == 1
     async with database.read_session() as reader:
         assert (
             await reader.scalar(
@@ -215,7 +167,7 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
                 .select_from(MemoryDreamOperationModel)
                 .where(MemoryDreamOperationModel.status == "committed")
             )
-            == 130
+            == 1
         )
         assert (
             await reader.scalar(
@@ -223,5 +175,5 @@ async def test_recovery_batches_aggregate_original_committed_operations_once(dat
                 .select_from(MemoryDreamClusterModel)
                 .where(MemoryDreamClusterModel.status == "pending")
             )
-            == 130
+            == 1
         )

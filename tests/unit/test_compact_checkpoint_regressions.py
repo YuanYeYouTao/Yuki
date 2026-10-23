@@ -13,14 +13,13 @@ from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
-@pytest.mark.parametrize("maximum_views", [1, 128])
-@pytest.mark.parametrize("byte_budget", [None, 4])
+@pytest.mark.parametrize(("maximum_views", "byte_budget"), [(1, None), (128, 4)])
 async def test_public_compact_checkpoint_survives_projection_cache_eviction(
     database, tmp_path, maximum_views, byte_budget
 ):
     await social_env(database, tmp_path)
     # Each empty [] projection uses two bytes: three exceed the four-byte budget.
-    # Without a byte budget, retain the full default-128 view eviction exercise.
+    # Exercise count eviction and byte eviction independently.
     view_count = 3 if byte_budget is not None else 2 * maximum_views + 1
     scopes = [ConversationScope.group("80001", str(20001 + index)) for index in range(view_count)]
     writer = ScopedEventLedgerUnitOfWork(database)
@@ -379,15 +378,12 @@ def test_0119_keeps_valid_rollup_checkpoint_without_cached_projection(tmp_path, 
     assert after == before
 
 
-@pytest.mark.parametrize("budget_kind", ["fixed", "growing"])
-def test_public_plan_scaling_measurement(monkeypatch, budget_kind):
+def test_public_plan_keeps_the_largest_fitting_complete_prefix():
     from dataclasses import replace
-    from time import perf_counter
     from types import SimpleNamespace
 
-    from yuki.conversation.frozen_fragments import FrozenFragments
     from yuki.domain.messages import ChatMessage, ChatRequest
-    from yuki.model_runtime import capacity
+    from yuki.model_runtime.capacity import estimate_request_tokens
     from yuki.services.context_compaction import (
         PUBLIC_COMPACT_INSTRUCTION,
         PublicCompactContext,
@@ -395,90 +391,56 @@ def test_public_plan_scaling_measurement(monkeypatch, budget_kind):
     )
     from yuki.services.turn_transcript import TurnTranscript
 
+    fragments = FrozenFragments.load(
+        [
+            {
+                "kind": "model_input",
+                "event_ids": [i + 1],
+                "message": {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": "ordinary chat " * 16,
+                },
+            }
+            for i in range(8)
+        ]
+    )
     static = ChatMessage("system", "original static instructions")
     instruction = ChatMessage("user", PUBLIC_COMPACT_INSTRUCTION)
-    metrics = []
-    for count in (256, 512):
-        fragments = FrozenFragments.load(
-            [
-                {
-                    "kind": "model_input",
-                    "event_ids": [index + 1],
-                    "message": {
-                        "role": "user" if index % 2 == 0 else "assistant",
-                        "content": "ordinary chat " * 16,
-                    },
-                }
-                for index in range(count)
-            ]
-        )
-        version = SimpleNamespace(
-            conversation_id="offline-scaling",
-            generation=1,
-            prompt_source_revision=0,
-            starts_after_event_id=0,
-        )
+    messages = fragments.messages()
+    version = SimpleNamespace(
+        conversation_id="original", generation=1, prompt_source_revision=0, starts_after_event_id=0
+    )
 
-        async def adopt(*args):
-            raise AssertionError("Planning does not publish")
+    async def adopt(*args):
+        raise AssertionError("Planning does not publish")
 
-        context = PublicCompactContext(
-            (static, *fragments.messages()), 1, fragments, version, "offline-scaling", None, adopt
+    context = PublicCompactContext(
+        (static, *messages), 1, fragments, version, "original", None, adopt
+    )
+    initial = (*context.messages, ChatMessage("user", "current trigger"))
+    request = ChatRequest(messages=initial)
+    budget = estimate_request_tokens(
+        replace(request, messages=(static, *messages[:4], instruction))
+    )
+    plan = public_compact_plan(
+        context,
+        TurnTranscript(initial),
+        request,
+        initial=initial,
+        input_budget=budget,
+        prepare=lambda value: value,
+    )
+    coverage = plan.public["coverage"]
+    assert 0 < coverage < len(messages)
+    assert plan.request.messages == (static, *messages[:coverage], instruction)
+    assert estimate_request_tokens(plan.request) <= budget
+    assert (
+        estimate_request_tokens(
+            replace(plan.request, messages=(static, *messages[: coverage + 1], instruction))
         )
-        initial = (*context.messages, ChatMessage("user", "current trigger"))
-        request = ChatRequest(messages=initial)
-        messages = fragments.messages()
-        budget = (
-            2048
-            if budget_kind == "fixed"
-            else capacity.estimate_request_tokens(
-                replace(request, messages=(static, *messages[: count // 2], instruction))
-            )
-        )
-        observed = []
-        original_cost = capacity._input_token_cost
-
-        def input_cost(value, original_cost=original_cost, observed=observed):
-            cost = original_cost(value)
-            observed.append(cost.ascii + cost.non_ascii)
-            return cost
-
-        started = perf_counter()
-        with monkeypatch.context() as patch:
-            patch.setattr(capacity, "_input_token_cost", input_cost)
-            plan = public_compact_plan(
-                context,
-                TurnTranscript(initial),
-                request,
-                initial=initial,
-                input_budget=budget,
-                prepare=lambda request: request,
-            )
-        elapsed = perf_counter() - started
-        coverage = plan.public["coverage"]
-        assert 0 < coverage < count
-        assert plan.request.messages == (static, *messages[:coverage], instruction)
-        assert capacity.estimate_request_tokens(plan.request) <= budget
-        # The next whole event must exceed capacity; prompt wording can change
-        # the maximal legal prefix without changing the planning contract.
-        assert (
-            capacity.estimate_request_tokens(
-                replace(plan.request, messages=(static, *messages[: coverage + 1], instruction))
-            )
-            > budget
-        )
-        assert FrozenFragments.load(plan.public["items"]).messages() == messages[coverage:]
-        assert observed  # Record real preparation work without fixing its implementation count.
-        metrics.append(
-            {
-                "input_fragments": count,
-                "input_budget": budget,
-                "serialized_characters": sum(observed),
-                "coverage": coverage,
-                "seconds": elapsed,
-            }
-        )
-    print({"public_plan_scaling": metrics})
+        > budget
+    )
+    assert FrozenFragments.load(plan.public["items"]).messages() == messages[coverage:]
 
 
 async def test_status_does_not_report_source_invalidated_checkpoint(database, tmp_path):

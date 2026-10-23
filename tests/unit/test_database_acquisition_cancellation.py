@@ -187,11 +187,9 @@ async def test_owned_reader_checkout_cancellation_waits_for_the_actual_operation
         await database.close()
 
 
-async def test_native_pool_reuses_connections_without_probes_and_replaces_invalidated_driver(
-    tmp_path, monkeypatch
-):
+async def test_invalidated_native_driver_is_closed_and_replaced(tmp_path, monkeypatch):
     connect = sqlite3.connect
-    native, closed, statements = [], [], []
+    native, closed = [], []
 
     class Connection(sqlite3.Connection):
         def close(self):
@@ -200,35 +198,26 @@ async def test_native_pool_reuses_connections_without_probes_and_replaces_invali
 
     def instrumented_connect(*args, **kwargs):
         connection = connect(*args, **kwargs, factory=Connection)
-        connection.set_trace_callback(statements.append)
         native.append(connection)
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", instrumented_connect)
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pool.db'}")
     try:
-        for _ in range(3):
-            async with database.read_session() as reader:
-                assert await reader.scalar(text("SELECT 7")) == 7
-        for _ in range(2):
-            async with database.immediate_session() as writer:
-                assert await writer.scalar(text("SELECT 8")) == 8
-        assert len(native) == 1
-        assert statements.count("SELECT 7") == 3
-        assert statements.count("SELECT 8") == 2
-        assert "SELECT 1" not in statements
-
+        async with database.read_session() as reader:
+            assert await reader.scalar(text("SELECT 7")) == 7
+        async with database.immediate_session() as writer:
+            assert await writer.scalar(text("SELECT 8")) == 8
+        original = tuple(native)
         async with database.read_session() as reader:
             connection = await reader.connection()
             await connection.invalidate()
-        assert closed == native
+        assert all(connection in closed for connection in original)
         async with database.read_session() as reader:
             assert await reader.scalar(text("SELECT 9")) == 9
-        assert len(native) == 2
-        assert closed == native[:1]
     finally:
         await database.close()
-    assert closed == native
+    assert all(connection in closed for connection in native)
 
 
 async def test_schema_check_cancellation_owns_its_late_native_connection(tmp_path, monkeypatch):

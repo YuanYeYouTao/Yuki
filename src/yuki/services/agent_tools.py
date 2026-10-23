@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -68,6 +68,12 @@ from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state
 from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, history_schema
+
+if TYPE_CHECKING:
+    from yuki.external_agents.service import ExternalAgentService
+    from yuki.sandbox.client import SandboxClient
+    from yuki.social.service import SocialService
+    from yuki.workspace.service import WorkspaceService
 from yuki.services.turn_coordinator import TurnToken
 from yuki.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from yuki.web.models import (
@@ -415,6 +421,10 @@ class AgentToolService:
         settings: Settings,
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
+        social_service: SocialService,
+        workspace_service: WorkspaceService,
+        sandbox_client: SandboxClient,
+        external_agent_service: ExternalAgentService,
         memory_context: MemoryContextService | None = None,
         memory_mutations: MemoryMutationService | None = None,
         web_provider: WebSearchProvider | None = None,
@@ -434,7 +444,6 @@ class AgentToolService:
                     repository=self._memory_repository,
                     lexical_index=SQLiteMemoryFTSIndex(ledger._database),
                 ),
-                facts=memories,
             )
         self._memory_context = memory_context
         self._memory_mutations = memory_mutations
@@ -446,11 +455,10 @@ class AgentToolService:
         self._permission_catalog = permission_catalog or PermissionCatalogService(
             config_registry=self._runtime_config.registry,
         )
-        self.social_service: Any = None
-        self.short_state: Any = None
-        self.workspace_service: Any = None
-        self.sandbox_client: Any = None
-        self.external_agent_service: Any = None
+        self.social_service = social_service
+        self.workspace_service = workspace_service
+        self.sandbox_client = sandbox_client
+        self.external_agent_service = external_agent_service
 
     @staticmethod
     def _work_source() -> dict[str, str]:
@@ -816,12 +824,7 @@ class AgentToolService:
                     invocation = current_invocation.get()
                     if runtime.tools_closed:
                         return self._result(error="permission_denied", detail="本轮未授权执行操作")
-                    client = (
-                        self.external_agent_service
-                        if name == "external_agent"
-                        else self.sandbox_client
-                    )
-                    if client is None or invocation is None:
+                    if invocation is None:
                         return self._result(
                             error="external_agent_unavailable"
                             if name == "external_agent"
@@ -863,26 +866,26 @@ class AgentToolService:
                     )
                     source["actor_person_id"] = runtime.actor_person_id
                     if name == "external_agent":
-                        result = await client.execute(
+                        execution_result = await self.external_agent_service.execute(
                             arguments, request_id=request_id, source=source
                         )
                     else:
-                        result = await client.execute(
+                        execution_result = await self.sandbox_client.execute(
                             name,
                             arguments,
                             request_id=request_id,
                             source=source if is_execution(name, arguments) else None,
                         )
-                    if result.get("error"):
+                    if execution_result.get("error"):
                         return self._result(
-                            data=result,
-                            error=str(result["error"]),
+                            data=execution_result,
+                            error=str(execution_result["error"]),
                             detail="操作结果未确认；核对原执行回执，不能重新提交。"
-                            if result.get("uncertain")
+                            if execution_result.get("uncertain")
                             else "执行操作未完成",
-                            uncertain=bool(result.get("uncertain")),
+                            uncertain=bool(execution_result.get("uncertain")),
                         )
-                    return self._result(data=result)
+                    return self._result(data=execution_result)
 
                 if name in WORKSPACE_TOOLS:
                     from yuki.workspace.store import WorkspaceError
@@ -891,8 +894,6 @@ class AgentToolService:
                         return self._result(
                             error="permission_denied", detail="本轮未授权工作区操作"
                         )
-                    if self.workspace_service is None:
-                        return self._result(error="workspace_unavailable", detail="工作区未连接")
                     try:
                         from yuki.capabilities.invocation import current_invocation
 
@@ -931,8 +932,6 @@ class AgentToolService:
                     from yuki.social.agent_adapter import invoke_social
                     from yuki.social.models import SocialError
 
-                    if self.social_service is None:
-                        return self._result(error="social_unavailable", detail="社交服务尚未连接")
                     try:
                         social_result = await invoke_social(
                             self.social_service, name, arguments, runtime
@@ -1147,10 +1146,7 @@ class AgentToolService:
         for key, value in defaults.items():
             selected.setdefault(key, value)
         try:
-            if (
-                self.social_service is not None
-                and runtime.origin is not TurnOrigin.PLUGIN_BACKGROUND
-            ):
+            if runtime.origin is not TurnOrigin.PLUGIN_BACKGROUND:
                 data = await invoke_social(
                     self.social_service, "query_chat_history", selected, runtime
                 )

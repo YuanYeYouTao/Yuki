@@ -3,11 +3,11 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import insert, select
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.unit.test_memory_v2 import _append_event
 
+from yuki.memory.enums import MemoryInvalidationReason
 from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from yuki.memory.repository import MemoryFactRepository
 from yuki.memory.service import MemoryFactService
@@ -19,8 +19,8 @@ from yuki.persistence.models import (
 from yuki.persistence.repositories import EventLedgerRepository
 
 
-@pytest.mark.parametrize("size", [1, 64, 1000])
-async def test_evidence_order_limit_and_counts_are_preserved(database, size):
+async def test_evidence_order_limit_and_counts_are_preserved(database):
+    size = 1000
     repository = MemoryFactRepository(database)
     facts = MemoryFactService(repository)
     source = await _append_event(EventLedgerRepository(database), message_id="seed", content="seed")
@@ -286,7 +286,14 @@ async def test_separate_preparations_on_one_reader_do_not_share_unrelated_eviden
             (saved[1].id,), copies=(((saved[1].id,), saved[1], None),), session=reader
         )
     async with repository.write_session(second) as writer:
-        await service.administrator_confirm(saved[1].id, actor_user_id="operator", session=writer)
+        assert await service.invalidate_fact(
+            saved[1].id,
+            reason=MemoryInvalidationReason.USER_RETRACTED,
+            actor_user_id="operator",
+            session=writer,
+        )
     assert set(first.rows) == {saved[0].id} and set(second.rows) == {saved[1].id}
     assert first.copies == first_copies
     assert {item.source_ids for item in second.copies.values()} == {(saved[1].id,)}
+    assert (await service.get_fact(saved[0].id)).status.value == "active"
+    assert (await service.get_fact(saved[1].id)).status.value == "invalidated"

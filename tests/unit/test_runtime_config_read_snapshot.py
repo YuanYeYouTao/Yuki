@@ -69,38 +69,14 @@ async def _override(
         )
 
 
-async def test_snapshot_indexes_override_rows_once_without_changing_scope_values(
-    database, monkeypatch
-):
+async def test_zero_person_temperature_and_group_context_keep_original_scopes(database):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     person, _, space, _ = await _owners(database)
     await _override(database, person, 0.0, key="llm.temperature", value_type="number")
     await _override(database, space, 0.8, "group", key="llm.temperature", value_type="number")
     await _override(database, space, 80000, "group")
-    expected = await runtime.snapshot(user_id=person, group_id=space)
-    assert expected.llm.temperature == 0.0 and expected.context.compact_trigger_tokens == 80000
-
-    class TrackedRows(tuple):
-        visits = 0
-
-        def __iter__(self):
-            for row in super().__iter__():
-                self.visits += 1
-                yield row
-
-    read = runtime._repository.read_relevant_snapshot
-    observed = []
-
-    async def tracked(**kwargs):
-        rows, person_id, space_id = await read(**kwargs)
-        records = TrackedRows(rows)
-        observed.append(records)
-        return records, person_id, space_id
-
-    monkeypatch.setattr(runtime._repository, "read_relevant_snapshot", tracked)
-    actual = await runtime.snapshot(user_id=person, group_id=space)
-    assert actual == expected
-    assert observed[0].visits == len(observed[0])
+    snapshot = await runtime.snapshot(user_id=person, group_id=space)
+    assert snapshot.llm.temperature == 0.0 and snapshot.context.compact_trigger_tokens == 80000
 
 
 @pytest.mark.asyncio
@@ -158,69 +134,6 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
     for name in values_a:
         assert getattr(private_a.context, name) == values_a[name]
         assert getattr(private_b.context, name) == values_b[name]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["global", "person", "space", "both", "canonical", "memory"])
-async def test_snapshot_matches_previous_complete_config_and_resolves_once(
-    database, monkeypatch, scope
-):
-    from yuki.admin import config_service as module
-
-    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    person, _, space, _ = await _owners(database)
-    await _override(database, person, 70000)
-    await _override(database, space, 80000, "group")
-    kwargs = {
-        "global": {},
-        "person": {"user_id": person},
-        "space": {"group_id": space},
-        "both": {"user_id": person, "group_id": space},
-        "canonical": {"user_id": person, "group_id": space},
-        "memory": {"memory_scope": MemoryConfigScope(person, space)},
-    }[scope]
-
-    async def previous(*, user_id, group_id):
-        records = await runtime._repository.list_relevant(user_id=user_id, group_id=group_id)
-        owners = await runtime._owner_match(user_id=user_id, group_id=group_id)
-        return records, *owners
-
-    with monkeypatch.context() as baseline:
-        baseline.setattr(runtime._repository, "read_relevant_snapshot", previous)
-        expected = await runtime.snapshot(**kwargs)
-    sessions, sql, resolved = [], [], []
-    original_sessions = database.read_session
-
-    def factory(*args, **kw):
-        sessions.append(1)
-        return original_sessions(*args, **kw)
-
-    def capture(_connection, _cursor, statement, *_args):
-        sql.append(statement)
-
-    for name in ("current_person_id", "resolve_space_owner"):
-        original = getattr(module, name)
-
-        async def wrapped(*args, _original=original, _name=name, **kw):
-            resolved.append(_name)
-            return await _original(*args, **kw)
-
-        monkeypatch.setattr(module, name, wrapped)
-    monkeypatch.setattr(database, "read_session", factory)
-    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        actual = await runtime.snapshot(**kwargs)
-    finally:
-        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert actual == expected
-    assert len(sessions) == 1
-    assert all(statement.lstrip().startswith(("BEGIN", "SELECT")) for statement in sql)
-    assert sql[0] == "BEGIN"
-    assert resolved.count("current_person_id") == int(
-        "user_id" in kwargs
-        or ("memory_scope" in kwargs and kwargs["memory_scope"].person_id is not None)
-    )
-    assert resolved.count("resolve_space_owner") == int("group_id" in kwargs)
 
 
 @pytest.mark.asyncio

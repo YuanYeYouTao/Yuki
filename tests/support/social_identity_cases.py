@@ -9,6 +9,7 @@ from sqlalchemy import select
 from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 from tests.support.event_seed import seed_scoped_event
+from tests.support.service_dependencies import social_service, workspace_service
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
@@ -25,7 +26,7 @@ from yuki.identity.routing import PresenceRouter, RouteSendError
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.social.models import SocialError
-from yuki.social.service import SocialContext, SocialService
+from yuki.social.service import SocialContext
 from yuki.workspace.store import WorkspaceStore
 
 
@@ -99,9 +100,10 @@ async def social_env(database, tmp_path):
             )
         )
     assert await router.cas_takeover_space(space) == "taken"
-    service = SocialService(database, router, writer)
     store = WorkspaceStore(tmp_path / "workspace")
-    service.workspace = store
+    service = social_service(
+        database, router, writer, workspace=workspace_service(store, database=database)
+    )
     return SimpleNamespace(
         db=database,
         bot=bot,

@@ -26,6 +26,7 @@ from yuki.identity.canonical_repository import (
     forget_person_by_id,
 )
 from yuki.identity.db_models import CanonicalPersonModel
+from yuki.memory.models import MemoryFactCreate
 from yuki.memory.mutation.models import MemoryMutationOperation, MemoryMutationRequest
 from yuki.memory.mutation.service import MemoryMutationRejected
 from yuki.memory.subjects import ResolvedSubject
@@ -148,7 +149,19 @@ async def test_revoked_snapshot_cannot_read_other_person_memory(database):
         owner = await ensure_person(session, "9000")
         target = await ensure_person(session, "1002")
         (await session.get(CanonicalPersonModel, owner)).is_superuser = True
-    fact = await facts.add_explicit_person("1002", "private", person_id=target)
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="1002",
+            canonical_subject_person_id=target,
+            memory_key="authority-fixture",
+            category="explicit",
+            content="private",
+            importance=5,
+            source_type="explicit",
+            authority="explicit",
+        )
+    )
     actor = AdminActor("9000", True, "", "private:9000", person_id=owner)
     admin = MemoryAdminService(
         settings=make_settings(database.url),
@@ -172,7 +185,19 @@ async def test_memory_search_rechecks_role_before_disclosing_awaited_result(
     async with database.immediate_session() as writer:
         owner = await ensure_person(writer, "9000")
         target = await ensure_person(writer, "1002")
-    fact = await facts.add_explicit_person("1002", "private memory", person_id=target)
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="1002",
+            canonical_subject_person_id=target,
+            memory_key="authority-fixture",
+            category="explicit",
+            content="private memory",
+            importance=5,
+            source_type="explicit",
+            authority="explicit",
+        )
+    )
     event = await _event(
         ledger, message_id="original-private-search", sender_user_id="9000", content="search memory"
     )
@@ -236,7 +261,19 @@ async def test_memory_writer_rechecks_revoke_but_replays_original_success(databa
         owner = await ensure_person(session, "9000")
         target = await ensure_person(session, "1002")
         (await session.get(CanonicalPersonModel, owner)).is_superuser = True
-    fact = await facts.add_explicit_person("1002", "old", person_id=target)
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="1002",
+            canonical_subject_person_id=target,
+            memory_key="authority-fixture",
+            category="explicit",
+            content="old",
+            importance=5,
+            source_type="explicit",
+            authority="explicit",
+        )
+    )
     event = await _event(
         ledger, message_id="authority-admin-event", sender_user_id="9000", content="new fact"
     )
@@ -273,7 +310,19 @@ async def test_memory_admin_original_event_replays_original_mutation(database, o
     async with database.immediate_session() as writer:
         owner = await ensure_person(writer, "9000")
         (await writer.get(CanonicalPersonModel, owner)).is_superuser = True
-    fact = await facts.add_explicit_person("9000", "old", person_id=owner)
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="9000",
+            canonical_subject_person_id=owner,
+            memory_key="authority-fixture",
+            category="explicit",
+            content="old",
+            importance=5,
+            source_type="explicit",
+            authority="explicit",
+        )
+    )
     event = await _event(
         ledger, message_id="stable-admin-memory", sender_user_id="9000", content="new memory"
     )

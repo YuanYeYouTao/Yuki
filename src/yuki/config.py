@@ -576,14 +576,6 @@ class Settings(BaseSettings):
         return Path(self.database_url.removeprefix(prefix))
 
     @property
-    def llm_configured(self) -> bool:
-        """Whether enough configuration exists to make LLM requests."""
-
-        if self.llm_provider.casefold() == "fake":
-            return True
-        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
-
-    @property
     def web_configured(self) -> bool:
         """Whether web is enabled; WebModule validates the selected catalog backend."""
         return self.web.mode is not WebMode.DISABLED

@@ -8,27 +8,16 @@ from yuki.persistence.models import ChatEventModel
 from yuki.services.participation_feedback import admission_unit_binding
 
 
-async def test_binding_and_committed_feedback_share_group_scope_preparation(
-    database, tmp_path, monkeypatch
-):
+async def test_prepared_binding_and_feedback_keep_the_original_input(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        row = await _event_and_route(database, host.app.ledger)
-        hydrate = AsyncMock(wraps=host._hydrate)
-        monkeypatch.setattr(host, "_hydrate", hydrate)
-        binding = await host.binding_for_event(row.id)
+        row = await _event_and_route(database, host.ledger)
+        runtime = await host.runtime_config.snapshot(group_id=row.group_id)
+        binding = await host.binding_for_event(row.id, record=row, runtime=runtime)
         assert binding is not None
-        config_reads = host.app.runtime_config.snapshot.await_count
-        history_reads = hydrate.await_count
-        assert history_reads
         prepared = host.ordinary.prepare(row, binding.generation, 1, binding, reason="mention")
         assert await host.ordinary.commit(prepared)
         await host.on_ordinary_admitted(binding, prepared.admission)
-        assert hydrate.await_count == history_reads
-        assert host.app.runtime_config.snapshot.await_count == config_reads
-        assert all(
-            call.kwargs.get("group_id") for call in host.app.runtime_config.snapshot.await_args_list
-        )
         item = host._sessions[(binding.conversation_id, binding.generation)]
         event = item.controller.state.events[f"event:{row.id}"]
         unit = admission_unit_binding(prepared.admission)
@@ -37,7 +26,6 @@ async def test_binding_and_committed_feedback_share_group_scope_preparation(
         before = item.controller.state.model_dump_json()
         await host.on_ordinary_admitted(binding, prepared.admission)
         assert item.controller.state.model_dump_json() == before
-        assert hydrate.await_count == history_reads
     finally:
         await host.close()
 
@@ -47,7 +35,7 @@ async def test_feedback_revalidates_deleted_source_without_rehydrating(
 ):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        row = await _event_and_route(database, host.app.ledger)
+        row = await _event_and_route(database, host.ledger)
         binding = await host.binding_for_event(row.id)
         prepared = host.ordinary.prepare(row, binding.generation, 1, binding, reason="mention")
         assert await host.ordinary.commit(prepared)
@@ -64,7 +52,7 @@ async def test_feedback_revalidates_deleted_source_without_rehydrating(
 async def test_cold_feedback_recovers_original_admission(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        row = await _event_and_route(database, host.app.ledger)
+        row = await _event_and_route(database, host.ledger)
         binding = await host.binding_for_event(row.id)
         prepared = host.ordinary.prepare(row, binding.generation, 1, binding, reason="mention")
         assert await host.ordinary.commit(prepared)

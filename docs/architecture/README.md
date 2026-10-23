@@ -2,6 +2,8 @@
 
 开发先读[共同开发约束](development-contract.md)，再读涉及模块。以下是当前源码合同；发现源码不符合合同，记录具体缺口，不把历史设计或验收结论当成现行实现。
 
+代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
+
 本入口跟随 **4.0.0 后续开发**；当前源码迁移 head 为 `0149`、Plugin API 为 `7.1`、Main 固定工具合同为 `31`、Code API 为 `yuki.codemode.api.v2`。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。

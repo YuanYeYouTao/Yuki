@@ -10,7 +10,6 @@ from yuki.prompting.models import (
     PromptMetrics,
     PromptProgram,
     PromptStability,
-    PromptTrust,
 )
 
 __all__ = [
@@ -22,7 +21,6 @@ __all__ = [
     "PromptMetrics",
     "PromptProgram",
     "PromptStability",
-    "PromptTrust",
     "ToolSchemaMetrics",
     "measure_tool_schemas",
 ]

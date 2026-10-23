@@ -35,7 +35,7 @@ async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(d
     host, _ = await _host(database, tmp_path, observer=False)
     try:
         body = "@油桃 你先说这件事，@远野 等下接着说；@油桃 再确认。"
-        row = await _event_and_route(database, host.app.ledger, content=body)
+        row = await _event_and_route(database, host.ledger, content=body)
         item = await _item(host, row)
         event = host._event(row, item)
         snapshot = Snapshot(
@@ -70,13 +70,13 @@ async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(d
                 },
             )
 
-        host.app.settings.character_identity = BotIdentity("阿澪", ("阿澪", "小澪"))
+        host.settings.character_identity = BotIdentity("阿澪", ("阿澪", "小澪"))
         async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
             observer = JevObserver(
                 "synthetic-key", identity=host._observer_identity, client=transport
             )
             await observer.evaluate(snapshot)
-            host.app.settings.character_identity = BotIdentity("林舟", ("林舟", "阿舟"))
+            host.settings.character_identity = BotIdentity("林舟", ("林舟", "阿舟"))
             await observer.evaluate(snapshot.model_copy(update={"sequence": 2}))
         assert len(requests) == 2
         payload = requests[0]["state"]
@@ -123,7 +123,7 @@ async def _append(host, *, author="1001", reply_to=None, cause=None, age=20):
         async with host.database.immediate_session() as writer:
             await ensure_person(writer, author, display_name=f"synthetic-{author}")
     row, created = await seed_event(
-        host.app.ledger,
+        host.ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,
@@ -169,7 +169,7 @@ async def test_projection_keeps_every_human_and_self_anchor_without_full_belief_
 ):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        first = await _event_and_route(database, host.app.ledger, content="synthetic first thread")
+        first = await _event_and_route(database, host.ledger, content="synthetic first thread")
         item = await _item(host, first)
         first_unit = _resolve_new(item, first, 1)
         own_first = await _append(host, author="8000", cause=first.id, age=30)
@@ -234,7 +234,7 @@ async def test_cold_hydration_and_warm_increment_project_sources_without_full_be
 ):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        first = await _event_and_route(database, host.app.ledger, content="synthetic cold source")
+        first = await _event_and_route(database, host.ledger, content="synthetic cold source")
         scene = await host._scene(first.canonical_conversation_id)
         item = await host._session(scene)
         rows = [first]
@@ -349,7 +349,7 @@ async def test_projection_change_preserves_restore_and_source_revocation_of_cont
     host, item, original, _admission, unit = await _relationship(database, tmp_path)
     try:
         later = await _event_and_route(
-            database, host.app.ledger, content="synthetic continuation candidate"
+            database, host.ledger, content="synthetic continuation candidate"
         )
         binding, reason = await host.continuation_for_event(later.id)
         assert reason == "continuation" and binding.unit_key == unit.unit.thread

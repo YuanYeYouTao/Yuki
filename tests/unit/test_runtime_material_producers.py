@@ -6,8 +6,7 @@ import json
 
 import pytest
 
-from yuki.domain.messages import ChatMessage, ChatRequest
-from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.domain.messages import ChatMessage
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki.plugin_host.prompt_adapter import PluginPromptAdapter
 from yuki.prompting import (
@@ -15,7 +14,6 @@ from yuki.prompting import (
     PromptCompiler,
     PromptContribution,
     PromptProgram,
-    PromptTrust,
 )
 from yuki.services.model_context_projection import project_short_state
 from yuki.services.prompt_registry import PromptRegistry
@@ -93,18 +91,14 @@ def test_registered_long_plugin_fragment_stays_structured_and_complete() -> None
                 PromptContribution(
                     id="context.plugins",
                     channel=PromptChannel.PLUGIN,
-                    trust=PromptTrust.UNTRUSTED,
                     payload=list(fragments),
                 ),
             )
         ),
         current_message=ChatMessage("user", "读取这些资料"),
     )
-    request = ChatRequest(model="primary", messages=compiled.messages)
     assert content in (compiled.messages[-1].content or "")
     assert "插件资料：" in (compiled.messages[-1].content or "")
-    budget = ModelCapacity(input_tokens=96_000).input_budget()
-    assert budget is not None and estimate_request_tokens(request) < budget
 
 
 def test_prompt_registration_still_checks_actual_permission() -> None:

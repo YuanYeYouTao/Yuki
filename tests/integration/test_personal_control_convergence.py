@@ -34,7 +34,6 @@ from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import effects, journal
-from yuki.services.main_agent_contract import MainAgentContract
 from yuki.social.service import SocialContext
 
 
@@ -183,9 +182,7 @@ async def test_sdk_settles_ended_requests_and_keeps_delivery_before_failure(
             return ChatResponse(
                 content="",
                 latency_seconds=0,
-                tool_calls=(
-                    ToolCall("sent", ToolFunction("send", '{"text":"Partial result"}')),
-                ),
+                tool_calls=(ToolCall("sent", ToolFunction("send", '{"text":"Partial result"}')),),
             )
         return "" if failure else "Private final without a Social message."
 
@@ -574,7 +571,7 @@ async def test_disabled_platform_binding_can_transfer_without_reviving_old_owner
         assert current.history_starts_at == current.created_at == old.ended_at == old.updated_at
 
 
-async def test_acp_uses_fixed_common_tools_and_explicit_person_routing(acp_runtime, database):
+async def test_acp_keeps_explicit_person_routing_and_original_entry_history(acp_runtime, database):
     env = acp_runtime
     session = await new_session(env)
     identity = env.app.client_api.identity
@@ -582,16 +579,6 @@ async def test_acp_uses_fixed_common_tools_and_explicit_person_routing(acp_runti
     principal = await identity.authenticate(
         env.device["token"], conversation_id=session["session_id"]
     )
-    contract = env.app.main_agent_contract
-    assert await contract.model_definitions() == await contract.model_definitions()
-    for code in (False, True):
-        view = MainAgentContract(env.app.chat, contract.state, code_enabled=code)
-        declared = await view.definitions()
-        assert "query_chat_history" in {tool.name for tool in declared}
-        assert "read_personal_entry" not in {tool.name for tool in declared}
-        if code:
-            assert "query_chat_history" in view.script_api.schemas
-            assert "read_personal_entry" not in view.script_api.schemas
     runtime = SimpleNamespace(
         effective_conversation_id=principal.conversation_id,
         require_actor=lambda: SimpleNamespace(person_id=principal.person_id),
@@ -645,9 +632,7 @@ async def test_stdio_replay_of_failed_turn_flushes_original_confirmed_output(acp
                 content="",
                 latency_seconds=0,
                 tool_calls=(
-                    ToolCall(
-                        "partial", ToolFunction("send", '{"text":"Original partial"}')
-                    ),
+                    ToolCall("partial", ToolFunction("send", '{"text":"Original partial"}')),
                 ),
             ),
             "",

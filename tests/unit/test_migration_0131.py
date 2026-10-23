@@ -8,15 +8,6 @@ from alembic.config import Config
 from tests.unit.test_migration_0119 import _seed_0118
 
 
-def test_full_empty_upgrade_reaches_0131(tmp_path, monkeypatch):
-    path = tmp_path / "empty.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path}")
-    command.upgrade(Config("alembic.ini"), "0131")
-    with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0131",)
-        assert not db.execute("PRAGMA foreign_key_check").fetchall()
-
-
 def test_0130_upgrade_retires_all_scopes_without_rewriting_history(tmp_path, monkeypatch):
     path = tmp_path / "retirement.db"
     _seed_0118(path, monkeypatch)

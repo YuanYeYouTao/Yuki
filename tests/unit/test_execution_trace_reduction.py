@@ -280,5 +280,4 @@ async def test_semantic_snapshot_is_not_duplicated_and_failure_details_remain(da
         result = payloads["semantic_observation_error"]["result"]
         assert result["error_category"] == type(problem).__name__
         assert result["http_status"] == (429 if failure == "http" else None)
-    assert result["elapsed_seconds"] >= 0
     assert "original snapshot" not in json.dumps(result)

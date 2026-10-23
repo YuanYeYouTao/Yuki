@@ -132,7 +132,7 @@ async def test_nonordinary_main_does_not_apply_ordinary_hint(database):
 
 async def ordinary_expression(database, tmp_path, *, admission=True, status="succeeded", send=True):
     host, _ = await _host(database, tmp_path)
-    event = await _event_and_route(database, host.app.ledger)
+    event = await _event_and_route(database, host.ledger)
     item = await _item(host, event)
     source = item.controller.state.events[f"event:{event.id}"]
     repository = OrdinaryAdmissionRepository(database)
@@ -157,7 +157,7 @@ async def ordinary_expression(database, tmp_path, *, admission=True, status="suc
     if not send:
         return host, item, event, None, None
     own, _ = await seed_event(
-        host.app.ledger,
+        host.ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,
@@ -243,7 +243,7 @@ async def test_actual_host_observes_no_send_hint_without_purchasing_state_change
     try:
         content = f'NO_REPLY\n<yuki-state>{{"engage":"{engage}"}}</yuki-state>'
         chat, provider, tool_runtime, runtime, _ = await ordinary_backend(database, content)
-        host.app.chat = chat
+        host.validate_turn_snapshot = chat.validate_turn_snapshot
         chat.observe_main_response = host.observe_main_response
         scope = ConversationScope.group(event.bot_user_id, event.group_id)
         state = await chat._conversation_scopes.get(scope)

@@ -55,10 +55,10 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
     snapshots = []
     try:
         # This fixture exercises ordinary response/review, without an intrinsic draw.
-        config = await host.app.runtime_config.snapshot()
+        config = await host.runtime_config.snapshot()
         config.conversation_policy().proactive_wakeup_enabled = False
         item.observation.queue.pending.clear()
-        b = await _event_and_route(database, host.app.ledger, content="synthetic continuation B")
+        b = await _event_and_route(database, host.ledger, content="synthetic continuation B")
         binding, reason = await host.continuation_for_event(b.id)
         assert reason == "continuation"
         prepared = host.ordinary.prepare(b, item.scene.generation, 2, binding, reason=reason)
@@ -71,7 +71,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
             else 'NO_REPLY\n<yuki-state>{"engage":"stay"}</yuki-state>'
         )
         chat, provider, tool_runtime, runtime, _ = await ordinary_backend(database, content)
-        host.app.chat = chat
+        host.validate_turn_snapshot = chat.validate_turn_snapshot
         chat.observe_main_response = host.observe_main_response
         scope = ConversationScope.group(b.bot_user_id, b.group_id)
         state = await chat._conversation_scopes.get(scope)
@@ -152,7 +152,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
                 assert not review.done()
 
             c = await _event_and_route(
-                database, host.app.ledger, content="synthetic continuation C"
+                database, host.ledger, content="synthetic continuation C"
             )
             assert await host.continuation_for_event(c.id) is None
             assert snapshots[0].model_dump_json() == frozen
@@ -201,7 +201,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
     host, policy = await _host(database, tmp_path)
     policy.proactive_wakeup_enabled = False
     harness.processor.set_participation(host)
-    host.app.chat = harness.processor._chat
+    host.validate_turn_snapshot = harness.processor._chat.validate_turn_snapshot
     sender = MemorySender()
     classified = []
     checked, late_errors = asyncio.Event(), []

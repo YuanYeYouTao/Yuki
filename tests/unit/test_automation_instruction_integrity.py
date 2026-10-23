@@ -51,14 +51,11 @@ async def gemini_wire():
         )
 
 
-@pytest.mark.parametrize("padding", [32, 4300, 5600])
-async def test_long_task_persists_and_reaches_original_main_agent(
-    database, tmp_path, padding, gemini_wire
-):
+async def test_long_task_persists_and_reaches_original_main_agent(database, tmp_path, gemini_wire):
     provider, requests = gemini_wire
     goal = "完整目标：" + "待处理资料" * 600
     constraints = [
-        "占位资料，不要输出：" + "A" * padding + "\nTAIL_MARKER=YUKI_AUTO_TAIL_OK_731",
+        "占位资料，不要输出：" + "A" * 5600 + "\nTAIL_MARKER=YUKI_AUTO_TAIL_OK_731",
         *[f"条件 {i}" for i in range(13)],
     ]
     case = await setup_run(

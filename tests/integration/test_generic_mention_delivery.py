@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from tests.support.service_dependencies import social_service
 
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, MessageMention, SenderIdentity
@@ -23,7 +24,7 @@ from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from yuki.social.service import SocialContext, SocialService
+from yuki.social.service import SocialContext
 
 
 class Operations:
@@ -138,7 +139,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
         )
         assert snapshot["account_id"] == guest.id and snapshot["person_id"] is None
         assert await session.get(CanonicalPersonModel, guest.id) is None
-    social = SocialService(database, router, ScopedEventLedgerUnitOfWork(database))
+    social = social_service(database, router, ScopedEventLedgerUnitOfWork(database))
     context = SocialContext(
         "third-turn",
         "natural",

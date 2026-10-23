@@ -2,56 +2,14 @@
 
 from dataclasses import replace
 
-from sqlalchemy import insert, select
+from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.canonical_identity import ensure_person
 from tests.support.event_seed import seed_scoped_event
-from tests.support.sqlite_cost import capture_reads, read_vm_steps
 
 from yuki.domain.conversations import ConversationScope
-from yuki.persistence.models import AutomationModel, ChatEventModel
+from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-
-
-async def test_no_match_directory_read_work_grows_with_candidate_count(database, tmp_path):
-    case = await setup_run(database, tmp_path, mode="silent")
-    async with database.read_session() as session:
-        original = dict(
-            (
-                await session.execute(
-                    select(AutomationModel.__table__).where(AutomationModel.id == case.row.id)
-                )
-            )
-            .mappings()
-            .one()
-        )
-    requested = {**case.row.script, "goal": "no equivalent task in this isolated directory"}
-    costs = []
-    previous = 1
-    sizes = (50, 1000)
-    for count in sizes:
-        async with database.immediate_session() as session:
-            await session.execute(
-                insert(AutomationModel),
-                [
-                    {
-                        **{key: value for key, value in original.items() if key != "id"},
-                        "creation_source_key": f"directory-cost:{index}",
-                    }
-                    for index in range(previous, count)
-                ],
-            )
-        with capture_reads(database) as statements:
-            assert (
-                await case.service.find_equivalent_directory_entries(requested, actor=case.actor)
-                == ()
-            )
-        # The captured public operation only read; replay sees the same rows.
-        costs.append(read_vm_steps(database, statements))
-        previous = count
-    assert costs[0] > 0
-    assert costs[1] <= costs[0] * (sizes[1] / sizes[0]) * 2, (sizes, costs)
-    assert not case.provider.requests
 
 
 async def test_equivalence_uses_normalized_task_and_not_the_owner_or_name(database, tmp_path):

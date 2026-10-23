@@ -28,7 +28,7 @@ from yuki.model_runtime.pool import ModelClientPool
 from yuki.model_runtime.profiles import ModelProfileCatalog, parse_model_profile_catalog
 from yuki.model_runtime.routes import ModelRouter
 from yuki.web.base import WebSearchError
-from yuki.web.models import WebMode, WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
 from yuki.web.native_bridge import NativeSearchBridge
 from yuki.web.page_extractor import DirectPageExtractor
 from yuki.web.route_context import current_web_model_task
@@ -363,11 +363,6 @@ async def test_explicit_tavily_backend_remains_selected(
     finally:
         await routed.close()
     tavily.close.assert_awaited_once()
-
-
-def test_retired_tavily_fallback_mode_is_not_an_execution_alias():
-    with pytest.raises(ValueError):
-        WebMode("native_with_tavily_fallback")
 
 
 async def test_search_backend_round_trips_through_management(tmp_path):

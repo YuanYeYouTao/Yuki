@@ -13,6 +13,7 @@ from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.support.event_seed import seed_scoped_event
 from tests.support.model_executor import InjectedModelExecutor
+from tests.support.service_dependencies import workspace_service
 
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage, ChatRequest
@@ -27,7 +28,6 @@ from yuki.services.agent_runner import AgentRunner
 from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.turn_execution import _PrimaryDispatch
 from yuki.services.turn_transcript import TurnTranscript
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -191,7 +191,7 @@ async def test_real_native_edit_still_revokes_old_selected_pixels(
     _photo(edited["edited_message"], "new-photo")
     await env.gateway.receive(edited)
     await _path(reader, source)
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
+    workspace = workspace_service(WorkspaceStore(tmp_path / "artifacts"))
     workspace.conversation_media = reader.service
     provider = FakeLLMProvider(lambda _: "must not be called")
     transcript = TurnTranscript((ChatMessage("user", "old pixels", images=selected.images),))

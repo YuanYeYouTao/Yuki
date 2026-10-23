@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from websockets.asyncio.client import ClientConnection, connect
 
+from .. import __version__
 from ..config import Instance
 from . import DriverError, Emit
 
@@ -65,7 +66,7 @@ class CodexRPC:
         await self.call(
             "initialize",
             {
-                "clientInfo": {"name": "yuki_agent_connector", "version": "0.1.0"},
+                "clientInfo": {"name": "yuki_agent_connector", "version": __version__},
                 "capabilities": {"experimentalApi": True},
             },
         )

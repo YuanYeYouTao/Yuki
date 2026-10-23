@@ -8,6 +8,7 @@ from sqlalchemy import event as sql_event
 from sqlalchemy import select, update
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
+from tests.support.service_dependencies import tool_dependencies
 from tests.unit.test_dream_busy_recovery import _case
 from tests.unit.test_memory_mutation import _event, _service
 from tests.unit.test_memory_rebuild import _service as rebuild_service
@@ -100,7 +101,12 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
             ReflectionCheckpoint(output.model_dump(mode="json"), event_map, tool_map)
         ).decode(),
     )
-    worker = SelfReflectionWorker(settings=settings, repository=repository, service=service)
+    worker = SelfReflectionWorker(
+        settings=settings,
+        repository=repository,
+        service=service,
+        social=tool_dependencies(database, settings)["social_service"],
+    )
     paid = await worker.control.reserve_request(batch.run_id)
     await worker.control.finish_request(paid, "completed", 12)
     if merge_owner:

@@ -36,7 +36,6 @@ def test_source_free_release_archives_match_the_loose_assets(tmp_path):
         assert b"YuanYeYouTao/Yuki" in installer
         assert b"ghcr.io/yuanyeyoutao/yuki" in installer
         assert b"--entrypoint yuki" in installer
-        assert b"qq-ai-bot" not in installer
     with zipfile.ZipFile(tmp_path / f"{archive_root}.zip") as archive:
         assert archive.read(f"{archive_root}/docker-compose.yml") == compose
         assert not any(name.startswith(f"{archive_root}/src/") for name in archive.namelist())

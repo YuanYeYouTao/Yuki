@@ -16,6 +16,7 @@ from PIL import Image
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.integration.test_telegram_attachment_tools import attachment_tools  # noqa: F401
+from tests.support.service_dependencies import workspace_service
 from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
@@ -36,7 +37,6 @@ from yuki.sandbox.persistent import PersistentManager
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.media_resolver import MediaResolver
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -171,7 +171,7 @@ async def test_main_reads_an_uploaded_file_only_after_its_explicit_tool_call(
     harness = build_harness(database, make_settings(database.url), provider)
     resolver = MediaResolver()
     media = ConversationMediaService(database, tmp_path / "cache", resolver, ImagePreprocessor())
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
+    workspace = workspace_service(WorkspaceStore(tmp_path / "artifacts"))
     workspace.conversation_media = media
     harness.processor._conversation_media = media
     chat = harness.processor._chat

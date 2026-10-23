@@ -68,10 +68,9 @@ from yuki.social.repository import (
     payload_hash,
     sequence_prefix,
 )
-from yuki.workspace.store import WorkspaceStore
 
 if TYPE_CHECKING:
-    from yuki.emoji.delivery import EmojiDeliveryService
+    from yuki.emoji.library import EmojiLibrary
     from yuki.workspace.service import WorkspaceService
 
 
@@ -148,16 +147,24 @@ def _prepared_parts(prepared: dict[str, Any]) -> tuple[dict[str, Any], ...]:
 
 class SocialService:
     def __init__(
-        self, database: Database, router: PresenceRouter, writer: ScopedEventLedgerUnitOfWork
+        self,
+        database: Database,
+        router: PresenceRouter,
+        writer: ScopedEventLedgerUnitOfWork,
+        *,
+        runtime_config: RuntimeConfigService,
+        workspace_service: WorkspaceService,
+        emoji_library: EmojiLibrary,
     ) -> None:
         self.database = database
         self.router = router
         self.writer = writer
         self.receipts = SocialOperationRepository(database)
-        self.runtime_config: RuntimeConfigService | None = None
-        self.workspace: WorkspaceStore | None = None
-        self.workspace_service: WorkspaceService | None = None
-        self.emoji_delivery: EmojiDeliveryService | None = None
+        self.runtime_config = runtime_config
+        self.workspace_service = workspace_service
+        from yuki.emoji.delivery import EmojiDeliveryService
+
+        self.emoji_delivery = EmojiDeliveryService(self, emoji_library)
 
     async def _validate_person_context(
         self, context: SocialContext, *, session: AsyncSession | None = None
@@ -297,8 +304,6 @@ class SocialService:
             frozen = prior.prepared.get("artifact")
             if frozen is not None:
                 return cast(dict[str, Any], frozen)
-        if self.workspace_service is None:
-            raise SocialError("artifact_transport_unavailable")
         from yuki.workspace.store import WorkspaceError
 
         identity = str(
@@ -716,7 +721,7 @@ class SocialService:
     ) -> dict[str, Any]:
         """Plan protocol parts before dispatch; every actual send owns its receipt."""
         snapshot = context.runtime_snapshot
-        if snapshot is None and self.runtime_config is not None:
+        if snapshot is None:
             snapshot = await self.runtime_config.snapshot()
         if (
             prior is not None
@@ -729,7 +734,7 @@ class SocialService:
             )
         else:
             layout: tuple[TransportMessage, ...] = (message,)
-            if message.media is None and message.text and snapshot is not None:
+            if message.media is None and message.text:
                 layout = OutboundMessageSplitter.render_message(message, runtime=snapshot)
             operations = self.router.operations(route)
             planned = tuple(part for item in layout for part in operations.plan_send(item))
@@ -808,9 +813,7 @@ class SocialService:
                 content=content,
                 ledger_segments=segments(part),
                 known_event_id=known_event_id,
-                emoji_request=(args, context)
-                if args.get("emoji") and self.emoji_delivery is not None
-                else None,
+                emoji_request=(args, context) if args.get("emoji") else None,
             )
             if "emoji" in result:
                 illustration = result["emoji"]
@@ -872,7 +875,7 @@ class SocialService:
                             "social_sequence_preflight_failed category=%s", type(exc).__name__
                         )
                         await self.receipts.stop_sequence(parent.operation_id, type(exc).__name__)
-                        if args.get("emoji") and self.emoji_delivery is not None:
+                        if args.get("emoji"):
                             self.emoji_delivery.wake()
                         break
                     if result.get("status") != OperationStatus.SUCCEEDED.value:
@@ -881,7 +884,7 @@ class SocialService:
                 # A host shutdown ends this dispatch loop, not the accepted
                 # illustration. Unsent child receipts remain prepared.
                 await self.receipts.stop_sequence(parent.operation_id, "CancelledError")
-                if args.get("emoji") and self.emoji_delivery is not None:
+                if args.get("emoji"):
                     self.emoji_delivery.wake()
                 raise
         result = await self._sequence_result(parent, context)
@@ -933,12 +936,12 @@ class SocialService:
                 prior = await self.receipts.find(context.turn_id, context.call_id)
                 replay = await self._replay_receipt(args, context, prior)
                 if replay is not None:
-                    if message.emoji is not None and self.emoji_delivery is not None:
+                    if message.emoji is not None:
                         illustration = await self._replay_emoji(args, context)
                         if illustration is not None:
                             replay["emoji"] = illustration
                     return replay
-                if message.emoji is not None and self.emoji_delivery is not None:
+                if message.emoji is not None:
                     illustration = await self._replay_emoji(args, context)
                     if illustration is not None and not message.text.strip():
                         return {
@@ -1067,15 +1070,10 @@ class SocialService:
             emoji_source = None
             emoji_error = None
             if deferred_only:
-                if self.emoji_delivery is None:
-                    emoji_error = "emoji_delivery_unavailable"
-                else:
-                    try:
-                        emoji_source = await self.emoji_delivery.source(context, route)
-                    except Exception as exc:
-                        emoji_error = (
-                            str(exc) if isinstance(exc, SocialError) else type(exc).__name__
-                        )
+                try:
+                    emoji_source = await self.emoji_delivery.source(context, route)
+                except Exception as exc:
+                    emoji_error = str(exc) if isinstance(exc, SocialError) else type(exc).__name__
                 if emoji_source is not None:
                     emoji_source["reply_to_event_id"] = args.get("reply_to_event_id")
                 illustration = await self._admit_emoji(
@@ -1097,10 +1095,8 @@ class SocialService:
                     }
                 message = message.model_copy(update={"artifact_id": UUID(published["artifact_id"])})
             if message.artifact_id is not None:
-                if self.workspace is None:
-                    raise SocialError("artifact_transport_unavailable")
                 metadata, artifact_bytes = await asyncio.to_thread(
-                    self.workspace.read_bytes, str(message.artifact_id)
+                    self.workspace_service.store.read_bytes, str(message.artifact_id)
                 )
                 if not metadata["immutable"]:
                     raise SocialError("artifact_not_immutable")
@@ -1159,7 +1155,7 @@ class SocialService:
         source: dict[str, Any] | None,
         error: str | None,
     ) -> dict[str, Any]:
-        if source is not None and self.emoji_delivery is not None:
+        if source is not None:
             try:
                 return await self.emoji_delivery.admit(
                     prepared=self.emoji_delivery.prepare_admission(args, context, target, source)
@@ -1190,7 +1186,6 @@ class SocialService:
     async def _replay_emoji(
         self, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any] | None:
-        assert self.emoji_delivery is not None
         try:
             return await self.emoji_delivery.replay(args, context)
         except SQLAlchemyError:
@@ -1257,7 +1252,6 @@ class SocialService:
         )
         prepared_emoji = None
         if emoji_request is not None and context.sequence_part_index in {None, 0}:
-            assert self.emoji_delivery is not None
             emoji_arguments, emoji_context = emoji_request
             source = await self.emoji_delivery.source(emoji_context, route)
             source["after_operation_id"] = context.parent_operation_id or receipt.operation_id
@@ -1270,7 +1264,6 @@ class SocialService:
             async with self.database.immediate_session() as session:
                 await self._validate_person_context(context, session=session)
                 if context.deferred_emoji_id is not None:
-                    assert self.emoji_delivery is not None
                     await self.emoji_delivery.validate_claim(
                         session, context.deferred_emoji_id, target, route
                     )
@@ -1362,7 +1355,6 @@ class SocialService:
                 )
                 await self._validate_reply_route(session, context, target, route)
                 if prepared_emoji is not None:
-                    assert self.emoji_delivery is not None
                     illustration = await self.emoji_delivery.admit(
                         prepared=prepared_emoji, session=session
                     )
@@ -1404,7 +1396,7 @@ class SocialService:
                 destination_kind=target.kind,
             )
         finally:
-            if emoji_request is not None and self.emoji_delivery is not None:
+            if emoji_request is not None:
                 self.emoji_delivery.wake()
         result = await self._receipt_result(completed, context)
         if illustration is not None:

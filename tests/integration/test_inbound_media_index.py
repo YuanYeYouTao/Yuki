@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from tests.integration import test_telegram_runtime as native
 from tests.integration.test_telegram_runtime import telegram_env  # noqa: F401
+from tests.support.service_dependencies import workspace_service
 
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 
@@ -96,7 +97,6 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
     from yuki.conversation.media_service import ConversationMediaService
     from yuki.services.image_preprocessor import ImagePreprocessor
     from yuki.services.media_resolver import MediaResolver
-    from yuki.workspace.service import WorkspaceService
     from yuki.workspace.store import WorkspaceStore
 
     env = telegram_env
@@ -127,7 +127,7 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
         ImagePreprocessor(),
         gateway_registry=env.gateway.registry,
     )
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
+    workspace = workspace_service(WorkspaceStore(tmp_path / "artifacts"))
     workspace.conversation_media = service
     env.harness.processor._conversation_media = service
     release = asyncio.Event()

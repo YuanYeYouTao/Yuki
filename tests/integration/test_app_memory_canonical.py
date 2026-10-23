@@ -6,6 +6,7 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
+from tests.support.service_dependencies import tool_dependencies
 from tests.unit.test_app_messages import admin as admin
 from tests.unit.test_app_messages import app_env as app_env
 from tests.unit.test_app_messages import drain
@@ -73,6 +74,7 @@ async def test_app_memory_write_search_detail_and_correction_keep_original_perso
         ledger=ledger,
         memories=facts,
         memory_mutations=mutations,
+        **tool_dependencies(database, make_settings(database.url)),
     )
     created = (
         await tools.execute(

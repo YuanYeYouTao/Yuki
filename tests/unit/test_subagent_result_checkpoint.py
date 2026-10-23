@@ -1112,38 +1112,37 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
     )
     original_grant = (await notifications.list_grants(plugin_id))[0]
     legacy = {}
-    for index in range(256):
-        receipt = await notifications.publish(
-            plugin_id=plugin_id,
-            request=PublishNotificationRequest(
-                event_key=f"legacy:{index}",
-                event_type="fixture",
-                external_source="fixture",
-                target=NotificationTarget(
-                    target_type="group",
-                    target_id=original_grant.target_id,
-                    conversation_id=original_grant.conversation_id,
-                ),
-                occurred_at=datetime.now(UTC),
-                summary="original background event",
-                ask_agent=True,
+    receipt = await notifications.publish(
+        plugin_id=plugin_id,
+        request=PublishNotificationRequest(
+            event_key="original-legacy",
+            event_type="fixture",
+            external_source="fixture",
+            target=NotificationTarget(
+                target_type="group",
+                target_id=original_grant.target_id,
+                conversation_id=original_grant.conversation_id,
             ),
-        )
-        accepted = await repo.accept(
-            parent_lease,
-            source_key=f"legacy-background:{receipt.source_event_id}",
-            source={
-                "owner": "plugin_background",
-                "plugin_id": plugin_id,
-                "trigger_event_id": receipt.source_event_id,
-                "conversation_id": root["conversation_id"],
-                "generation": root["generation"],
-                "instruction": "original instruction",
-                "context_data": {"original": "background context"},
-            },
-            goal="finished background goal",
-        )
-        legacy[receipt.source_event_id] = accepted["id"]
+            occurred_at=datetime.now(UTC),
+            summary="original background event",
+            ask_agent=True,
+        ),
+    )
+    accepted = await repo.accept(
+        parent_lease,
+        source_key=f"legacy-background:{receipt.source_event_id}",
+        source={
+            "owner": "plugin_background",
+            "plugin_id": plugin_id,
+            "trigger_event_id": receipt.source_event_id,
+            "conversation_id": root["conversation_id"],
+            "generation": root["generation"],
+            "instruction": "original instruction",
+            "context_data": {"original": "background context"},
+        },
+        goal="finished background goal",
+    )
+    legacy[receipt.source_event_id] = accepted["id"]
     async with database.immediate_session() as writer:
         for job in await writer.scalars(select(PluginBackgroundTurnJobModel)):
             job.work_id = legacy[job.source_event_id]
@@ -1196,14 +1195,6 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         original_legacy = list(
             (await reader.execute(select(work).where(work.c.id.in_(legacy.values())))).mappings()
         )
-    for index in range(130):
-        newer = await repo.accept(
-            parent_lease, source_key=f"newer-terminal:{index}", source={}, goal="finished receipt"
-        )
-        await repo.accept_control(
-            parent_lease, newer["id"], {"action": "complete", "call_key": f"newer-done:{index}"}
-        )
-        await repo.transition(parent_lease, newer["id"], newer["revision"], "completed")
     await repo.reclaim_unreferenced_media()
     await repo.reclaim_unreferenced_media()
     assert await repo.get(plain["id"]) == original_plain

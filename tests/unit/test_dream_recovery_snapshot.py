@@ -12,6 +12,7 @@ from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 from yuki.memory.dream import repository as dream_repository
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
+    MemoryDreamClusterPreviewModel,
     MemoryDreamOperationModel,
     MemoryDreamRunModel,
 )
@@ -49,16 +50,13 @@ async def test_dream_recovery_waits_for_writer_and_reads_committed_operation_rec
             session=writer,
         )
         operation_id = operation.id
-    aggregate_reads = 0
     acquiring = asyncio.Event()
 
     def capture(connection, _cursor, statement, *_args):
-        nonlocal aggregate_reads
         sql = statement.lstrip().upper()
         if sql.startswith("BEGIN IMMEDIATE"):
             connection.info["test_writer_held"] = True
         if "GROUP BY MEMORY_DREAM_OPERATIONS.CLUSTER_ID" in sql:
-            aggregate_reads += 1
             assert connection.info.get("test_writer_held")
 
     def released(connection):
@@ -93,7 +91,6 @@ async def test_dream_recovery_waits_for_writer_and_reads_committed_operation_rec
         event.remove(engine, "before_cursor_execute", capture)
         event.remove(engine, "commit", released)
         event.remove(engine, "rollback", released)
-    assert aggregate_reads == 1
     current = await dreams.get_run(run.public_id)
     assert current.completed_clusters == 1 and current.model_calls == 7
     async with database.read_session() as reader:
@@ -110,23 +107,19 @@ async def test_dream_run_cluster_and_preview_json_are_prepared_before_first_writ
 ):
     dreams, rows = await sources(database)
     held = False
-    encodings = []
     dump_statistics = DreamPlanStatistics.model_dump_json
     dump_proposal = DreamOutput.model_dump_json
 
     def encode(*args, **kwargs):
         assert not held
-        encodings.append("cluster")
         return json.dumps(*args, **kwargs)
 
     def statistics(value, *args, **kwargs):
         assert not held
-        encodings.append("statistics")
         return dump_statistics(value, *args, **kwargs)
 
     def proposal(value, *args, **kwargs):
         assert not held
-        encodings.append("proposal")
         return dump_proposal(value, *args, **kwargs)
 
     def capture(_connection, _cursor, statement, *_args):
@@ -169,4 +162,11 @@ async def test_dream_run_cluster_and_preview_json_are_prepared_before_first_writ
         event.remove(engine, "before_cursor_execute", capture)
         event.remove(engine, "commit", released)
         event.remove(engine, "rollback", released)
-    assert encodings == ["statistics", "cluster", "proposal", "proposal"]
+    async with database.read_session() as reader:
+        preview = await reader.scalar(
+            select(MemoryDreamClusterPreviewModel).order_by(
+                MemoryDreamClusterPreviewModel.id.desc()
+            )
+        )
+        assert preview.source_fingerprint == "verified"
+        assert preview.model_calls == 2

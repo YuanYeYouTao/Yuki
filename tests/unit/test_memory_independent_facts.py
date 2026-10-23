@@ -128,10 +128,6 @@ async def test_upgrade_preserves_rows_and_allows_independent_same_key(tmp_path, 
             canonical_schema_revision(),
         )
         assert db.execute("SELECT * FROM memory_facts").fetchall() == before
-        indexes = {
-            row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='index'")
-        }
-        assert not any(name.startswith("uq_memory_facts_active_canonical_") for name in indexes)
         db.execute(sql, values)
         assert db.execute(
             "SELECT COUNT(*) FROM memory_facts WHERE memory_key='same-key'"

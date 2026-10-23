@@ -207,7 +207,7 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
     env.service.runtime_config = chat._runtime_config
     bind_main_contract(harness, tmp_path)
     outputs = []
-    if work_mode in {"unfinished", "write"}:
+    if work_mode == "unfinished":
         outputs.append(
             native_response(
                 {
@@ -226,18 +226,14 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
             )
         )
     send_args = {"text": "已确认送达的消息" if not native_event else "开始查询，稍后给结果。"}
-    if work_mode == "failed":
-        send_args["text"] = ""
     outputs.append(
         native_response(
             {
                 "type": "function_call",
                 "id": "fc-send",
                 "call_id": "original-send",
-                "name": "update_short_state" if work_mode == "write" else "send",
-                "arguments": json.dumps(
-                    {"slot": 1, "text": "write survived"} if work_mode == "write" else send_args
-                ),
+                "name": "send",
+                "arguments": json.dumps(send_args),
             }
         )
     )
@@ -263,19 +259,6 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
             ),
         )
     )
-    if work_mode == "incomplete":
-        outputs[-1]["status"] = "incomplete"
-        outputs[-1]["incomplete_details"] = {"reason": "max_output_tokens"}
-    if work_mode == "unknown":
-        original_gateway = env.bot.call_api
-
-        async def interrupted_send(action, **params):
-            response = await original_gateway(action, **params)
-            if action.startswith("send_"):
-                raise RuntimeError("fixture unknown send outcome")
-            return response
-
-        env.bot.call_api = interrupted_send
     client, wire = install_native_response_wire(harness, outputs)
     chat.runtime.runner._models._invocations = ModelInvocationRepository(database)
     sender = MemorySender()
@@ -302,26 +285,17 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
     assert len(wire) == len(outputs)
     assert all(payload["tools"] == wire[0]["tools"] for payload in wire)
     assert any(tool["type"] == "web_search" for tool in wire[0]["tools"])
-    assert len([action for action, _ in env.bot.calls if action.startswith("send_")]) == (
-        0 if work_mode in {"failed", "write"} else 1
-    )
+    assert len([action for action, _ in env.bot.calls if action.startswith("send_")]) == 1
     async with database.read_session() as reader:
         invocations = list(await reader.scalars(select(ModelInvocationModel).limit(5)))
         rows = list(await reader.execute(select(work.c.state, work.c.model_requests).limit(2)))
     assert len(invocations) == len(outputs)
     assert sum(row.physical_request_count for row in invocations) == len(outputs)
     assert sum(row.total_tokens for row in invocations) == len(outputs) * 13
-    if work_mode == "write":
-        write_receipts = [
-            item for item in wire[-1]["input"] if item.get("type") == "function_call_output"
-        ]
-        assert json.loads(write_receipts[-1]["output"])["ok"] is True, write_receipts[-1]
-    if work_mode in {"unfinished", "write"}:
+    if work_mode == "unfinished":
         assert rows == [("failed" if native_event else "completed", 3)]
         assert not sender.messages
-        if work_mode == "write":
-            assert chat.runtime.runner.main_contract.state.snapshot()[0]["text"] == "write survived"
-    elif native_event or work_mode in {"failed", "unknown", "write", "incomplete"}:
+    elif native_event:
         assert result.reason == "llm_failure" and result.sent_messages == 0
         assert not sender.messages
         assert not rows
@@ -735,22 +709,16 @@ async def test_native_only_complete_keeps_real_checkpoint_usage_and_http_shape(k
         assert wire[0].get("tools") == payload.get("tools")
 
 
-@pytest.mark.parametrize("kind", [OpenAIResponsesProvider])
 @pytest.mark.parametrize("with_native", [False, True])
-@pytest.mark.parametrize("same_arguments", [False])
-async def test_duplicate_local_ids_are_not_executable_and_keep_native_result(
-    kind, with_native, same_arguments
-):
-    body = native_reply(kind, duplicate=True)
+async def test_duplicate_local_ids_are_not_executable_and_keep_native_result(with_native):
+    body = native_reply(OpenAIResponsesProvider, duplicate=True)
     if not with_native:
         body["output"] = [item for item in body["output"] if item["type"] != "web_search_call"]
-    if same_arguments:
-        body["output"][-1]["arguments"] = body["output"][-2]["arguments"]
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/",
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body)),
     ) as client:
-        provider = kind(
+        provider = OpenAIResponsesProvider(
             base_url="https://wire.invalid",
             api_key="synthetic",
             timeout_seconds=1,
@@ -770,31 +738,17 @@ async def test_duplicate_local_ids_are_not_executable_and_keep_native_result(
         assert response.native_tool_events == ()
     calls = [item for item in response.continuation.payload if item["type"] == "function_call"]
     assert len(calls) == 2 and calls[0]["call_id"] == calls[1]["call_id"]
-    assert (calls[0]["arguments"] == calls[1]["arguments"]) is same_arguments
+    assert calls[0]["arguments"] != calls[1]["arguments"]
 
 
 @pytest.mark.parametrize("kind", [AnthropicMessagesProvider, GeminiProvider])
-@pytest.mark.parametrize("same_arguments", [False])
-@pytest.mark.parametrize("signed", [True])
-async def test_native_duplicate_claude_gemini_preserves_paid_raw_state(
-    kind, same_arguments, signed
-):
+async def test_native_duplicate_claude_gemini_preserves_paid_raw_state(kind):
     body = native_reply(kind, duplicate=True)
-    if kind is AnthropicMessagesProvider:
-        blocks = body["content"]
-        if not signed:
-            blocks.pop(0)
-        calls = [block for block in blocks if block["type"] == "tool_use"]
-        if same_arguments:
-            calls[1]["input"] = calls[0]["input"].copy()
-    else:
-        blocks = body["candidates"][0]["content"]["parts"]
-        if not signed:
-            for block in blocks:
-                block.pop("thoughtSignature", None)
-        calls = [block["functionCall"] for block in blocks if "functionCall" in block]
-        if same_arguments:
-            calls[1]["args"] = calls[0]["args"].copy()
+    blocks = (
+        body["content"]
+        if kind is AnthropicMessagesProvider
+        else body["candidates"][0]["content"]["parts"]
+    )
     wire = []
 
     def transport(request):
@@ -1216,144 +1170,70 @@ async def test_native_transport_unknown_fails_original_activation_without_automa
     await repository.release(lease)
 
 
-@pytest.mark.parametrize("kind", [OpenAIResponsesProvider])
-@pytest.mark.parametrize(
-    "output,failed",
-    [
-        (
-            json.dumps(
-                {"ok": False, "error_code": "tool_input_validation_failed", "executed": False}
-            ),
-            True,
+async def test_responses_wire_preserves_original_result_payloads_and_call_ids():
+    outputs = [
+        json.dumps({"ok": False, "error_code": "tool_input_validation_failed", "executed": False}),
+        json.dumps(
+            {
+                "ok": True,
+                "process": {"succeeded": False, "exit_code": 127},
+                "data": {"status": "failed"},
+                "mutation_committed": True,
+            }
         ),
-        (
-            json.dumps(
-                {
-                    "ok": True,
-                    "process": {"succeeded": False, "exit_code": 127},
-                    "data": {"status": "failed"},
-                    "mutation_committed": True,
-                }
-            ),
-            True,
+        json.dumps({"ok": True, "data": {"output": "failed: example text"}}),
+        json.dumps(
+            {"ok": True, "data": {"exit_code": 127}, "uncertain": True, "mutation_committed": None}
         ),
-        (json.dumps({"ok": True, "data": {"output": "failed: example text"}}), False),
-        (
-            json.dumps(
-                {
-                    "ok": True,
-                    "data": {"exit_code": 127},
-                    "uncertain": True,
-                    "mutation_committed": None,
-                }
-            ),
-            False,
-        ),
-        ("failed: this is only returned prose", False),
-    ],
-)
-async def test_real_http_failure_projection_preserves_transport_and_effect_facts(
-    kind, output, failed
-):
+        "failed: this is only returned prose",
+    ]
+    calls = [
+        ToolCall(f"original-{i}", ToolFunction("terminal_read", "{}")) for i in range(len(outputs))
+    ]
     wire = []
 
-    def transport(req):
-        wire.append(json.loads(req.content))
-        if kind is AnthropicMessagesProvider:
-            body = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "observed"}]}
-        elif kind is GeminiProvider:
-            body = {
-                "candidates": [
-                    {"finishReason": "STOP", "content": {"parts": [{"text": "observed"}]}}
-                ]
-            }
-        elif kind is OpenAICompatibleProvider:
-            body = {"choices": [{"finish_reason": "stop", "message": {"content": "observed"}}]}
-        else:
-            body = {
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "id": "answer",
-                        "content": [{"type": "output_text", "text": "observed"}],
-                    }
-                ],
-            }
-        return httpx.Response(200, json=body)
+    def transport(request):
+        wire.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json=native_response(
+                {
+                    "type": "message",
+                    "id": "answer",
+                    "content": [{"type": "output_text", "text": "observed"}],
+                }
+            ),
+        )
 
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
     ) as client:
-        adapter = kind(
+        adapter = OpenAIResponsesProvider(
             base_url="https://wire.invalid",
             api_key="synthetic",
             timeout_seconds=1,
             max_retries=0,
             client=client,
         )
-        initial = (ChatMessage("system", "fixed"), ChatMessage("user", "inspect"))
-        call = ToolCall("original-call", ToolFunction("terminal_read", "{}"))
-        transcript = TurnTranscript(initial)
-        if kind is OpenAICompatibleProvider:
-            transcript.append(ChatMessage("assistant", tool_calls=(call,)))
-        else:
-            if kind is AnthropicMessagesProvider:
-                native = (
-                    {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "thinking",
-                                "thinking": "private",
-                                "signature": "original-signature",
-                            },
-                            {
-                                "type": "tool_use",
-                                "id": call.id,
-                                "name": call.function.name,
-                                "input": {},
-                            },
-                        ],
-                    },
-                )
-            elif kind is GeminiProvider:
-                native = (
-                    {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "name": call.function.name,
-                                    "args": {},
-                                    "id": call.id,
-                                },
-                                "thoughtSignature": "original-signature",
-                            }
-                        ],
-                    },
-                )
-            else:
-                native = (
-                    {"type": "reasoning", "id": "reason", "encrypted_content": "original-opaque"},
-                    {
-                        "type": "function_call",
-                        "id": "fc-original",
-                        "call_id": call.id,
-                        "name": call.function.name,
-                        "arguments": "{}",
-                    },
-                )
-            transcript.accept(
-                ProviderContinuation(
-                    adapter.provider_name,
-                    adapter.protocol
-                    if kind in (GeminiProvider, AnthropicMessagesProvider)
-                    else "responses",
-                    native,
-                )
-            )
-        transcript.append_result(call.id, output)
+        transcript = TurnTranscript(
+            (ChatMessage("system", "fixed"), ChatMessage("user", "inspect"))
+        )
+        native = (
+            {"type": "reasoning", "id": "reason", "encrypted_content": "original-opaque"},
+            *(
+                {
+                    "type": "function_call",
+                    "id": f"fc-{call.id}",
+                    "call_id": call.id,
+                    "name": call.function.name,
+                    "arguments": "{}",
+                }
+                for call in calls
+            ),
+        )
+        transcript.accept(ProviderContinuation(adapter.provider_name, "responses", native))
+        for call, output in zip(calls, outputs, strict=True):
+            transcript.append_result(call.id, output)
         restored = decode_transcript(encode_transcript(transcript)).request()
         await adapter.complete(
             ChatRequest(
@@ -1363,31 +1243,11 @@ async def test_real_http_failure_projection_preserves_transport_and_effect_facts
                 continuation_items=restored.items,
             )
         )
-    payload = wire[0]
-    if kind is GeminiProvider:
-        value = payload["contents"][-1]["parts"][0]["functionResponse"]
-        assert value["id"] == call.id
-        assert value["response"] == {"error" if failed else "output": output}
-    elif kind is AnthropicMessagesProvider:
-        value = payload["messages"][-1]["content"][0]
-        assert value["tool_use_id"] == call.id
-        assert value["content"] == output
-        assert value.get("is_error", False) is failed
-    elif kind is OpenAICompatibleProvider:
-        assert payload["messages"][-1] == {
-            "role": "tool",
-            "content": output,
-            "tool_call_id": call.id,
-        }
-    else:
-        value = payload["input"][-1]
-        assert value == {"type": "function_call_output", "call_id": call.id, "output": output}
-    if kind is not OpenAICompatibleProvider:
-        assert (
-            "original-signature"
-            if kind in (GeminiProvider, AnthropicMessagesProvider)
-            else "original-opaque"
-        ) in json.dumps(payload)
+    assert [item for item in wire[0]["input"] if item.get("type") == "function_call_output"] == [
+        {"type": "function_call_output", "call_id": call.id, "output": output}
+        for call, output in zip(calls, outputs, strict=True)
+    ]
+    assert "original-opaque" in json.dumps(wire[0])
 
 
 async def test_model_stats_summary_preserves_weighted_latency_usage_and_historical_tasks(database):
@@ -1424,9 +1284,6 @@ async def test_model_stats_summary_preserves_weighted_latency_usage_and_historic
     async with database.immediate_session() as writer:
         await writer.execute(insert(ModelInvocationModel), rows)
     stats, tasks, profiles = await repository.stats_summary()
-    assert stats == await repository.stats()
-    assert tasks == await repository.stats_by_task()
-    assert profiles == await repository.stats_by_profile()
     assert stats.average_latency_seconds == 7.4
     assert stats.unknown_usage == 5 and stats.failures == 4
     assert tasks["planner"].average_latency_seconds == 1.0

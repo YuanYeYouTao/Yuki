@@ -10,11 +10,8 @@ from tests.integration.test_feishu_runtime import drain, update
 from tests.integration.test_feishu_runtime import feishu_env as feishu_env
 
 from yuki.domain.messages import AttachmentKind, OutboundMessage
-from yuki.emoji.library import EmojiLibrary
 from yuki.gateway.providers.feishu_ingress import FeishuSender, normalize_message
 from yuki.persistence.models import ChatEventModel
-from yuki.workspace.service import WorkspaceService
-from yuki.workspace.store import WorkspaceStore
 
 
 def client(app_id="cli_test", platform="feishu"):
@@ -66,28 +63,16 @@ def test_media_uses_original_message_resource_locator(message_type, content, kin
     }
 
 
-@pytest.mark.parametrize("message_type", ["image", "sticker"])
-async def test_inbound_image_and_native_sticker_do_not_start_library_collection(
-    tmp_path, message_type
-):
-    incoming = update(message_type=message_type)
-    incoming["event"]["message"]["content"] = json.dumps(
-        {"image_key": "img_original"} if message_type == "image" else {"file_key": "sticker_key"}
-    )
+def test_native_sticker_preserves_provenance_without_a_library_original():
+    incoming = update(message_type="sticker")
+    incoming["event"]["message"]["content"] = json.dumps({"file_key": "sticker_key"})
     message = normalize_message(incoming["event"], client())
-    library = EmojiLibrary(WorkspaceService(WorkspaceStore(tmp_path / "workspace")))
-    library.collect_message = AsyncMock(side_effect=AssertionError("No automatic collection"))
     assert message is not None
-    library.submit(message, source_event_id=1)
-    assert not library._tasks
-    library.collect_message.assert_not_called()
-    if message_type == "sticker":
-        assert not message.attachments
-        assert message.segments[-1] == {
-            "type": "feishu_sticker",
-            "data": {"file_key": "sticker_key"},
-        }
-    await library.close()
+    assert not message.attachments
+    assert message.segments[-1] == {
+        "type": "feishu_sticker",
+        "data": {"file_key": "sticker_key"},
+    }
 
 
 def test_native_mentions_preserve_repetition_and_literal_at():

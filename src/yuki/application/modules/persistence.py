@@ -96,7 +96,6 @@ class PersistenceModule:
         memory_context = MemoryContextService(
             query_builder=MemoryQueryBuilder(MemoryTargetResolver(people)),
             retriever=MemoryRetriever(repository=memory_repository, lexical_index=memory_index),
-            facts=memories,
         )
         scoped_events = ScopedEventLedgerUnitOfWork(database)
         ledger = EventLedgerRepository(database)

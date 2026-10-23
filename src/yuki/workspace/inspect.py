@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import replace
-from datetime import UTC, datetime
 from typing import Any
 
 from yuki.admin.models import VisionRuntimeConfig
@@ -102,7 +101,6 @@ class WorkspaceInspector:
                     mode = "image"
             except (ImagePreprocessingError, VisionProcessingError) as exc:
                 raise WorkspaceError(exc.code) from exc
-            expires_at = metadata.get("expires_at")
             images = tuple(
                 replace(
                     image,
@@ -110,9 +108,6 @@ class WorkspaceInspector:
                     workspace_path=metadata.get("path"),
                     version=digest,
                     content_hash=digest,
-                    expires_at=datetime.fromtimestamp(expires_at, UTC).isoformat()
-                    if expires_at is not None
-                    else None,
                 )
                 for image in images
             )

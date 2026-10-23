@@ -178,8 +178,8 @@ async def test_semantic_order_and_streamed_health_keep_stale_and_scan_coverage(
     assert health["stale_embedding_count"] == 2
 
 
-@pytest.mark.parametrize("count", [1, 20, 129])
-async def test_complete_pages_hashes_outside_writer(database, monkeypatch, count):
+async def test_complete_pages_hashes_outside_writer(database, monkeypatch):
+    count = 129
     jobs = await _jobs(database, count)
     assert await jobs.reconcile() == count
     claimed = await jobs.claim(limit=count)

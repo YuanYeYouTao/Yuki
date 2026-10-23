@@ -24,6 +24,7 @@ def test_offline_reader_closes_its_native_connection(database, tmp_path, monkeyp
         assert verify(path, tmp_path) == {"protocol_objects": 0, "tool_artifacts": 0}
     else:
         assert export_candidates(path, ())["candidates"] == []
-    assert len(connections) == 1
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        connections[0].execute("SELECT 1")
+    assert connections
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")

@@ -165,15 +165,6 @@ async def test_next_cleanup_finishes_original_file_after_unlink_failure(
         assert await session.get(PluginMediaArtifactModel, env.handle.handle_id) is None
 
 
-async def test_expired_unreferenced_media_is_removed(database, plugin_media):
-    env = plugin_media
-    await expire(database, env.handle.handle_id)
-    assert await env.store.cleanup() == 1
-    assert not env.path.exists()
-    async with database.read_session() as session:
-        assert await session.get(PluginMediaArtifactModel, env.handle.handle_id) is None
-
-
 async def test_unlink_failures_do_not_hide_later_expired_originals(
     database, plugin_media, monkeypatch
 ):

@@ -2,7 +2,6 @@
 
 from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy import insert
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.unit.test_memory_v2 import _append_event
@@ -13,15 +12,13 @@ from yuki.memory.service import MemoryFactService
 from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
-    MemoryFactModel,
     MemoryToolReceiptModel,
 )
 from yuki.persistence.repositories import EventLedgerRepository
 
 
-@pytest.mark.parametrize("extra_facts", [0, 300])
 async def test_missing_writer_counts_use_current_sql_readability_without_evidence_dtos(
-    database, monkeypatch, extra_facts
+    database, monkeypatch
 ):
     repository = MemoryFactRepository(database)
     facts = MemoryFactService(repository)
@@ -47,22 +44,11 @@ async def test_missing_writer_counts_use_current_sql_readability_without_evidenc
             excerpt="original source",
         ),
     )
-    async with database.read_session() as reader:
-        row = await reader.get(MemoryFactModel, first.id)
-        template = {column.name: getattr(row, column.name) for column in row.__table__.columns}
-    template.pop("id")
     ids = [first.id]
     async with database.immediate_session() as writer:
         hidden_row = await writer.get(ChatEventModel, hidden.id)
         hidden_row.utterance_fingerprint = "a" * 64
         hidden_row.suppression_status = "duplicate"
-        if extra_facts:
-            ids.extend(
-                await writer.scalars(
-                    insert(MemoryFactModel).returning(MemoryFactModel.id),
-                    [dict(template, memory_key=f"count:{index}") for index in range(extra_facts)],
-                )
-            )
         await writer.execute(
             insert(MemoryEvidenceModel),
             [

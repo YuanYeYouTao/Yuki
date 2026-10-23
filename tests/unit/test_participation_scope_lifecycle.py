@@ -45,14 +45,14 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
                     session, str(2000 + index), name=f"scope-{index}", require_mention=True
                 )
         for index in range(32):
-            event = await _event_and_route(database, host.app.ledger, group=str(2000 + index))
+            event = await _event_and_route(database, host.ledger, group=str(2000 + index))
             await host._session(await host._scene(event.canonical_conversation_id))
         originals = dict(host._sessions)
         task = asyncio.create_task(host.tick())
         await started.wait()
         assert len(entered) == 2
         assert all(item.pins == 1 for item in originals.values())
-        fresh = await _event_and_route(database, host.app.ledger, group="2999")
+        fresh = await _event_and_route(database, host.ledger, group="2999")
         message = _message(fresh)
         await host.legacy_allowed(message)
         current = await host._session(await host._scene(fresh.canonical_conversation_id))
@@ -106,7 +106,7 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
 async def test_generation_retirement_preserves_a_held_controller(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        event = await _event_and_route(database, host.app.ledger)
+        event = await _event_and_route(database, host.ledger)
         scene = await host._scene(event.canonical_conversation_id)
         original = await host._session(scene)
         original.pins += 1
@@ -130,9 +130,9 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
 ):
     host, _ = await _host(database, tmp_path, observer=True)
     settings = make_settings(database.url, conversation_semantic_participation_enabled=True)
-    host.app.settings = settings
+    host.settings = settings
     runtime_config = RuntimeConfigService(settings=settings, database=database)
-    host.app.runtime_config = runtime_config
+    host.runtime_config = runtime_config
     requested_groups = []
     original_snapshot = runtime_config.snapshot
 
@@ -142,7 +142,7 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
 
     runtime_config.snapshot = snapshot
     try:
-        event = await _event_and_route(database, host.app.ledger)
+        event = await _event_and_route(database, host.ledger)
         item = await host._session(await host._scene(event.canonical_conversation_id))
         await host._hydrate(item)
         binding = await host._binding(item)
@@ -217,10 +217,10 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
 async def test_disabled_scope_preserves_completed_work_and_original_feedback(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=True)
     settings = make_settings(database.url, conversation_semantic_participation_enabled=True)
-    host.app.settings = settings
-    host.app.runtime_config = RuntimeConfigService(settings=settings, database=database)
+    host.settings = settings
+    host.runtime_config = RuntimeConfigService(settings=settings, database=database)
     try:
-        event = await _event_and_route(database, host.app.ledger)
+        event = await _event_and_route(database, host.ledger)
         item = await host._session(await host._scene(event.canonical_conversation_id))
         await host._hydrate(item)
         binding = await host._binding(item)

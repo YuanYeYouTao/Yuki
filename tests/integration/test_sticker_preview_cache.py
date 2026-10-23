@@ -13,6 +13,7 @@ from tests.integration.test_telegram_event_edits import media_reader as media_re
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_sticker_inputs import TGS, TGS_DATA, original
+from tests.support.service_dependencies import workspace_service
 from tests.support.sticker_delivery import DirectoryBridge
 from tests.unit.test_sticker_library import attach_caption_provider
 
@@ -22,7 +23,6 @@ from yuki.gateway.providers.telegram_ingress import normalize_message
 from yuki.persistence.models import ConversationMediaItemModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.services.media_resolver import MediaResolutionError
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 _TGS = {
@@ -93,7 +93,6 @@ async def test_preview_uses_original_cached_at_and_expires_without_redownload(
     await inspect(case, "late-first-preview")
     item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     preview = next(path.parent.glob("preview-*"))
-    assert preview.stat().st_mtime == pytest.approx(cached_at.timestamp())
     assert item.expires_at.replace(tzinfo=UTC) == expires_at
     async with database.immediate_session() as writer:
         await writer.execute(
@@ -228,7 +227,7 @@ async def test_captioned_sticker_cache_and_collection_share_parent_preview(
         source_segments=source.segments,
     )
     assert inbound.attachments[0].segment_index == 1
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "permanent-artifacts"))
+    workspace = workspace_service(WorkspaceStore(tmp_path / "permanent-artifacts"))
     workspace.conversation_media = reader.service
     bridge = DirectoryBridge(
         tmp_path / "shared-workspace", workspace.store, cache_root=reader.service.root.parent

@@ -155,14 +155,6 @@ def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path
             await asyncio.to_thread(command.upgrade, config, "0111")
             assert await snapshot() == original
             async with database.immediate_session() as writer:
-                sql = await writer.scalar(
-                    text(
-                        "SELECT group_concat(sql) FROM sqlite_master "
-                        "WHERE name IN ('memory_tool_receipts','memory_mutation_receipts')"
-                    )
-                )
-                assert "ck_memory_tool_receipts_source" not in sql
-                assert "ck_memory_mutation_trigger_source" not in sql
                 await insert_frozen(
                     writer,
                     "memory_tool_receipts",

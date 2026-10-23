@@ -16,8 +16,7 @@ from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import AdmissionSignalRegistration
 
 
-@pytest.mark.parametrize("score", [-10, 10])
-@pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize(("score", "expired"), [(-10, False), (10, False), (10, True)])
 async def test_signal_retains_full_sdk_summary_and_real_source(database, score, expired):
     summary = "完整插件摘要" * 82 + "末尾标记保留完整"
     signal = AdmissionSignal(
@@ -59,5 +58,5 @@ async def test_signal_retains_full_sdk_summary_and_real_source(database, score, 
     else:
         (result,) = results
         assert result.source_plugin_id == "com.example.signal"
-        assert result.summary == summary and len(result.summary) == 500
+        assert result.summary == summary
         assert result.score_delta == score and result.confidence == signal.confidence

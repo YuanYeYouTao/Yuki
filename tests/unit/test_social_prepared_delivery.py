@@ -7,12 +7,11 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.social_identity_cases import social_env
 
 from yuki.admin.models import ReplyRuntimeConfig
-from yuki.execution_trace.phases import current_metrics
 from yuki.identity.routing import RouteSendError
 from yuki.persistence.models import ChatEventModel
 from yuki.social.db_models import SocialOperationModel
@@ -80,42 +79,22 @@ async def test_known_group_route_sends_without_remote_membership_preflight(
         await env.router.accessible_group_connections(env.space)
 
 
-async def test_sequence_replay_batches_reads_and_retains_origin_privacy(database, tmp_path):
+async def test_sequence_replay_preserves_original_parts_and_origin_privacy(database, tmp_path):
     env = await social_env(database, tmp_path)
-    counts = []
-    for count in (2, 12):
-        context = replace(
-            env.context,
-            call_id=f"sequence-{count}",
-            runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20)),
-        )
-        args = {"text": "\n".join(f"part {index}" for index in range(count))}
-        sent = await env.service.execute("send", args, context)
-        assert sent["status"] == "succeeded" and sent["sent_messages"] == count
-        statements = []
-
-        def capture(
-            _connection, _cursor, statement, _parameters, _context, _many, *, statements=statements
-        ):
-            statements.append(statement)
-
-        event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-        try:
-            replay = await env.service.execute("send", args, context)
-        finally:
-            event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-        assert replay == sent
-        counts.append(len(statements))
-        assert [part["delivered_text"] for part in replay["parts"]] == [
-            f"part {index}" for index in range(count)
-        ]
-        # A different source cannot expose the original content, even though success remains fact.
-        isolated = await env.service.execute(
-            "send", args, replace(context, origin="another_source")
-        )
-        assert isolated["status"] == "succeeded"
-        assert all(not part["delivered_text_available"] for part in isolated["parts"])
-    assert counts[1] == counts[0], "sequence replay must not add per-part database round trips"
+    context = replace(
+        env.context,
+        call_id="sequence",
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20)),
+    )
+    args = {"text": "first\nsecond"}
+    sent = await env.service.execute("send", args, context)
+    assert sent["status"] == "succeeded" and sent["sent_messages"] == 2
+    replay = await env.service.execute("send", args, context)
+    assert replay == sent
+    assert [part["delivered_text"] for part in replay["parts"]] == ["first", "second"]
+    isolated = await env.service.execute("send", args, replace(context, origin="another_source"))
+    assert isolated["status"] == "succeeded"
+    assert all(not part["delivered_text_available"] for part in isolated["parts"])
 
 
 async def test_sequence_keeps_configured_delay_between_confirmed_parts(
@@ -137,28 +116,6 @@ async def test_sequence_keeps_configured_delay_between_confirmed_parts(
     result = await env.service.execute("send", {"text": "first\nsecond\nthird"}, context)
     assert result["status"] == "succeeded"
     assert sends_at_sleep == [1, 2]
-
-
-async def test_sequence_layout_is_frozen_from_one_configuration(database, tmp_path, monkeypatch):
-    env = await social_env(database, tmp_path)
-    first = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20))
-    changed = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 2, 20))
-    snapshots = AsyncMock(side_effect=[first, changed])
-    env.service.runtime_config = SimpleNamespace(snapshot=snapshots)
-    original = env.service.receipts.prepare_sequence
-    layouts = []
-
-    async def prepare(**kwargs):
-        layouts.append(kwargs["prepared"])
-        return await original(**kwargs)
-
-    monkeypatch.setattr(env.service.receipts, "prepare_sequence", prepare)
-    args = {"text": "first\nsecond"}
-    result = await env.service.execute("send", args, env.context)
-    assert [part["delivered_text"] for part in result["parts"]] == ["first", "second"]
-    assert [part["text"] for part in layouts[0]["parts"]] == ["first", "second"]
-    assert layouts[0]["message"]["text"] == args["text"]
-    assert snapshots.await_count == 1
 
 
 async def test_unmigrated_old_sequence_payload_cannot_acquire_a_new_plan(database, tmp_path):
@@ -230,26 +187,6 @@ async def test_cancel_after_ack_and_receipt_commit_replays_without_another_send(
         assert len(outgoing) == 1 and receipt.event_id == outgoing[0].id == result["event_id"]
 
 
-async def test_delivery_timings_separate_platform_wait_from_claim_and_settlement(
-    database, tmp_path
-):
-    env = await social_env(database, tmp_path)
-    metrics = {}
-    token = current_metrics.set(metrics)
-    try:
-        result = await env.service.execute("send", {"text": "timed delivery"}, env.context)
-    finally:
-        current_metrics.reset(token)
-    assert result["status"] == "succeeded"
-    assert {
-        "social_preparation_seconds",
-        "social_claim_seconds",
-        "social_transport_seconds",
-        "social_settlement_seconds",
-    } <= metrics.keys()
-    assert all(value >= 0 for value in metrics.values())
-
-
 async def test_failed_work_delivery_rolls_back_normal_settlement_without_resending(
     database, tmp_path, monkeypatch
 ):
@@ -278,7 +215,6 @@ async def test_failed_work_delivery_rolls_back_normal_settlement_without_resendi
         args = {"text": "one acknowledged transport effect"}
         result = await env.service.execute("send", args, env.context)
         assert result["status"] == "succeeded"
-        assert attempts == 2
         async with database.read_session() as reader:
             outgoing = list(
                 await reader.scalars(

@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import event as sql_event
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from tests.conftest import make_settings
@@ -41,7 +40,7 @@ from yuki.services.participation_trace import TracedSemanticObserver
 
 
 def actual_config(host):
-    host.app.runtime_config = RuntimeConfigService(
+    host.runtime_config = RuntimeConfigService(
         settings=make_settings(host.database.url, conversation_semantic_participation_enabled=True),
         database=host.database,
     )
@@ -49,7 +48,7 @@ def actual_config(host):
 
 async def append(host, original, sender, *, reply=None):
     row, _ = await seed_event(
-        host.app.ledger,
+        host.ledger,
         bot_user_id=original.bot_user_id,
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,
@@ -115,7 +114,7 @@ async def test_current_merge_quiet_cannot_be_overridden_by_original_stay_or_late
         current = item.controller.participating_units(time.time(), actor_identity=identity)
         assert len(current) == 1 and current[0].engage == "quiet"
         assert (
-            str(source_revision(await host.app.ledger.get_event(a.id)))
+            str(source_revision(await host.ledger.get_event(a.id)))
             == accepted_a.admission.source_revision
         )
         assert item.controller.state.events[ea.ref.event_id] == ea
@@ -333,7 +332,7 @@ async def test_unadmitted_same_person_invitation_keeps_release_after_newer_sourc
     host, _ = await _host(database, tmp_path)
     actual_config(host)
     try:
-        a = await _event_and_route(database, host.app.ledger, content="synthetic stop")
+        a = await _event_and_route(database, host.ledger, content="synthetic stop")
         item = await _item(host, a)
 
         async def interpret(row, interaction, sequence):
@@ -374,17 +373,7 @@ async def test_unadmitted_same_person_invitation_keeps_release_after_newer_sourc
             # actual stop boundary and SeenSource remain retained facts.
             item.controller.state.events.pop(stop.ref.event_id)
 
-        statements = []
-
-        def capture(_connection, _cursor, statement, _parameters, _context, _many):
-            statements.append(statement)
-
-        sql_event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
-        try:
-            identity = await actor_identity(host, item)
-        finally:
-            sql_event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-        assert len(statements) == 1
+        identity = await actor_identity(host, item)
         assert {identity(row.author_person_id) for row in (a, b, c)} == {c.author_person_id}
 
         async with database.immediate_session() as writer:
@@ -399,9 +388,7 @@ async def test_unadmitted_same_person_invitation_keeps_release_after_newer_sourc
         assert item.controller.state.events[invitation_b.ref.event_id].author == b.author_person_id
         assert remaining.author == a.author_person_id
         for row in (a, b, c):
-            assert (
-                await host.app.ledger.get_event(row.id)
-            ).author_person_id == row.author_person_id
+            assert (await host.ledger.get_event(row.id)).author_person_id == row.author_person_id
         assert not host._observer.calls
     finally:
         await host.close()

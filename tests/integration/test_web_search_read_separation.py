@@ -260,9 +260,7 @@ async def test_main_search_then_historical_read_then_social_send(
                 "explicit-read", ToolFunction("read_webpage", json.dumps({"url": old_url}))
             )
         elif index == 3:
-            call = ToolCall(
-                "original-send", ToolFunction("send", '{"text":"已保留搜索结果。"}')
-            )
+            call = ToolCall("original-send", ToolFunction("send", '{"text":"已保留搜索结果。"}'))
         else:
             return "完成。"
         return ChatResponse("", 0, tool_calls=(call,))
@@ -372,19 +370,3 @@ async def test_retired_source_rows_still_expire_with_cascading_sources(database,
     async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(WebSearchRunModel)) == 0
         assert await session.scalar(select(func.count()).select_from(WebSearchSourceModel)) == 0
-
-
-async def test_retired_search_settings_follow_existing_unknown_key_behavior(database, tmp_path):
-    case = await setup_run(database, tmp_path, mode="silent")
-    for key in ("web.extract_max_results", "web.source_max_runs_per_conversation"):
-        result = await case.chat._runtime_config.set_override(
-            key,
-            3,
-            scope_type="global",
-            scope_id="",
-            actor_user_id="9000",
-            trigger_message_id="original-admin-request",
-        )
-        assert not result.success and result.error_category == "unknown_key"
-    config = await case.chat._runtime_config.snapshot()
-    assert config.web.search_max_results > 0 and config.web.source_retention_days > 0

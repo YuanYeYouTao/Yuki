@@ -71,7 +71,7 @@ def test_snowluma_selection_prepares_only_its_real_credentials(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("profiles", ["", "external"])
-def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
+def test_new_setup_writes_selected_profiles_and_private_operator_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profiles: str
 ) -> None:
     root = Path(__file__).resolve().parents[2]
@@ -121,13 +121,7 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
     assert "person_id" not in operator
     assert len(environment["YUKI_CONTROL_OPERATOR_TOKEN"]) >= 32
     assert environment["YUKI_CONTROL_OPERATOR_TOKEN"] not in ui._output.getvalue()
-    assert not any(key.startswith("NAPCAT_") for key in environment)
-    assert not (paths.root / "data/setup/gateway-action.json").exists()
     assert not paths.restart_required.exists()
-    assert not any(
-        (paths.root / directory).exists()
-        for directory in ("napcat-data", "napcat-config", "napcat-plugins")
-    )
 
 
 def test_operator_setup_preserves_policy_and_credential(tmp_path: Path) -> None:
@@ -197,7 +191,6 @@ def test_config_change_preserves_unknown_environment_and_backs_up_originals(tmp_
     assert environment["EXTENSION_TOKEN"] == "private-extension"
     assert environment["NAPCAT_WEBUI_TOKEN"] == "private-legacy"
     assert paths.restart_required.read_text(encoding="utf-8") == "configuration-changed\n"
-    assert not (paths.root / "data/setup/gateway-action.json").exists()
 
 
 def test_snowluma_port_validation_uses_current_listeners() -> None:

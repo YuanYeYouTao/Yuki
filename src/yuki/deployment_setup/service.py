@@ -514,10 +514,6 @@ def commit_configuration(
     return backup
 
 
-def _truthy(value: str) -> bool:
-    return value.strip().casefold() in {"1", "true", "yes", "on"}
-
-
 def selected_gateway_providers(environment: Mapping[str, str]) -> tuple[str, ...]:
     """Return only explicitly selected bundled gateway profiles."""
 

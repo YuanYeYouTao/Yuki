@@ -176,8 +176,18 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
     assert (await repository.get(second)).generation == 2
     page = await ledger.query_history(conversation_id=state.id, keyword="needle", order="oldest")
     assert [row.id for row in page.events] == expected
-    assert await ledger.list_scope_recent(second, limit=20) == ()
-    assert [row.id for row in await ledger.list_scope_recent(first, limit=20)] == [original.id]
+    second_version, second_rows = await ledger.read_scope_context(second, limit=20)
+    first_version, first_rows = await ledger.read_scope_context(first, limit=20)
+    assert second_rows == ()
+    assert second_version.conversation_id == state.id and second_version.generation == 2
+    assert second_version.starts_after_event_id == event.id
+    assert not await ledger.read_version_matches(version)
+    assert await ledger.read_version_matches(second_version)
+    assert [row.id for row in first_rows] == [original.id]
+    assert first_version.conversation_id == original.canonical_conversation_id
+    assert first_version.generation == 1 and await ledger.read_version_matches(first_version)
+    delta_version, delta = await ledger.read_scope_delta(second, after_event_id=0)
+    assert delta_version == second_version and delta == ()
 
 
 async def test_person_erasure_removes_all_private_binding_conversations(database):

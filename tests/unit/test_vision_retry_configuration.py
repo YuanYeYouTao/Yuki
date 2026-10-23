@@ -53,25 +53,33 @@ async def test_vision_failure_makes_one_http_request(failure):
 
 
 @pytest.mark.parametrize("thinking", [False, True])
-async def test_explicit_thinking_choice_reaches_actual_vision_request(thinking):
-    observed = []
+async def test_six_inputs_preserve_all_results_indices_and_explicit_thinking(thinking):
+    inputs = tuple(
+        visual()[0].model_copy(update={"media_hash": f"input-{index}"}) for index in range(6)
+    )
+    indices = (1, 2, 3, 4, 5, 6, 1, 7) if thinking else (1, 1, 3, 7, 5, 6)
+    body = json.dumps(
+        {
+            "items": [
+                {"index": index, "description": f"seen-{index}"}
+                for index in indices
+            ]
+        }
+    )
 
     def respond(request):
-        observed.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"content": '{"items":[{"index":1,"description":"seen"}]}'}}
-                ]
-            },
-        )
+        payload = json.loads(request.content)
+        assert payload["enable_thinking"] is thinking
+        assert sum(item["type"] == "image_url" for item in payload["messages"][1]["content"]) == 6
+        return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         provider = QwenVisionProvider(
             base_url="https://vision.test/v1", api_key="fixture", client=client
         )
-        await provider.analyze(
-            visual(), "describe", options=VisionAnalysisOptions(thinking_enabled=thinking)
+        result = await provider.analyze(
+            inputs, "describe", options=VisionAnalysisOptions(thinking_enabled=thinking)
         )
-    assert observed[0]["enable_thinking"] is thinking
+    expected = (1, 2, 3, 4, 5, 6) if thinking else (1, 3, 5, 6)
+    assert tuple(item.index for item in result.items) == expected
+    assert result.partial_failure is (not thinking)

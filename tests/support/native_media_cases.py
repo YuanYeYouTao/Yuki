@@ -12,6 +12,7 @@ import pytest
 from PIL import Image
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.service_dependencies import social_service
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.gateway.media import PlatformMediaFile
@@ -30,7 +31,6 @@ from yuki.services.group_recovery import NativeGroupRecovery
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.media_resolver import MediaResolver
-from yuki.social.service import SocialService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -134,7 +134,7 @@ async def native_media_env(database, tmp_path):
     harness.processor._group_recovery = NativeGroupRecovery(
         harness.settings, database, registry, router
     )
-    harness.processor._chat._tools.social_service = SocialService(
+    harness.processor._chat._tools.social_service = social_service(
         database, router, harness.scoped_events
     )
     store = WorkspaceStore(tmp_path / "main-workspace")

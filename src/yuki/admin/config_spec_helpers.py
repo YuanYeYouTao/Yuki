@@ -21,10 +21,6 @@ def _field(name: str) -> Any:
     return lambda settings: getattr(settings, name)
 
 
-def _path_field(name: str) -> Any:
-    return lambda settings: str(getattr(settings, name))
-
-
 def _constant(value: ConfigValue) -> Any:
     return lambda _settings: value
 

@@ -16,7 +16,6 @@ from yuki.prompting import (
     PromptCompiler,
     PromptContribution,
     PromptProgram,
-    PromptTrust,
 )
 from yuki.prompting.contracts import core_contract
 from yuki.prompting.contributors import static_text
@@ -107,7 +106,6 @@ class PromptComposer:
                 PromptContribution(
                     id="runtime.short_state",
                     channel=PromptChannel.RUNTIME,
-                    trust=PromptTrust.UNTRUSTED,
                     priority=-9_999,
                     payload=state,
                 )
@@ -117,7 +115,6 @@ class PromptComposer:
                 PromptContribution(
                     id="context.current",
                     channel=PromptChannel.CONTEXT,
-                    trust=PromptTrust.UNTRUSTED,
                     priority=85,
                     payload=context.metadata_payload,
                 )
@@ -130,7 +127,6 @@ class PromptComposer:
                 PromptContribution(
                     id="context.plugins",
                     channel=PromptChannel.PLUGIN,
-                    trust=PromptTrust.UNTRUSTED,
                     priority=30,
                     payload=list(plugin_context),
                     source="plugins",

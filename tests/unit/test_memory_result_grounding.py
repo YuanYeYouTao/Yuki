@@ -4,6 +4,7 @@ import json
 
 from tests.conftest import make_settings
 from tests.support.event_seed import seed_event
+from tests.support.service_dependencies import tool_dependencies
 
 from yuki.capabilities.results import normalize_legacy_result
 from yuki.domain.conversations import ScopeType
@@ -53,6 +54,7 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
         settings=settings,
         ledger=ledger,
         memories=facts,
+        **tool_dependencies(database, settings),
     )
     runtime = ToolRuntime(
         inbound=InboundMessage(

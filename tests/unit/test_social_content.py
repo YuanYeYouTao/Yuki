@@ -143,13 +143,6 @@ def test_explicit_account_has_priority_over_a_same_text_name():
     assert content.message.mentions[0].account_id == person.account_id
 
 
-def test_escaped_and_address_account_references_are_not_looked_up():
-    person = target()
-    reference = f"@{{account:{person.account_id}}}"
-    positions = _positions("https://example.test/" + reference + " \\" + reference)
-    assert not any(item.account_id for item in positions)
-
-
 def test_email_url_and_host_escape_do_not_become_group_names():
     content = prepare_content(r"x@Ice.com https://x/@Ice \@Ice @Ice", names=(("Ice", target()),))
     assert content.message.text == "x@Ice.com https://x/@Ice @Ice @Ice"
@@ -169,7 +162,6 @@ def test_email_url_and_host_escape_do_not_become_group_names():
 )
 def test_address_tokens_preserve_literal_at_and_the_next_natural_mention(address):
     person = target()
-    assert not _positions(address)
     literal = prepare_content(address, names=(("Ice", person),))
     assert literal.message.text == address and not literal.message.mentions
     body = address + r" \@Ice，再@Ice"
@@ -187,7 +179,6 @@ def test_address_tokens_preserve_literal_at_and_the_next_natural_mention(address
 def test_long_nonaddress_token_keeps_a_following_native_mention(prefix):
     person = target()
     body = prefix + " @Ice"
-    assert _positions(body)[-1].name_start == len(prefix) + 2
     content = prepare_content(body, names=(("Ice", person),))
     assert content.message.text == body
     assert len(content.message.mentions) == 1
@@ -200,7 +191,6 @@ def test_unclosed_account_prefixes_do_not_hide_a_later_real_reference_or_name():
     malformed = "@{account:" * 1000
     reference = f"@{{account:{person.account_id}}}"
     body = malformed + " " + reference + " @Ice"
-    assert [item.account_id for item in _positions(body) if item.account_id] == [person.account_id]
     content = prepare_content(body, names=(("Ice", person),), accounts={person.account_id: person})
     assert content.message.text == malformed + " @Ice @Ice"
     assert [mention.account_id for mention in content.message.mentions] == [

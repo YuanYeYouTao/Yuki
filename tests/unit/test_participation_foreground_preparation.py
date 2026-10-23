@@ -22,7 +22,7 @@ from yuki.persistence.models import ChatEventModel
 
 
 def _runtime(host, item, source):
-    host.app.chat = SimpleNamespace(validate_turn_snapshot=AsyncMock(return_value=True))
+    host.validate_turn_snapshot = AsyncMock(return_value=True)
     return SimpleNamespace(
         turn_snapshot=SimpleNamespace(
             conversation_id=item.scene.conversation_id, generation=item.scene.generation
@@ -43,11 +43,11 @@ async def _hint(host, runtime):
 
 async def test_unrelated_scope_prepares_and_binds_while_another_reads_config(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
-    first = await _event_and_route(database, host.app.ledger, group="2001")
-    other = await _event_and_route(database, host.app.ledger, group="2002")
+    first = await _event_and_route(database, host.ledger, group="2001")
+    other = await _event_and_route(database, host.ledger, group="2002")
     first_scene = await host._scene(first.canonical_conversation_id)
     entered, release = asyncio.Event(), asyncio.Event()
-    snapshot = host.app.runtime_config.snapshot
+    snapshot = host.runtime_config.snapshot
 
     async def delayed(**kwargs):
         if kwargs.get("group_id") == first_scene.space_id:
@@ -55,7 +55,7 @@ async def test_unrelated_scope_prepares_and_binds_while_another_reads_config(dat
             await release.wait()
         return await snapshot(**kwargs)
 
-    host.app.runtime_config.snapshot = delayed
+    host.runtime_config.snapshot = delayed
     task = asyncio.create_task(host.binding_for_event(first.id))
     try:
         await entered.wait()
@@ -76,9 +76,9 @@ async def test_prepared_continuation_sees_quiet_applied_before_its_owner_applica
     database, tmp_path
 ):
     host, item, original, _, _ = await _relationship(database, tmp_path)
-    source = await _event_and_route(database, host.app.ledger, content="not yet selected input")
+    source = await _event_and_route(database, host.ledger, content="not yet selected input")
     entered, release = asyncio.Event(), asyncio.Event()
-    snapshot = host.app.runtime_config.snapshot
+    snapshot = host.runtime_config.snapshot
 
     async def delayed(**kwargs):
         prepared = await snapshot(**kwargs)
@@ -86,7 +86,7 @@ async def test_prepared_continuation_sees_quiet_applied_before_its_owner_applica
         await release.wait()
         return prepared
 
-    host.app.runtime_config.snapshot = delayed
+    host.runtime_config.snapshot = delayed
     task = asyncio.create_task(host.continuation_for_event(source.id))
     try:
         await entered.wait()
@@ -116,9 +116,9 @@ async def test_preparation_wait_cannot_restore_a_retired_or_closed_owner(
     database, tmp_path, change
 ):
     host, _ = await _host(database, tmp_path, observer=False)
-    source = await _event_and_route(database, host.app.ledger)
+    source = await _event_and_route(database, host.ledger)
     entered, release = asyncio.Event(), asyncio.Event()
-    snapshot = host.app.runtime_config.snapshot
+    snapshot = host.runtime_config.snapshot
 
     async def delayed(**kwargs):
         prepared = await snapshot(**kwargs)
@@ -126,7 +126,7 @@ async def test_preparation_wait_cannot_restore_a_retired_or_closed_owner(
         await release.wait()
         return prepared
 
-    host.app.runtime_config.snapshot = delayed
+    host.runtime_config.snapshot = delayed
     task = asyncio.create_task(host.binding_for_event(source.id))
     try:
         await entered.wait()
@@ -258,7 +258,7 @@ async def test_warm_hint_recovers_committed_input_when_admission_feedback_was_no
 ):
     host, item, _, _, _ = await _relationship(database, tmp_path)
     try:
-        source = await _event_and_route(database, host.app.ledger, content="committed continuation")
+        source = await _event_and_route(database, host.ledger, content="committed continuation")
         binding, reason = await host.continuation_for_event(source.id)
         assert reason == "continuation"
         prepared = host.ordinary.prepare(source, item.scene.generation, 2, binding, reason=reason)
@@ -307,7 +307,7 @@ async def test_binding_hydrates_unseen_confirmed_self_quote_before_freezing_its_
         async with database.immediate_session() as writer:
             await ensure_person(writer, "1002")
         focus, _ = await seed_event(
-            host.app.ledger,
+            host.ledger,
             bot_user_id="8000",
             platform_message_id=str(uuid4()),
             scope_type=ScopeType.GROUP,

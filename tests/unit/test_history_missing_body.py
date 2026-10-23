@@ -16,8 +16,9 @@ from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.projections import ProjectionConflict, PromptProjectionRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage
-from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.event_repository import EventLedgerRepository, _read_version
 from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repository_helpers import _event_record, keeper_event_clause
 from yuki.services.context_assembler import AssembledContext, ContextMetrics
 from yuki.services.history_projection import prepare_history
 from yuki.services.turn_coordinator import HistorySourceChangedError
@@ -111,13 +112,23 @@ async def legacy_missing(
     rows = []
     after = after_event_id
     while after < through_event_id:
-        page = await ledger.list_scope_after(
-            expected.scope,
-            after_event_id=after,
-            through_event_id=through_event_id,
-            limit=256,
-            message_only=True,
-        )
+        async with ledger._database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            version = await _read_version(session, expected.scope)
+            assert version == expected
+            records = await session.scalars(
+                select(ChatEventModel)
+                .where(
+                    ChatEventModel.canonical_conversation_id == version.conversation_id,
+                    keeper_event_clause(),
+                    ChatEventModel.event_kind == "message",
+                    ChatEventModel.id > max(after, version.starts_after_event_id),
+                    ChatEventModel.id <= through_event_id,
+                )
+                .order_by(ChatEventModel.id)
+                .limit(256)
+            )
+            page = tuple(_event_record(row) for row in records)
         if not page:
             break
         rows.extend(

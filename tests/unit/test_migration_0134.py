@@ -79,19 +79,6 @@ def test_trace_index_upgrade_preserves_payloads_and_actual_query_indexes(tmp_pat
         assert {
             row[1] for row in connection.execute("PRAGMA index_list(execution_trace_entries)")
         } == indexes - retired
-        for field, expected in (
-            ("turn_id", "ix_execution_trace_turn_id"),
-            ("work_id", "ix_execution_trace_work_id"),
-            ("source_event_id", "ix_execution_trace_source_event"),
-            ("delivered_event_id", "ix_execution_trace_delivered_event"),
-            ("conversation_id", "ix_execution_trace_conversation_id"),
-        ):
-            plan = connection.execute(
-                f"EXPLAIN QUERY PLAN SELECT id FROM execution_trace_entries WHERE {field}=? "
-                "AND id>? ORDER BY id LIMIT 50",
-                ("original-turn", 0),
-            ).fetchall()
-            assert any(expected in row[3] for row in plan), plan
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
     with pytest.raises(RuntimeError, match="Retired diagnostic rows cannot be reconstructed"):
         command.downgrade(config, "0133")

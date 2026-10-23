@@ -13,7 +13,6 @@ from yuki.memory.models import (
 )
 from yuki.memory.query import MemoryQueryBuilder
 from yuki.memory.retrieval import MemoryRetriever
-from yuki.memory.service import MemoryFactService
 
 MEMORY_GROUNDING_RULE = (
     "当前请求不自动附带长期记忆。可见聊天和已有资料不足以回答人物、群或自己的既往事实时，"
@@ -39,11 +38,9 @@ class MemoryContextService:
         *,
         query_builder: MemoryQueryBuilder,
         retriever: MemoryRetriever,
-        facts: MemoryFactService,
     ) -> None:
         self._queries = query_builder
         self._retriever = retriever
-        self._facts = facts
 
     @property
     def retriever(self) -> MemoryRetriever:

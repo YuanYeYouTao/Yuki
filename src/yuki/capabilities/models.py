@@ -39,13 +39,6 @@ class CapabilityIdempotency(StrEnum):
     NON_IDEMPOTENT = "non_idempotent"
 
 
-class CapabilityExposure(StrEnum):
-    """How a capability enters a model turn after backend policy checks."""
-
-    PLANNED = "planned"
-    DIRECT_ALWAYS = "direct_always"
-
-
 CapabilityHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
@@ -73,10 +66,6 @@ class CapabilityDescriptor:
     parallel_safe: bool = False
     result_kind: str = "json"
     schema_version: str = "1"
-    exposure: CapabilityExposure = CapabilityExposure.PLANNED
-    additional_scopes: tuple[str, ...] = ()
-    bundle_scopes: tuple[str, ...] = ()
-    scope_summaries: tuple[tuple[str, str], ...] = ()
     provider_metadata: dict[str, Any] | None = None
     finalize_after_commit: bool = False
     namespace: str = ""
@@ -96,18 +85,6 @@ class CapabilityDescriptor:
         """Semantic discovery namespace; never a permission."""
 
         return self.namespace or self.group
-
-    @property
-    def scope_id(self) -> str:
-        """Discovery grouping id; namespace replaces Planner scope."""
-
-        return self.namespace_id
-
-    @property
-    def scope_ids(self) -> tuple[str, ...]:
-        """Namespace plus optional bundle aliases, without duplicates."""
-
-        return tuple(dict.fromkeys((self.namespace_id, *self.additional_scopes)))
 
     def as_chat_tool(self, description: str | None = None) -> ChatTool:
         """Build the model-facing function envelope.

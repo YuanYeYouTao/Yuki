@@ -119,16 +119,6 @@ class ToolArtifactRepository:
             )
 
     @staticmethod
-    async def release_refs(session: AsyncSession, owner_kind: str, owner_id: str) -> None:
-        from yuki.tool_results.schema import artifact_refs
-
-        await session.execute(
-            delete(artifact_refs).where(
-                artifact_refs.c.owner_kind == owner_kind, artifact_refs.c.owner_id == owner_id
-            )
-        )
-
-    @staticmethod
     async def _authorized(
         session: AsyncSession, row: ToolArtifactModel, access: ArtifactAccess
     ) -> bool:

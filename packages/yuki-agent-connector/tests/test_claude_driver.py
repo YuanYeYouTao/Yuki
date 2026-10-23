@@ -312,5 +312,5 @@ async def test_server_revocation_does_not_exit_sdk_or_kill_its_original_native_e
         connector.stopped.set()
         await asyncio.wait_for(task, 3)
     assert transport.closed
-    assert journal.pending()[0]["payload"]["text"] == "completed locally"
+    assert json.loads(journal.next_event()[2])["payload"]["text"] == "completed locally"
     journal.close()

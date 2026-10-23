@@ -7,13 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.support.service_dependencies import workspace_service
 from tests.unit.test_sticker_library import picture
 
 from yuki.sandbox import persistent
 from yuki.sandbox.persistent import PersistentManager
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.workspace.inspect import WorkspaceInspector
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceStore
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Environment cache FDs require Linux")
@@ -53,7 +53,7 @@ async def test_cache_reads_copy_and_publication_reuse_safe_fd_without_writing_ca
             "workspace_media_validate", {"path": path, "expected_version": version}
         )
         assert validated["version"] == version and "base64" not in validated
-        workspace = WorkspaceService(owner.store)
+        workspace = workspace_service(owner.store)
         workspace.sandbox = SimpleNamespace(execute=owner.file_request)
         workspace.visual_inspector = WorkspaceInspector(owner.store, ImagePreprocessor())
         viewed = await workspace.execute(

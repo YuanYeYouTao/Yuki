@@ -11,7 +11,6 @@ from alembic import command
 from alembic.config import Config
 from tests.unit.test_migration_0119 import _seed_0118
 
-from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
 from yuki.persistence.schema_guard import require_canonical_schema
 
 PROTECTED = (
@@ -116,11 +115,6 @@ def test_upgrade_preserves_sources_and_backfills_exact_pairs(
             ).fetchall()
             == sessions_before
         )
-        for name, expected in ARTIFACT_REFERENCE_TRIGGERS.items():
-            actual = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE name=?", (name,)
-            ).fetchone()[0]
-            assert " ".join(actual.split()) == " ".join(expected.split())
         connection.execute(
             "UPDATE chat_events SET segments_json=? WHERE id=?",
             (

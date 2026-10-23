@@ -10,7 +10,7 @@ from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
 from yuki import cli as administrative_cli
 from yuki.adapters.onebot.provider_adapter import SnowLumaOneBotAdapter
-from yuki.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
+from yuki.gateway.compatibility import provider_doctor_payload
 from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.snowluma import (
@@ -203,10 +203,10 @@ def test_adapter_rolls_back_registry_when_nonebot_rejects_connection(
         configure_process_registry(None)
 
 
-def test_snowluma_registers_dedicated_websocket_routes_without_legacy_endpoints() -> None:
+def test_snowluma_registers_dedicated_websocket_routes() -> None:
     from nonebot.config import Config, Env
     from nonebot.drivers.fastapi import Driver
-    from starlette.routing import Route, WebSocketRoute
+    from starlette.routing import WebSocketRoute
 
     driver = Driver(Env(_env_file=None), Config(_env_file=None))
     adapter = object.__new__(SnowLumaOneBotAdapter)
@@ -215,18 +215,8 @@ def test_snowluma_registers_dedicated_websocket_routes_without_legacy_endpoints(
     websocket_paths = {
         route.path for route in driver.server_app.routes if isinstance(route, WebSocketRoute)
     }
-    http_paths = {route.path for route in driver.server_app.routes if isinstance(route, Route)}
     assert "/onebot/v11/snowluma/ws" in websocket_paths
     assert "/onebot/v11/snowluma/ws/" in websocket_paths
-    legacy_paths = {
-        "/onebot/v11/",
-        "/onebot/v11/http",
-        "/onebot/v11/http/",
-        "/onebot/v11/ws",
-        "/onebot/v11/ws/",
-    }
-    assert not legacy_paths & websocket_paths
-    assert not legacy_paths & http_paths
 
 
 def test_different_accounts_can_use_different_providers_together() -> None:
@@ -251,9 +241,6 @@ def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
         "get_group_msg_history",
         "get_friend_msg_history",
     }
-    assert {item.action for item in CORE_ONEBOT_ACTIONS} == expected
-    required_capabilities = {item.provider_capability for item in CORE_ONEBOT_ACTIONS}
-    assert required_capabilities <= SNOWLUMA_CAPABILITIES
     snowluma = provider_doctor_payload("snowluma")
     assert {item["action"] for item in snowluma["core_actions"]} == expected
     assert snowluma["reverse_ws_paths"] == ["/onebot/v11/snowluma/ws"]

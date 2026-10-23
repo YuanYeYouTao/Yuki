@@ -12,9 +12,9 @@ async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
     await host._store.close()
     path = tmp_path / "same-host-checkpoint.db"
     host._store = await AsyncSnapshotStore.open(path)
-    handled = await _event_and_route(database, host.app.ledger, content="已经交给主入口处理")
-    pending = await _event_and_route(database, host.app.ledger, content="仅排队，未被Work接纳")
-    untouched = await _event_and_route(database, host.app.ledger, content="尚未处理的新消息")
+    handled = await _event_and_route(database, host.ledger, content="已经交给主入口处理")
+    pending = await _event_and_route(database, host.ledger, content="仅排队，未被Work接纳")
+    untouched = await _event_and_route(database, host.ledger, content="尚未处理的新消息")
     item = await _item(host, handled)
     lease = await host.work.acquire(item.scene.conversation_id, item.scene.generation)
     assert lease is not None

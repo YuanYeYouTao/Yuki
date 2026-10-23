@@ -12,30 +12,8 @@ import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.deployment_setup.environment_check import check_environment
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "workspace_list",
-        "workspace_read",
-        "workspace_write",
-        "workspace_search",
-        "workspace_patch",
-        "workspace_mkdir",
-        "workspace_move",
-        "workspace_delete",
-    ],
-)
-async def test_retired_file_operations_do_not_dispatch_to_manager(tmp_path, name):
-    service = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
-    service.sandbox = SimpleNamespace(execute=AsyncMock())
-    with pytest.raises(WorkspaceError, match="unknown_tool"):
-        await service.execute(name, {"path": "work.txt", "artifact_id": str(uuid4())})
-    service.sandbox.execute.assert_not_awaited()
 
 
 def test_large_files_publish_and_read_above_former_file_and_total_quotas(tmp_path):

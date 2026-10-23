@@ -240,7 +240,6 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                 assert result.value == "original structured result"
                 assert result.source_ref == f"event:{events[0].id}"
             assert headers == [owner] and len(wire) == 1
-            assert wire[0] == provider._build_payload(replace(neutral[0], provider_session_id=None))
             assert "x-session-id" not in json.dumps(wire[0])
             assert responses[0].prompt_tokens == 137
             assert responses[0].completion_tokens == 28

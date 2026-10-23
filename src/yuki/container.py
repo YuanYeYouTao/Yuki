@@ -6,9 +6,8 @@ import asyncio
 import logging
 import time
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -67,15 +66,24 @@ from yuki.services.group_recovery import NativeGroupRecovery
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.plugin_events import publish_notification
 from yuki.services.processing_status import ProcessingStatusService
-from yuki.services.processor import MessageProcessor
+from yuki.services.processor import MessageProcessor, ProcessResult
 from yuki.services.turn_coordinator import ConversationTurnCoordinator
 from yuki.services.vision_service import VisionService
 from yuki.time.service import TimeContextService
 from yuki.tool_results.artifacts import ToolArtifactRepository
 from yuki.tool_results.recorder import ToolReceiptRepository
 from yuki.vision.base import VisionProvider
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.permissions import PluginPermission
+
+if TYPE_CHECKING:
+    from yuki_participation.self_report import SelfDelta
+
+    from yuki.conversation.ordinary_admission import OrdinaryParticipationBinding
+    from yuki.domain.messages import ChatResponse
+    from yuki.services.agent_tools import ToolRuntime
+
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +99,12 @@ class ApplicationContainer:
         owns_database: bool = False,
         runtime_config: RuntimeConfigService | None = None,
         vision_provider: VisionProvider | None = None,
+        workspace_store: WorkspaceStore | None = None,
     ) -> None:
         if bool(settings.feishu_app_id) != bool(settings.feishu_app_secret.get_secret_value()):
             raise ValueError("FEISHU_APP_ID and FEISHU_APP_SECRET must be configured together")
         self.settings = settings
+        store = workspace_store or WorkspaceStore(settings.workspace_directory)
         self.started_at = time.monotonic()
         self.lifecycle = LifecycleRegistry()
         persistence = PersistenceModule(
@@ -199,6 +209,61 @@ class ApplicationContainer:
         self.processing_status = ProcessingStatusService(
             self.presence_router, self.gateway_registry
         )
+        from yuki.conversation.media_service import ConversationMediaService
+        from yuki.external_agents.service import ExternalAgentService
+        from yuki.sandbox.client import SandboxClient
+        from yuki.sandbox.completion_receiver import CompletionReceiver
+        from yuki.sandbox.task_repository import SandboxTaskRepository
+        from yuki.workspace.inspect import WorkspaceInspector
+        from yuki.workspace.service import WorkspaceService
+        from yuki.workspace.short_state import ShortState
+
+        self.sandbox_tasks = SandboxTaskRepository(self.database)
+        self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
+        self.database.sandbox_client = self.sandbox_client
+        self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
+        self.database.external_agents = self.external_agents
+        self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
+        self.conversation_media = ConversationMediaService(
+            self.database,
+            settings.conversation_media_cache_directory,
+            self.media_resolver,
+            self.image_preprocessor,
+            gateway_registry=self.gateway_registry,
+            max_prepared_bytes=settings.vision_max_prepared_bytes,
+        )
+        self.workspace_service = WorkspaceService(
+            store,
+            sandbox=self.sandbox_client,
+            conversation_media=self.conversation_media,
+            visual_inspector=WorkspaceInspector(
+                store,
+                self.image_preprocessor,
+                max_prepared_bytes=settings.vision_max_prepared_bytes,
+            ),
+        )
+        from yuki.admin.models import VisionRuntimeConfig
+        from yuki.emoji.library import EmojiLibrary
+        from yuki.social.service import SocialService
+
+        async def sticker_vision_runtime() -> VisionRuntimeConfig:
+            return (await self.runtime_config.snapshot()).vision
+
+        self.emoji_library = EmojiLibrary(
+            workspace=self.workspace_service,
+            preprocessor=self.image_preprocessor,
+            provider=self.vision_provider,
+            vision_runtime=sticker_vision_runtime,
+        )
+        self.social_service = SocialService(
+            self.database,
+            self.presence_router,
+            persistence.scoped_events,
+            runtime_config=self.runtime_config,
+            workspace_service=self.workspace_service,
+            emoji_library=self.emoji_library,
+        )
+        self.emoji_delivery = self.social_service.emoji_delivery
         self.conversation_module = ConversationModule(
             settings=settings,
             persistence=persistence,
@@ -213,6 +278,13 @@ class ApplicationContainer:
             tool_artifacts=self.tool_artifacts,
             tool_receipts=self.tool_receipts,
             processing_status=self.processing_status,
+            social=self.social_service,
+            workspace=self.workspace_service,
+            sandbox=self.sandbox_client,
+            external_agents=self.external_agents,
+            short_state=ShortState(store),
+            observe_main_response=self._observe_main_response,
+            participation_runtime_context=self._participation_runtime_context,
         )
         conversation = self.conversation_module.build()
         self.conversation = conversation
@@ -220,85 +292,9 @@ class ApplicationContainer:
         self.admission_features = conversation.admission_features
         self.rate_limiter = conversation.rate_limiter
         self.agent_tools = conversation.agent_tools
-        from yuki.social.service import SocialService
-
-        self.social_service = SocialService(
-            self.database, self.presence_router, persistence.scoped_events
-        )
-        self.agent_tools.social_service = self.social_service
-        self.social_service.runtime_config = self.runtime_config
-        from yuki.workspace.service import WorkspaceService
-        from yuki.workspace.store import WorkspaceStore
-
-        self.workspace_service = WorkspaceService(WorkspaceStore(settings.workspace_directory))
-        from yuki.conversation.media_service import ConversationMediaService
-
-        self.conversation_media = ConversationMediaService(
-            self.database,
-            settings.conversation_media_cache_directory,
-            self.media_resolver,
-            self.image_preprocessor,
-            gateway_registry=self.gateway_registry,
-            max_prepared_bytes=settings.vision_max_prepared_bytes,
-        )
-        self.workspace_service.conversation_media = self.conversation_media
-        self.agent_tools.workspace_service = self.workspace_service
-        from yuki.workspace.inspect import WorkspaceInspector
-
-        self.workspace_service.visual_inspector = WorkspaceInspector(
-            self.workspace_service.store,
-            self.image_preprocessor,
-            max_prepared_bytes=settings.vision_max_prepared_bytes,
-        )
-        from yuki.sandbox.client import SandboxClient
-        from yuki.sandbox.completion_receiver import CompletionReceiver
-        from yuki.sandbox.task_repository import SandboxTaskRepository
-
-        self.sandbox_tasks = SandboxTaskRepository(
-            self.database,
-            settings=settings,
-            lookup_plugin_host=lambda identity: self._plugin_contexts.get(identity),
-        )
-        self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
-        self.database.sandbox_client = self.sandbox_client
-        from yuki.external_agents.service import ExternalAgentService
-
-        self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
-        self.database.external_agents = self.external_agents
-        self.agent_tools.external_agent_service = self.external_agents
-        self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
-        self.workspace_service.sandbox = self.sandbox_client
-        self.agent_tools.sandbox_client = self.sandbox_client
-        self.social_service.workspace = self.workspace_service.store
-        self.social_service.workspace_service = self.workspace_service
-        from yuki.admin.models import VisionRuntimeConfig
-        from yuki.emoji.delivery import EmojiDeliveryService
-        from yuki.emoji.library import EmojiLibrary
-
-        async def sticker_vision_runtime() -> VisionRuntimeConfig:
-            return (await self.runtime_config.snapshot()).vision
-
-        self.emoji_library = EmojiLibrary(
-            workspace=self.workspace_service,
-            preprocessor=self.image_preprocessor,
-            provider=self.vision_provider,
-            vision_runtime=sticker_vision_runtime,
-        )
-        self.emoji_delivery = EmojiDeliveryService(self.social_service, self.emoji_library)
-        self.social_service.emoji_delivery = self.emoji_delivery
         self.chat = conversation.chat
         self.runtime = self.chat.runtime
-        from yuki.services.main_agent_contract import MainAgentContract
-        from yuki.workspace.short_state import ShortState
-
-        self.main_agent_contract = MainAgentContract(
-            self.chat,
-            ShortState(self.workspace_service.store),
-            code_enabled=settings.code_mode_enabled,
-        )
-        self.agent_tools.short_state = self.main_agent_contract.state
-        self.runtime.runner.main_contract = self.main_agent_contract
-        self.runtime.runner.code_mode_settings = settings
+        self.main_agent_contract = self.chat.main_contract
         from yuki.runtime.subagent_repository import SubagentRepository
         from yuki.runtime.subagent_scheduler import SubagentScheduler
         from yuki.runtime.work_repository import WorkRepository
@@ -382,7 +378,6 @@ class ApplicationContainer:
         self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
         self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
-        self.memory_self_reflection_worker.social = self.social_service
         self.memory_dream_worker = conversation.memory_dream_worker
         admin = AdminModule(
             settings=settings,
@@ -495,17 +490,21 @@ class ApplicationContainer:
         self.soul = CharacterSoul(self.client_identity, settings)
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
-
-        self.client_api = ClientApi(self.client_identity)
         from yuki.services.client_link import ClientLinkCommands
 
-        self.client_links = ClientLinkCommands(self.client_api.identity, self.gateway_registry)
+        self.client_links = ClientLinkCommands(self.client_identity, self.gateway_registry)
         self.chat.set_plugin_tools(self.plugin_tools)
         from yuki.services.semantic_participation import SemanticParticipationService
 
-        self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
-        self.chat.observe_main_response = self.semantic_participation.observe_main_response
-        self.chat.participation_runtime_context = self.semantic_participation.runtime_context
+        self.semantic_participation = SemanticParticipationService(
+            database=self.database,
+            settings=settings,
+            ledger=self.ledger,
+            runtime_config=self.runtime_config,
+            validate_turn_snapshot=self.chat.validate_turn_snapshot,
+            promote=self._promote_semantic_event,
+            traces=self.models.traces,
+        )
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
@@ -608,7 +607,7 @@ class ApplicationContainer:
         )
         client_gateways = {"app": self.app_gateway, "acp": self.acp_gateway}
         client_prompts = ClientPrompts(
-            self.client_api.identity,
+            self.client_identity,
             client_gateways,
             self.runtime.bindings,
             concurrency=self.concurrency,
@@ -644,23 +643,36 @@ class ApplicationContainer:
                     domain=settings.feishu_domain,
                 ),
             )
-        client_works = ClientWorks(self.client_api.identity, client_gateways)
+        self.gateway_health_sources = {
+            platform: gateway.health
+            for platform, gateway in (
+                ("telegram", self.telegram_gateway),
+                (
+                    self.feishu_gateway.client.platform
+                    if self.feishu_gateway is not None
+                    else "feishu",
+                    self.feishu_gateway,
+                ),
+            )
+            if gateway is not None
+        }
+        client_works = ClientWorks(self.client_identity, client_gateways)
         client_views = ClientViews(
-            self.client_api.identity,
+            self.client_identity,
             client_works,
             self.models.traces,
             character=self.character,
             soul=self.soul,
         )
         client_files = ClientFiles(
-            ConversationUploads(self.client_api.identity, self.conversation_media),
+            ConversationUploads(self.client_identity, self.conversation_media),
             client_views,
             self.workspace_service.store,
         )
         self.client_api = ClientApi(
-            self.client_api.identity,
+            self.client_identity,
             ClientMessages(
-                self.client_api.identity, client_gateways, client_files, prompts=client_prompts
+                self.client_identity, client_gateways, client_files, prompts=client_prompts
             ),
             client_works,
             client_views,
@@ -669,12 +681,24 @@ class ApplicationContainer:
             self.character,
             self.soul,
         )
-        self.semantic_participation.set_promoter(
-            partial(self.processor.promote_committed_event, reason="semantic_invitation")
-        )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._register_lifecycle()
+
+    async def _promote_semantic_event(
+        self, event_id: int, binding: OrdinaryParticipationBinding
+    ) -> ProcessResult:
+        return await self.processor.promote_committed_event(
+            event_id, binding, reason="semantic_invitation"
+        )
+
+    async def _observe_main_response(
+        self, runtime: ToolRuntime, sequence: int, response: ChatResponse, delta: SelfDelta | None
+    ) -> None:
+        await self.semantic_participation.observe_main_response(runtime, sequence, response, delta)
+
+    async def _participation_runtime_context(self, runtime: ToolRuntime) -> dict[str, Any] | None:
+        return await self.semantic_participation.runtime_context(runtime)
 
     def _create_plugin_context(
         self,
@@ -834,11 +858,15 @@ class ApplicationContainer:
             except ValidationError:
                 # Validation errors can retain credential-bearing input mappings.
                 raise ValueError("activated runtime settings failed validation") from None
+            from yuki.services.media_resolver import _media_io
+
+            workspace_store = await _media_io(WorkspaceStore, active_settings.workspace_directory)
             return cls(
                 active_settings,
                 database=database,
                 owns_database=True,
                 runtime_config=runtime_config,
+                workspace_store=workspace_store,
             )
         except BaseException:
             await database.close()
@@ -989,7 +1017,7 @@ class ApplicationContainer:
                 if vision_deleted:
                     logger.info("media_analyses_cleaned count=%d", vision_deleted)
                 plugin_state_deleted = await self.plugin_state.cleanup_expired()
-                await self.client_api.identity.cleanup_expired()
+                await self.client_identity.cleanup_expired()
                 media_artifacts_deleted = await self.plugin_media_artifacts.cleanup()
                 if media_artifacts_deleted:
                     logger.info(

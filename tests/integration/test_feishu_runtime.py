@@ -10,6 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.service_dependencies import social_service
 from websockets.asyncio.server import serve
 
 from yuki.application.lifecycle import LifecycleRegistry
@@ -28,7 +29,6 @@ from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
 from yuki.services.group_recovery import NativeGroupRecovery
 from yuki.services.main_agent_contract import MainAgentContract
-from yuki.social.service import SocialService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -73,7 +73,7 @@ async def feishu_env(database, tmp_path):
     harness.processor._group_recovery = NativeGroupRecovery(
         harness.settings, database, registry, router
     )
-    social = SocialService(database, router, harness.scoped_events)
+    social = social_service(database, router, harness.scoped_events)
     harness.processor._chat._tools.social_service = social
     harness.processor._chat.runtime.runner.main_contract = MainAgentContract(
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "workspace"))

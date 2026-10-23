@@ -62,7 +62,6 @@ from yuki.memory.enums import (
 )
 from yuki.memory.job_claims import fence_memory_job_claim
 from yuki.memory.models import (
-    MemoryCandidate,
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
@@ -246,6 +245,20 @@ class MemoryMutationService:
             idempotency_key=_fingerprint({"operation_id": context.operation_id}),
         )
         if receipt is None:
+            if context.legacy_operation_id is not None:
+                legacy = await self._receipts.find(
+                    idempotency_key=_fingerprint({"operation_id": context.legacy_operation_id}),
+                )
+                if (
+                    legacy is not None
+                    and legacy.decision_actor_type is MemoryDecisionActorType.PLUGIN
+                    and legacy.decision_actor_id in {None, context.decision_actor_id}
+                ):
+                    # An old event-wide receipt cannot identify a particular
+                    # plugin call. Keep its effect and identity without replay.
+                    return self._rejected(
+                        request.operation, "memory_operation_legacy_identity_unknown"
+                    )
             return None
         return self._original_result(
             receipt,
@@ -1490,6 +1503,19 @@ class MemoryMutationService:
                     claim_fingerprint=prepared.claim_fingerprint,
                     operation=request.operation,
                 )
+            if context.legacy_operation_id is not None:
+                legacy = await self._receipts.find(
+                    idempotency_key=_fingerprint({"operation_id": context.legacy_operation_id}),
+                    session=session,
+                )
+                if (
+                    legacy is not None
+                    and legacy.decision_actor_type is MemoryDecisionActorType.PLUGIN
+                    and legacy.decision_actor_id in {None, context.decision_actor_id}
+                ):
+                    return self._rejected(
+                        request.operation, "memory_operation_legacy_identity_unknown"
+                    )
             from yuki.runtime.effect_outcomes import current_result_capture
 
             capture = current_result_capture.get()
@@ -2263,13 +2289,7 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("contest_fact_required")
             result = await self._facts.apply_claim(
                 claim,
-                candidates=(
-                    MemoryCandidate(
-                        candidate_ref="candidate_1",
-                        fact=fact,
-                        exact_key=True,
-                    ),
-                ),
+                candidates=(fact,),
                 plan=MemoryResolutionPlan(
                     action=MemoryResolutionAction.CONTEST,
                     existing_fact_id=fact.id,
@@ -2277,7 +2297,6 @@ class MemoryMutationService:
                     new_conflict_state=MemoryConflictState.CONTESTED,
                     relation_types=(MemoryFactRelationType.CONTRADICTS,),
                     reason_code="agent_requested_contest",
-                    create_new_fact=True,
                 ),
                 session=session,
             )

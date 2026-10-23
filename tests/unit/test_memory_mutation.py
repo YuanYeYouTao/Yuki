@@ -10,14 +10,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import make_settings
 from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.event_seed import seed_event
+from tests.support.service_dependencies import tool_dependencies
 
-from yuki.admin.audit import AdminAuditService
-from yuki.admin.models import AdminActor
 from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
@@ -82,7 +80,6 @@ from yuki.persistence.repositories import (
     PeopleRepository,
 )
 from yuki.persistence.repository_records import EventRecord
-from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.agent_tools import AgentToolService, ToolRuntime
 
 
@@ -285,6 +282,63 @@ def _context(event: EventRecord) -> MemoryMutationContext:
         decision_actor_id="yuki-main-agent",
         executed_by_bot_user_id=event.bot_user_id,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_in_plan", [False, True])
+async def test_claim_plan_cannot_reference_an_unbound_id_or_another_owner(
+    database: Database, candidate_in_plan: bool
+) -> None:
+    _mutations, facts, ledger, _processor = _service(database)
+    event = await _event(
+        ledger, message_id="claim-plan-owner", sender_user_id="1001", content="我喜欢绿色"
+    )
+    original = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="2002" if candidate_in_plan else "1001",
+            memory_key="color:favorite",
+            category="preference",
+            content="喜欢蓝色",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    claim = ValidatedMemoryClaim(
+        operation=MemoryClaimOperation.ASSERT,
+        fact=MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            memory_key="color:favorite",
+            category="preference",
+            content="喜欢绿色",
+            source_type=MemorySourceType.EXPLICIT,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=event.id,
+            source_speaker_user_id="1001",
+            relation=MemoryEvidenceRelation.SELF_STATEMENT,
+            excerpt="我喜欢绿色",
+        ),
+        subject_is_speaker=True,
+        occurred_at=event.occurred_at,
+    )
+    with pytest.raises(
+        ValueError, match="crosses identity targets" if candidate_in_plan else "unbounded candidate"
+    ):
+        await facts.apply_claim(
+            claim,
+            candidates=(original,) if candidate_in_plan else (),
+            plan=MemoryResolutionPlan(
+                action=MemoryResolutionAction.CONTEST,
+                existing_fact_id=original.id,
+                new_fact_status=MemoryStatus.CONTESTED,
+                new_conflict_state=MemoryConflictState.CONTESTED,
+                reason_code="explicit_contest",
+            ),
+        )
+    assert await facts.get_fact(original.id) == original
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 1
 
 
 @pytest.mark.asyncio
@@ -726,6 +780,7 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
         ledger=ledger,
         memories=facts,
         memory_mutations=service,
+        **tool_dependencies(database, make_settings(database.url)),
     )
     inbound = InboundMessage(
         message_id=event.platform_message_id,
@@ -1047,10 +1102,8 @@ async def test_receipt_failure_rolls_back_fact(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_type", [RuntimeError, SQLAlchemyError, KeyError])
 async def test_embedding_schedule_failure_keeps_committed_fact(
     database: Database,
-    error_type: type[Exception],
 ) -> None:
     service, facts, ledger, _processor = _service(database)
     event = await _event(
@@ -1062,7 +1115,7 @@ async def test_embedding_schedule_failure_keeps_committed_fact(
 
     class FailedScheduler:
         async def schedule(self, _fact_id: int) -> None:
-            raise error_type("embedding unavailable")
+            raise RuntimeError("embedding unavailable")
 
     facts.set_embedding_scheduler(FailedScheduler())
     result = await service.mutate(
@@ -1139,7 +1192,6 @@ async def test_contested_claim_is_enqueued_after_commit(database: Database) -> N
         candidates=(),
         plan=MemoryResolutionPlan(
             action=MemoryResolutionAction.CREATE,
-            create_new_fact=True,
             new_fact_status=MemoryStatus.CONTESTED,
             new_conflict_state=MemoryConflictState.CONTESTED,
             reason_code="test_contested",
@@ -1509,6 +1561,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
         memories=facts,
+        **tool_dependencies(database, make_settings(database.url)),
     )
     runtime = ToolRuntime(
         inbound=inbound,
@@ -1830,44 +1883,3 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         )
     ).model_payload()
     assert not forgotten["ok"]
-
-
-@pytest.mark.asyncio
-async def test_deterministic_memory_admin_uses_unified_mutation_receipt(
-    database: Database,
-) -> None:
-    service, facts, ledger, _processor = _service(database)
-    event = await _event(
-        ledger,
-        message_id="command-memory-add",
-        sender_user_id="1001",
-        content="/ai memory add 我喜欢天文",
-    )
-    admin = MemoryAdminService(
-        settings=make_settings("sqlite+aiosqlite:///:memory:"),
-        memories=facts,
-        audit=AdminAuditService(database),
-        mutations=service,
-        ledger=ledger,
-    )
-    row = await admin.add_memory(
-        AdminActor(
-            user_id="1001",
-            is_superuser=False,
-            trigger_message_id=event.platform_message_id,
-            trigger_event_id=event.id,
-            conversation_key="private:1001",
-            bot_user_id=event.bot_user_id,
-            decision_actor_type="command",
-        ),
-        "1001",
-        "我喜欢天文",
-    )
-
-    assert row.content == "我喜欢天文"
-    async with database.read_session() as session:
-        receipt = await session.scalar(select(MemoryMutationReceiptModel))
-    assert receipt is not None
-    assert receipt.trigger_event_id == event.id
-    assert receipt.decision_actor_type == "command"
-    assert receipt.new_fact_id == row.id

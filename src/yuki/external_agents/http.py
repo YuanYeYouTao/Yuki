@@ -85,12 +85,19 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
 
         async def events() -> None:
             while True:
-                batch = [await queue.get()]
-                while not queue.empty():
-                    batch.append(queue.get_nowait())
-                await service.receive_events(principal.device_id, batch)
-                for event in batch:
-                    await connection.send({"type": "ack", "event_id": event["event_id"]})
+                message = await queue.get()
+                if message["type"] == "catalog":
+                    instances = message.get("instances")
+                    if not isinstance(instances, list):
+                        raise ValueError("invalid_connector_catalog")
+                    await service.update_catalog(principal.device_id, connection, instances)
+                    await connection.send({"type": "catalog_ack"})
+                else:
+                    # Protocol 2 credit is one original durable event, acknowledged
+                    # only after its complete transaction. Explicit repository lists
+                    # remain an atomic batch and are never divided here.
+                    await service.receive_events(principal.device_id, [message])
+                    await connection.send({"type": "ack", "event_id": message["event_id"]})
 
         async def read() -> None:
             hello = await socket.receive_json()
@@ -102,7 +109,7 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                 kind = message.get("type")
                 if kind == "response":
                     connection.respond(message)
-                elif kind == "event":
+                elif kind in {"event", "catalog"}:
                     queue.put_nowait(message)
                 elif kind == "ping":
                     await connection.send({"type": "pong"})

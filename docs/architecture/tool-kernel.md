@@ -34,6 +34,10 @@ schema、脚本调用名及本轮直调可见性。搜索不返回全部 schema�
 Capability Runtime 的执行集合不是模型声明的真源，也不能在请求链中添加 schema 或扩大权限。
 能力目录不另建 FTS 搜索、别名配置或 schema 成本索引；工具查询统一使用冻结合同上的 `lookup_tools`。
 Runner 请求只使用固定合同；后端刷新执行目录，不再生成按轮的动态工具声明。
+`MainAgentContract` 冻结完整工具清单时一次编译参数 schema，并持有只读的
+`CapabilitySchemaView`；同部署各激活复用该视图。每次激活仍从当前目录、角色和 grants
+计算实际执行集合，不缓存授权。schema 隔离属于该固定合同，同名工具的新合同独立编译。
+目录构造后不存在另一次“开启”状态；真实 SDK aliases、use_when、tags 和批准指纹保留。
 参数 schema 由现有 JSON Schema 库按其声明方言编译并核验，不因固定深度、节点数、
 正则长度或重复量词启发式隔离可编译的工具。真实编译错误仍沿原隔离回执返回；
 本地 `$ref` 按 schema 自身资源作用域解析，标准本地 Registry 不提供远程检索。
@@ -260,7 +264,7 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 
 通用 OneBot 操作不另写无人读取的诊断表 `agent_actions`；0117 删除该旧表。授权、Work effect 与实际发送回执继续由各自执行链保存。
 
-WorkspaceStore 保不可变发布、媒体、short_state、下载及实际引用清理；旧 expires_at 只保历史读取与转换。删除单文件200MiB、总量512MiB及1000对象的经验配额，沿真实磁盘与传输结果处理。私有工具结果库仍是独立来源和保留合同。
+WorkspaceStore 在 owner 打开时原子升级独立 manifest，永久保留不可变发布及原来源，旧 artifact expires_at 在该升级中退出；普通事务不再查 schema 或归一化到期时间。媒体、short_state、下载及实际引用清理各沿自身寿命。删除单文件200MiB、总量512MiB及1000对象的经验配额，沿真实磁盘与传输结果处理。私有工具结果库仍是独立来源和保留合同。
 
 ## 共同账本历史与原生平台操作
 

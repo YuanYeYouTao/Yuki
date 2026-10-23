@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.support.runtime_execution import make_work_resumer
+from tests.support.service_dependencies import workspace_service
 
 from yuki.automation.models import RunStatus
 from yuki.conversation.autonomy_repository import AutonomyRepository
@@ -220,7 +221,6 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
     from yuki.plugin_host import main_turn
     from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
     from yuki.runtime.work_schema_v1 import effects
-    from yuki.workspace.service import WorkspaceService
     from yuki_plugin_sdk.permissions import PluginPermission
 
     case = await setup_run(
@@ -233,7 +233,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
     )
     recorder = ToolReceiptRepository(database)
     case.chat._tool_receipts = recorder
-    case.chat._tools.workspace_service = WorkspaceService(case.env.store)
+    case.chat._tools.workspace_service = workspace_service(case.env.store)
     case.chat._tools.sandbox_client = SimpleNamespace(
         execute=AsyncMock(return_value={"ready": True, "workspace": "/workspace"})
     )

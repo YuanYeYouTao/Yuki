@@ -10,7 +10,6 @@ import pytest
 from sqlalchemy import func, select, text
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
-from tests.support.projection_sql_counts import capture_sql
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
@@ -59,13 +58,9 @@ async def test_duplicate_enqueue_returns_original_partition_without_waiting_for_
             .one()
         )
     async with database.immediate_session():
-        with capture_sql(database) as statements:
-            assert await asyncio.wait_for(
-                jobs.enqueue_resolved(event.id, "another-input-scope"), 0.5
-            ) == (False, original_partition)
-        assert statements and all(
-            sql.lstrip().upper().startswith("SELECT") for sql, _ in statements
-        )
+        assert await asyncio.wait_for(
+            jobs.enqueue_resolved(event.id, "another-input-scope"), 0.5
+        ) == (False, original_partition)
     async with database.read_session() as reader:
         after = (
             (

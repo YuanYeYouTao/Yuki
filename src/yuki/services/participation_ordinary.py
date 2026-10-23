@@ -55,7 +55,7 @@ async def event_scope(
 ) -> AsyncIterator[tuple[EventRecord, _Session, ScopedEvent, Callable[[str], str]] | None]:
     # These immutable reads do not own a Controller. Another conversation can
     # prepare its input while the existing application lock is occupied.
-    row = record if record is not None else await service.app.ledger.get_event(event_id)
+    row = record if record is not None else await service.ledger.get_event(event_id)
     if row is None or not row.canonical_conversation_id:
         yield None
         return
@@ -64,7 +64,7 @@ async def event_scope(
         yield None
         return
     if runtime is None:
-        runtime = await service.app.runtime_config.snapshot(group_id=scene.space_id)
+        runtime = await service.runtime_config.snapshot(group_id=scene.space_id)
     if not runtime.conversation_policy().semantic_participation_enabled:
         yield None
         return
@@ -79,7 +79,7 @@ async def event_scope(
             yield None
             return
         if current.space_id != scene.space_id:
-            runtime = await service.app.runtime_config.snapshot(group_id=current.space_id)
+            runtime = await service.runtime_config.snapshot(group_id=current.space_id)
         async with hydrated_scope(service, row, current, runtime) as found:
             yield found
 
@@ -135,7 +135,7 @@ async def admitted_scope(
             if scene is None or not scene.enabled or scene.generation != generation:
                 yield None
                 return
-            runtime = await service.app.runtime_config.snapshot(group_id=scene.space_id)
+            runtime = await service.runtime_config.snapshot(group_id=scene.space_id)
             if not runtime.conversation_policy().semantic_participation_enabled:
                 yield None
                 return
@@ -533,7 +533,7 @@ async def observe_main_response(
     event_id = runtime.effective_trigger_event_id
     if delta is None or snapshot is None or event_id is None:
         return
-    if not await service.app.chat.validate_turn_snapshot(snapshot):
+    if not await service.validate_turn_snapshot(snapshot):
         return
     async with admitted_scope(
         service, snapshot.conversation_id, snapshot.generation, event_id
@@ -590,7 +590,7 @@ async def observe_main_response(
 async def promote_invitations(service: SemanticParticipationService, item: _Session) -> None:
     callback = service._promote
     conversation = item.scene.conversation_id
-    if callback is None or conversation in service._promotions:
+    if conversation in service._promotions:
         return
     identity = await actor_identity(
         service,
@@ -612,7 +612,7 @@ async def promote_invitations(service: SemanticParticipationService, item: _Sess
             item.controller.state.consumed[event.ref.event_id] = event.ref.revision
             item.controller.state.candidates.pop(event.ref.event_id, None)
             continue
-        row = await service.app.ledger.get_event(int(event_identity))
+        row = await service.ledger.get_event(int(event_identity))
         if row is None:
             continue
         basis = invitation_basis(item, event)

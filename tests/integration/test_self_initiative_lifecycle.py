@@ -153,7 +153,7 @@ async def test_intrinsic_to_real_chat_and_terminal_feedback(database, tmp_path, 
         # dynamics; it is never the actor/trigger for the SELF execution.
         await _event_and_route(
             database,
-            host.app.ledger,
+            host.ledger,
             group="1049765710",
             content="isolated historical context, no invitation",
         )

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.integration.test_native_social_delivery import prepare_paid_send
+from tests.support.service_dependencies import workspace_service
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import artifact_ids, snapshot_bytes
 from tests.unit.test_admin_api import admin as admin_fixture
@@ -21,7 +22,6 @@ from yuki.gateway.social import TransportMessage, transport_payload
 from yuki.runtime.effect_outcomes import execution_evidence
 from yuki.sandbox.persistent import PersistentManager
 from yuki.social.models import SocialError
-from yuki.workspace.service import WorkspaceService
 
 admin = admin_fixture
 app_env = app_fixture
@@ -130,7 +130,7 @@ def attach_manager(env, tmp_path):
     async def execute(method, args, *, request_id):
         return await manager.file_request(method, args, request_id)
 
-    workspace = WorkspaceService(env.store)
+    workspace = workspace_service(env.store)
     workspace.sandbox = SimpleNamespace(execute=execute)
     env.service.workspace_service = workspace
     return manager

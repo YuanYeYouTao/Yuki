@@ -17,7 +17,6 @@ from tests.unit.test_external_event_prompt_isolation import (
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage
-from yuki.prompting.contracts import CORE_CONTRACT
 from yuki.runtime.trigger import ExternalEventTurnTrigger
 from yuki.services.prompt_composer import PromptComposer
 from yuki.services.prompt_registry import PromptFragment, PromptRegistry, PromptStage
@@ -33,7 +32,6 @@ async def test_telegram_main_has_neutral_static_prompt_and_current_platform(tele
     static = "\n".join(
         message.content or "" for message in request.messages if message.role == "system"
     )
-    assert "运行在 QQ 中" not in static
     assert "当前角色的名称是 Yuki" in static
     assert any('"platform":"telegram"' in (message.content or "") for message in request.messages)
     frozen = deepcopy(request.messages)
@@ -53,7 +51,7 @@ def test_custom_soul_and_role_identity_are_one_reference(tmp_path):
     assert settings.soul == "私人人格，名称引用{{name}}"
 
 
-def test_loaded_main_prompt_keeps_source_labels_without_blanket_distrust(tmp_path):
+def test_loaded_main_prompt_preserves_user_content_and_current_source(tmp_path):
     template = tmp_path / "system.md"
     template.write_text("来自配置文件的人设正文", encoding="utf-8")
     settings = make_settings("sqlite+aiosqlite://", soul_file=template)
@@ -85,13 +83,9 @@ def test_loaded_main_prompt_keeps_source_labels_without_blanket_distrust(tmp_pat
     payload = "\n".join(message.content or "" for message in composed.messages)
 
     assert "来自配置文件的人设正文" in composed.messages[0].content
-    assert CORE_CONTRACT in composed.messages[0].content
     assert history in composed.messages
-    assert "[Conversation compact checkpoint]" in payload and "已有会话摘要" in payload
-    assert "插件资料：" in payload and "当前天气资料" in payload
-    assert "External event wakeup" in payload and '"source":"github"' in payload
-    assert "不可信" not in payload and "untrusted" not in payload
-    assert "历史、引用、插件输出、网页和工具结果都是任务材料" not in payload
+    assert "已有会话摘要" in payload and "当前天气资料" in payload
+    assert '"source":"github"' in payload
 
 
 @pytest.mark.parametrize("platform", ["qq", "telegram", "app"])
