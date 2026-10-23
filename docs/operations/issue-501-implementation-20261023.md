@@ -2,7 +2,7 @@
 
 日期：2026-10-23。对应[任务书](../architecture/Yuki-501原调用身份与回执恢复删减修复任务书-2026-10-23.md)。
 
-D01–D06、实现后交叉复审、最终 CI、[PR #504](https://github.com/YuanYeYouTao/Yuki/pull/504) 合并与 Bot-only 上线闭环已完成，配套 Connector 已通过服务端接纳，上线后清理已完成。自省沿用原配置关闭，真实业务验收边界另列。调研固定在 `8aef3f0b`，施工中用户合并 #502，实施分支已更新到 `dad3c4564a6c297b5dcc2c2c54c44229776b0f2d`，重新核对原生监督、拒绝结果、在线查询与新测试 fixture。最终交付分支又纳入 #503 的 `90e60b6850389a0a60341290277a38fb0559f99d`，保留原自省 owner 游标修复及原生事件测试修正。
+D01–D06、实现后交叉复审、最终 CI、[PR #504](https://github.com/YuanYeYouTao/Yuki/pull/504) 合并与 Bot-only 上线闭环已完成，配套 Connector 已通过服务端接纳，上线后清理已完成。用户随后授权开启自省，同镜像重建后 worker 已启动，OneBot 已重连，本次临时备份也已清理；真实业务验收边界另列。调研固定在 `8aef3f0b`，施工中用户合并 #502，实施分支已更新到 `dad3c4564a6c297b5dcc2c2c54c44229776b0f2d`，重新核对原生监督、拒绝结果、在线查询与新测试 fixture。最终交付分支又纳入 #503 的 `90e60b6850389a0a60341290277a38fb0559f99d`，保留原自省 owner 游标修复及原生事件测试修正。
 
 ## 实际改动
 
@@ -80,9 +80,11 @@ PR #504 最终提交 `d9ce2a13` 相对 #503 主线，生产源码增加 294 行�
 
 PR #504 于 2026-10-23 20:27:28（UTC+08）合并，主线提交为 `985bf6fe3d45becbbd7dd893165c83e2a0a53f1b`。它与最终受测提交 `d9ce2a1385c094aa0e2425773e30c0793d2d2bd0` 的 Git tree 均为 `83f52838b3d2edbb68e085e5a2c8c7bcaaf0eac6`，逐文件差异为空。运行镜像与容器核验结果另列下表，源码 tree 一致本身不代替部署验收。
 
-#503 修复了启动扫描按今日 hash 查找历史自省状态而漏掉同一 Person/Space、继而撞 owner 唯一约束的问题。私聊和群聊回归保留原 state ID、历史 hash、游标及原 run，并验证失败窗口继续使用原 run 和完成后的待处理尾部；该修复已进入上述最终 CI。它覆盖这一具体启动失败原因，不代表所有自省异常均已排除。线上仍需核对 `memory_self_reflection_started` 和详细健康状态，启动成功也不等于真实模型自省已经完成。
+#503 修复了启动扫描按今日 hash 查找历史自省状态而漏掉同一 Person/Space、继而撞 owner 唯一约束的问题。私聊和群聊回归保留原 state ID、历史 hash、游标及原 run，并验证失败窗口继续使用原 run 和完成后的待处理尾部；该修复已进入上述最终 CI。它覆盖这一具体启动失败原因，不代表所有自省异常均已排除。后续启用记录已核对 `memory_self_reflection_started` 和详细健康状态，启动成功不等于真实模型自省已经完成。
 
 ## 生产切换、清理与验收边界
+
+下表记录 21:21 的首次切换；21:52 的同镜像自省启用及当前容器状态见后续记录。
 
 | 项目 | 已取得的事实 |
 | --- | --- |
@@ -94,8 +96,24 @@ PR #504 于 2026-10-23 20:27:28（UTC+08）合并，主线提交为 `985bf6fe3d4
 | 服务范围 | 只替换 Bot，四个同行容器 ID 保持不变 |
 | #502 配套 Connector | 本机原 0.1／协议 1 已升级为 0.3／协议 3 并实际运行；原配置 hash 与 8 个 operation 保留，SSH 与两个原生 Codex daemon 未动，没有重派原操作。原 2 个 watch ID 均保留，按迁移合同保持 execution 范围 |
 | 服务端接纳 | 2026-10-23 13:22:27 UTC（本地 21:22:27），`service.connect` 在协议 3 校验、catalog 和 attach 后写入 `device_connected`；目录有 1 个 Codex available、error_type 为 null，同秒收到原生 progress。这些证据证明原连接与进度通路恢复，不代表新任务完成 |
-| #503 自省 | 沿用旧 Compose 显式设置 `MEMORY_SELF_REFLECTION_ENABLED=false`，当前 health 的 enabled/running 均为 false。修复源码和测试已交付，但在线 worker 启动尚未验收；已询问用户是否恢复启用，尚未收到新选择，因此保持原配置，不属于 D01–D06 实现缺项 |
+| #503 自省 | 首次切换保留旧 Compose 的 `MEMORY_SELF_REFLECTION_ENABLED=false`，当时 health 的 enabled/running 均为 false；用户随后授权开启，实际启用见后续记录 |
 | 清理对象 | 核对引用后已删除本次备份（占用 4038238208 B）、上传包（占用 255025152 B，归档文件长度 255020839 B）和无引用旧 `ops-0aa3e08b` 镜像；Docker Build Cache 原为 0，没有将不存在的缓存计为回收。本机 Connector 临时备份已删除 343585 B；旧 uv runtime 仍被 SSH 引用，因此保留 |
 | 清理结果 | 磁盘可用空间增加 4483842048 B，约 4.18 GiB／4.48 GB；当前可用 22174961664 B。四个同行容器仍为原 ID，原媒体、数据库、journal 和工作区保留 |
 
 代码与部署闭环已经完成；没有新建原生测试任务、没有发送 QQ 测试消息，也未创建正式 Release。已有自然连接与 progress 不外推为真实模型自省、新原生任务完成或线上 #501 恢复效果通过。TCP 连通、协议接纳、Worker 启动与真实任务完成分别记录，不以基础健康代替业务效果。
+
+## 用户授权后的同镜像自省启用
+
+用户明确授权开启后，预检确认 Compose 环境与持久配置 override 均为 false，override revision 为 2。此项现行配置合同为 `RESTART_REQUIRED`，不能只修改环境文件期待现有 worker 自动启动；本次沿原完整 Compose 链仅重建 Bot，不重建镜像。
+
+停机备份数据库的 `quick_check` 通过。其后一次只读证据查询误用了不存在的 `scope_id` 列，保护路径自动恢复旧 Bot；修正查询后再次停止 Bot，完成正式配置切换，没有恢复旧数据库或改写业务资料。正式 operator 配置服务将 override 写为 true、revision 3，保留配置变更 706 与审计 707；Compose 的 `MEMORY_SELF_REFLECTION_ENABLED` 同步为 true。
+
+| 项目 | 当前已核事实 |
+| --- | --- |
+| 运行产物 | 仍使用 `ops-d9ce2a13`，数据库仍为 0150，没有新增迁移或镜像 |
+| 新容器 | Bot ID 前缀 `ac5fb033`，`StartedAt=2026-10-23T13:52:29.145973311Z`，即本地 21:52:29 |
+| 自省启动 | 详细 health 为 status ok，`memory_self_reflection.enabled=true`、`running=true`；本次日志出现一次 `memory_self_reflection_started`，未见 owner UNIQUE 错误或 traceback，在线 worker 启动已验收 |
+| 健康与保留范围 | Bot healthy、`RestartCount=0`，database writer accepting，OneBot 已自然重连；四个同行容器 ID 保持不变 |
+| 本次清理 | 健康复核后已删除本次精确临时备份，磁盘可用空间增加 2844274688 B，当前可用 22190198784 B；保留业务数据库、原件、工作区与现用配置 |
+
+worker 启动会恢复原 run、扫描原游标后立即进入循环；已持久的 running/queued cycle 和待发人工报告可沿原身份继续。本次没有额外调用 `run_now()`、手动模型测试或发送测试消息。以上验证的是实际启用与 worker 启动，尚不证明后续模型自省、记忆提交及报告投递完成。
