@@ -2,6 +2,9 @@
 services:
   bot:
     image: ${YUKI_LOCAL_IMAGE:-ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}}
+    # Local files stay owned by the person who selected this directory.
+    user: "${YUKI_LOCAL_UID:-10001}:${YUKI_LOCAL_GID:-10001}"
+    entrypoint: ["/bin/sh", "-c", "yuki init-db && exec yuki-bot"]
     ports:
       - "127.0.0.1:${YUKI_LOCAL_PORT:-8080}:8080"
     volumes: !override
