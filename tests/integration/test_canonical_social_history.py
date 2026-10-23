@@ -103,7 +103,9 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
     )
     assert unavailable["anchor_status"] == "unavailable" and not unavailable["events"]
     token = current_invocation.set(
-        ToolInvocationContext(SimpleNamespace(read_target_id=env.person), call_id="delegated")
+        ToolInvocationContext(
+            SimpleNamespace(read_target_id=env.person), invocation_key="delegated"
+        )
     )
     try:
         with pytest.raises(SocialError, match="history_scope_denied"):
@@ -318,7 +320,7 @@ async def test_delegated_history_keeps_same_person_scope_after_merge(database, t
         read_target_id=env.person if grant == "original" else target,
     )
     env.bot.calls.clear()
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="delegated"))
+    token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="delegated"))
     try:
         result = await invoke_social(
             env.service,

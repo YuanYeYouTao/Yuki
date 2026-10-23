@@ -71,7 +71,7 @@ class WorkspaceService:
                     (
                         f"workspace:{invocation.runtime.conversation_key}:"
                         f"{invocation.execution_key}:"
-                        f"{invocation.call_id}"
+                        f"{invocation.invocation_key}"
                     ).encode()
                 ).hexdigest()
                 if invocation

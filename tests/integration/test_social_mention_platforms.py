@@ -53,7 +53,7 @@ async def invoke(env, arguments, *, account="10001"):
         presence_id=env.presence,
     )
     runtime = ToolRuntime(inbound=message)
-    token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="mention"))
+    token = current_invocation.set(ToolInvocationContext(runtime=runtime, invocation_key="mention"))
     try:
         return await invoke_social(env.service, "send", arguments, runtime)
     finally:

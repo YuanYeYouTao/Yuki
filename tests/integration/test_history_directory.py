@@ -248,7 +248,7 @@ async def test_entry_directory_keeps_real_read_delegation(database, tmp_path):
             "80001", "20001", conversation_id=env.context.conversation_id
         ),
     )
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="directory-grant"))
+    token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="directory-grant"))
     try:
         page = await invoke_social(env.service, "find_contacts", {"view": "entries"}, runtime)
         assert page["items"] and all(item["space_id"] == env.space for item in page["items"])

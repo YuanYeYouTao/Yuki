@@ -553,8 +553,7 @@ class MemoryAdminService:
         )
         if not mutation.ok or mutation.new_fact_id is None:
             return None
-        result = await self._memories.get_fact(mutation.new_fact_id)
-        return await self._visible_person_correction(result, expected_content=expected)
+        return await self._memories.get_fact(mutation.new_fact_id)
 
     async def invalidate_fact(
         self,
@@ -890,24 +889,6 @@ class MemoryAdminService:
             ),
             target=target,
         )
-
-    async def _visible_person_correction(
-        self,
-        fact: MemoryFact | None,
-        *,
-        expected_content: str,
-    ) -> MemoryFact | None:
-        if (
-            fact is None
-            or fact.content != expected_content
-            or fact.scope_type is not MemoryScopeType.PERSON
-            or fact.canonical_subject_person_id is None
-        ):
-            return None
-        projection = await self._memories.list_person(
-            person_id=fact.canonical_subject_person_id,
-        )
-        return next((row for row in projection if row.id == fact.id), None)
 
     async def _mutation_fact(
         self,

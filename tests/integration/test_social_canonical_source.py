@@ -55,7 +55,9 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     )
     runtime = ToolRuntime(inbound=inbound, visible_event_ids=frozenset({original.id}))
     arguments = {"text": "reply delivered", "reply_to_event_id": original.id}
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="ordinary-reply-send"))
+    token = current_invocation.set(
+        ToolInvocationContext(runtime, invocation_key="ordinary-reply-send")
+    )
     try:
         result = await invoke_social(env.service, "send", arguments, runtime)
     finally:
@@ -135,7 +137,7 @@ async def test_social_refs_use_original_person_after_external_account_transfer(
         effective_trigger_event_id=event.id,
         space_id=env.space,
     )
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="original"))
+    token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="original"))
     try:
         await invoke_social(env.service, "find_contacts", {"kind": "person"}, runtime)
     finally:

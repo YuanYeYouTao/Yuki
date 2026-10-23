@@ -38,7 +38,6 @@ from yuki.memory.fts import SQLiteMemoryFTSIndex
 from yuki.memory.models import MemoryEntityTarget, MemoryQueryIntent
 from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
-    MemoryMutationAppliedOperation,
     MemoryMutationContext,
     MemoryMutationRequest,
     MemoryMutationResult,
@@ -837,14 +836,14 @@ class AgentToolService:
                         (
                             f"{runtime.conversation_id}:"
                             f"{runtime.effective_execution_id}:"
-                            f"{invocation.call_id}"
+                            f"{invocation.invocation_key}"
                         ).encode()
                     ).hexdigest()
                     from yuki.runtime.work_activation import current_work_control
 
                     work_control = current_work_control.get()
                     if work_control is not None and work_control.session is not None:
-                        request_id = sha256(invocation.call_id.encode()).hexdigest()
+                        request_id = sha256(invocation.invocation_key.encode()).hexdigest()
                     source = (
                         {**runtime.sandbox_source, **self._work_source()}
                         if runtime.sandbox_source
@@ -902,7 +901,9 @@ class AgentToolService:
                             name,
                             arguments,
                             runtime=runtime,
-                            request_id=invocation.call_id if invocation is not None else None,
+                            request_id=invocation.invocation_key
+                            if invocation is not None
+                            else None,
                         )
                         return self._result(
                             data=workspace_result,
@@ -1755,7 +1756,7 @@ class AgentToolService:
                 executed_by_bot_user_id=runtime.effective_bot_user_id or "",
                 initiative_run_id=runtime.initiative_run_id,
                 source_group_id=runtime.current_group_id,
-                operation_id=invocation.call_id if invocation is not None else None,
+                operation_id=invocation.invocation_key if invocation is not None else None,
                 actor_person_id=None,
             )
             result = await service.mutate(request, context)
@@ -1797,7 +1798,7 @@ class AgentToolService:
             decision_actor_id=actor.execution_id or "main_agent",
             executed_by_bot_user_id=runtime.effective_bot_user_id or "bot",
             actor_is_superuser=runtime.actor_is_superuser,
-            operation_id=invocation.call_id if invocation is not None else None,
+            operation_id=invocation.invocation_key if invocation is not None else None,
             actor_person_id=event.author_person_id,
         )
         named_target: ResolvedSubject | None = None
@@ -1862,31 +1863,7 @@ class AgentToolService:
         return self._memory_change_result(result)
 
     def _memory_change_result(self, result: MemoryMutationResult) -> ToolExecutionResult:
-        payload: dict[str, Any] = {
-            "ok": result.ok,
-            "mutation_id": result.mutation_id,
-            "requested_operation": result.requested_operation.value,
-            "applied_operation": result.applied_operation.value,
-            "outcome": result.outcome.value,
-            "old_fact_id": result.old_fact_id,
-            "new_fact_id": result.new_fact_id,
-            "reason_code": result.reason_code,
-            "deduplicated": result.deduplicated,
-            "candidates": [
-                {
-                    "fact_id": candidate.fact_id,
-                    "memory_ref": candidate.memory_ref,
-                    "key": candidate.memory_key,
-                    "category": candidate.category,
-                    "kind": candidate.kind.value,
-                    "content": candidate.content,
-                    "status": candidate.status.value,
-                }
-                for candidate in result.candidates
-            ],
-        }
-        if result.ok and result.applied_operation is MemoryMutationAppliedOperation.INVALIDATE:
-            payload["persistence_semantics"] = "invalidated_not_deleted"
+        payload = result.tool_payload()
         if not result.ok:
             retryable = result.reason_code in {
                 "memory_candidate_ambiguous",

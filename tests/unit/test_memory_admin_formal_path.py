@@ -11,9 +11,12 @@ from tests.unit.test_memory_rebuild import _admin
 
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.models import AdminActor
+from yuki.memory.enums import MemoryScopeType, MemorySourceType
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from yuki.memory.mutation.models import MemoryMutationRequestBasis
 from yuki.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
 from yuki.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
+from yuki.services.commands.memory import MemoryCommands
 
 
 def trigger(source, operation_id):
@@ -57,6 +60,65 @@ async def test_missing_facts_keep_original_noops_without_secondary_writes(databa
         assert (
             await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 0
         )
+
+
+@pytest.mark.parametrize("scope", [MemoryScopeType.PERSON, MemoryScopeType.GROUP])
+async def test_command_correction_returns_original_result_for_authorized_scope(database, scope):
+    admin, facts, ledger = admin_for(database)
+    source = await _event(
+        ledger,
+        message_id=f"command-original-{scope}",
+        sender_user_id="9000",
+        group_id="3001",
+        content="original fact",
+    )
+    original = await facts.remember(
+        MemoryFactCreate(
+            scope_type=scope,
+            subject_user_id="9000" if scope is MemoryScopeType.PERSON else None,
+            group_id="3001" if scope is MemoryScopeType.GROUP else None,
+            memory_key="command-correction",
+            category="explicit",
+            content="original fact",
+            source_type=MemorySourceType.EXPLICIT,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=source.id,
+            source_speaker_user_id="9000",
+            relation="explicit_command",
+            excerpt=source.content,
+        ),
+    )
+    event = await _event(
+        ledger,
+        message_id=f"command-correction-{scope}",
+        sender_user_id="9000",
+        group_id="3001",
+        content=f"/ai memory correct {original.id} corrected fact",
+    )
+    actor = AdminActor(
+        "9000",
+        True,
+        "command",
+        "group:3001",
+        bot_user_id=event.bot_user_id,
+        trigger_event_id=event.id,
+        person_id=await _admin(database),
+        decision_actor_type="command",
+    )
+    commands = MemoryCommands(admin, None)
+    response = await commands.memory(actor=actor, argument=f"correct {original.id} corrected fact")
+    async with database.read_session() as reader:
+        receipt = await reader.scalar(select(MemoryMutationReceiptModel))
+        corrected_id = receipt.new_fact_id
+    assert response == f"已创建修正事实 #{corrected_id}。"
+    corrected = await facts.get_fact(corrected_id)
+    assert corrected.scope_type is scope and corrected.content == "corrected fact"
+    assert (await facts.get_fact(original.id)).status.value == "superseded"
+    assert (
+        await commands.memory(actor=actor, argument=f"correct {original.id} corrected fact")
+        == response
+    )
 
 
 async def test_correction_rolls_back_then_copies_original_evidence_on_retry(database):

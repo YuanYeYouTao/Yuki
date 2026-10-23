@@ -22,7 +22,7 @@ async def invoke_social(
         actor = runtime.require_actor()
         if (
             invocation is None
-            or not invocation.call_id
+            or not invocation.invocation_key
             or runtime.tools_closed
             or actor.principal_kind != "self"
             or runtime.inbound is not None
@@ -31,7 +31,7 @@ async def invoke_social(
         scheduled_run = actor.automation_run_id
         context = SocialContext(
             turn_id=f"{actor.conversation_id}:{actor.source_key}",
-            call_id=invocation.call_id,
+            call_id=invocation.invocation_key,
             conversation_id=actor.conversation_id or "",
             space_id=runtime.space_id,
             origin=runtime.origin.value,
@@ -57,7 +57,7 @@ async def invoke_social(
         conversation_id = runtime.effective_conversation_id
         if (
             invocation is None
-            or not invocation.call_id
+            or not invocation.invocation_key
             or runtime.inbound is not None
             or runtime.tools_closed
             or not isinstance(event_id, int)
@@ -83,7 +83,7 @@ async def invoke_social(
                 raise SocialError("permission_denied")
         context = SocialContext(
             turn_id=f"{conversation_id}:plugin-event:{event_id}",
-            call_id=invocation.call_id,
+            call_id=invocation.invocation_key,
             conversation_id=conversation_id,
             person_refs=(
                 {"current_speaker": runtime.person_id} if runtime.person_id is not None else {}
@@ -111,7 +111,7 @@ async def invoke_social(
             raise SocialError("missing_read_scope")
         context = SocialContext(
             turn_id=f"{runtime.effective_conversation_id}:{runtime.effective_execution_id}",
-            call_id=invocation.call_id,
+            call_id=invocation.invocation_key,
             conversation_id=runtime.effective_conversation_id or "",
             space_id=runtime.space_id,
             person_refs={"current_speaker": actor.person_id}
@@ -134,7 +134,7 @@ async def invoke_social(
             raise SocialError("history_scope_denied")
         context = SocialContext(
             turn_id=f"{runtime.effective_conversation_id}:{runtime.effective_execution_id}",
-            call_id=invocation.call_id,
+            call_id=invocation.invocation_key,
             conversation_id=runtime.effective_conversation_id or "",
             space_id=target_id if kind == "space" else None,
             person_refs={"current_speaker": target_id} if kind == "person" else {},
@@ -163,7 +163,7 @@ async def invoke_social(
     ):
         raise SocialError("permission_denied")
     invocation = current_invocation.get()
-    if invocation is None or not invocation.call_id:
+    if invocation is None or not invocation.invocation_key:
         raise SocialError("missing_call_context")
     inbound = runtime.inbound
     actor = runtime.require_actor()
@@ -189,7 +189,7 @@ async def invoke_social(
     execution_id = actor.source_key
     context = SocialContext(
         turn_id=f"{conversation_id}:{execution_id}",
-        call_id=invocation.call_id,
+        call_id=invocation.invocation_key,
         conversation_id=conversation_id,
         origin=runtime.origin.value,
         person_refs=refs,

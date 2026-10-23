@@ -32,6 +32,7 @@ from yuki.emoji.sticker_index import StickerIndex
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import _media_io
 from yuki.vision.fake import FakeVisionProvider
+from yuki.workspace.files import FileWorkspace
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 pytestmark = pytest.mark.skipif(
@@ -60,17 +61,12 @@ class LocalDirectoryBridge:
             return await _media_io(StickerIndex(self.root).execute, args)
         if method == "workspace_copy":
             source = self.cache / str(args["path"]).removeprefix("/inputs/media-cache/")
-            content = source.read_bytes()
-            digest = hashlib.sha256(content).hexdigest()
-            assert digest == args["expected_version"]
-            target = self.root / args["destination"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-            return {
-                "path": "/workspace/" + args["destination"],
-                "version": digest,
-                "size": len(content),
-            }
+            with source.open("rb") as stream:
+                return FileWorkspace(self.root).copy(
+                    args["destination"],
+                    stream.fileno(),
+                    expected_version=args["expected_version"],
+                )
         if method in {"workspace_media_read", "workspace_media_validate"}:
             target = self.root / str(args["path"]).removeprefix("/workspace/")
             if not target.exists():
@@ -104,18 +100,25 @@ async def library(tmp_path):
     await value.close()
 
 
-async def seed_cached_sticker(value, content, **arguments):
-    """Seed the real shared original; collection itself only copies its cache path."""
+def cached_sticker_source(value, content):
+    """Prepare one stable original before any collection starts."""
     digest = hashlib.sha256(content).hexdigest()
     relative = f"v1/{digest}"
     original = value.workspace.sandbox.cache / relative
     original.parent.mkdir(parents=True, exist_ok=True)
     original.write_bytes(content)
+    return {
+        "cached_path": original,
+        "shared_path": "/inputs/media-cache/" + relative,
+        "sha256": digest,
+        "source_key": "test-original:" + digest,
+    }
+
+
+async def seed_cached_sticker(value, content, **arguments):
+    """Seed the real shared original; collection itself only copies its cache path."""
     return await value.store_cached(
-        original,
-        shared_path="/inputs/media-cache/" + relative,
-        sha256=digest,
-        source_key="test-original:" + digest,
+        **cached_sticker_source(value, content),
         request_id=arguments.pop("request_id", f"test-sticker:{uuid4()}"),
         **arguments,
     )
@@ -425,9 +428,10 @@ def attach_caption_provider(value):
 async def test_concurrent_first_create_has_one_optional_caption(library):
     value, bridge = library
     provider = attach_caption_provider(value)
+    source = cached_sticker_source(value, picture())
     first, second = await asyncio.gather(
-        seed_cached_sticker(value, picture(), platform="qq"),
-        seed_cached_sticker(value, picture(), platform="qq"),
+        value.store_cached(**source, request_id="first-collection", platform="qq"),
+        value.store_cached(**source, request_id="second-collection", platform="qq"),
     )
     await asyncio.gather(*tuple(value._tasks))
     assert first.id == second.id and len(provider.requests) == 1

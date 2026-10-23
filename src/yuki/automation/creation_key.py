@@ -10,5 +10,5 @@ def creation_key(source_key: str) -> str:
     invocation = current_invocation.get()
     if invocation is None:
         return source_key
-    call_key = invocation.call_id
+    call_key = invocation.invocation_key
     return "call:" + hashlib.sha256(json.dumps([source_key, call_key]).encode()).hexdigest()

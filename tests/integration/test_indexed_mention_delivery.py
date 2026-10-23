@@ -70,7 +70,7 @@ async def env(database, tmp_path):
 
 async def send(env, text, *, call_id="send", **arguments):
     runtime = ToolRuntime(inbound=env.source)
-    token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id=call_id))
+    token = current_invocation.set(ToolInvocationContext(runtime=runtime, invocation_key=call_id))
     try:
         return await invoke_social(
             env.service, "send", {"text": text, **arguments}, runtime

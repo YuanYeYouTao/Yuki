@@ -620,7 +620,7 @@ class CodeModeDriver:
 
     async def _dispatch_child(self, state: _State, child: _Child) -> None:
         control = self.control
-        if child.state != "prepared":
+        if child.state != "prepared" or child.dispatched:
             # Restored child: the original receipt only, never a second dispatch.
             child.receipt = await self._original_receipt(child)
             child.view = receipt_view(
@@ -631,18 +631,12 @@ class CodeModeDriver:
                 reused=True,
             )
             self.usage.reused_receipts += 1
+            if child.klass.side_effecting and child.view.executed:
+                state.side_effect_done = True
+            if child.state == "prepared" and child.view.uncertain:
+                raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
             self._closing(child)
             return
-        if child.dispatched:
-            # T2 committed before a crash: possibly sent. Never re-run.
-            child.receipt = await self._original_receipt(child)
-            child.view = receipt_view(
-                child.receipt,
-                evidence=child.evidence,
-                operation_id=child.operation_id,
-                executed=True,
-            )
-            raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         call = ToolCall(f"c{child.ordinal}", ToolFunction(child.tool, child.arguments))
         if child.klass.kind == "control":
             await self._dispatch_control(child, call)

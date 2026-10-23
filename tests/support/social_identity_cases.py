@@ -343,7 +343,9 @@ async def current_speaker_mention(env):
         presence_id=env.presence,
     )
     runtime = ToolRuntime(inbound=message)
-    token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="mention-me"))
+    token = current_invocation.set(
+        ToolInvocationContext(runtime=runtime, invocation_key="mention-me")
+    )
     try:
         result = await invoke_social(
             env.service,

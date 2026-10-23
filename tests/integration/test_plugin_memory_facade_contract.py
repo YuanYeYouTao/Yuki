@@ -18,6 +18,8 @@ from yuki.identity.errors import CanonicalIdentityError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.memory.mutation.models import MemoryMutationRequestBasis
 from yuki.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.plugin_host.facades import HostPluginContext
 from yuki.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -138,6 +140,93 @@ async def test_two_calls_and_cold_replay_keep_each_original_identity(database, m
             source_type="plugin",
             confidence=0.4,
         )
+
+
+@pytest.mark.parametrize("invalidate_latest", [False, True])
+async def test_cold_callback_replays_each_correction_after_later_versions(
+    database, memory_host, invalidate_latest
+):
+    env, host, invocation, _, _ = memory_host
+
+    async def sequence(context):
+        with context.bind(invocation):
+            added = await context.memory.add(
+                scope_type="person",
+                subject_id=env.person,
+                content="original fact",
+                source_type="plugin",
+                confidence=0.4,
+            )
+            original = added.data["memory"]["memory_id"]
+            first = await context.memory.update(original, content="first correction")
+            second = await context.memory.update(
+                first.data["memory_id"], content="second correction"
+            )
+            assert first.ok and second.ok
+            if invalidate_latest:
+                assert (await context.memory.delete(second.data["memory_id"])).ok
+            return original, first, second
+
+    original = await sequence(host)
+    async with database.read_session() as reader:
+        receipts = tuple(await reader.scalars(select(MemoryMutationReceiptModel.mutation_id)))
+        fact_ids = tuple(await reader.scalars(select(MemoryFactModel.id)))
+    await database.engine.dispose()
+    mutations, facts, ledger, _ = _service(database)
+    rebuilt = HostPluginContext(
+        plugin_id=host.plugin_id,
+        approved_permissions=host._approved_permissions,
+        services=replace(
+            host._services,
+            memories=facts,
+            memory_admin=MemoryAdminService(
+                settings=make_settings(database.url),
+                memories=facts,
+                audit=AdminAuditService(database),
+                mutations=mutations,
+                ledger=ledger,
+            ),
+        ),
+    )
+    try:
+        assert await sequence(rebuilt) == original
+        assert (await facts.get_fact(int(original[1].data["memory_id"].split(":")[1]))).content == (
+            "first correction"
+        )
+        async with database.read_session() as reader:
+            assert tuple(await reader.scalars(select(MemoryFactModel.id))) == fact_ids
+            assert (
+                tuple(await reader.scalars(select(MemoryMutationReceiptModel.mutation_id)))
+                == receipts
+            )
+        rebuilt._approved_permissions = frozenset()
+        with rebuilt.bind(invocation), pytest.raises(PluginPermissionError):
+            await rebuilt.memory.update(original[0], content="first correction")
+    finally:
+        await rebuilt.close_host_resources()
+
+
+async def test_correction_replay_does_not_restore_forgotten_person_material(database, memory_host):
+    env, host, invocation, facts, _ = memory_host
+    with host.bind(invocation):
+        added = await host.memory.add(
+            scope_type="person",
+            subject_id=env.person,
+            content="private original fact",
+            source_type="plugin",
+            confidence=0.4,
+        )
+        original_id = added.data["memory"]["memory_id"]
+        corrected = await host.memory.update(original_id, content="private correction")
+    assert corrected.ok
+    assert await PeopleRepository(database).delete_person_id(env.person)
+    with host.bind(invocation):
+        result = await host.memory.update(original_id, content="private correction")
+    assert not result.ok and result.error_code == "memory.not_found"
+    assert "private" not in str(result.data)
+    assert await facts.get_fact(int(corrected.data["memory_id"].split(":")[1])) is None
+    async with database.read_session() as reader:
+        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
 
 
 async def test_source_event_validation_precedes_any_memory_effect(database, memory_host):

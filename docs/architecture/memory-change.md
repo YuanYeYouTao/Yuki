@@ -55,6 +55,12 @@ SELF 的 kind、category 和 key 不设固定名称白名单。私聊资料传�
 同一原请求的 mutation/operation ID 和持久回执负责幂等，不以同 key 全库唯一代替幂等。
 主工具使用原 Host 调用的稳定 operation ID；相同正文的新调用仍是独立请求。
 原 operation 携带不同参数时报告冲突，不返回另一份变更的成功结果。原调用确认丢失时先读其持久回执。
+原修正结果后来 superseded 或 invalidated，不改变该次修正已提交及原结果 ID；命令和插件直接
+消费原 mutation 的结果，不再用当前 active 人物列表二次裁决成功。当前对象展示与原效果分开，
+真实授权和隐私清退仍沿原入口处理，不恢复已经删除的正文。
+Work 已绑定 `memory:<mutation_id>` 而尚未保存工具结果时，从原 receipt 只读恢复；原 outcome、
+old/new fact ID 与调用归属保留，不再次执行 mutation，也不因当前事实状态变化推翻原效果。
+缺回执或 processing 保持未确认；已知拒绝和无变化按原领域结果返回，不冒充成功或未知。
 事实、版本、证据、状态事件和变更回执作为同一纯数据库单元提交。失败整体回滚，取消传播。
 完整来源与复制证据在只读快照准备，关闭 reader 后进入主库统一 FIFO writer。
 提交时核对实际来源、成员集合、归属和权限；不升级旧读快照，不再运行 Memory 自己的 BUSY 重试循环。

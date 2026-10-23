@@ -28,7 +28,7 @@ async def test_one_plugin_invocation_creates_two_tasks_and_replays_original_requ
     )
     second_task = {**first_task, "name": "second", "goal": "check second"}
     token = (
-        current_invocation.set(ToolInvocationContext(source, call_id="original-plugin-call"))
+        current_invocation.set(ToolInvocationContext(source, invocation_key="original-plugin-call"))
         if bound_tool_call
         else None
     )

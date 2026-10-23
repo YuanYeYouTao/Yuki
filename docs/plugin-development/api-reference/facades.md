@@ -62,6 +62,11 @@ memory.delete(memory_id) -> PluginResult
 fact 和 evidence；`update(confidence=None)` 沿原 fact 的值，不强制改成 1。现有来源证据按
 真实范围核验，`source_event_ids` 只能引用当前真实事件，不能用其他事件补造出处。
 
+同一可信 callback 按原调用顺序重入时，`update` 返回原 mutation 的结果 ID；该版本被后续
+修正或失效，不会把原成功改成 `memory.not_found`。原效果与当前对象展示分开：`add` 可返回
+原 fact 的当前状态，不承诺冻结整份 JSON。权限与隐私规则继续生效，已清退的正文不被恢复；
+没有持久 callback 身份的普通新回调不因此获得跨重启重放语义。
+
 `add` 的 `source_type=automatic` 表示自动记录；`plugin` 表示插件生产者，不等于用户显式
 指令，两者均沿真实来源形成 automatic 事实。插件身份记录于原 mutation receipt，
 不另造持久 `plugin` 来源枚举。公开 `update` 仍是显式 correction 操作；后台、第三方等来源的

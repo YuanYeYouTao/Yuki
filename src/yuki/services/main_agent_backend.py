@@ -419,7 +419,9 @@ class MainAgentBackend(AgentToolBackend):
                         self.failed_tool_calls += 1
                     return await binding.invoke(
                         {str(key): value for key, value in parsed.items()},
-                        ToolInvocationContext(runtime=binding_runtime, call_id=receipt_call_id),
+                        ToolInvocationContext(
+                            runtime=binding_runtime, invocation_key=receipt_call_id
+                        ),
                     )
 
                 outcome = await self._service.run_effect(
