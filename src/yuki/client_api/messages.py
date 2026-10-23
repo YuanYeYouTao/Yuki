@@ -10,6 +10,14 @@ if TYPE_CHECKING:
     from yuki.client_api.files import ClientFiles
     from yuki.client_api.prompts import ClientPrompts
 
+from yuki.client_api.agent_target import (
+    AgentTarget,
+    authorize_target,
+    input_content,
+    stored_target,
+    target_data,
+    target_segments,
+)
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
 from yuki.client_api.requests import ClientRequests, personal_command
@@ -42,6 +50,7 @@ class ClientMessages:
         request_id: str,
         text: str,
         references: tuple[str, ...],
+        agent_target: AgentTarget | None = None,
     ) -> dict[str, Any] | None:
         async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
@@ -59,7 +68,9 @@ class ClientMessages:
                     raise ClientError("not_found")
                 return None
             payload_segments = [
-                part for part in json.loads(event.segments_json) if part["type"] != "yuki_context"
+                part
+                for part in json.loads(event.segments_json)
+                if part["type"] not in {"yuki_context", "agent_target"}
             ]
             original_references = tuple(
                 part.get("data", {}).get("media_id") for part in payload_segments[1:]
@@ -72,7 +83,9 @@ class ClientMessages:
                 not payload_segments
                 or payload_segments[0] != {"type": "text", "data": {"text": text}}
                 or original_references != references
-                or event.content != rendered
+                or event.content != input_content(rendered, agent_target)
+                or target_data(stored_target(json.loads(event.segments_json)))
+                != target_data(agent_target)
             ):
                 raise ClientError("request_conflict")
             return {
@@ -87,14 +100,16 @@ class ClientMessages:
         request_id: str,
         text: str,
         attachments: tuple[str, ...] = (),
+        agent_target: AgentTarget | None = None,
     ) -> dict[str, Any]:
         text = text.strip()
-        if not text and not attachments:
+        if not text and not attachments and agent_target is None:
             raise ClientError("validation_error")
         segments = ({"type": "text", "data": {"text": text}},)
-        previous = await self._previous(principal, request_id, text, attachments)
+        previous = await self._previous(principal, request_id, text, attachments, agent_target)
         if previous is not None:
             return previous
+        await authorize_target(self.identity.database, principal.person_id, agent_target)
         transient: tuple[MessageAttachment, ...] = ()
         rendered = text
         if attachments:
@@ -106,6 +121,8 @@ class ClientMessages:
                 f" [{part['type']}附件{index}：{part['data']['filename']}]"
                 for index, part in enumerate(media_segments)
             )
+        segments += target_segments(agent_target)
+        rendered = input_content(rendered, agent_target)
         async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             binding = await session.get(IdentityBindingModel, principal.binding_id)
@@ -130,7 +147,7 @@ class ClientMessages:
         except CanonicalIdentityError as exc:
             if exc.category != "receipt_conflict":
                 raise
-            previous = await self._previous(principal, request_id, text, attachments)
+            previous = await self._previous(principal, request_id, text, attachments, agent_target)
             if previous is None:
                 if (
                     write_failure_phase(exc) is not None
@@ -140,7 +157,7 @@ class ClientMessages:
                 raise ClientError("request_conflict") from exc
             return previous
         if not appended.created:
-            previous = await self._previous(principal, request_id, text, attachments)
+            previous = await self._previous(principal, request_id, text, attachments, agent_target)
             if previous is None:
                 raise ClientError("request_conflict")
             return previous

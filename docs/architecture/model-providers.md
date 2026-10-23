@@ -176,6 +176,7 @@ Gemini 组装一次请求时转换一次基础历史，并在该 payload 内按�
 `headers` 支持 OpenRouter 的站点标识、Anthropic beta 等非鉴权 Header；不能覆盖认证字段，
 不能放换行或把密钥写入 TOML。`api_key_env` 是密钥引用；可读取进程环境变量，或由管理 API
 将 operator 输入的 API Key 保存在模型文件同目录的私有 `model_profiles.secrets.json` 中。
+显式 `api_key_env = ""` 表示该连接无需鉴权；Pool 允许调用，HTTP 不添加空 Bearer／原生 API Key Header。有声明的密钥环境变量仍必须提供真实值，缺失时在请求前报错。不按本机地址、Provider 名称或模型内容推断鉴权方式，也不填写伪造 Key。
 管理查询不会回传密钥；客户端不跨供应商或密钥来源共享。
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
 Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。Google Gemini 连接示例使用

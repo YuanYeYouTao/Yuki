@@ -16,12 +16,22 @@ from pathlib import Path, PurePosixPath
 
 from scripts.release_validate import project_version
 
-_ROOT_FILES = frozenset({"docker-compose.yml", ".env.example", "install.sh", "install.ps1"})
+_ROOT_FILES = frozenset(
+    {
+        "docker-compose.yml",
+        "docker-compose.local.yml",
+        "docker-compose.https.yml",
+        ".env.example",
+        "install.sh",
+        "install.ps1",
+    }
+)
 _CONFIG_FILES = frozenset(
     {
         "config/model_profiles.example.toml",
         "config/SOUL.md",
         "config/qq_face_map.json",
+        "config/Caddyfile.example",
     }
 )
 _EMPTY_DIRECTORIES = (
@@ -76,6 +86,7 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
             soul_deployment,
             "docs/operations/persistent-environment.md",
             "docs/operations/persistent-environment.zh-CN.md",
+            "docs/operations/desktop-local-deployment.zh-CN.md",
         }
     )
     missing = sorted(required - tracked)

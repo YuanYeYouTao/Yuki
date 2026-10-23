@@ -319,6 +319,7 @@ class ClaudeDriver:
     async def _inspect(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
+            *(["-I", "-B"] if sys.flags.isolated else []),
             "-m",
             "yuki_agent_connector.claude_inspect",
             env=self.spec.environment(),

@@ -4,7 +4,9 @@ Independent Python 3.12 connector for an existing local Codex daemon, the offici
 Agent SDK and generic ACP agents. It does not install the Yuki Bot, own business tasks,
 mirror native transcripts or send chat messages itself.
 
-Install the built wheel with Python 3.12, for example `uv tool install path/to/yuki_agent_connector-0.2.0-py3-none-any.whl`.
+For ordinary Desktop users, use the bundled setup UI; no Python or terminal installation is required.
+For an independently managed CLI installation, install the wheel with Python 3.12, for example
+`uv tool install path/to/yuki_agent_connector-0.3.1-py3-none-any.whl`.
 The connector uses its own lock file and does not install the Bot project. The pinned
 Claude SDK currently includes its own large CLI payload; the driver nevertheless
 requires the explicitly selected native executable and never silently runs that payload.
@@ -78,7 +80,7 @@ Services are per OS user: Windows Task Scheduler uses `InteractiveToken` and
 `LeastPrivilege` after login; Linux uses `systemd --user`; macOS uses a user
 LaunchAgent. `service stop` and `service uninstall` preserve configuration, journal
 and native stores. Closing Desktop does not stop this service. Desktop invokes the
-same CLI with the same default installation, without another runtime or credential copy.
+same CLI with the explicitly selected original data directory, without another driver or credential copy.
 
 Development and artifact checks:
 
@@ -120,3 +122,51 @@ originals without imposing a round trip before every send. Failure of the event 
 or reader ends that connection. An acknowledged old-protocol event whose ACK was lost remains the same
 fact after upgrade; replay does not duplicate its Work input. Complete diffs are no longer pushed as
 progress; file paths, command results, plans, questions and native tool milestones remain available.
+
+### Desktop-managed distribution (0.3.1; wire protocol remains 3)
+
+Desktop ships a platform-specific, relocatable CPython directory with this exact
+locked Connector wheel and dependencies. The user does not need Python, uv, pip,
+or a terminal. The build machine assembles it with `scripts/build_runtime.py`,
+using pinned python-build-standalone archive digests and `uv.lock` hashes. A build
+moves the complete directory to a path containing spaces/Unicode before checking
+the real module entry point, SQLite/TLS, all three drivers and local status.
+Python's distribution notices, dependency dist-info licenses, the Yuki license,
+and the dependency lock travel with the runtime. This is not a relocated venv.
+
+Desktop copies the bundle to a stable per-user runtime directory before installing
+a service. The selected data directory remains unchanged across runtime upgrades:
+config, device/profile IDs and journal are not copied or recreated. The runtime
+content digest distinguishes builds with the same package version. A separate
+installation is created only through the explicit UI action. Existing installations
+can be selected with their original absolute Python path and data directory;
+Desktop does not upgrade an externally managed Python installation.
+
+Managed launches use `-I -B -m yuki_agent_connector`; the installed user service
+and Claude inspection subprocess preserve isolated mode. Thus project/CWD Python
+files and user site-packages cannot replace the bundled module. The module and
+service model are the same as the independent CLI. Package assembly must run on
+the target OS/architecture, and official installers still require the corresponding
+platform signing/notarization checks; an unsigned local build is not a release.
+
+`discover --json` reads registered Codex installation locations and explicit
+absolute executable locations. It never searches the current directory or reads
+login files. `instance configure` accepts a JSON object on stdin and updates a
+specified original instance ID; it retains environment, native owner endpoint and
+journal. A registered installation source is re-resolved when the Codex client
+starts so an app update need not create another profile. `diagnose --instance ID`
+is an explicit no-model native handshake and account/read check; an installed
+binary, a running Connector service, device admission, and native login readiness
+are separate observations. Status contains actual registered service executable
+information, not merely the Python used by the status command.
+
+Example build-machine command (choose a new output directory):
+
+```text
+uv run --frozen python scripts/build_runtime.py --output /staging/agent-connector --cache /build-cache/python
+```
+
+Desktop authorizes through the current chat Person to issue a connector-purpose
+code, then passes it to this CLI on stdin. The renderer never receives that code.
+Task and permission UI forwards the original server IDs through Main/Work;
+submission acknowledgement does not assert native execution success.

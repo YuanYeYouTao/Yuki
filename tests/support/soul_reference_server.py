@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from tests.conftest import make_settings
 from tests.support.model_profiles import write_fake_profiles
 
+from yuki.character.db_models import CharacterOwnerGrantModel
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.identity.canonical_repository import create_presence
@@ -28,9 +29,19 @@ from yuki.identity.db_models import CanonicalPersonModel
 from yuki.persistence.database import Database
 
 
-async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None:
+async def serve(
+    root: Path,
+    state_file: Path,
+    port: int,
+    base_path: str,
+    *,
+    desktop: bool = False,
+    real_model_source: Path | None = None,
+) -> None:
     soul_file = root / "character" / "SOUL.md"
-    database = Database(f"sqlite+aiosqlite:///{(root / 'yuki.sqlite3').as_posix()}")
+    database_path = root / "yuki.sqlite3"
+    first_start = not database_path.exists()
+    database = Database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
     runtime = ApplicationContainer(
         make_settings(
             database.url,
@@ -43,23 +54,40 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
             social_transfer_directory=root / "transfer",
             runtime_work_enabled=True,
             telegram_bot_token="",
+            asr_enabled=desktop and real_model_source is None,
+            web_mode="disabled" if real_model_source is not None else "native",
         ),
         database=database,
     )
     try:
-        await database.create_schema()
-        await runtime.character.initialize("初始角色")
-        operator_id, owner_id, nonowner_id = (str(uuid4()) for _ in range(3))
-        now = datetime.now(UTC)
-        async with database.immediate_session() as session:
-            session.add_all(
-                CanonicalPersonModel(
-                    id=person_id, display_name=name, created_at=now, updated_at=now
+        if first_start:
+            await database.create_schema()
+            await runtime.character.initialize("初始角色")
+            operator_id, owner_id, nonowner_id = (str(uuid4()) for _ in range(3))
+            now = datetime.now(UTC)
+            async with database.immediate_session() as session:
+                session.add_all(
+                    CanonicalPersonModel(
+                        id=person_id, display_name=name, created_at=now, updated_at=now
+                    )
+                    for person_id, name in ((owner_id, "Owner"), (nonowner_id, "Visitor"))
                 )
-                for person_id, name in ((owner_id, "Owner"), (nonowner_id, "Visitor"))
+                await create_presence(
+                    session, external_account_id="yuki-app", platform="app", now=now
+                )
+            await runtime.character.set_owner(operator_id, owner_id, str(uuid4()), granted=True)
+        else:
+            original_state = json.loads(
+                await asyncio.to_thread(state_file.read_text, encoding="utf-8")
             )
-            await create_presence(session, external_account_id="yuki-app", platform="app", now=now)
-        await runtime.character.set_owner(operator_id, owner_id, str(uuid4()), granted=True)
+            owner_id = original_state["owner_person_id"]
+            nonowner_id = original_state["nonowner_person_id"]
+            async with database.read_session() as session:
+                assert await session.get(CanonicalPersonModel, owner_id) is not None
+                assert await session.get(CanonicalPersonModel, nonowner_id) is not None
+                grant = await session.get(CharacterOwnerGrantModel, owner_id)
+                assert grant is not None
+                operator_id = grant.granted_by_principal
 
         async def issue_code(person_id: str) -> dict:
             return await runtime.client_identity.issue_for_operator(
@@ -68,12 +96,161 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
 
         owner_code = await issue_code(owner_id)
         nonowner_code = await issue_code(nonowner_id)
+        work_model_gate = asyncio.Event()
+        work_model_gate.set()
+        if desktop and real_model_source is None:
+            from tests.support.desktop_reference_server import ControlledASR
+
+            asr_provider = ControlledASR()
+            runtime.asr._provider = asr_provider
+            from tests.integration.test_current_material_main_contract import _catalog, _profile
+
+            from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+            from yuki.llm.fake import FakeLLMProvider
+            from yuki.model_runtime.pool import ModelClientPool
+
+            def respond(request):
+                from yuki.runtime.work_activation import current_work_control
+
+                has_receipt = any(
+                    message.role == "tool" or message.tool_calls for message in request.messages
+                )
+                control = current_work_control.get()
+                if (
+                    has_receipt
+                    and control is not None
+                    and control.current is not None
+                    and not control.ending
+                ):
+                    return ChatResponse(
+                        content="",
+                        latency_seconds=0,
+                        tool_calls=(
+                            ToolCall(
+                                str(uuid4()),
+                                ToolFunction(
+                                    "task_control",
+                                    json.dumps(
+                                        {
+                                            "action": "complete",
+                                            "result": "Desktop reference complete",
+                                        }
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                if has_receipt:
+                    return ChatResponse(content="已完成。", latency_seconds=0)
+                return ChatResponse(
+                    content="",
+                    latency_seconds=0,
+                    tool_calls=(
+                        ToolCall(
+                            str(uuid4()),
+                            ToolFunction("send", json.dumps({"text": "Desktop reference reply"})),
+                        ),
+                    ),
+                )
+
+            class DesktopModel(FakeLLMProvider):
+                async def _complete(self, request):
+                    from yuki.runtime.work_activation import current_work_control
+
+                    control = current_work_control.get()
+                    if control is not None and control.current is not None:
+                        await work_model_gate.wait()
+                    return await super()._complete(request)
+
+            runtime.models.apply_catalog(
+                _catalog(_profile()),
+                ModelClientPool(injected_profiles={"main": DesktopModel(respond)}),
+            )
+        elif real_model_source is not None:
+            from tests.support.desktop_reference_server import load_real_models
+
+            catalog, pool = load_real_models(real_model_source)
+            runtime.models.apply_catalog(catalog, pool)
         await runtime.model_invocations.writer.start()
         await runtime.app_gateway.start()
         await runtime._freeze_main_manifest()
         await runtime.work_scheduler.start()
-        api = FastAPI()
+        artifact_state = {}
+        if desktop and real_model_source is None:
+            from tests.support.desktop_reference_server import publish_artifact
+
+            if first_start:
+                artifact_state = await publish_artifact(runtime, await issue_code(owner_id))
+                await asyncio.gather(*tuple(runtime.app_gateway.tasks))
+            else:
+                artifact_state = {
+                    key: value
+                    for key, value in original_state.items()
+                    if key.startswith("artifact_")
+                }
+        api = FastAPI(debug=desktop)
         attach_client_api(api, lambda: runtime.client_api)
+        if desktop:
+            from yuki.external_agents.http import attach_external_agent_api
+
+            attach_external_agent_api(api, lambda: runtime.external_agents)
+
+        if desktop and real_model_source is None:
+            from types import SimpleNamespace
+
+            qq_bot = SimpleNamespace(self_id="8000")
+
+            @api.post("/__test/qq-entry")
+            async def qq_entry() -> dict:
+                from tests.support.desktop_reference_server import seed_qq_entry
+
+                return await seed_qq_entry(runtime, owner_id, qq_bot)
+
+            @api.delete("/__test/events/{event_id}")
+            async def remove_original_event(event_id: int) -> dict:
+                # Simulate an original source being retired, including real DB triggers.
+                from sqlalchemy import delete
+
+                from yuki.persistence.models import ChatEventModel
+
+                async with database.immediate_session() as session:
+                    await session.execute(
+                        delete(ChatEventModel).where(ChatEventModel.id == event_id)
+                    )
+                return {"deleted": event_id}
+
+            @api.get("/__test/asr-started")
+            async def asr_started() -> dict:
+                return {"started": asr_provider.started.is_set()}
+
+            @api.post("/__test/resume-asr")
+            async def resume_asr() -> dict:
+                asr_provider.release.set()
+                return {"released": True}
+
+            @api.post("/__test/work")
+            async def work_fixture() -> dict:
+                from tests.support.desktop_reference_server import seed_work
+
+                return await seed_work(runtime, artifact_state)
+
+            @api.post("/__test/history")
+            async def history_fixture(count: int = 61) -> dict:
+                from tests.support.desktop_reference_server import seed_app_history
+
+                return await seed_app_history(runtime, artifact_state, count)
+
+        if desktop and real_model_source is None:
+
+            @api.post("/__test/hold-work")
+            async def hold_work_model() -> dict:
+                work_model_gate.clear()
+                return {"held": True}
+
+            @api.post("/__test/release-work")
+            async def release_work_model() -> dict:
+                work_model_gate.set()
+                return {"held": False}
 
         @api.get("/healthz")
         async def ready() -> dict:
@@ -117,11 +294,20 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
                     await asyncio.sleep(0.01)
                 state = {
                     "base_url": f"http://127.0.0.1:{actual_port}{base_path}",
+                    "owner_person_id": owner_id,
+                    "nonowner_person_id": nonowner_id,
                     "owner_pairing_code": owner_code["code"],
                     "nonowner_pairing_code": nonowner_code["code"],
+                    **artifact_state,
                 }
                 await asyncio.to_thread(state_file.write_text, json.dumps(state), encoding="utf-8")
-                print(json.dumps(state), flush=True)
+                if real_model_source is None:
+                    print(json.dumps(state), flush=True)
+                else:
+                    print(
+                        "Isolated real-model backend ready; connection details in state file.",
+                        flush=True,
+                    )
                 await serving
     finally:
         try:

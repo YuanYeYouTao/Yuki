@@ -54,7 +54,7 @@ class GeminiProvider(JSONHTTPProvider):
         return f"models/{quote(request.model.removeprefix('models/'), safe='')}:generateContent"
 
     def _request_headers(self) -> dict[str, str]:
-        return {**self._headers, "x-goog-api-key": self._api_key}
+        return {**self._headers, **({"x-goog-api-key": self._api_key} if self._api_key else {})}
 
     @staticmethod
     def _usage_diagnostics(payload: dict[str, Any]) -> dict[str, object]:

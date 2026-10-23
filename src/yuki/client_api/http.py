@@ -12,6 +12,7 @@ from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
+from yuki.client_api.agent_target import AgentTarget
 from yuki.client_api.errors import ClientError
 from yuki.client_api.files import ClientFiles
 from yuki.client_api.http_errors import install_identity_errors
@@ -29,6 +30,20 @@ from yuki.client_api.models import (
     character_changes,
 )
 from yuki.client_api.prompts import ClientPrompts
+from yuki.client_api.responses import (
+    Activity,
+    Events,
+    Home,
+    InputReceipt,
+    LinkCodeReceipt,
+    Me,
+    MessageReceipt,
+    PairReceipt,
+    RequestReceipt,
+    UploadReceipt,
+    Work,
+    WorkCancelReceipt,
+)
 from yuki.client_api.sessions import ClientSessions
 from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.client_api.views import ClientViews
@@ -68,12 +83,14 @@ class MessageBody(BaseModel):
     request_id: UUID4
     text: str
     attachments: tuple[str, ...] = ()
+    agent_target: AgentTarget | None = None
 
 
 class WorkInputBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID4
     text: str
+    agent_target: AgentTarget | None = None
 
 
 class WorkCancelBody(BaseModel):
@@ -204,7 +221,9 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             raise ClientError("unavailable")
         return service
 
-    @router.post("/uploads")
+    @router.post(
+        "/uploads", response_model=Envelope[UploadReceipt], response_model_exclude_unset=True
+    )
     async def upload(
         request: Request,
         actor: Actor,
@@ -232,11 +251,31 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             },
         )
 
-    @router.get("/home")
+    @router.get("/home", response_model=Envelope[Home], response_model_exclude_unset=True)
     async def home(actor: Actor) -> Any:
         return {"data": await views().home(actor)}
 
-    @router.get("/conversations/{identity}/events")
+    @router.get("/conversations/{identity}/events/{event_id}/attachments/{attachment_index}")
+    async def attachment(
+        identity: UUID4, event_id: int, attachment_index: int, actor: Actor
+    ) -> Response:
+        metadata, content = await files().attachment(
+            actor, str(identity), event_id, attachment_index
+        )
+        return Response(
+            content,
+            media_type="application/octet-stream",
+            headers={
+                "ETag": f'"{metadata["sha256"]}"',
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(metadata['name'])}",
+            },
+        )
+
+    @router.get(
+        "/conversations/{identity}/events",
+        response_model=Envelope[Events],
+        response_model_exclude_unset=True,
+    )
     async def events(
         identity: UUID4,
         actor: Actor,
@@ -250,7 +289,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.get("/activity")
+    @router.get("/activity", response_model=Envelope[Activity], response_model_exclude_unset=True)
     async def activity(actor: Actor, conversation_id: UUID4) -> Any:
         return {"data": await views().activity(actor, str(conversation_id))}
 
@@ -262,15 +301,29 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             headers={"Cache-Control": "no-cache"},
         )
 
-    @router.get("/works/{identity}")
+    @router.get(
+        "/works/{identity}", response_model=Envelope[Work], response_model_exclude_unset=True
+    )
     async def work(identity: UUID4, actor: Actor) -> Any:
         return {"data": await works().get(actor, str(identity))}
 
-    @router.post("/works/{identity}/inputs")
+    @router.post(
+        "/works/{identity}/inputs",
+        response_model=Envelope[InputReceipt],
+        response_model_exclude_unset=True,
+    )
     async def work_input(identity: UUID4, body: WorkInputBody, actor: Actor) -> Any:
-        return {"data": await works().submit(actor, str(identity), str(body.request_id), body.text)}
+        return {
+            "data": await works().submit(
+                actor, str(identity), str(body.request_id), body.text, body.agent_target
+            )
+        }
 
-    @router.post("/works/{identity}/cancel")
+    @router.post(
+        "/works/{identity}/cancel",
+        response_model=Envelope[WorkCancelReceipt],
+        response_model_exclude_unset=True,
+    )
     async def work_cancel(identity: UUID4, body: WorkCancelBody, actor: Actor) -> Any:
         return {
             "data": await works().cancel(
@@ -278,16 +331,24 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.post("/messages")
+    @router.post(
+        "/messages", response_model=Envelope[MessageReceipt], response_model_exclude_unset=True
+    )
     async def messages(body: MessageBody, actor: Actor) -> Any:
         service = resolve().messages
         if service is None:
             raise ClientError("unavailable")
         return {
-            "data": await service.submit(actor, str(body.request_id), body.text, body.attachments)
+            "data": await service.submit(
+                actor, str(body.request_id), body.text, body.attachments, body.agent_target
+            )
         }
 
-    @router.get("/requests/{request_id}")
+    @router.get(
+        "/requests/{request_id}",
+        response_model=Envelope[RequestReceipt],
+        response_model_exclude_unset=True,
+    )
     async def original_request(request_id: UUID4, actor: Actor) -> Any:
         from yuki.client_api.requests import ClientRequests
 
@@ -297,7 +358,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.post("/pair")
+    @router.post("/pair", response_model=Envelope[PairReceipt], response_model_exclude_unset=True)
     async def pair(body: PairBody, authorization: Annotated[str | None, Header()] = None) -> Any:
         if authorization is not None:
             raise ClientError("unauthenticated")
@@ -305,11 +366,13 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             "data": await resolve().identity.pair(body.code.get_secret_value(), body.device_label)
         }
 
-    @router.get("/me")
+    @router.get("/me", response_model=Envelope[Me], response_model_exclude_unset=True)
     async def me(actor: Actor) -> Any:
         return {"data": await resolve().identity.me(actor)}
 
-    @router.post("/link-codes")
+    @router.post(
+        "/link-codes", response_model=Envelope[LinkCodeReceipt], response_model_exclude_unset=True
+    )
     async def link_code(actor: Actor, body: LinkCodeBody | None = None) -> Any:
         return {
             "data": await resolve().identity.issue_for_device(

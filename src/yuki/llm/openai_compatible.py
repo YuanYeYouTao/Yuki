@@ -38,6 +38,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
         *,
         base_url: str,
         api_key: str,
+        api_key_env: str | None = None,
         timeout_seconds: float,
         max_retries: int,
         client: httpx.AsyncClient | None = None,
@@ -48,6 +49,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
         super().__init__(
             base_url=base_url,
             api_key=api_key,
+            api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
             client=client,

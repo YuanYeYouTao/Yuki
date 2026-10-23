@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -75,6 +76,7 @@ def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProces
         check=check,
         capture_output=True,
         text=True,
+        encoding="utf-8" if command[0].lower() == "powershell" else None,
         creationflags=creation_flags,
     )
 
@@ -101,6 +103,7 @@ class UserService:
     @property
     def arguments(self) -> list[str]:
         return [
+            *(["-I", "-B"] if sys.flags.isolated else []),
             "-m",
             "yuki_agent_connector",
             "--config",
@@ -258,20 +261,41 @@ class UserService:
                     "-NoProfile",
                     "-NonInteractive",
                     "-Command",
-                    f"[int](Get-ScheduledTask -TaskName '{self.name}' -ErrorAction Stop).State",
+                    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+                    f"$t=Get-ScheduledTask -TaskName '{self.name}' -ErrorAction Stop; "
+                    "[PSCustomObject]@{running=($t.State -eq 'Running');"
+                    "executable=$t.Actions[0].Execute;argumentLine=$t.Actions[0].Arguments}"
+                    " | ConvertTo-Json -Compress",
                 ],
                 check=False,
             )
-            running = result.stdout.strip() == "4" if result.returncode == 0 else None
+            if result.returncode == 0:
+                actual = json.loads(result.stdout)
+                return {"installed": True, **actual}
+            running = None
         elif self.platform == "darwin":
             result = run(["launchctl", "print", f"gui/{user_id()}/{self.name}"], check=False)
             running = "state = running" in result.stdout if result.returncode == 0 else False
+            actual = re.search(r"^\s*program = (.+)$", result.stdout, re.MULTILINE)
+            if actual:
+                return {"installed": True, "running": running, "executable": actual[1]}
+            # An unloaded LaunchAgent still has its exact next-launch target.
+            value = plistlib.loads(self.artifact.read_bytes())
+            return {
+                "installed": True,
+                "running": running,
+                "executable": value["ProgramArguments"][0],
+                "arguments": value["ProgramArguments"][1:],
+            }
         else:
             result = run(
-                ["systemctl", "--user", "show", self.name, "-p", "ActiveState", "--value"],
+                ["systemctl", "--user", "show", self.name, "-p", "ActiveState", "-p", "ExecStart"],
                 check=False,
             )
-            running = result.stdout.strip() == "active" if result.returncode == 0 else None
+            running = "ActiveState=active" in result.stdout if result.returncode == 0 else None
+            actual = re.search(r"path=(.+?) ;", result.stdout)
+            if actual:
+                return {"installed": True, "running": running, "executable": actual[1]}
         return {"installed": True, "running": running}
 
     def uninstall(self) -> None:

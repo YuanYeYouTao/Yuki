@@ -25,6 +25,7 @@ from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatTool, InboundMessage
 from yuki.domain.tool_actor import ToolActor
+from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
@@ -1043,6 +1044,8 @@ class AgentToolService:
                 return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
             except SQLAlchemyError as exc:
                 return await self._database_failure(exc, name=name, runtime=runtime)
+            except ExternalAgentArgumentError as exc:
+                return self._result(error=exc.code, detail=exc.detail, retryable=False)
             except (TypeError, ValueError) as exc:
                 from yuki.persistence.database import write_failure_committed, write_failure_phase
 

@@ -43,6 +43,7 @@ def event_view(row: EventRecord, *, timezone: str = "Asia/Taipei") -> dict[str, 
         "attachments": [
             {
                 "attachment_index": index,
+                "segment_index": position,
                 "kind": kind,
                 **{
                     key: value
@@ -59,7 +60,7 @@ def event_view(row: EventRecord, *, timezone: str = "Asia/Taipei") -> dict[str, 
                     }
                 },
             }
-            for index, _position, kind, data in indexed_media_segments(row.segments)
+            for index, position, kind, data in indexed_media_segments(row.segments)
         ],
         "occurred_at": local_iso(row.occurred_at, timezone),
         "observed_at": local_iso(row.observed_at or row.occurred_at, timezone),

@@ -9,7 +9,7 @@
 
 电脑使用独立 `/agents/v1/pair` 兑换 connector 码，再用该 token 建立 `/agents/v1/connect` WSS；不能使用聊天 token。电脑归原 Person，不依赖 App Binding、Conversation 或其 generation；同人合并保原 device namespace，账号转移不转电脑。电脑连接只传输原生控制和重要事件，不自行发聊天消息。
 
-`GET /agents/v1/devices` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。新控制沿 Main 固定 `external_agent` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
+`GET /agents/v1/devices`、`/agents/v1/instances/{instance_id}/sessions?cursor=...`、`/agents/v1/operations?work_id=...&cursor=...&limit=...` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。设备目录包含尚无实例的本人 connector 设备，online 仅来自当前服务端连接；实例 `local_id` 仅用于本地配置匹配，控制仍使用服务端内部 `id`。会话目录 cursor 沿该实例原 native 分页，查询不启动任务。操作列表按原 created_at/id 分页，cursor 为上一页原 operation ID，默认每页 50 条，next_cursor 为 null 表示当前已读完；不另建持久游标。操作列表复用原持久回执和离线 unknown 投影，不把 accepted 当作已完成。新控制沿 Main 固定 `external_agent` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
 
 ## 角色资料与单 SOUL
 
@@ -35,7 +35,7 @@ SDK 的 SOUL 受控写在确认丢失后先查原 UUID，恢复仍用原 payload
 | `GET /me` | 设备 Bearer；当前 Person、凭据来源、实际 App 入口、原请求 namespace、绑定与设备列表 |
 | `POST /link-codes {request_id?}` | 设备 Bearer；为本人签发新码，明文仅首次返回 |
 | `DELETE /devices/{id}` | 设备 Bearer；撤销本人的指定设备，其他设备继续可用 |
-| `POST /messages {request_id, text, attachments:[media_id,...]}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
+| `POST /messages {request_id, text, attachments:[media_id,...], agent_target?}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
 | `GET /requests/{request_id}` | 原消息／命令查询，先核本人归属，不重新派发 |
 
 每个原 App 入口由服务器生成账号、Binding 和独立 Conversation；多设备进入同一入口时共用会话。
@@ -95,6 +95,8 @@ Memory 重建按来源事件处理提案，保留有界账号的运行选择集�
 重放先核当前本人访问权与原事件作者／App 会话，再核规范化正文和附件，
 已有请求不构造新入站、不通知轮次。并发首次提交在原入账处遇到 receipt_conflict 时，
 回到同一授权与内容核对；同号不同操作或正文返回 request_conflict。正文是个人聊天输入，
+App 消息与 `POST /works/{id}/inputs` 可附显式 `agent_target`：本人设备、实例、会话、执行、原 operation、项目 cwd，以及可选 intent、permission_id、option_id、response JSON 对象。intent 不默认为 prompt；没有显式意图时以用户正文为准。目标在首次接纳前沿原 Person／资源／当前 connector 授权查证，随原事件与 Work 输入进入 Main，不由个人 HTTP 另建执行驱动。目标、意图和原问题答案都参与同 UUID 一致性；未提供 target 的旧输入保持原正文和指纹。原请求查证先返回原回执，不依赖该电脑当前在线或目录就绪。此选择不构成整个 Work 后续工具操作的固定锁；实际控制继续核原资源、原问题和真实执行回执。
+
 不在个人 API 中执行 QQ `/ai` 管理命令。附件使用本人已登记的 media_id，经原媒体链准备。
 
 App 经过原 Processor、Main、Social 与 Memory；配置、读取与执行来源使用 canonical Person
@@ -156,6 +158,8 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 不重读请求体、不重新登记文件。过期资源用于一条新的附件消息时仍返回 not_found。
 
 上传与原聊天媒体共用 24 小时原件缓存，不设单文件、会话或全局经验容量配额；真实磁盘与平台传输失败照实返回。维护清理会在删除前核实际回执引用。
+`GET /conversations/{conversation_id}/events/{event_id}/attachments/{attachment_index}` 在原个人事件可见范围内下载原件，返回强 ETag；读取后重新核当前本人／入口／原事件授权及字节摘要。缺失或已经清理的过期原件返回 not_found，不通过重新下载来重置期限。事件 attachment_index 是媒体序号，segment_index 是原消息段序号；ASR 的 segment_index 只与后者关联。普通事件投影不为可用性提示扫描或 hash 原文件；客户端实际下载以该 GET 回执为准。
+
 已接纳消息的原件通过只读目录映射在共享沙箱 `/inputs/media-cache`，各会话的 Agent 均可按需读取或复制收藏。Main 首次输入仅有附件索引和资料，图片、视频、贴纸及普通文件均不自动展开；语音沿原 ASR 配置独立处理。
 账本仅保存 media_id 和元数据，沙箱路径仅在当前运行资料提供；媒体字节及 Base64 不进入公开事件。设备上传、绑定与下载 API 的身份仍沿原合同，不因共享 Agent 环境改为匿名上传或公开下载。
 
@@ -263,7 +267,7 @@ Work 完成和消息已发出是不同事实。`work.active` 只反映原 Work �
 能力按实际实现声明：本轮支持 initialize、new、load、prompt、cancel，不声明 resume/close；
 cwd 是客户端目录资料，不改服务器工作区，也不授予客户端 terminal/设备执行能力。
 文本、嵌入文本与 ResourceLink 保原输入含义；图片、音频与嵌入二进制显式不支持，客户端文本文件读取只使用已协商的只读回调。
-已确认的文件出站在 live/load 中保留原 artifact ID 与版本，ResourceLink 指向个人 API 实际下载地址，仍需原设备凭据；链接本身不携 token。旧媒体只有 media ID、没有独立下载 API 时保留原可见引用并说明不能下载，不伪造 URL。
+已确认的文件出站在 live/load 中保留原 artifact ID 与版本，ResourceLink 指向个人 API 实际下载地址，仍需原设备凭据；链接本身不携 token。普通原件使用原 conversation/event/attachment_index 下载接口；无法定位原事件或原件已清理时保留原可见引用并说明不可用，不伪造 URL 或重新下载续期。
 Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支持。当前规范要求 stdio MCP，
 因此这是已知互操作限制，不宣称覆盖所有 ACP MUST；不为对接恢复动态工具或新的审批框架。
 
@@ -277,3 +281,12 @@ App/ACP 与其他 Main 入口共用当前 Main 固定工具合同，执行处核
 Person 的管理员资格直接保存于人物，但个人设备正文仍不解析 `/ai admin` 或插件直达命令。真正管理走既有 operator/平台命令入口。鉴权不再写设备 last_used_at；GET/事件读取与初始 SSE sync 的调用链为只读，仍即时核当前撤销、人物启停与入口归属。
 
 ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；第二请求投影、live 输出与取消均关联该原 Work 及其子树。原请求结束与 Work 是否完成独立。已知失败重放仍能展示先前已确认输出，沿原 UUID 查证，不重新购买模型请求。
+
+
+### 可选配对链接与真实参考服务
+
+显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link` 在原一次性 chat 码旁附 `yuki://pair?server=...&code=...`；未配置时保留原裸码输出，不猜服务器地址。链接只帮助填写已有信息，purpose 与 Person／owner 权限不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
+
+个人 API 的 me、home、events、activity、Work、request、upload、pair 和 link-code 使用真实投影的响应模型；保留现有公开扩展字段，不因类型收敛静默删字段。新增可选输入与只读路由保持 revision 6 兼容。
+
+`python -m tests.support.desktop_reference_server --root DIR --state-file FILE` 仅为临时隔离测试：装配原 ApplicationContainer、SQLite、App/Work/Social、个人与 connector HTTP 路由，模型出口采用脚本化 provider，不访问付费模型或生产。旧 soul_reference_server 保持原入口。测试 state 中 artifact_id/artifact_version 来自真不可变快照与已成功 Social 发送，授权只属于 fixture 原 Person。`POST /__test/work` 在该隔离 Person 原事件下沿 WorkRepository 接纳、Social 发送问题并转 waiting_user，供真实输入、取消与跨设备回执联调；这些测试控制不进入正式应用。

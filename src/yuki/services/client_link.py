@@ -1,5 +1,6 @@
 """Platform possession proof before automatic Person creation or chat admission."""
 
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -20,9 +21,13 @@ from yuki.services.policies import message_command_text
 
 class ClientLinkCommands:
     def __init__(
-        self, identities: ClientIdentityService, registry: GatewayConnectionRegistry
+        self,
+        identities: ClientIdentityService,
+        registry: GatewayConnectionRegistry,
+        public_url: str = "",
     ) -> None:
         self.identities, self.registry = identities, registry
+        self.public_url = public_url
 
     def is_request(self, message: InboundMessage) -> bool:
         parts = message_command_text(message).strip().split(maxsplit=2)
@@ -114,7 +119,12 @@ class ClientLinkCommands:
                     continue
                 break
             if not code:
-                return f"绑定码：{result['code']}（10 分钟内有效，使用一次后失效）。"
+                reply = f"绑定码：{result['code']}（10 分钟内有效，使用一次后失效）。"
+                if self.public_url and result.get("code"):
+                    reply += "\n绑定链接：yuki://pair?" + urlencode(
+                        {"server": self.public_url, "code": result["code"]}
+                    )
+                return reply
             if result["merged"]:
                 return "身份已合并，原入口、会话和执行记录继续保留。"
             return "账号已绑定到目标身份。"

@@ -1,14 +1,17 @@
 #!/bin/sh
 set -eu
 
+yuki_uid=${YUKI_RUNTIME_UID:-10001}
+yuki_gid=${YUKI_RUNTIME_GID:-10001}
+
 mkdir -p /app/data
 mkdir -p /app/workspace /app/social-transfer
 mkdir -p /app/character
-chown -R bot:bot /app/character
+chown -R "$yuki_uid:$yuki_gid" /app/character
 chmod 750 /app/character
-chown bot:bot /app/workspace /app/social-transfer
+chown "$yuki_uid:$yuki_gid" /app/workspace /app/social-transfer
 chmod 755 /app/social-transfer
-chown -R bot:bot /app/data
+chown -R "$yuki_uid:$yuki_gid" /app/data
 
 case ",${COMPOSE_PROFILES:-}," in
   *,snowluma,*)
@@ -29,5 +32,5 @@ case ",${COMPOSE_PROFILES:-}," in
     ;;
 esac
 
-setpriv --reuid=10001 --regid=10001 --init-groups yuki init-db
-exec setpriv --reuid=10001 --regid=10001 --init-groups yuki-bot
+setpriv --reuid="$yuki_uid" --regid="$yuki_gid" --clear-groups yuki init-db
+exec setpriv --reuid="$yuki_uid" --regid="$yuki_gid" --clear-groups yuki-bot

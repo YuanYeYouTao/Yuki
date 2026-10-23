@@ -793,7 +793,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     ).model_payload()
     center = next(row for row in around["data"]["events"] if row["id"] == event.id)
     assert around["ok"] and center["attachments"] == [
-        {"attachment_index": 1, "kind": "video", "name": "clip.mp4"}
+        {"attachment_index": 1, "segment_index": 1, "kind": "video", "name": "clip.mp4"}
     ]
     searched = (
         await tools.execute("query_chat_history", '{"view":"search", "keyword":"release"}', runtime)
