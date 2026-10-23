@@ -63,8 +63,8 @@ def candidates() -> list[dict[str, Any]]:
             for relative in ("app/resources/codex.exe", "resources/codex.exe"):
                 add(location / relative, f"appx:{package['Name']}:{relative}", package["Name"])
     elif sys.platform == "darwin":
-        for directory in (Path("/Applications"), Path.home() / "Applications"):
-            app = directory / "Codex.app"
+        for applications in (Path("/Applications"), Path.home() / "Applications"):
+            app = applications / "Codex.app"
             add(app / "Contents/Resources/codex", f"app:{app}", "Codex App")
     executable = "codex.exe" if sys.platform == "win32" else "codex"
     for directory in os.environ.get("PATH", "").split(os.pathsep):

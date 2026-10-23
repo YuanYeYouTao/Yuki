@@ -9,6 +9,58 @@ from uuid import uuid4
 from tests.support.soul_reference_server import serve
 
 
+class ControlledASR:
+    """Replace only the paid provider; resolution, decoding and persistence stay real."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def transcribe(self, audio):
+        assert audio
+        self.started.set()
+        await self.release.wait()
+        return "原語音轉寫：請把附件留下。"
+
+    async def close(self):
+        self.release.set()
+
+
+async def seed_qq_entry(runtime, owner_id, bot):
+    from datetime import UTC, datetime
+
+    from yuki.domain.conversations import ScopeType
+    from yuki.domain.messages import InboundMessage, SenderIdentity
+    from yuki.identity.canonical_repository import (
+        create_presence,
+        ensure_account,
+        find_identity_binding,
+        replace_assignment,
+    )
+    from yuki.identity.db_models import CanonicalPersonModel
+
+    now = datetime.now(UTC)
+    async with runtime.database.immediate_session() as session:
+        presence = await create_presence(session, external_account_id="8000", now=now)
+        if await find_identity_binding(session, "1001") is None:
+            account = await ensure_account(session, "1001", platform="qq", now=now)
+            person = await session.get(CanonicalPersonModel, owner_id)
+            await replace_assignment(session, account, None, person, now=now)
+    runtime.gateway_registry.connect(bot, provider_id="snowluma", presence_id=presence.id)
+    message = InboundMessage(
+        message_id=str(uuid4()),
+        event_type="message:private:friend",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity("1001", nickname="Owner"),
+        text="QQ 原入口的真實帳本內容",
+        bot_user_id="8000",
+    )
+    admitted = await runtime.canonical_ingress.pre_admit(bot, message)
+    assert admitted is not None and not admitted.dropped
+    result = await runtime.canonical_uow.append_inbound(admitted.message, admitted)
+    return {"event_id": result.event.id, "conversation_id": admitted.conversation_id}
+
+
 async def publish_artifact(runtime, code):
     from tests.support.workspace_snapshots import snapshot_bytes
 

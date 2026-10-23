@@ -45,6 +45,7 @@ async def serve(
             social_transfer_directory=root / "transfer",
             runtime_work_enabled=True,
             telegram_bot_token="",
+            asr_enabled=desktop,
         ),
         database=database,
     )
@@ -73,6 +74,10 @@ async def serve(
         work_model_gate = asyncio.Event()
         work_model_gate.set()
         if desktop:
+            from tests.support.desktop_reference_server import ControlledASR
+
+            asr_provider = ControlledASR()
+            runtime.asr._provider = asr_provider
             from tests.integration.test_current_material_main_contract import _catalog, _profile
 
             from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -154,6 +159,37 @@ async def serve(
             attach_external_agent_api(api, lambda: runtime.external_agents)
 
         if desktop:
+            from types import SimpleNamespace
+
+            qq_bot = SimpleNamespace(self_id="8000")
+
+            @api.post("/__test/qq-entry")
+            async def qq_entry() -> dict:
+                from tests.support.desktop_reference_server import seed_qq_entry
+
+                return await seed_qq_entry(runtime, owner_id, qq_bot)
+
+            @api.delete("/__test/events/{event_id}")
+            async def remove_original_event(event_id: int) -> dict:
+                # Simulate an original source being retired, including real DB triggers.
+                from sqlalchemy import delete
+
+                from yuki.persistence.models import ChatEventModel
+
+                async with database.immediate_session() as session:
+                    await session.execute(
+                        delete(ChatEventModel).where(ChatEventModel.id == event_id)
+                    )
+                return {"deleted": event_id}
+
+            @api.get("/__test/asr-started")
+            async def asr_started() -> dict:
+                return {"started": asr_provider.started.is_set()}
+
+            @api.post("/__test/resume-asr")
+            async def resume_asr() -> dict:
+                asr_provider.release.set()
+                return {"released": True}
 
             @api.post("/__test/work")
             async def work_fixture() -> dict:
