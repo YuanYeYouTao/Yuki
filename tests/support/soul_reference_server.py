@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from tests.conftest import make_settings
 from tests.support.model_profiles import write_fake_profiles
 
+from yuki.character.db_models import CharacterOwnerGrantModel
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.identity.canonical_repository import create_presence
@@ -38,7 +39,9 @@ async def serve(
     real_model_source: Path | None = None,
 ) -> None:
     soul_file = root / "character" / "SOUL.md"
-    database = Database(f"sqlite+aiosqlite:///{(root / 'yuki.sqlite3').as_posix()}")
+    database_path = root / "yuki.sqlite3"
+    first_start = not database_path.exists()
+    database = Database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
     runtime = ApplicationContainer(
         make_settings(
             database.url,
@@ -57,19 +60,34 @@ async def serve(
         database=database,
     )
     try:
-        await database.create_schema()
-        await runtime.character.initialize("初始角色")
-        operator_id, owner_id, nonowner_id = (str(uuid4()) for _ in range(3))
-        now = datetime.now(UTC)
-        async with database.immediate_session() as session:
-            session.add_all(
-                CanonicalPersonModel(
-                    id=person_id, display_name=name, created_at=now, updated_at=now
+        if first_start:
+            await database.create_schema()
+            await runtime.character.initialize("初始角色")
+            operator_id, owner_id, nonowner_id = (str(uuid4()) for _ in range(3))
+            now = datetime.now(UTC)
+            async with database.immediate_session() as session:
+                session.add_all(
+                    CanonicalPersonModel(
+                        id=person_id, display_name=name, created_at=now, updated_at=now
+                    )
+                    for person_id, name in ((owner_id, "Owner"), (nonowner_id, "Visitor"))
                 )
-                for person_id, name in ((owner_id, "Owner"), (nonowner_id, "Visitor"))
+                await create_presence(
+                    session, external_account_id="yuki-app", platform="app", now=now
+                )
+            await runtime.character.set_owner(operator_id, owner_id, str(uuid4()), granted=True)
+        else:
+            original_state = json.loads(
+                await asyncio.to_thread(state_file.read_text, encoding="utf-8")
             )
-            await create_presence(session, external_account_id="yuki-app", platform="app", now=now)
-        await runtime.character.set_owner(operator_id, owner_id, str(uuid4()), granted=True)
+            owner_id = original_state["owner_person_id"]
+            nonowner_id = original_state["nonowner_person_id"]
+            async with database.read_session() as session:
+                assert await session.get(CanonicalPersonModel, owner_id) is not None
+                assert await session.get(CanonicalPersonModel, nonowner_id) is not None
+                grant = await session.get(CharacterOwnerGrantModel, owner_id)
+                assert grant is not None
+                operator_id = grant.granted_by_principal
 
         async def issue_code(person_id: str) -> dict:
             return await runtime.client_identity.issue_for_operator(
@@ -161,8 +179,15 @@ async def serve(
         if desktop and real_model_source is None:
             from tests.support.desktop_reference_server import publish_artifact
 
-            artifact_state = await publish_artifact(runtime, await issue_code(owner_id))
-            await asyncio.gather(*tuple(runtime.app_gateway.tasks))
+            if first_start:
+                artifact_state = await publish_artifact(runtime, await issue_code(owner_id))
+                await asyncio.gather(*tuple(runtime.app_gateway.tasks))
+            else:
+                artifact_state = {
+                    key: value
+                    for key, value in original_state.items()
+                    if key.startswith("artifact_")
+                }
         api = FastAPI(debug=desktop)
         attach_client_api(api, lambda: runtime.client_api)
         if desktop:
@@ -269,6 +294,8 @@ async def serve(
                     await asyncio.sleep(0.01)
                 state = {
                     "base_url": f"http://127.0.0.1:{actual_port}{base_path}",
+                    "owner_person_id": owner_id,
+                    "nonowner_person_id": nonowner_id,
                     "owner_pairing_code": owner_code["code"],
                     "nonowner_pairing_code": nonowner_code["code"],
                     **artifact_state,
