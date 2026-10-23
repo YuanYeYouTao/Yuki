@@ -221,6 +221,7 @@ def test_0149_native_namespaces_foreign_keys_and_event_lookup_are_real(upgraded_
 
 def test_0149_startup_checks_metadata_without_scanning_original_or_agent_data(upgraded_agents):
     _path, url, *_ = upgraded_agents
+    command.upgrade(Config("alembic.ini"), "head")
     statements = []
 
     def observe(_connection, _cursor, statement, _parameters, _context, _many):
@@ -245,6 +246,7 @@ def test_0149_startup_checks_metadata_without_scanning_original_or_agent_data(up
 
 def test_0149_startup_still_requires_native_operation_storage(upgraded_agents):
     path, url, *_ = upgraded_agents
+    command.upgrade(Config("alembic.ini"), "head")
     with sqlite3.connect(path) as connection, connection:
         connection.execute("DROP TABLE external_agent_operations")
     with pytest.raises(CanonicalSchemaError, match="canonical schema is incomplete"):

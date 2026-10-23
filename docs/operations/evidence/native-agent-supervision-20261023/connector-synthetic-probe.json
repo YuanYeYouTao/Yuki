@@ -1,0 +1,34 @@
+{
+  "synthetic_only": true,
+  "native_calls": 0,
+  "network_calls": 0,
+  "milestone_emitted_by_kind": {
+    "agentMessage": 1,
+    "commandExecution": 1,
+    "fileChange": 1,
+    "mcpToolCall": 1,
+    "webSearch": 1,
+    "plan": 1,
+    "dynamicToolCall": 0,
+    "collabAgentToolCall": 0,
+    "subAgentActivity": 0,
+    "exitedReviewMode": 0,
+    "item/mcpToolCall/progress": 0
+  },
+  "after_terminal": {
+    "watch_removed": true,
+    "next_turn_events": 0
+  },
+  "normal_eof": {
+    "notices": [],
+    "pending_error_code": "unknown",
+    "pending_uncertain": true
+  },
+  "exceptional_eof": {
+    "notices": [
+      "connector/ownerDisconnected"
+    ],
+    "pending_error_code": "unknown",
+    "pending_uncertain": true
+  }
+}

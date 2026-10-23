@@ -41,8 +41,9 @@ class ManagedSession:
     execution: str | None = None
     active: bool = False
     status: str = "unknown"
-    watches: set[str] = field(default_factory=set)
+    watches: dict[str, str | None] = field(default_factory=dict)
     admitted: asyncio.Future[bool] | None = None
+    connection_id: str = field(default_factory=lambda: str(uuid4()))
 
 
 class ClaudeDriver:
@@ -83,9 +84,10 @@ class ClaudeDriver:
         await self.emit(
             "progress",
             {
-                "session_id": result["session_id"],
-                "execution_id": result.get("execution_id"),
+                "session_id": result.get("session_id") or command.get("session_id"),
+                "execution_id": result.get("execution_id") or command.get("execution_id"),
                 "operation_id": command["id"],
+                "snapshot_sequence": result.get("state_sequence", 0),
                 "payload": {
                     "status": "unknown",
                     "reason": "previous_sdk_owner_not_attached",
@@ -98,15 +100,31 @@ class ClaudeDriver:
     async def _publish(self, session: ManagedSession, kind: str, payload: dict[str, Any]) -> None:
         if payload.get("status") != "unknown":
             payload.setdefault("admitted", True)
-        operations = session.watches | ({session.operation} if session.operation else set())
+        operations = {
+            operation
+            for operation, execution in session.watches.items()
+            if execution in {None, "", session.execution}
+        } | ({session.operation} if session.operation else set())
         for operation in operations:
+            if operation in session.watches and session.watches[operation] == "":
+                session.watches[operation] = session.execution
+            continuous = operation in session.watches and session.watches[operation] is None
+            event_kind, event_payload = kind, payload
+            if kind == "completed" and continuous:
+                event_kind = "progress"
+                event_payload = {
+                    **payload,
+                    "execution_status": payload["status"],
+                    "status": "idle",
+                    "pending": True,
+                }
             await self.emit(
-                kind,
+                event_kind,
                 {
                     "session_id": session.id,
                     "execution_id": session.execution,
                     "operation_id": operation,
-                    "payload": payload,
+                    "payload": event_payload,
                 },
             )
 
@@ -132,6 +150,7 @@ class ClaudeDriver:
                 {
                     "permission_id": key,
                     "native_request_id": key,
+                    "connection_id": session.connection_id,
                     "tool": tool,
                     "native_request": arguments,
                     "options": ["allow", "deny"],
@@ -199,6 +218,7 @@ class ClaudeDriver:
 
     async def _serve(self, session: ManagedSession) -> None:
         receive: asyncio.Task[None] | None = None
+        wait: asyncio.Task[bool] | None = None
         try:
             # The SDK task group remains owned by this long-lived task. Remote
             # socket reconnect never exits it or implicitly kills the CLI.
@@ -210,12 +230,26 @@ class ClaudeDriver:
                 wait.cancel()
                 if receive in done:
                     await receive
+                    if not session.stopped.is_set():
+                        if session.status not in {"completed", "failed", "cancelled"}:
+                            session.status = "unknown"
+                        await self._publish(
+                            session,
+                            "progress",
+                            {
+                                "status": "unknown",
+                                "pending": True,
+                                "reason": "native_sdk_connection_lost",
+                                "stream_gap": True,
+                            },
+                        )
                 else:
                     receive.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await receive
         except Exception as exc:
-            session.status = "unknown"
+            if session.status not in {"completed", "failed", "cancelled"}:
+                session.status = "unknown"
             if not session.ready.done():
                 session.ready.set_exception(exc)
             else:
@@ -229,10 +263,16 @@ class ClaudeDriver:
                     },
                 )
         finally:
+            tasks = [task for task in (receive, wait) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             session.active = False
             session.stopped.set()
             if session.admitted and not session.admitted.done():
-                session.admitted.set_result(False)
+                session.admitted.set_exception(
+                    DriverError("unknown", "Native admission was not confirmed", uncertain=True)
+                )
             for owner, future, _ in list(self.requests.values()):
                 if owner == session.id and not future.done():
                     future.cancel()
@@ -259,7 +299,9 @@ class ClaudeDriver:
                     },
                 )
                 session.operation = None
-                session.watches.clear()
+                session.watches = {
+                    key: value for key, value in session.watches.items() if value is None
+                }
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
                     # Only completed assistant/tool blocks, never thinking/deltas.
@@ -309,8 +351,8 @@ class ClaudeDriver:
                 result.update(
                     status=session.status,
                     execution_id=session.execution,
-                    live_attach=True,
-                    pending=session.active,
+                    live_attach=not session.stopped.is_set(),
+                    pending=session.active or session.status == "unknown",
                 )
             return result
         if action == "prompt":
@@ -357,8 +399,10 @@ class ClaudeDriver:
                 "unsupported_action", "This SDK does not provide precise native steer/queue"
             )
         if action == "detach":
-            if session:
-                session.watches.discard(arguments["operation_id"])
+            for attached in self.sessions.values():
+                attached.watches.pop(arguments["operation_id"], None)
+                if attached.operation == arguments["operation_id"]:
+                    attached.operation = None
             return {
                 "session_id": identity,
                 "status": "completed",
@@ -370,17 +414,27 @@ class ClaudeDriver:
                 "not_live", "Independent Claude terminals are readonly, not SDK-owned"
             )
         if action == "watch":
+            if session.stopped.is_set():
+                raise DriverError("owner_disconnected", "Original SDK session owner has exited")
             expected = command.get("execution_id")
             if expected and expected != session.execution:
                 raise DriverError(
                     "execution_mismatch", "Watch must target the original native execution"
                 )
             if session.active or not expected:
-                session.watches.add(command["id"])
+                session.watches[command["id"]] = (
+                    None
+                    if command.get("observation_scope") == "session"
+                    else expected or session.execution or ""
+                )
             return {
                 "session_id": session.id,
                 "execution_id": session.execution if session.active or expected else None,
-                "status": session.status if session.active or expected else "unknown",
+                "status": session.status
+                if session.active or expected
+                else "idle"
+                if command.get("observation_scope") == "session"
+                else "unknown",
                 "pending": session.active or not expected,
                 "admitted": True,
             }
@@ -404,6 +458,10 @@ class ClaudeDriver:
                 "admitted": True,
             }
         if action == "respond":
+            if arguments.get("connection_id") != session.connection_id:
+                raise DriverError(
+                    "request_resolved", "Original SDK connection is no longer current"
+                )
             pending = self.requests.get(str(arguments["permission_id"]))
             if not pending or pending[0] != identity or pending[1].done():
                 raise DriverError(

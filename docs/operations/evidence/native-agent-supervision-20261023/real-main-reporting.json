@@ -1,0 +1,112 @@
+{
+  "scope": "T21 isolated real configured model, original Work, typed native loss/recovery inputs, explicit latest-user resume, in-memory gateway only",
+  "synthetic_native_facts": true,
+  "real_qq_messages": 0,
+  "main_profile_configuration_issue": "Configured pro route enables unsupported native search; used local flash profile with tools capability declared only in memory",
+  "configured_model": "deepseek-v4-flash",
+  "passed": true,
+  "attempts": [
+    {
+      "scenario": "initial-incomplete-fixture",
+      "model": "deepseek-v4-flash",
+      "calls": 9,
+      "usage": {
+        "prompt_tokens": 168839,
+        "completion_tokens": 2846,
+        "cached_prompt_tokens": 149760,
+        "total_tokens": 171685
+      },
+      "cache_usage_known_calls": 9,
+      "cache_hit_rate": 0.8869988568991761,
+      "resume_error": "PermissionError",
+      "final_state": "failed",
+      "recorded_send_segments": 3,
+      "send_pairs": [
+        {
+          "call_id": "call_00_VDxbtSrhFGHYv4seKymq1232",
+          "paired": true,
+          "ok": true,
+          "status": "succeeded",
+          "sent_messages": 3
+        }
+      ],
+      "input_states": [
+        "consumed",
+        "consumed",
+        "consumed"
+      ],
+      "communication_retained": false
+    },
+    {
+      "scenario": "registered-native-before-explicit-resume",
+      "model": "deepseek-v4-flash",
+      "calls": 4,
+      "usage": {
+        "prompt_tokens": 72670,
+        "completion_tokens": 822,
+        "cached_prompt_tokens": 69504,
+        "total_tokens": 73492
+      },
+      "cache_usage_known_calls": 4,
+      "cache_hit_rate": 0.9564331911380212,
+      "resume_error": null,
+      "final_state": "completed",
+      "recorded_send_segments": 3,
+      "send_pairs": [
+        {
+          "call_id": "call_00_JpXZVzGHWa2SWkHxLqXZ0710",
+          "paired": true,
+          "ok": true,
+          "status": "succeeded",
+          "sent_messages": 3
+        }
+      ],
+      "input_states": [
+        "consumed",
+        "consumed",
+        "consumed",
+        "consumed"
+      ],
+      "communication_retained": false
+    },
+    {
+      "scenario": "final-original-work-resume",
+      "model": "deepseek-v4-flash",
+      "calls": 5,
+      "usage": {
+        "prompt_tokens": 93060,
+        "completion_tokens": 1882,
+        "cached_prompt_tokens": 89728,
+        "total_tokens": 94942
+      },
+      "cache_usage_known_calls": 5,
+      "cache_hit_rate": 0.9641951429185471,
+      "resume_error": null,
+      "final_state": "waiting_external",
+      "recorded_send_segments": 3,
+      "send_pairs": [
+        {
+          "call_id": "call_00_Tma4DOcvvoo42HDbxyg35251",
+          "paired": true,
+          "ok": true,
+          "status": "succeeded",
+          "sent_messages": 3
+        }
+      ],
+      "input_states": [
+        "consumed",
+        "consumed",
+        "consumed",
+        "consumed"
+      ],
+      "communication_retained": false
+    }
+  ],
+  "total_model_calls": 18,
+  "total_usage": {
+    "prompt_tokens": 334569,
+    "completion_tokens": 5550,
+    "cached_prompt_tokens": 308992,
+    "total_tokens": 340119
+  }
+}

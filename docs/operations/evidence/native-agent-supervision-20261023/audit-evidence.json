@@ -1,0 +1,123 @@
+{
+  "date": "2026-10-23",
+  "source_main": "0aa3e08bd3b5a78677b7831c7a22301966526adf",
+  "reviewed_open_pr": {
+    "number": 500,
+    "head": "ae45ba148a42a6df0c4d6c33c71a73980fb4f7b8",
+    "state_when_reviewed": "OPEN",
+    "not_a_deployment_claim": true
+  },
+  "desktop_main": "72c6cbf",
+  "investigation_scope": {
+    "production_reads_only": true,
+    "native_rpc_calls": 0,
+    "provider_calls": 0,
+    "platform_sends": 0,
+    "production_mutations": 0,
+    "schema_export_versions": [
+      "0.163.0",
+      "0.164.0"
+    ]
+  },
+  "reporting_history": {
+    "introduced_commit": "8ca2e17a",
+    "introduced_pr": 218,
+    "introduced_date": "2026-10-02",
+    "gates_relaxed_commit": "56c2da8f",
+    "reporting_module_deleted_commit": "82bb386a"
+  },
+  "reporting_provenance": {
+    "checked_at": "2026-10-23T09:11:35.288557+00:00",
+    "time_format": "UTC unless timestamp explicitly includes an offset",
+    "initial_accept": {
+      "trace_id": 307682,
+      "created_at": "2026-10-23 06:46:27.329384",
+      "reporting_parameter_present": false,
+      "goal_requires_progress_updates": true
+    },
+    "model_calls": [
+      {
+        "id": 308991,
+        "operation_id": "f37ad785fa8d422bb44a2becadbb2d02",
+        "created_at": "2026-10-23 07:28:27.949148",
+        "call_id": "call_277715",
+        "arguments": {
+          "action": "update",
+          "reporting": "quiet"
+        }
+      },
+      {
+        "id": 309305,
+        "operation_id": "578190436c364232833935403fdd7e1b",
+        "created_at": "2026-10-23 07:40:28.246913",
+        "call_id": "call_805165",
+        "arguments": {
+          "action": "update",
+          "reporting": "quiet"
+        }
+      }
+    ],
+    "paired_tool_results": [
+      {
+        "provider_start_id": 308993,
+        "call_id": "call_277715",
+        "content": {
+          "ok": true,
+          "work_id": "5c8e4f7c-405c-4850-87f4-1ceb11fca351",
+          "state": "running",
+          "revision": 113,
+          "ending_proposed": null
+        }
+      },
+      {
+        "provider_start_id": 309307,
+        "call_id": "call_805165",
+        "content": {
+          "ok": true,
+          "work_id": "5c8e4f7c-405c-4850-87f4-1ceb11fca351",
+          "state": "running",
+          "revision": 125,
+          "ending_proposed": null
+        }
+      }
+    ],
+    "causal_boundary": "First quiet write followed the native disconnect; it does not explain all earlier missing progress reports."
+  },
+  "native_disconnect": {
+    "at_utc": "2026-10-23T07:21:52.162675+00:00",
+    "event_id": 441,
+    "work_input_id": 818,
+    "input_state": "consumed",
+    "error_type": "ConnectionClosedError",
+    "reason": "native_event_stream_lost",
+    "last_original_incident_snapshot_utc": "2026-10-23T08:44:14.501581+00:00",
+    "daemon_version_change": "0.163.0 to 0.164.0 near 15:21:35-36 UTC+8",
+    "causal_limit": "Timing correlation only; old native process exit logs were not available."
+  },
+  "event_volume": {
+    "checked_at": "2026-10-23T09:11:35.288557+00:00",
+    "groups": [
+      {
+        "method": null,
+        "events": 1,
+        "bytes": 367
+      },
+      {
+        "method": "item/completed",
+        "events": 93,
+        "bytes": 96049
+      },
+      {
+        "method": "turn/diff/updated",
+        "events": 69,
+        "bytes": 857803
+      }
+    ],
+    "total_bytes": 954219,
+    "diff_bytes": 857803,
+    "diff_fraction": 0.8989582056110809,
+    "measurement": "UTF-8 byte length of stored event envelopes; not provider tokens or billing"
+  },
+  "known_good_boundary": "The isolated current-source probe preserved a confirmed terminal receipt against later progress.",
+  "privacy": "No credentials, full configs, private native transcripts, model reasoning or unrelated conversation text included."
+}

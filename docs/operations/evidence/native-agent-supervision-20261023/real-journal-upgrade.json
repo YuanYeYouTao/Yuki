@@ -1,0 +1,21 @@
+{
+  "source_opened_read_only": true,
+  "schema_version": 1,
+  "operation_count": 8,
+  "legacy_terminal_count": 6,
+  "legacy_unknown_admission_count": 1,
+  "recovery_operation_count": 2,
+  "checks": {
+    "original_ids_preserved": true,
+    "namespace_preserved": true,
+    "responses_preserved": true,
+    "commands_preserved_except_explicit_legacy_watch_scope": true,
+    "legacy_watches_stay_execution_scope": true,
+    "all_six_terminals_stay_terminal": true,
+    "unknown_admission_enters_recovery": true,
+    "no_events_created": true
+  },
+  "dispatches": 0,
+  "driver_created": false,
+  "model_calls": 0
+}

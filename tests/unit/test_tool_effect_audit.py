@@ -50,7 +50,7 @@ from yuki.social.db_models import SocialOperationModel
 from yuki.tool_results.recorder import ToolReceiptRepository
 
 
-async def active_work(database, tmp_path, *, reporting=None):
+async def active_work(database, tmp_path):
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
     lease = await repo.acquire(env.context.conversation_id, 1)
@@ -60,9 +60,7 @@ async def active_work(database, tmp_path, *, reporting=None):
         assert await repo.valid(lease)
 
     control = WorkControl(repo, lease, "tool-audit", {}, validate)
-    control.current = await repo.accept(
-        lease, source_key="tool-audit", source={}, goal="send", reporting=reporting
-    )
+    control.current = await repo.accept(lease, source_key="tool-audit", source={}, goal="send")
     work = WorkSession(control, "contract")
     control.session = work
     work.transcript = TurnTranscript((ChatMessage("system", "test"),))

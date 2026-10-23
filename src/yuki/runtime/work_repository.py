@@ -279,7 +279,6 @@ class WorkRepository:
         parent_work_id: str | None = None,
         identity: str | None = None,
         handoff_from: str | None = None,
-        reporting: str | None = None,
         initial_state: str = "running",
     ) -> dict[str, Any]:
         source_json = encode_json(source)
@@ -294,7 +293,6 @@ class WorkRepository:
                 parent_work_id=parent_work_id,
                 identity=identity,
                 handoff_from=handoff_from,
-                reporting=reporting,
                 initial_state=initial_state,
             )
 
@@ -310,7 +308,6 @@ class WorkRepository:
         parent_work_id: str | None = None,
         identity: str | None = None,
         handoff_from: str | None = None,
-        reporting: str | None = None,
         initial_state: str = "running",
     ) -> dict[str, Any]:
         """Admit in a writer transaction owned by the caller.
@@ -320,14 +317,9 @@ class WorkRepository:
         """
         if not goal.strip() or not source_key:
             raise ValueError("invalid_work_goal")
-        if reporting is not None and reporting not in {"interactive", "quiet"}:
-            raise ValueError("work_reporting_invalid")
         if initial_state not in {"running", "queued"}:
             raise ValueError("invalid_work_initial_state")
         source_json, now = prepared_source_json, time.time()
-        initial_checkpoint = encode_json(
-            {"communication": {"reporting": reporting}} if reporting is not None else {}
-        )
         await self._assert_lease(session, lease)
         if parent_work_id is not None:
             parent = (
@@ -405,7 +397,7 @@ class WorkRepository:
                 source_json=source_json,
                 goal=goal,
                 parent_work_id=parent_work_id,
-                checkpoint_json=initial_checkpoint,
+                checkpoint_json="{}",
                 state="queued" if handoff_from else initial_state,
                 created=now,
                 updated=now,
@@ -914,7 +906,7 @@ class WorkRepository:
         serialized = encode_json(payload) if payload is not None else None
         replacement: Any = serialized
         if serialized is not None:
-            for retained in ("communication", "context_note", "accepted_control"):
+            for retained in ("context_note", "accepted_control"):
                 path = f"$.{retained}"
                 replacement = case(
                     (
@@ -941,9 +933,10 @@ class WorkRepository:
                         work.c.state.not_in(TERMINAL),
                     )
                     .values(
-                        checkpoint_json=replacement
-                        if serialized is not None
-                        else work.c.checkpoint_json,
+                        checkpoint_json=func.json_remove(
+                            replacement if serialized is not None else work.c.checkpoint_json,
+                            "$.communication",
+                        ),
                         updated=time.time(),
                         model_requests=work.c.model_requests + models,
                         tool_calls=work.c.tool_calls + tools,
@@ -954,16 +947,6 @@ class WorkRepository:
             ).first()
             if row is None:
                 raise WorkConflict("work_checkpoint_obsolete")
-
-    @staticmethod
-    def encode_communication_updates(updates: dict[str, Any]) -> str:
-        if set(updates) != {"reporting"} or updates["reporting"] not in (
-            None,
-            "interactive",
-            "quiet",
-        ):
-            raise ValueError("work_reporting_invalid")
-        return encode_json({"communication": updates})
 
     async def patch_context_note(
         self, lease: WorkLease, identity: str, expected_revision: int, note: dict[str, Any]
@@ -1035,37 +1018,6 @@ class WorkRepository:
                     artifact_refs.c.handle_id.not_in(handles),
                 )
             )
-            return dict(row)
-
-    async def patch_communication(
-        self, lease: WorkLease, identity: str, updates: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Patch bounded host-owned communication facts without changing lifecycle."""
-        serialized = self.encode_communication_updates(updates)
-        async with self.database.immediate_session() as session:
-            await self._assert_lease(session, lease)
-            row = (
-                (
-                    await session.execute(
-                        update(work)
-                        .where(
-                            work.c.id == identity,
-                            work.c.conversation_id == lease.conversation_id,
-                            work.c.generation == lease.generation,
-                            work.c.state.not_in(TERMINAL),
-                        )
-                        .values(
-                            checkpoint_json=func.json_patch(work.c.checkpoint_json, serialized),
-                            updated=time.time(),
-                        )
-                        .returning(work)
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise WorkConflict("work_checkpoint_obsolete")
             return dict(row)
 
     async def enqueue(

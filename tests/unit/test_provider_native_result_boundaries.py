@@ -219,7 +219,6 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
                         {
                             "action": "accept",
                             "goal": "finish later",
-                            "reporting": "quiet",
                         }
                     ),
                 }

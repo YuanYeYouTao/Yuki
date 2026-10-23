@@ -50,9 +50,9 @@ async def test_ready_instance_connects_and_later_ready_catalog_does_not_wait_for
 
     async def peer(socket):
         hello = json.loads(await socket.recv())
-        assert hello["protocol_version"] == 2
+        assert hello["protocol_version"] == 3
         initial = {item["id"]: item["status"] for item in hello["instances"]}
-        assert initial == {"fast": "available", "later": "unavailable", "recovering": "unavailable"}
+        assert initial == {"fast": "available", "later": "unavailable", "recovering": "available"}
         await socket.send(
             json.dumps(
                 {
@@ -75,7 +75,7 @@ async def test_ready_instance_connects_and_later_ready_catalog_does_not_wait_for
                 statuses = {item["id"]: item["status"] for item in message["instances"]}
                 if statuses["later"] == "available":
                     assert statuses["fast"] == "available"
-                    assert statuses["recovering"] == "unavailable"
+                    assert statuses["recovering"] == "available"
                     later_visible.set()
 
     async with serve(peer, "127.0.0.1", 0) as server:

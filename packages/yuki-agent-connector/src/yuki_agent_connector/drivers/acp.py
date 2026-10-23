@@ -49,7 +49,7 @@ class Session:
     operation: str | None = None
     execution: str | None = None
     task: asyncio.Task[None] | None = None
-    watches: set[str] = field(default_factory=set)
+    watches: dict[str, str | None] = field(default_factory=dict)
     text: list[str] = field(default_factory=list)
     dispatched: asyncio.Event = field(default_factory=asyncio.Event)
     admitted: asyncio.Future[bool] | None = None
@@ -87,6 +87,7 @@ class ACPDriver:
 
     async def _serve(self) -> None:
         assert self.ready is not None
+        waiters: list[asyncio.Task[Any]] = []
         try:
             async with spawn_agent_process(
                 cast(Client, self),
@@ -112,11 +113,18 @@ class ACPDriver:
                 self.ready.set_result(None)
                 stopped = asyncio.create_task(self.stopped.wait())
                 exited = asyncio.create_task(process.wait())
+                waiters = [stopped, exited]
                 done, _ = await asyncio.wait((stopped, exited), return_when=asyncio.FIRST_COMPLETED)
                 stopped.cancel()
                 exited.cancel()
                 if exited in done and not self.stopped.is_set():
+                    await self.emit(
+                        "connection",
+                        {"status": "unavailable", "reason": "native_acp_process_exited"},
+                    )
                     for session in self.sessions.values():
+                        if session.status not in {"completed", "failed", "cancelled"}:
+                            session.status = "unknown"
                         await self._publish(
                             session,
                             "progress",
@@ -129,7 +137,12 @@ class ACPDriver:
             if not self.ready.done():
                 self.ready.set_exception(exc)
             else:
+                await self.emit(
+                    "connection", {"status": "unavailable", "reason": "native_acp_connection_lost"}
+                )
                 for session in self.sessions.values():
+                    if session.status not in {"completed", "failed", "cancelled"}:
+                        session.status = "unknown"
                     await self._publish(
                         session,
                         "progress",
@@ -140,7 +153,14 @@ class ACPDriver:
                         },
                     )
         finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
             self.connection = None
+            self.permission_refs.clear()
+            for _, _, pending in self.requests.values():
+                if not pending.done():
+                    pending.cancel()
             for future in self.responses.values():
                 if not future.done():
                     future.set_exception(
@@ -154,7 +174,9 @@ class ACPDriver:
     async def stop(self) -> None:
         self.stopped.set()
         if self.worker:
-            await self.worker
+            if self.ready is None or not self.ready.done() or self.ready.cancelled():
+                self.worker.cancel()
+            await asyncio.gather(self.worker, return_exceptions=True)
         # Only subprocesses this ACP driver created. Network/detach never calls stop.
         for terminal_id, terminal in list(self.terminals.items()):
             await self.release_terminal(terminal.session_id, terminal_id)
@@ -163,9 +185,10 @@ class ACPDriver:
         await self.emit(
             "progress",
             {
-                "session_id": result["session_id"],
-                "execution_id": result.get("execution_id"),
+                "session_id": result.get("session_id") or command.get("session_id"),
+                "execution_id": result.get("execution_id") or command.get("execution_id"),
                 "operation_id": command["id"],
+                "snapshot_sequence": result.get("state_sequence", 0),
                 "payload": {
                     "status": "unknown",
                     "reason": "previous_acp_owner_not_attached",
@@ -211,15 +234,31 @@ class ACPDriver:
     async def _publish(self, session: Session, kind: str, payload: dict[str, Any]) -> None:
         if payload.get("status") != "unknown":
             payload.setdefault("admitted", True)
-        operations = session.watches | ({session.operation} if session.operation else set())
+        operations = {
+            operation
+            for operation, execution in session.watches.items()
+            if execution in {None, "", session.execution}
+        } | ({session.operation} if session.operation else set())
         for operation in operations:
+            if operation in session.watches and session.watches[operation] == "":
+                session.watches[operation] = session.execution
+            continuous = operation in session.watches and session.watches[operation] is None
+            event_kind, event_payload = kind, payload
+            if kind == "completed" and continuous:
+                event_kind = "progress"
+                event_payload = {
+                    **payload,
+                    "execution_status": payload["status"],
+                    "status": "idle",
+                    "pending": True,
+                }
             await self.emit(
-                kind,
+                event_kind,
                 {
                     "session_id": session.id,
                     "execution_id": session.execution,
                     "operation_id": operation,
-                    "payload": payload,
+                    "payload": event_payload,
                 },
             )
 
@@ -267,6 +306,7 @@ class ACPDriver:
                 {
                     "permission_id": identity,
                     "native_request_id": original_request,
+                    "connection_id": self.owner,
                     "tool": dump(tool_call),
                     "options": [dump(item) for item in options],
                 },
@@ -300,7 +340,9 @@ class ACPDriver:
                     "native": dump(result),
                 },
             )
-            session.watches.clear()
+            session.watches = {
+                key: value for key, value in session.watches.items() if value is None
+            }
         except Exception as exc:
             session.status = "unknown"
             await self._publish(
@@ -314,7 +356,9 @@ class ACPDriver:
             )
         finally:
             if session.admitted and not session.admitted.done():
-                session.admitted.set_result(False)
+                session.admitted.set_exception(
+                    DriverError("unknown", "Native admission was not confirmed", uncertain=True)
+                )
             session.text.clear()
             session.operation = None
             session.dispatched.set()
@@ -322,6 +366,17 @@ class ACPDriver:
     async def execute(self, command: dict[str, Any]) -> dict[str, Any]:
         action, arguments = command["action"], command.get("arguments", {})
         identity = command.get("session_id")
+        if action == "detach":
+            for session in self.sessions.values():
+                session.watches.pop(arguments["operation_id"], None)
+                if session.operation == arguments["operation_id"]:
+                    session.operation = None
+            return {
+                "session_id": identity,
+                "status": "completed",
+                "detached": True,
+                "admitted": True,
+            }
         if self.connection is None:
             raise DriverError("owner_disconnected", "Original ACP process is not connected")
         if action == "list":
@@ -420,20 +475,20 @@ class ACPDriver:
                     "execution_mismatch", "Watch must target the original native prompt"
                 )
             if active or not expected:
-                session.watches.add(command["id"])
+                session.watches[command["id"]] = (
+                    None
+                    if command.get("observation_scope") == "session"
+                    else expected or session.execution or ""
+                )
             return {
                 "session_id": identity,
                 "execution_id": session.execution if active or expected else None,
-                "status": session.status if active or expected else "unknown",
+                "status": session.status
+                if active or expected
+                else "idle"
+                if command.get("observation_scope") == "session"
+                else "unknown",
                 "pending": active or not expected,
-                "admitted": True,
-            }
-        if action == "detach":
-            session.watches.discard(arguments["operation_id"])
-            return {
-                "session_id": identity,
-                "status": "completed",
-                "detached": True,
                 "admitted": True,
             }
         if command.get("execution_id") != session.execution:
@@ -450,6 +505,10 @@ class ACPDriver:
                 "admitted": True,
             }
         if action == "respond":
+            if arguments.get("connection_id") != self.owner:
+                raise DriverError(
+                    "request_resolved", "Original ACP connection is no longer current"
+                )
             request = self.requests.get(str(arguments["permission_id"]))
             if not request or request[0] != identity or request[2].done():
                 raise DriverError(

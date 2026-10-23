@@ -62,7 +62,6 @@ async def paid_case(database, tmp_path):
         database,
         tmp_path,
         [ChatResponse("original-paid-response", 0, tool_calls=(call,))],
-        reporting="quiet",
     )
     result.runtime = replace(result.runtime, max_model_requests=1)
     return result

@@ -51,6 +51,7 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
 ):
     # This separate package is installed only for explicit live acceptance.
     # The ordinary Bot dependency set never imports or installs the connector.
+    from yuki_agent_connector import __version__
     from yuki_agent_connector.config import Config, Instance
     from yuki_agent_connector.connector import Connector
     from yuki_agent_connector.journal import Journal
@@ -108,7 +109,9 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
     try:
         async with asyncio.timeout(30):
             # The real connector has no readiness RPC; observe its actual attachment.
-            while not bridge.service.connections.online(config.device_id):
+            while not bridge.service.connections.online(config.device_id) or spec.id not in (
+                bridge.service.connections.get(config.device_id).instances
+            ):
                 if running.done():
                     running.result()
                 await asyncio.sleep(0.01)
@@ -247,7 +250,7 @@ async def test_real_connector_codex_owner_file_tools_and_original_work(
             assert forwarded["run_id"] == accepted["run_id"]
             report = {
                 "codex_version": version.decode().strip(),
-                "connector_version": "0.1.0",
+                "connector_version": __version__,
                 "transport": "TLS WebSocket",
                 "status": completion["status"],
                 "operation_id": operation_id,

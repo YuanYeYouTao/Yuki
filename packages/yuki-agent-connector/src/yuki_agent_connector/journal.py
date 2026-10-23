@@ -1,7 +1,4 @@
-"""Only original dispatch facts and unacknowledged significant events.
-
-No Work state machine, native transcript mirror, token journal or scheduled jobs.
-"""
+"""Original dispatch evidence, native receipt projections and unacknowledged events."""
 
 from __future__ import annotations
 
@@ -12,9 +9,33 @@ from typing import Any, cast
 
 from .config import private_path
 
+OBSERVED_ACTIONS = {"watch", "prompt", "queue"}
+TERMINAL = {"completed", "failed", "cancelled", "detached"}
+
 
 def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def original_command(command: dict[str, Any]) -> dict[str, Any]:
+    # A missing scope belongs to the old single-execution watch contract.
+    return (
+        {"observation_scope": "execution", **command} if command["action"] == "watch" else command
+    )
+
+
+def fold_receipt(previous: dict[str, Any], facts: dict[str, Any], sequence: int) -> dict[str, Any]:
+    if previous.get("status") in TERMINAL:
+        return {**previous, "state_sequence": sequence}
+    result = {**previous, **facts, "state_sequence": sequence}
+    if previous.get("admitted") is True:
+        result["admitted"] = True
+    if result.get("status") in TERMINAL:
+        result["pending"] = False
+    if facts.get("status") and facts["status"] != "unknown":
+        result.pop("reason", None)
+        result.pop("error_type", None)
+    return result
 
 
 class Journal:
@@ -46,146 +67,254 @@ class Journal:
             )
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO installation VALUES (?)", (namespace,))
+            if self.db.execute("PRAGMA user_version").fetchone()[0] == 0:
+                self._upgrade_receipts()
+                self.db.execute("PRAGMA user_version=1")
+
+    @staticmethod
+    def _initial(command: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": "unknown",
+            "reason": "original_dispatch_not_confirmed",
+            "state_sequence": 0,
+        }
+        if command["action"] in OBSERVED_ACTIONS:
+            result["pending"] = True
+        for key in ("session_id", "execution_id"):
+            if command.get(key) is not None:
+                result[key] = command[key]
+        return result
+
+    @staticmethod
+    def _response_state(response: dict[str, Any]) -> dict[str, Any]:
+        if "error" in response:
+            return {"status": "failed", "admitted": False, "error": response["error"]}
+        return dict(response.get("result", {}))
+
+    @staticmethod
+    def _event_facts(event: dict[str, Any]) -> dict[str, Any]:
+        payload = event.get("payload", {})
+        facts = {
+            key: payload[key]
+            for key in ("status", "pending", "admitted", "reason", "error_type", "error")
+            if key in payload
+        }
+        for key in ("session_id", "execution_id"):
+            if event.get(key) is not None:
+                facts[key] = event[key]
+        if event["kind"] == "completed":
+            facts.update(payload)
+            facts.update(pending=False, admitted=True)
+        return facts
+
+    def _upgrade_receipts(self) -> None:
+        # Frozen upgrade only; ordinary startup does not scan history.
+        for key, encoded, response, receipt, observing in self.db.execute(
+            "SELECT id, command, response, receipt, observing FROM operations"
+        ):
+            command = original_command(json.loads(encoded))
+            state = self._initial(command)
+            if response:
+                state = fold_receipt(state, self._response_state(json.loads(response)), 0)
+            state["state_sequence"] = 0
+            if receipt:
+                state = fold_receipt(state, self._event_facts(json.loads(receipt)), 0)
+            if command["action"] in OBSERVED_ACTIONS:
+                observing = state.get("status") not in TERMINAL
+            self.db.execute(
+                "UPDATE operations SET command=?, receipt=?, observing=? WHERE id=?",
+                (encode(command), encode(state), observing, key),
+            )
+        # An acknowledged detach is an observation exit, even if later progress was queued.
+        for encoded in self.db.execute(
+            "SELECT command FROM operations WHERE json_extract(command, '$.action')='detach' "
+            "AND json_extract(response, '$.result.detached')=1 "
+            "AND json_extract(response, '$.result.admitted')=1"
+        ):
+            self._detach(json.loads(encoded[0])["arguments"]["operation_id"])
+        for sequence, key, encoded in self.db.execute(
+            "SELECT sequence, id, event FROM events ORDER BY sequence"
+        ):
+            event = json.loads(encoded)
+            self._project_event(event, sequence)
+            self.db.execute("UPDATE events SET event=? WHERE id=?", (encode(event), key))
+        for (key,) in self.db.execute(
+            "SELECT id FROM operations WHERE json_extract(receipt, '$.detached')=1"
+        ):
+            self._detach(key, self._next_sequence(key))
 
     def begin(self, command: dict[str, Any]) -> dict[str, Any] | None:
+        command = original_command(command)
         key = command["id"]
-        previous = self.db.execute(
-            "SELECT command, response FROM operations WHERE id = ?", (key,)
-        ).fetchone()
+        previous = self.db.execute("SELECT command FROM operations WHERE id=?", (key,)).fetchone()
         if previous:
             if previous[0] != encode(command):
                 raise ValueError("Original operation ID reused with different parameters")
-            return (
-                json.loads(previous[1])
-                if previous[1]
-                else {
-                    "type": "response",
-                    "id": key,
-                    "result": {"status": "unknown", "reason": "original_dispatch_not_confirmed"},
-                }
-            )
+            return {"type": "response", "id": key, "result": self.operation(key)}
         with self.db:
             self.db.execute(
-                "INSERT INTO operations(id, command) VALUES (?, ?)", (key, encode(command))
+                "INSERT INTO operations(id, command, observing, receipt) VALUES (?, ?, ?, ?)",
+                (
+                    key,
+                    encode(command),
+                    command["action"] in OBSERVED_ACTIONS,
+                    encode(self._initial(command)),
+                ),
             )
         return None
 
+    def _next_sequence(self, key: str) -> int:
+        inserted = self.db.execute(
+            "INSERT INTO events(id, event) VALUES (?, '{}')", (f"response:{key}",)
+        )
+        sequence = cast(int, inserted.lastrowid)
+        self.db.execute("DELETE FROM events WHERE sequence=?", (sequence,))
+        return sequence
+
+    def _detach(self, key: str, sequence: int = 0) -> None:
+        state = fold_receipt(
+            self.operation(key),
+            {"status": "detached", "pending": False, "detached": True},
+            sequence,
+        )
+        state["detached"] = True
+        self.db.execute(
+            "UPDATE operations SET observing=0, receipt=? WHERE id=?", (encode(state), key)
+        )
+
     def complete(self, key: str, response: dict[str, Any]) -> None:
         command = json.loads(
-            self.db.execute("SELECT command FROM operations WHERE id = ?", (key,)).fetchone()[0]
+            self.db.execute("SELECT command FROM operations WHERE id=?", (key,)).fetchone()[0]
         )
-        action = command["action"]
-        result = response.get("result", {})
-        encoded = encode(response)
+        state, result = self.operation(key), self._response_state(response)
         with self.db:
-            self.db.execute("UPDATE operations SET response = ? WHERE id = ?", (encoded, key))
-            if action in {"watch", "prompt", "queue"} and result.get("session_id"):
-                self.db.execute(
-                    "UPDATE operations SET observing = CASE WHEN "
-                    "json_extract(receipt, '$.kind') = 'completed' THEN 0 ELSE 1 END WHERE id = ?",
-                    (key,),
-                )
-            elif (
-                action == "detach"
+            # Reserve from the same durable order as events. Responses need an
+            # order too, including admission arriving after an early milestone.
+            sequence = self._next_sequence(key)
+            if state.get("state_sequence", 0) and state.get("reason") != (
+                "original_dispatch_not_confirmed"
+            ):
+                state = {**result, **state, "state_sequence": sequence}
+            else:
+                state = fold_receipt(state, result, sequence)
+            if command.get("observation_scope") == "session":
+                state.pop("execution_id", None)
+            self.db.execute(
+                "UPDATE operations SET response=?, receipt=?, observing=? WHERE id=?",
+                (
+                    encode(response),
+                    encode(state),
+                    command["action"] in OBSERVED_ACTIONS and state.get("status") not in TERMINAL,
+                    key,
+                ),
+            )
+            if (
+                command["action"] == "detach"
                 and result.get("admitted") is True
                 and result.get("detached") is True
             ):
-                self.db.execute(
-                    "UPDATE operations SET observing = 0 WHERE id = ?",
-                    (command["arguments"]["operation_id"],),
-                )
+                self._detach(command["arguments"]["operation_id"], sequence)
+            elif (
+                command["action"] == "cancel"
+                and result.get("pending") is False
+                and (result.get("status") in TERMINAL)
+            ):
+                original = command.get("arguments", {}).get("operation_id")
+                if original is not None:
+                    terminal = fold_receipt(self.operation(original), result, sequence)
+                    self.db.execute(
+                        "UPDATE operations SET receipt=?, observing=0 WHERE id=?",
+                        (encode(terminal), original),
+                    )
 
     def operation(self, key: str) -> dict[str, Any]:
+        row = self.db.execute("SELECT receipt FROM operations WHERE id=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else {"status": "not_found"}
+
+    def observation(self, key: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
         row = self.db.execute(
-            "SELECT response, receipt FROM operations WHERE id = ?", (key,)
+            "SELECT command, receipt FROM operations WHERE id=? AND observing=1", (key,)
         ).fetchone()
-        if not row:
-            return {"status": "not_found"}
-        original = json.loads(row[0]) if row[0] else {}
-        result: dict[str, Any] = original.get("result", {"status": "unknown"})
-        if "error" in original:
-            result = {"status": "failed", "admitted": False, "error": original["error"]}
-        if row[1]:
-            receipt = json.loads(row[1])
-            result.update(
-                {
-                    key: receipt[key]
-                    for key in ("session_id", "execution_id")
-                    if receipt.get(key) is not None
-                }
-            )
-            payload = receipt["payload"]
-            if receipt["kind"] == "completed":
-                result.update(payload)
-                result["pending"] = False
-                result["admitted"] = True
-            elif payload.get("admitted") is True:
-                result.update(admitted=True, status=payload.get("status", "running"), pending=True)
-        return result
+        return (json.loads(row[0]), json.loads(row[1])) if row else None
 
     def observations(
         self, instance_id: str | None = None
     ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-        observations = []
-        for command, response, receipt in self.db.execute(
-            "SELECT command, response, receipt FROM operations WHERE observing = 1"
-            + (
-                " AND json_extract(command, '$.instance_id') = ?" if instance_id is not None else ""
+        return [
+            (json.loads(command), json.loads(receipt))
+            for command, receipt in self.db.execute(
+                "SELECT command, receipt FROM operations WHERE observing=1"
+                + (
+                    " AND json_extract(command, '$.instance_id')=?"
+                    if instance_id is not None
+                    else ""
+                ),
+                (instance_id,) if instance_id is not None else (),
+            )
+        ]
+
+    def _project_event(self, event: dict[str, Any], sequence: int) -> None:
+        event["sequence"] = sequence
+        key = event.get("operation_id")
+        if key is None:
+            return
+        row = self.db.execute(
+            "SELECT command, receipt FROM operations WHERE id=?", (key,)
+        ).fetchone()
+        if row is None:
+            return
+        command, previous = json.loads(row[0]), json.loads(row[1])
+        facts = self._event_facts(event)
+        if command.get("observation_scope") == "session":
+            facts.pop("execution_id", None)
+        state = fold_receipt(previous, facts, sequence)
+        self.db.execute(
+            "UPDATE operations SET receipt=?, observing=? WHERE id=?",
+            (
+                encode(state),
+                command["action"] in OBSERVED_ACTIONS and state.get("status") not in TERMINAL,
+                key,
             ),
-            (instance_id,) if instance_id is not None else (),
-        ):
-            result = json.loads(response).get("result", {}) if response else {}
-            if receipt:
-                original = json.loads(receipt)
-                result.update(
-                    {
-                        key: original[key]
-                        for key in ("session_id", "execution_id")
-                        if original.get(key) is not None
-                    }
-                )
-            observations.append((json.loads(command), result))
-        return observations
+        )
+        event["operation_state"] = state
 
     def append(self, event: dict[str, Any]) -> None:
-        encoded = encode(event)
+        event = dict(event)
+        snapshot_sequence = event.pop("snapshot_sequence", None)
         with self.db:
-            self.db.execute(
+            if event.get("operation_id"):
+                current = self.operation(event["operation_id"])
+                if current.get("detached") or (
+                    snapshot_sequence is not None
+                    and snapshot_sequence != current.get("state_sequence", 0)
+                    and not (
+                        event["kind"] == "completed"
+                        and event.get("payload", {}).get("status") in TERMINAL
+                    )
+                ):
+                    return
+            inserted = self.db.execute(
                 "INSERT OR IGNORE INTO events(id, event) VALUES (?, ?)",
-                (event["event_id"], encoded),
+                (event["event_id"], encode(event)),
             )
-            if event["kind"] == "completed" and event.get("operation_id"):
-                self.db.execute(
-                    "UPDATE operations SET receipt = ?, observing = 0 WHERE id = ?",
-                    (encoded, event["operation_id"]),
-                )
-            elif (
-                event.get("operation_id")
-                and event.get("session_id")
-                and event.get("payload", {}).get("admitted") is True
-            ):
-                self.db.execute(
-                    "UPDATE operations SET receipt = COALESCE(receipt, ?), observing = CASE "
-                    "WHEN json_extract(receipt, '$.kind') = 'completed' THEN 0 ELSE 1 END "
-                    "WHERE id = ? AND json_extract(command, '$.action') "
-                    "IN ('watch', 'prompt', 'queue')",
-                    (encoded, event["operation_id"]),
-                )
+            if not inserted.rowcount:
+                return
+            sequence = cast(int, inserted.lastrowid)
+            self._project_event(event, sequence)
+            self.db.execute("UPDATE events SET event=? WHERE sequence=?", (encode(event), sequence))
 
     def next_event(self, after_sequence: int = 0) -> tuple[int, str, str] | None:
-        """Select the next original unacknowledged wire record without decoding its backlog."""
         return cast(
             tuple[int, str, str] | None,
             self.db.execute(
-                "SELECT sequence, id, event FROM events WHERE sequence > ? "
-                "ORDER BY sequence LIMIT 1",
+                "SELECT sequence, id, event FROM events WHERE sequence>? ORDER BY sequence LIMIT 1",
                 (after_sequence,),
             ).fetchone(),
         )
 
     def ack(self, key: str) -> None:
         with self.db:
-            self.db.execute("DELETE FROM events WHERE id = ?", (key,))
+            self.db.execute("DELETE FROM events WHERE id=?", (key,))
 
     def close(self) -> None:
         self.db.close()

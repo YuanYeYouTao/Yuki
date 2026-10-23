@@ -93,7 +93,7 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                     await service.update_catalog(principal.device_id, connection, instances)
                     await connection.send({"type": "catalog_ack"})
                 else:
-                    # Protocol 2 credit is one original durable event, acknowledged
+                    # Acknowledge each original durable event
                     # only after its complete transaction. Explicit repository lists
                     # remain an atomic batch and are never divided here.
                     await service.receive_events(principal.device_id, [message])
@@ -126,6 +126,6 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
             with suppress(RuntimeError):
                 await socket.close(code=1008)
         finally:
-            service.connections.detach(connection)
+            await service.disconnect(connection)
 
     app.include_router(router)

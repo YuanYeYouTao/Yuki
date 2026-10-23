@@ -2,14 +2,14 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.2.0`，要求 Python 3.12。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.3.0`，要求 Python 3.12。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 安装与显式配对
 
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.2.0-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.3.0-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -107,7 +107,7 @@ yuki-agent-connector service uninstall
 
 工具目录返回内部 device／instance／session／execution ID；本地名称、路径和 native thread ID 不用于重建人物或执行归属。一个 Person 可从 QQ、TG、App 或 ACP A 查询本人获准的原操作，各入口的公共聊天历史仍分开。
 
-`list/get` 只查询；`watch` 监督已有执行；`prompt/queue` 委托新输入；`steer` 纠偏指定活跃执行；`respond` 回答原问题；`cancel` 定向取消；`detach` 结束监督。detach、Work 完成、聊天重置和断网都不能顺手关闭用户整个 daemon 或其他会话。
+`list/get` 只查询；`watch` 仅指定 session 时持续监督该会话，指定 execution 时只监督该轮；`prompt/queue` 委托新输入；`steer` 纠偏指定活跃执行；`respond` 回答原问题；`cancel` 定向取消；`detach` 结束监督。detach、Work 完成、聊天重置和断网都不能顺手关闭用户整个 daemon 或其他会话。
 
 确认丢失后按原 operation／run 查询。unknown 不代表未执行，不换 ID 重发。重要事件先进入服务器原回执和 Work 私有输入，再确认设备事件；同一事件重传不重复产生输入。高频 token 不作为持久进度洪流，原生完整上下文不灌入 Yuki 的公共历史。
 
@@ -139,17 +139,33 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 2026-10-23 在 Windows 上以 `codex-cli 0.163.0` 和连接器 `0.1.0` 完成一次真实模型全链路验收：原生审批经内部问题 ID 回答，隔离目录写入和读回各有一条成功命令回执，最终标记与文件内容一致，原执行终态进入原 Work 的 continuation；测试通过，耗时 34.98 秒。9 条重要事件中含 3 条工具回执，其中首次沙盒执行失败、随后精确授权后的写入与读回成功，失败事实仍保留。该次缓存字段未提供，记录为 unknown。测试只归档自己的新原生会话，未停止用户 daemon；这份记录不涵盖生产上线、真实 QQ 投递、Claude 付费执行或其他 OS 的实机服务验收。
 
 
-## 协议 2：独立就绪与持久事件信用
+## 协议 3：原回执、持续监督与断流恢复
 
-本次 Bot 与 Connector 须配套升级。WSS hello 使用 `protocol_version=2`，不将协议 1
-默认为兼容；HTTP `/agents/v1` 路径不因此改名。原 device/instance/session/execution/
-operation ID、Journal 和已付回执不清理、不重建。
+Bot 与 Connector 0.3.0 配套升级，WSS hello 使用 `protocol_version=3`。原 device、instance、
+session、execution、operation ID 和 journal 保留。旧 watch 在升级时明确保留单轮范围；新 watch
+只给 session 时观察后续各轮，单轮结束只是一条进度。detach 或原 Work 结束时退出监督，不关闭
+用户的原生会话。指定 execution 的 watch 不追踪其他轮次。
 
-各实例的启动和原 observation 恢复独立推进。就绪实例可先连接并执行；后就绪实例通过
-原连接的 catalog 消息登记，完成后返回 `catalog_ack`，不替换连接 owner 或内部实例 ID。
+本机 journal 保存原命令、原响应与最新回执。事件和响应沿同一个 SQLite sequence 排序，
+事件附带完整 `operation_state`，查询返回同一份投影。服务器按 `state_sequence` 接纳新事实，
+不再靠事件有没有再次携带 admitted 来猜状态。断流变成 unknown，已确认接纳和原 ID 保留；
+迟到进度不会复活完成或 detached 的观察。原命令是否成功仍不明确时，按原 client ID 查证，
+不重发 prompt 或 queue。
 
-每个原持久事件本身作为传输信用与原子 ACK 单位。Connector 以原 sequence keyset 读取
-下一条已保存 JSON，收到提交后的 ACK 才推进。断线保留未 ACK 原件并重传，不重新派发
-原生任务；等 ACK 时同 socket 的 RPC reader 仍处理响应。传输不再反复物化全部积压或
-保留所有已发送 ID。此选择每条事件需要一轮 commit/ACK，在高 RTT 下会降低批量吞吐，
-不是任务完成门槛。Host 直接接收的显式 `receive_events([...])` 仍保持整笔 list 原子性。
+实例分别启动，连接状态通过原 socket 的 catalog 更新。Codex 的正常 EOF、异常断开和 proxy
+退出进入同一条恢复链，重连所选原 owner 后恢复 journal 中的观察。原生问题属于产生它的
+RPC 连接；重连后即使请求数字重复，也不能用旧问题的回答批准新请求。Claude SDK 和 ACP
+失去自己持有的执行流时记录 unknown，不声称可以接管已经消失的旧进程。
+
+设备离线和原生实例离线分别呈现；设备离线时，未结束操作的查询返回 unknown，并附最后
+确认的原回执。连接和断流事实进入原 Work 输入，由 Main 决定是否通过 send 汇报。任务没有
+独立的 reporting 模式；日常聊天的 engage=quiet 和 SELF 安静工作的规则仍保留。
+
+重要事件按 sequence 逐条从 journal 读取并流水发送，流量由 WebSocket 写入背压控制。
+ACK 只在服务器提交后删除本机原件，不再阻塞下一条发送。断网重传未 ACK 原事件，不重派
+原生操作；读端继续处理 RPC。事件发送、目录发送或读取任一退出，都结束该连接，避免看似
+在线却不再上传进度。旧协议事件在服务端已提交但 ACK 丢失时，升级重传仍认原 event_id 和
+原事实，不重复生成 Work 输入。
+
+原生完整 diff 不作为持久进度上传；保留文件路径、命令结果、计划、问题、子 Agent 和工具
+调用里程碑。需要细节时显式查询原生历史。以上为实现合同，实际测试与上线回执见本次交付记录。

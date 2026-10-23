@@ -34,11 +34,36 @@ class Connector:
         self.stopped = asyncio.Event()
         self.catalog_changed = asyncio.Event()
         self._startup: list[asyncio.Task[None]] = []
-        self._event_ack: tuple[str, asyncio.Future[None]] | None = None
+
+    def _spawn(self, coroutine: Any) -> None:
+        task = asyncio.create_task(coroutine)
+        self.tasks.add(task)
+
+        def finished(task: asyncio.Task[None]) -> None:
+            self.tasks.discard(task)
+            if not task.cancelled() and (error := task.exception()) is not None:
+                logger.error("Connector operation failed: %s", type(error).__name__)
+
+        task.add_done_callback(finished)
+
+    async def _recover(self, instance_id: str) -> None:
+        driver = self.drivers[instance_id]
+        for command, _ in self.journal.observations(instance_id):
+            current = self.journal.observation(command["id"])
+            if current is not None:
+                await driver.recover(*current)
 
     async def start_drivers(self) -> None:
         async def start(spec: Any) -> None:
             async def emit(kind: str, value: dict[str, Any]) -> None:
+                if kind == "connection":
+                    if value["status"] == "available":
+                        self.errors.pop(spec.id, None)
+                        self._spawn(self._recover(spec.id))
+                    else:
+                        self.errors[spec.id] = value.get("reason", "native_disconnected")
+                    self.catalog_changed.set()
+                    return
                 event = {
                     "type": "event",
                     "event_id": str(uuid4()),
@@ -52,14 +77,16 @@ class Connector:
             driver: Driver | None = None
             try:
                 driver = make_driver(spec, emit)
-                await driver.start()
-                for command, result in self.journal.observations(spec.id):
-                    await driver.recover(command, result)
                 self.drivers[spec.id] = driver
+                self.errors[spec.id] = "starting"
+                await driver.start()
+                self.errors.pop(spec.id, None)
                 self.catalog_changed.set()
+                await self._recover(spec.id)
             except asyncio.CancelledError:
                 if driver:
                     await driver.stop()
+                    self.drivers.pop(spec.id, None)
                 raise
             except Exception as exc:
                 self.errors[spec.id] = type(exc).__name__
@@ -67,6 +94,7 @@ class Connector:
                 logger.error("Native instance unavailable: %s (%s)", spec.id, type(exc).__name__)
                 if driver:
                     await driver.stop()
+                    self.drivers.pop(spec.id, None)
 
         self._startup.extend(
             asyncio.create_task(start(spec), name=f"native-start-{spec.id}")
@@ -78,7 +106,7 @@ class Connector:
     def hello(self) -> dict[str, Any]:
         return {
             "type": "hello",
-            "protocol_version": 2,
+            "protocol_version": 3,
             "device_id": self.config.device_id,
             "instances": [
                 {
@@ -86,9 +114,11 @@ class Connector:
                     "label": spec.label,
                     "driver": spec.driver,
                     "capabilities": self.drivers[spec.id].capabilities
-                    if spec.id in self.drivers
+                    if spec.id in self.drivers and spec.id not in self.errors
                     else [],
-                    "status": "available" if spec.id in self.drivers else "unavailable",
+                    "status": "available"
+                    if spec.id in self.drivers and spec.id not in self.errors
+                    else "unavailable",
                     **({"error_type": self.errors[spec.id]} if spec.id in self.errors else {}),
                 }
                 for spec in self.config.instances
@@ -108,9 +138,28 @@ class Connector:
             arguments = command.get("arguments", {})
             if command["action"] == "get" and arguments.get("operation_id"):
                 result = self.journal.operation(arguments["operation_id"])
+                if result.get("status") == "unknown":
+                    observation = self.journal.observation(arguments["operation_id"])
+                    driver = self.drivers.get(command["instance_id"])
+                    if observation and driver and command["instance_id"] not in self.errors:
+                        original, receipt = observation
+                        await driver.recover(original, receipt)
+                        result = self.journal.operation(arguments["operation_id"])
+            elif command["action"] == "detach":
+                driver = self.drivers.get(command["instance_id"])
+                result = (
+                    await driver.execute(command)
+                    if driver is not None
+                    else {
+                        "admitted": True,
+                        "detached": True,
+                        "pending": False,
+                        "status": "detached",
+                    }
+                )
             else:
                 driver = self.drivers.get(command["instance_id"])
-                if driver is None:
+                if driver is None or command["instance_id"] in self.errors:
                     raise DriverError(
                         "instance_unavailable", "The configured native instance is unavailable"
                     )
@@ -173,13 +222,20 @@ class Connector:
             }
         if recorded:
             self.journal.complete(key, response)
+            response = {"type": "response", "id": key, "result": self.journal.operation(key)}
         return response
 
     async def _command(self, command: dict[str, Any], websocket: ClientConnection) -> None:
-        response = await self.dispatch(command)
-        # If transport disappeared, the result remains in its original journal.
-        with contextlib.suppress(ConnectionClosed):
+        try:
+            response = await self.dispatch(command)
             await websocket.send(json.dumps(response, ensure_ascii=False))
+        except ConnectionClosed:
+            # The original dispatch remains independent of its transport.
+            pass
+        except Exception:
+            # A missing response cannot leave the peer awaiting a live RPC forever.
+            await websocket.close(code=1011, reason="Command response unavailable")
+            raise
 
     async def _events(self, websocket: ClientConnection) -> None:
         after = 0
@@ -189,17 +245,13 @@ class Connector:
             if original is None:
                 await self.pending_events.wait()
                 continue
-            sequence, event_id, encoded = original
-            ack = asyncio.get_running_loop().create_future()
-            self._event_ack = (event_id, ack)
-            try:
-                # One durable event is the transport credit/atomic receipt unit.
-                # RPC reads continue independently while its commit ACK is pending.
-                await websocket.send(encoded)
-                await ack
-                after = sequence
-            finally:
-                self._event_ack = None
+            sequence, _, encoded = original
+            # WebSocket write backpressure controls transport. Commit ACK only
+            # prunes durable originals; it isn't a one-event RTT credit gate.
+            await websocket.send(encoded)
+            after = sequence
+            # send() may complete without yielding when the socket is writable.
+            await asyncio.sleep(0)
 
     async def _catalog(self, websocket: ClientConnection) -> None:
         while True:
@@ -211,31 +263,32 @@ class Connector:
                 )
             )
 
+    async def _read(self, websocket: ClientConnection) -> None:
+        async for raw in websocket:
+            value = json.loads(raw)
+            if value.get("type") == "ack":
+                self.journal.ack(value["event_id"])
+            elif value.get("type") == "command":
+                self._spawn(self._command(value, websocket))
+            elif value.get("type") == "revoked":
+                raise DriverError("credential_revoked", "Connector authorization was revoked")
+
     async def connection(self, websocket: ClientConnection) -> None:
         self.stream = websocket
         await websocket.send(json.dumps(self.hello(), ensure_ascii=False))
-        events = asyncio.create_task(self._events(websocket))
-        catalog = asyncio.create_task(self._catalog(websocket))
+        owners = [
+            asyncio.create_task(owner(websocket))
+            for owner in (self._read, self._events, self._catalog)
+        ]
         try:
-            async for raw in websocket:
-                value = json.loads(raw)
-                if value.get("type") == "ack":
-                    self.journal.ack(value["event_id"])
-                    if self._event_ack is not None and self._event_ack[0] == value["event_id"]:
-                        future = self._event_ack[1]
-                        if not future.done():
-                            future.set_result(None)
-                elif value.get("type") == "command":
-                    task = asyncio.create_task(self._command(value, websocket))
-                    self.tasks.add(task)
-                    task.add_done_callback(self.tasks.discard)
-                elif value.get("type") == "revoked":
-                    raise DriverError("credential_revoked", "Connector authorization was revoked")
+            done, _ = await asyncio.wait(owners, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
         finally:
             self.stream = None
-            events.cancel()
-            catalog.cancel()
-            await asyncio.gather(events, catalog, return_exceptions=True)
+            for task in owners:
+                task.cancel()
+            await asyncio.gather(*owners, return_exceptions=True)
 
     async def run(self) -> None:
         try:

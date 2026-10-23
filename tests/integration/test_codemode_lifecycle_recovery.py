@@ -41,8 +41,8 @@ from yuki.services.turn_transcript import TurnTranscript
 from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
-async def environment(database, tmp_path, *, reporting=None):
-    test_case = await case(database, tmp_path, [], reporting=reporting)
+async def environment(database, tmp_path):
+    test_case = await case(database, tmp_path, [])
     owner = WorkSession(test_case.control, "contract")
     test_case.control.session = owner
     owner.transcript = TurnTranscript(
@@ -138,7 +138,7 @@ class FakeEngine:
 async def test_control_receipt_crash_restores_decision_and_valid_tail(
     database, tmp_path, monkeypatch, native, action, ending
 ):
-    env = await environment(database, tmp_path, reporting="quiet" if action == "complete" else None)
+    env = await environment(database, tmp_path)
     args = {"action": action}
     if action in {"need_input", "fail"}:
         args["reason"] = "Which file?"
