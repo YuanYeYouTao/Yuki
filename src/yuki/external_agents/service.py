@@ -17,6 +17,7 @@ from yuki.external_agents.db_models import (
     AgentOperationModel,
     AgentSessionModel,
 )
+from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
     AgentRepository,
@@ -259,7 +260,10 @@ class ExternalAgentService:
                 raise ValueError("external_agent_target_mismatch")
             session_id = execution.session_id
         if not isinstance(session_id, str):
-            raise ValueError("external_agent_resource_required")
+            raise ExternalAgentArgumentError(
+                "external_agent_resource_required",
+                "get 需要 operation_id/run_id 或 session_id/execution_id；设备/实例用 list。",
+            )
         resource = await self.repository.native_session(session_id, actor)
         if args.get("instance_id") not in (None, resource.instance_id):
             raise ValueError("external_agent_target_mismatch")
@@ -353,7 +357,11 @@ class ExternalAgentService:
                 raise ValueError("external_agent_source_obsolete")
         if action in {"prompt", "queue", "watch"}:
             if control is None or control.current is None:
-                raise ValueError("accept_work_before_execution")
+                raise ExternalAgentArgumentError(
+                    "accept_work_before_execution",
+                    "先用 task_control(action=accept) 接纳 Work，"
+                    "再调用 prompt/queue/watch。本次未派发。",
+                )
             trusted = {
                 **trusted,
                 "work_id": control.current["id"],
@@ -392,12 +400,21 @@ class ExternalAgentService:
         if args.get("session_id") is not None and args["session_id"] != session_id:
             raise ValueError("external_agent_target_mismatch")
         if not isinstance(instance_id, str):
-            raise ValueError("instance_id_required")
+            raise ExternalAgentArgumentError(
+                "instance_id_required",
+                "提供目录返回的 instance_id，或能定位实例的原操作/会话引用。",
+            )
         instance = await self._instance(instance_id, actor, args.get("device_id"))
         if action in {"steer", "cancel"} and owned is None and execution is None:
-            raise ValueError("operation_id_or_execution_id_required")
+            raise ExternalAgentArgumentError(
+                "operation_id_or_execution_id_required",
+                "steer/cancel 须提供原 operation_id（或 run_id），或目录返回的 execution_id。",
+            )
         if action in {"detach", "respond"} and owned is None:
-            raise ValueError("operation_id_or_execution_id_required")
+            raise ExternalAgentArgumentError(
+                "operation_id_required",
+                "respond/detach 需要原 operation_id 或 run_id；execution_id 不能替代。",
+            )
         try:
             connection = await self._connection(instance, action=action)
         except DeviceOffline:
@@ -435,14 +452,23 @@ class ExternalAgentService:
             try:
                 permission_key = int(args["permission_id"])
             except (KeyError, ValueError, TypeError) as error:
-                raise ValueError("permission_id_required") from error
+                raise ExternalAgentArgumentError(
+                    "permission_id_required",
+                    "respond 须使用服务器事件顶层 permission_id，不使用原生请求 ID。",
+                ) from error
             async with self.database.read_session() as session:
                 event = await session.get(AgentEventModel, permission_key)
                 if owned is None or event is None or event.operation_id != owned.id:
-                    raise ValueError("external_agent_question_not_found")
+                    raise ExternalAgentArgumentError(
+                        "external_agent_question_not_found",
+                        "get 原 operation_id 的 permission/question 事件，使用顶层 permission_id。",
+                    )
                 event_data = json.loads(event.payload_json)
                 if event.kind not in {"permission", "question"}:
-                    raise ValueError("external_agent_question_not_found")
+                    raise ExternalAgentArgumentError(
+                        "external_agent_question_not_found",
+                        "permission_id 必须指向原 operation_id 的 permission/question 事件。",
+                    )
                 native_question = event_data["payload"]["native_request_id"]
                 question_execution = event_data.get("execution_id")
                 if execution is not None and execution.native_id != question_execution:

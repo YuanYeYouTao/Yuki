@@ -131,6 +131,7 @@ class Transcript(PublicProjection):
 
 
 class Event(PublicProjection):
+    sender_display_name: str | None = None
     id: int
     event_id: int
     conversation_id: str

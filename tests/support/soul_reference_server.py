@@ -209,6 +209,12 @@ async def serve(
 
                 return await seed_work(runtime, artifact_state)
 
+            @api.post("/__test/history")
+            async def history_fixture(count: int = 61) -> dict:
+                from tests.support.desktop_reference_server import seed_app_history
+
+                return await seed_app_history(runtime, artifact_state, count)
+
         if desktop and real_model_source is None:
 
             @api.post("/__test/hold-work")

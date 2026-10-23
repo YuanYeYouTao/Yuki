@@ -322,6 +322,8 @@ direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入�
 
 公开 device_id／instance_id／session_id／execution_id／operation_id／run_id 均为内部 ID；native ID 仅是适配器引用，不用于重建人物归属。run_id 认 Work 等待，execution_id 认原生执行映射。确认丢失保持原关联，不以 resume、fork 或新 prompt 冒充恢复；原生能力缺失照实返回，不隐式取消重启。原问题回答、纠偏和管理操作记录本次真实 actor 与独立稳定调用键，不复用原 prompt 键。
 
+`prompt/queue/watch` 先由 `task_control(action=accept)` 接纳 Work。`respond/detach` 必须引用原 `operation_id` 或其 `run_id`；`execution_id` 只定位原生执行，不能替代监督操作。`respond.permission_id` 使用服务器 `permission/question` 事件顶层 ID，选项与回答沿原问题。`request_id` 参数仅保留 `get` 查证的兼容别名，新写调用身份仍由 Host 生成。已知缺参或前置 Work 未接纳通过原工具结果返回明确领域错误与修正说明，不泛化为无信息的 `ValueError`，也不把任意底层异常原样公开。固定声明及字段说明变化由现有完整声明哈希自然产生新 manifest revision，不放宽旧链恢复合同。
+
 声明、说明和顺序在部署冻结，direct／Code Mode／Script API 共用；设备目录和实际能力变化只影响查询结果。执行处核当前 Person 与设备授予；operator、平台超管和聊天 token 不自动获得电脑控制权。重要问题和进度沿原 Work 私有输入，交付仍走 send／Social。旧 ACP close／peer／prompt 回执按原事实读取，不接收新调用别名。
 
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。

@@ -210,6 +210,31 @@ async def seed_work(runtime, artifact_state):
         await repository.release(lease)
 
 
+async def seed_app_history(runtime, artifact_state, count):
+    """Prepare accepted App history through original ingress, without scheduling Main."""
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.identity.db_models import IdentityBindingModel
+
+    conversation_id = artifact_state["artifact_conversation_id"]
+    async with runtime.database.read_session() as reader:
+        conversation = await reader.get(CanonicalConversationModel, conversation_id)
+        binding = await reader.get(IdentityBindingModel, conversation.identity_binding_id)
+    ids = []
+    for index in range(count):
+        message = runtime.app_gateway.message(
+            binding,
+            str(uuid4()),
+            f"歷史訊息 {index + 1}",
+            (),
+            conversation_id=conversation_id,
+        )
+        admitted = await runtime.canonical_ingress.pre_admit(runtime.app_gateway.handle, message)
+        assert admitted is not None and not admitted.dropped
+        result = await runtime.canonical_uow.append_inbound(admitted.message, admitted)
+        ids.append(result.event.id)
+    return {"conversation_id": conversation_id, "event_ids": ids}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
