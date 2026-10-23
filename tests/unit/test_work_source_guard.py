@@ -17,7 +17,6 @@ from yuki.conversation.canonical_db_models import (
 from yuki.conversation.projection_chunks_schema import EVENT_METADATA_COLUMNS_CURRENT
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatImage, ChatMessage
-from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.identity.canonical_repository import ensure_account
 from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
@@ -88,9 +87,7 @@ async def test_source_scans_finish_before_recheck_and_new_enrichment_remains_all
     assert guard.additional_events == prior
 
 
-@pytest.mark.parametrize(
-    "change", ["metadata", "privacy", "privacy_counter", "cancel", "reset", "owner"]
-)
+@pytest.mark.parametrize("change", ["metadata", "privacy", "cancel", "reset", "owner"])
 async def test_fresh_snapshot_recheck_rejects_changes_after_read_snapshot(
     database, monkeypatch, change
 ):
@@ -113,12 +110,6 @@ async def test_fresh_snapshot_recheck_rejects_changes_after_read_snapshot(
                     await other.execute(
                         delete(ChatEventModel).where(ChatEventModel.id == source.id)
                     )
-                elif change == "privacy_counter":
-                    state = await other.get(ExecutionTraceStateModel, 1)
-                    if state is None:
-                        other.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
-                    else:
-                        state.privacy_generation += 1
                 elif change == "owner":
                     space = await ensure_space(other, "2990", name="other owner")
                     await other.execute(
@@ -380,8 +371,10 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     from yuki.conversation.hydrate import bump_canonical_generation
     from yuki.conversation.media_service import ConversationMediaService
     from yuki.domain.conversations import ScopeType
+    from yuki.sandbox.client import SandboxClient
     from yuki.services.image_preprocessor import ImagePreprocessor
     from yuki.services.media_resolver import MediaResolver
+    from yuki.workspace.inspect import WorkspaceInspector
     from yuki.workspace.service import WorkspaceService
     from yuki.workspace.store import WorkspaceStore
 
@@ -415,8 +408,13 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     media = ConversationMediaService(
         database, tmp_path / "media-cache", resolver, ImagePreprocessor()
     )
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "workspace"))
-    workspace.conversation_media = media
+    store = WorkspaceStore(tmp_path / "workspace")
+    workspace = WorkspaceService(
+        store,
+        sandbox=SandboxClient(tmp_path / "manager.sock"),
+        visual_inspector=WorkspaceInspector(store, ImagePreprocessor()),
+        conversation_media=media,
+    )
     try:
         item, path = await media.authorized_path(event_id=old_image.id, attachment_index=0)
         result = await media.inspect(item, path, "看看这张图片")

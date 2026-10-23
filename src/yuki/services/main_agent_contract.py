@@ -9,6 +9,7 @@ import logging
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+from yuki.capabilities.validation import CapabilitySchemaView, JsonSchemaCapabilityValidator
 from yuki.codemode.contract import CODE_API_REVISION
 from yuki.codemode.tool_visibility import DIRECT_TOOL_NAMES, LOOKUP_TOOLS, model_definitions
 from yuki.domain.messages import ChatMessage, ChatTool
@@ -26,6 +27,7 @@ class MainAgentContract:
         self.chat, self.state = chat, state
         self.mode = "code" if code_enabled else "direct"
         self._tools: tuple[ChatTool, ...] | None = None
+        self.schema_view: CapabilitySchemaView
         self.revision = ""
         self.script_api: ScriptApi | None = None
         self.plugin_contracts: dict[str, str] = {}
@@ -130,6 +132,9 @@ class MainAgentContract:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
+            validator = JsonSchemaCapabilityValidator()
+            validator.admit_tools(frozen)
+            self.schema_view = validator.freeze()
             self._tools = frozen
             self.revision = revision
             from yuki.codemode.api_projection import project

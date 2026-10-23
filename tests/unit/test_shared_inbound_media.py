@@ -14,6 +14,7 @@ from PIL import Image
 from sqlalchemy import delete, select, text
 from sqlalchemy import event as sql_event
 from tests.support.event_seed import seed_scoped_event
+from tests.support.service_dependencies import workspace_service
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import artifact_ids
 
@@ -29,7 +30,6 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolutionError, MediaResolver, PreparedAttachment
 from yuki.vision.models import MediaReference
-from yuki.workspace.service import WorkspaceService
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ async def admitted_media(database, tmp_path):
             ),
         )
         message = media.prepare_message(message, None, source_segments=event.segments)
-        workspace = WorkspaceService(env.store)
+        workspace = workspace_service(env.store)
         workspace.conversation_media = media
         files = tmp_path / "manager-workspace"
         copies = {}

@@ -10,6 +10,7 @@ import httpx
 import pytest
 from PIL import Image
 from tests.support.event_seed import seed_scoped_event
+from tests.support.service_dependencies import workspace_service
 from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
@@ -27,7 +28,6 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolver
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -168,7 +168,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
             gateway_registry=registry,
         )
         store = WorkspaceStore(tmp_path / "artifacts")
-        workspace = WorkspaceService(store)
+        workspace = workspace_service(store)
         workspace.conversation_media = media
         copies = []
 

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import make_settings
+from tests.support.service_dependencies import tool_dependencies, workspace_service
 from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -22,7 +23,6 @@ from yuki.persistence.repositories import EventLedgerRepository
 from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.persistent import PersistentManager
 from yuki.services.agent_tools import AgentToolService, ToolRuntime
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceStore
 
 pytestmark = pytest.mark.skipif(
@@ -64,6 +64,7 @@ async def save_tool_result(database, workspace, request_id):
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
+        **tool_dependencies(database, make_settings(database.url)),
     )
     tools.workspace_service = workspace
     runtime = ToolRuntime(
@@ -168,7 +169,7 @@ async def test_copy_interrupted_after_write_keeps_unknown_without_overwriting_us
             "interrupted-copy",
         )
         assert found["found"] is True and found["result"]["error"] == result["error"]
-        workspace = WorkspaceService(manager.store)
+        workspace = workspace_service(manager.store)
         workspace.sandbox = SimpleNamespace(execute=manager.file_request)
         outcome = await save_tool_result(database, workspace, "interrupted-copy")
         assert outcome.ok is False and outcome.error_code == result["error"]
@@ -192,7 +193,7 @@ async def test_save_cannot_turn_unavailable_receipt_query_into_confirmed_no_writ
     try:
         await manager.file_request("workspace_copy", args, "original-copy")
         assert (manager.files.root / "target.txt").read_bytes() == content
-        workspace = WorkspaceService(manager.store)
+        workspace = workspace_service(manager.store)
         workspace.sandbox = SandboxClient(tmp_path / "offline-manager.sock")
         outcome = await save_tool_result(database, workspace, "original-copy")
         assert outcome.ok is False and outcome.error_code == "sandbox_unavailable"

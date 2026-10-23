@@ -9,6 +9,7 @@ from yuki.admin.authority.operators import ControlOperatorAccess
 from yuki.admin.operations import AdminOperations
 from yuki.admin.queries import AdminQueries
 from yuki.admin_api.http import AdminApi
+from yuki.gateway.health import platform_health
 
 if TYPE_CHECKING:
     from yuki.container import ApplicationContainer
@@ -37,25 +38,14 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
                 "checked_at": checked_at,
             }
         )
-    from sqlalchemy import select
-
-    from yuki.identity.db_models import PresenceModel
-
-    async with app.database.read_session() as session:
-        presences = list(await session.scalars(select(PresenceModel)))
-    platforms = set(app.gateway_providers.platforms) | {presence.platform for presence in presences}
-    for platform in sorted(platforms):
-        configured = [presence for presence in presences if presence.platform == platform]
-        enabled_ids = {presence.id for presence in configured if presence.enabled}
-        connected = bool(
-            enabled_ids.intersection(app.gateway_registry.connected_presence_ids(platform))
-        )
+    platforms = await platform_health(
+        app.database, app.gateway_providers, app.gateway_registry, app.gateway_health_sources
+    )
+    for platform, facts in platforms.items():
         rows.append(
             {
                 "name": platform,
-                "enabled": bool(enabled_ids),
-                "running": connected,
-                "healthy": connected if enabled_ids else None,
+                **facts.summary(),
                 "checked_at": checked_at,
             }
         )

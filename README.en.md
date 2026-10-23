@@ -101,6 +101,11 @@ The 4.0.0 release baseline is schema **0143**, Plugin API **7.0**, and manifest 
 
 ## Architecture and development
 
+The B1–B6 development cleanup includes the paired connector `0.2.0` / WSS protocol `2`
+upgrade, corrected Memory Fake results, and retired CLI/Python surfaces. See the
+[compatibility notes](docs/upgrade-code-deletion-20261023.en.md). This is not a new formal
+release or a deployment receipt.
+
 Read the [development contract](docs/architecture/development-contract.md) and [architecture index](docs/architecture/README.md). Chat, background tasks and plugins reuse Main. Native platform protocols stay in adapters, while people, conversations and tasks use internal IDs.
 
 ```bash

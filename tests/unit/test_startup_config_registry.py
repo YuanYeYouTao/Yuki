@@ -97,3 +97,20 @@ async def test_asr_uses_actual_settings_field_metadata(database, name, invalid, 
             **await restarted_runtime.startup_settings_updates(),
         },
     )
+
+
+async def test_vision_image_count_has_the_same_explicit_value_in_settings_and_hot_config(database):
+    settings = make_settings(database.url, vision_max_images_per_turn=6)
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    saved = await runtime.set_override(
+        "vision.max_images_per_turn",
+        6,
+        scope_type="global",
+        scope_id="",
+        actor_user_id="test",
+        trigger_message_id="six-vision-inputs",
+    )
+    assert saved.success and not saved.pending_restart
+    assert runtime.registry.convert(runtime.registry.get("vision.max_images_per_turn"), 6) == 6
+    assert settings.vision_max_images_per_turn == 6

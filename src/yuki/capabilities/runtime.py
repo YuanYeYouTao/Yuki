@@ -1,4 +1,4 @@
-"""Per-turn authorized catalog, local exposure and call validation.
+"""Per-turn authorized catalog and validation against one frozen contract.
 
 MainAgentContract owns the fixed model declaration. This runtime projects
 local authority without growing that declaration.
@@ -18,35 +18,27 @@ from yuki.capabilities.models import CapabilityDescriptor
 from yuki.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
 from yuki.capabilities.validation import (
     UNDECLARED_TOOL,
+    CapabilitySchemaView,
     CapabilityValidationResult,
-    JsonSchemaCapabilityValidator,
 )
 from yuki.runtime.contracts import MemoryCapabilityView
 
 
 class TurnCapabilityRuntime:
-    """Owns one turn's authorized catalog, exposure and callable set."""
+    """Project one turn's current grants over compiled contract schemas."""
 
     def __init__(
         self,
         *,
         registry: DescriptorRegistrySnapshot,
         policy_context: CapabilityPolicyContext,
+        schemas: CapabilitySchemaView,
     ) -> None:
         self._registry = registry
         self._policy_context = policy_context
         self._policy = CapabilityPolicyEngine()
-        self._validator = JsonSchemaCapabilityValidator()
-        self._quarantined: frozenset[str] = frozenset()
+        self._schemas = schemas
         self._authorized = self._project_authorized()
-        # A freshly constructed runtime grants nothing until its exposure opens.
-        self._opened = False
-        self._quarantined = frozenset(self._validator.admit(self._authorized.catalog.entries))
-        if self._quarantined:
-            self._authorized = replace(
-                self._authorized,
-                requestable_ids=self._authorized.requestable_ids - self._quarantined,
-            )
 
     @property
     def authorized_catalog(self) -> UnifiedToolCatalog:
@@ -56,7 +48,6 @@ class TurnCapabilityRuntime:
         """Re-project authority when the memory contract revision changes.
 
         The declaration stays fixed; a transition updates only execution grants.
-        A transition also opens execution, even before ``initial_exposure``.
         """
 
         current = self._policy_context.memory_view
@@ -66,15 +57,9 @@ class TurnCapabilityRuntime:
             return
         self._policy_context = replace(self._policy_context, memory_view=view)
         self._authorized = self._project_authorized()
-        self._opened = True
 
     def callable_capability_ids(self) -> frozenset[str]:
-        return self._authorized.requestable_ids if self._opened else frozenset()
-
-    def initial_exposure(self) -> None:
-        """Open the authorized grants of the complete stable catalog."""
-
-        self._opened = True
+        return self._authorized.requestable_ids
 
     def validate_call(self, name: str, arguments_json: str) -> tuple[bool, str | None]:
         """Boolean admission view retained for policy probes, without losing execution detail."""
@@ -88,7 +73,7 @@ class TurnCapabilityRuntime:
             return CapabilityValidationResult(
                 False, NO_LONGER_AUTHORIZED, "current authority does not allow this tool"
             )
-        return self._validator.validate(name, arguments_json)
+        return self._schemas.validate(name, arguments_json)
 
     def descriptor(self, name: str) -> CapabilityDescriptor | None:
         entry = self._authorized.catalog.by_model_name(name)
@@ -104,7 +89,9 @@ class TurnCapabilityRuntime:
             tuple(entry.descriptor for entry in entries),
             self._policy_context,
         )
-        visible_names = frozenset(item.model_name for item in visible) - self._quarantined
+        visible_names = frozenset(item.model_name for item in visible) & frozenset(
+            self._schemas.validators
+        )
         catalog = UnifiedToolCatalog(
             entries=entries,
         )

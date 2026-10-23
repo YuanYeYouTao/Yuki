@@ -13,6 +13,7 @@ from tests.support.native_media_cases import (
     telegram_update,
 )
 from tests.support.native_media_cases import native_media_env as native_media_env
+from tests.support.service_dependencies import workspace_service
 from tests.support.sticker_delivery import DirectoryBridge
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -21,7 +22,6 @@ from yuki.emoji.library import EmojiLibrary
 from yuki.gateway.providers.telegram_ingress import normalize_message
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.persistence.people_repository import PeopleRepository
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceStore
 
 
@@ -54,7 +54,7 @@ async def test_native_sticker_collection_keeps_only_the_actual_original_source(
         source_segments=source.segments,
     )
     assert inbound.attachments[0].is_sticker
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "published"))
+    workspace = workspace_service(WorkspaceStore(tmp_path / "published"))
     workspace.conversation_media = env.media
     bridge = DirectoryBridge(
         tmp_path / "shared-workspace", workspace.store, cache_root=env.media.root.parent

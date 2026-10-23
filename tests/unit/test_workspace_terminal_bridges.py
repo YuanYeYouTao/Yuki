@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from tests.support.service_dependencies import workspace_service
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.deployment_setup.environment_check import check_environment
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -31,7 +31,7 @@ from yuki.workspace.store import WorkspaceError, WorkspaceStore
     ],
 )
 async def test_retired_file_operations_do_not_dispatch_to_manager(tmp_path, name):
-    service = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
+    service = workspace_service(WorkspaceStore(tmp_path / "artifacts"))
     service.sandbox = SimpleNamespace(execute=AsyncMock())
     with pytest.raises(WorkspaceError, match="unknown_tool"):
         await service.execute(name, {"path": "work.txt", "artifact_id": str(uuid4())})

@@ -67,11 +67,11 @@ def test_events_are_committed_before_send_and_ack_prunes_only_original(journal: 
     }
     journal.append(event)
     journal.append(event)
-    assert journal.pending() == [event]
+    assert json.loads(journal.next_event()[2]) == event
     journal.ack("another-event")
-    assert journal.pending() == [event]
+    assert json.loads(journal.next_event()[2]) == event
     journal.ack("e1")
-    assert journal.pending() == []
+    assert journal.next_event() is None
     assert journal.operation(original["id"])["status"] == "completed"
     assert journal.operation(original["id"])["pending"] is False
     assert journal.observations() == []
@@ -182,7 +182,7 @@ async def test_network_disconnect_leaves_native_dispatch_running_and_replays_eve
             await task
     assert len(driver.calls) == 1
     assert received[-1]["event_id"] == "offline-event"
-    assert journal.pending() == []
+    assert journal.next_event() is None
 
 
 def test_detach_only_removes_its_original_observation(journal: Journal) -> None:
@@ -301,3 +301,63 @@ async def test_unknown_control_is_never_admitted_or_used_to_detach(journal: Jour
     )
     assert "admitted" not in response["result"]
     assert journal.observations()[0][0]["id"] == "watch-original"
+
+
+@pytest.mark.asyncio
+async def test_one_original_event_credit_leaves_rpc_live_and_replays_only_unacked_sequence(journal):
+    connector = Connector(Config("ws://localhost/", "device", "fixture"), journal)
+    connector.drivers["local"] = FakeDriver()
+    originals = [
+        {
+            "type": "event",
+            "event_id": f"backlog-{i}",
+            "kind": "progress",
+            "payload": {"text": "x" * 4096},
+        }
+        for i in range(40)
+    ]
+    for event in originals:
+        journal.append(event)
+    connections = 0
+    all_acked = asyncio.Event()
+    seen = []
+
+    async def peer(socket):
+        nonlocal connections
+        connections += 1
+        await socket.recv()  # Current connection hello.
+        if connections == 1:
+            first = json.loads(await socket.recv())
+            assert first == originals[0]
+            # Do not acknowledge the event yet: its DB commit is deliberately slow.
+            await socket.send(json.dumps(command("read-during-ack", "get")))
+            response = json.loads(await socket.recv())
+            assert response["type"] == "response" and response["id"] == "read-during-ack"
+            assert json.loads(journal.next_event()[2]) == first
+            await socket.send(json.dumps({"type": "ack", "event_id": first["event_id"]}))
+            await socket.send(json.dumps({"type": "ack", "event_id": first["event_id"]}))
+            second = json.loads(await socket.recv())
+            assert second == originals[1]
+            await socket.send(json.dumps({"type": "ack", "event_id": first["event_id"]}))
+            await socket.close()  # Commit/ACK observation is lost for the second original.
+        else:
+            for original in originals[1:]:
+                current = json.loads(await socket.recv())
+                assert current == original
+                seen.append(current["event_id"])
+                await socket.send(json.dumps({"type": "ack", "event_id": current["event_id"]}))
+            all_acked.set()
+            await socket.wait_closed()
+
+    async with serve(peer, "127.0.0.1", 0) as server:
+        url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        async with connect(url) as socket:
+            await connector.connection(socket)
+        assert json.loads(journal.next_event()[2]) == originals[1]
+        async with connect(url) as socket:
+            running = asyncio.create_task(connector.connection(socket))
+            await asyncio.wait_for(all_acked.wait(), 5)
+            await socket.close()
+            await running
+    assert seen == [item["event_id"] for item in originals[1:]]
+    assert journal.next_event() is None

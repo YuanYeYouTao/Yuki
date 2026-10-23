@@ -30,7 +30,7 @@ from yuki.services.participation_feedback import admission_unit_binding
 
 async def _relationship(database, tmp_path, *, engage="stay"):
     host, _ = await _host(database, tmp_path)
-    a = await _event_and_route(database, host.app.ledger, content="synthetic original exchange")
+    a = await _event_and_route(database, host.ledger, content="synthetic original exchange")
     item = await _item(host, a)
     binding = await host.binding_for_event(a.id)
     prepared = host.ordinary.prepare(a, item.scene.generation, 1, binding, reason="mention")
@@ -57,7 +57,7 @@ async def test_committed_fast_input_recovers_once_and_still_gets_background_obse
 ):
     host, item, a, _original, _unit = await _relationship(database, tmp_path)
     try:
-        b = await _event_and_route(database, host.app.ledger, content="synthetic next exchange")
+        b = await _event_and_route(database, host.ledger, content="synthetic next exchange")
         binding, reason = await host.continuation_for_event(b.id)
         assert reason == "continuation"
         prepared = host.ordinary.prepare(b, item.scene.generation, 2, binding, reason=reason)
@@ -130,7 +130,7 @@ async def test_quiet_closes_unadmitted_continuation_at_writer_without_blocking_d
     host, item, _a, original, unit = await _relationship(database, tmp_path)
     try:
         b = await _event_and_route(
-            database, host.app.ledger, content="synthetic queued continuation"
+            database, host.ledger, content="synthetic queued continuation"
         )
         binding, reason = await host.continuation_for_event(b.id)
         prepared = host.ordinary.prepare(b, item.scene.generation, 2, binding, reason=reason)
@@ -192,7 +192,7 @@ async def test_selected_original_activation_preserves_qualification_after_review
         admitted_refs = []
         for index in range(6):
             content = f"synthetic selected continuation {index}"
-            event = await _event_and_route(database, host.app.ledger, content=content)
+            event = await _event_and_route(database, host.ledger, content=content)
             binding, reason = await host.continuation_for_event(event.id)
             incoming = host.ordinary.prepare(
                 event, item.scene.generation, 2, binding, reason=reason
@@ -220,7 +220,7 @@ async def test_selected_original_activation_preserves_qualification_after_review
             item.controller.state.host_checkpoint["participation_v1"]
         )
         assert next(iter(checkpoint.units.values())).continuation_refs == tuple(admitted_refs)
-        d = await _event_and_route(database, host.app.ledger, content="synthetic queued D")
+        d = await _event_and_route(database, host.ledger, content="synthetic queued D")
         binding, reason = await host.continuation_for_event(d.id)
         assert await host.continuation_current(binding)
         incoming = host.ordinary.prepare(d, item.scene.generation, 3, binding, reason=reason)
@@ -274,7 +274,7 @@ async def test_selected_original_activation_preserves_qualification_after_review
         assert selected_admission.activation_id == original.admission.activation_id
         await host.on_ordinary_admitted(binding, selected_admission)
         later = await _event_and_route(
-            database, host.app.ledger, content="synthetic unselected after exit"
+            database, host.ledger, content="synthetic unselected after exit"
         )
         assert await host.continuation_for_event(later.id) is None
         assert not provider.requests
@@ -292,9 +292,9 @@ async def test_waiting_review_rechecks_its_actual_sources_after_observer_returns
     task = None
     try:
         context = await _event_and_route(
-            database, host.app.ledger, content="synthetic context not in the unit basis"
+            database, host.ledger, content="synthetic context not in the unit basis"
         )
-        b = await _event_and_route(database, host.app.ledger, content="synthetic reviewed B")
+        b = await _event_and_route(database, host.ledger, content="synthetic reviewed B")
         binding, reason = await host.continuation_for_event(b.id)
         prepared = host.ordinary.prepare(b, item.scene.generation, 2, binding, reason=reason)
         assert await host.ordinary.commit(prepared)
@@ -369,7 +369,7 @@ async def test_idle_ticks_and_cold_restore_do_not_query_available_long_term_memo
 
     try:
         source = await _event_and_route(
-            database, host.app.ledger, content="synthetic old group evidence"
+            database, host.ledger, content="synthetic old group evidence"
         )
         async with database.immediate_session() as writer:
             await writer.execute(

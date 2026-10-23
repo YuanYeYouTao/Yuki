@@ -13,21 +13,21 @@ async def test_binding_and_committed_feedback_share_group_scope_preparation(
 ):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        row = await _event_and_route(database, host.app.ledger)
+        row = await _event_and_route(database, host.ledger)
         hydrate = AsyncMock(wraps=host._hydrate)
         monkeypatch.setattr(host, "_hydrate", hydrate)
         binding = await host.binding_for_event(row.id)
         assert binding is not None
-        config_reads = host.app.runtime_config.snapshot.await_count
+        config_reads = host.runtime_config.snapshot.await_count
         history_reads = hydrate.await_count
         assert history_reads
         prepared = host.ordinary.prepare(row, binding.generation, 1, binding, reason="mention")
         assert await host.ordinary.commit(prepared)
         await host.on_ordinary_admitted(binding, prepared.admission)
         assert hydrate.await_count == history_reads
-        assert host.app.runtime_config.snapshot.await_count == config_reads
+        assert host.runtime_config.snapshot.await_count == config_reads
         assert all(
-            call.kwargs.get("group_id") for call in host.app.runtime_config.snapshot.await_args_list
+            call.kwargs.get("group_id") for call in host.runtime_config.snapshot.await_args_list
         )
         item = host._sessions[(binding.conversation_id, binding.generation)]
         event = item.controller.state.events[f"event:{row.id}"]
@@ -47,7 +47,7 @@ async def test_feedback_revalidates_deleted_source_without_rehydrating(
 ):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        row = await _event_and_route(database, host.app.ledger)
+        row = await _event_and_route(database, host.ledger)
         binding = await host.binding_for_event(row.id)
         prepared = host.ordinary.prepare(row, binding.generation, 1, binding, reason="mention")
         assert await host.ordinary.commit(prepared)
@@ -64,7 +64,7 @@ async def test_feedback_revalidates_deleted_source_without_rehydrating(
 async def test_cold_feedback_recovers_original_admission(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        row = await _event_and_route(database, host.app.ledger)
+        row = await _event_and_route(database, host.ledger)
         binding = await host.binding_for_event(row.id)
         prepared = host.ordinary.prepare(row, binding.generation, 1, binding, reason="mention")
         assert await host.ordinary.commit(prepared)

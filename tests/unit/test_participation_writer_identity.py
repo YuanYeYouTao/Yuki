@@ -42,7 +42,7 @@ async def test_queued_quiet_uses_current_predicate_without_collecting_actor_hist
 
     task = None
     try:
-        event = await _event_and_route(database, host.app.ledger, content="queued qualification")
+        event = await _event_and_route(database, host.ledger, content="queued qualification")
         binding, reason = await host.continuation_for_event(event.id)
         admission = host.ordinary.prepare(event, item.scene.generation, 2, binding, reason=reason)
         monkeypatch.setattr(database, "immediate_session", tracked_writer)
@@ -89,7 +89,7 @@ async def test_current_person_roots_are_read_after_writer_admission(
 ):
     host, _item, _a, _original, _unit = await _relationship(database, tmp_path)
     try:
-        event = await _event_and_route(database, host.app.ledger, content="original current root")
+        event = await _event_and_route(database, host.ledger, content="original current root")
         binding, _reason = await host.continuation_for_event(event.id)
         continuation = await host.prepare_continuation(binding)
         current_root = str(uuid4())
@@ -120,7 +120,7 @@ async def test_new_self_target_reprepares_once_and_preserves_absent_person_ident
 ):
     host, item, _a, _original, _unit = await _relationship(database, tmp_path)
     try:
-        event = await _event_and_route(database, host.app.ledger, content="new self target")
+        event = await _event_and_route(database, host.ledger, content="new self target")
         binding, reason = await host.continuation_for_event(event.id)
         admission = host.ordinary.prepare(event, item.scene.generation, 2, binding, reason=reason)
         old = await host.prepare_continuation(binding)

@@ -114,7 +114,7 @@ async def test_latest_other_discussion_does_not_replace_original_scope(
     try:
         if other_scope == "person":
             other, _ = await seed_event(
-                host.app.ledger,
+                host.ledger,
                 bot_user_id="8000",
                 platform_message_id=str(uuid4()),
                 scope_type=ScopeType.GROUP,
@@ -125,7 +125,7 @@ async def test_latest_other_discussion_does_not_replace_original_scope(
                 occurred_at=datetime.now(UTC),
             )
         else:
-            other = await _event_and_route(database, host.app.ledger, group="2002")
+            other = await _event_and_route(database, host.ledger, group="2002")
         other_item = await _item(host, other)
         binding = await host.binding_for_event(other.id)
         accepted = host.ordinary.prepare(
@@ -165,7 +165,7 @@ async def test_unrelated_or_missing_admission_returns_none_without_hydration(
     try:
         runtime = _runtime(event)
         if missing == "binding":
-            other = await _event_and_route(database, host.app.ledger)
+            other = await _event_and_route(database, host.ledger)
             accepted = host.ordinary.prepare(
                 other, item.scene.generation, 2, None, reason="mention"
             )
@@ -218,7 +218,7 @@ async def test_other_author_group_stop_is_visible_to_original_main_until_release
     host, item, event, original, unit = await _relationship(database, tmp_path)
     try:
         stop, _ = await seed_event(
-            host.app.ledger,
+            host.ledger,
             bot_user_id="8000",
             platform_message_id=str(uuid4()),
             scope_type=ScopeType.GROUP,
@@ -263,7 +263,7 @@ async def test_other_author_group_stop_is_visible_to_original_main_until_release
         assert before["target_person_id"] == original.admission.actor_person_id
 
         invitation, _ = await seed_event(
-            host.app.ledger,
+            host.ledger,
             bot_user_id="8000",
             platform_message_id=str(uuid4()),
             scope_type=ScopeType.GROUP,
@@ -313,7 +313,7 @@ async def test_quiet_covers_observed_same_person_alias_without_rewriting_its_ori
 
         async def incoming(account, text):
             row, _ = await seed_event(
-                host.app.ledger,
+                host.ledger,
                 bot_user_id="8000",
                 platform_message_id=str(uuid4()),
                 scope_type=ScopeType.GROUP,
@@ -363,7 +363,7 @@ async def test_quiet_covers_observed_same_person_alias_without_rewriting_its_ori
         assert alias_admission.binding.unit_key == outsider_next_admission.binding.unit_key
         assert alias_admission.activation_id == outsider_next_admission.activation_id
 
-        host.app.chat = SimpleNamespace(validate_turn_snapshot=AsyncMock(return_value=True))
+        host.validate_turn_snapshot = AsyncMock(return_value=True)
         runtime = replace(
             _runtime(event),
             visible_event_ids=frozenset({event.id, alias.id, outsider.id, outsider_next.id}),

@@ -189,31 +189,33 @@ def test_unsafe_xml_and_non_feed_responses_fail(body: str) -> None:
 
 
 @pytest.mark.parametrize("format_name", ["rss", "atom", "json"])
-def test_more_than_200_entries_fails_instead_of_silently_truncating(format_name: str) -> None:
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_large_feeds_keep_all_unique_entries_and_deduplicate_original_ids(format_name, duplicate):
+    identities = ["same" if duplicate else f"item-{index}" for index in range(201)]
     if format_name == "rss":
         body = (
             '<rss version="2.0"><channel>'
-            + "<item><guid>same</guid></item>" * 201
+            + "".join(
+                f'<item><guid isPermaLink="false">{identity}</guid></item>'
+                for identity in identities
+            )
             + "</channel></rss>"
         )
     elif format_name == "atom":
         body = (
             '<feed xmlns="http://www.w3.org/2005/Atom">'
-            + "<entry><id>same</id></entry>" * 201
+            + "".join(f"<entry><id>{identity}</id></entry>" for identity in identities)
             + "</feed>"
         )
     else:
         body = json.dumps(
             {
                 "version": "https://jsonfeed.org/version/1",
-                "items": [
-                    {"id": "same", "content_text": "Same"},
-                ]
-                * 201,
+                "items": [{"id": identity, "content_text": "Same"} for identity in identities],
             }
         )
-    with pytest.raises(FeedParseError, match="exceeds 200 entries"):
-        parse_feed(body, source_url=SOURCE)
+    result = parse_feed(body, source_url=SOURCE)
+    assert [entry.id for entry in result] == list(dict.fromkeys(identities))
 
 
 def test_oversize_response_fails_and_projection_fields_are_bounded() -> None:

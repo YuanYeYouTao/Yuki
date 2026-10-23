@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.person_identity import person_family_condition
 from yuki.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from yuki.memory.embedding.models import (
@@ -246,8 +247,10 @@ class MemoryEmbeddingRepository:
             for row in rows
         )
 
-    async def purge_old_profiles(self, *, current_profile_id: int) -> int:
+    async def purge_old_profiles(self, *, current_profile_id: int, actor_person_id: str) -> int:
         async with self._database.immediate_session() as session:
+            if not await person_is_superuser(session, actor_person_id):
+                raise PermissionError("embedding_purge_requires_current_superuser")
             old_ids = select(MemoryEmbeddingProfileModel.id).where(
                 MemoryEmbeddingProfileModel.id != current_profile_id
             )

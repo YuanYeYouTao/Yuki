@@ -12,6 +12,7 @@ from tests.conftest import make_settings
 from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.canonical_ingress import fixture_ingress
+from tests.support.service_dependencies import tool_dependencies
 from tests.support.user_profiles_helpers import inbound, observe_members
 
 from yuki.conversation.canonical_db_models import (
@@ -486,6 +487,7 @@ async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
+        **tool_dependencies(database, make_settings(database.url)),
     )
     runtime = ToolRuntime(
         inbound=await _canonical_message(

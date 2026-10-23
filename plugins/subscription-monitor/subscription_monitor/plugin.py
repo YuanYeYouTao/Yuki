@@ -60,7 +60,7 @@ class SubscriptionMonitorPlugin:
                 metadata=BackgroundServiceMetadata(
                     name="subscription_monitor",
                     description="Poll configured feeds and admit events to Yuki's Main Agent.",
-                    restart_policy=RestartPolicy.ON_FAILURE,
+                    restart_policy=RestartPolicy.NEVER,
                     max_concurrency=1,
                 ),
                 runner=self.run,

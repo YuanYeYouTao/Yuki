@@ -70,25 +70,18 @@ class EmojiLibrary:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _manager(self) -> Any:
-        if self.workspace.sandbox is None:
-            raise WorkspaceError("environment_unavailable")
-        return self.workspace.sandbox
-
     async def _index(self, command: str, **arguments: Any) -> dict[str, Any]:
-        result = await self._manager().execute(
+        result = await self.workspace.sandbox.execute(
             "sticker_index", {"command": command, **arguments}, request_id=str(uuid4())
         )
         if result.get("error"):
             raise WorkspaceError(str(result["error"]))
-        return cast(dict[str, Any], result)
+        return result
 
     async def collect_message(
         self, message: InboundMessage, *, source_event_id: int
     ) -> tuple[EmojiAsset, ...]:
         media = self.workspace.conversation_media
-        if media is None:
-            raise WorkspaceError("event_attachment_unavailable")
         indices = {
             position: index
             for index, position, _kind, _data in indexed_media_segments(message.segments)
@@ -252,7 +245,7 @@ class EmojiLibrary:
         if content is None:
             import base64
 
-            result = await self._manager().execute(
+            result = await self.workspace.sandbox.execute(
                 "workspace_media_read",
                 {"path": asset.relative_path, "expected_version": asset.sha256},
                 request_id=str(uuid4()),

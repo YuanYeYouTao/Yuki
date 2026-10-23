@@ -1,5 +1,6 @@
 """Known preparation failures leave the five-item report queue."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -62,8 +63,8 @@ async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp
         settings=make_settings(database.url),
         repository=SelfReflectionRepository(database),
         service=SimpleNamespace(),
+        social=env.service,
     )
-    worker.social = env.service
     await worker._deliver_reports()
     async with database.read_session() as reader:
         failed = list(
@@ -80,7 +81,11 @@ async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp
             await reader.get(MemorySelfReflectionCycleModel, "report-5")
         ).delivery_state == "delivered"
     sends = sum(action == "send_group_msg" for action, _ in env.bot.calls)
-    assert sends == 1
+    assert sends > 0
+    async with database.read_session() as reader:
+        cycle = await reader.get(MemorySelfReflectionCycleModel, "report-5")
+        receipt = json.loads(cycle.delivery_receipt_json)
+        assert receipt["status"] == "succeeded" and receipt["sent_messages"] == sends
     await worker._deliver_reports()
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == sends
 

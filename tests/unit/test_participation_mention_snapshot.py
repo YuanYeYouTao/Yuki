@@ -42,7 +42,7 @@ def segment(account, stage, name, start, end, *, person=None, presence=None):
 @pytest.mark.asyncio
 async def test_host_passes_ordered_original_mentions_without_relabeling_target(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
-    original = await _event_and_route(database, host.app.ledger, content="前😀@Ice 后@Yuki @Ice")
+    original = await _event_and_route(database, host.ledger, content="前😀@Ice 后@Yuki @Ice")
     item = await _item(host, original)
     account, stage, person, own_account, own_stage = (str(uuid4()) for _ in range(5))
     segments = (
@@ -78,7 +78,7 @@ async def test_plain_at_has_no_native_relation_and_account_author_is_not_human_o
     database, tmp_path
 ):
     host, _ = await _host(database, tmp_path, observer=False)
-    original = await _event_and_route(database, host.app.ledger, content="普通文字@Ice")
+    original = await _event_and_route(database, host.ledger, content="普通文字@Ice")
     item = await _item(host, original)
     try:
         event = host._event(original, item)
@@ -94,7 +94,7 @@ async def test_plain_at_has_no_native_relation_and_account_author_is_not_human_o
 @pytest.mark.asyncio
 async def test_mentioned_person_current_projection_uses_the_existing_root_batch(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
-    original = await _event_and_route(database, host.app.ledger, content="看看@Ice")
+    original = await _event_and_route(database, host.ledger, content="看看@Ice")
     item = await _item(host, original)
     async with database.immediate_session() as session:
         old_person = await ensure_person(session, "1002")

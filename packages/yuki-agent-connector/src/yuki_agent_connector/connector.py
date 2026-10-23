@@ -32,6 +32,9 @@ class Connector:
         self.pending_events = asyncio.Event()
         self.tasks: set[asyncio.Task[None]] = set()
         self.stopped = asyncio.Event()
+        self.catalog_changed = asyncio.Event()
+        self._startup: list[asyncio.Task[None]] = []
+        self._event_ack: tuple[str, asyncio.Future[None]] | None = None
 
     async def start_drivers(self) -> None:
         async def start(spec: Any) -> None:
@@ -50,27 +53,32 @@ class Connector:
             try:
                 driver = make_driver(spec, emit)
                 await driver.start()
+                for command, result in self.journal.observations(spec.id):
+                    await driver.recover(command, result)
                 self.drivers[spec.id] = driver
+                self.catalog_changed.set()
             except asyncio.CancelledError:
                 if driver:
                     await driver.stop()
                 raise
             except Exception as exc:
                 self.errors[spec.id] = type(exc).__name__
+                self.catalog_changed.set()
                 logger.error("Native instance unavailable: %s (%s)", spec.id, type(exc).__name__)
                 if driver:
                     await driver.stop()
 
-        await asyncio.gather(*(start(spec) for spec in self.config.instances))
-        for command, result in self.journal.observations():
-            driver = self.drivers.get(command["instance_id"])
-            if driver:
-                await driver.recover(command, result)
+        self._startup.extend(
+            asyncio.create_task(start(spec), name=f"native-start-{spec.id}")
+            for spec in self.config.instances
+        )
+        # Each native owner starts/reconnects independently of its siblings.
+        await asyncio.sleep(0)
 
     def hello(self) -> dict[str, Any]:
         return {
             "type": "hello",
-            "protocol_version": 1,
+            "protocol_version": 2,
             "device_id": self.config.device_id,
             "instances": [
                 {
@@ -174,27 +182,49 @@ class Connector:
             await websocket.send(json.dumps(response, ensure_ascii=False))
 
     async def _events(self, websocket: ClientConnection) -> None:
-        sent: set[str] = set()
+        after = 0
         while True:
             self.pending_events.clear()
-            pending = self.journal.pending()
-            sent.intersection_update(event["event_id"] for event in pending)
-            for event in pending:
-                if event["event_id"] not in sent:
-                    await websocket.send(json.dumps(event, ensure_ascii=False))
-                    sent.add(event["event_id"])
-            await self.pending_events.wait()
+            original = self.journal.next_event(after)
+            if original is None:
+                await self.pending_events.wait()
+                continue
+            sequence, event_id, encoded = original
+            ack = asyncio.get_running_loop().create_future()
+            self._event_ack = (event_id, ack)
+            try:
+                # One durable event is the transport credit/atomic receipt unit.
+                # RPC reads continue independently while its commit ACK is pending.
+                await websocket.send(encoded)
+                await ack
+                after = sequence
+            finally:
+                self._event_ack = None
+
+    async def _catalog(self, websocket: ClientConnection) -> None:
+        while True:
+            await self.catalog_changed.wait()
+            self.catalog_changed.clear()
+            await websocket.send(
+                json.dumps(
+                    {"type": "catalog", "instances": self.hello()["instances"]}, ensure_ascii=False
+                )
+            )
 
     async def connection(self, websocket: ClientConnection) -> None:
         self.stream = websocket
         await websocket.send(json.dumps(self.hello(), ensure_ascii=False))
         events = asyncio.create_task(self._events(websocket))
+        catalog = asyncio.create_task(self._catalog(websocket))
         try:
             async for raw in websocket:
                 value = json.loads(raw)
                 if value.get("type") == "ack":
                     self.journal.ack(value["event_id"])
-                    self.pending_events.set()
+                    if self._event_ack is not None and self._event_ack[0] == value["event_id"]:
+                        future = self._event_ack[1]
+                        if not future.done():
+                            future.set_result(None)
                 elif value.get("type") == "command":
                     task = asyncio.create_task(self._command(value, websocket))
                     self.tasks.add(task)
@@ -204,8 +234,8 @@ class Connector:
         finally:
             self.stream = None
             events.cancel()
-            with contextlib.suppress(asyncio.CancelledError, ConnectionClosed):
-                await events
+            catalog.cancel()
+            await asyncio.gather(events, catalog, return_exceptions=True)
 
     async def run(self) -> None:
         try:
@@ -236,10 +266,25 @@ class Connector:
         finally:
             # Application/service shutdown is distinct from a socket reconnect.
             # Codex closes only its client/proxy; SDK/ACP processes are our own.
-            for task in self.tasks:
-                task.cancel()
-            await asyncio.gather(*self.tasks, return_exceptions=True)
-            await asyncio.gather(*(driver.stop() for driver in self.drivers.values()))
+            original = sys.exception()
+
+            async def close_owners() -> None:
+                owners = (*self._startup, *self.tasks)
+                for task in owners:
+                    task.cancel()
+                await asyncio.gather(*owners, return_exceptions=True)
+                await asyncio.gather(*(driver.stop() for driver in self.drivers.values()))
+
+            joined = asyncio.create_task(close_owners())
+            cancelled: asyncio.CancelledError | None = None
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+            joined.result()
+            if cancelled is not None and not isinstance(original, asyncio.CancelledError):
+                raise cancelled
 
     async def authorization_lost(self) -> None:
         logger.error(

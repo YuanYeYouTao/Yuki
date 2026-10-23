@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, delete, exists, literal, or_, select, update
+from sqlalchemy import and_, exists, literal, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult, Row
 from sqlalchemy.sql.elements import ColumnElement
@@ -590,15 +590,6 @@ class MemoryEmbeddingJobRepository:
                         )
                     )
                     changed += int(cast(CursorResult[Any], result).rowcount == 1)
-
-    async def delete_for_old_profiles(self) -> int:
-        async with self._database.immediate_session() as session:
-            result = await session.execute(
-                delete(MemoryEmbeddingJobModel).where(
-                    MemoryEmbeddingJobModel.profile_id != self.profile.id
-                )
-            )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
 
     @staticmethod
     def _project(row: MemoryEmbeddingJobModel) -> MemoryEmbeddingJob:

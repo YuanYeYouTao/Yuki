@@ -32,7 +32,9 @@ from yuki_participation.models import (
 from yuki_participation.observer import JevObserver
 from yuki_participation.session import ObservationSession
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
+from yuki.config import Settings
 from yuki.conversation.autonomy_binding import (
     AcceptedInitiative,
     AutonomyBinding,
@@ -52,6 +54,7 @@ from yuki.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
     OrdinaryParticipationBinding,
 )
+from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.self_initiative import validate_self_initiative
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.memory_config import MemoryConfigScope
@@ -59,6 +62,8 @@ from yuki.domain.messages import InboundMessage, mention_snapshots
 from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
@@ -126,17 +131,25 @@ class _Session:
 class SemanticParticipationService:
     def __init__(
         self,
-        app: Any,
         *,
+        database: Database,
+        settings: Settings,
+        ledger: EventLedgerRepository,
+        runtime_config: RuntimeConfigService,
+        validate_turn_snapshot: Callable[[ConversationTurnSnapshot], Awaitable[bool]],
+        promote: Callable[[int, OrdinaryParticipationBinding], Awaitable[object]],
         model_config_path: Path | None = None,
         traces: TraceRecorder | None = None,
     ) -> None:
-        self.app = app
-        self.database = app.database
+        self.database = database
+        self.settings = settings
+        self.ledger = ledger
+        self.runtime_config = runtime_config
+        self.validate_turn_snapshot = validate_turn_snapshot
         self.repository = AutonomyRepository(self.database)
         self.work = WorkRepository(self.database)
         self.ordinary = OrdinaryAdmissionRepository(self.database)
-        self._promote: Callable[[int, OrdinaryParticipationBinding], Awaitable[Any]] | None = None
+        self._promote = promote
         self._promotions: dict[str, asyncio.Task[None]] = {}
         self._store: AsyncSnapshotStore | None = None
         self._observer: JevObserver | None = None
@@ -154,7 +167,7 @@ class SemanticParticipationService:
         self._terminal_cursor = ""
         self._terminal_ceiling: str | None = None
         self._model_config_path = (
-            model_config_path or app.settings.semantic_participation_model_config_file
+            model_config_path or settings.semantic_participation_model_config_file
         )
         self._model_parameters = DEFAULT_AUTONOMY_PARAMETERS
         self._model_seen_digest = ""
@@ -194,15 +207,13 @@ class SemanticParticipationService:
 
     async def start(self) -> None:
         self._refresh_model_parameters()
-        self._store = await AsyncSnapshotStore.open(
-            self.app.settings.semantic_participation_state_path
-        )
-        key = self.app.settings.semantic_participation_api_key.get_secret_value()
+        self._store = await AsyncSnapshotStore.open(self.settings.semantic_participation_state_path)
+        key = self.settings.semantic_participation_api_key.get_secret_value()
         if key:
             self._observer = JevObserver(
                 key,
                 identity=self._observer_identity,
-                model=self.app.settings.semantic_participation_model,
+                model=self.settings.semantic_participation_model,
             )
         for conversation_id, generation in await self.repository.list_current_autonomous_scopes():
             scene = await self._scene(conversation_id)
@@ -212,7 +223,7 @@ class SemanticParticipationService:
         self._task = asyncio.create_task(self._loop(), name="semantic-participation")
 
     def _observer_identity(self) -> dict[str, object]:
-        identity = self.app.settings.character_identity
+        identity = self.settings.character_identity
         return {"display_name": identity.display_name, "aliases": identity.aliases}
 
     async def close(self) -> None:
@@ -234,11 +245,6 @@ class SemanticParticipationService:
                 self._store = None
             self._sessions.clear()
             self._dirty.clear()
-
-    def set_promoter(
-        self, callback: Callable[[int, OrdinaryParticipationBinding], Awaitable[Any]]
-    ) -> None:
-        self._promote = callback
 
     async def binding_for_event(
         self,
@@ -443,15 +449,14 @@ class SemanticParticipationService:
         if not keys:
             return
         async with self.database.read_session() as session:
-            generations = dict(
-                (
-                    await session.execute(
-                        select(
-                            CanonicalConversationModel.id, CanonicalConversationModel.generation
-                        ).where(CanonicalConversationModel.id.in_({key[0] for key in keys}))
-                    )
-                ).all()
-            )
+            rows = (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel.id, CanonicalConversationModel.generation
+                    ).where(CanonicalConversationModel.id.in_({key[0] for key in keys}))
+                )
+            ).all()
+            generations = {row.id: row.generation for row in rows}
         async with self._session_lock:
             for key in keys:
                 item = self._sessions.get(key)
@@ -541,7 +546,7 @@ class SemanticParticipationService:
     ) -> AutonomyBinding:
         scene = item.scene
         if runtime is None:
-            runtime = await self.app.runtime_config.snapshot(
+            runtime = await self.runtime_config.snapshot(
                 group_id=scene.space_id if scene.enabled else None
             )
         policy = runtime.conversation_policy()
@@ -689,7 +694,7 @@ class SemanticParticipationService:
             observation_priority=row.author_is_human()
             and any(
                 alias.casefold() in row.perceived_content.casefold()
-                for alias in self.app.settings.character_identity.aliases
+                for alias in self.settings.character_identity.aliases
             ),
         )
 
@@ -700,7 +705,7 @@ class SemanticParticipationService:
         *,
         runtime: RuntimeConfigSnapshot | None = None,
     ) -> RuntimeConfigSnapshot | None:
-        version, rows = await self.app.ledger.read_scope_context(
+        version, rows = await self.ledger.read_scope_context(
             item.scene.identity, limit=64, message_only=True
         )
         if (
@@ -803,7 +808,7 @@ class SemanticParticipationService:
         )
 
         if runtime is None:
-            runtime = await self.app.runtime_config.snapshot(
+            runtime = await self.runtime_config.snapshot(
                 group_id=item.scene.space_id if item.scene.enabled else None
             )
         observe_enabled = (
@@ -961,7 +966,7 @@ class SemanticParticipationService:
             if kind is CandidateKind.CONVERSATION
             else "proactive_wakeup_enabled"
         )
-        master, semantic, product = await self.app.runtime_config.inspect_configs(
+        master, semantic, product = await self.runtime_config.inspect_configs(
             (
                 "conversation.autonomous_enabled",
                 "conversation.semantic_participation_enabled",
@@ -1226,7 +1231,7 @@ class SemanticParticipationService:
         packet: list[dict[str, object]] = []
         for source_ref in run.sources:
             if source_ref.kind is InitiativeSourceKind.EVENT:
-                event = await self.app.ledger.get_event(int(source_ref.source_id))
+                event = await self.ledger.get_event(int(source_ref.source_id))
                 if (
                     event is None
                     or event.canonical_conversation_id != run.conversation_id
@@ -1434,7 +1439,7 @@ class SemanticParticipationService:
         if current_scene is None or current_scene.generation != scene.generation:
             return
         item.scene = current_scene
-        runtime = await self.app.runtime_config.snapshot(
+        runtime = await self.runtime_config.snapshot(
             group_id=current_scene.space_id if current_scene.enabled else None
         )
         binding = await self._binding(item, runtime=runtime)

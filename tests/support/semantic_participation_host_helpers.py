@@ -147,7 +147,7 @@ async def _host(database, tmp_path, *, observer=True):
         settings=make_settings(database.url, conversation_semantic_participation_enabled=True),
         database=database,
     )
-    app = SimpleNamespace(
+    host = SemanticParticipationService(
         database=database,
         ledger=EventLedgerRepository(database),
         settings=SimpleNamespace(
@@ -156,14 +156,11 @@ async def _host(database, tmp_path, *, observer=True):
         ),
         runtime_config=SimpleNamespace(
             inspect_configs=config.inspect_configs,
-            snapshot=AsyncMock(
-                return_value=SimpleNamespace(
-                    conversation_policy=lambda: policy,
-                )
-            ),
+            snapshot=AsyncMock(return_value=SimpleNamespace(conversation_policy=lambda: policy)),
         ),
+        validate_turn_snapshot=AsyncMock(return_value=True),
+        promote=AsyncMock(),
     )
-    host = SemanticParticipationService(app)
     host._store = await AsyncSnapshotStore.open(tmp_path / f"participation-{uuid4()}.db")
     host._observer = Observer() if observer else None
     return host, policy

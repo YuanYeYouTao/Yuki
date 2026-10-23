@@ -9,7 +9,6 @@ import os
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 from uuid import uuid4
 
 from alembic import command
@@ -19,7 +18,6 @@ from yuki import __version__
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.config import Settings
 from yuki.deployment_setup import add_setup_parser, run_setup_command
-from yuki.domain.messages import ChatMessage, ChatTool
 from yuki.gateway.compatibility import provider_doctor_payload
 from yuki.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 from yuki.http_environment import load_http_environment
@@ -35,16 +33,6 @@ from yuki.model_runtime import (
 from yuki.model_runtime.profiles import model_profile_environment
 from yuki.persistence.database import Database
 from yuki.plugin_host.manifest import load_manifest
-from yuki.prompting import (
-    CORE_CONTRACT,
-    PromptChannel,
-    PromptCompiler,
-    PromptContribution,
-    PromptProgram,
-    PromptStability,
-    PromptTrust,
-    measure_tool_schemas,
-)
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.testing.contract import run_plugin_contract_tests
 
@@ -171,25 +159,9 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     retry.add_argument("--request-id")
 
 
-_PROMPT_SCENARIOS = (
-    "direct-text",
-    "group-mention",
-    "autonomous-group",
-    "web",
-    "vision",
-    "plugin",
-)
-
-
 def _add_diagnostics_parsers(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    prompt = subparsers.add_parser("prompt", help="检查脱敏 Prompt 与 Token 指标")
-    prompt_commands = prompt.add_subparsers(dest="prompt_command", required=True)
-    inspect = prompt_commands.add_parser("inspect")
-    inspect.add_argument("scenario", choices=_PROMPT_SCENARIOS)
-    prompt_commands.add_parser("compare")
-
     model = subparsers.add_parser("model", help="检查模型档案、路由和调用统计")
     model_commands = model.add_subparsers(dest="model_command", required=True)
     model_commands.add_parser("routes")
@@ -231,104 +203,6 @@ def _model_catalog(settings: Settings) -> ModelProfileCatalog:
     )
 
 
-def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
-    catalog = _model_catalog(settings)
-    task = ModelTask.CHAT_AGENT
-    route, profile = catalog.routes[task], catalog.profiles[catalog.routes[task].profile_id]
-    dynamic_payloads: dict[str, object] = {
-        "time": {"timezone": "Asia/Shanghai", "local": "2000-01-01T12:00:00+08:00"},
-        "scene": {"kind": "group" if "group" in scenario else "private"},
-    }
-    if scenario == "vision":
-        dynamic_payloads["vision"] = {"observations": ["synthetic visual observation"]}
-    if scenario == "plugin":
-        dynamic_payloads["plugins"] = [{"id": "example", "data": "synthetic"}]
-    dynamic_payloads["plan"] = {"decision": "reply"}
-
-    contributions = [
-        PromptContribution(
-            id="core.persona",
-            channel=PromptChannel.PERSONA,
-            trust=PromptTrust.CORE,
-            priority=100,
-            stability=PromptStability.STATIC,
-            content=settings.character_prompt,
-        ),
-        PromptContribution(
-            id="core.contract",
-            channel=PromptChannel.INVARIANT,
-            trust=PromptTrust.CORE,
-            priority=90,
-            stability=PromptStability.STATIC,
-            content=CORE_CONTRACT,
-        ),
-    ]
-    contributions.extend(
-        PromptContribution(
-            id=f"runtime.{key}",
-            channel=PromptChannel.RUNTIME,
-            trust=PromptTrust.TRUSTED,
-            priority=50,
-            payload=value,
-        )
-        for key, value in dynamic_payloads.items()
-    )
-    compiled = PromptCompiler().compile(
-        PromptProgram(contributions=tuple(contributions)),
-        history=(
-            ChatMessage(role="user", content="这是脱敏的历史消息。"),
-            ChatMessage(role="assistant", content="这是脱敏的历史回复。"),
-        ),
-        current_message=ChatMessage(role="user", content="请回应当前合成场景。"),
-    )
-    tools, groups = _scenario_tools(scenario)
-    tool_metrics = measure_tool_schemas(tools, groups=groups)
-    metrics = compiled.metrics
-    return {
-        "scenario": scenario,
-        "static_prefix_characters": metrics.static_characters,
-        "dynamic_envelope_characters": metrics.dynamic_characters,
-        "history_characters": metrics.history_characters,
-        "current_message_characters": metrics.current_message_characters,
-        "tool_schema_characters": tool_metrics.schema_characters,
-        "estimated_tokens": metrics.estimated_tokens + tool_metrics.estimated_tokens,
-        "contribution_ids": [item.id for item in compiled.selected],
-        "tool_count": tool_metrics.tool_count,
-        "tool_group_characters": tool_metrics.group_characters,
-        "route_task": task.value,
-        "model_profile": route.profile_id,
-        "model": profile.model,
-        "usage_available": True,
-        "fixture": "sanitized_predefined_scenario",
-    }
-
-
-def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]]:
-    selected = {
-        "direct-text": ("search_memory",),
-        "group-mention": ("search_memory",),
-        "autonomous-group": (),
-        "web": ("web_search", "read_webpage"),
-        "vision": ("search_memory",),
-        "plugin": ("plugin_example",),
-    }[scenario]
-    group_by_name = {
-        "search_memory": "memory",
-        "web_search": "web",
-        "read_webpage": "web",
-        "plugin_example": "plugin",
-    }
-    tools = tuple(
-        ChatTool(
-            name=name,
-            description="Predefined diagnostic capability schema.",
-            parameters={"type": "object", "properties": {}},
-        )
-        for name in selected
-    )
-    return tools, group_by_name
-
-
 async def _model_stats(settings: Settings) -> int:
     database = Database(settings.database_url)
     repository = ModelInvocationRepository(database)
@@ -342,44 +216,6 @@ async def _model_stats(settings: Settings) -> int:
         return 0
     finally:
         await database.close()
-
-
-def _prompt_comparison(settings: Settings) -> dict[str, object]:
-    baseline = {
-        "direct-text": {"total_characters": 22413, "estimated_tokens": 5604},
-        "group-mention": {"total_characters": 22422, "estimated_tokens": 5606},
-        "autonomous-group": {"total_characters": 4509, "estimated_tokens": 1128},
-        "web": {"total_characters": 22413, "estimated_tokens": 5604},
-        "vision": {"total_characters": 22886, "estimated_tokens": 5722},
-        "plugin": {"total_characters": 22413, "estimated_tokens": 5604},
-    }
-    comparisons: dict[str, object] = {}
-    for scenario in _PROMPT_SCENARIOS:
-        current = _prompt_diagnostic(settings, scenario)
-        current_characters = (
-            cast(int, current["static_prefix_characters"])
-            + cast(int, current["dynamic_envelope_characters"])
-            + cast(int, current["history_characters"])
-            + cast(int, current["current_message_characters"])
-            + cast(int, current["tool_schema_characters"])
-        )
-        old = baseline[scenario]
-        comparisons[scenario] = {
-            "baseline": old,
-            "current": {
-                "total_characters": current_characters,
-                "estimated_tokens": current["estimated_tokens"],
-            },
-            "character_reduction_percent": round(
-                (1 - current_characters / old["total_characters"]) * 100,
-                1,
-            ),
-        }
-    return {
-        "baseline_commit": "c4a0910a39a69501a0a49226a64f2cfb6e7a682d",
-        "fixture": "sanitized_predefined_scenario",
-        "scenarios": comparisons,
-    }
 
 
 async def _runtime_diagnostics(settings: Settings, args: argparse.Namespace) -> int:
@@ -592,12 +428,6 @@ def main() -> None:
         from yuki.admin_api.cli import admin_command
 
         raise SystemExit(asyncio.run(admin_command(settings, args)))
-    elif args.command == "prompt":
-        if args.prompt_command == "inspect":
-            result = _prompt_diagnostic(settings, str(args.scenario))
-        else:
-            result = _prompt_comparison(settings)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "model":
         if args.model_command == "stats":
             raise SystemExit(asyncio.run(_model_stats(settings)))

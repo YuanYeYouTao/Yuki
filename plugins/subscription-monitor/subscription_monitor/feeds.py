@@ -22,7 +22,6 @@ from pydantic import Field
 from yuki_plugin_sdk.models import StrictModel
 
 MAX_FEED_BYTES = 1_048_576
-MAX_FEED_ENTRIES = 200
 MAX_CONTENT_CHARS = 6000
 ATOM = "{http://www.w3.org/2005/Atom}"
 XML_BASE = "{http://www.w3.org/XML/1998/namespace}base"
@@ -192,7 +191,6 @@ def _rss(root: Element, source_url: str) -> list[FeedEntry]:
     if channel is None:
         raise FeedParseError("RSS feed has no channel")
     items = channel.findall("item")
-    _check_count(len(items))
     base = _xml_base(channel, _xml_base(root, source_url))
     result: list[FeedEntry] = []
     for item in items:
@@ -223,7 +221,6 @@ def _rss(root: Element, source_url: str) -> list[FeedEntry]:
 
 def _atom(root: Element, source_url: str) -> list[FeedEntry]:
     items = root.findall(f"{ATOM}entry")
-    _check_count(len(items))
     base = _xml_base(root, source_url)
     result: list[FeedEntry] = []
     for item in items:
@@ -288,7 +285,6 @@ def _json_feed(body: str, source_url: str) -> list[FeedEntry]:
     items = data.get("items")
     if not isinstance(items, list):
         raise FeedParseError("JSON Feed items must be an array")
-    _check_count(len(items))
     result: list[FeedEntry] = []
     for item in items:
         if not isinstance(item, dict):
@@ -318,11 +314,6 @@ def _json_feed(body: str, source_url: str) -> list[FeedEntry]:
             )
         )
     return result
-
-
-def _check_count(count: int) -> None:
-    if count > MAX_FEED_ENTRIES:
-        raise FeedParseError(f"Feed exceeds {MAX_FEED_ENTRIES} entries")
 
 
 def parse_feed(body: str, *, source_url: str) -> tuple[FeedEntry, ...]:

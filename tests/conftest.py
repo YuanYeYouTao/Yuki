@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -170,7 +171,12 @@ def build_harness(
         ),
     )
     effect_gate = ConversationEffectGate()
+    from tests.support.service_dependencies import tool_dependencies
+    from yuki.workspace.short_state import ShortState
+
+    dependencies = tool_dependencies(database, settings, runtime_config=runtime_config)
     agent_tools = AgentToolService(
+        **dependencies,
         settings=settings,
         ledger=ledger,
         memories=memories,
@@ -186,6 +192,9 @@ def build_harness(
         memories=memories,
         tools=agent_tools,
         runtime_config=runtime_config,
+        short_state=ShortState(dependencies["workspace_service"].store),
+        observe_main_response=AsyncMock(),
+        participation_runtime_context=AsyncMock(return_value=None),
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
         conversation_scopes=conversation_scopes,
         effect_gate=effect_gate,

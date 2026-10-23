@@ -160,7 +160,6 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
         binding=InProcessToolBinding("core", "schema_probe", execute),
     )
     runtime = _runtime(_entry(descriptor))
-    runtime.initial_exposure()
     assert runtime.descriptor("schema_probe").input_schema == schema
     assert "schema_probe" in runtime.callable_capability_ids()
     assert runtime.validate_call("schema_probe", json.dumps(payload)) == (True, None)
@@ -402,8 +401,11 @@ def _runtime(
 ) -> TurnCapabilityRuntime:
     catalog = UnifiedToolCatalog(entries=entries)
     snapshot = DescriptorRegistrySnapshot(catalog)
+    validator = JsonSchemaCapabilityValidator()
+    validator.admit(entries)
     return TurnCapabilityRuntime(
         registry=snapshot,
+        schemas=validator.freeze(),
         policy_context=CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="1001", is_superuser=False),
             memory_view=memory_view,
@@ -429,10 +431,8 @@ def test_complete_catalog_keeps_execution_authorized() -> None:
             )
         ),
     )
-    # Freshly constructed: complete catalog, nothing executable yet.
-    assert runtime.callable_capability_ids() == frozenset()
-    assert runtime.validate_call("web_search", '{"query":"x"}') == (False, NO_LONGER_AUTHORIZED)
-    runtime.initial_exposure()
+    # Construction projects current execution authority over the frozen schemas.
+    assert runtime.validate_call("web_search", '{"query":"x"}') == (True, None)
     assert {entry.descriptor.capability_id for entry in runtime.authorized_catalog.entries} == {
         "web_search",
         "memory_change",
@@ -465,7 +465,6 @@ def test_memory_revision_changes_only_execution_grants_and_denial_wins() -> None
         _entry(_descriptor("memory_change", namespace="memory.state.write")),
     )
     runtime = _runtime(*entries, memory_view=_memory_view(1))
-    runtime.initial_exposure()
     catalog = runtime.authorized_catalog
     assert "memory_change" in runtime.callable_capability_ids()
     runtime.sync_memory_view(_memory_view(2, hidden=("memory.state.write",)))
@@ -481,13 +480,103 @@ def test_memory_revision_changes_only_execution_grants_and_denial_wins() -> None
     assert runtime.callable_capability_ids() == {"web_search"}
 
 
-def test_memory_sync_before_initial_exposure_opens_existing_grants() -> None:
+def test_memory_sync_refreshes_existing_grants() -> None:
     runtime = _runtime(
         _entry(_descriptor("web_search", namespace="web.search")),
         _entry(_descriptor("memory_change", namespace="memory.state.write")),
     )
-    assert runtime.callable_capability_ids() == frozenset()
+    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
     runtime.sync_memory_view(_memory_view(1))
     assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
-    runtime.initial_exposure()
-    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
+
+
+def test_compiled_schema_view_is_shared_while_current_grants_stay_independent():
+    entries = (
+        _entry(_descriptor("web_search", namespace="web.search")),
+        _entry(_descriptor("memory_change", namespace="memory.state.write")),
+        _entry(_descriptor("privileged", namespace="qq.api", permissions=frozenset({"superuser"}))),
+    )
+    validator = JsonSchemaCapabilityValidator()
+    validator.admit(entries)
+    schemas = validator.freeze()
+    registry = DescriptorRegistrySnapshot(UnifiedToolCatalog(entries))
+    ordinary = TurnCapabilityRuntime(
+        registry=registry,
+        schemas=schemas,
+        policy_context=CapabilityPolicyContext(
+            authority=AuthorityContext("ordinary", False), memory_view=_memory_view(1)
+        ),
+    )
+    privileged = TurnCapabilityRuntime(
+        registry=registry,
+        schemas=schemas,
+        policy_context=CapabilityPolicyContext(
+            authority=AuthorityContext("operator", True), memory_view=_memory_view(1)
+        ),
+    )
+    assert ordinary._schemas is privileged._schemas is schemas
+    assert ordinary.validate_call("privileged", '{"query":"x"}') == (
+        False,
+        NO_LONGER_AUTHORIZED,
+    )
+    assert privileged.validate_call("privileged", '{"query":"x"}') == (True, None)
+    ordinary.sync_memory_view(_memory_view(2, hidden=("memory.state.write",)))
+    assert "memory_change" not in ordinary.callable_capability_ids()
+    assert "memory_change" in privileged.callable_capability_ids()
+    assert not schemas.validate("web_search", '{"query":42}').ok
+    with pytest.raises(TypeError):
+        schemas.validators["injected"] = object()
+
+
+def test_same_tool_name_in_a_new_schema_contract_has_its_own_compiled_validator():
+    first = JsonSchemaCapabilityValidator()
+    second = JsonSchemaCapabilityValidator()
+    first.admit((_entry(_descriptor("same", namespace="web.search")),))
+    second.admit(
+        (
+            _entry(
+                _descriptor(
+                    "same",
+                    namespace="web.search",
+                    schema={"type": "object", "properties": {"query": {"type": "integer"}}},
+                )
+            ),
+        )
+    )
+    original, replacement = first.freeze(), second.freeze()
+    assert original.validate("same", '{"query":"x"}').ok
+    assert not replacement.validate("same", '{"query":"x"}').ok
+    assert replacement.validate("same", '{"query":42}').ok
+    assert not original.validate("same", '{"query":42}').ok
+
+
+async def test_main_activations_reuse_the_frozen_schema_view_without_changing_wire_contract(
+    database, tmp_path
+):
+    from tests.conftest import build_harness, make_settings
+    from tests.unit.test_tool_effect_audit import active_work
+
+    from yuki.domain.conversations import ScopeType
+    from yuki.services.main_agent_backend import MainAgentBackend
+
+    env, work, tool_runtime = await active_work(database, tmp_path)
+    chat = build_harness(database, make_settings(database.url)).processor._chat
+    tool_runtime = replace(
+        tool_runtime,
+        runtime_config=await chat._runtime_config.snapshot(),
+        scope_type=ScopeType.GROUP,
+        space_id=env.space,
+        person_id=env.person,
+    )
+    contract = chat.runtime.runner.main_contract
+    original = await contract.definitions()
+    revision = contract.revision
+    first = MainAgentBackend(chat, tool_runtime)
+    second = MainAgentBackend(chat, tool_runtime)
+    await first.prepare()
+    compiled = contract.schema_view
+    await second.prepare()
+    assert first._capability_runtime._schemas is second._capability_runtime._schemas is compiled
+    assert await contract.definitions() == original
+    assert contract.revision == revision
+    await work.control.repository.release(work.control.lease)

@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Set
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, Protocol, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,6 +118,7 @@ from yuki.services.turn_coordinator import (
 )
 from yuki.web.models import WebMode
 from yuki.web.native_sources import recover_native_web_response
+from yuki.workspace.short_state import ShortState
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
@@ -233,6 +234,9 @@ class ChatService:
         memories: MemoryFactService,
         tools: AgentToolService,
         runtime_config: RuntimeConfigService,
+        short_state: ShortState,
+        observe_main_response: Callable[..., Awaitable[None]],
+        participation_runtime_context: Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]],
         memory_context: MemoryContextService | None = None,
         memory_partition_lookup: MemoryPartitionLookup,
         context_assembler: ContextAssembler | None = None,
@@ -259,7 +263,6 @@ class ChatService:
         self._memories = memories
         self._tools = tools
         self._runtime_config = runtime_config
-        runner = AgentRunner(models, concurrency)
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
         self._tool_artifacts = tool_artifacts
@@ -283,6 +286,22 @@ class ChatService:
                 conversation_scopes=self._conversation_scopes,
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
+        self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
+            interrupt_autonomous_on_new_message=(
+                settings.conversation_interrupt_autonomous_on_new_message
+            ),
+        )
+        self._event_publisher = event_publisher
+        self.observe_main_response = observe_main_response
+        self.participation_runtime_context = participation_runtime_context
+        from yuki.services.main_agent_contract import MainAgentContract
+
+        self.main_contract = MainAgentContract(
+            self, short_state, code_enabled=settings.code_mode_enabled
+        )
+        runner = AgentRunner(
+            models, concurrency, main_contract=self.main_contract, code_mode_settings=settings
+        )
         from yuki.runtime.activation_bindings import ActiveWorkBindings
         from yuki.services.yuki_runtime import YukiRuntime
 
@@ -302,16 +321,6 @@ class ChatService:
         from yuki.runtime.work_repository import WorkRepository
 
         self._work_repository = WorkRepository(self._ledger._database)
-        self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
-            interrupt_autonomous_on_new_message=(
-                settings.conversation_interrupt_autonomous_on_new_message
-            ),
-        )
-        self._event_publisher = event_publisher
-        self.observe_main_response: Callable[..., Awaitable[None]] | None = None
-        self.participation_runtime_context: (
-            Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]] | None
-        ) = None
 
     def set_automation_tools(self, service: AutomationToolProvider) -> None:
         """Attach scheduling tools without introducing a second Agent."""
@@ -795,13 +804,10 @@ class ChatService:
                             or source.get("work_id") != control.current["id"]
                         ):
                             return None
-                        return cast(
-                            dict[str, Any],
-                            await client.execute(
-                                "terminal_read",
-                                {"run_id": run_id},
-                                request_id=f"work-check:{run_id}",
-                            ),
+                        return await client.execute(
+                            "terminal_read",
+                            {"run_id": run_id},
+                            request_id=f"work-check:{run_id}",
                         )
 
                     work_scope = await memory_cleanup.enter_async_context(AsyncExitStack())

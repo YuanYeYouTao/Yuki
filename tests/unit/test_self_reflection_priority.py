@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import make_settings
+from tests.support.service_dependencies import tool_dependencies
 from tests.unit.test_memory_v2 import _append_event
 
 from yuki.memory.self_reflection.repository import SelfReflectionRepository
@@ -44,7 +45,12 @@ async def reflection_worker(database, *, owners=1):
         for i in range(owners)
     ]
     service = SimpleNamespace(wait_for_quiet=AsyncMock(), reflect=AsyncMock(return_value=(0, 0)))
-    worker = SelfReflectionWorker(settings=settings, repository=repository, service=service)
+    worker = SelfReflectionWorker(
+        settings=settings,
+        repository=repository,
+        service=service,
+        social=tool_dependencies(database, settings)["social_service"],
+    )
     return worker, repository, service, events
 
 
@@ -171,7 +177,10 @@ async def test_restart_finishes_preempted_cycle_without_claiming_another_batch(
         wait_for_quiet=AsyncMock(), reflect=AsyncMock(return_value=(0, 0))
     )
     resumed = SelfReflectionWorker(
-        settings=worker._settings, repository=repository, service=resumed_service
+        settings=worker._settings,
+        repository=repository,
+        service=resumed_service,
+        social=tool_dependencies(database, worker._settings)["social_service"],
     )
     claim = AsyncMock(wraps=repository.claim_due)
     monkeypatch.setattr(repository, "claim_due", claim)

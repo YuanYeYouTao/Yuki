@@ -24,7 +24,7 @@ def test_publication_work_does_not_scale_with_permanent_history(tmp_path, monkey
             for _ in range(size - previous):
                 identity = str(uuid4())
                 writer.execute(
-                    "INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)", (identity, *row[1:])
+                    "INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?)", (identity, *row[1:])
                 )
                 writer.execute(
                     "INSERT INTO artifact_snapshots VALUES (?,?)", (identity, "original-source")

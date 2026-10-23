@@ -17,6 +17,7 @@ import httpx
 import pytest
 from PIL import Image
 from tests.support.event_seed import seed_event, seed_scoped_event
+from tests.support.service_dependencies import workspace_service
 from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.conversation.media_service import ConversationMediaService
@@ -36,7 +37,6 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolver
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -187,7 +187,7 @@ async def attachment_tools(database, tmp_path, request):
             gateway_registry=registry,
         )
         store = WorkspaceStore(tmp_path / "artifacts")
-        workspace = WorkspaceService(store)
+        workspace = workspace_service(store)
         workspace.conversation_media = media
         copies = []
 
@@ -367,7 +367,7 @@ async def test_attachment_bridge_keeps_qq_adapter_and_inline_without_connection(
     media = ConversationMediaService(
         database, tmp_path / "cache", resolver, ImagePreprocessor(), gateway_registry=registry
     )
-    workspace = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
+    workspace = workspace_service(WorkspaceStore(tmp_path / "artifacts"))
     workspace.conversation_media = media
     try:
         result = await workspace.execute(

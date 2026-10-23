@@ -22,14 +22,14 @@ async def test_warm_binding_and_hint_keep_original_source_and_saved_quiet(
     database, tmp_path, prepared_input
 ):
     host, item, source, _, _ = await ordinary_expression(database, tmp_path, send=False)
-    host.app.runtime_config = RuntimeConfigService(
+    host.runtime_config = RuntimeConfigService(
         settings=make_settings(database.url, conversation_semantic_participation_enabled=True),
         database=database,
     )
-    host.app.chat = SimpleNamespace(validate_turn_snapshot=AsyncMock(return_value=True))
+    host.validate_turn_snapshot = AsyncMock(return_value=True)
     queries = []
     scanned = []
-    read_context = host.app.ledger.read_scope_context
+    read_context = host.ledger.read_scope_context
 
     async def count_history(*args, **kwargs):
         version, rows = await read_context(*args, **kwargs)
@@ -39,11 +39,11 @@ async def test_warm_binding_and_hint_keep_original_source_and_saved_quiet(
     def count_sql(_conn, _cursor, statement, _parameters, _context, _many):
         queries.append(statement)
 
-    host.app.ledger.read_scope_context = count_history
+    host.ledger.read_scope_context = count_history
     sql_event.listen(database.engine.sync_engine, "before_cursor_execute", count_sql)
     try:
         for index in range(63):
-            await _event_and_route(database, host.app.ledger, content=f"history {index}")
+            await _event_and_route(database, host.ledger, content=f"history {index}")
         await host._hydrate(item)
         item.observation.queue.pending.clear()
         original = item.controller.state.events[f"event:{source.id}"]
@@ -55,7 +55,7 @@ async def test_warm_binding_and_hint_keep_original_source_and_saved_quiet(
             effective_trigger_event_id=source.id,
             visible_event_ids=frozenset(),
         )
-        prepared_runtime = await host.app.runtime_config.snapshot(group_id=item.scene.space_id)
+        prepared_runtime = await host.runtime_config.snapshot(group_id=item.scene.space_id)
         samples = {"binding": [], "hint": []}
         for sequence in range(1, 6):
             queries.clear()

@@ -245,6 +245,20 @@ class MemoryMutationService:
             idempotency_key=_fingerprint({"operation_id": context.operation_id}),
         )
         if receipt is None:
+            if context.legacy_operation_id is not None:
+                legacy = await self._receipts.find(
+                    idempotency_key=_fingerprint({"operation_id": context.legacy_operation_id}),
+                )
+                if (
+                    legacy is not None
+                    and legacy.decision_actor_type is MemoryDecisionActorType.PLUGIN
+                    and legacy.decision_actor_id in {None, context.decision_actor_id}
+                ):
+                    # An old event-wide receipt cannot identify a particular
+                    # plugin call. Keep its effect and identity without replay.
+                    return self._rejected(
+                        request.operation, "memory_operation_legacy_identity_unknown"
+                    )
             return None
         return self._original_result(
             receipt,
@@ -1489,6 +1503,19 @@ class MemoryMutationService:
                     claim_fingerprint=prepared.claim_fingerprint,
                     operation=request.operation,
                 )
+            if context.legacy_operation_id is not None:
+                legacy = await self._receipts.find(
+                    idempotency_key=_fingerprint({"operation_id": context.legacy_operation_id}),
+                    session=session,
+                )
+                if (
+                    legacy is not None
+                    and legacy.decision_actor_type is MemoryDecisionActorType.PLUGIN
+                    and legacy.decision_actor_id in {None, context.decision_actor_id}
+                ):
+                    return self._rejected(
+                        request.operation, "memory_operation_legacy_identity_unknown"
+                    )
             from yuki.runtime.effect_outcomes import current_result_capture
 
             capture = current_result_capture.get()

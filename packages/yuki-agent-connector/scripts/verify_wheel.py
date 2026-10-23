@@ -79,6 +79,10 @@ def main() -> None:
             "-c",
             "import importlib.util; "
             "assert importlib.util.find_spec('yuki') is None; "
+            "import importlib.metadata; import yuki_agent_connector; "
+            "assert yuki_agent_connector.__version__ == "
+            "importlib.metadata.version('yuki-agent-connector') == "
+            f"{metadata['project']['version']!r}; "
             "import yuki_agent_connector.drivers.codex; "
             "import yuki_agent_connector.drivers.claude; "
             "import yuki_agent_connector.drivers.acp",

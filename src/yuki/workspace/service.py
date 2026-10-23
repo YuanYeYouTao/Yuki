@@ -17,11 +17,18 @@ from yuki.workspace.tools import workspace_tools as workspace_tools
 
 
 class WorkspaceService:
-    def __init__(self, store: WorkspaceStore) -> None:
+    def __init__(
+        self,
+        store: WorkspaceStore,
+        *,
+        sandbox: SandboxClient,
+        visual_inspector: WorkspaceInspector,
+        conversation_media: ConversationMediaService,
+    ) -> None:
         self.store = store
-        self.sandbox: SandboxClient | None = None
-        self.visual_inspector: WorkspaceInspector | None = None
-        self.conversation_media: ConversationMediaService | None = None
+        self.sandbox = sandbox
+        self.visual_inspector = visual_inspector
+        self.conversation_media = conversation_media
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -71,8 +78,6 @@ class WorkspaceService:
                 else str(uuid4())
             )
         if name == "workspace_inspect":
-            if self.visual_inspector is None:
-                raise WorkspaceError("visual_inspection_unavailable")
             if bool(args.get("artifact_id")) == bool(args.get("path")):
                 raise WorkspaceError("choose_path_or_artifact_id")
             vision = (
@@ -84,8 +89,6 @@ class WorkspaceService:
                 return await self.visual_inspector(
                     str(args["artifact_id"]), str(args["question"]), runtime=vision
                 )
-            if self.sandbox is None:
-                raise WorkspaceError("environment_unavailable")
             metadata = await self.sandbox.execute(
                 "workspace_media_read",
                 {
@@ -109,8 +112,6 @@ class WorkspaceService:
         if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
             source_key = f"attachment:{int(args['event_id'])}:{int(args['attachment_index'])}"
             if name == "save_conversation_attachment_to_workspace":
-                if self.sandbox is None:
-                    raise WorkspaceError("environment_unavailable")
                 prior = await self.sandbox.execute(
                     "workspace_copy_result",
                     {"source_key": source_key, "destination": str(args["destination"])},
@@ -126,8 +127,6 @@ class WorkspaceService:
                     result: dict[str, Any] = prior["result"]
                     return result
             media = self.conversation_media
-            if media is None:
-                raise WorkspaceError("event_attachment_unavailable")
             try:
                 item, path = await media.authorized_path(
                     event_id=int(args["event_id"]),
@@ -144,8 +143,6 @@ class WorkspaceService:
                             else None
                         ),
                     )
-                if self.sandbox is None:
-                    raise WorkspaceError("environment_unavailable")
                 return await self.copy_from_cache(
                     path="/inputs/media-cache/v1/" + path.relative_to(media.root).as_posix(),
                     destination=str(args["destination"]),
@@ -160,8 +157,6 @@ class WorkspaceService:
     async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
         """Execution-time authority and current source versions, without fetching pixels."""
         if any(image.source == "history" for image in images):
-            if self.conversation_media is None:
-                raise WorkspaceError("event_attachment_unavailable")
             try:
                 await self.conversation_media.validate_images(images)
             except ConversationMediaError as exc:
@@ -177,10 +172,8 @@ class WorkspaceService:
                 continue
             validated.add(dependency)
             if image.artifact_id:
-                if self.visual_inspector is None:
-                    raise WorkspaceError("visual_inspection_unavailable")
                 await self.visual_inspector.validate_artifact(image)
-            elif image.workspace_path and image.version and self.sandbox:
+            elif image.workspace_path and image.version:
                 result = await self.sandbox.execute(
                     "workspace_media_validate",
                     {
@@ -203,8 +196,6 @@ class WorkspaceService:
         source_key: str,
         expected_version: str | None = None,
     ) -> dict[str, Any]:
-        if self.sandbox is None:
-            raise WorkspaceError("environment_unavailable")
         result = await self.sandbox.execute(
             "workspace_copy",
             {
@@ -228,8 +219,6 @@ class WorkspaceService:
         expected_version: str | None = None,
     ) -> dict[str, Any]:
         """Freeze one original send through the Manager's durable file request."""
-        if self.sandbox is None:
-            raise WorkspaceError("environment_unavailable")
         result = await self.sandbox.execute(
             "workspace_publish",
             {

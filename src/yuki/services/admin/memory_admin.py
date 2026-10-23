@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,12 +20,9 @@ from yuki.memory.dream.worker import DreamWorker
 from yuki.memory.embedding.models import MemoryEmbeddingHealth
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
 from yuki.memory.enums import (
-    MemoryAuthority,
     MemoryInvalidationReason,
     MemoryKind,
     MemoryScopeType,
-    MemorySourceType,
-    MemoryStatus,
     MemoryTargetRole,
 )
 from yuki.memory.fts import SQLiteMemoryFTSIndex
@@ -35,9 +31,7 @@ from yuki.memory.models import (
     MemoryConsistencyHealth,
     MemoryEntityTarget,
     MemoryEvidence,
-    MemoryEvidenceCreate,
     MemoryFact,
-    MemoryFactCreate,
     MemoryFactStateEvent,
     MemoryIndexHealth,
     MemoryRetrievalResult,
@@ -47,6 +41,7 @@ from yuki.memory.mutation.models import (
     MemoryMutationContext,
     MemoryMutationOperation,
     MemoryMutationRequest,
+    MemoryMutationRequestBasis,
     MemoryMutationResult,
     MemoryMutationTarget,
 )
@@ -88,6 +83,7 @@ class MemoryPreferenceTrigger:
     actor_is_superuser: bool = False
     person_id: str | None = None
     operation_id: str | None = None
+    turn_origin: str | None = None
 
 
 class MemoryAdminService:
@@ -105,8 +101,8 @@ class MemoryAdminService:
         memory_embeddings: MemoryEmbeddingRuntime | None = None,
         fact_audit: MemoryAuditService | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
-        mutations: MemoryMutationService | None = None,
-        ledger: EventLedgerRepository | None = None,
+        mutations: MemoryMutationService,
+        ledger: EventLedgerRepository,
         self_reflection: SelfReflectionWorker | None = None,
         dream: DreamWorker | None = None,
     ) -> None:
@@ -200,8 +196,6 @@ class MemoryAdminService:
             confidence=1.0,
             importance=4,
         )
-        if mutation is None:
-            raise RuntimeError("memory mutation service is unavailable")
         row = await self._mutation_fact(mutation)
         assert row is not None
         return row
@@ -231,8 +225,6 @@ class MemoryAdminService:
             fact_id=existing.id,
             reason="deterministic_preference_delete",
         )
-        if mutation is None:
-            raise RuntimeError("memory mutation service is unavailable")
         return mutation.ok
 
     async def add_memory(
@@ -241,8 +233,9 @@ class MemoryAdminService:
         target: str,
         content: str,
         *,
-        evidence: MemoryEvidenceCreate | None = None,
         target_person_id: str | None = None,
+        confidence: float = 1.0,
+        request_basis: MemoryMutationRequestBasis = MemoryMutationRequestBasis.USER_REQUESTED,
     ) -> MemoryFact:
         target_person_id = await self._require_authorized_person_target(
             actor, target, person_id=target_person_id
@@ -250,7 +243,6 @@ class MemoryAdminService:
         normalized = " ".join(content.split()).strip()
         if not normalized:
             raise ValueError("记忆内容不能为空")
-        started = time.perf_counter()
         mutation = await self._apply_mutation(
             actor,
             target=ResolvedSubject(
@@ -265,55 +257,12 @@ class MemoryAdminService:
             category="explicit",
             kind=MemoryKind.FACT,
             reason="deterministic_memory_add",
-            confidence=1.0,
+            confidence=confidence,
+            request_basis=request_basis,
             importance=5,
         )
-        if mutation is not None:
-            row = await self._mutation_fact(mutation)
-            assert row is not None
-            return row
-
-        draft = MemoryFactCreate(
-            scope_type=MemoryScopeType.PERSON,
-            subject_user_id=target,
-            canonical_subject_person_id=target_person_id,
-            kind=MemoryKind.FACT,
-            memory_key=f"explicit-{uuid4()}",
-            category="explicit",
-            content=normalized,
-            importance=5,
-            confidence=1,
-            source_type=MemorySourceType.EXPLICIT,
-            authority=MemoryAuthority.EXPLICIT,
-        )
-        prepared = await self._memories.prepare_write((), targets=(draft,))
-
-        async def write(session: AsyncSession) -> MemoryFact:
-            await self._require_authorized_person_target(
-                actor, target, person_id=target_person_id, session=session
-            )
-            row = await self._memories.remember(
-                draft,
-                evidence=evidence,
-                session=session,
-            )
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="add",
-                target_type="user",
-                target_id=target,
-                before=None,
-                after={"memory_id": row.id, "content": normalized},
-                success=True,
-                duration_seconds=time.perf_counter() - started,
-                session=session,
-            )
-            return row
-
-        async with self._memories.repository.write_session(prepared) as writer:
-            row = await write(writer)
-        await self._memories.schedule_embedding(row.id)
+        row = await self._mutation_fact(mutation)
+        assert row is not None
         return row
 
     async def update_memory(
@@ -331,7 +280,6 @@ class MemoryAdminService:
         normalized = " ".join(content.split()).strip()
         if not normalized:
             raise ValueError("记忆内容不能为空")
-        started = time.perf_counter()
         current = await self._memories.get_fact(memory_id)
         mutation = await self._apply_mutation(
             actor,
@@ -351,48 +299,7 @@ class MemoryAdminService:
             confidence=1.0,
             importance=current.importance if current is not None else None,
         )
-        if mutation is not None:
-            updated = mutation.ok and mutation.new_fact_id is not None
-            return updated
-
-        async def write(session: AsyncSession) -> MemoryFact | None:
-            await self._require_authorized_person_target(
-                actor, target, person_id=target_person_id, session=session
-            )
-            before = await self._person_fact(
-                session, memory_id, target=target, person_id=target_person_id
-            )
-            updated_row = await self._memories.update_explicit_person(
-                memory_id,
-                user_id=target,
-                person_id=target_person_id,
-                content=normalized,
-                session=session,
-            )
-            updated = updated_row is not None
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="update",
-                target_type="user",
-                target_id=target,
-                before={"memory_id": memory_id, "content": before.content if before else None},
-                after={"memory_id": memory_id, "content": normalized},
-                success=updated,
-                error_category=None if updated else "not_found",
-                duration_seconds=time.perf_counter() - started,
-                session=session,
-            )
-            return updated_row
-
-        prepared = await self._memories.prepare_write(
-            (memory_id,), copies=(((memory_id,), current, None),) if current is not None else ()
-        )
-        async with self._memories.repository.write_session(prepared) as writer:
-            updated_row = await write(writer)
-        if updated_row is not None:
-            await self._memories.schedule_embedding(updated_row.id)
-        return updated_row is not None
+        return mutation.ok and mutation.new_fact_id is not None
 
     async def delete_memory(
         self,
@@ -405,7 +312,6 @@ class MemoryAdminService:
         target_person_id = await self._require_authorized_person_target(
             actor, target, person_id=target_person_id
         )
-        started = time.perf_counter()
         mutation = await self._apply_mutation(
             actor,
             target=ResolvedSubject(
@@ -418,41 +324,7 @@ class MemoryAdminService:
             fact_id=memory_id,
             reason="deterministic_memory_delete",
         )
-        if mutation is not None:
-            deleted = mutation.ok
-            return deleted
-
-        async def write(session: AsyncSession) -> bool:
-            await self._require_authorized_person_target(
-                actor, target, person_id=target_person_id, session=session
-            )
-            before = await self._person_fact(
-                session, memory_id, target=target, person_id=target_person_id
-            )
-            deleted = await self._memories.invalidate_person(
-                memory_id,
-                user_id=target,
-                person_id=target_person_id,
-                session=session,
-            )
-            await self._audit.record(
-                actor=actor,
-                capability="memory",
-                operation="delete",
-                target_type="user",
-                target_id=target,
-                before={"memory_id": memory_id, "content": before.content if before else None},
-                after=None,
-                success=deleted,
-                error_category=None if deleted else "not_found",
-                duration_seconds=time.perf_counter() - started,
-                session=session,
-            )
-            return deleted
-
-        prepared = await self._memories.prepare_write((memory_id,))
-        async with self._memories.repository.write_session(prepared) as writer:
-            return await write(writer)
+        return mutation.ok
 
     async def list_evidence(
         self,
@@ -596,7 +468,9 @@ class MemoryAdminService:
         await self._require_superuser(actor)
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
-        return await self._memory_embeddings.purge_old()
+        person_id = await self._actor_person_id(actor)
+        assert person_id is not None
+        return await self._memory_embeddings.purge_old(actor_person_id=person_id)
 
     async def show_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
         async with self._database.read_session() as session:
@@ -654,52 +528,33 @@ class MemoryAdminService:
         actor: AdminActor | MemoryPreferenceTrigger,
         fact_id: int,
         content: str,
+        *,
+        confidence: float = 1.0,
     ) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
         await self._require_authorized_fact_mutation(actor, fact)
         expected = normalize_memory_text(content)
         if not expected:
             raise ValueError("memory correction cannot be empty")
-        result: MemoryFact | None = None
-        if fact is not None:
-            mutation = await self._apply_mutation(
-                actor,
-                target=ResolvedSubject(
-                    fact.scope_type,
-                    fact.subject_user_id,
-                    fact.group_id,
-                ),
-                operation=MemoryMutationOperation.CORRECT,
-                fact_id=fact_id,
-                new_content=expected,
-                memory_key=fact.memory_key,
-                category=fact.category,
-                kind=fact.kind,
-                reason="memory_fact_correct_command",
-                confidence=1.0,
-                importance=fact.importance,
-            )
-            if mutation is not None:
-                if mutation.ok and mutation.new_fact_id is not None:
-                    result = await self._memories.get_fact(mutation.new_fact_id)
-                else:
-                    return None
-            else:
-                result = await self._memories.correct_fact(
-                    fact_id,
-                    content=expected,
-                    actor_user_id=actor.user_id,
-                )
-        else:
-            result = await self._memories.correct_fact(
-                fact_id,
-                content=expected,
-                actor_user_id=actor.user_id,
-            )
-        return await self._visible_person_correction(
-            result,
-            expected_content=expected,
+        if fact is None:
+            return None
+        mutation = await self._apply_mutation(
+            actor,
+            target=ResolvedSubject(fact.scope_type, fact.subject_user_id, fact.group_id),
+            operation=MemoryMutationOperation.CORRECT,
+            fact_id=fact_id,
+            new_content=expected,
+            memory_key=fact.memory_key,
+            category=fact.category,
+            kind=fact.kind,
+            reason="memory_fact_correct_command",
+            confidence=confidence,
+            importance=fact.importance,
         )
+        if not mutation.ok or mutation.new_fact_id is None:
+            return None
+        result = await self._memories.get_fact(mutation.new_fact_id)
+        return await self._visible_person_correction(result, expected_content=expected)
 
     async def invalidate_fact(
         self,
@@ -717,25 +572,16 @@ class MemoryAdminService:
         )
         if reason and privileged:
             selected = MemoryInvalidationReason(reason)
-        if fact is not None:
-            mutation = await self._apply_mutation(
-                actor,
-                target=ResolvedSubject(
-                    fact.scope_type,
-                    fact.subject_user_id,
-                    fact.group_id,
-                ),
-                operation=MemoryMutationOperation.INVALIDATE,
-                fact_id=fact_id,
-                reason=selected.value,
-            )
-            if mutation is not None:
-                return mutation.ok
-        return await self._memories.invalidate_fact(
-            fact_id,
-            reason=selected,
-            actor_user_id=actor.user_id,
+        if fact is None:
+            return False
+        mutation = await self._apply_mutation(
+            actor,
+            target=ResolvedSubject(fact.scope_type, fact.subject_user_id, fact.group_id),
+            operation=MemoryMutationOperation.INVALIDATE,
+            fact_id=fact_id,
+            reason=selected.value,
         )
+        return mutation.ok
 
     async def restore_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
@@ -750,21 +596,16 @@ class MemoryAdminService:
             }
         ):
             raise PermissionError("只能恢复由本人撤回的记忆")
-        if fact is not None:
-            mutation = await self._apply_mutation(
-                actor,
-                target=ResolvedSubject(
-                    fact.scope_type,
-                    fact.subject_user_id,
-                    fact.group_id,
-                ),
-                operation=MemoryMutationOperation.RESTORE,
-                fact_id=fact_id,
-                reason="memory_fact_restore_command",
-            )
-            if mutation is not None:
-                return await self._mutation_fact(mutation, required=False)
-        return await self._memories.restore_fact(fact_id, actor_user_id=actor.user_id)
+        if fact is None:
+            return None
+        mutation = await self._apply_mutation(
+            actor,
+            target=ResolvedSubject(fact.scope_type, fact.subject_user_id, fact.group_id),
+            operation=MemoryMutationOperation.RESTORE,
+            fact_id=fact_id,
+            reason="memory_fact_restore_command",
+        )
+        return await self._mutation_fact(mutation, required=False)
 
     async def merge_facts(
         self,
@@ -774,26 +615,17 @@ class MemoryAdminService:
     ) -> MemoryFact | None:
         await self._require_superuser(actor)
         source = await self._fact_audit.get_fact(source_fact_id)
-        if source is not None:
-            mutation = await self._apply_mutation(
-                actor,
-                target=ResolvedSubject(
-                    source.scope_type,
-                    source.subject_user_id,
-                    source.group_id,
-                ),
-                operation=MemoryMutationOperation.MERGE,
-                fact_id=source_fact_id,
-                merge_fact_id=target_fact_id,
-                reason="memory_fact_merge_command",
-            )
-            if mutation is not None:
-                return await self._mutation_fact(mutation, required=False)
-        return await self._memories.merge_facts(
-            source_fact_id,
-            target_fact_id,
-            actor_user_id=actor.user_id,
+        if source is None:
+            return None
+        mutation = await self._apply_mutation(
+            actor,
+            target=ResolvedSubject(source.scope_type, source.subject_user_id, source.group_id),
+            operation=MemoryMutationOperation.MERGE,
+            fact_id=source_fact_id,
+            merge_fact_id=target_fact_id,
+            reason="memory_fact_merge_command",
         )
+        return await self._mutation_fact(mutation, required=False)
 
     async def resolve_conflicts(
         self,
@@ -954,11 +786,8 @@ class MemoryAdminService:
         kind: MemoryKind | None = None,
         confidence: float = 1.0,
         importance: int | None = None,
-    ) -> MemoryMutationResult | None:
-        if self._mutations is None and self._ledger is None:
-            return None
-        if self._mutations is None or self._ledger is None:
-            raise RuntimeError("memory mutation dependencies are incomplete")
+        request_basis: MemoryMutationRequestBasis = MemoryMutationRequestBasis.USER_REQUESTED,
+    ) -> MemoryMutationResult:
         if not actor.bot_user_id:
             raise RuntimeError("memory mutation is not bound to a real Bot event")
         if actor.trigger_event_id is None:
@@ -997,6 +826,7 @@ class MemoryAdminService:
             effective_key = f"explicit:{event.id}"
         request = MemoryMutationRequest(
             operation=operation,
+            request_basis=request_basis,
             fact_id=fact_id,
             merge_fact_id=merge_fact_id,
             target=MemoryMutationTarget(
@@ -1032,7 +862,11 @@ class MemoryAdminService:
             MemoryMutationContext(
                 event=event,
                 conversation_key=actor.conversation_key,
-                turn_origin=event.origin,
+                turn_origin=(
+                    actor.turn_origin
+                    if isinstance(actor, MemoryPreferenceTrigger) and actor.turn_origin is not None
+                    else event.origin
+                ),
                 delegation_mode=decision_actor_type.value,
                 trigger_actor_user_id=event.sender_user_id,
                 decision_actor_type=decision_actor_type,
@@ -1040,7 +874,19 @@ class MemoryAdminService:
                 executed_by_bot_user_id=event.bot_user_id,
                 actor_is_superuser=await self._is_superuser(actor),
                 actor_person_id=event.author_person_id,
-                operation_id=f"memory-admin:event:{event.id}",
+                operation_id=(
+                    actor.operation_id
+                    if isinstance(actor, MemoryPreferenceTrigger) and actor.operation_id is not None
+                    else f"memory-admin:event:{event.id}"
+                ),
+                legacy_operation_id=(
+                    f"memory-admin:event:{event.id}"
+                    if isinstance(actor, MemoryPreferenceTrigger)
+                    and decision_actor_type is MemoryDecisionActorType.PLUGIN
+                    and actor.operation_id is not None
+                    and actor.operation_id != f"memory-admin:event:{event.id}"
+                    else None
+                ),
             ),
             target=target,
         )
@@ -1074,21 +920,6 @@ class MemoryAdminService:
         if row is None and required:
             raise ValueError(f"记忆变更未提交：{mutation.reason_code}")
         return row
-
-    async def _person_fact(
-        self, session: AsyncSession, fact_id: int, *, target: str, person_id: str
-    ) -> MemoryFact | None:
-        fact = await self._memories.get_fact(fact_id, session=session)
-        if (
-            fact is not None
-            and fact.scope_type is MemoryScopeType.PERSON
-            and fact.status is MemoryStatus.ACTIVE
-            and await self._memories.person_owns_fact(
-                fact, actor_user_id=target, actor_person_id=person_id, session=session
-            )
-        ):
-            return fact
-        return None
 
     async def _require_authorized_person_target(
         self,

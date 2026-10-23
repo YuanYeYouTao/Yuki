@@ -176,6 +176,8 @@ class MemoryMutationContext:
     source_group_id: str | None = None
     operation_id: str | None = None
     actor_person_id: str | None = None
+    # Read-only original key from the retired event-wide plugin identity.
+    legacy_operation_id: str | None = None
 
     @property
     def occurred_at(self) -> datetime:

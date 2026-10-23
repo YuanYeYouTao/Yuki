@@ -180,7 +180,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
 async def test_self_new_proposals_ignore_expiry_scoring_reuse_and_existing_work(database, tmp_path):
     host, _ = await _host(database, tmp_path)
     try:
-        event = await _event_and_route(database, host.app.ledger)
+        event = await _event_and_route(database, host.ledger)
         item = await _item(host, event)
         binding = await host._binding(item)
         focus = item.controller.state.events[f"event:{event.id}"]

@@ -214,7 +214,7 @@ async def test_actual_self_host_uses_proactive_flag_independently_of_auto_reply(
 
     host, _ = await _host(database, tmp_path, observer=False)
     try:
-        event = await _event_and_route(database, host.app.ledger)
+        event = await _event_and_route(database, host.ledger)
         item = await host._session(await host._scene(event.canonical_conversation_id))
         await host._hydrate(item)
         binding = await host._binding(item)

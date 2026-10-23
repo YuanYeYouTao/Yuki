@@ -4,7 +4,7 @@ Independent Python 3.12 connector for an existing local Codex daemon, the offici
 Agent SDK and generic ACP agents. It does not install the Yuki Bot, own business tasks,
 mirror native transcripts or send chat messages itself.
 
-Install the built wheel with Python 3.12, for example `uv tool install path/to/yuki_agent_connector-0.1.0-py3-none-any.whl`.
+Install the built wheel with Python 3.12, for example `uv tool install path/to/yuki_agent_connector-0.2.0-py3-none-any.whl`.
 The connector uses its own lock file and does not install the Bot project. The pinned
 Claude SDK currently includes its own large CLI payload; the driver nevertheless
 requires the explicitly selected native executable and never silently runs that payload.
@@ -96,3 +96,19 @@ The independent CI job runs on Linux, Windows and macOS and uploads the built wh
 fake server with zero native instances; it does not touch existing tasks or paid models.
 Real provider tests, OS service tests and source-level fake protocol tests remain
 distinct acceptance evidence.
+
+
+### Connector 0.2.0 / wire protocol 2
+
+Bot and Connector must be updated to a matching revision. The WebSocket hello now uses
+`protocol_version: 2`; version 1 is rejected rather than treated as compatible. Device,
+instance, native session, execution, operation IDs and the original journal remain unchanged.
+Each native instance starts and recovers independently. A ready sibling can connect immediately;
+later readiness is sent through the same connection's catalog update without replacing its owner.
+
+One original durable event is the in-flight credit and commit/ACK unit. RPC responses keep using
+the independent socket reader while that event waits for SQLite. The connector reads its original
+journal by sequence and sends the stored JSON, then advances only after its ACK. Disconnects replay
+only unacknowledged records; they never redispatch native operations. This bounds transport backlog
+materialization at the cost of one commit/ACK round trip per event; it is not an execution limit.
+Explicit server `receive_events([...])` calls still commit or roll back the whole supplied list.

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .config import private_path
 
@@ -123,10 +123,16 @@ class Journal:
                 result.update(admitted=True, status=payload.get("status", "running"), pending=True)
         return result
 
-    def observations(self) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    def observations(
+        self, instance_id: str | None = None
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
         observations = []
         for command, response, receipt in self.db.execute(
             "SELECT command, response, receipt FROM operations WHERE observing = 1"
+            + (
+                " AND json_extract(command, '$.instance_id') = ?" if instance_id is not None else ""
+            ),
+            (instance_id,) if instance_id is not None else (),
         ):
             result = json.loads(response).get("result", {}) if response else {}
             if receipt:
@@ -166,11 +172,16 @@ class Journal:
                     (encoded, event["operation_id"]),
                 )
 
-    def pending(self) -> list[dict[str, Any]]:
-        return [
-            json.loads(row[0])
-            for row in self.db.execute("SELECT event FROM events ORDER BY sequence")
-        ]
+    def next_event(self, after_sequence: int = 0) -> tuple[int, str, str] | None:
+        """Select the next original unacknowledged wire record without decoding its backlog."""
+        return cast(
+            tuple[int, str, str] | None,
+            self.db.execute(
+                "SELECT sequence, id, event FROM events WHERE sequence > ? "
+                "ORDER BY sequence LIMIT 1",
+                (after_sequence,),
+            ).fetchone(),
+        )
 
     def ack(self, key: str) -> None:
         with self.db:

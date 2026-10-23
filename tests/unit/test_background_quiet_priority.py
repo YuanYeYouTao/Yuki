@@ -137,3 +137,53 @@ async def test_cancelled_chat_releases_background_admission():
         turn.cancel()
         await asyncio.gather(turn, return_exceptions=True)
         await models.close()
+
+
+async def test_foreground_and_maintenance_keep_slots_while_background_yields_and_cancel_releases():
+    entered = {name: asyncio.Event() for name in ("maintenance", "foreground", "background")}
+    release = {name: asyncio.Event() for name in entered}
+
+    class ControlledProvider(FakeLLMProvider):
+        async def _complete(self, request):
+            name = request.messages[-1].content
+            entered[name].set()
+            await release[name].wait()
+            return await super()._complete(request)
+
+    models = _executor(ControlledProvider(lambda _: "done"))
+    models._max_concurrency = 2
+
+    async def run(name, priority):
+        return await models.execute(
+            ModelTask.CHAT_AGENT,
+            ChatRequest((ChatMessage("user", name),)),
+            priority=priority,
+        )
+
+    tasks = []
+    try:
+        maintenance = asyncio.create_task(run("maintenance", ModelExecutionPriority.MAINTENANCE))
+        tasks.append(maintenance)
+        await asyncio.wait_for(entered["maintenance"].wait(), 1)
+        background = asyncio.create_task(run("background", ModelExecutionPriority.BACKGROUND))
+        tasks.append(background)
+        foreground = asyncio.create_task(run("foreground", ModelExecutionPriority.FOREGROUND))
+        tasks.append(foreground)
+        await asyncio.wait_for(entered["foreground"].wait(), 1)
+        assert not entered["background"].is_set()
+        foreground.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await foreground
+        assert not entered["background"].is_set()
+        release["maintenance"].set()
+        assert (await asyncio.wait_for(maintenance, 1)).content == "done"
+        await asyncio.wait_for(entered["background"].wait(), 1)
+        release["background"].set()
+        assert (await asyncio.wait_for(background, 1)).content == "done"
+        assert models._ordinary_active == 0 and models._provider_active == 0
+        await asyncio.wait_for(models.wait_for_background_idle(), 1)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await models.close()

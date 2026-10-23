@@ -21,12 +21,12 @@ from yuki.social.db_models import SocialEmojiIntentModel
 from yuki.social.repository import sequence_prefix
 
 
-def split_context(context):
+def split_context(context, *, hard_max_messages=4):
     return replace(
         context,
         runtime_snapshot=SimpleNamespace(
             reply=SimpleNamespace(
-                hard_max_messages=4,
+                hard_max_messages=hard_max_messages,
                 max_qq_message_chars=200,
                 delay_min_seconds=0,
                 delay_max_seconds=0,
@@ -47,7 +47,7 @@ async def test_plain_text_never_wakes_optional_illustration_queue(
     delivery, library = make_delivery(env)
     wake = Mock(wraps=delivery.wake)
     monkeypatch.setattr(delivery, "wake", wake)
-    context = split_context(env.context) if split else env.context
+    context = split_context(env.context, hard_max_messages=4 if split else 1)
     result = await env.service.execute("send", {"text": "first\nsecond"}, context)
     assert result["status"] == "succeeded"
     assert len(messages(env)) == (2 if split else 1)
@@ -159,9 +159,7 @@ async def test_inflight_text_does_not_release_image_or_block_another_intent(
     monkeypatch.setattr(env.bot, "call_api", hold_text)
     await delivery.start()
     sending = asyncio.create_task(
-        env.service.execute(
-            "send", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context
-        )
+        env.service.execute("send", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context)
     )
     try:
         await asyncio.wait_for(first.wait(), 3)

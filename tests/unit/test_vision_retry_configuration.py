@@ -75,3 +75,43 @@ async def test_explicit_thinking_choice_reaches_actual_vision_request(thinking):
             visual(), "describe", options=VisionAnalysisOptions(thinking_enabled=thinking)
         )
     assert observed[0]["enable_thinking"] is thinking
+
+
+@pytest.mark.parametrize("indices", [(1, 2, 3, 4, 5, 6), (1, 1, 3, 7, 5, 6)])
+async def test_six_inputs_keep_all_valid_results_and_original_index_association(indices):
+    calls = []
+    inputs = tuple(
+        visual()[0].model_copy(update={"media_hash": f"input-{index}"}) for index in range(6)
+    )
+
+    def respond(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "items": [
+                                        {"index": index, "description": f"seen-{index}"}
+                                        for index in indices
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = QwenVisionProvider(
+            base_url="https://vision.test/v1", api_key="fixture", client=client
+        )
+        result = await provider.analyze(inputs, "describe")
+    expected = tuple(dict.fromkeys(index for index in indices if index <= len(inputs)))
+    assert tuple(item.index for item in result.items) == expected
+    assert result.partial_failure is (len(expected) != len(inputs))
+    assert len(calls) == 1

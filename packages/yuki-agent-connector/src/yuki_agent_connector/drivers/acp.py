@@ -32,6 +32,7 @@ from acp.schema import (
 )
 from acp.stdio import spawn_agent_process
 
+from .. import __version__
 from ..config import Instance
 from . import DriverError, Emit
 
@@ -103,7 +104,7 @@ class ACPDriver:
                         fs=FileSystemCapabilities(read_text_file=True, write_text_file=True),
                         terminal=True,
                     ),
-                    client_info=Implementation(name="Yuki Agent Connector", version="0.1.0"),
+                    client_info=Implementation(name="Yuki Agent Connector", version=__version__),
                 )
                 self.native_capabilities = dump(initialized.agent_capabilities)
                 if self.native_capabilities.get("sessionCapabilities", {}).get("list") is not None:

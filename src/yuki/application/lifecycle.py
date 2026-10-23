@@ -44,14 +44,14 @@ class LifecycleRegistry:
     async def start(self) -> None:
         if self._started:
             raise RuntimeError("application lifecycle has already started")
-        started: list[LifecycleEntry] = []
         try:
             for entry in self._entries:
-                started.append(entry)
                 if entry.start is not None:
                     await entry.start()
         except BaseException as start_error:
-            close_errors = await self._close_entries(started)
+            # Registration transfers already-constructed resources to this owner.
+            # Even resources whose start hook was not reached may own clients.
+            close_errors = await self._close_entries(self._entries)
             if close_errors:
                 if not isinstance(start_error, Exception):
                     for close_error in close_errors:

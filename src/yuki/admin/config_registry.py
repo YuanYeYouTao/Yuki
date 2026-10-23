@@ -51,6 +51,10 @@ class ConfigRegistry:
                     raise ValueError(f"duplicate runtime configuration alias: {alias}")
                 aliases[normalized] = spec.key
         self._aliases = aliases
+        self._adapters = {
+            name: TypeAdapter(Settings.model_fields[name].rebuild_annotation())
+            for name in {name for spec in selected for name in spec.settings_fields}
+        }
 
     def get(self, key_or_alias: str) -> ConfigSpec:
         """Return a spec or reject unknown input before any value is processed."""
@@ -81,8 +85,7 @@ class ConfigRegistry:
     def keys(self) -> tuple[str, ...]:
         return tuple(self._specs)
 
-    @staticmethod
-    def convert(spec: ConfigSpec, value: object) -> ConfigValue:
+    def convert(self, spec: ConfigSpec, value: object) -> ConfigValue:
         """Convert untrusted command/tool input into the registered scalar type."""
 
         if spec.value_type == "boolean":
@@ -150,9 +153,7 @@ class ConfigRegistry:
                 raise ValueError(f"不能大于 {spec.maximum:g}")
         for name in spec.settings_fields:
             try:
-                TypeAdapter(Settings.model_fields[name].rebuild_annotation()).validate_python(
-                    converted
-                )
+                self._adapters[name].validate_python(converted)
             except ValidationError as exc:
                 raise ValueError(
                     exc.errors(include_input=False, include_url=False)[0]["msg"]

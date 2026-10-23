@@ -500,44 +500,6 @@ class MemoryFactService:
             session=session,
         )
 
-    async def update_explicit_person(
-        self,
-        fact_id: int,
-        *,
-        user_id: str,
-        content: str,
-        person_id: str | None = None,
-        session: AsyncSession | None = None,
-    ) -> MemoryFact | None:
-        if session is None:
-            copy_target = await self._repository.get_fact(fact_id)
-            async with self.write_session(
-                (fact_id,),
-                copies=(((fact_id,), copy_target, None),) if copy_target is not None else (),
-            ) as owned:
-                return await self.update_explicit_person(
-                    fact_id, user_id=user_id, content=content, person_id=person_id, session=owned
-                )
-        current = await self._repository.get_fact(fact_id, session=session)
-        if (
-            current is None
-            or current.status is not MemoryStatus.ACTIVE
-            or current.scope_type is not MemoryScopeType.PERSON
-            or not await self.person_owns_fact(
-                current,
-                actor_user_id=user_id,
-                actor_person_id=person_id,
-                session=session,
-            )
-        ):
-            return None
-        return await self._correct_fact_in_session(
-            fact_id,
-            normalized=normalize_memory_text(content),
-            actor_user_id=user_id,
-            session=session,
-        )
-
     async def invalidate_person(
         self,
         fact_id: int,
@@ -797,9 +759,9 @@ class MemoryFactService:
             recorded_at=confirmed_at,
             session=session,
         )
+        await self._repository.add_evidence(created.id, evidence, session=session)
         if copied is not None:
             await self._repository.copy_prepared_evidence(created.id, copied, session=session)
-        await self._repository.add_evidence(created.id, evidence, session=session)
         await self._refresh_evidence(
             created.id,
             confirmed_at=confirmed_at,

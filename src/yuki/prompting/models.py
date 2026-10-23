@@ -20,12 +20,6 @@ class PromptChannel(StrEnum):
     MODALITY = "modality"
 
 
-class PromptTrust(StrEnum):
-    CORE = "core"
-    TRUSTED = "trusted"
-    UNTRUSTED = "untrusted"
-
-
 class PromptStability(StrEnum):
     STATIC = "static"
     TURN = "turn"
@@ -38,7 +32,6 @@ class PromptContribution(BaseModel):
 
     id: str
     channel: PromptChannel
-    trust: PromptTrust
     priority: int = 0
     stability: PromptStability = PromptStability.TURN
     content: str | None = None

@@ -604,7 +604,9 @@ class PersistentManager:
         if type(timeout) is not int or timeout < 0:
             raise ValueError("invalid_timeout")
 
-    async def submit(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
+    async def submit(
+        self, method: str, args: dict[str, Any], request_id: str, *, service_name: str | None = None
+    ) -> dict[str, Any]:
         if method not in EXECUTION_TOOLS | {"service"}:
             return {"error": "unknown_method"}
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
@@ -632,6 +634,12 @@ class PersistentManager:
             self.db.execute(
                 "INSERT INTO environment_jobs (id,kind) VALUES (?,?)", (identity, method)
             )
+            if service_name is not None:
+                self.db.execute(
+                    "UPDATE environment_services SET run_id=?,attempts=attempts+1,next_start=? "
+                    "WHERE name=?",
+                    (identity, time.time() + 5, service_name),
+                )
         self.queue.put_nowait(identity)
         return self.get(identity) if method == "service" else await self.wait_result(identity)
 
@@ -1052,18 +1060,7 @@ class PersistentManager:
                 or (spec["restart"] == "on-failure" and previous.get("status") == "succeeded")
             ):
                 continue
-            result = await self.submit("service", spec, f"service:{uuid4()}")
-            if result.get("run_id"):
-                with self.db:
-                    self.db.execute(
-                        "UPDATE environment_services SET run_id=?,at"
-                        "tempts=attempts+1,next_start=? WHERE name=?",
-                        (
-                            result["run_id"],
-                            time.time() + 5,
-                            row["name"],
-                        ),
-                    )
+            await self.submit("service", spec, f"service:{uuid4()}", service_name=row["name"])
 
     async def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         method, args = request.get("method"), request.get("args")

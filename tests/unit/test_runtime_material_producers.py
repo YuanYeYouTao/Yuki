@@ -15,7 +15,6 @@ from yuki.prompting import (
     PromptCompiler,
     PromptContribution,
     PromptProgram,
-    PromptTrust,
 )
 from yuki.services.model_context_projection import project_short_state
 from yuki.services.prompt_registry import PromptRegistry
@@ -93,7 +92,6 @@ def test_registered_long_plugin_fragment_stays_structured_and_complete() -> None
                 PromptContribution(
                     id="context.plugins",
                     channel=PromptChannel.PLUGIN,
-                    trust=PromptTrust.UNTRUSTED,
                     payload=list(fragments),
                 ),
             )

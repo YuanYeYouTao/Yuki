@@ -10,13 +10,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
+from tests.support.service_dependencies import workspace_service
 from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.vision.models import DownloadedMedia
 from yuki.workspace.inspect import WorkspaceInspector
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -107,7 +107,7 @@ async def test_selected_manager_file_pixels_and_dispatch_version_guard(tmp_path)
         )
     )
     store = WorkspaceStore(tmp_path / "artifacts")
-    service = WorkspaceService(store)
+    service = workspace_service(store)
     service.sandbox = sandbox
     service.visual_inspector = WorkspaceInspector(store, ImagePreprocessor())
     result = await service.execute(

@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import pytest
 from PIL import Image
+from tests.support.service_dependencies import workspace_service
 from tests.support.workspace_snapshots import artifact_ids
 
 from yuki.domain.messages import AttachmentKind, MessageAttachment
@@ -31,7 +32,6 @@ from yuki.emoji.sticker_index import StickerIndex
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import _media_io
 from yuki.vision.fake import FakeVisionProvider
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 pytestmark = pytest.mark.skipif(
@@ -96,7 +96,7 @@ class LocalDirectoryBridge:
 @pytest.fixture
 async def library(tmp_path):
     store = WorkspaceStore(tmp_path / "artifacts")
-    workspace = WorkspaceService(store)
+    workspace = workspace_service(store)
     bridge = LocalDirectoryBridge(tmp_path / "files", store)
     workspace.sandbox = bridge
     value = EmojiLibrary(workspace)

@@ -61,7 +61,7 @@ class _VerifiedSources:
     version: ConversationReadVersion
     revision: int
     identity: tuple[str, str | None, str | None]
-    privacy: int
+    privacy: int | None
     fingerprint: str
     additional_events: dict[int, str]
     visible_ids: frozenset[int]
@@ -72,7 +72,7 @@ class _VerifiedSources:
 class WorkSourceGuard:
     def __init__(self, version: ConversationReadVersion) -> None:
         self.version = version
-        self.codec = 2
+        self.codec = 3
         self.fingerprint: str | None = None
         self.additional_events: dict[int, str] = {}
         self._verified: _VerifiedSources | None = None
@@ -152,14 +152,16 @@ class WorkSourceGuard:
         # no transcript scan, hashing or JSON conversion while holding writer.
         if {row.id: tuple(row) for row in rows} != verified.cross_values:
             raise WorkConflict("work_journal_source_changed")
-        privacy = (
-            await session.scalar(
-                select(ExecutionTraceStateModel.privacy_generation).where(
-                    ExecutionTraceStateModel.id == 1
+        privacy = None
+        if verified.privacy is not None:
+            privacy = (
+                await session.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
                 )
+                or 0
             )
-            or 0
-        )
         if (
             privacy != verified.privacy
             or not actor_person_id
@@ -203,7 +205,7 @@ class WorkSourceGuard:
         observation_sources: tuple[tuple[str, int], ...] = (),
         event_ids: Set[int] = frozenset(),
     ) -> bool:
-        if self.codec != 2:
+        if self.codec not in {2, 3}:
             return False
         source_database = control.repository.database if control is not None else database
         assert source_database is not None
@@ -231,16 +233,18 @@ class WorkSourceGuard:
                     if source.prompt_source_revision != version.prompt_source_revision:
                         return False
                 identity = (source.kind, source.person_id, source.space_id)
-                privacy = (
-                    await session.scalar(
-                        select(ExecutionTraceStateModel.privacy_generation).where(
-                            ExecutionTraceStateModel.id == 1
-                        )
-                    )
-                    or 0
-                )
-                verified = self._verified
                 original_observations = version.observation_sources
+                privacy = None
+                if self.codec == 2 or original_observations or observation_sources:
+                    privacy = (
+                        await session.scalar(
+                            select(ExecutionTraceStateModel.privacy_generation).where(
+                                ExecutionTraceStateModel.id == 1
+                            )
+                        )
+                        or 0
+                    )
+                verified = self._verified
                 observation_versions = dict(original_observations)
                 reused = (
                     verified is not None
@@ -339,7 +343,11 @@ class WorkSourceGuard:
                         snapshot_privacy_generation=privacy,
                     ):
                         return False
-                values: list[object] = [identity, rows, summary, original_observations, privacy]
+                values: list[object] = [identity, rows, summary, original_observations]
+                if self.codec == 2:
+                    # codec2 journalled the counter only inside this digest. Keep
+                    # its original proof shape; never infer it or rewrite paid input.
+                    values.append(privacy)
                 fingerprint = (
                     verified.fingerprint
                     if reused and verified is not None
@@ -382,14 +390,16 @@ class WorkSourceGuard:
                 if control is not None:
                     await control.repository._assert_lease_readonly(session, control.lease)
                 current = await session.get(CanonicalConversationModel, version.conversation_id)
-                current_privacy = (
-                    await session.scalar(
-                        select(ExecutionTraceStateModel.privacy_generation).where(
-                            ExecutionTraceStateModel.id == 1
+                current_privacy = None
+                if privacy is not None:
+                    current_privacy = (
+                        await session.scalar(
+                            select(ExecutionTraceStateModel.privacy_generation).where(
+                                ExecutionTraceStateModel.id == 1
+                            )
                         )
+                        or 0
                     )
-                    or 0
-                )
                 if (
                     current is None
                     or (

@@ -8,12 +8,12 @@ import pytest
 from sqlalchemy import func, select
 from tests.integration.test_feishu_runtime import drain, update
 from tests.integration.test_feishu_runtime import feishu_env as feishu_env
+from tests.support.service_dependencies import workspace_service
 
 from yuki.domain.messages import AttachmentKind, OutboundMessage
 from yuki.emoji.library import EmojiLibrary
 from yuki.gateway.providers.feishu_ingress import FeishuSender, normalize_message
 from yuki.persistence.models import ChatEventModel
-from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceStore
 
 
@@ -75,7 +75,7 @@ async def test_inbound_image_and_native_sticker_do_not_start_library_collection(
         {"image_key": "img_original"} if message_type == "image" else {"file_key": "sticker_key"}
     )
     message = normalize_message(incoming["event"], client())
-    library = EmojiLibrary(WorkspaceService(WorkspaceStore(tmp_path / "workspace")))
+    library = EmojiLibrary(workspace_service(WorkspaceStore(tmp_path / "workspace")))
     library.collect_message = AsyncMock(side_effect=AssertionError("No automatic collection"))
     assert message is not None
     library.submit(message, source_event_id=1)

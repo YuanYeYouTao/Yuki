@@ -55,7 +55,11 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
 角色名称与单 SOUL 沿同一领域服务发布，保原 UUID、profile revision、文件 CAS 和实际生效结果；
 不会编辑工具或授权规则，也不重写已付请求。角色 owner 不等于 operator，资格按原 Person 授予或撤销。
-平台项来自已登记 Provider 的平台声明和实际 Presence，不按固定平台名单列举。
+平台项来自已登记 Provider 的平台声明、实际 Presence 与原生网关 owner，公共 `/health`
+的 `gateways` 与管理健康行复用同一事实投影。旧 `onebot_connected`、`telegram_gateway`
+字段保留原形状；未知健康证据保持 null。数据库分别报告 reader 可读与 writer 接受写入。
+公共 `llm_configured` 读取当前 `chat_agent` 路由及其 Pool 的已配置事实，支持显式 Profile、
+sidecar 密钥及注入客户端；健康检查不创建模型调用，也不返回密钥。
 聊天 status 显示当前 Conversation 所在平台连接与 `chat_agent` 当前选中 Profile 的模型。
 轨迹查询使用内部事件 ID 与原 turn/Work ID，按有效期过滤，使用 `after` 与 `limit`
 续读；正文单独授权。它不读取私有恢复 journal，也不制造恢复或重新发送资格。
@@ -109,6 +113,8 @@ Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用
 密钥写入 `model_profiles.secrets.json`，可新增或更新已有别名；别名使用合法环境变量名称。
 模型文件与密钥 sidecar 共用一个 bundle revision；更新任一文件都会使旧 revision 失效。
 重启配置装配直接消费注册项声明的 Settings 字段；保存值复用这些字段的实际类型与取值约束。
+字段验证器由每个 ConfigRegistry 依据其当前 Settings 元数据在构造时派生一次，
+后续转换复用该实例的验证器；不同 registry 不共享全局缓存。
 配置文件中的 `api_key_env` 必须引用该别名。
 读取模型时只返回配置与已配置状态，响应、审计和 TOML 不包含密钥值。
 

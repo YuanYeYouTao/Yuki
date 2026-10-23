@@ -83,7 +83,7 @@ async def test_runtime_configuration_resolves_disabled_material_alias_without_en
 
 async def test_memory_admin_reads_same_person_material_but_still_rejects_disabled_actor(database):
     source, target, _, _ = await _owners(database)
-    _, facts, _, _ = _service(database)
+    mutations, facts, ledger, _ = _service(database)
     original = await facts.remember(
         MemoryFactCreate(
             scope_type=MemoryScopeType.PERSON,
@@ -99,7 +99,11 @@ async def test_memory_admin_reads_same_person_material_but_still_rejects_disable
     async with database.immediate_session() as writer:
         (await writer.get(CanonicalPersonModel, source)).enabled = False
     service = MemoryAdminService(
-        settings=make_settings(database.url), memories=facts, audit=AdminAuditService(database)
+        settings=make_settings(database.url),
+        memories=facts,
+        audit=AdminAuditService(database),
+        mutations=mutations,
+        ledger=ledger,
     )
     actor = AdminActor("10002", False, "read", "", person_id=target)
     rows = await service.list_memories(actor, "10001", target_person_id=source)
@@ -111,7 +115,7 @@ async def test_memory_admin_reads_same_person_material_but_still_rejects_disable
 
 
 async def test_superuser_reads_disabled_person_material_without_any_account(database):
-    _, facts, _, _ = _service(database)
+    mutations, facts, ledger, _ = _service(database)
     now = datetime.now(UTC)
     subject = str(uuid4())
     async with database.immediate_session() as writer:
@@ -138,7 +142,11 @@ async def test_superuser_reads_disabled_person_material_without_any_account(data
         )
     )
     service = MemoryAdminService(
-        settings=make_settings(database.url), memories=facts, audit=AdminAuditService(database)
+        settings=make_settings(database.url),
+        memories=facts,
+        audit=AdminAuditService(database),
+        mutations=mutations,
+        ledger=ledger,
     )
     actor = AdminActor("9000", False, "read", "", person_id=actor_id)
     rows = await service.list_memories(actor, subject, target_person_id=subject)

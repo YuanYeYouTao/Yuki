@@ -57,6 +57,7 @@ class NativeComputer:
         self.socket = None
         self.reader = None
         self.ready = asyncio.Event()
+        self.catalog_ready = asyncio.Event()
 
     async def start(self):
         self.socket = await connect(
@@ -69,7 +70,7 @@ class NativeComputer:
             json.dumps(
                 {
                     "type": "hello",
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "instances": [
                         {
                             "id": self.local_id,
@@ -103,6 +104,9 @@ class NativeComputer:
                 message = json.loads(raw)
                 if message["type"] == "pong":
                     self.ready.set()
+                    continue
+                if message["type"] == "catalog_ack":
+                    self.catalog_ready.set()
                     continue
                 if message["type"] == "ack":
                     self.acknowledged.put_nowait(message["event_id"])
@@ -806,4 +810,103 @@ async def test_native_pagination_and_explicit_history_do_not_share_server_event_
         assert computer.commands[-1]["arguments"]["include_history"] is True
         assert computer.commands[-1]["arguments"]["cursor"] == "opaque-history-page"
     finally:
+        await computer.close()
+
+
+async def test_later_ready_catalog_keeps_original_device_instance_and_live_connection(bridge):
+    computer = await NativeComputer(bridge).start()
+    try:
+        connection = bridge.service.connections.get(bridge.device["device_id"])
+        rows = [
+            {
+                "id": computer.local_id,
+                "label": "Original",
+                "driver": "codex",
+                "capabilities": ["list", "get"],
+                "status": "available",
+            },
+            {
+                "id": "later-instance",
+                "label": "Starting",
+                "driver": "codex",
+                "capabilities": [],
+                "status": "unavailable",
+            },
+        ]
+        for available in (False, True):
+            if available:
+                rows[1] = {**rows[1], "capabilities": ["list", "get"], "status": "available"}
+            computer.catalog_ready.clear()
+            await computer.socket.send(json.dumps({"type": "catalog", "instances": rows}))
+            await asyncio.wait_for(computer.catalog_ready.wait(), 5)
+            catalog = await bridge.service.catalog(bridge.env.person)
+            later = next(item for item in catalog["instances"] if item["label"] == "Starting")
+            assert later["online"] is available
+            assert connection is bridge.service.connections.get(bridge.device["device_id"])
+            if not available:
+                identity = later["id"]
+            else:
+                assert later["id"] == identity
+                listed = await bridge.service.execute(
+                    {"action": "list", "instance_id": identity}, str(uuid4()), bridge.source
+                )
+                assert listed["sessions"]
+                assert computer.commands[-1]["instance_id"] == "later-instance"
+    finally:
+        await computer.close()
+
+
+async def test_event_waiting_for_real_sqlite_commit_does_not_block_rpc_responses(
+    bridge, monkeypatch
+):
+    computer = await NativeComputer(bridge).start()
+    sending = None
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge):
+            operation = str(uuid4())
+            await bridge.service.execute(
+                {"action": "watch", "instance_id": instance, "session_id": session_id},
+                operation,
+                bridge.source,
+            )
+            entered = asyncio.Event()
+            receive = bridge.service.receive_events
+
+            async def contended(device_id, events):
+                entered.set()
+                await receive(device_id, events)
+
+            monkeypatch.setattr(bridge.service, "receive_events", contended)
+            # Test-only writer barrier: the socket reader must remain independent
+            # of the event worker queued behind this real SQLite transaction.
+            async with bridge.database.immediate_session():
+                sending = asyncio.create_task(
+                    computer.event(operation, "progress", {"text": "new"})
+                )
+                await asyncio.wait_for(entered.wait(), 5)
+                connection = bridge.service.connections.get(bridge.device["device_id"])
+                response = await asyncio.wait_for(
+                    connection.request(
+                        {
+                            "type": "command",
+                            "id": str(uuid4()),
+                            "action": "get",
+                            "instance_id": computer.local_id,
+                            "arguments": {},
+                        }
+                    ),
+                    5,
+                )
+                assert response["session_id"] == computer.native_session
+                assert not sending.done()
+            original = await asyncio.wait_for(sending, 5)
+            async with bridge.database.read_session() as reader:
+                stored = await reader.scalar(
+                    select(AgentEventModel).where(AgentEventModel.event_id == original["event_id"])
+                )
+                assert stored.operation_id == operation
+    finally:
+        if sending is not None:
+            await asyncio.gather(sending, return_exceptions=True)
         await computer.close()

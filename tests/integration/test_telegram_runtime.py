@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.support.event_seed import seed_scoped_event
+from tests.support.service_dependencies import social_service
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -26,7 +27,6 @@ from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
 from yuki.services.group_recovery import NativeGroupRecovery
 from yuki.services.main_agent_contract import MainAgentContract
-from yuki.social.service import SocialService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -69,7 +69,7 @@ async def telegram_env(database, tmp_path):
     harness.processor._group_recovery = NativeGroupRecovery(
         harness.settings, database, registry, router
     )
-    social = SocialService(database, router, harness.scoped_events)
+    social = social_service(database, router, harness.scoped_events)
     harness.processor._chat._tools.social_service = social
     store = WorkspaceStore(tmp_path / "workspace")
     harness.processor._chat.runtime.runner.main_contract = MainAgentContract(
@@ -424,7 +424,7 @@ async def test_another_platform_uses_the_same_processor_and_social_contract(tele
     registry.connect(handle, provider_id="extra", presence_id=presence.id)
     env.harness.processor._canonical_ingress = CanonicalIngressResolver(database, registry, router)
     env.harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
-    env.harness.processor._chat._tools.social_service = SocialService(
+    env.harness.processor._chat._tools.social_service = social_service(
         database, router, env.harness.scoped_events
     )
     result = await env.harness.processor.handle(

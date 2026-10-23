@@ -92,7 +92,7 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"/monitor":"subscription-monitor:monitor"}
 重新出现时也不会重复发布。标记写入前，条目和待提交请求已一起保存，重启可继续完成。
 这些标记计入插件 100 MiB 存储额度；额度耗尽会明确报错并保留当前批次，不淘汰标记冒险重发。
 
-一次 HTTP 响应最多 1 MiB / 200 条，超出整次失败，不静默截掉条目。正文最多保留 6,000 字符，
+一次 HTTP 响应最多 1 MiB，超出整次失败；条目总数不另设门槛，也不静默截掉条目。正文最多保留 6,000 字符，
 通知 payload 另作有界投影。插件按一次已抓取的有限快照处理，不跨页回填离线期间已从 feed
 消失的历史；监控可靠性也取决于来源保留多久的动态。
 
@@ -136,3 +136,9 @@ approve its manifest, then manage subscriptions with the `monitor` administrator
 ## Plugin API 7.0 的通知目标
 
 `target_id` 是内部 Person/Space，不是 QQ/TG 外部账号或群号。目标可带 `conversation_id` 指定原私聊 Bot 或群 topic；短命令也接受 `group:<Space-ID>:conversation:<Conversation-ID>` / `private:<Person-ID>:conversation:<Conversation-ID>`。未指定时仅接受当前或唯一真实入口，保存 Host 返回的 Conversation；有多个入口时显式选择。已有排队事件保留原来源、游标和回执，迁移不会重发已接纳通知。
+
+
+后台轮询已经自己处理各订阅源的暂时失败，不再交由 Host 立即重启同一个轮询。
+非法全局配置保留真实失败并停止该服务，不推进 pending、cursor 或已接纳通知。
+修正配置后显式停用并重新启用插件，沿原持久状态恢复；不会清空或重发原通知。
+此插件注册 `RestartPolicy.NEVER`，SDK 的通用 `ON_FAILURE` 合同保持原有行为。

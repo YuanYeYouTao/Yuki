@@ -100,6 +100,14 @@ class ModelClientPool:
         secret = self._secret_overrides.get(profile.api_key_env)
         return os.getenv(profile.api_key_env, "") if secret is None else secret
 
+    def configured(self, profile: ModelProfile) -> bool:
+        """Project this pool's selected injection or credential without model I/O."""
+        return (
+            profile.id in self._injected_profiles
+            or profile.provider.casefold() == "fake"
+            or bool(self.api_key_for(profile))
+        )
+
     def get(self, profile: ModelProfile, *, timeout_seconds: float | None = None) -> LLMProvider:
         injected = self._injected_profiles.get(profile.id)
         if injected is not None:

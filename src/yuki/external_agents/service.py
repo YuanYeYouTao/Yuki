@@ -60,15 +60,20 @@ class ExternalAgentService:
     async def connect(
         self, device_id: str, connection: DeviceConnection, hello: dict[str, Any]
     ) -> None:
-        if hello.get("protocol_version") != 1 or not isinstance(hello.get("instances"), list):
+        if hello.get("protocol_version") != 2 or not isinstance(hello.get("instances"), list):
             raise ValueError("unsupported_connector_protocol")
         if hello.get("device_id", device_id) != device_id:
             raise ValueError("external_agent_device_mismatch")
-        await self.repository.register(device_id, hello["instances"])
-        connection.instances = {
-            item["id"] for item in hello["instances"] if item.get("status") != "unavailable"
-        }
+        await self.update_catalog(device_id, connection, hello["instances"])
         await self.connections.attach(connection)
+
+    async def update_catalog(
+        self, device_id: str, connection: DeviceConnection, instances: list[dict[str, Any]]
+    ) -> None:
+        await self.repository.register(device_id, instances)
+        connection.instances = {
+            item["id"] for item in instances if item.get("status") != "unavailable"
+        }
 
     async def _connection(self, instance: AgentInstanceModel) -> DeviceConnection:
         # Recheck the real grant for every native access, including an already-open WSS.

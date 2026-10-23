@@ -15,6 +15,7 @@ from tests.conftest import make_settings
 from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.event_seed import seed_event
+from tests.support.service_dependencies import tool_dependencies
 
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.models import AdminActor
@@ -783,6 +784,7 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
         ledger=ledger,
         memories=facts,
         memory_mutations=service,
+        **tool_dependencies(database, make_settings(database.url)),
     )
     inbound = InboundMessage(
         message_id=event.platform_message_id,
@@ -1565,6 +1567,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
         ledger=ledger,
         memories=facts,
+        **tool_dependencies(database, make_settings(database.url)),
     )
     runtime = ToolRuntime(
         inbound=inbound,

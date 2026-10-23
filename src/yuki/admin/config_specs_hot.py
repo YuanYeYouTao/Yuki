@@ -381,7 +381,6 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             aliases=("视觉图片上限", "每轮图片数量"),
             value_type="integer",
             minimum=1,
-            maximum=5,
             scopes=_GGU,
             env_alias="VISION_MAX_IMAGES_PER_TURN",
             getter=_field("vision_max_images_per_turn"),

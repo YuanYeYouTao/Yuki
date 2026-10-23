@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
+from tests.support.service_dependencies import tool_dependencies
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.capabilities.models import CapabilityEffect
@@ -45,6 +46,7 @@ async def test_database_tool_failure_keeps_actual_commit_and_original_phase(
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
+        **tool_dependencies(database, make_settings(database.url)),
     )
     tools.sandbox_client = SimpleNamespace(execute=AsyncMock(side_effect=failure))
     tools.workspace_service = tools.sandbox_client
@@ -104,6 +106,7 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
+        **tool_dependencies(database, make_settings(database.url)),
     )
     backend = SimpleNamespace(execute=AsyncMock(return_value=payload))
     tools.workspace_service = backend
@@ -206,6 +209,7 @@ async def test_non_sqlalchemy_commit_failure_keeps_real_certainty(
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
+        **tool_dependencies(database, make_settings(database.url)),
     )
     backend = SimpleNamespace(execute=AsyncMock(side_effect=failure))
     tools.sandbox_client = tools.workspace_service = backend
@@ -241,6 +245,7 @@ async def test_rolled_back_business_value_error_remains_business_error(database)
         settings=make_settings(database.url),
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
+        **tool_dependencies(database, make_settings(database.url)),
     )
     tools.workspace_service = SimpleNamespace(execute=AsyncMock(side_effect=failure))
     result = await tools.execute(

@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.integration.test_telegram_runtime import update
+from tests.support.service_dependencies import social_service, workspace_service
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
 
@@ -41,7 +42,7 @@ from yuki.services.message_splitter import OutboundMessageSplitter
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.models import SocialError
 from yuki.social.repository import payload_hash, sequence_prefix
-from yuki.social.service import SocialContext, SocialService
+from yuki.social.service import SocialContext
 from yuki.workspace.store import WorkspaceStore
 
 
@@ -111,8 +112,12 @@ async def native_env(database, tmp_path):
     router = PresenceRouter(database, registry)
     harness.processor._canonical_ingress = CanonicalIngressResolver(database, registry, router)
     harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
-    social = SocialService(database, router, harness.scoped_events)
-    social.workspace = WorkspaceStore(tmp_path / "workspace")
+    social = social_service(
+        database,
+        router,
+        harness.scoped_events,
+        workspace=workspace_service(WorkspaceStore(tmp_path / "workspace"), database=database),
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
         client = TelegramClient("offline-only-token", client=transport)
         await client.get_me()
@@ -172,7 +177,7 @@ async def native_env(database, tmp_path):
             event=event,
             account=account.id,
             account_name=account.display_name,
-            store=social.workspace,
+            store=social.workspace_service.store,
             db=database,
             registry=registry,
             client=client,

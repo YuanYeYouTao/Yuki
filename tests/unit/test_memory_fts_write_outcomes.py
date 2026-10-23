@@ -7,24 +7,26 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from tests.conftest import make_settings
+from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_rebuild import _admin
 
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.models import AdminActor
 from yuki.memory.errors import MemoryRetrievalError
 from yuki.memory.fts import SQLiteMemoryFTSIndex
-from yuki.memory.repository import MemoryFactRepository
-from yuki.memory.service import MemoryFactService
 from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.services.admin.memory_admin import MemoryAdminService
 
 
 @pytest.mark.parametrize("phase", ["execute", "commit"])
 async def test_admin_fts_rebuild_keeps_database_phase_and_original_error(database, phase):
+    mutations, facts, ledger, _ = _service(database)
     admin = MemoryAdminService(
         settings=make_settings(database.url),
-        memories=MemoryFactService(MemoryFactRepository(database)),
+        memories=facts,
         audit=AdminAuditService(database),
+        mutations=mutations,
+        ledger=ledger,
     )
     actor = AdminActor(
         user_id="9000",

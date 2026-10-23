@@ -58,10 +58,12 @@ class ActivationTasks:
             task.cancel("yuki_runtime_shutdown")
         if pending:
             joined = asyncio.gather(*pending, return_exceptions=True)
-            try:
-                await asyncio.shield(joined)
-            except asyncio.CancelledError:
-                # Preserve shutdown cancellation after original recovery/release.
-                # Cancelling the join would interrupt that cleanup a second time.
-                await joined
-                raise
+            cancelled: asyncio.CancelledError | None = None
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError as exc:
+                    # Every cancellation keeps the original cleanup protected.
+                    cancelled = cancelled or exc
+            if cancelled is not None:
+                raise cancelled

@@ -18,7 +18,7 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
     from yuki.gateway.providers.feishu_ingress import FeishuGateway
 
     start = AsyncMock()
-    health = AsyncMock(return_value={"enabled": True, "running": True})
+    health = AsyncMock(return_value={"enabled": True, "running": True, "healthy": True})
     monkeypatch.setattr(FeishuGateway, "start", start)
     monkeypatch.setattr(FeishuGateway, "health", health)
     close = AsyncMock()
@@ -72,6 +72,13 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
             assert app.feishu_gateway.client.platform == (
                 "lark" if domain == "https://open.larksuite.com" else "feishu"
             )
+            platform = app.feishu_gateway.client.platform
+            assert platform in app.gateway_health_sources
+            assert await app.gateway_health_sources[platform]() == {
+                "enabled": True,
+                "running": True,
+                "healthy": True,
+            }
             start.assert_awaited_once()
             assert (await app.lifecycle.health())["feishu_gateway"]["running"]
     finally:

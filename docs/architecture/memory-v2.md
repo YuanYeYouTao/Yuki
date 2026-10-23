@@ -150,8 +150,10 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   将领域证据交给同一个 writer；供给的 session 一直复用，writer 不另开 reader 扫描历史。
   Control 的确认／隔离保留原能力判定；revision 核验、savepoint、审计和回执仍共用
   同一事务，证据准备早于本次首写，不拆分提交。旧管理入口和偏好入口通过 Memory
-  mutation 提交事实与原变更回执，完成后不另写一笔管理审计；未装配 mutation 的旧管理
-  fallback 仍把事实变更与管理审计放在同一个数据库事务中。
+  mutation 提交事实与原变更回执，完成后不另写一笔管理审计。MemoryAdmin 构造必须提供
+  mutation 与原 ledger，不再保留第二套事实写入模式；不存在的事实沿原接口返回 None/False。
+  新版本先登记本次已验证证据，再复制其他原来源；同一事件的多次独立修改各认原调用 ID，
+  不用旧版本的 evidence confidence/关系覆盖新版本的真实修改。原事实与原证据保持原件。
   新自省结果以实际 run ID 原子登记，不从旧 delegation_mode 字符串反推归属。
 - 永久证据不按样本数压缩删除。Evidence compaction 的新任务、装配和配置已退出运行链；
   原表、run/item 和删除回执仅保留真实历史诊断。Dream 的模型输入可按请求预算选择证据摘录，

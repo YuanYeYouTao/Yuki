@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.canonical_identity import ensure_person
 from tests.support.person_merge import merge_persons
+from tests.support.service_dependencies import workspace_service
 from tests.support.social_identity_cases import add_second_account, social_env
 from tests.support.sticker_delivery import DirectoryBridge, make_delivery, settle
 from tests.support.work_runner_helpers import case, run, tool
@@ -46,7 +47,6 @@ from yuki.social.db_models import SocialEmojiIntentModel, SocialOperationModel
 from yuki.social.emoji_intents import derived_call_id
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
 from yuki.social.repository import payload_hash
-from yuki.workspace.service import WorkspaceService
 
 ARGS = {"text": "正文先到", "emoji": {"goal": "开心", "emotion": "高兴"}}
 
@@ -205,7 +205,7 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
         )
     env.registry.connect(telegram, provider_id="telegram", presence_id=presence.id)
     _, fixture = make_delivery(env)
-    workspace = WorkspaceService(env.store)
+    workspace = workspace_service(env.store)
     workspace.sandbox = DirectoryBridge(tmp_path / "terminal", env.store)
     library = EmojiLibrary(workspace)
     assets = {}
@@ -250,11 +250,8 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
         await telegram.close()
 
 
-async def test_unavailable_and_empty_library_do_not_block_text(database, tmp_path):
+async def test_empty_library_does_not_block_text(database, tmp_path):
     env = await social_env(database, tmp_path)
-    unavailable = await env.service.execute("send", ARGS, env.context)
-    assert unavailable["status"] == "succeeded"
-    assert unavailable["emoji"]["status"] == "not_accepted"
     delivery, library = make_delivery(env)
     library.asset = None
     context = replace(env.context, call_id="empty-library")
@@ -264,7 +261,7 @@ async def test_unavailable_and_empty_library_do_not_block_text(database, tmp_pat
         assert result["status"] == "succeeded"
         completed = await settle(delivery, context)
         assert completed["error"] == "emoji_no_candidate"
-        assert len(sends(env)) == 2
+        assert len(sends(env)) == 1
     finally:
         await delivery.close()
 

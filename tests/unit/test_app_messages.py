@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select
 from tests.conftest import build_harness, make_settings
+from tests.support.service_dependencies import social_service, workspace_service
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
@@ -35,7 +36,6 @@ from yuki.persistence.models import ChatEventModel
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.media_resolver import MediaResolver
-from yuki.social.service import SocialService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -74,7 +74,7 @@ async def app_env(database, admin, tmp_path):
         assert await find_presence(session, "yuki-app", platform="app") is not None
     harness.processor._canonical_ingress = CanonicalIngressResolver(database, registry, router)
     harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
-    social = SocialService(database, router, harness.scoped_events)
+    social = social_service(database, router, harness.scoped_events)
     harness.processor._chat._tools.social_service = social
     store = WorkspaceStore(tmp_path / "workspace")
     harness.processor._chat.runtime.runner.main_contract = MainAgentContract(
@@ -86,7 +86,7 @@ async def app_env(database, admin, tmp_path):
     )
     media = ConversationMediaService(database, tmp_path / "media", resolver, preprocessor)
     harness.processor._conversation_media = media
-    social.workspace = store
+    social.workspace_service = workspace_service(store, database=database)
     gateway = AppGateway(database, registry, harness.processor, social)
     await gateway.start()
     prompts = ClientPrompts(

@@ -64,6 +64,7 @@ from yuki.web.route_context import web_model_task
 
 if TYPE_CHECKING:
     from yuki.codemode.api_projection import ScriptApi
+    from yuki.config import Settings
     from yuki.services.context_compaction import PublicCompactContext
     from yuki.services.main_agent_contract import MainAgentContract
 
@@ -195,15 +196,16 @@ class AgentRunner:
         concurrency: ConcurrencyManager,
         *,
         task: ModelTask = ModelTask.CHAT_AGENT,
+        main_contract: MainAgentContract | None = None,
+        code_mode_settings: Settings | None = None,
     ) -> None:
         self._models = model_executor
         self._concurrency = concurrency
         self._task = task
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
-        self.main_contract: MainAgentContract | None = None
-        # Pinned worker path/digest and limits; Code Mode is unavailable until set.
-        self.code_mode_settings: Any = None
+        self.main_contract = main_contract
+        self.code_mode_settings = code_mode_settings
 
     def work_contract(
         self,

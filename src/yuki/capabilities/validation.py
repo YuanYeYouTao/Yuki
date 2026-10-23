@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -12,6 +14,7 @@ from jsonschema.validators import validator_for
 from referencing import Registry
 
 from yuki.capabilities.catalog import UnifiedToolCatalogEntry
+from yuki.domain.messages import ChatTool
 
 TOOL_INPUT_VALIDATION_FAILED = "tool_input_validation_failed"
 UNDECLARED_TOOL = "undeclared_tool"
@@ -31,6 +34,17 @@ class CapabilityValidationResult:
             raise ValueError("failed validation must carry an error category")
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilitySchemaView:
+    """Compiled input schemas of one frozen contract, without execution grants."""
+
+    validators: Mapping[str, Any]
+    quarantined: frozenset[str]
+
+    def validate(self, capability_id: str, arguments_json: str) -> CapabilityValidationResult:
+        return _validate(self.validators, self.quarantined, capability_id, arguments_json)
+
+
 @dataclass(slots=True)
 class JsonSchemaCapabilityValidator:
     """Compile-and-cache validators at catalog admission; never fetch $ref."""
@@ -41,10 +55,22 @@ class JsonSchemaCapabilityValidator:
     def admit(self, entries: tuple[UnifiedToolCatalogEntry, ...]) -> tuple[str, ...]:
         """Compile schemas; return quarantined capability ids."""
 
+        return self._admit(
+            (entry.descriptor.model_name, entry.descriptor.input_schema) for entry in entries
+        )
+
+    def admit_tools(self, tools: tuple[ChatTool, ...]) -> tuple[str, ...]:
+        return self._admit((tool.name, tool.parameters) for tool in tools)
+
+    def freeze(self) -> CapabilitySchemaView:
+        return CapabilitySchemaView(
+            MappingProxyType(dict(self._validators)), frozenset(self._quarantined)
+        )
+
+    def _admit(self, schemas: Iterable[tuple[str, Any]]) -> tuple[str, ...]:
+
         quarantined: list[str] = []
-        for entry in entries:
-            capability_id = entry.descriptor.model_name
-            schema = entry.descriptor.input_schema
+        for capability_id, schema in schemas:
             try:
                 validator_cls = validator_for(schema, default=Draft202012Validator)
                 validator_cls.check_schema(schema)
@@ -57,51 +83,60 @@ class JsonSchemaCapabilityValidator:
         return tuple(quarantined)
 
     def validate(self, capability_id: str, arguments_json: str) -> CapabilityValidationResult:
-        if capability_id in self._quarantined:
-            return CapabilityValidationResult(
-                ok=False,
-                error_category=SCHEMA_QUARANTINED,
-                detail="tool schema is not safe to validate",
-            )
-        validator = self._validators.get(capability_id)
-        if validator is None:
-            return CapabilityValidationResult(
-                ok=False,
-                error_category=UNDECLARED_TOOL,
-                detail="tool is not declared for this turn",
-            )
-        try:
-            payload = json.loads(arguments_json)
-        except json.JSONDecodeError:
+        return _validate(self._validators, self._quarantined, capability_id, arguments_json)
+
+
+def _validate(
+    validators: Mapping[str, Any],
+    quarantined: set[str] | frozenset[str],
+    capability_id: str,
+    arguments_json: str,
+) -> CapabilityValidationResult:
+    if capability_id in quarantined:
+        return CapabilityValidationResult(
+            ok=False,
+            error_category=SCHEMA_QUARANTINED,
+            detail="tool schema is not safe to validate",
+        )
+    validator = validators.get(capability_id)
+    if validator is None:
+        return CapabilityValidationResult(
+            ok=False,
+            error_category=UNDECLARED_TOOL,
+            detail="tool is not declared for this turn",
+        )
+    try:
+        payload = json.loads(arguments_json)
+    except json.JSONDecodeError:
+        return CapabilityValidationResult(
+            ok=False,
+            error_category=TOOL_INPUT_VALIDATION_FAILED,
+            detail="arguments must be a JSON object",
+        )
+    if not isinstance(payload, dict):
+        return CapabilityValidationResult(
+            ok=False,
+            error_category=TOOL_INPUT_VALIDATION_FAILED,
+            detail="arguments must be a JSON object",
+        )
+    try:
+        validator.validate(payload)
+    except ValidationError as exc:
+        return CapabilityValidationResult(
+            ok=False,
+            error_category=TOOL_INPUT_VALIDATION_FAILED,
+            detail=_validation_detail(exc),
+        )
+    except Exception as exc:
+        module = getattr(type(exc), "__module__", "")
+        if "jsonschema" in module or "referencing" in module:
             return CapabilityValidationResult(
                 ok=False,
                 error_category=TOOL_INPUT_VALIDATION_FAILED,
-                detail="arguments must be a JSON object",
+                detail="arguments do not match the declared schema",
             )
-        if not isinstance(payload, dict):
-            return CapabilityValidationResult(
-                ok=False,
-                error_category=TOOL_INPUT_VALIDATION_FAILED,
-                detail="arguments must be a JSON object",
-            )
-        try:
-            validator.validate(payload)
-        except ValidationError as exc:
-            return CapabilityValidationResult(
-                ok=False,
-                error_category=TOOL_INPUT_VALIDATION_FAILED,
-                detail=_validation_detail(exc),
-            )
-        except Exception as exc:
-            module = getattr(type(exc), "__module__", "")
-            if "jsonschema" in module or "referencing" in module:
-                return CapabilityValidationResult(
-                    ok=False,
-                    error_category=TOOL_INPUT_VALIDATION_FAILED,
-                    detail="arguments do not match the declared schema",
-                )
-            raise
-        return CapabilityValidationResult(ok=True)
+        raise
+    return CapabilityValidationResult(ok=True)
 
 
 def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:

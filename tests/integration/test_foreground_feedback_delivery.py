@@ -31,8 +31,8 @@ async def test_quiet_is_saved_before_split_delivery_and_keeps_original_request_a
         database=database,
         settings=make_settings(database.url, conversation_semantic_participation_enabled=True),
     )
-    processor._runtime_config = chat._runtime_config = host.app.runtime_config = config
-    host.app.chat = chat
+    processor._runtime_config = chat._runtime_config = host.runtime_config = config
+    host.validate_turn_snapshot = chat.validate_turn_snapshot
     processor.set_participation(host)
     chat.observe_main_response = host.observe_main_response
     original_call = TelegramClient.call

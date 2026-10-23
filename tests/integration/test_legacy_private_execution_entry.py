@@ -14,6 +14,7 @@ from tests.support.event_seed import seed_scoped_event
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.gateway import builtin_registry
 from tests.support.runtime_execution import make_work_resumer
+from tests.support.service_dependencies import social_service
 from tests.unit.test_migration_0119 import _seed_0118
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -28,7 +29,7 @@ from yuki.runtime.work_journal import encode_transcript
 from yuki.runtime.work_repository import WorkRepository
 from yuki.services.execution_sources import recover_source
 from yuki.services.turn_transcript import TurnTranscript
-from yuki.social.service import SocialContext, SocialService
+from yuki.social.service import SocialContext
 
 
 class Bot:
@@ -281,7 +282,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             bot_a, bot_b = Bot("test"), Bot("testB")
             registry.connect(bot_a, provider_id="snowluma", presence_id=original_presence)
             registry.connect(bot_b, provider_id="snowluma", presence_id=second_presence)
-            social = SocialService(database, router, harness.scoped_events)
+            social = social_service(database, router, harness.scoped_events)
             chat._tools.social_service = social
             original = await repository.get(work_id)
             recovered = await recover_source(database, conversation_id, source, request_id=work_id)

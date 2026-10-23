@@ -12,33 +12,15 @@ from yuki.capabilities.invocation import ToolInvocationContext, current_invocati
 from yuki.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
-    CapabilityExposure,
     CapabilityIdempotency,
     CapabilityRisk,
     CapabilityTrustSource,
 )
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.messages import ChatTool
-from yuki.external_agents.tools import EXTERNAL_AGENT_TOOLS
 from yuki.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
-_RESIDENT_YUKI_TOOLS = (
-    frozenset(
-        {
-            "find_contacts",
-            "query_chat_history",
-            "send",
-            "get_group_members",
-            "recall_own_message",
-            "inspect_conversation_attachment",
-            "save_conversation_attachment_to_workspace",
-        }
-    )
-    | SANDBOX_TOOLS
-    | EXTERNAL_AGENT_TOOLS
-    | WORKSPACE_TOOLS
-)
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "external_agent": (
         "external_agent.control",
@@ -97,63 +79,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "read_webpage": ("web.read", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
 }
 
-_CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
-    "query_chat_history": ("聊天原话", "近期消息", "以前聊过", "附近消息"),
-    "read_memory": ("记忆详情", "记忆证据"),
-    "get_my_capabilities": ("我能改什么", "权限范围", "有哪些设置"),
-    "search_memory": ("记得他", "人物记忆", "群记忆", "自我记忆", "你的经历"),
-    "memory_change": ("记住", "忘记", "纠正记忆", "保存记忆"),
-    "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
-    "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
-    "send": ("发消息", "回复", "发文件", "发图片", "表情", "引用这条"),
-    "read_tool_artifact": ("读取工具结果", "artifact"),
-}
-
-
 _AUTOMATION_READ = frozenset({"automation_query"})
-
-_CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
-    "query_chat_history": ("聊天记录", "原文", "前后几条", "以前聊过"),
-    "read_memory": ("事实详情", "证据摘要"),
-    "search_memory": (
-        "人物记忆",
-        "群友记忆",
-        "某人",
-        "关于他",
-        "关于她",
-        "偏好",
-        "记得",
-        "自我记忆",
-        "你的经历",
-        "你的偏好",
-        "群记忆",
-        "群整体",
-        "群里的情况",
-    ),
-    "memory_change": (
-        "记住",
-        "保存记忆",
-        "纠正记忆",
-        "修改记忆",
-        "忘记",
-        "撤销",
-        "恢复记忆",
-    ),
-    "web_search": (
-        "搜索",
-        "联网",
-        "网上查",
-        "最新",
-        "新闻",
-        "查资料",
-        "查询资料",
-        "搜下",
-        "搜搜",
-        "上网",
-    ),
-    "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
-    "send": ("发消息", "回复", "发文件", "发送文件", "发图片", "表情", "来张图"),
-}
 
 
 class CapabilityProvider(Protocol):
@@ -188,9 +114,9 @@ class ChatToolCapabilityProvider:
             return None
         namespace, effect, risk = metadata
         permissions = frozenset({"superuser"}) if namespace.startswith("qq.") else frozenset()
-        aliases = tool.aliases or _CORE_SEARCH_TAGS.get(tool.name, ())
-        use_when = tool.use_when or _CORE_USE_WHEN.get(tool.name, ())
-        tags = tool.tags or (namespace.split(".")[0], self._source.value)
+        aliases = tool.aliases
+        use_when = tool.use_when
+        tags = tool.tags
         return CapabilityDescriptor(
             canonical_name=f"{self._source.value}.{tool.name}",
             model_name=tool.name,
@@ -210,11 +136,6 @@ class ChatToolCapabilityProvider:
                 CapabilityIdempotency.IDEMPOTENT
                 if risk is CapabilityRisk.READ
                 else CapabilityIdempotency.CONDITIONAL
-            ),
-            exposure=(
-                CapabilityExposure.DIRECT_ALWAYS
-                if self._source is CapabilityTrustSource.CORE and tool.name in _RESIDENT_YUKI_TOOLS
-                else CapabilityExposure.PLANNED
             ),
             schema_version=str(tool.schema_version),
             result_cacheable=tool.result_cacheable,
@@ -297,28 +218,12 @@ class InProcessToolProvider:
             finally:
                 current_invocation.reset(token)
 
-        search_tags = (
-            _CORE_SEARCH_TAGS.get(tool.name, ())
-            if self._source is CapabilityTrustSource.CORE
-            else tool.tags
-        )
         return replace(
             descriptor,
             provider_id=self._provider_id,
             provider_tool_name=tool.name,
             description=tool.description,
             compact_description=tool.description[:240],
-            aliases=tuple(dict.fromkeys((*descriptor.aliases, *search_tags))),
-            tags=tuple(
-                dict.fromkeys(
-                    (
-                        descriptor.namespace_id,
-                        self._source.value,
-                        *descriptor.tags,
-                        *search_tags,
-                    )
-                )
-            ),
             binding=InProcessToolBinding(
                 provider_id=self._provider_id,
                 tool_name=tool.name,

@@ -7,7 +7,7 @@ import logging
 import traceback
 from collections import Counter
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from yuki.config import Settings
@@ -25,6 +25,9 @@ from yuki.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from yuki.social.service import SocialService
+
 
 class SelfReflectionWorker:
     def __init__(
@@ -33,6 +36,7 @@ class SelfReflectionWorker:
         settings: Settings,
         repository: SelfReflectionRepository,
         service: SelfReflectionService,
+        social: SocialService,
     ) -> None:
         self._settings, self._repository, self._service = (
             settings,
@@ -48,7 +52,7 @@ class SelfReflectionWorker:
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._process_lock = asyncio.Lock()
-        self.social: Any = None
+        self.social = social
 
     async def start(self) -> None:
         if not self._settings.memory_self_reflection_enabled or (
@@ -199,8 +203,6 @@ class SelfReflectionWorker:
         )
 
     async def _deliver_reports(self) -> None:
-        if self.social is None:
-            return
         from yuki.memory.self_reflection.reporting import deliver_report
 
         for cycle in await self.control.pending_reports():
