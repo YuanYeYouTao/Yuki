@@ -4,9 +4,103 @@ import asyncio
 import json
 import os
 import sys
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+
+
+async def test_desktop_reference_restarts_same_port_without_regranting_owner(tmp_path):
+    root, state_file = tmp_path / "server", tmp_path / "state.json"
+    log_file = tmp_path / "server.log"
+    process = None
+    port = 0
+    with log_file.open("wb") as log:
+
+        async def start():
+            nonlocal process, port
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "tests.support.desktop_reference_server",
+                "--root",
+                str(root),
+                "--state-file",
+                str(state_file),
+                "--port",
+                str(port),
+                "--base-path",
+                "/role/restart",
+                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                stdout=log,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            async with asyncio.timeout(30):
+                async with httpx.AsyncClient() as probe:
+                    while True:
+                        if process.returncode is not None:
+                            raise AssertionError(log_file.read_text(encoding="utf-8")[-2000:])
+                        if state_file.exists():
+                            state = json.loads(state_file.read_text(encoding="utf-8"))
+                            try:
+                                ready = await probe.get(state["base_url"] + "/healthz")
+                            except httpx.ConnectError:
+                                pass
+                            else:
+                                if ready.status_code == 200:
+                                    port = urlparse(state["base_url"]).port
+                                    return state
+                        await asyncio.sleep(0.05)
+
+        async def stop(client):
+            # Keep an actual SSE connection open during server shutdown. This exercises
+            # the listener's active-close/TIME_WAIT path, not just a vacant port bind.
+            async with client.stream("GET", "client/v1/stream", headers=owner) as stream:
+                assert stream.status_code == 200
+                assert (await client.post("__test/shutdown")).status_code == 200
+                assert await asyncio.wait_for(process.wait(), 10) == 0
+
+        try:
+            state = await start()
+            async with httpx.AsyncClient(base_url=state["base_url"] + "/") as client:
+                paired = await client.post(
+                    "client/v1/pair",
+                    json={"code": state["owner_pairing_code"], "device_label": "Restart"},
+                )
+                assert paired.status_code == 200
+                owner = {"Authorization": "Bearer " + paired.json()["data"]["token"]}
+                me = (await client.get("client/v1/me", headers=owner)).json()["data"]
+                profile = (await client.get("client/v1/character", headers=owner)).json()["data"]
+                soul = (root / "character" / "SOUL.md").read_bytes()
+                assert profile["viewer"]["is_owner"] is True
+                await stop(client)
+
+            for revoked in (False, True):
+                restarted = await start()
+                assert restarted["base_url"] == state["base_url"]
+                assert restarted["owner_person_id"] == state["owner_person_id"]
+                assert restarted["nonowner_person_id"] == state["nonowner_person_id"]
+                async with httpx.AsyncClient(base_url=state["base_url"] + "/") as client:
+                    assert (await client.get("client/v1/me", headers=owner)).json()["data"] == me
+                    current = (await client.get("client/v1/character", headers=owner)).json()[
+                        "data"
+                    ]
+                    assert current["viewer"]["is_owner"] is not revoked
+                    assert current["id"] == profile["id"]
+                    assert current["display_name"] == profile["display_name"]
+                    assert (root / "character" / "SOUL.md").read_bytes() == soul
+                    if not revoked:
+                        assert (await client.post("__test/revoke-owner")).status_code == 200
+                    else:
+                        assert (
+                            await client.get("client/v1/character/soul", headers=owner)
+                        ).status_code == 403
+                    await stop(client)
+        finally:
+            if process is not None:
+                if process.returncode is None:
+                    process.terminate()
+                await asyncio.wait_for(process.wait(), 10)
 
 
 async def test_soul_reference_process_uses_real_owners_files_and_personal_views(tmp_path):
