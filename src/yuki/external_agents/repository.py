@@ -27,6 +27,7 @@ from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.persistence.database import Database
+from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait import PreparedWaitAction, WorkWaitRepository
@@ -179,6 +180,81 @@ class AgentRepository:
                 raise ValueError("external_agent_not_found")
             await self.authorize(session, row.instance_id, actor)
             return row
+
+    async def work_operation(
+        self,
+        operation_id: str,
+        *,
+        work_id: str,
+        action: str,
+        actor_person_id: str,
+        session: AsyncSession,
+    ) -> dict[str, Any] | None:
+        """Read an original Work control receipt, without authorizing a new effect."""
+        operation = await session.scalar(
+            select(AgentOperationModel).where(
+                AgentOperationModel.id == operation_id,
+                AgentOperationModel.work_id == work_id,
+                AgentOperationModel.action == action,
+                AgentOperationModel.actor_person_id == actor_person_id,
+            )
+        )
+        if operation is None:
+            return None
+        return {**await self.operation_view(operation, session=session), "action": operation.action}
+
+    async def operation_view(
+        self, operation: AgentOperationModel, *, session: AsyncSession | None = None
+    ) -> dict[str, Any]:
+        """Project the original local receipt for public reads and Work recovery."""
+        result = json.loads(operation.result_json or "{}")
+        native_execution = (
+            result.get("execution_id")
+            if session_observation(operation)
+            else operation.native_execution_id
+        )
+        native = {
+            "session_id": result.get("session_id"),
+            "execution_id": native_execution,
+        }
+        execution_id = (
+            execution_key(operation.session_id, native_execution)
+            if operation.session_id and native_execution
+            else None
+        )
+        if isinstance(result.get("error"), dict) and "code" in result["error"]:
+            result = {**result, "error_detail": result["error"], "error": result["error"]["code"]}
+        async with optional_session(self.database, session, write=False) as reader:
+            task = await reader.get(SandboxTaskRunModel, operation.id) if operation.run_id else None
+        if task is not None and task.status == "completed":
+            completion = json.loads(task.completion_json or "{}")
+            return {
+                **completion,
+                **(
+                    {"status": "detached"}
+                    if completion.get("operation_status") == "detached"
+                    else {}
+                ),
+                "instance_id": operation.instance_id,
+                "native_reference": native,
+                "execution_id": execution_id,
+            }
+        return {
+            **result,
+            "kind": "external_agent",
+            "operation_id": operation.id,
+            "request_id": operation.id,
+            "instance_id": operation.instance_id,
+            "session_id": operation.session_id,
+            "run_id": operation.run_id,
+            "execution_id": execution_id,
+            "native_reference": native,
+            "pending": result.get("pending", True),
+            "status": result.get("status", "unknown"),
+            "uncertain": not bool(result) or result.get("status") == "unknown",
+            "admitted": result.get("admitted") is True,
+            "ownership": "observe" if operation.action == "watch" else "execute",
+        }
 
     async def native_execution(self, identity: str, actor: str) -> AgentExecutionModel:
         async with self.database.read_session() as session:

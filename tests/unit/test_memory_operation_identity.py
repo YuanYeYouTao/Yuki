@@ -14,7 +14,8 @@ from yuki.domain.audio import AudioTranscript, serialize_transcripts
 from yuki.memory.claim_processor import MemoryProcessingContext
 from yuki.memory.enums import MemoryStatus
 from yuki.memory.extraction import MemoryClaim
-from yuki.memory.mutation.models import MemoryMutationRequest
+from yuki.memory.mutation.models import MemoryMutationRequest, MemoryMutationResult
+from yuki.memory.mutation.repository import MemoryMutationReceiptRepository
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
 from yuki.memory.repository import MemoryJobRepository
@@ -53,6 +54,14 @@ async def test_operation_replay_is_distinct_from_equal_content_and_later_actions
     assert replay.ok and replay.deduplicated
     assert replay.mutation_id == first.mutation_id and replay.new_fact_id == first.new_fact_id
     assert (await facts.get_fact(first.new_fact_id)).status is MemoryStatus.INVALIDATED
+    receipts = MemoryMutationReceiptRepository(database)
+    async with database.read_session() as reader:
+        receipt = await receipts.get(first.mutation_id, session=reader)
+    assert receipt is not None
+    recovered = MemoryMutationResult.from_receipt(receipt, deduplicated=False)
+    assert recovered.tool_payload() == first.tool_payload()
+    assert recovered.outcome.value == "committed" and not recovered.deduplicated
+    assert await receipts.get("missing-mutation") is None
     conflict = await mutations.mutate(create_request("喜欢咖啡"), first_context)
     assert not conflict.ok and conflict.reason_code == "memory_operation_payload_conflict"
     async with database.read_session() as reader:

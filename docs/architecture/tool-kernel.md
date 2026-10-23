@@ -151,9 +151,18 @@ Social 在父操作首次持久准备时，把 `social:<operation_id>` 与原 ef
 工具汇总丢失时，原 effect 查询按这个关联读取计划数量和逐片回执；缺失、executing 或
 unknown 的片不能被另一成功片覆盖。查询本身不派发，未知效果保留原事实；它不成为其他调用或 Work 完成的全局否决。
 
+内部 `ToolInvocationContext.invocation_key` 传递 Host 的 `InvocationIdentity.operation_id`，
+Provider 原 call ID 与 Social/Memory/native 各自实体 ID 保留原合同和编码。
+
 Work 中的 Agent 记忆写把 `memory:<mutation_id>` 与原 effect 在领域提交交易中关联，
 按可信原 event/initiative 的来源、当前授权和持久回执执行；不另设单次写配额。
 插件在异步 scope 等待后再次检查当前定义与批准状态；已派发的未知写入不重放。
+领域提交已完成而 Work T3 缺结果时，Memory 按原绑定 mutation 和调用指纹读回原 outcome；
+原生 steer/respond/cancel/detach 按既有请求 hash、原 Work/action/actor 读取 operation。
+两者复用领域投影，reader 不写、不联网、不重新派发。已保存完整结果仍优先返回原件。
+Code 子调用在 T2 后恢复时认实际回执：已确认结果继续原程序，实际未知保留原停止语义，
+不因 `prepared` 字面状态否定原提交。控制被接纳不等于目标原生任务完成。
+
 
 宿主而非脚本决定并发：只读子调用受 `max_parallel_calls` 约束，发送、修改、记忆写和控制为
 屏障；同一响应的 `execute_code` 和直接调用沿原顺序执行。普通 complete、wait、need_input 与交接返回原控制回执，程序继续执行仍获准的语句，原批次和程序收拢后由共同 writer 结算；取消另一个目标不停止当前程序。

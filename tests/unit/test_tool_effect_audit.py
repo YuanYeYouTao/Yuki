@@ -104,7 +104,9 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
             "send",
             {"target": {"kind": "space", "target_id": env.space}, "text": "same"},
             replace(
-                env.context, call_id=context.call_id, trigger_event_id=runtime.trigger_event_id
+                env.context,
+                call_id=context.invocation_key,
+                trigger_event_id=runtime.trigger_event_id,
             ),
         )
         return ToolExecutionResult(ok=result["status"] == "succeeded", data=result)

@@ -523,7 +523,7 @@ class WorkJournal:
             )
 
     async def effect_result(self, key: str, *, original_tool: str = "legacy_tool") -> str:
-        def recorded_result(result: str) -> str:
+        def recorded_result(result: str, *, recovered: bool = False) -> str:
             # This is the original persisted receipt reader, never a live adapter.
             from yuki.runtime.effect_outcomes import (
                 current_result_capture,
@@ -535,7 +535,9 @@ class WorkJournal:
                 stored = json.loads(row["receipt_json"]) if row is not None else {}
                 capture.evidence = historical_evidence(
                     stored
-                    if row is not None and (row["state"] == "accepted" or row["kind"] == "final")
+                    if row is not None
+                    and not recovered
+                    and (row["state"] == "accepted" or row["kind"] == "final")
                     else {
                         "result": result,
                         **({"invocation": stored["invocation"]} if "invocation" in stored else {}),
@@ -598,13 +600,43 @@ class WorkJournal:
         value = json.loads(row["receipt_json"])
         invocation = value.get("invocation", {})
         reference = invocation.get("original_domain_ref")
-        if invocation.get("version") == 1 and isinstance(reference, str):
+        if invocation.get("version") == 1:
             from yuki.runtime.effect_queries import RuntimeEffectQueries
 
-            original = await RuntimeEffectQueries(
-                self.repository.database
-            ).inspect_social_operation(
-                reference=reference, work_id=row["work_id"], operation_key=key
+            queries = RuntimeEffectQueries(self.repository.database)
+            outcome = None
+            if isinstance(reference, str) and reference.startswith("memory:"):
+                outcome = await queries.inspect_memory_mutation(
+                    reference=reference, operation_key=key
+                )
+            elif invocation.get("tool_id") == "external_agent" and invocation.get("action") in {
+                "steer",
+                "respond",
+                "cancel",
+                "detach",
+            }:
+                outcome = await queries.inspect_native_operation(
+                    work_id=row["work_id"], operation_key=key, action=invocation["action"]
+                )
+            if outcome is not None:
+                return recorded_result(
+                    json.dumps(
+                        {
+                            **outcome.model_payload(),
+                            **({"original_domain_ref": reference} if reference else {}),
+                            "work_effect_state": row["state"],
+                            "replay_forbidden": True,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    recovered=True,
+                )
+            original = (
+                await queries.inspect_social_operation(
+                    reference=reference, work_id=row["work_id"], operation_key=key
+                )
+                if isinstance(reference, str)
+                else None
             )
             if original is not None:
                 return recorded_result(

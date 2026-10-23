@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -243,6 +244,35 @@ class MemoryMutationResult:
     reason_code: str = ""
     deduplicated: bool = False
     candidates: tuple[MemoryMutationCandidate, ...] = ()
+
+    def tool_payload(self) -> dict[str, Any]:
+        """Project the original mutation result for live and recovered callers."""
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "mutation_id": self.mutation_id,
+            "requested_operation": self.requested_operation.value,
+            "applied_operation": self.applied_operation.value,
+            "outcome": self.outcome.value,
+            "old_fact_id": self.old_fact_id,
+            "new_fact_id": self.new_fact_id,
+            "reason_code": self.reason_code,
+            "deduplicated": self.deduplicated,
+            "candidates": [
+                {
+                    "fact_id": candidate.fact_id,
+                    "memory_ref": candidate.memory_ref,
+                    "key": candidate.memory_key,
+                    "category": candidate.category,
+                    "kind": candidate.kind.value,
+                    "content": candidate.content,
+                    "status": candidate.status.value,
+                }
+                for candidate in self.candidates
+            ],
+        }
+        if self.ok and self.applied_operation is MemoryMutationAppliedOperation.INVALIDATE:
+            payload["persistence_semantics"] = "invalidated_not_deleted"
+        return payload
 
     @classmethod
     def from_receipt(

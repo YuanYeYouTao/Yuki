@@ -152,7 +152,9 @@ async def test_global_search_keeps_real_delegated_conversation_scope(permanent_e
             conversation_id=selected.event.canonical_conversation_id,
         ),
     )
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="delegated-search"))
+    token = current_invocation.set(
+        ToolInvocationContext(runtime, invocation_key="delegated-search")
+    )
     try:
         result = await env.service.execute(
             "query_chat_history", {"view": "search", "keyword": "雷达站"}, env.context

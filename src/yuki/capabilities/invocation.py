@@ -161,7 +161,7 @@ class ToolInvocationContext:
     """Runtime values that providers may consume but a model can never supply."""
 
     runtime: ToolRuntime
-    call_id: str = ""
+    invocation_key: str = ""
 
     @property
     def execution_key(self) -> str:

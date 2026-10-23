@@ -157,6 +157,12 @@ Work 时返回内部结果。自动化沿原 Work 终态收尾，完成不强制
 同一结果不重复反馈。明确安静执行、自主 SELF、定时任务和后台维护不因此额外发消息。
 这是 Agent 的执行指导，不新增关键词判断、强制代发或恢复循环；合成回放验证提示装配、
 工具回执顺序和显式发送边界，不证明真实模型在任意场景都遵守提示。
+恢复读取沿原 effect 到领域回执：Memory 认绑定 mutation 的原 outcome，原生控制认原 Work、
+action、actor 下的 operation；不以当前 fact 可见性、设备在线或是否有 run 重判已确认效果。
+已保存的完整 T3 结果优先；缺结果时恢复出的模型结果与效果证据使用同一事实，保留
+`executed`、`mutation_committed`、pending/uncertain。steer/respond 被接纳不是任务完成，
+cancel/detach 按原动作语义解释。Main、Code child、worker 复用这条读取链，原预算和身份不重置。
+
 记忆写入不创建独占轮、单次写配额或特殊发送权限。每次操作仍核对原 actor、授权、
 输入来源、预算和效果回执；发送继续经 Social 权限、路由与投递合同。记忆写和发送可在同批或同一 Code 脚本按原调用顺序执行，真实结果逐条返回。原未知调用不重新派发，后续独立调用不因历史未知被整体拒绝。
 `NO_REPLY` 是合法内部沉默，`return_to_caller` 不制造真人收尾通知。作为 `send`

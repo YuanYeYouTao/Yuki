@@ -149,7 +149,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         ),
     )
     token = current_invocation.set(
-        ToolInvocationContext(runtime=source, call_id="original-plugin-call")
+        ToolInvocationContext(runtime=source, invocation_key="original-plugin-call")
     )
     try:
         with host.invocation_scope("example.plugin", source):

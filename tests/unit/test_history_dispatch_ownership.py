@@ -426,7 +426,7 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
         runtime_config=await chat._runtime_config.snapshot(),
     )
     token = current_invocation.set(
-        ToolInvocationContext(runtime=runtime, call_id=owner.call_key("recent-history"))
+        ToolInvocationContext(runtime=runtime, invocation_key=owner.call_key("recent-history"))
     )
     try:
         result = (

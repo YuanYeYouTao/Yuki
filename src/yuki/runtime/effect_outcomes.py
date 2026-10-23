@@ -312,6 +312,10 @@ def historical_evidence(
     """Read original facts without promoting absent or malformed display data."""
     from yuki.capabilities.results import normalize_legacy_result
 
+    invocation = receipt.get("invocation", {})
+    if isinstance(invocation, dict) and isinstance(invocation.get("tool_id"), str):
+        original_tool = invocation["tool_id"]
+
     # Final transport receipts predate and intentionally do not use tool outcomes.
     # Only their exact domain/state proof can settle them; a tool row never gets this exemption.
     if kind == "final" and not any(key in receipt for key in ("outcome", "result", "status", "ok")):
@@ -410,6 +414,9 @@ def historical_evidence(
                 ),
                 tool=original_tool,
                 side_effecting=True,
+                arguments=json.dumps({"action": invocation.get("action")})
+                if isinstance(invocation, dict)
+                else "{}",
             )
         except (TypeError, ValueError):
             result = {"ok": False, "uncertain": True, "side_effecting": True, "executed": True}
@@ -423,7 +430,6 @@ def historical_evidence(
         result.update(ok=False, uncertain=True)
     elif result.get("status") in {"running", "queued", "waiting"}:
         result["pending"] = True
-    invocation = receipt.get("invocation", {})
     if isinstance(invocation, dict) and invocation.get("tool_id") == "external_agent":
         result["tool"] = "external_agent"
         if "action" in invocation:

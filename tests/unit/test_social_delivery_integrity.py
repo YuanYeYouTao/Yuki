@@ -273,7 +273,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                 media: {"goal": "开心"},
             }
             token = current_invocation.set(
-                ToolInvocationContext(runtime, call_id=f"{target_kind}-{media}")
+                ToolInvocationContext(runtime, invocation_key=f"{target_kind}-{media}")
             )
             try:
                 result = await invoke_social(env.service, "send", args, runtime)

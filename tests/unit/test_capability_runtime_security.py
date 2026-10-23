@@ -151,7 +151,7 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
 
     async def execute(arguments, context):
         assert arguments == payload
-        dispatched.append(context.call_id)
+        dispatched.append(context.invocation_key)
         return ToolExecutionResult(ok=True, data={"compiled_input_seen": True})
 
     descriptor = replace(

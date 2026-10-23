@@ -26,6 +26,7 @@ from yuki.external_agents.repository import (
 from yuki.external_agents.service import ExternalAgentService
 from yuki.external_agents.transport import DeviceConnection, DeviceOffline
 from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
@@ -89,6 +90,8 @@ async def prepare(env, identity="original-operation", **changes):
         "lease": None,
     }
     parameters.update(changes)
+    if "command" not in changes:
+        parameters["command"] = {"id": identity, "action": parameters["action"]}
     return await env.repository.prepare(**parameters)
 
 
@@ -167,6 +170,165 @@ async def test_original_operation_key_preserves_unknown_and_rejects_changed_inte
     assert view["status"] == "unknown" and view["uncertain"] and view["pending"]
     assert view["admitted"] is False
     assert not view["device_online"]
+
+
+@pytest.mark.parametrize("action", ["steer", "respond", "cancel", "detach"])
+async def test_work_control_receipt_survives_person_disable_and_device_revoke(
+    database, native, case, action
+):
+    owner = case.control.current["id"]
+    original, _ = await prepare(
+        native,
+        action=action,
+        arguments={"action": action},
+        source={**native.source, "work_id": owner},
+        lease=case.control.lease,
+    )
+    result = {"admitted": True, "pending": True, "status": "running"}
+    await native.repository.response(original.id, result)
+    async with database.immediate_session() as writer:
+        (await writer.get(CanonicalPersonModel, native.actor)).enabled = False
+        (await writer.get(ClientDeviceModel, native.device["device_id"])).revoked_at = datetime.now(
+            UTC
+        )
+    repository = AgentRepository(database)
+    async with database.read_session() as reader:
+        recovered = await repository.work_operation(
+            original.id,
+            work_id=owner,
+            action=action,
+            actor_person_id=native.actor,
+            session=reader,
+        )
+        assert await reader.get(SandboxTaskRunModel, original.id) is None
+    assert recovered["operation_id"] == recovered["request_id"] == original.id
+    assert recovered["action"] == action and recovered["run_id"] is None
+    assert recovered["admitted"] and recovered["pending"]
+    assert recovered["status"] == "running" and not recovered["uncertain"]
+    assert recovered["session_id"] == native.session
+    # Reading an original effect does not grant current public/native access.
+    with pytest.raises(ClientError, match="unauthenticated"):
+        await repository.operation(original.id, native.actor)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        {"status": "unknown", "pending": True},
+        {"status": "failed", "pending": False, "error": {"code": "native_rejected"}},
+    ],
+)
+async def test_work_control_recovery_preserves_unconfirmed_and_failed_results(native, case, result):
+    owner = case.control.current["id"]
+    original, _ = await prepare(
+        native, source={**native.source, "work_id": owner}, lease=case.control.lease
+    )
+    if result is not None:
+        await native.repository.response(original.id, result)
+    async with native.repository.database.read_session() as reader:
+        recovered = await native.repository.work_operation(
+            original.id,
+            work_id=owner,
+            action="steer",
+            actor_person_id=native.actor,
+            session=reader,
+        )
+    assert recovered["operation_id"] == original.id and recovered["action"] == "steer"
+    assert recovered["status"] == (result or {}).get("status", "unknown")
+    assert recovered["pending"] is (result or {}).get("pending", True)
+    assert recovered["uncertain"] is (not result or result["status"] == "unknown")
+    assert recovered["admitted"] is False
+    if result and result.get("error"):
+        assert recovered["error"] == "native_rejected"
+
+
+async def test_work_receipt_lookup_requires_exact_operation_and_original_owner(native, case):
+    owner = case.control.current["id"]
+    original, _ = await prepare(
+        native, source={**native.source, "work_id": owner}, lease=case.control.lease
+    )
+    query = {"work_id": owner, "action": "steer", "actor_person_id": native.actor}
+    async with native.repository.database.read_session() as reader:
+        for changed in (
+            {"work_id": str(uuid4())},
+            {"action": "cancel"},
+            {"actor_person_id": native.other_actor},
+        ):
+            assert (
+                await native.repository.work_operation(
+                    original.id, **{**query, **changed}, session=reader
+                )
+                is None
+            )
+        assert (
+            await native.repository.work_operation("missing-operation", **query, session=reader)
+            is None
+        )
+    prompt, _ = await prepare(
+        native,
+        identity="prompt-operation",
+        action="prompt",
+        source={
+            **native.source,
+            "work_id": owner,
+            "conversation_id": case.control.lease.conversation_id,
+        },
+        lease=case.control.lease,
+    )
+    async with native.repository.database.read_session() as reader:
+        assert prompt.run_id is not None
+        assert (
+            await native.repository.work_operation(
+                prompt.run_id, **{**query, "action": "prompt"}, session=reader
+            )
+            is None
+        )
+    async with native.repository.database.immediate_session() as writer:
+        await writer.delete(await writer.get(AgentOperationModel, original.id))
+    async with native.repository.database.read_session() as reader:
+        assert await native.repository.work_operation(original.id, **query, session=reader) is None
+
+
+async def test_work_control_admission_survives_later_unknown_native_observation(native, case):
+    from yuki.capabilities.results import ToolExecutionResult
+    from yuki.runtime.effect_outcomes import execution_evidence, execution_finished
+
+    owner = case.control.current["id"]
+    operation, _ = await prepare(
+        native,
+        action="cancel",
+        arguments={"action": "cancel"},
+        command={"id": "original-operation", "action": "cancel"},
+        source={**native.source, "work_id": owner},
+        lease=case.control.lease,
+    )
+    # The connector retains original admission when a later observation is unknown.
+    admitted = {"status": "running", "pending": True, "admitted": True, "state_sequence": 1}
+    await native.repository.response(operation.id, admitted)
+    await native.repository.response(
+        operation.id, {**admitted, "status": "unknown", "state_sequence": 2}
+    )
+    await native.repository.database.engine.dispose()
+    async with native.repository.database.read_session() as reader:
+        recovered = await native.repository.work_operation(
+            operation.id,
+            work_id=owner,
+            action="cancel",
+            actor_person_id=native.actor,
+            session=reader,
+        )
+    assert recovered["admitted"] and recovered["uncertain"] and recovered["pending"]
+    assert recovered["status"] == "unknown" and recovered["state_sequence"] == 2
+    evidence = execution_evidence(
+        ToolExecutionResult(ok=True, data=recovered),
+        tool="external_agent",
+        side_effecting=True,
+        arguments='{"action":"cancel"}',
+    )
+    assert evidence["ok"] and evidence["mutation_committed"]
+    assert not evidence["uncertain"] and not evidence["pending"]
+    assert evidence["status"] == "admitted" and not execution_finished(evidence)
 
 
 @pytest.mark.parametrize("missing", [True, False])

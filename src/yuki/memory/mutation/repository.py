@@ -22,6 +22,23 @@ class MemoryMutationReceiptRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    async def get(
+        self,
+        mutation_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> MemoryMutationReceipt | None:
+        """Read an original result without consulting its facts' current state."""
+        if session is None:
+            async with self._database.read_session() as owned:
+                return await self.get(mutation_id, session=owned)
+        row = await session.scalar(
+            select(MemoryMutationReceiptModel).where(
+                MemoryMutationReceiptModel.mutation_id == mutation_id
+            )
+        )
+        return _receipt(row) if row is not None else None
+
     async def find(
         self,
         *,

@@ -21,7 +21,6 @@ from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
     AgentRepository,
     encode,
-    execution_key,
     session_observation,
 )
 from yuki.external_agents.transport import DeviceConnection, DeviceConnections, DeviceOffline
@@ -136,64 +135,15 @@ class ExternalAgentService:
         return {"devices": list(devices.values()), "instances": instances}
 
     async def _view(self, operation: AgentOperationModel) -> dict[str, Any]:
-        result = json.loads(operation.result_json or "{}")
-        native_execution = (
-            result.get("execution_id")
-            if session_observation(operation)
-            else operation.native_execution_id
-        )
-        native = {
-            "session_id": result.get("session_id"),
-            "execution_id": native_execution,
-        }
-        execution_id = (
-            execution_key(operation.session_id, native_execution)
-            if operation.session_id and native_execution
-            else None
-        )
-        if isinstance(result.get("error"), dict) and "code" in result["error"]:
-            result = {**result, "error_detail": result["error"], "error": result["error"]["code"]}
-        async with self.database.read_session() as session:
-            task = (
-                await session.get(SandboxTaskRunModel, operation.id) if operation.run_id else None
-            )
+        async with self.database.read_session() as reader:
+            view = await self.repository.operation_view(operation, session=reader)
             instance = (
-                await session.get(AgentInstanceModel, operation.instance_id)
-                if result.get("pending", True)
+                await reader.get(AgentInstanceModel, operation.instance_id)
+                if view.get("pending")
                 else None
             )
-        if task is not None and task.status == "completed":
-            completion = json.loads(task.completion_json or "{}")
-            return {
-                **completion,
-                **(
-                    {"status": "detached"}
-                    if completion.get("operation_status") == "detached"
-                    else {}
-                ),
-                "instance_id": operation.instance_id,
-                "native_reference": native,
-                "execution_id": execution_id,
-            }
-        view = {
-            **result,
-            "kind": "external_agent",
-            "operation_id": operation.id,
-            "request_id": operation.id,
-            "instance_id": operation.instance_id,
-            "session_id": operation.session_id,
-            "run_id": operation.run_id,
-            "execution_id": execution_id,
-            "native_reference": native,
-            "pending": result.get("pending", True),
-            "status": result.get("status", "unknown"),
-            "uncertain": not bool(result) or result.get("status") == "unknown",
-            "admitted": result.get("admitted") is True,
-            "ownership": "observe" if operation.action == "watch" else "execute",
-        }
-        if view["pending"]:
-            if instance is not None and not self.connections.online(instance.device_id):
-                return self._unavailable_view(view, "device_offline")
+        if instance is not None and not self.connections.online(instance.device_id):
+            return self._unavailable_view(view, "device_offline")
         return view
 
     @staticmethod

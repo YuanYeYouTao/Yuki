@@ -265,7 +265,7 @@ async def test_delegated_history_reads_person_material_without_send_availability
         read_scope=ConversationScope.private("80001", "10002"),
         read_target_id=target,
     )
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="delegated-read"))
+    token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="delegated-read"))
     calls = list(env.bot.calls)
     try:
         result = await invoke_social(
@@ -301,7 +301,7 @@ async def test_delegated_history_scope_is_still_required(database, tmp_path):
         read_scope=ConversationScope.private("80001", "10001"),
         read_target_id=env.person,
     )
-    token = current_invocation.set(ToolInvocationContext(runtime, call_id="wrong-read"))
+    token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="wrong-read"))
     try:
         with pytest.raises(SocialError, match="history_scope_denied"):
             await invoke_social(

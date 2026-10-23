@@ -54,7 +54,6 @@ from yuki.memory.enums import (
 from yuki.memory.models import MemoryEntityTarget
 from yuki.memory.mutation.models import MemoryMutationRequestBasis
 from yuki.memory.service import MemoryFactService
-from yuki.memory.validation import normalize_memory_text
 from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.repositories import (
     EventLedgerRepository,
@@ -1385,7 +1384,7 @@ class _MemoryFacade:
             raise ValueError("confidence must be between zero and one")
         memories = _require_service(self._host._services.memories, "memory")
         current = await memories.get_fact(numeric_id)
-        visible = None
+        corrected = None
         if current is not None and await memories.person_owns_fact(
             current,
             actor_person_id=invocation.actor_person_id,
@@ -1401,14 +1400,8 @@ class _MemoryFacade:
                 expected,
                 confidence=current.confidence if confidence is None else confidence,
             )
-            visible = await _visible_person_projection_fact(
-                memories,
-                user_id=cast(str, invocation.actor_person_id),
-                fact_id=corrected.id if corrected is not None else None,
-                content=expected,
-            )
-        changed = visible is not None
-        result_id = f"person:{visible.id}" if visible is not None else memory_id
+        changed = corrected is not None
+        result_id = f"person:{corrected.id}" if corrected is not None else memory_id
         await self._host._audit(
             invocation,
             operation="memory.update",
@@ -1420,7 +1413,7 @@ class _MemoryFacade:
             ok=changed,
             data={"memory_id": result_id},
             error_code=None if changed else "memory.not_found",
-            detail="" if changed else "memory is not owned by the current user",
+            detail="" if changed else "memory is unavailable for correction",
         )
 
     async def delete(self, memory_id: str) -> PluginResult:
@@ -2773,12 +2766,12 @@ def _delivery_identity(host: HostPluginContext, invocation: PluginInvocation) ->
 
     identity = invocation.delivery_identity
     tool = current_invocation.get()
-    if identity is None and tool is not None and tool.call_id:
+    if identity is None and tool is not None and tool.invocation_key:
         control = current_work_control.get()
         identity = (
-            tool.call_id
+            tool.invocation_key
             if control is not None and control.session is not None
-            else f"{tool.execution_key}:{tool.call_id}"
+            else f"{tool.execution_key}:{tool.invocation_key}"
         )
     # A direct callback without a persisted Host identity is a NEW invocation,
     # not an alleged replay inferred from its source event or message content.
@@ -3018,26 +3011,6 @@ def _group_record(row: Any) -> dict[str, JsonValue]:
         "require_mention": row.require_mention,
         "autonomous_enabled": row.autonomous_enabled,
     }
-
-
-async def _visible_person_projection_fact(
-    memories: MemoryFactService,
-    *,
-    user_id: str,
-    fact_id: int | None,
-    content: str,
-) -> Any | None:
-    if fact_id is None:
-        return None
-    expected = normalize_memory_text(content)
-    return next(
-        (
-            row
-            for row in await memories.list_person(person_id=user_id)
-            if row.id == fact_id and row.content == expected
-        ),
-        None,
-    )
 
 
 def _memory_record(row: Any, scope: str) -> dict[str, JsonValue]:
