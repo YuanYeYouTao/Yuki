@@ -62,6 +62,7 @@ async def serve(
     )
     computer_fixture = None
     computer_scenario = None
+    native_scenario = None
     fault_fixture = None
     work_script: list = []
     try:
@@ -104,6 +105,10 @@ async def serve(
         work_model_gate = asyncio.Event()
         work_model_gate.set()
         if desktop and real_model_source is None:
+            if os.environ.get("YUKI_DESKTOP_NATIVE_FIXTURE") == "1":
+                from tests.support.desktop_native_work_fixture import DesktopNativeWorkScenario
+
+                native_scenario = DesktopNativeWorkScenario(runtime)
             manager_socket = os.environ.get("YUKI_DESKTOP_MANAGER_SOCKET")
             if manager_socket:
                 from tests.support.desktop_external_computer import DesktopExternalComputer
@@ -199,6 +204,10 @@ async def serve(
                     control = current_work_control.get()
                     if control is not None and control.current is not None:
                         await work_model_gate.wait()
+                    if native_scenario is not None:
+                        response = await native_scenario.respond(request)
+                        if response is not None:
+                            return response
                     return await super()._complete(request)
 
             desktop_model = DesktopModel(respond)
@@ -247,6 +256,8 @@ async def serve(
             computer_fixture.attach(api)
         if computer_scenario is not None:
             computer_scenario.attach(api)
+        if native_scenario is not None:
+            native_scenario.attach(api)
         if (
             desktop
             and real_model_source is None
