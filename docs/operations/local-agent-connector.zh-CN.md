@@ -2,14 +2,24 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.3.2`，要求 Python 3.12。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.3`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+
+## 从桌面连接
+
+配套 Yuki Desktop 的「编程 Agent」页提供首次接入：确认当前 Yuki 与服务器地址，明确允许这位 Yuki 使用本机 Agent，再点击「连接本机 Codex」。桌面准备随附运行时，以当前已登录的 Person 申请 `purpose=connector` 授权并完成配对，随后发现已有 Codex；多个候选时才需要选择。项目目录可以选择，也可以沿已有原生会话继续。用户不需要安装 wheel、Python、修改 PATH 或另外抄配对码。
+
+桌面源码、五平台 CI 安装产物和正式 Release 是不同状态；实际可下载版本以桌面仓库对应产物为准。原生 Codex 仍需用户自行安装、登录并处理它自己的权限。服务已启动、服务器已连接和原生握手成功分别展示，不能代替实际模型任务的执行结果。现有独立安装及手动入口继续保留。
+
+服务器部署者需一次性提供同一域名的 HTTPS／WSS 入口：`/client/v1/` 和 `/agents/v1/` 转发给同一 Yuki 服务，后者允许 WebSocket Upgrade。已有 HTTPS 代理直接复用域名与 443，不另开 Agent 端口；尚无入口时按[桌面本地部署与公网接入](desktop-local-deployment.zh-CN.md)配置实际域名、证书和代理。电脑主动连出，不开放入站端口。下文 SSH 隧道是已有 SSH 用户的高级方式，不是普通桌面接入的默认前置条件。
+
+服务器 URL 与 device ID 参与原 journal namespace。已有 HTTP／隧道安装不能仅覆盖成新 HTTPS 地址就声称原任务无损迁移；先核原未决操作与回执，再明确处理原安装。
 
 ## 安装与显式配对
 
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.3.2-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.3.3-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
