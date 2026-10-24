@@ -345,6 +345,7 @@ class NativeInstance(PublicProjection):
 
 
 class NativeDirectory(PublicProjection):
+    connector_protocol: int
     devices: list[NativeDevice]
     instances: list[NativeInstance]
 

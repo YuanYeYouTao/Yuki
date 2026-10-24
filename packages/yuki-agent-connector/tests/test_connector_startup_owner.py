@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import sys
 
 import pytest
@@ -11,6 +12,77 @@ from websockets.asyncio.server import serve
 from yuki_agent_connector.config import Config, Instance
 from yuki_agent_connector.connector import Connector
 from yuki_agent_connector.journal import Journal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "reason", "authorization_lost"),
+    [(1008, "unsupported_connector_protocol", False), (4401, "revoked", True)],
+)
+async def test_protocol_rejection_is_distinct_from_revocation_and_keeps_native_owner(
+    tmp_path, monkeypatch, caplog, code, reason, authorization_lost
+):
+    observed, native_stopped = asyncio.Event(), asyncio.Event()
+    authorization = []
+
+    class Driver:
+        def __init__(self):
+            self.capabilities = ["list"]
+
+        async def stop(self):
+            native_stopped.set()
+
+    journal = Journal(tmp_path / "journal.sqlite3", namespace="server/device")
+    connector = Connector(Config("ws://localhost/", "device", "fixture"), journal)
+    connector.drivers["original"] = Driver()
+
+    async def already_started():
+        pass
+
+    original_authorization_lost = connector.authorization_lost
+
+    async def record_authorization():
+        authorization.append(True)
+        observed.set()
+        await original_authorization_lost()
+
+    class ProtocolNotice(logging.Handler):
+        def emit(self, record):
+            if "unsupported_connector_protocol" in record.getMessage():
+                observed.set()
+
+    handler = ProtocolNotice()
+    logger = logging.getLogger("yuki_agent_connector.connector")
+    logger.addHandler(handler)
+    monkeypatch.setattr(connector, "start_drivers", already_started)
+    monkeypatch.setattr(connector, "authorization_lost", record_authorization)
+
+    async def reject(socket):
+        await socket.recv()
+        await socket.close(code, reason)
+
+    try:
+        async with serve(reject, "127.0.0.1", 0) as server:
+            connector.config = Config(
+                f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}", "device", "fixture"
+            )
+            running = asyncio.create_task(connector.run())
+            try:
+                await asyncio.wait_for(observed.wait(), 5)
+                assert bool(authorization) is authorization_lost
+                assert not running.done() and not native_stopped.is_set()
+                if not authorization_lost:
+                    assert "unsupported_connector_protocol" in caplog.text
+                    assert "authorization ended" not in caplog.text
+                connector.stopped.set()
+                await asyncio.wait_for(running, 5)
+                assert native_stopped.is_set()
+            finally:
+                running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+    finally:
+        logger.removeHandler(handler)
+        journal.close()
 
 
 @pytest.mark.asyncio

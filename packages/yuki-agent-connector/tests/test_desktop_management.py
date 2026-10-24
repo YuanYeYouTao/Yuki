@@ -75,6 +75,49 @@ def test_refresh_tracks_registered_installation_without_changing_profile(
         discovery.refresh(original)
 
 
+@pytest.mark.parametrize("existing", [True, False])
+def test_configure_without_project_uses_original_instance_cwd(
+    existing: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "config.json"
+    original = Instance("original", "codex", "Old", sys.executable, cwd=tmp_path.as_posix())
+    Config(
+        "wss://example/agents/v1/connect",
+        "device",
+        "private-token",
+        [original] if existing else [],
+    ).save(path)
+    monkeypatch.setattr(cli, "candidates", lambda: [])
+    value = {"command": sys.executable, "label": "Codex"}
+    if existing:
+        value["id"] = original.id
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(value)))
+
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+
+    current = Config.load(path)
+    assert len(current.instances) == 1
+    spec = current.instances[0]
+    assert spec.cwd == (original.cwd if existing else str(Path.home()))
+    assert spec.command == original.command
+    if existing:
+        assert spec.id == original.id
+    assert current.device_id == "device" and current.token == "private-token"
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt == {"instance_id": spec.id}
+
+    # A later service start can fail independently. Continue with the returned
+    # saved identity rather than registering another instance on retry.
+    value["id"] = receipt["instance_id"]
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(value)))
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+    assert json.loads(capsys.readouterr().out) == receipt
+    assert Config.load(path) == current
+
+
 @pytest.mark.parametrize("logged_in", [True, False])
 async def test_diagnose_reads_account_without_model_or_auth_files(
     logged_in: bool, monkeypatch: pytest.MonkeyPatch

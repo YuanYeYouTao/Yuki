@@ -15,6 +15,7 @@ from uuid import uuid4
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
+from . import PROTOCOL_VERSION
 from .config import Config
 from .drivers import Driver, DriverError, make_driver
 from .journal import Journal
@@ -106,7 +107,7 @@ class Connector:
     def hello(self) -> dict[str, Any]:
         return {
             "type": "hello",
-            "protocol_version": 3,
+            "protocol_version": PROTOCOL_VERSION,
             "device_id": self.config.device_id,
             "instances": [
                 {
@@ -301,6 +302,17 @@ class Connector:
                 try:
                     await self.connection(websocket)
                 except ConnectionClosed as exc:
+                    if (
+                        exc.rcvd
+                        and exc.rcvd.code == 1008
+                        and exc.rcvd.reason == "unsupported_connector_protocol"
+                    ):
+                        logger.error(
+                            "unsupported_connector_protocol: Connector and Yuki protocol versions "
+                            "are incompatible; update the older installation"
+                        )
+                        await self.stopped.wait()
+                        break
                     if exc.rcvd and exc.rcvd.code in {1008, 4001, 4003, 4401, 4403}:
                         await self.authorization_lost()
                         break
