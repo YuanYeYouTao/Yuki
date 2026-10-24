@@ -23,6 +23,34 @@ owner 资格归 Person，账号转交不转交角色编辑权；operator 通过�
 SDK 的 SOUL 受控写在确认丢失后先查原 UUID，恢复仍用原 payload；不把一般未知外部效果重新派发。
 旧双文档路径与 key 不保留。安装、旧草稿整理与权限见[升级说明](../operations/soul-deployment-20261022.md)。
 
+## 角色头像
+
+API revision `6` 保持兼容；`/meta.capabilities` 中的 `character_avatar` 表示实际提供头像写入与读取。
+头像属于原 `character_profile.id`，跨该角色的桌面设备共用，不与 Person、QQ 等平台账号头像混合。
+
+`PUT /character/avatar?request_id=&expected_revision=&sha256=&size=` 接收裁切后的 1024×1024 PNG
+字节。设备的当前角色拥有者资格在收流前和提交前分别核验。流长及 SHA-256 必须与原声明一致，
+客户端以 sRGB 导出；服务端完整解码、去元数据并发布 sRGB PNG，生成 1024/512/256/128/64 图。图片 I/O、解码和变体生成
+全部在写事务外执行；同盘临时目录在变体写入并刷新后原子发布，短事务才推进头像版本及原命令回执。
+没有新增文件大小经验上限、持久上传队列或后台重放。
+
+`DELETE /character/avatar {request_id,expected_revision}` 还原已配置的 `default_avatar`；没有默认图时
+还原名称字首。两种写入都返回完整角色资料。`expected_revision` 认独立的 `avatar_revision`，即使
+`avatar=null` 也保留该版本；名称、简介的 profile revision 不随头像修改推进。
+
+原请求的 `operation_kind` 为 `client.character_avatar`，target 是角色 UUID。指纹沿
+`fingerprint(operation_kind, character_id, {action,expected_revision,sha256,size})`；action 为 set/reset，
+reset 的 sha256/size 明确为 null。同一 UUID 按原个人入口命名空间查回执，冲突不换版本覆盖；
+响应丢失先查 `GET /requests/{request_id}`，不通过生成新 UUID 或新头像账本恢复。
+
+`GET /character/avatar/{sha256}/{size}.png` 返回 immutable PNG。当前头像的 128 图允许配对前读取；
+其他尺寸和旧图需要当前有效设备资格。实际读字节后再次核验资格或公开头像指针，撤权与当前头像
+变化不能被在途读取越过。sha256 是上传资产的内容身份，尺寸变体保留同一资产路径，不将它冒充
+每个变体文件的字节摘要。旧资产目录保留，不自动删除默认图或原回执指向的内容。
+
+头像提交沿现有数据库 commit hint 发布 `character.avatar_revision` 变化，其他设备据此刷新角色资料，
+不新增轮询。普通修改不重建角色、Person、Binding、Conversation、历史或 Work，也不自动授予拥有者。
+
 ## 配对与账号绑定
 
 第一台设备可由 operator 执行 `yuki admin person create`，再执行

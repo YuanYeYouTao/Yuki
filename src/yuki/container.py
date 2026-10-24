@@ -488,6 +488,16 @@ class ApplicationContainer:
 
         self.character = CharacterRepository(self.client_identity, settings)
         self.soul = CharacterSoul(self.client_identity, settings)
+        from yuki.character.avatar import AvatarStore, CharacterAvatars
+
+        self.character_avatars = CharacterAvatars(
+            self.character,
+            AvatarStore(
+                (settings.sqlite_path.parent if settings.sqlite_path is not None else Path("data"))
+                / "character-assets"
+                / "avatars"
+            ),
+        )
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
         from yuki.services.client_link import ClientLinkCommands
@@ -682,6 +692,7 @@ class ApplicationContainer:
             client_prompts,
             self.character,
             self.soul,
+            self.character_avatars,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None

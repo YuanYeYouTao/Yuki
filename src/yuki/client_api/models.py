@@ -72,6 +72,12 @@ class CharacterUpdateBody(TypedDict):
     accent: NotRequired[Accent]
 
 
+class AvatarResetBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID4
+    expected_revision: int = Field(strict=True, ge=0)
+
+
 def character_changes(body: CharacterUpdateBody) -> dict[str, Any]:
     changes = {
         key: value for key, value in body.items() if key not in {"request_id", "expected_revision"}

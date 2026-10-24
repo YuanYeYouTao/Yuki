@@ -32,6 +32,7 @@ class CharacterCurrent:
     id: str
     display_name: str
     revision: int
+    avatar_revision: int
 
 
 async def is_character_owner(session: AsyncSession, person_id: str) -> bool:
@@ -57,7 +58,22 @@ async def require_character_owner(
     return current
 
 
+def avatar_view(sha256: str | None) -> dict[str, Any] | None:
+    if sha256 is None:
+        return None
+    return {
+        "sha256": sha256,
+        "sizes": {
+            str(size): f"/client/v1/character/avatar/{sha256}/{size}.png"
+            for size in (64, 128, 256, 512)
+        },
+    }
+
+
 def profile_view(row: CharacterProfileModel, *, owner: bool) -> dict[str, Any]:
+    avatar = avatar_view(row.avatar_sha256)
+    if avatar is not None:
+        avatar.update(revision=row.avatar_revision, updated_at=utc_iso(row.updated_at))
     return {
         "id": row.id,
         "slug": row.slug,
@@ -66,8 +82,8 @@ def profile_view(row: CharacterProfileModel, *, owner: bool) -> dict[str, Any]:
         "accent": {"light": row.accent_light, "dark": row.accent_dark},
         "revision": row.revision,
         "avatar_revision": row.avatar_revision,
-        "avatar": None,
-        "default_avatar": None,
+        "avatar": avatar,
+        "default_avatar": avatar_view(row.default_avatar_sha256),
         "viewer": {"is_owner": owner},
     }
 
@@ -88,7 +104,7 @@ class CharacterRepository:
             async with self.database.read_session() as reader:
                 return await self.current(reader)
         row = await self._profile(session)
-        return CharacterCurrent(row.id, row.display_name, row.revision)
+        return CharacterCurrent(row.id, row.display_name, row.revision, row.avatar_revision)
 
     async def initialize(self, display_name: str, *, slug: str | None = None) -> CharacterCurrent:
         """Explicit setup only; an existing identity is never renamed by initialization."""
@@ -107,7 +123,7 @@ class CharacterRepository:
                 )
                 session.add(row)
                 await session.flush()
-            result = CharacterCurrent(row.id, row.display_name, row.revision)
+            result = CharacterCurrent(row.id, row.display_name, row.revision, row.avatar_revision)
         self.settings.apply_character_name(result.display_name, result.revision)
         return result
 
@@ -121,10 +137,14 @@ class CharacterRepository:
                     "id": row.id,
                     "display_name": row.display_name,
                     "accent": {"light": row.accent_light, "dark": row.accent_dark},
-                    "avatar_url": None,
+                    "avatar_url": (
+                        f"/client/v1/character/avatar/{row.avatar_sha256}/128.png"
+                        if row.avatar_sha256
+                        else None
+                    ),
                 },
                 "min_client": {"desktop": None, "android": None},
-                "capabilities": ["character", "soul"],
+                "capabilities": ["character", "soul", "character_avatar"],
             }
 
     async def get(self, principal: ClientPrincipal | None = None) -> dict[str, Any]:

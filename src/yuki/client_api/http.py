@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
+from yuki.character.avatar import CharacterAvatars
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.agent_target import AgentTarget
@@ -19,6 +20,7 @@ from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
 from yuki.client_api.messages import ClientMessages
 from yuki.client_api.models import (
+    AvatarResetBody,
     CharacterProfile,
     CharacterUpdateBody,
     Envelope,
@@ -61,6 +63,7 @@ class ClientApi:
     prompts: ClientPrompts | None = None
     character: CharacterRepository | None = None
     soul: CharacterSoul | None = None
+    avatars: CharacterAvatars | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -159,6 +162,77 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
                 principal=actor,
             )
         }
+
+    def avatars() -> CharacterAvatars:
+        service = resolve().avatars
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.put(
+        "/character/avatar",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+            }
+        },
+    )
+    async def set_avatar(
+        request: Request,
+        actor: Actor,
+        request_id: UUID4,
+        sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+        size: Annotated[int, Query(ge=0)],
+        expected_revision: Annotated[int, Query(ge=0)],
+    ) -> Any:
+        return {
+            "data": await avatars().change(
+                str(request_id),
+                expected_revision,
+                action="set",
+                sha256=sha256,
+                size=size,
+                chunks=request.stream(),
+                principal=actor,
+            )
+        }
+
+    @router.delete(
+        "/character/avatar",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+    )
+    async def reset_avatar(body: AvatarResetBody, actor: Actor) -> Any:
+        return {
+            "data": await avatars().change(
+                str(body.request_id), body.expected_revision, action="reset", principal=actor
+            )
+        }
+
+    @router.get(
+        "/character/avatar/{sha256}/{size}.png",
+        response_class=Response,
+        responses={
+            200: {"content": {"image/png": {"schema": {"type": "string", "format": "binary"}}}}
+        },
+    )
+    async def avatar_file(
+        sha256: str,
+        size: int,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        actor = await principal(authorization) if authorization is not None else None
+        return Response(
+            await avatars().read(sha256, size, actor),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @router.get("/character/soul", response_model=Envelope[SoulDocument])
     async def read_soul(actor: Actor) -> Any:

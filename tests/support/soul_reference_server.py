@@ -199,6 +199,12 @@ async def serve(
 
             qq_bot = SimpleNamespace(self_id="8000")
 
+            @api.post("/__test/avatar-inputs")
+            async def avatar_inputs() -> dict:
+                from tests.support.desktop_reference_server import seed_avatar_inputs
+
+                return await asyncio.to_thread(seed_avatar_inputs, root)
+
             @api.post("/__test/qq-entry")
             async def qq_entry() -> dict:
                 from tests.support.desktop_reference_server import seed_qq_entry

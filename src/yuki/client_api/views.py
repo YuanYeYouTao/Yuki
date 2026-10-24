@@ -263,6 +263,7 @@ class ClientViews:
                 hint: dict[str, Any] = {
                     "id": current.id,
                     "revision": current.revision,
+                    "avatar_revision": current.avatar_revision,
                     "is_owner": owner,
                 }
                 if owner and self.soul is not None:
