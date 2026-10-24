@@ -52,12 +52,18 @@ async def serve(
             conversation_media_cache_directory=root / "media",
             social_transfer_directory=root / "transfer",
             runtime_work_enabled=True,
+            automation_enabled=desktop and os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
+            self_memory_enabled=desktop and os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
             telegram_bot_token="",
             asr_enabled=desktop and real_model_source is None,
             web_mode="disabled" if real_model_source is not None else "native",
         ),
         database=database,
     )
+    computer_fixture = None
+    computer_scenario = None
+    fault_fixture = None
+    work_script: list = []
     try:
         if first_start:
             await database.create_schema()
@@ -98,6 +104,27 @@ async def serve(
         work_model_gate = asyncio.Event()
         work_model_gate.set()
         if desktop and real_model_source is None:
+            manager_socket = os.environ.get("YUKI_DESKTOP_MANAGER_SOCKET")
+            if manager_socket:
+                from tests.support.desktop_external_computer import DesktopExternalComputer
+
+                computer_fixture = DesktopExternalComputer(
+                    runtime, Path(manager_socket), Path(os.environ["YUKI_DESKTOP_MANAGER_ROOT"])
+                )
+            elif os.environ.get("YUKI_DESKTOP_HEADED_FIXTURE") == "1":
+                from tests.support.desktop_headed_computer_fixture import (
+                    DesktopHeadedComputerFixture,
+                )
+
+                computer_fixture = DesktopHeadedComputerFixture(root, runtime)
+            elif os.environ.get("YUKI_DESKTOP_COMPUTER_FIXTURE") == "1":
+                from tests.support.desktop_computer_fixture import DesktopComputerFixture
+
+                computer_fixture = DesktopComputerFixture(
+                    root,
+                    runtime,
+                    native_work=os.environ.get("YUKI_DESKTOP_COMPUTER_WORK_FIXTURE") == "1",
+                )
             from tests.support.desktop_reference_server import ControlledASR
 
             asr_provider = ControlledASR()
@@ -111,6 +138,19 @@ async def serve(
             def respond(request):
                 from yuki.runtime.work_activation import current_work_control
 
+                if computer_scenario is not None:
+                    response = computer_scenario.respond(request)
+                    if response is not None:
+                        return response
+                if work_script:
+                    name, arguments = work_script.pop(0)
+                    return ChatResponse(
+                        content="",
+                        latency_seconds=0,
+                        tool_calls=(
+                            ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),
+                        ),
+                    )
                 has_receipt = any(
                     message.role == "tool" or message.tool_calls for message in request.messages
                 )
@@ -161,9 +201,10 @@ async def serve(
                         await work_model_gate.wait()
                     return await super()._complete(request)
 
+            desktop_model = DesktopModel(respond)
             runtime.models.apply_catalog(
                 _catalog(_profile()),
-                ModelClientPool(injected_profiles={"main": DesktopModel(respond)}),
+                ModelClientPool(injected_profiles={"main": desktop_model}),
             )
         elif real_model_source is not None:
             from tests.support.desktop_reference_server import load_real_models
@@ -172,6 +213,12 @@ async def serve(
             runtime.models.apply_catalog(catalog, pool)
         await runtime.model_invocations.writer.start()
         await runtime.app_gateway.start()
+        if computer_fixture is not None:
+            await computer_fixture.start(owner_id)
+            if computer_fixture.native_work:
+                from tests.support.desktop_computer_work_fixture import DesktopComputerWorkScenario
+
+                computer_scenario = DesktopComputerWorkScenario(root, runtime, computer_fixture)
         await runtime._freeze_main_manifest()
         await runtime.work_scheduler.start()
         artifact_state = {}
@@ -189,6 +236,33 @@ async def serve(
                 }
         api = FastAPI(debug=desktop)
         attach_client_api(api, lambda: runtime.client_api)
+        if desktop and real_model_source is None:
+            from tests.support.desktop_fault_fixture import DesktopFaultFixture
+
+            fault_fixture = DesktopFaultFixture(
+                runtime, root, owner_id, lambda: issue_code(nonowner_id), desktop_model, work_script
+            )
+            fault_fixture.attach(api)
+        if computer_fixture is not None:
+            computer_fixture.attach(api)
+        if computer_scenario is not None:
+            computer_scenario.attach(api)
+        if (
+            desktop
+            and real_model_source is None
+            and os.environ.get("YUKI_DESKTOP_EXECUTOR_FIXTURE") == "1"
+        ):
+            from tests.support.desktop_executor_fixture import attach_executor_fixture
+
+            attach_executor_fixture(api, runtime, work_script)
+        if (
+            desktop
+            and real_model_source is None
+            and os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1"
+        ):
+            from tests.support.desktop_character_fixture import attach_character_fixture
+
+            await attach_character_fixture(api, runtime, owner_id)
         if desktop:
             from yuki.external_agents.http import attach_external_agent_api
 
@@ -211,18 +285,17 @@ async def serve(
 
                 return await seed_qq_entry(runtime, owner_id, qq_bot)
 
-            @api.delete("/__test/events/{event_id}")
-            async def remove_original_event(event_id: int) -> dict:
-                # Simulate an original source being retired, including real DB triggers.
-                from sqlalchemy import delete
+            @api.get("/__test/events")
+            async def original_events() -> list[dict]:
+                from sqlalchemy import select
 
+                from yuki.persistence.event_view import event_view
                 from yuki.persistence.models import ChatEventModel
+                from yuki.persistence.repository_helpers import _event_record
 
-                async with database.immediate_session() as session:
-                    await session.execute(
-                        delete(ChatEventModel).where(ChatEventModel.id == event_id)
-                    )
-                return {"deleted": event_id}
+                async with database.read_session() as session:
+                    rows = await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id))
+                    return [event_view(_event_record(row)) for row in rows]
 
             @api.get("/__test/asr-started")
             async def asr_started() -> dict:
@@ -308,7 +381,13 @@ async def serve(
                 await serving
     finally:
         try:
-            assert not await runtime.lifecycle._close_entries(runtime.lifecycle._entries)
+            try:
+                if fault_fixture is not None:
+                    await fault_fixture.close()
+                if computer_fixture is not None:
+                    await computer_fixture.close()
+            finally:
+                assert not await runtime.lifecycle._close_entries(runtime.lifecycle._entries)
         finally:
             await database.close()
 

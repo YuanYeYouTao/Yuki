@@ -95,7 +95,7 @@ def execution_evidence(
     except ValueError:
         args = {}
     if (
-        tool == "external_agent"
+        tool in {"external_agent", "local_device"}
         and isinstance(args, dict)
         and args.get("action") in {"list", "get"}
     ):
@@ -191,7 +191,7 @@ def execution_evidence(
         "tool": tool,
         **(
             {"action": args.get("action")}
-            if tool == "external_agent" and isinstance(args, dict)
+            if tool in {"external_agent", "local_device"} and isinstance(args, dict)
             else {}
         ),
         "side_effecting": side_effecting,

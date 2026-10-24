@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import mimetypes
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, literal_column, or_, select, text, union_all
+from sqlalchemy import func, literal_column, or_, select, text, tuple_, union_all
 
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientPrincipal
+from yuki.client_api.pagination import cursor, decode_cursor
 from yuki.client_api.views import ClientViews, personal_conversation
 from yuki.client_api.works import work_access
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -23,6 +27,7 @@ from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_schema_v1 import effects, work
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.history_sources import history_delivery_predicates
+from yuki.time.formatting import utc_iso
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -32,6 +37,207 @@ class ClientFiles:
     ) -> None:
         self.uploads, self.views, self.store = uploads, views, store
         self.identity = uploads.identity
+
+    def _references(self, person_id: str) -> Any:
+        parts = func.json_each(ChatEventModel.segments_json).table_valued(
+            "key", "value", joins_implicitly=True
+        )
+        artifact = func.json_extract(parts.c.value, "$.data.artifact_id")
+        version = func.json_extract(parts.c.value, "$.data.version")
+        social = (
+            select(SocialOperationModel.id)
+            .where(
+                SocialOperationModel.event_id == ChatEventModel.id,
+                SocialOperationModel.status == "succeeded",
+            )
+            .correlate(ChatEventModel)
+        )
+        linked = union_all(
+            select(deliveries.c.work_id).where(deliveries.c.id.in_(social)),
+            select(effects.c.work_id).where(
+                func.json_extract(
+                    effects.c.receipt_json, literal_column("'$.invocation.original_domain_ref'")
+                ).in_(
+                    select("social:" + SocialOperationModel.id)
+                    .where(
+                        SocialOperationModel.event_id == ChatEventModel.id,
+                        SocialOperationModel.status == "succeeded",
+                    )
+                    .correlate(ChatEventModel)
+                )
+            ),
+        )
+        visible_work = (
+            select(work.c.id)
+            .join(
+                CanonicalConversationModel, CanonicalConversationModel.id == work.c.conversation_id
+            )
+            .where(work.c.id.in_(linked), work_access(person_id))
+            .correlate(ChatEventModel)
+        )
+        private = (
+            select(CanonicalConversationModel.id)
+            .where(
+                CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+                CanonicalConversationModel.kind == "private",
+                person_family_condition(CanonicalConversationModel.person_id, person_id),
+            )
+            .exists()
+        )
+        query = (
+            select(
+                ChatEventModel.id.label("event_id"),
+                parts.c.key.label("part_index"),
+                parts.c.value.label("segment"),
+                ChatEventModel.canonical_conversation_id.label("conversation_id"),
+                ChatEventModel.observed_at.label("created_at"),
+                visible_work.order_by(work.c.id).limit(1).scalar_subquery().label("work_id"),
+            )
+            .select_from(ChatEventModel, parts)
+            .where(
+                ChatEventModel.direction == "outbound",
+                ChatEventModel.author_kind == "yuki",
+                ChatEventModel.suppression_status == "keeper",
+                social.exists(),
+                or_(private, visible_work.exists()),
+                artifact.is_not(None),
+                version.is_not(None),
+                select(ChatEventArtifactRefModel.event_id)
+                .where(
+                    ChatEventArtifactRefModel.event_id == ChatEventModel.id,
+                    ChatEventArtifactRefModel.artifact_id == artifact,
+                    ChatEventArtifactRefModel.version == version,
+                )
+                .correlate(ChatEventModel, parts)
+                .exists(),
+            )
+        )
+        return query, parts
+
+    async def list(
+        self, principal: ClientPrincipal, before: str | None, limit: int, kind: str
+    ) -> dict[str, Any]:
+        position = decode_cursor(before) if before else None
+        if (
+            limit < 1
+            or kind not in {"all", "image", "document", "code"}
+            or (
+                position is not None
+                and (
+                    not isinstance(position, list)
+                    or len(position) != 2
+                    or any(type(value) is not int for value in position)
+                )
+            )
+        ):
+            raise ClientError("validation_error")
+        items: list[dict[str, Any]] = []
+        next_cursor = None
+        while len(items) < limit:
+            async with self.identity.database.read_session() as session:
+                await session.execute(text("BEGIN"))
+                current = await self.identity.require_principal(session, principal)
+                query, parts = self._references(current.person_id)
+                if position is not None:
+                    query = query.where(tuple_(ChatEventModel.id, parts.c.key) < tuple(position))
+                rows = list(
+                    (
+                        await session.execute(
+                            query.order_by(ChatEventModel.id.desc(), parts.c.key.desc()).limit(
+                                limit + 1
+                            )
+                        )
+                    ).mappings()
+                )
+            if not rows:
+                break
+            consumed = 0
+            for row in rows[:limit]:
+                consumed += 1
+                position = [row["event_id"], row["part_index"]]
+                data = json.loads(row["segment"])["data"]
+                name = data.get("filename") or data.get("name") or data["artifact_id"]
+                media_type = (
+                    data.get("mime_type")
+                    or mimetypes.guess_type(name)[0]
+                    or "application/octet-stream"
+                )
+                code = Path(name).suffix.lower() in {
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".tsx",
+                    ".jsx",
+                    ".rs",
+                    ".go",
+                    ".sh",
+                    ".json",
+                    ".yaml",
+                    ".yml",
+                    ".html",
+                    ".css",
+                    ".sql",
+                    ".java",
+                    ".c",
+                    ".cpp",
+                }
+                category = (
+                    "image" if media_type.startswith("image/") else "code" if code else "document"
+                )
+                if kind != "all" and kind != category:
+                    continue
+                items.append(
+                    {
+                        "ref": {"event_id": row["event_id"], "part_index": row["part_index"]},
+                        "artifact_id": data["artifact_id"],
+                        "version": data["version"],
+                        "name": name,
+                        "size": data.get("size", data.get("file_size")),
+                        "media_type": media_type,
+                        "conversation_id": row["conversation_id"],
+                        "work_id": row["work_id"],
+                        "published_path": None,
+                        "created_at": utc_iso(row["created_at"]),
+                    }
+                )
+                if len(items) == limit:
+                    break
+            next_cursor = cursor(position) if consumed < len(rows) else None
+            if next_cursor is None:
+                break
+        if items:
+            async with self.identity.database.read_session() as session:
+                current = await self.identity.require_principal(session, principal)
+                query, parts = self._references(current.person_id)
+                references = [
+                    (item["ref"]["event_id"], item["ref"]["part_index"]) for item in items
+                ]
+                live = (
+                    await session.execute(
+                        query.where(tuple_(ChatEventModel.id, parts.c.key).in_(references))
+                    )
+                ).mappings()
+                valid = {
+                    (
+                        row["event_id"],
+                        row["part_index"],
+                        json.loads(row["segment"])["data"]["artifact_id"],
+                        json.loads(row["segment"])["data"]["version"],
+                    )
+                    for row in live
+                }
+                items = [
+                    item
+                    for item in items
+                    if (
+                        item["ref"]["event_id"],
+                        item["ref"]["part_index"],
+                        item["artifact_id"],
+                        item["version"],
+                    )
+                    in valid
+                ]
+        return {"items": items, "next_cursor": next_cursor}
 
     async def _event_source(
         self, principal: ClientPrincipal, conversation_id: str, event_id: int

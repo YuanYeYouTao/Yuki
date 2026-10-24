@@ -105,6 +105,26 @@ class RuntimeEffectQueries:
             else outcome
         )
 
+    async def inspect_local_operation(
+        self, *, reference: str, work_id: str, operation_key: str
+    ) -> ToolExecutionResult | None:
+        service = self._database.local_executors
+        if service is None:
+            return None
+        original = await service.original_operation(operation_key, work_id)
+        if original is None or reference != "local_device:" + original["op_id"]:
+            return None
+        uncertain = bool(original["uncertain"])
+        return ToolExecutionResult(
+            ok=original["state"] != "failed" and not uncertain,
+            data=original,
+            error_code="local_device_failed" if original["state"] == "failed" else None,
+            uncertain=uncertain,
+            mutation_committed=None
+            if uncertain or original["pending"]
+            else original["state"] == "succeeded",
+        )
+
     async def inspect_social_operation(
         self, *, reference: str, work_id: str, operation_key: str
     ) -> dict[str, Any] | None:

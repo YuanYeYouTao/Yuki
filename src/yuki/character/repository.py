@@ -144,7 +144,21 @@ class CharacterRepository:
                     ),
                 },
                 "min_client": {"desktop": None, "android": None},
-                "capabilities": ["character", "soul", "character_avatar"],
+                "capabilities": [
+                    "character",
+                    "soul",
+                    "character_avatar",
+                    "memory",
+                    "automations",
+                    "capabilities",
+                    "proactive_route",
+                    "artifact_catalog",
+                    "work_catalog",
+                    "work_steps",
+                    "character_status",
+                    "computer",
+                    "executors",
+                ],
             }
 
     async def get(self, principal: ClientPrincipal | None = None) -> dict[str, Any]:

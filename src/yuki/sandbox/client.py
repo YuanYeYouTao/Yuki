@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -29,6 +31,31 @@ class SandboxClient:
         self.socket = socket
         self.tasks = tasks
 
+    @asynccontextmanager
+    async def stream(
+        self, method: str, args: dict[str, Any]
+    ) -> AsyncIterator[tuple[dict[str, Any], asyncio.StreamReader, asyncio.StreamWriter]]:
+        if method not in {"display_stream", "files_read", "control_watch"}:
+            raise ValueError("unknown_stream_method")
+        connect = getattr(asyncio, "open_unix_connection", None)
+        if connect is None:
+            raise NotImplementedError("unix_stream_unavailable")
+        reader, writer = await connect(str(self.socket))
+        try:
+            writer.write(json.dumps({"method": method, "args": args}).encode() + b"\n")
+            await writer.drain()
+            from yuki.sandbox.protocol import read_protocol_line
+
+            header = json.loads(await read_protocol_line(reader))
+            if not isinstance(header, dict):
+                raise ValueError("invalid_stream_response")
+            if header.get("error"):
+                raise ValueError(str(header["error"]))
+            yield header, reader, writer
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     async def execute(
         self,
         name: str,
@@ -38,8 +65,12 @@ class SandboxClient:
         source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         execution = is_execution(name, args)
+        wire_args = args
+        if name == "terminal_exec" and source is not None and source.get("work_id"):
+            wire_args = {**args, "env": {"YUKI_WORK_ID": source["work_id"]}}
         message = (
-            json.dumps({"method": name, "args": args, "request_id": request_id}).encode() + b"\n"
+            json.dumps({"method": name, "args": wire_args, "request_id": request_id}).encode()
+            + b"\n"
         )
         if len(message) > 262144:
             return {"error": "request_too_large", "retryable": False}

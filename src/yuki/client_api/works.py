@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, func, literal_column, or_, select, text, union
+from sqlalchemy import and_, func, literal_column, or_, select, text, tuple_, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
@@ -26,6 +27,8 @@ from yuki.client_api.agent_target import (
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
+from yuki.client_api.pagination import cursor, decode_cursor
+from yuki.client_api.work_projection import public_step, step_position, steps_token, wait_view
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
@@ -61,6 +64,18 @@ def work_access(person_id: str) -> Any:
             CanonicalConversationModel.kind == "private",
             person_family_condition(CanonicalConversationModel.person_id, person_id),
         ),
+    )
+
+
+def root_work_query(person_id: str, group: str = "active") -> Any:
+    return (
+        select(work)
+        .join(CanonicalConversationModel, CanonicalConversationModel.id == work.c.conversation_id)
+        .where(
+            work_access(person_id),
+            work.c.parent_work_id.is_(None),
+            work.c.state.in_(TERMINAL) if group == "ended" else work.c.state.not_in(TERMINAL),
+        )
     )
 
 
@@ -172,12 +187,67 @@ async def input_result(
 
 class ClientWorks:
     def __init__(
-        self, identity: ClientIdentityService, gateway: AppGateway | Mapping[str, AppGateway]
+        self,
+        identity: ClientIdentityService,
+        gateway: AppGateway | Mapping[str, AppGateway],
+        *,
+        computer: Any = None,
     ) -> None:
         self.identity = identity
         self.gateways = dict(gateway) if isinstance(gateway, Mapping) else {"app": gateway}
         self.database = identity.database
         self.repository = WorkRepository(self.database)
+        self.computer = computer
+
+    async def linked_for_events(
+        self,
+        session: AsyncSession,
+        person_id: str,
+        event_ids: Iterable[int],
+    ) -> dict[int, list[str]]:
+        ids = tuple(event_ids)
+        if not ids:
+            return {}
+        trigger = func.json_extract(work.c.source_json, literal_column("'$.trigger_event_id'"))
+        domain = func.json_extract(
+            effects.c.receipt_json, literal_column("'$.invocation.original_domain_ref'")
+        )
+        delivered = (
+            select(SocialOperationModel.id, SocialOperationModel.event_id)
+            .join(ChatEventModel, ChatEventModel.id == SocialOperationModel.event_id)
+            .where(
+                ChatEventModel.id.in_(_values(ids)),
+                ChatEventModel.direction == "outbound",
+                ChatEventModel.author_kind == "yuki",
+                ChatEventModel.suppression_status == "keeper",
+                SocialOperationModel.status == "succeeded",
+            )
+            .subquery("page_delivered_operations")
+        )
+        links = union(
+            select(trigger.label("event_id"), work.c.id.label("work_id")).where(
+                trigger.in_(_values(ids))
+            ),
+            select(delivered.c.event_id, deliveries.c.work_id).join(
+                deliveries, deliveries.c.id == delivered.c.id
+            ),
+            select(delivered.c.event_id, effects.c.work_id).join(
+                effects, domain == "social:" + delivered.c.id
+            ),
+        ).subquery("page_work_links")
+        rows = await session.execute(
+            select(links.c.event_id, work.c.id)
+            .join(work, work.c.id == links.c.work_id)
+            .join(
+                CanonicalConversationModel, CanonicalConversationModel.id == work.c.conversation_id
+            )
+            .where(work_access(person_id))
+            .order_by(links.c.event_id, work.c.created, work.c.id)
+        )
+        result: dict[int, list[str]] = {identity: [] for identity in ids}
+        for event_id, work_id in rows:
+            result[event_id].append(work_id)
+        return result
 
     async def public_many(
         self, session: AsyncSession, rows: list[dict[str, Any]]
@@ -312,6 +382,14 @@ class ClientWorks:
                     if isinstance(part.get("data"), dict) and part["data"].get("artifact_id")
                 ],
             }
+        step_counts = {
+            row[0]: (row[1], f"{row[1]}:{row[2]}")
+            for row in await session.execute(
+                select(effects.c.work_id, func.count(), func.max(effects.c.updated))
+                .where(effects.c.work_id.in_(_values(ids)), effects.c.kind == "tool")
+                .group_by(effects.c.work_id)
+            )
+        }
         projections = []
         for row in rows:
             conversation = conversations[row["conversation_id"]]
@@ -339,47 +417,157 @@ class ClientWorks:
             root = roots[row["id"]]
             budget = root_budgets.get(root)
             delivered = list(results.get(row["id"], {}).values())
-            projections.append(
-                {
-                    "work_id": row["id"],
-                    "conversation_id": row["conversation_id"],
-                    "generation": row["generation"],
-                    "state": row["state"],
-                    "revision": row["revision"],
-                    "goal": row["goal"][:240],
-                    "source": origin,
-                    "result_delivery": origin,
-                    "waiting_kind": "user"
-                    if row["state"] == "waiting_user"
-                    else "external"
-                    if row["state"] == "waiting_external"
-                    else None,
-                    "waiting_question": delivered[-1]
-                    if row["state"] == "waiting_user" and delivered
-                    else None,
-                    "child_count": children.get(row["id"], 0),
-                    "budget": {
-                        "root_id": root,
-                        "models": budget["models"] if budget else row["model_requests"],
-                        "model_limit": budget["model_limit"] if budget else None,
-                        "tools": budget["tools"] if budget else row["tool_calls"],
-                        "tool_limit": budget["tool_limit"] if budget else None,
-                    },
-                    "results": delivered,
-                    "updated_at": row["updated"],
-                }
-            )
+            projection = {
+                "work_id": row["id"],
+                "conversation_id": row["conversation_id"],
+                "generation": row["generation"],
+                "state": row["state"],
+                "revision": row["revision"],
+                "goal": row["goal"][:240],
+                "trigger_event_id": source.get("trigger_event_id"),
+                "reason": row["reason"],
+                "step_count": step_counts.get(row["id"], (0, "0:0"))[0],
+                "steps_token": step_counts.get(row["id"], (0, "0:0"))[1],
+                "source": origin,
+                "result_delivery": origin,
+                "waiting_kind": "user"
+                if row["state"] == "waiting_user"
+                else "external"
+                if row["state"] == "waiting_external"
+                else None,
+                "waiting_question": delivered[-1]
+                if row["state"] == "waiting_user" and delivered
+                else None,
+                "child_count": children.get(row["id"], 0),
+                "budget": {
+                    "root_id": root,
+                    "models": budget["models"] if budget else row["model_requests"],
+                    "model_limit": budget["model_limit"] if budget else None,
+                    "tools": budget["tools"] if budget else row["tool_calls"],
+                    "tool_limit": budget["tool_limit"] if budget else None,
+                },
+                "results": delivered,
+                "updated_at": row["updated"],
+            }
+            if self.computer is not None:
+                projection["help_requested"] = self.computer.help_for(row["id"])
+            projections.append(projection)
         return projections
 
     async def get(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
-            return (
-                await self.public_many(
-                    session, [await personal_work(session, principal.person_id, identity)]
+            row = await personal_work(session, principal.person_id, identity)
+            result = (await self.public_many(session, [row]))[0]
+            result.update(
+                goal=row["goal"],
+                wait=await wait_view(
+                    session, identity, self.computer.run_kind if self.computer else None
+                ),
+            )
+            return result
+
+    async def list(
+        self, principal: ClientPrincipal, group: str, origin: str, before: str | None, limit: int
+    ) -> dict[str, Any]:
+        if (
+            group not in {"active", "ended"}
+            or origin not in {"all", "this_entry", "other"}
+            or limit < 1
+        ):
+            raise ClientError("validation_error")
+        async with self.database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            current = await self.identity.require_principal(session, principal)
+            query = root_work_query(current.person_id, group)
+            if origin != "all":
+                query = query.where(
+                    work.c.conversation_id == current.conversation_id
+                    if origin == "this_entry"
+                    else work.c.conversation_id != current.conversation_id
                 )
-            )[0]
+            if before:
+                value = decode_cursor(before)
+                if (
+                    not isinstance(value, list)
+                    or len(value) != 2
+                    or type(value[0]) not in (float, int)
+                    or not math.isfinite(value[0])
+                    or not isinstance(value[1], str)
+                ):
+                    raise ClientError("validation_error")
+                query = query.where(tuple_(work.c.updated, work.c.id) < tuple(value))
+            rows = list(
+                (
+                    await session.execute(
+                        query.order_by(work.c.updated.desc(), work.c.id.desc()).limit(limit + 1)
+                    )
+                ).mappings()
+            )
+            selected = rows[:limit]
+            return {
+                "works": await self.public_many(session, [dict(row) for row in selected]),
+                "next_before": cursor([selected[-1]["updated"], selected[-1]["id"]])
+                if len(rows) > limit
+                else None,
+            }
+
+    async def steps(
+        self, principal: ClientPrincipal, identity: str, after: str | None, limit: int
+    ) -> dict[str, Any]:
+        if limit < 1:
+            raise ClientError("validation_error")
+        async with self.database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            current = await self.identity.require_principal(session, principal)
+            row = await personal_work(session, current.person_id, identity)
+            # An opaque presentation ID is not a capability. Resource ACL remains above.
+            namespace = identity.encode()
+            query = select(effects).where(effects.c.work_id == identity, effects.c.kind == "tool")
+            if after:
+                created, key = await step_position(session, identity, after, namespace)
+                query = query.where(
+                    tuple_(effects.c.created, effects.c.effect_key) > (created, key)
+                )
+            rows = list(
+                (
+                    await session.execute(
+                        query.order_by(effects.c.created, effects.c.effect_key).limit(limit + 1)
+                    )
+                ).mappings()
+            )
+            selected = rows[:limit]
+            children = (
+                await session.execute(
+                    select(work.c.id, work.c.goal, work.c.state, work.c.revision)
+                    .where(work.c.parent_work_id == identity)
+                    .order_by(work.c.created, work.c.id)
+                )
+            ).mappings()
+            _, token = await steps_token(session, identity)
+            return {
+                "steps": [public_step(item, namespace) for item in selected],
+                "next_after": cursor(
+                    [selected[-1]["created"], public_step(selected[-1], namespace)["step_id"]]
+                )
+                if len(rows) > limit
+                else None,
+                "children": [
+                    {
+                        "work_id": item["id"],
+                        "goal": item["goal"],
+                        "state": item["state"],
+                        "revision": item["revision"],
+                    }
+                    for item in children
+                ],
+                "wait": await wait_view(
+                    session, identity, self.computer.run_kind if self.computer else None
+                ),
+                "steps_token": token,
+                "work_revision": row["revision"],
+            }
 
     async def _record(
         self,

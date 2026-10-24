@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -191,6 +192,14 @@ class _AppliedMutation:
     old_fact_id: int | None
     new_fact_id: int | None
     reason_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMemoryMutation:
+    """Reader-prepared domain mutation for one caller-owned atomic writer."""
+
+    evidence: PreparedMemoryEvidence
+    apply: Callable[[AsyncSession], Awaitable[MemoryMutationResult]]
 
 
 class MemoryMutationService:
@@ -1419,24 +1428,41 @@ class MemoryMutationService:
             _fingerprint(target_payload),
         )
 
-    async def _commit_prepared(
+    async def prepare_mutation(
+        self,
+        request: MemoryMutationRequest,
+        context: MemoryMutationContext,
+        *,
+        target: ResolvedSubject | None = None,
+    ) -> PreparedMemoryMutation:
+        """Resolve the actual source and complete evidence before a supplied writer."""
+        prepared = await self._prepare(request, context, target_override=target)
+        return await self._prepare_commit(prepared)
+
+    async def apply_mutation(
+        self,
+        prepared: PreparedMemoryMutation,
+        *,
+        session: AsyncSession,
+    ) -> MemoryMutationResult:
+        """Recheck and apply the same domain rules inside the caller's transaction."""
+        await self._facts.repository.use_prepared_write(prepared.evidence, session=session)
+        return await prepared.apply(session)
+
+    async def after_commit(self, result: MemoryMutationResult) -> None:
+        """Schedule derived embeddings only after the owning transaction committed."""
+        if not result.deduplicated:
+            await self._schedule_embedding_after_commit(result.new_fact_id)
+
+    async def _prepare_commit(
         self,
         prepared: _PreparedMutation,
         *,
         additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
         self_reflection_result: tuple[int, str, int] | None = None,
-    ) -> MemoryMutationResult:
+    ) -> PreparedMemoryMutation:
         request = prepared.request
         context = prepared.context
-        existing = await self._receipts.find(
-            idempotency_key=prepared.idempotency_key,
-        )
-        if existing is not None:
-            return self._original_result(
-                existing,
-                claim_fingerprint=prepared.claim_fingerprint,
-                operation=request.operation,
-            )
         evidence_sources = (prepared.evidence, *additional_evidence)
         async with self._facts.repository.database.read_session() as source_session:
             source_snapshot = await self._mutation_source_snapshot(
@@ -1661,9 +1687,33 @@ class MemoryMutationService:
             )
             return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
 
+        return PreparedMemoryMutation(evidence_preparation, apply)
+
+    async def _commit_prepared(
+        self,
+        prepared: _PreparedMutation,
+        *,
+        additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
+        self_reflection_result: tuple[int, str, int] | None = None,
+    ) -> MemoryMutationResult:
+        request = prepared.request
+        existing = await self._receipts.find(
+            idempotency_key=prepared.idempotency_key,
+        )
+        if existing is not None:
+            return self._original_result(
+                existing,
+                claim_fingerprint=prepared.claim_fingerprint,
+                operation=request.operation,
+            )
+        plan = await self._prepare_commit(
+            prepared,
+            additional_evidence=additional_evidence,
+            self_reflection_result=self_reflection_result,
+        )
         try:
-            async with self._facts.repository.write_session(evidence_preparation) as writer:
-                result = await apply(writer)
+            async with self._facts.repository.write_session(plan.evidence) as writer:
+                result = await plan.apply(writer)
         except BaseException as exc:
             # Unknown commit acknowledgements are resolved by the original receipt.
             # Cancellation still propagates after verification; never replay the work.

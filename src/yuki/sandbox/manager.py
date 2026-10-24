@@ -36,6 +36,9 @@ async def main() -> None:
     parser.add_argument("--network", default="yuki-sandbox-egress")
     parser.add_argument("--proxy", default="")
     parser.add_argument("--resolv-conf", type=Path)
+    for option in ("memory-mib", "swap-mib", "pids", "tmp-mib"):
+        parser.add_argument("--" + option, type=int)
+    parser.add_argument("--cpus", type=float)
     parser.add_argument(
         "--media-cache", type=Path, default=os.environ.get("YUKI_MANAGER_MEDIA_CACHE") or None
     )
@@ -52,6 +55,10 @@ async def main() -> None:
         resolv_conf=args.resolv_conf,
         media_cache=args.media_cache,
     )
+    for option in ("memory_mib", "swap_mib", "pids", "tmp_mib", "cpus"):
+        value = getattr(args, option)
+        if value is not None:
+            manager.set_setting("resource_" + option, str(value))
     try:
         await manager.recover()
         args.socket.parent.mkdir(parents=True, exist_ok=True)

@@ -195,6 +195,13 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
         {"account_id", "assignment_id", "space_binding_id", "name"}
     ),
     "client_devices": frozenset({"id", "person_id", "purpose", "token_hash", "revoked_at"}),
+    "client_executors": frozenset({"id", "person_id", "token_hash", "revision", "revoked_at"}),
+    "executor_grants": frozenset(
+        {"executor_id", "capability", "scope_alias", "scope_digest", "revision"}
+    ),
+    "executor_operations": frozenset(
+        {"op_id", "executor_id", "person_id", "work_id", "tool_call_key", "state", "receipt_hash"}
+    ),
     "client_link_codes": frozenset(
         {"id", "person_id", "purpose", "code_hash", "expires_at", "used_at"}
     ),

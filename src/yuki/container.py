@@ -209,7 +209,9 @@ class ApplicationContainer:
         self.processing_status = ProcessingStatusService(
             self.presence_router, self.gateway_registry
         )
+        from yuki.client_api.identity import ClientIdentityService
         from yuki.conversation.media_service import ConversationMediaService
+        from yuki.executor.service import LocalExecutors
         from yuki.external_agents.service import ExternalAgentService
         from yuki.sandbox.client import SandboxClient
         from yuki.sandbox.completion_receiver import CompletionReceiver
@@ -223,6 +225,9 @@ class ApplicationContainer:
         self.database.sandbox_client = self.sandbox_client
         self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
         self.database.external_agents = self.external_agents
+        self.client_identity = ClientIdentityService(self.database, self.presence_router)
+        self.local_executors = LocalExecutors(self.client_identity, store)
+        self.database.local_executors = self.local_executors
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.conversation_media = ConversationMediaService(
             self.database,
@@ -282,6 +287,7 @@ class ApplicationContainer:
             workspace=self.workspace_service,
             sandbox=self.sandbox_client,
             external_agents=self.external_agents,
+            local_executors=self.local_executors,
             short_state=ShortState(store),
             observe_main_response=self._observe_main_response,
             participation_runtime_context=self._participation_runtime_context,
@@ -480,9 +486,6 @@ class ApplicationContainer:
             web_module=self.web_module,
         )
         from yuki.application.modules.admin_api import build_admin_api
-        from yuki.client_api.identity import ClientIdentityService
-
-        self.client_identity = ClientIdentityService(self.database, self.presence_router)
         from yuki.character.repository import CharacterRepository
         from yuki.character.soul import CharacterSoul
 
@@ -599,7 +602,11 @@ class ApplicationContainer:
             emoji_library=self.emoji_library,
         )
         self.processor.set_participation(self.semantic_participation)
+        from yuki.client_api.automations import ClientAutomations
+        from yuki.client_api.capabilities import ClientCapabilities
+        from yuki.client_api.computer import ClientComputer
         from yuki.client_api.files import ClientFiles
+        from yuki.client_api.memory import ClientMemory
         from yuki.client_api.messages import ClientMessages
         from yuki.client_api.prompts import ClientPrompts
         from yuki.client_api.views import ClientViews
@@ -668,13 +675,17 @@ class ApplicationContainer:
             )
             if gateway is not None
         }
-        client_works = ClientWorks(self.client_identity, client_gateways)
+        self.client_computer = ClientComputer(self.client_identity, self.sandbox_client)
+        client_works = ClientWorks(
+            self.client_identity, client_gateways, computer=self.client_computer
+        )
         client_views = ClientViews(
             self.client_identity,
             client_works,
             self.models.traces,
             character=self.character,
             soul=self.soul,
+            computer=self.client_computer,
         )
         client_files = ClientFiles(
             ConversationUploads(self.client_identity, self.conversation_media),
@@ -693,6 +704,17 @@ class ApplicationContainer:
             self.character,
             self.soul,
             self.character_avatars,
+            memory=ClientMemory(
+                self.client_identity, self.memories, self.memory_mutations, self.app_gateway
+            ),
+            automations=ClientAutomations(
+                self.client_identity, self.automation_repository, self.automation
+            ),
+            capabilities=ClientCapabilities(
+                self.client_identity, self.plugin_manager, self.sandbox_client
+            ),
+            computer=self.client_computer,
+            executors=self.local_executors,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -899,6 +921,9 @@ class ApplicationContainer:
             "social_recovery", start=self.social_service.receipts.recover_interrupted
         )
         self.lifecycle.register("external_agents", close=self.external_agents.close)
+        self.lifecycle.register(
+            "client_computer", start=self.client_computer.start, close=self.client_computer.close
+        )
         self.lifecycle.register(
             "workspace", start=self.workspace_service.start, close=self.workspace_service.close
         )

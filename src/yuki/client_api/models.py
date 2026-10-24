@@ -1,8 +1,8 @@
 """Response contracts for actual character and single-SOUL endpoints."""
 
-from typing import Annotated, Any, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
-from pydantic import UUID4, BaseModel, ConfigDict, Field
+from pydantic import UUID4, BaseModel, ConfigDict, Field, JsonValue
 from typing_extensions import TypedDict
 
 
@@ -115,3 +115,87 @@ class SoulResult(BaseModel):
     active_revision: str
     applied_at: str
     replay: bool | None = None
+
+
+class PublicProblem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    code: str
+
+
+class ProblemEnvelope(BaseModel):
+    problem: PublicProblem
+
+
+class ComputerControlView(BaseModel):
+    holder: Literal["none", "agent", "human"]
+    lease_id: str | None = None
+    device_id: str | None = None
+    device_label: str | None = None
+    device_online: bool | None = None
+    work_id: str | None = None
+    since: str | None = None
+
+
+class ComputerHelp(BaseModel):
+    wait_id: str
+    kind: Literal["help", "wait_control"]
+    work_id: str | None
+    note: str | None
+    since: str
+
+
+class ComputerTab(BaseModel):
+    target_id: str
+    title: str
+    url_host: str
+    work_id: str | None
+    work_state: str | None
+    ownership: Literal["work", "unknown"]
+
+
+class ComputerResources(BaseModel):
+    memory_mib: int
+    cpus: float
+
+
+class ComputerView(BaseModel):
+    environment: Literal["running", "stopped", "unavailable"]
+    display: Literal["running", "stopped", "starting", "unavailable"]
+    control: ComputerControlView | None
+    help_requests: list[ComputerHelp]
+    tabs: list[ComputerTab]
+    tabs_available: bool
+    resources: ComputerResources | None
+    revision: int
+
+
+class ComputerResult(BaseModel):
+    control: ComputerControlView | None = None
+    display: Literal["running", "stopped", "starting", "unavailable"] | None = None
+    by: dict[str, JsonValue] | str | None = None
+    note: str | None = None
+    at: str | None = None
+    replay: bool | None = None
+
+
+class DisplayTicket(BaseModel):
+    ticket: str
+    expires_at: str
+    ws_path: str
+
+
+class ComputerFile(BaseModel):
+    name: str
+    kind: Literal["directory", "file", "link"]
+    size: int
+    mtime: float
+
+
+class ComputerFiles(BaseModel):
+    path: str
+    items: list[ComputerFile]
+    next_cursor: str | None
+
+
+class ComputerHint(BaseModel):
+    revision: int

@@ -1,0 +1,16 @@
+# Optional headed image over the existing persistent execution environment.
+# Build the base from this checkout, then pass its exact tag as BASE_IMAGE.
+ARG BASE_IMAGE=yuki-environment:local
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tigervnc-standalone-server openbox chromium socat fonts-noto-cjk fonts-noto-color-emoji \
+    xdotool x11-utils imagemagick \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir 'websockets>=16,<17'
+COPY src/yuki/sandbox/yuki_computer.py /opt/yuki-runtime/yuki_computer.py
+COPY src/yuki/sandbox/desktop_service.py /opt/yuki-runtime/desktop_service.py
+COPY deploy/sandbox/yuki-computer.sh /usr/local/bin/yuki-computer
+COPY deploy/sandbox/desktop-manifest.py /opt/yuki-runtime/desktop-manifest.py
+RUN chmod 755 /usr/local/bin/yuki-computer && python /opt/yuki-runtime/desktop-manifest.py
+ENV DISPLAY=:1
