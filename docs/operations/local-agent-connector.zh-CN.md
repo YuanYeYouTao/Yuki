@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.3`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 从桌面连接
 
@@ -19,7 +19,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.3.3-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.3.4-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -82,6 +82,8 @@ yuki-agent-connector instance add --label "ACP Agent" --driver acp --command /pa
 `doctor` 查询实际程序与原生目录，不发模型任务；ACP 检查可启动所选协议程序完成握手。它不证明模型额度、真实代码修改、审批或端到端委托已经验收。配置变更后重启连接器应用新实例清单。
 
 Desktop 可以先登记原生安装并选择已有会话，不要求先选新项目。`instance configure` 的 JSON 可省略 `cwd`：已有实例沿用原目录，新实例使用 `Instance` 原本的用户主目录默认值；只有显式选择项目才修改目录。登记和读取目录都不创建原生 thread。
+
+由发现候选登记的 Codex 按原安装来源跟随正常程序升级。0.3.4 的 `discover --instance ID --json` 只读解析该原实例当前的程序路径，返回 `{"instance_id":"原ID","command":"当前路径"}`，不启动原生程序、不改配置或 journal。编辑同一实例的名称或项目时也先解析原来源，再保存；原实例、环境、owner 与回执保留。用户明确换成手工绝对路径时按该路径配置；原来源消失时明确报错，不自动选择另一个 Codex。
 
 `status --json` 的 `protocol` 是本机 Connector 协议，`GET /agents/v1/devices` 的 `connector_protocol` 是服务器接受的协议。版本不同时更新较旧的一端；服务端的 `unsupported_connector_protocol` 拒绝与撤权分别诊断，不改写原操作、原会话或登录。原生实例的 `status`／`error_type` 与 OS 服务是否运行、服务器设备是否在线是不同事实，不能互相代替。
 

@@ -83,6 +83,142 @@ def test_refresh_tracks_registered_installation_without_changing_profile(
         discovery.refresh(original)
 
 
+@pytest.mark.parametrize("registered", [True, False])
+def test_discover_instance_resolves_only_its_original_installation_without_writing(
+    registered: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original = Instance(
+        "original",
+        "codex",
+        "Codex",
+        "old/executable",
+        installation="appx:stable" if registered else None,
+        env={"SECRET": "private"},
+        cwd="original-project",
+    )
+    path = tmp_path / "config.json"
+    Config("wss://example/agents/v1/connect", "device", "private-token", [original]).save(path)
+    journal = tmp_path / "journal.sqlite3"
+    journal.write_bytes(b"original receipts")
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        discovery,
+        "candidates",
+        lambda: [
+            {"id": "other", "source": "appx:other", "command": "other/executable"},
+            {"id": "stable", "source": "appx:stable", "command": "new/executable"},
+        ],
+    )
+    assert (
+        cli.main(["--data-dir", str(tmp_path), "discover", "--instance", "original", "--json"]) == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "instance_id": "original",
+        "command": "new/executable" if registered else original.command,
+    }
+    assert path.read_bytes() == before
+    assert journal.read_bytes() == b"original receipts"
+
+
+@pytest.mark.parametrize(
+    ("identity", "problem"),
+    [("missing", "connector_configuration_failed"), ("original", "native_not_installed")],
+)
+def test_discover_instance_keeps_missing_identity_and_installation_as_real_errors(
+    identity: str,
+    problem: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original = Instance("original", "codex", "Codex", "old/executable", installation="appx:stable")
+    path = tmp_path / "config.json"
+    Config("wss://example/agents/v1/connect", "device", "private-token", [original]).save(path)
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        discovery,
+        "candidates",
+        lambda: [{"id": "other", "source": "appx:other", "command": "other"}],
+    )
+    assert (
+        cli.main(["--data-dir", str(tmp_path), "discover", "--instance", identity, "--json"]) == 1
+    )
+    assert json.loads(capsys.readouterr().out) == {"problem": problem}
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_editing_after_upgrade_preserves_original_profile_or_explicit_manual_choice(
+    manual: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old = tmp_path / "old-version" / "codex.exe"
+    current = tmp_path / "new-version" / "codex.exe"
+    current.parent.mkdir()
+    current.write_bytes(b"installed executable, never launched")
+    project = tmp_path / "new-project"
+    project.mkdir()
+    original = Instance(
+        "original",
+        "codex",
+        "Old label",
+        str(old),
+        args=["--original-option"],
+        cwd=str(tmp_path),
+        env={"SECRET": "private"},
+        socket="original-owner",
+        installation="appx:stable",
+    )
+    path = tmp_path / "config.json"
+    config = Config("wss://example/agents/v1/connect", "device", "private-token", [original])
+    config.save(path)
+    journal = tmp_path / "journal.sqlite3"
+    journal.write_bytes(b"original receipts")
+
+    def candidates() -> list[dict[str, str]]:
+        return [{"id": "stable", "source": "appx:stable", "command": str(current)}]
+
+    monkeypatch.setattr(cli, "candidates", candidates)
+    monkeypatch.setattr(discovery, "candidates", candidates)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "id": original.id,
+                        "label": "New label",
+                        "command": str(current if manual else old),
+                        "cwd": str(project),
+                    }
+                ).encode("utf-8")
+            ),
+            encoding="utf-8",
+        ),
+    )
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"instance_id": original.id}
+    assert Config.load(path) == replace(
+        config,
+        instances=[
+            replace(
+                original,
+                label="New label",
+                command=str(current),
+                cwd=str(project),
+                installation=None if manual else original.installation,
+            )
+        ],
+    )
+    assert journal.read_bytes() == b"original receipts"
+
+
 @pytest.mark.parametrize("existing", [True, False])
 def test_configure_without_project_uses_original_instance_cwd(
     existing: bool,
@@ -199,6 +335,11 @@ def test_label_or_project_change_keeps_registered_installation_source(
     Config("wss://example/agents/v1/connect", "device", "token", [original]).save(path)
     monkeypatch.setattr(cli, "candidates", lambda: [])
     monkeypatch.setattr(
+        discovery,
+        "candidates",
+        lambda: [{"id": "stable", "source": original.installation, "command": original.command}],
+    )
+    monkeypatch.setattr(
         sys,
         "stdin",
         io.TextIOWrapper(
@@ -258,6 +399,11 @@ def test_configure_reads_raw_utf8_json_bytes_under_gbk_text_stdin(
     stdin = io.TextIOWrapper(io.BytesIO(raw), encoding="gbk", errors=errors)
     monkeypatch.setattr(sys, "stdin", stdin)
     monkeypatch.setattr(cli, "candidates", lambda: [])
+    monkeypatch.setattr(
+        discovery,
+        "candidates",
+        lambda: [{"id": "original", "source": original.installation, "command": original.command}],
+    )
 
     assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
 

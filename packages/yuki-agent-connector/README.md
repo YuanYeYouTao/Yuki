@@ -6,7 +6,7 @@ mirror native transcripts or send chat messages itself.
 
 For ordinary Desktop users, use the bundled setup UI; no Python or terminal installation is required.
 For an independently managed CLI installation, install the wheel with Python 3.12, for example
-`uv tool install path/to/yuki_agent_connector-0.3.3-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.3.4-py3-none-any.whl`.
 The connector uses its own lock file and does not install the Bot project. The pinned
 Claude SDK currently includes its own large CLI payload; the driver nevertheless
 requires the explicitly selected native executable and never silently runs that payload.
@@ -164,6 +164,14 @@ is an explicit no-model native handshake and account/read check; an installed
 binary, a running Connector service, device admission, and native login readiness
 are separate observations. Status contains actual registered service executable
 information, not merely the Python used by the status command.
+
+Version 0.3.4 adds `discover --instance ID --json` to resolve the original
+instance's current executable as `{"instance_id":"...","command":"..."}`.
+It uses the same registered installation source as startup, without starting
+Codex or changing configuration or the journal. Editing that instance's label
+or project also re-resolves its source before validating the executable. An
+explicitly changed manual path clears the registered source; a missing original
+installation fails rather than selecting another candidate.
 
 Example build-machine command (choose a new output directory):
 
