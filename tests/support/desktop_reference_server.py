@@ -235,6 +235,40 @@ async def seed_app_history(runtime, artifact_state, count):
     return {"conversation_id": conversation_id, "event_ids": ids}
 
 
+def seed_avatar_inputs(root: Path) -> dict[str, str]:
+    """Produce local image files; uploads still use the actual character API."""
+    from PIL import Image, ImageDraw
+
+    directory = root / "avatar-inputs"
+    directory.mkdir(exist_ok=True)
+    with Image.new("RGB", (4000, 3000)) as portrait:
+        draw = ImageDraw.Draw(portrait)
+        for box, color in (
+            ((0, 0, 1999, 1499), "red"),
+            ((2000, 0, 3999, 1499), "green"),
+            ((0, 1500, 1999, 2999), "blue"),
+            ((2000, 1500, 3999, 2999), "yellow"),
+        ):
+            draw.rectangle(box, fill=color)
+        exif = Image.Exif()
+        exif[274] = 6
+        portrait.save(directory / "rotated.jpg", exif=exif, quality=95)
+    with Image.new("RGB", (200, 200), "#e8354a") as small:
+        small.save(directory / "small.png")
+    with Image.new("RGB", (6000, 4000), "#35a85c") as large:
+        large.save(directory / "large.jpg", quality=90)
+    (directory / "broken.png").write_bytes(b"not an image")
+    return {
+        key: str(directory / filename)
+        for key, filename in {
+            "rotated": "rotated.jpg",
+            "small": "small.png",
+            "large": "large.jpg",
+            "broken": "broken.png",
+        }.items()
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)

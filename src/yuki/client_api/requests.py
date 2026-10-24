@@ -165,6 +165,10 @@ class ClientRequests:
             event = await self.message(session, principal, request_id)
             if event is None:
                 return {"found": False}
+            if event.origin == "memory_correction":
+                # Admission records the actual user action, not its completed mutation.
+                # Retry the original UUID to finish preparation and the atomic domain receipt.
+                return {"found": False}
             if event.origin == "work_input":
                 raise ClientError("not_found")
             from yuki.conversation.canonical_db_models import CanonicalConversationModel

@@ -396,6 +396,30 @@ class PluginManager:
     async def list(self) -> tuple[PluginInstallationRecord, ...]:
         return await self._installations.list_all()
 
+    async def public_capabilities(self) -> tuple[dict[str, str], ...]:
+        """Read approved presentation metadata without exposing configuration or grants."""
+        if not self._enabled:
+            return ()
+        async with self._lock:
+            result = []
+            for record in await self._installations.list_all():
+                available = self._available.get(record.plugin_id)
+                if (
+                    record.enabled
+                    and record.approved_at is not None
+                    and available is not None
+                    and record.manifest_hash == available.manifest.manifest_hash
+                ):
+                    manifest = available.manifest
+                    result.append(
+                        {
+                            "id": manifest.id,
+                            "name": manifest.name,
+                            "description": manifest.description,
+                        }
+                    )
+            return tuple(result)
+
     async def show(self, plugin_id: str) -> PluginInstallationRecord | None:
         return await self._installations.get(plugin_id)
 

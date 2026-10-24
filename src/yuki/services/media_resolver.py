@@ -47,13 +47,13 @@ async def _media_io[T](function: Callable[..., T], *args: object) -> T:
 
 
 @asynccontextmanager
-async def _media_directory(prefix: str) -> AsyncIterator[Path]:
+async def _media_directory(prefix: str, *, dir: Path | None = None) -> AsyncIterator[Path]:
     """Create and release decoder originals off-loop, including cancelled creation."""
     owner: TemporaryDirectory[str] | None = None
 
     def create() -> str:
         nonlocal owner
-        owner = TemporaryDirectory(prefix=prefix)
+        owner = TemporaryDirectory(prefix=prefix, dir=dir)
         return owner.name
 
     try:

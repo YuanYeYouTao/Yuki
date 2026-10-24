@@ -3,8 +3,10 @@
 from pathlib import Path
 
 from yuki.admin.config_service import RuntimeConfigService
+from yuki.client_api.identity import ClientIdentityService
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.emoji.library import EmojiLibrary
+from yuki.executor.service import LocalExecutors
 from yuki.external_agents.service import ExternalAgentService
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.registry import GatewayConnectionRegistry
@@ -78,4 +80,5 @@ def tool_dependencies(database, settings, *, runtime_config=None):
         "workspace_service": workspace,
         "sandbox_client": sandbox,
         "external_agent_service": ExternalAgentService(database, tasks),
+        "local_executors": LocalExecutors(ClientIdentityService(database, router), store),
     }

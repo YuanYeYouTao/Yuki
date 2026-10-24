@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -15,7 +17,7 @@ from yuki.character.repository import CharacterRepository, is_character_owner
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
-from yuki.client_api.works import ClientWorks, work_access
+from yuki.client_api.works import ClientWorks, root_work_query, work_access
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.recorder import TraceRecorder
@@ -23,7 +25,7 @@ from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.persistence.event_view import event_view
 from yuki.persistence.repositories import EventLedgerRepository
-from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_schema_v1 import effects, work
 from yuki.social.history_sources import history_delivery_predicates
 
 
@@ -51,9 +53,11 @@ class ClientViews:
         *,
         character: CharacterRepository | None = None,
         soul: CharacterSoul | None = None,
+        computer: Any = None,
     ) -> None:
         self.identity, self.works, self.traces = identity, works, traces
         self.character, self.soul = character, soul
+        self.computer = computer
         self.database = identity.database
 
     async def _entries(
@@ -89,23 +93,87 @@ class ClientViews:
             for row, binding in rows
         ]
 
-    async def home(self, principal: ClientPrincipal) -> dict[str, Any]:
+    async def character_status(self, principal: ClientPrincipal) -> dict[str, Any]:
+        async with self.database.read_session() as session:
+            await session.execute(text("BEGIN"))
+            current = await self.identity.require_principal(session, principal)
+            entries = await self._entries(session, current)
+            activities = await self._activities(
+                session, tuple(item["conversation_id"] for item in entries)
+            )
+            counts = (
+                await session.execute(
+                    root_work_query(current.person_id)
+                    .with_only_columns(work.c.state, func.count())
+                    .group_by(work.c.state)
+                )
+            ).all()
+            mine: dict[str, Any] = {
+                "live_conversations": [
+                    item["conversation_id"]
+                    for item in activities
+                    if item["evidence"] == "executing"
+                ],
+                "works": {state: count for state, count in counts},
+            }
+            mine["works"]["failed_recent"] = (
+                await session.scalar(
+                    root_work_query(current.person_id, "ended")
+                    .with_only_columns(func.count())
+                    .where(work.c.state == "failed", work.c.updated >= time.time() - 86400)
+                )
+                or 0
+            )
+            profile = await self.character.current(session) if self.character is not None else None
+        environment = {
+            "state": "unavailable",
+            "display": "unavailable",
+            "generation": None,
+            "control": None,
+            "help_requested": None,
+        }
+        if self.computer is not None:
+            environment = await self.computer.environment(current)
+        revision = int.from_bytes(
+            hashlib.sha256(
+                json.dumps(
+                    {
+                        "mine": mine,
+                        "environment": environment,
+                        "character": [profile.id, profile.revision, profile.avatar_revision]
+                        if profile
+                        else None,
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).digest()[:6]
+        )
+        return {
+            "observed_at": datetime.now(UTC).isoformat(),
+            "environment": environment,
+            "mine": mine,
+            "revision": revision,
+        }
+
+    async def home(self, principal: ClientPrincipal, *, active: bool = False) -> dict[str, Any]:
         async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
-            rows = (
-                (
-                    await session.execute(
-                        select(work)
-                        .join(
-                            CanonicalConversationModel,
-                            CanonicalConversationModel.id == work.c.conversation_id,
-                        )
-                        .where(work_access(principal.person_id))
-                        .order_by(work.c.updated.desc(), work.c.id)
+            query = (
+                root_work_query(principal.person_id)
+                if active
+                else (
+                    select(work)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == work.c.conversation_id,
                     )
+                    .where(work_access(principal.person_id))
                 )
+            )
+            rows = (
+                (await session.execute(query.order_by(work.c.updated.desc(), work.c.id)))
                 .mappings()
                 .all()
             )
@@ -156,6 +224,9 @@ class ClientViews:
             if before is not None:
                 selected.reverse()
             facts = [event_view(row) for row in selected]
+            linked = await self.works.linked_for_events(
+                session, principal.person_id, (row.id for row in selected)
+            )
             return {
                 "items": [
                     {
@@ -164,6 +235,7 @@ class ClientViews:
                         "binding_id": binding.id,
                         "platform": binding.platform,
                         "created_at": fact["observed_at"],
+                        "work_ids": linked[row.id],
                     }
                     for row, fact in zip(selected, facts, strict=True)
                 ],
@@ -235,24 +307,50 @@ class ClientViews:
             )
         return result
 
-    async def sync(self, principal: ClientPrincipal) -> dict[str, Any]:
+    async def sync(self, principal: ClientPrincipal, *, active: bool = False) -> dict[str, Any]:
         async with self.database.read_session() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
-            rows = (
-                await session.execute(
-                    select(work.c.id, work.c.revision)
+            query = (
+                root_work_query(principal.person_id)
+                if active
+                else (
+                    select(work)
                     .join(
                         CanonicalConversationModel,
                         CanonicalConversationModel.id == work.c.conversation_id,
                     )
                     .where(work_access(principal.person_id))
                 )
+            )
+            rows = (
+                await session.execute(query.with_only_columns(work.c.id, work.c.revision))
             ).all()
+            requested_works = func.json_each(json.dumps([row.id for row in rows])).table_valued(
+                "value"
+            )
+            step_tokens = {
+                row[0]: f"{row[1]}:{row[2]}"
+                for row in await session.execute(
+                    select(effects.c.work_id, func.count(), func.max(effects.c.updated))
+                    .where(
+                        effects.c.work_id.in_(select(requested_works.c.value)),
+                        effects.c.kind == "tool",
+                    )
+                    .group_by(effects.c.work_id)
+                )
+            }
             result: dict[str, Any] = {
                 "conversations": entries,
-                "works": [{"work_id": row.id, "revision": row.revision} for row in rows],
+                "works": [
+                    {
+                        "work_id": row.id,
+                        "revision": row.revision,
+                        "steps_token": step_tokens.get(row.id, "0:0"),
+                    }
+                    for row in rows
+                ],
                 "activity": await self._activities(
                     session, tuple(item["conversation_id"] for item in entries)
                 ),
@@ -263,6 +361,7 @@ class ClientViews:
                 hint: dict[str, Any] = {
                     "id": current.id,
                     "revision": current.revision,
+                    "avatar_revision": current.avatar_revision,
                     "is_owner": owner,
                 }
                 if owner and self.soul is not None:
@@ -271,11 +370,17 @@ class ClientViews:
                         "active_revision": self.soul.settings.active_soul_revision,
                     }
                 result["character"] = hint
+            if self.computer is not None:
+                result["computer_revision"] = self.computer.revision
             return result
 
-    async def stream(self, principal: ClientPrincipal) -> AsyncIterator[str]:
+    async def stream(
+        self, principal: ClientPrincipal, *, active: bool = False
+    ) -> AsyncIterator[str]:
         queue = self.database.commit_hints.subscribe()
         sequence = 0
+        if self.computer is not None:
+            self.computer.device_connection(principal.device_id, 1)
 
         def frame(kind: str, data: Any) -> str:
             nonlocal sequence
@@ -285,7 +390,7 @@ class ClientViews:
             )
 
         try:
-            previous = await self.sync(principal)
+            previous = await self.sync(principal, active=active)
             yield frame("sync", previous)
             while True:
                 try:
@@ -298,7 +403,12 @@ class ClientViews:
                 while not queue.empty():
                     if not queue.get_nowait():
                         return
-                current = await self.sync(principal)
+                current = await self.sync(principal, active=active)
+                if current == previous:
+                    # Management data can change outside this small snapshot.
+                    yield frame("refresh", {})
+                if current.get("computer_revision") != previous.get("computer_revision"):
+                    yield frame("computer", {"revision": current["computer_revision"]})
                 if current.get("character") != previous.get("character"):
                     yield frame("character", current["character"])
                 for category, key, event_kind in (
@@ -317,3 +427,5 @@ class ClientViews:
             return
         finally:
             self.database.commit_hints.unsubscribe(queue)
+            if self.computer is not None:
+                self.computer.device_connection(principal.device_id, -1)

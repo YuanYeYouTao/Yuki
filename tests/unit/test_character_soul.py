@@ -88,9 +88,9 @@ async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocati
         await activate.wait()
         return await apply_soul(*args, **kwargs)
 
-    async def written_snapshot(actor):
+    async def written_snapshot(actor, *, active=False):
         await file_written.wait()
-        return await sync(actor)
+        return await sync(actor, active=active)
 
     monkeypatch.setattr(soul, "_activate", paused_activation)
     monkeypatch.setattr(views, "sync", written_snapshot)

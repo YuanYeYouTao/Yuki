@@ -296,68 +296,76 @@ class AutomationService:
         return row
 
     async def pause(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        async with self._repository._database.immediate_session() as session:
-            current = await self._manageable_row(automation_id, actor, session)
-            creator_person_id = self._canonical_owner(current)
-            changed = await self._repository.set_status(
-                automation_id,
-                creator_person_id=creator_person_id,
-                status=AutomationStatus.PAUSED,
-                now=self._time.clock.now(),
-                session=session,
-            )
-            await self._audit_event(
-                actor,
-                conversation_key,
-                operation="pause",
-                automation_id=automation_id,
-                after={"changed": changed},
-                session=session,
-            )
-        return changed
+        return await self.transition_status(
+            automation_id, "pause", actor=actor, conversation_key=conversation_key
+        )
 
     async def resume(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        TaskSpec.model_validate((await self.require_manageable(automation_id, actor)).script)
-        async with self._repository._database.immediate_session() as session:
-            current = await self._manageable_row(automation_id, actor, session)
-            creator_person_id = self._canonical_owner(current)
-            now = self._time.clock.now()
-            next_run = current.next_run_at or now
-            changed = await self._repository.resume(
+        return await self.transition_status(
+            automation_id, "resume", actor=actor, conversation_key=conversation_key
+        )
+
+    async def cancel(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
+        return await self.transition_status(
+            automation_id, "cancel", actor=actor, conversation_key=conversation_key
+        )
+
+    async def transition_status(
+        self,
+        automation_id: int,
+        action: str,
+        *,
+        actor: ToolActor,
+        conversation_key: str,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        """Compose an authorized lifecycle change with its caller's original receipt."""
+        if action not in {"pause", "resume", "cancel"}:
+            raise ValueError("invalid automation transition")
+        if session is None:
+            if action == "resume":
+                TaskSpec.model_validate(
+                    (await self.require_manageable(automation_id, actor)).script
+                )
+            async with self._repository._database.immediate_session() as writer:
+                return await self.transition_status(
+                    automation_id,
+                    action,
+                    actor=actor,
+                    conversation_key=conversation_key,
+                    session=writer,
+                )
+        current = await self._manageable_row(automation_id, actor, session)
+        creator = self._canonical_owner(current)
+        now = self._time.clock.now()
+        if action == "pause":
+            changed = await self._repository.set_status(
                 automation_id,
-                creator_person_id=creator_person_id,
-                next_run_at=next_run,
+                creator_person_id=creator,
+                status=AutomationStatus.PAUSED,
                 now=now,
                 session=session,
             )
-            await self._audit_event(
-                actor,
-                conversation_key,
-                operation="resume",
-                automation_id=automation_id,
-                after={"changed": changed},
-                session=session,
-            )
-        return changed
-
-    async def cancel(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        async with self._repository._database.immediate_session() as session:
-            current = await self._manageable_row(automation_id, actor, session)
-            creator_person_id = self._canonical_owner(current)
-            changed = await self._repository.cancel(
+        elif action == "resume":
+            changed = await self._repository.resume(
                 automation_id,
-                creator_person_id=creator_person_id,
-                now=self._time.clock.now(),
+                creator_person_id=creator,
+                next_run_at=current.next_run_at or now,
+                now=now,
                 session=session,
             )
-            await self._audit_event(
-                actor,
-                conversation_key,
-                operation="cancel",
-                automation_id=automation_id,
-                after={"changed": changed},
-                session=session,
+        else:
+            changed = await self._repository.cancel(
+                automation_id, creator_person_id=creator, now=now, session=session
             )
+        await self._audit_event(
+            actor,
+            conversation_key,
+            operation=action,
+            automation_id=automation_id,
+            after={"changed": changed},
+            session=session,
+        )
         return changed
 
     async def run_now(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:

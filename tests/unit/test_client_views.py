@@ -117,9 +117,9 @@ async def test_subscribe_before_sync_covers_snapshot_gap_and_hint_follows_commit
     await drain(env)
     sync = views.sync
 
-    async def checked(actor):
+    async def checked(actor, *, active=False):
         assert database.commit_hints.subscribers
-        return await sync(actor)
+        return await sync(actor, active=active)
 
     monkeypatch.setattr(views, "sync", checked)
     stream = views.stream(principal)

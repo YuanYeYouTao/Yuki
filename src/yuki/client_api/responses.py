@@ -1,7 +1,7 @@
 """Typed public projections; retained extension fields never disappear on serialization."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -87,6 +87,39 @@ class WorkResult(PublicProjection):
     artifacts: list[Artifact]
 
 
+class TimeDueCondition(BaseModel):
+    kind: Literal["time_due"]
+    due_at: str
+
+
+class ConversationCondition(BaseModel):
+    kind: Literal["conversation"]
+
+
+class PluginEventCondition(BaseModel):
+    kind: Literal["plugin_event"]
+    plugin_id: str
+    event_type: str
+
+
+class OwnedRunCondition(BaseModel):
+    kind: Literal["owned_run"]
+    run_kind: Literal["terminal", "acp", "help_request", "wait_control", "other"]
+
+
+WaitCondition = Annotated[
+    TimeDueCondition | ConversationCondition | PluginEventCondition | OwnedRunCondition,
+    Field(discriminator="kind"),
+]
+
+
+class WorkWait(BaseModel):
+    mode: Literal["any", "all"]
+    since: str
+    deadline_at: str | None
+    conditions: list[WaitCondition]
+
+
 class Work(PublicProjection):
     work_id: str
     conversation_id: str
@@ -102,6 +135,12 @@ class Work(PublicProjection):
     budget: WorkBudget
     results: list[WorkResult]
     updated_at: float
+    trigger_event_id: int | None = None
+    reason: str | None = None
+    step_count: int | None = None
+    steps_token: str | None = None
+    wait: WorkWait | None = None
+    help_requested: bool | None = None
 
 
 class Home(PublicProjection):
@@ -149,6 +188,7 @@ class Event(PublicProjection):
     observed_at: str
     occurred_at: str | None
     created_at: str
+    work_ids: list[str] = Field(default_factory=list)
 
 
 class Events(PublicProjection):

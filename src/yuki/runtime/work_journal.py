@@ -609,6 +609,10 @@ class WorkJournal:
                 outcome = await queries.inspect_memory_mutation(
                     reference=reference, operation_key=key
                 )
+            elif isinstance(reference, str) and reference.startswith("local_device:"):
+                outcome = await queries.inspect_local_operation(
+                    reference=reference, work_id=row["work_id"], operation_key=key
+                )
             elif invocation.get("tool_id") == "external_agent" and invocation.get("action") in {
                 "steer",
                 "respond",

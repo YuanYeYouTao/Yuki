@@ -1,7 +1,7 @@
 # 个人客户端 API
 
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
-聊天设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或电脑控制权限。公开服务沿部署提供 HTTPS。
+聊天设备凭据解析当前 Person，保留原设备与 App 入口。个人管理核本人范围，角色编辑和远程电脑控制另核当前角色 owner；个人 token 不替代 operator 授权。公开服务沿部署提供 HTTPS。
 
 ## 本机 Agent 设备
 
@@ -10,6 +10,28 @@
 电脑使用独立 `/agents/v1/pair` 兑换 connector 码，再用该 token 建立 `/agents/v1/connect` WSS；不能使用聊天 token。电脑归原 Person，不依赖 App Binding、Conversation 或其 generation；同人合并保原 device namespace，账号转移不转电脑。电脑连接只传输原生控制和重要事件，不自行发聊天消息。
 
 `GET /agents/v1/devices`、`/agents/v1/instances/{instance_id}/sessions?cursor=...`、`/agents/v1/operations?work_id=...&cursor=...&limit=...` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。设备目录包含尚无实例的本人 connector 设备，online 仅来自当前服务端连接；实例 `local_id` 仅用于本地配置匹配，控制仍使用服务端内部 `id`。会话目录 cursor 沿该实例原 native 分页，查询不启动任务。操作列表按原 created_at/id 分页，cursor 为上一页原 operation ID，默认每页 50 条，next_cursor 为 null 表示当前已读完；不另建持久游标。操作列表复用原持久回执和离线 unknown 投影，不把 accepted 当作已完成。新控制沿 Main 固定 `external_agent` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
+
+## 个人管理、产物与工作步骤
+
+`GET /memory/facts?about=me|self` 和详情只返回本人及当前可见 SELF 事实，证据另核原 Conversation 的实际读取资格。本人可以用原 UUID、事实 revision 和明确正文纠正或撤回自己的事实；角色 owner 不是读取或修改其他人私有记忆的凭据。SELF 页只读。
+
+明确的桌面纠正动作作为真实本人 App 输入，以 `origin=memory_correction` 入原账本，不调用 Main。原 namespace、UUID 和实际操作正文用于定位同一次动作。源事件先短写落账，然后在 reader 准备现行 Memory mutation；同一 writer 提交事实、原 mutation receipt 和个人命令回执。崩溃后查原 UUID，缺少个人命令结果不把源事件误当成纠正成功；沿同一源事件继续，不再生成第二条输入。embedding 在提交后调度。
+
+安排列表和暂停、继续、删除复用现行 AutomationService 的创建者权限、不可变定义与脚本合同，领域状态、审计和个人命令回执共用 writer。主动收件入口按原 request Person namespace、当前本人 Binding、CAS 与原 UUID 处理；目标 Binding 只选择入口，不反向重建人物或证明可达性。角色能力目录是当前实际批准插件与 Manager manifest 的只读投影，不增加授权，不改主工具声明。
+
+`GET /artifacts` 保留全局可读产物目录及原发布版本，正文继续沿现有不可变 artifact 接口读取。`GET /works` 提供活动/结束与来源分页；`/works/{id}/steps` 投影当前 Work 效果与等待，不恢复旧执行状态机，不返回私有工具参数或原内部调用键。实际 HTTP DTO 从服务端统一导出，客户端不再维护另一份产品模型。
+
+桌面使用 `home?works=active` 与 `stream?works=active` 读取活动根 Work，先过滤终态再聚合步骤提示；省略参数继续保持全量兼容。事件页的 `work_ids` 仅按本页内部事件、原 Work 触发来源或真实已送达 Social 回执关联，再核当前 Work ACL。历史终态卡片不依赖活动 Home，当前已打开的详情与目录可由既有提交提示复读，不逐提交扫描整份历史步骤。
+
+## 远程电脑与本地系统操作
+
+远程电脑的画面、控制租约、休眠/唤醒、截图与文件来自真实 Manager 环境。ClientComputer 核当前 owner；控制先登记原操作，再向 Manager 查原 key，原回执丢失不授予重复效果资格。画面使用一次性 ticket 与同一 HTTPS/WSS 入口；有头组件未配置或不可达时返回实际不可用状态，不影响聊天和其他页面。其生命周期与原生 Agent 会话独立。
+
+Bot 启动仍恢复电脑观察，以便没有桌面客户端时也能按当前撤权归还旧 human 租约。协议明确不支持或宿主没有 Unix transport 时停止无用重连，实际电脑访问可重新启动；暂时网络失败保原恢复路径。观察任务的启动与关闭共用同一实例生命周期锁。授权提示过载丢失时，先关画面输入，再读一次当前授权并沿原 release key 归还，不依赖下一条通知，也不重放原控制命令。
+
+本地系统操作沿 `/client/v1/executors` 的本人显式授权管理与独立 `/executor/v1` 设备 token 执行。真实目录路径留在桌面主进程，服务端只保存该设备的能力、目录别名与摘要。固定 `local_device` 工具提供 list/get/execute；目录查询不改变声明，也不沿 `external_agent` 创建原生会话。工具来源使用原 Person 与 Host 的调用键，不能由模型提供另一个人的身份或调用键。
+
+原 op UUID、调用键与参数保存于 `executor_operations`；当前 Work 同事务绑定原域回执。登记后即返回 pending，不用固定秒数等待结果或循环扫描 SQL。SSE 只派发本进程实际接纳的新操作；重启后的旧未决行只查询，不能自动变成可派发任务。文件/URL/通知的回执区分系统已接纳与用户已看到；unknown 保持未知，恢复读取原回执，不重做外部动作。迁移 0152 建立三张领域表，已有同名旧功能表保留原行与原身份。
 
 ## 角色资料与单 SOUL
 
@@ -22,6 +44,34 @@ owner 资格归 Person，账号转交不转交角色编辑权；operator 通过�
 空正文合法，`{{name}}` 只在装配时精确展开。改名或改人格影响后续合法新激活，原已付输入和历史保持原件。
 SDK 的 SOUL 受控写在确认丢失后先查原 UUID，恢复仍用原 payload；不把一般未知外部效果重新派发。
 旧双文档路径与 key 不保留。安装、旧草稿整理与权限见[升级说明](../operations/soul-deployment-20261022.md)。
+
+## 角色头像
+
+API revision `6` 保持兼容；`/meta.capabilities` 中的 `character_avatar` 表示实际提供头像写入与读取。
+头像属于原 `character_profile.id`，跨该角色的桌面设备共用，不与 Person、QQ 等平台账号头像混合。
+
+`PUT /character/avatar?request_id=&expected_revision=&sha256=&size=` 接收裁切后的 1024×1024 PNG
+字节。设备的当前角色拥有者资格在收流前和提交前分别核验。流长及 SHA-256 必须与原声明一致，
+客户端以 sRGB 导出；服务端完整解码、去元数据并发布 sRGB PNG，生成 1024/512/256/128/64 图。图片 I/O、解码和变体生成
+全部在写事务外执行；同盘临时目录在变体写入并刷新后原子发布，短事务才推进头像版本及原命令回执。
+没有新增文件大小经验上限、持久上传队列或后台重放。
+
+`DELETE /character/avatar {request_id,expected_revision}` 还原已配置的 `default_avatar`；没有默认图时
+还原名称字首。两种写入都返回完整角色资料。`expected_revision` 认独立的 `avatar_revision`，即使
+`avatar=null` 也保留该版本；名称、简介的 profile revision 不随头像修改推进。
+
+原请求的 `operation_kind` 为 `client.character_avatar`，target 是角色 UUID。指纹沿
+`fingerprint(operation_kind, character_id, {action,expected_revision,sha256,size})`；action 为 set/reset，
+reset 的 sha256/size 明确为 null。同一 UUID 按原个人入口命名空间查回执，冲突不换版本覆盖；
+响应丢失先查 `GET /requests/{request_id}`，不通过生成新 UUID 或新头像账本恢复。
+
+`GET /character/avatar/{sha256}/{size}.png` 返回 immutable PNG。当前头像的 128 图允许配对前读取；
+其他尺寸和旧图需要当前有效设备资格。实际读字节后再次核验资格或公开头像指针，撤权与当前头像
+变化不能被在途读取越过。sha256 是上传资产的内容身份，尺寸变体保留同一资产路径，不将它冒充
+每个变体文件的字节摘要。旧资产目录保留，不自动删除默认图或原回执指向的内容。
+
+头像提交沿现有数据库 commit hint 发布 `character.avatar_revision` 变化，其他设备据此刷新角色资料，
+不新增轮询。普通修改不重建角色、Person、Binding、Conversation、历史或 Work，也不自动授予拥有者。
 
 ## 配对与账号绑定
 

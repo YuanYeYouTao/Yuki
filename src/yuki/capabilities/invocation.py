@@ -78,7 +78,7 @@ class Invocation:
             "tool_id": self.call.function.name,
             **(
                 {"action": parsed_arguments.get("action")}
-                if self.call.function.name == "external_agent"
+                if self.call.function.name in {"external_agent", "local_device"}
                 and isinstance(parsed_arguments, dict)
                 else {}
             ),

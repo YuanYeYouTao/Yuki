@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
 
     from yuki.admin.models import WorkStorageRuntimeConfig
+    from yuki.executor.service import LocalExecutors
     from yuki.external_agents.service import ExternalAgentService
     from yuki.persistence.sqlite_diagnostics import SQLiteDiagnostics
     from yuki.sandbox.client import SandboxClient
@@ -110,6 +111,7 @@ class Database:
         self.subagents_enabled = False
         self.sandbox_client: SandboxClient | None = None
         self.external_agents: ExternalAgentService | None = None
+        self.local_executors: LocalExecutors | None = None
         self.work_result_store: Any = None
         self.protocol_storage_policy: Callable[[], Awaitable[WorkStorageRuntimeConfig]] | None = (
             None
@@ -249,10 +251,20 @@ class Database:
     async def create_schema(self) -> None:
         """Create all tables for tests; deployments use Alembic migrations."""
         # Declare current read indexes without changing the frozen 0056 schema.
-        from sqlalchemy import Index
+        from sqlalchemy import Index, func, literal_column
 
         from yuki.runtime import work_recovery_schema as _recovery  # noqa: F401
         from yuki.runtime import work_schema_v1 as _work_schema
+
+        if not any(
+            index.name == "ix_runtime_work_trigger_event" for index in _work_schema.work.indexes
+        ):
+            Index(
+                "ix_runtime_work_trigger_event",
+                func.json_extract(
+                    _work_schema.work.c.source_json, literal_column("'$.trigger_event_id'")
+                ),
+            )
 
         if not any(
             index.name == "ix_runtime_work_state_updated" for index in _work_schema.work.indexes

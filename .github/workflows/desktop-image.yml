@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Read the actual backend version
+        id: version
+        run: python -c 'import os, tomllib; version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]; open(os.environ["GITHUB_OUTPUT"], "a").write(f"version={version}\n")'
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -25,6 +28,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/yuanyeyoutao/yuki:desktop-${{ github.sha }}
-          build-args: VCS_REF=${{ github.sha }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            YUKI_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=desktop-direct
           cache-to: type=gha,scope=desktop-direct,mode=max

@@ -25,6 +25,9 @@ from typing import Any, cast
 from uuid import uuid4
 
 from yuki.sandbox.completions import CompletionOutbox
+from yuki.sandbox.computer_control import ComputerControl
+from yuki.sandbox.computer_runtime import ComputerRuntime
+from yuki.sandbox.computer_transport import ComputerTransport
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.legacy_acp import ACP_KINDS, LegacyACPResources
@@ -85,6 +88,7 @@ class PersistentManager:
         self.last_prune = 0.0
         self.last_layer_check = 0.0
         self.legacy_acp = LegacyACPResources(self)
+        self.desktop_manifest: dict[str, Any] = {"desktop": False, "tools": []}
         self.db = sqlite3.connect(self.root / "jobs.sqlite3")
         try:
             self.db.row_factory = sqlite3.Row
@@ -111,6 +115,9 @@ class PersistentManager:
                 "digest TEXT NOT NULL, result TEXT NOT NULL);"
             )
             self.db.commit()
+            self.computer = ComputerControl(self)
+            self.desktop = ComputerRuntime(self)
+            self.computer_transport = ComputerTransport(self)
         except BaseException:
             self.db.close()
             raise
@@ -190,6 +197,15 @@ class PersistentManager:
             request = json.loads(raw)
             if not isinstance(request, dict):
                 raise ValueError("invalid_request")
+            if request.get("method") == "display_stream":
+                await self.computer_transport.display_stream(reader, writer)
+                return
+            if request.get("method") == "files_read":
+                await self.computer_transport.files_read(request["args"]["path"], writer)
+                return
+            if request.get("method") == "control_watch":
+                await self.computer.watch(reader, writer)
+                return
             result = await self.handle(request)
             writer.write(json.dumps(result).encode() + b"\n")
             await writer.drain()
@@ -212,6 +228,9 @@ class PersistentManager:
             "memory_mib": int(self.setting("resource_memory_mib", "512")),
             "cpus": float(self.setting("resource_cpus", "1")),
             "cpu_shares": int(self.setting("resource_cpu_shares", "1024")),
+            "swap_mib": int(self.setting("resource_swap_mib", "128")),
+            "pids": int(self.setting("resource_pids", "128")),
+            "tmp_mib": int(self.setting("resource_tmp_mib", "128")),
         }
         return limits
 
@@ -311,6 +330,8 @@ class PersistentManager:
                 ).rowcount
             return bool(changed)
         changed = self._finish_receipt(identity, state, result)
+        if changed and state in TERMINAL:
+            self.computer.finish_run(identity)
         if changed and state in TERMINAL and not (meta and meta[0] in ACP_KINDS):
             with self.db:
                 # Hash/source receipts survive; finished executable payloads need
@@ -369,6 +390,8 @@ class PersistentManager:
                 "create",
                 "--name",
                 self.name,
+                "--hostname",
+                self.name,
                 "--label",
                 LABEL,
                 "--runtime",
@@ -380,13 +403,13 @@ class PersistentManager:
                 "--memory",
                 f"{limits['memory_mib']}m",
                 "--memory-swap",
-                f"{limits['memory_mib'] + 128}m",
+                f"{limits['memory_mib'] + limits['swap_mib']}m",
                 "--cpus",
                 str(limits["cpus"]),
                 "--cpu-shares",
                 str(limits["cpu_shares"]),
                 "--pids-limit",
-                "128",
+                str(limits["pids"]),
                 "--restart",
                 "no",
                 "--security-opt",
@@ -399,7 +422,7 @@ class PersistentManager:
                 "--log-opt",
                 "max-file=2",
                 "--tmpfs",
-                "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
+                f"/tmp:rw,nosuid,nodev,size={limits['tmp_mib']}m,mode=1777",
                 "--mount",
                 f"type=bind,src={self.home},dst=/home/yuki",
                 "--mount",
@@ -449,6 +472,11 @@ class PersistentManager:
             current = await self.inspect_container()
             assert current is not None
         self.container_id = current["Id"] + ":" + current["State"]["StartedAt"]
+        if not self.testing:
+            code, raw = await self.command(
+                "docker", "exec", self.name, "cat", "/opt/yuki-runtime/manifest.json"
+            )
+            self.desktop_manifest = json.loads(raw) if not code else {"desktop": False, "tools": []}
         address = current["NetworkSettings"]["Networks"][self.network]["IPAddress"]
         self.execd = Execd(address, token)
         for attempt in range(20):
@@ -557,9 +585,15 @@ class PersistentManager:
             "command": args.get("command", ""),
             "tty": bool(args.get("tty")),
             "timeout_seconds": args.get("timeout_seconds", 0),
+            "env": {
+                key: value
+                for key, value in args.get("env", {}).items()
+                if key in {"YUKI_WORK_ID", "YUKI_STEP_LABEL"} and isinstance(value, str)
+            },
         }
         if kind == "service":
             spec["timeout_seconds"] = 0
+            spec["env"] = {}
         (root / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
         (root / "spec.json").chmod(0o444)
         return spec
@@ -659,6 +693,7 @@ class PersistentManager:
         if result.get("error") or result.get("status") in TERMINAL:
             return result
         if action in {"cancel", "close"}:
+            self.computer.cancel(identity)
             meta = self.db.execute(
                 "SELECT dispatched FROM environment_jobs WHERE id=?", (identity,)
             ).fetchone()
@@ -957,6 +992,8 @@ class PersistentManager:
     def environment_status(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
+            "generation": self.container_id or None,
+            **self.desktop_manifest,
             "home": "/home/yuki",
             "workspace": "/workspace",
             "media_cache": {
@@ -969,8 +1006,6 @@ class PersistentManager:
             "host_available_bytes": self.available_memory(),
             "limits": {
                 **self.resource_limits(),
-                "swap_mib": 128,
-                "pids": 128,
             },
             "runs": [
                 dict(row)
@@ -1067,6 +1102,16 @@ class PersistentManager:
         if not isinstance(method, str) or not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         try:
+            if method == "files_list":
+                return await asyncio.to_thread(self.computer_transport.files_list, args)
+            if method in {"display_status", "display_wake", "display_sleep", "tabs_list"}:
+                return await self.desktop.handle(method, args, request.get("request_id", ""))
+            if method == "control_get":
+                return self.computer.snapshot()
+            if method == "control_set":
+                return self.computer.set(request.get("request_id", ""), args)
+            if method == "control_request_get":
+                return self.computer.request_get(args.get("key", ""))
             if method == "sticker_index":
                 return await self.sticker_index(args)
             if method.startswith("acp_"):
@@ -1173,6 +1218,11 @@ class PersistentManager:
             for key, task in tuple(self.pumps.items()):
                 if task.done():
                     self.pumps.pop(key, None)
+            try:
+                self.computer.collect_requests()
+                await self.desktop.collect_commands()
+            except (OSError, ValueError, WorkspaceError):
+                LOGGER.warning("computer_wait_reconcile_pending")
             try:
                 self.legacy_acp.refresh()
             except (OSError, ValueError):
