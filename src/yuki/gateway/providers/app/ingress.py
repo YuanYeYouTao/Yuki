@@ -67,7 +67,6 @@ class AppSender:
                 person_refs={"current_speaker": self.binding.person_id},
                 reply_presence_id=self.presence_id,
                 trigger_event_id=self.event_id,
-                caused_by_event_id=self.event_id,
             ),
         )
         if result["status"] != "succeeded" or result.get("event_id") is None:

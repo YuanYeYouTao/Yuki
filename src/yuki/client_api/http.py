@@ -723,6 +723,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             background=BackgroundTask(close),
             media_type="application/octet-stream",
             headers={
+                "ETag": f'"{metadata["sha256"]}"',
                 "X-Yuki-Sha256": metadata["sha256"],
                 "Content-Length": str(metadata["size"]),
                 "Content-Disposition": "attachment; filename*=UTF-8''"
