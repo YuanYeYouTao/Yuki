@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     return 0
                 if args.operation == "configure":
-                    value = json.load(sys.stdin)
+                    value = json.load(sys.stdin.buffer)
                     identity = value.get("id") or str(uuid4())
                     previous = next((i for i in config.instances if i.id == identity), None)
                     if value.get("id") and previous is None:

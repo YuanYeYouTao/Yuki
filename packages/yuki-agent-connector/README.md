@@ -6,7 +6,7 @@ mirror native transcripts or send chat messages itself.
 
 For ordinary Desktop users, use the bundled setup UI; no Python or terminal installation is required.
 For an independently managed CLI installation, install the wheel with Python 3.12, for example
-`uv tool install path/to/yuki_agent_connector-0.3.2-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.3.3-py3-none-any.whl`.
 The connector uses its own lock file and does not install the Bot project. The pinned
 Claude SDK currently includes its own large CLI payload; the driver nevertheless
 requires the explicitly selected native executable and never silently runs that payload.
@@ -151,7 +151,8 @@ platform signing/notarization checks; an unsigned local build is not a release.
 
 `discover --json` reads registered Codex installation locations and explicit
 absolute executable locations. It never searches the current directory or reads
-login files. `instance configure` accepts a JSON object on stdin and updates a
+login files. `instance configure` reads UTF-8 JSON bytes from stdin independently
+of the console encoding, including isolated Windows runtimes. It updates a
 specified original instance ID; it retains environment, native owner endpoint and
 journal. Version 0.3.2 permits omitting `cwd`: existing instances retain their
 directory and new instances use the original home-directory default. It returns

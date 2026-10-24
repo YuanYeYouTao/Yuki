@@ -208,6 +208,10 @@ async def serve(
                         response = await native_scenario.respond(request)
                         if response is not None:
                             return response
+                    if fault_fixture is not None:
+                        response = await fault_fixture.respond(request)
+                        if response is not None:
+                            return response
                     return await super()._complete(request)
 
             desktop_model = DesktopModel(respond)
@@ -249,7 +253,7 @@ async def serve(
             from tests.support.desktop_fault_fixture import DesktopFaultFixture
 
             fault_fixture = DesktopFaultFixture(
-                runtime, root, owner_id, lambda: issue_code(nonowner_id), desktop_model, work_script
+                runtime, root, owner_id, lambda: issue_code(nonowner_id), desktop_model
             )
             fault_fixture.attach(api)
         if computer_fixture is not None:
@@ -398,6 +402,7 @@ async def serve(
                 if computer_fixture is not None:
                     await computer_fixture.close()
             finally:
+                await runtime.work_scheduler.close()
                 assert not await runtime.lifecycle._close_entries(runtime.lifecycle._entries)
         finally:
             await database.close()

@@ -34,7 +34,9 @@ def test_pair_exchanges_explicit_code_and_status_never_exposes_secrets(
         )
 
     monkeypatch.setattr(cli.httpx, "post", post)
-    monkeypatch.setattr(sys, "stdin", io.StringIO("ONE_TIME_CODE\n"))
+    monkeypatch.setattr(
+        sys, "stdin", io.TextIOWrapper(io.BytesIO(b"ONE_TIME_CODE\n"), encoding="utf-8")
+    )
     args = ["--data-dir", str(tmp_path / "device")]
     assert cli.main([*args, "status", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
