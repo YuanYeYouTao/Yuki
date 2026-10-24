@@ -62,7 +62,9 @@ class Connector:
                         self.errors.pop(spec.id, None)
                         self._spawn(self._recover(spec.id))
                     else:
-                        self.errors[spec.id] = value.get("reason", "native_disconnected")
+                        self.errors[spec.id] = value.get(
+                            "reason", value.get("error_type", "native_disconnected")
+                        )
                     self.catalog_changed.set()
                     return
                 event = {

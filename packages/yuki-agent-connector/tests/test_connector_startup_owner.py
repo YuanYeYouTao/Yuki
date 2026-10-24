@@ -15,6 +15,56 @@ from yuki_agent_connector.journal import Journal
 
 
 @pytest.mark.asyncio
+async def test_missing_codex_executable_publishes_actual_start_error_in_catalog(tmp_path):
+    journal = Journal(tmp_path / "journal.sqlite3", namespace="server/device")
+    received = asyncio.Event()
+    instances = []
+
+    async def peer(socket):
+        async for raw in socket:
+            message = json.loads(raw)
+            if message["type"] not in {"hello", "catalog"}:
+                continue
+            instance = message["instances"][0]
+            if instance["status"] == "unavailable" and instance.get("error_type") != "starting":
+                instances.append(instance)
+                received.set()
+
+    try:
+        async with serve(peer, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            connector = Connector(
+                Config(
+                    f"ws://127.0.0.1:{port}",
+                    "device",
+                    "fixture",
+                    instances=[
+                        Instance("original", "codex", "Codex", str(tmp_path / "missing-codex.exe"))
+                    ],
+                ),
+                journal,
+            )
+            running = asyncio.create_task(connector.run())
+            try:
+                await asyncio.wait_for(received.wait(), 5)
+                assert instances[0] == {
+                    "id": "original",
+                    "label": "Codex",
+                    "driver": "codex",
+                    "capabilities": [],
+                    "status": "unavailable",
+                    "error_type": "FileNotFoundError",
+                }
+                assert connector.config.instances[0].command == str(tmp_path / "missing-codex.exe")
+                assert journal.db.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+            finally:
+                running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+    finally:
+        journal.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("code", "reason", "authorization_lost"),
     [(1008, "unsupported_connector_protocol", False), (4401, "revoked", True)],
