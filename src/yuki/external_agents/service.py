@@ -32,6 +32,8 @@ from yuki.runtime.work_schema_v1 import work
 from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
 
+CONNECTOR_PROTOCOL = 3
+
 
 class ExternalAgentService:
     def __init__(self, database: Database, tasks: SandboxTaskRepository) -> None:
@@ -71,16 +73,20 @@ class ExternalAgentService:
     async def connect(
         self, device_id: str, connection: DeviceConnection, hello: dict[str, Any]
     ) -> None:
-        if hello.get("protocol_version") != 3 or not isinstance(hello.get("instances"), list):
+        if hello.get("protocol_version") != CONNECTOR_PROTOCOL or not isinstance(
+            hello.get("instances"), list
+        ):
             raise ValueError("unsupported_connector_protocol")
         if hello.get("device_id", device_id) != device_id:
             raise ValueError("external_agent_device_mismatch")
         await self.update_catalog(device_id, connection, hello["instances"])
         await self.connections.attach(connection)
+        self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
 
     async def disconnect(self, connection: DeviceConnection) -> None:
         if self.connections.detach(connection):
+            self.database.commit_hints.publish()
             await self.repository.connection_event(connection.device_id, connection.id, False)
 
     async def update_catalog(

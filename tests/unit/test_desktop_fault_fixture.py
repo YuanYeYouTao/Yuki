@@ -47,7 +47,7 @@ async def faults(app_env, database, tmp_path):
     async def other_code():
         return {"code": code}
 
-    fixture = DesktopFaultFixture(runtime, tmp_path, person, other_code, env.provider, [])
+    fixture = DesktopFaultFixture(runtime, tmp_path, person, other_code, env.provider)
     app = FastAPI()
     attach_client_api(app, lambda: api)
     fixture.attach(app)

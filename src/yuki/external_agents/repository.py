@@ -274,6 +274,7 @@ class AgentRepository:
                     else {}
                 ),
                 "instance_id": operation.instance_id,
+                "work_id": operation.work_id,
                 "native_reference": native,
                 "execution_id": execution_id,
             }
@@ -283,6 +284,7 @@ class AgentRepository:
             "operation_id": operation.id,
             "request_id": operation.id,
             "instance_id": operation.instance_id,
+            "work_id": operation.work_id,
             "session_id": operation.session_id,
             "run_id": operation.run_id,
             "execution_id": execution_id,

@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import httpx
 
-from . import __version__
+from . import PROTOCOL_VERSION, __version__
 from .config import Config, Instance, data_path, private_path
 from .connector import Connector, installation_lock
 from .discovery import candidates, diagnose
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             config = Config.load(path) if path.exists() else None
             value = {
                 "version": __version__,
-                "protocol": 3,
+                "protocol": PROTOCOL_VERSION,
                 "runtime": sys.executable,
                 "paired": config is not None,
                 "service": service.state(),
@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     return 0
                 if args.operation == "configure":
-                    value = json.load(sys.stdin)
+                    value = json.load(sys.stdin.buffer)
                     identity = value.get("id") or str(uuid4())
                     previous = next((i for i in config.instances if i.id == identity), None)
                     if value.get("id") and previous is None:
@@ -232,14 +232,18 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError("Choose an installed native executable")
                     if sys.platform == "win32" and Path(command).suffix.lower() != ".exe":
                         raise ValueError("Choose the native executable, not a shell script")
-                    cwd = Path(value["cwd"])
-                    if not cwd.is_absolute() or not cwd.is_dir():
-                        raise ValueError("Choose an existing project directory")
+                    original = previous or Instance(identity, "codex", "", command)
+                    cwd = original.cwd
+                    if "cwd" in value:
+                        directory = Path(value["cwd"])
+                        if not directory.is_absolute() or not directory.is_dir():
+                            raise ValueError("Choose an existing project directory")
+                        cwd = str(directory)
                     spec = replace(
-                        previous or Instance(identity, "codex", "", command),
+                        original,
                         label=value["label"],
                         command=command,
-                        cwd=str(cwd),
+                        cwd=cwd,
                         installation=(
                             candidate["source"]
                             if candidate
@@ -277,7 +281,10 @@ def main(argv: list[str] | None = None) -> int:
                         config, instances=[i for i in config.instances if i.id != args.id]
                     )
                 config.save(path)
-                print("Configuration updated; restart the connector service to apply it")
+                if args.operation == "configure":
+                    print(json.dumps({"instance_id": identity}))
+                else:
+                    print("Configuration updated; restart the connector service to apply it")
             elif args.action == "doctor":
                 print(
                     json.dumps(

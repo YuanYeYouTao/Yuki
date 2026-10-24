@@ -35,10 +35,18 @@ def test_configure_preserves_original_identity_environment_and_journal(
     monkeypatch.setattr(
         sys,
         "stdin",
-        io.StringIO(
-            json.dumps(
-                {"id": "original", "candidateId": "candidate", "label": "New", "cwd": str(tmp_path)}
-            )
+        io.TextIOWrapper(
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "id": "original",
+                        "candidateId": "candidate",
+                        "label": "New",
+                        "cwd": str(tmp_path),
+                    }
+                ).encode("utf-8")
+            ),
+            encoding="utf-8",
         ),
     )
     assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
@@ -73,6 +81,57 @@ def test_refresh_tracks_registered_installation_without_changing_profile(
     monkeypatch.setattr(discovery, "candidates", lambda: [])
     with pytest.raises(FileNotFoundError):
         discovery.refresh(original)
+
+
+@pytest.mark.parametrize("existing", [True, False])
+def test_configure_without_project_uses_original_instance_cwd(
+    existing: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "config.json"
+    original = Instance("original", "codex", "Old", sys.executable, cwd=tmp_path.as_posix())
+    Config(
+        "wss://example/agents/v1/connect",
+        "device",
+        "private-token",
+        [original] if existing else [],
+    ).save(path)
+    monkeypatch.setattr(cli, "candidates", lambda: [])
+    value = {"command": sys.executable, "label": "Codex"}
+    if existing:
+        value["id"] = original.id
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(json.dumps(value).encode("utf-8")), encoding="utf-8"),
+    )
+
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+
+    current = Config.load(path)
+    assert len(current.instances) == 1
+    spec = current.instances[0]
+    assert spec.cwd == (original.cwd if existing else str(Path.home()))
+    assert spec.command == original.command
+    if existing:
+        assert spec.id == original.id
+    assert current.device_id == "device" and current.token == "private-token"
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt == {"instance_id": spec.id}
+
+    # A later service start can fail independently. Continue with the returned
+    # saved identity rather than registering another instance on retry.
+    value["id"] = receipt["instance_id"]
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(json.dumps(value).encode("utf-8")), encoding="utf-8"),
+    )
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+    assert json.loads(capsys.readouterr().out) == receipt
+    assert Config.load(path) == current
 
 
 @pytest.mark.parametrize("logged_in", [True, False])
@@ -142,11 +201,68 @@ def test_label_or_project_change_keeps_registered_installation_source(
     monkeypatch.setattr(
         sys,
         "stdin",
-        io.StringIO(
-            json.dumps(
-                {"id": "original", "command": sys.executable, "label": "New", "cwd": str(tmp_path)}
-            )
+        io.TextIOWrapper(
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "id": "original",
+                        "command": sys.executable,
+                        "label": "New",
+                        "cwd": str(tmp_path),
+                    }
+                ).encode("utf-8")
+            ),
+            encoding="utf-8",
         ),
     )
     assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
     assert Config.load(path).instances[0] == replace(original, label="New")
+
+
+@pytest.mark.parametrize("errors", ["strict", "surrogateescape"])
+def test_configure_reads_raw_utf8_json_bytes_under_gbk_text_stdin(
+    errors: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = tmp_path / "config.json"
+    original = Instance(
+        "original-native",
+        "codex",
+        "Original",
+        sys.executable,
+        cwd=str(tmp_path),
+        env={"CODEX_HOME": "original-profile"},
+        endpoint="ws://original-owner",
+        installation="appx:original",
+    )
+    before = Config(
+        "wss://example.invalid/roles/original/agents/v1/connect",
+        "original-device",
+        "fixture-private-token",
+        [original],
+    )
+    before.save(path)
+    journal = tmp_path / "journal.sqlite3"
+    journal.write_bytes(b"original operation receipts")
+    value = {
+        "id": original.id,
+        "command": sys.executable,
+        "label": "本機 Codex 🦊",
+        "cwd": str(project),
+    }
+    raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    stdin = io.TextIOWrapper(io.BytesIO(raw), encoding="gbk", errors=errors)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(cli, "candidates", lambda: [])
+
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+
+    assert Config.load(path) == replace(
+        before, instances=[replace(original, label=value["label"], cwd=str(project))]
+    )
+    assert journal.read_bytes() == b"original operation receipts"
+    assert json.loads(capsys.readouterr().out) == {"instance_id": original.id}

@@ -1,22 +1,27 @@
 """Fault inputs for the isolated Desktop server, over actual domain operations."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from tests.support.workspace_snapshots import snapshot_bytes
 
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import AccountAssignmentModel, AccountModel
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.runtime.work_activation import current_work_control
 from yuki.social.service import SocialContext
 
 
 class DesktopFaultFixture:
-    def __init__(self, runtime, root, person, other_code, model, work_script):
+    def __init__(self, runtime, root, person, other_code, model):
         self.runtime, self.root, self.person = runtime, root, person
-        self.other_code, self.model, self.work_script = other_code, model, work_script
+        self.other_code, self.model = other_code, model
+        self.work_scenario = None
         self.lose_response = ""
         self.uploaded_requests = []
         self.pause_next_me = False
@@ -24,6 +29,55 @@ class DesktopFaultFixture:
         self.streams = set()
         self.stream_ready = asyncio.Event()
         self.stream_ready.set()
+
+    async def respond(self, _request):
+        scenario = self.work_scenario
+        control = current_work_control.get()
+        if scenario is None or not scenario["script"] or control is None:
+            return None
+        if scenario["work_id"] is not None:
+            if control.current is None or control.current["id"] != scenario["work_id"]:
+                return None
+        elif scenario["event_id"] is not None:
+            if (
+                control.source.get("trigger_event_id") != scenario["event_id"]
+                or control.current is None
+            ):
+                return None
+            scenario["work_id"] = control.current["id"]
+        else:
+            event_id = control.source.get("trigger_event_id")
+            if (
+                control.current is not None
+                or not isinstance(event_id, int)
+                or event_id <= scenario["after_event_id"]
+                or control.source.get("actor_person_id") != self.person
+            ):
+                return None
+            async with self.runtime.database.read_session() as reader:
+                original = await reader.scalar(
+                    select(ChatEventModel)
+                    .join(
+                        AccountAssignmentModel,
+                        AccountAssignmentModel.id == ChatEventModel.ingress_presence_id,
+                    )
+                    .join(AccountModel, AccountModel.id == AccountAssignmentModel.account_id)
+                    .where(
+                        ChatEventModel.id == event_id,
+                        ChatEventModel.author_person_id == self.person,
+                        ChatEventModel.direction == "inbound",
+                        AccountModel.platform == "app",
+                    )
+                )
+            if original is None or scenario is not self.work_scenario:
+                return None
+            scenario["event_id"] = original.id
+        name, arguments = scenario["script"].pop(0)
+        return ChatResponse(
+            content="",
+            latency_seconds=0,
+            tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),),
+        )
 
     async def close(self):
         self.resume_me.set()
@@ -263,13 +317,20 @@ class DesktopFaultFixture:
 
         @app.post("/__test/work-scenario")
         async def work_scenario():
-            self.work_script[:] = [
-                ("task_control", {"action": "accept", "goal": "原工作整合測試"}),
-                ("send", {"text": "需要你提供城市"}),
-                ("task_control", {"action": "need_input", "reason": "city missing"}),
-                ("send", {"text": "已依原工作完成"}),
-                ("task_control", {"action": "complete", "result": "original work finished"}),
-            ]
+            async with self.runtime.database.read_session() as reader:
+                after_event_id = await reader.scalar(select(func.max(ChatEventModel.id)))
+            self.work_scenario = {
+                "after_event_id": after_event_id or 0,
+                "event_id": None,
+                "work_id": None,
+                "script": [
+                    ("task_control", {"action": "accept", "goal": "原工作整合測試"}),
+                    ("send", {"text": "需要你提供城市"}),
+                    ("task_control", {"action": "need_input", "reason": "city missing"}),
+                    ("send", {"text": "已依原工作完成"}),
+                    ("task_control", {"action": "complete", "result": "original work finished"}),
+                ],
+            }
             return {"ok": True}
 
 

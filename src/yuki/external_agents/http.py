@@ -22,7 +22,7 @@ from yuki.client_api.responses import (
     NativeSessions,
 )
 from yuki.external_agents.db_models import AgentInstanceModel, AgentOperationModel
-from yuki.external_agents.service import ExternalAgentService
+from yuki.external_agents.service import CONNECTOR_PROTOCOL, ExternalAgentService
 from yuki.external_agents.transport import DeviceConnection
 from yuki.identity.credentials import DeviceCredentials, DevicePrincipal, require_person
 from yuki.identity.person_identity import person_family_condition
@@ -60,7 +60,10 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, Any]:
         principal = await person(authorization)
-        return await resolve().catalog(principal.source_person_id)
+        return {
+            "connector_protocol": CONNECTOR_PROTOCOL,
+            **await resolve().catalog(principal.source_person_id),
+        }
 
     @router.get(
         "/operations/{operation_id}",
