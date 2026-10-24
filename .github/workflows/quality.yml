@@ -104,8 +104,8 @@ jobs:
           WORKDIR /opt/yuki-source
           COPY pyproject.toml uv.lock README.md LICENSE ./
           COPY src ./src
-          RUN uv python install 3.12.15 \
-              && uv sync --frozen --all-extras --no-editable --python 3.12.15 \
+          RUN uv python install 3.12.13 \
+              && uv sync --frozen --all-extras --no-editable --python 3.12.13 \
               && /opt/yuki-tests/bin/python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"CREATE VIRTUAL TABLE f USING fts5(tokens, content='', contentless_delete=1, detail=none, tokenize='ascii')\"); c.execute(\"INSERT INTO f(rowid,tokens) VALUES(1,'capability')\"); c.execute('DELETE FROM f WHERE rowid=1'); print('SQLite', sqlite3.sqlite_version)"
           DOCKERFILE
           docker build -f "$RUNNER_TEMP/Dockerfile.headed-tests" -t yuki-environment:headed-tests .
