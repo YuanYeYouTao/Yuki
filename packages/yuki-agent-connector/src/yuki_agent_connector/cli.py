@@ -19,7 +19,7 @@ import httpx
 from . import PROTOCOL_VERSION, __version__
 from .config import Config, Instance, data_path, private_path
 from .connector import Connector, installation_lock
-from .discovery import candidates, diagnose
+from .discovery import candidates, diagnose, refresh
 from .drivers import make_driver
 from .journal import Journal
 from .service import UserService
@@ -59,6 +59,7 @@ def parser() -> argparse.ArgumentParser:
         "discover", help="Read installed Codex locations without starting it"
     )
     discover.add_argument("--json", action="store_true")
+    discover.add_argument("--instance", help="Resolve one original instance's installed executable")
     diagnostic = commands.add_parser("diagnose", help="Explicit native handshake; no model task")
     diagnostic.add_argument("--instance", required=True)
     commands.add_parser("run", help="Run independently of any Desktop UI")
@@ -122,7 +123,18 @@ def main(argv: list[str] | None = None) -> int:
     service = UserService(path, directory)
     try:
         if args.action == "discover":
-            print(json.dumps(candidates(), ensure_ascii=True))
+            discovered: object
+            if args.instance:
+                instance_config = Config.load(path)
+                original = next(
+                    (item for item in instance_config.instances if item.id == args.instance), None
+                )
+                if original is None:
+                    raise ValueError("The original instance does not exist")
+                discovered = {"instance_id": original.id, "command": refresh(original).command}
+            else:
+                discovered = candidates()
+            print(json.dumps(discovered, ensure_ascii=True))
         elif args.action == "pair":
             if path.exists():
                 raise ValueError(
@@ -218,12 +230,23 @@ def main(argv: list[str] | None = None) -> int:
                     previous = next((i for i in config.instances if i.id == identity), None)
                     if value.get("id") and previous is None:
                         raise ValueError("The original instance does not exist")
-                    candidate = next(
-                        (c for c in candidates() if c["id"] == value.get("candidateId")), None
+                    candidate_id = value.get("candidateId")
+                    candidate = (
+                        next((c for c in candidates() if c["id"] == candidate_id), None)
+                        if candidate_id
+                        else None
                     )
-                    if value.get("candidateId") and candidate is None:
+                    if candidate_id and candidate is None:
                         raise ValueError("The selected installation is no longer available")
                     command = candidate["command"] if candidate else value.get("command")
+                    if (
+                        previous is not None
+                        and previous.installation
+                        and candidate is None
+                        and command == previous.command
+                    ):
+                        previous = refresh(previous)
+                        command = previous.command
                     if (
                         not command
                         or not Path(command).is_absolute()
