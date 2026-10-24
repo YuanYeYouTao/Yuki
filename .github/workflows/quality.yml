@@ -81,6 +81,54 @@ jobs:
           path: test-results/*.xml
           retention-days: 7
 
+  desktop-headed:
+    name: Real headed desktop environment
+    runs-on: ubuntu-24.04
+    env:
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the actual optional headed environment
+        run: |
+          docker build -f deploy/sandbox/Dockerfile.environment -t yuki-environment:headed-ci-base .
+          docker build -f deploy/sandbox/Dockerfile.environment-desktop \
+            --build-arg BASE_IMAGE=yuki-environment:headed-ci-base \
+            -t yuki-environment:headed-ci .
+      - name: Install the locked test dependencies over the actual image
+        run: |
+          cat > "$RUNNER_TEMP/Dockerfile.headed-tests" <<'DOCKERFILE'
+          FROM ghcr.io/astral-sh/uv:0.11.31 AS uv
+          FROM yuki-environment:headed-ci
+          COPY --from=uv /uv /usr/local/bin/uv
+          ENV UV_PROJECT_ENVIRONMENT=/opt/yuki-tests UV_PYTHON_DOWNLOADS=never
+          WORKDIR /opt/yuki-source
+          COPY pyproject.toml uv.lock README.md LICENSE ./
+          COPY src ./src
+          RUN uv sync --frozen --all-extras --no-editable --python /usr/local/bin/python
+          DOCKERFILE
+          docker build -f "$RUNNER_TEMP/Dockerfile.headed-tests" -t yuki-environment:headed-tests .
+      - name: Test real display, browser input, control and original receipts offline
+        run: |
+          mkdir -p test-results
+          docker run --rm --network none --shm-size 512m \
+            --entrypoint /opt/yuki-tests/bin/python \
+            -e PYTHONPATH=/src/src:/src -e PYTHONDONTWRITEBYTECODE=1 \
+            -e YUKI_TEST_CHROMIUM=/usr/bin/chromium \
+            -v "$PWD:/src:ro" -v "$PWD/test-results:/results" -w /src \
+            yuki-environment:headed-tests -m pytest \
+            tests/unit/test_computer_control.py tests/unit/test_computer_runtime.py \
+            tests/unit/test_computer_transport.py tests/unit/test_computer_authority.py \
+            tests/unit/test_local_device_reintegration.py \
+            tests/unit/test_computer_observer_lifecycle.py \
+            -q --strict-markers -o cache_dir=/tmp/yuki-pytest-cache \
+            --basetemp=/tmp/yuki-pytest --junitxml=/results/desktop-headed.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-desktop-headed
+          path: test-results/desktop-headed.xml
+          retention-days: 7
+
   native:
     name: Native CodeMode
     runs-on: ubuntu-24.04
