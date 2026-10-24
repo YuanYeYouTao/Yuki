@@ -1,99 +1,120 @@
 """Real App/Main/Work/HTTP with an explicit non-model native protocol peer."""
 
 import asyncio
+import contextlib
 import json
-import os
-import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 from tests.integration.test_external_agent_bridge import NativeComputer
+from tests.support.desktop_native_work_fixture import DesktopNativeWorkScenario
+from tests.support.soul_reference_server import serve
+
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_control import WorkControl
 
 
 @pytest.fixture
-async def native_app(tmp_path):
+async def native_app(tmp_path, monkeypatch):
     root, state_file = tmp_path / "server", tmp_path / "ready.json"
-    log_file = tmp_path / "backend.log"
-    with log_file.open("wb") as log:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "tests.support.desktop_reference_server",
-            "--root",
-            str(root),
-            "--state-file",
-            str(state_file),
-            "--port",
-            "0",
-            "--base-path",
-            "/role/native",
-            env={
-                **os.environ,
-                "PYTHONPATH": os.pathsep.join(sys.path),
-                "YUKI_DESKTOP_NATIVE_FIXTURE": "1",
-            },
-            stdout=log,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        peer = None
-        try:
-            async with asyncio.timeout(30):
-                while not state_file.exists():
-                    if process.returncode is not None:
-                        raise AssertionError(log_file.read_text("utf-8")[-6000:])
-                    await asyncio.sleep(0.05)
-            state = json.loads(state_file.read_text("utf-8"))
-            async with httpx.AsyncClient(
-                base_url=state["base_url"] + "/", trust_env=False
-            ) as client:
-                paired = await client.post(
-                    "client/v1/pair",
-                    json={
-                        "code": state["owner_pairing_code"],
-                        "device_label": "Native UI fixture control",
-                    },
+    (root / "character").mkdir(parents=True)
+    (root / "character" / "SOUL.md").write_text("你是 {{name}}。\n", encoding="utf-8")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("YUKI_DESKTOP_NATIVE_FIXTURE", "1")
+    serving = asyncio.create_task(serve(root, state_file, 0, "/role/native", desktop=True))
+    peer = None
+    try:
+        async with asyncio.timeout(30):
+            while not state_file.exists():
+                if serving.done():
+                    serving.result()
+                await asyncio.sleep(0.05)
+        state = json.loads(state_file.read_text("utf-8"))
+        async with httpx.AsyncClient(base_url=state["base_url"] + "/", trust_env=False) as client:
+            paired = await client.post(
+                "client/v1/pair",
+                json={
+                    "code": state["owner_pairing_code"],
+                    "device_label": "Native UI fixture control",
+                },
+            )
+            assert paired.status_code == 200, paired.text
+            headers = httpx.Headers({"Authorization": "Bearer " + paired.json()["data"]["token"]})
+            grant = await client.post(
+                "client/v1/link-codes",
+                headers=headers,
+                json={
+                    "request_id": str(uuid4()),
+                    "purpose": "connector",
+                },
+            )
+            assert grant.status_code == 200, grant.text
+            connector = await client.post(
+                "agents/v1/pair",
+                json={
+                    "code": grant.json()["data"]["code"],
+                    "device_label": "Explicit protocol peer",
+                },
+            )
+            assert connector.status_code == 200, connector.text
+            device = connector.json()
+            peer = await NativeComputer(
+                SimpleNamespace(
+                    websocket_url=state["base_url"].replace("http:", "ws:") + "/agents/v1/connect",
+                    ssl=None,
+                    device=device,
                 )
-                assert paired.status_code == 200, paired.text
-                headers = {"Authorization": "Bearer " + paired.json()["data"]["token"]}
-                grant = await client.post(
-                    "client/v1/link-codes",
-                    headers=headers,
-                    json={
-                        "request_id": str(uuid4()),
-                        "purpose": "connector",
-                    },
+            ).start()
+            yield SimpleNamespace(
+                client=client, headers=headers, state=state, peer=peer, device=device
+            )
+            assert (await client.post("__test/shutdown")).status_code == 200
+            await asyncio.wait_for(serving, 10)
+    finally:
+        if peer is not None:
+            await peer.close()
+        if not serving.done():
+            serving.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serving
+
+
+@pytest.fixture
+async def permission_gate(native_app, permission, monkeypatch):
+    committed, release = asyncio.Event(), asyncio.Event()
+    gate = SimpleNamespace(committed=committed, release=release, control=None, response=None)
+    original = WorkControl._control
+    original_response = DesktopNativeWorkScenario.respond
+
+    async def accept(control, args, call_key, **payload):
+        result = await original(control, args, call_key, **payload)
+        if permission and args.get("action") == "wait" and gate.control is None:
+            gate.control = control
+            committed.set()
+            await release.wait()
+        return result
+
+    async def observe(scenario, request):
+        result = await original_response(scenario, request)
+        if result is not None and result.tool_calls:
+            tool = result.tool_calls[0].function
+            if tool.name == "external_agent" and json.loads(tool.arguments)["action"] == "respond":
+                control = current_work_control.get()
+                gate.response = SimpleNamespace(
+                    trigger_event_id=control.source["trigger_event_id"],
+                    work_id=control.current["id"],
+                    input_ids=tuple(control.session.input_ids),
                 )
-                assert grant.status_code == 200, grant.text
-                connector = await client.post(
-                    "agents/v1/pair",
-                    json={
-                        "code": grant.json()["data"]["code"],
-                        "device_label": "Explicit protocol peer",
-                    },
-                )
-                assert connector.status_code == 200, connector.text
-                device = connector.json()
-                peer = await NativeComputer(
-                    SimpleNamespace(
-                        websocket_url=state["base_url"].replace("http:", "ws:")
-                        + "/agents/v1/connect",
-                        ssl=None,
-                        device=device,
-                    )
-                ).start()
-                yield SimpleNamespace(
-                    client=client, headers=headers, state=state, peer=peer, device=device
-                )
-                assert (await client.post("__test/shutdown")).status_code == 200
-                assert await asyncio.wait_for(process.wait(), 10) == 0
-        finally:
-            if peer is not None:
-                await peer.close()
-            if process.returncode is None:
-                process.terminate()
-            await asyncio.wait_for(process.wait(), 10)
+        return result
+
+    monkeypatch.setattr(WorkControl, "_control", accept)
+    monkeypatch.setattr(DesktopNativeWorkScenario, "respond", observe)
+    try:
+        yield gate
+    finally:
+        release.set()
 
 
 async def eventually(read, predicate):
@@ -114,7 +135,7 @@ async def eventually(read, predicate):
     ],
 )
 async def test_app_native_original_work_waits_for_real_receipt_and_never_reprompts(
-    native_app, terminal, expected, permission
+    native_app, terminal, expected, permission, permission_gate
 ):
     f = native_app
     marker = "native-fixture-" + uuid4().hex
@@ -143,9 +164,17 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
         assert result.status_code == 200, result.text
         return result.json()
 
-    waiting = await eventually(
-        facts, lambda v: v["work"] and v["work"]["state"] == "waiting_external"
-    )
+    if permission:
+        await asyncio.wait_for(permission_gate.committed.wait(), 15)
+        waiting = await facts()
+        assert waiting["work"]["state"] == "running"
+        assert (
+            json.loads(waiting["work"]["checkpoint_json"])["accepted_control"]["action"] == "wait"
+        )
+    else:
+        waiting = await eventually(
+            facts, lambda v: v["work"] and v["work"]["state"] == "waiting_external"
+        )
     prompt = [row for row in waiting["operations"] if row["action"] == "prompt"]
     assert len(prompt) == 1
     original = prompt[0]
@@ -160,38 +189,44 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
     assert replay.json()["data"]["event_id"] == event_id
 
     if permission:
-        await f.peer.event(
-            original["id"],
-            "permission",
-            {
-                "native_request_id": "original-native-permission",
-                "native_method": "item/commandExecution/requestApproval",
-                "native_request": {
-                    "command": "isolated-probe",
-                    "cwd": "/isolated/native-project",
-                    "availableDecisions": ["accept", "decline"],
+        try:
+            await f.peer.event(
+                original["id"],
+                "permission",
+                {
+                    "native_request_id": "original-native-permission",
+                    "native_method": "item/commandExecution/requestApproval",
+                    "native_request": {
+                        "command": "isolated-probe",
+                        "cwd": "/isolated/native-project",
+                        "availableDecisions": ["accept", "decline"],
+                    },
                 },
-            },
-        )
-        view = (
-            await f.client.get("agents/v1/operations/" + original["id"], headers=f.headers)
-        ).json()
-        question = next(row for row in view["events"] if row["kind"] == "permission")
-        assert question["permission_id"] != "original-native-permission"
-        response_body = {
-            "request_id": str(uuid4()),
-            "text": "Only approve the original isolated command",
-            "agent_target": {
-                "intent": "respond",
-                "device_id": f.device["device_id"],
-                "instance_id": instance,
-                "operation_id": original["id"],
-                "permission_id": question["permission_id"],
-                "response": {"decision": "accept"},
-            },
-        }
-        response = await f.client.post("client/v1/messages", headers=f.headers, json=response_body)
-        assert response.status_code == 200, response.text
+            )
+            view = (
+                await f.client.get("agents/v1/operations/" + original["id"], headers=f.headers)
+            ).json()
+            question = next(row for row in view["events"] if row["kind"] == "permission")
+            assert question["permission_id"] != "original-native-permission"
+            response_body = {
+                "request_id": str(uuid4()),
+                "text": "Only approve the original isolated command",
+                "agent_target": {
+                    "intent": "respond",
+                    "device_id": f.device["device_id"],
+                    "instance_id": instance,
+                    "operation_id": original["id"],
+                    "permission_id": question["permission_id"],
+                    "response": {"decision": "accept"},
+                },
+            }
+            response = await f.client.post(
+                "client/v1/messages", headers=f.headers, json=response_body
+            )
+            assert response.status_code == 200, response.text
+            response_event_id = response.json()["data"]["event_id"]
+        finally:
+            permission_gate.release.set()
 
         async def responses():
             return [row for row in f.peer.commands if row["action"] == "respond"]
@@ -199,8 +234,18 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
         native_response = (await eventually(responses, lambda rows: len(rows) == 1))[0]
         assert native_response["arguments"]["permission_id"] == "original-native-permission"
         assert native_response["arguments"]["response"] == {"decision": "accept"}
+        assert permission_gate.response.trigger_event_id == event_id
+        assert permission_gate.response.work_id == original["work_id"]
+        reply_inputs = [
+            row for row in (await facts())["inputs"] if row["event_id"] == response_event_id
+        ]
+        assert len(reply_inputs) == 1
+        assert reply_inputs[0]["work_id"] == original["work_id"]
+        assert reply_inputs[0]["state"] in {"staged", "consumed"}
+        assert reply_inputs[0]["id"] in permission_gate.response.input_ids
         repeated = await f.client.post("client/v1/messages", headers=f.headers, json=response_body)
         assert repeated.json()["data"]["replay"] is True
+        assert repeated.json()["data"]["event_id"] == response_event_id
         assert len(await responses()) == 1
         assert (await facts())["work"]["state"] not in {"completed", "failed", "cancelled"}
 

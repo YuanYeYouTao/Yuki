@@ -43,6 +43,36 @@ class DesktopNativeWorkScenario:
             original = await reader.get(ChatEventModel, control.source.get("trigger_event_id"))
             if original is None:
                 return None
+            # A reply can join the running Work before its accepted wait settles.
+            # Its activation source remains the original prompt; use only inputs
+            # already admitted to this actual model session, never newer history.
+            if (
+                self.operation_id is not None
+                and control.current is not None
+                and control.current["id"] == self.work_id
+                and control.session is not None
+            ):
+                admitted = await reader.scalars(
+                    select(ChatEventModel)
+                    .join(inputs, inputs.c.event_id == ChatEventModel.id)
+                    .where(
+                        inputs.c.id.in_(control.session.input_ids),
+                        inputs.c.work_id == self.work_id,
+                        inputs.c.kind == "message",
+                        inputs.c.state.in_(("staged", "consumed")),
+                    )
+                    .order_by(inputs.c.id)
+                )
+                for event in admitted:
+                    target = stored_target(json.loads(event.segments_json))
+                    if (
+                        event.id not in self.responded
+                        and target is not None
+                        and target.intent == "respond"
+                        and target.operation_id == self.operation_id
+                    ):
+                        original = event
+                        break
             segments = json.loads(original.segments_json)
             target = stored_target(segments)
             if target is None:
