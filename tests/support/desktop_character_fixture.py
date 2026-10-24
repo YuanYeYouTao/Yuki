@@ -1,6 +1,7 @@
 """Opt-in Desktop management data through actual current domain services."""
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -9,7 +10,8 @@ from sqlalchemy import select
 
 from yuki.container import ApplicationContainer
 from yuki.domain.tool_actor import ToolActor
-from yuki.identity.db_models import PresenceModel
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.memory.enums import MemoryScopeType
 from yuki.memory.mutation.models import (
@@ -73,6 +75,22 @@ async def attach_character_fixture(
         return await container.character.set_owner(
             str(uuid4()), person, str(uuid4()), granted=False
         )
+
+    @app.post("/__test/qq-binding-without-destination")
+    async def qq_binding_without_destination() -> dict:
+        now = datetime.now(UTC)
+        async with container.database.immediate_session() as session:
+            account = await ensure_account(session, "100200", platform="qq", now=now)
+            owner = await session.get(CanonicalPersonModel, person)
+            assert owner is not None
+            binding = await replace_assignment(session, account, None, owner, now=now)
+            assert binding is not None
+            return {
+                "binding_id": binding.id,
+                "person_id": binding.person_id,
+                "platform": binding.platform,
+                "external_account_id": binding.external_account_id,
+            }
 
     @app.post("/__test/character-data")
     async def character_data() -> dict:
