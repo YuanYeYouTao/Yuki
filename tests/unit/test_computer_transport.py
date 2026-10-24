@@ -8,11 +8,85 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from uuid import uuid4
 
+import httpx
 import pytest
+from fastapi import FastAPI
+from tests.unit.test_admin_api import admin as admin_fixture
+from tests.unit.test_app_messages import app_env as app_fixture
+from tests.unit.test_client_api import bearer
+from tests.unit.test_client_works import owner
 from tests.unit.test_computer_control import manager_at
 
+from yuki.character.repository import CharacterRepository
+from yuki.client_api.computer import ClientComputer
+from yuki.client_api.http import ClientApi, attach_client_api
+from yuki.sandbox.client import SandboxClient
 from yuki.workspace.store import WorkspaceError
+
+admin = admin_fixture
+app_env = app_fixture
+
+
+async def test_http_file_etag_identifies_the_original_snapshot_after_source_changes(
+    app_env, database, tmp_path, monkeypatch
+):
+    device, person = await owner(app_env, database)
+    character = CharacterRepository(app_env.identity, app_env.harness.settings)
+    await character.initialize("Computer snapshot test")
+    await character.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
+    manager = manager_at(tmp_path)
+    manager.files.root.mkdir()
+    source = manager.files.root / "中文快照.bin"
+    original = "原始快照\n".encode() * 256 + b"\0"
+    replacement = b"later mutable source"
+    source.write_bytes(original)
+    snapshot = manager.computer_transport.file_snapshot
+
+    def capture_then_change(path):
+        captured = snapshot(path)
+        source.write_bytes(replacement)
+        return captured
+
+    monkeypatch.setattr(manager.computer_transport, "file_snapshot", capture_then_change)
+    short = tempfile.TemporaryDirectory(prefix="yc-http-", dir="/tmp")
+    socket = Path(short.name) / "manager.sock"
+    server = await asyncio.start_unix_server(manager.serve, str(socket))
+    computer = ClientComputer(app_env.identity, SandboxClient(socket))
+    app = FastAPI()
+    attach_client_api(app, lambda: ClientApi(app_env.identity, computer=computer))
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://computer"
+        ) as client:
+            response = await client.get(
+                "/client/v1/computer/files/content",
+                params={"path": source.name},
+                headers=bearer(device["token"]),
+            )
+            assert response.status_code == 200, response.text
+            assert source.read_bytes() == replacement
+            assert response.content == original
+            digest = hashlib.sha256(original).hexdigest()
+            assert response.headers.get("etag") == f'"{digest}"'
+            assert response.headers["x-yuki-sha256"] == digest
+            assert response.headers["content-length"] == str(len(original))
+            assert response.headers["cache-control"] == "no-store"
+            next_response = await client.get(
+                "/client/v1/computer/files/content",
+                params={"path": source.name},
+                headers=bearer(device["token"]),
+            )
+            assert next_response.status_code == 200 and next_response.content == replacement
+            assert next_response.headers["etag"] == (f'"{hashlib.sha256(replacement).hexdigest()}"')
+            assert next_response.headers["etag"] != response.headers["etag"]
+    finally:
+        await computer.close()
+        server.close()
+        await server.wait_closed()
+        short.cleanup()
+        await manager.close()
 
 
 async def test_mutable_file_stream_keeps_read_snapshot_hash_after_source_changes(tmp_path):
