@@ -130,6 +130,6 @@ printf '%s\n' "Review $INSTALL_DIR/Yuki-$VERSION-Upgrade.md before starting or u
 printf '%s\n' "Upgrade guide: https://github.com/$REPOSITORY/blob/v$VERSION/docs/upgrade-$VERSION.md"
 printf '%s\n' "Path file tools and terminals require the Linux host Manager; Compose does not install it."
 printf '%s\n' "After preparing the persistent-environment prerequisites, explicitly run on the Docker host:"
-printf '%s\n' 'sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path'
+printf '%s\n' 'sudo sh ./deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path --bot-container BOT_CONTAINER'
 printf 'Use this deployment root: %s\n' "$INSTALL_DIR"
 printf '%s\n' 'Then check: docker compose exec --user 10001:10001 bot yuki setup environment-check'

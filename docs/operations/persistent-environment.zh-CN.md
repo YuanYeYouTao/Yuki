@@ -83,12 +83,23 @@ python scripts/retire_media_snapshots.py \
 
 配置安装器不安装宿主 Manager。Linux Docker 宿主须有 Python 3.12、已验证的 runsc、环境镜像、bridge/防火墙和挂载好的家目录/运行记录文件系统。Docker Desktop 或 Bot healthy 不证明这些依赖可用。
 
+部署包带有 `deploy/sandbox/` 的宿主部署入口。Manager 源码从显式选中的 Bot 容器导出，不另选一个 checkout：先启动本次 Bot，再在 Linux Docker 宿主、实际 Compose 部署目录执行。首次安装先建立原 Manager venv：
+
 ```sh
-sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path
+sudo python3 -m venv /opt/yuki-sandbox/venv
+sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r deploy/sandbox/requirements-manager.txt
+sudo sh deploy/sandbox/install-manager.sh \
+  --deployment-root "$PWD" --bot-container "$(docker compose ps --quiet bot)"
 docker compose exec --user 10001:10001 bot yuki setup environment-check
 ```
 
-部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。`environment-check` 在 Bot 真实 UID 10001 下验证 artifact 目录可写和原 socket/status/ready，不再调用退役 `workspace_list`；不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网已验收。
+使用自定义 Compose 文件时，容器选择和最终检查都沿同一条实际 `-f` 链；也可直接给 `--bot-container` 传入已核实的容器名或 ID。该参数必填，不再从旧 `/opt/yuki-sandbox/src` 猜代码版本。
+
+安装器调用 `sync-manager.py`，将该 Bot 的完整已安装 `yuki` 包放到 `/opt/yuki-sandbox/releases/<Bot镜像提交>/src`，定向更新现有 `90-source-release.conf` 的 `PYTHONPATH`。已有 unit 参数、媒体缓存覆盖、原 venv、HOME、工作区和仍被环境挂载的旧源码保持原样。已存在的同提交源码只核对字节并复用，不覆盖正在被引用的不同内容。同步入口本身不重启服务或修改数据；安装器随后重启原 Manager，并在真实 UID 10001 下完成 artifact 写权限与 `environment_status` 的握手。残留 socket 文件不能再被当作成功。
+
+部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。Bot `environment-check` 与宿主安装器复用同一个标准库检查实现，不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网或QQ表情送达已验收。
+
+已有部署升级时，先备份原 `jobs.sqlite3`、共享 `manifest.sqlite3`、配置及相关文件，停止 Manager，再按原 Compose 链升级 Bot，最后运行上面的安装器与检查。不要让旧 Manager 在 Bot 已迁移的共享索引上继续运行。`yuki setup verify` 只核验 Bot 核心服务；Manager 升级以这一安装器的真实连接结果为准。3.9 升 4.0 时，原自定义 unit 中退役的 `-m qq_ai_bot.sandbox.manager` 须明确改为 `-m yuki.sandbox.manager`，保留其余实际参数；不提供旧模块别名。
 
 媒体缓存另外沿真实部署配置。在原 `/etc/yuki-sandbox/deployment.env` 保留其他字段，显式加入：
 
@@ -100,10 +111,10 @@ YUKI_MANAGER_MEDIA_CACHE=/absolute/deployment/path/data/conversation-media-cache
 
 已有环境不能靠更新配置增加 Docker 挂载。此次启用共享媒体需要沿下文完整 rootFS checkpoint 流程明确替换一次：保留同一 HOME、runtime、原安装与服务，只增加缓存的只读视图。切换后用实际终端验证能读现有媒体、写缓存返回只读文件系统，复制到 `/workspace` 后可编辑；不要只凭 status 或新镜像声明验收。
 
-本次需同步宿主 `src/yuki/sandbox/`、其 `workspace/` 依赖和 `deploy/sandbox/`，并在原 Manager venv 安装当前依赖：
+以后沿上述安装器从同一 Bot 交付 Manager，不再分别手工复制 `sandbox/` 和 `workspace/`。当前依赖在原 Manager venv 安装：
 
 ```sh
-sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r /opt/yuki-sandbox/deploy/sandbox/requirements-manager.txt
+sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r deploy/sandbox/requirements-manager.txt
 ```
 
 表情 helper 与格式读取依赖实际安装在原持久环境内，Main 与 Manager 调同一文件，Host 不直接连接用户可改的图库 cache。仅更新 Bot 镜像或给未来环境 Dockerfile 增 COPY 都不会升级现有 rootFS；部署须把当前 helper 复制到原容器 `/opt/yuki-runtime/`，验证原终端能运行并保留已有安装、文件、挂载和服务。已有checkpoint部署还须在Manager停止、确认无活动执行时，对装好helper的原容器制作私有完整rootFS快照，并离线沿现有 `set_setting` 更新 `checkpoint_image`；否则未来按旧checkpoint重建会丢helper。仅安装helper不要求重建环境；启用新的媒体只读挂载则须明确替换一次，home/runtime仍为原bind；清理同时保当前容器镜像和实际选中checkpoint。保留原 systemd 与仍有效覆盖，Supervisor 沿原只读源文件挂载；删除退役 ACP 配置，不再增加 peer 挂载或环境 SDK 安装。不能只更新 Bot 后声称环境已获得新代码。

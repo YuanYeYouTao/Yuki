@@ -62,17 +62,28 @@ Main entries, automation and subagents use fixed capability contracts. Directory
 
 The configuration installer does not install the host Manager. The Linux Docker host needs Python 3.12, verified runsc, the environment image, bridge/firewall and mounted home/runtime filesystems. Docker Desktop or a healthy Bot does not prove these dependencies are connected.
 
+Deployment bundles include the host scripts under `deploy/sandbox/`. Start the selected Bot first: the installer exports its installed package instead of choosing another source checkout. For a first installation, create the original Manager venv, then run on the Linux Docker host from the actual Compose deployment directory:
+
 ```sh
-sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path
+sudo python3 -m venv /opt/yuki-sandbox/venv
+sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r deploy/sandbox/requirements-manager.txt
+sudo sh deploy/sandbox/install-manager.sh \
+  --deployment-root "$PWD" --bot-container "$(docker compose ps --quiet bot)"
 docker compose exec --user 10001:10001 bot yuki setup environment-check
 ```
 
-The deployment root is the Compose directory mounting `./workspace`. The installer records only `YUKI_MANAGER_WORKSPACE_STORE` in `/etc/yuki-sandbox/deployment.env`, preserves other settings and refuses to replace an already configured artifact root. Without an argument it retains the existing value or legacy default. It does not move home or alter existing mounts. `environment-check` uses actual Bot UID 10001 to check artifact-directory write access and the existing socket/status/readiness. It no longer calls retired `workspace_list`, creates no container, executes no code, calls no model and sends no messages. This proves connectivity, not live administrator/public-network acceptance.
+Use the same real Compose `-f` chain for both container selection and the final check, or pass a verified container name/ID to `--bot-container`. This required argument removes the old implicit source selection from `/opt/yuki-sandbox/src`.
 
-Update the host's `src/yuki/sandbox/`, its `workspace/` dependencies and `deploy/sandbox/`. Install the current requirements into the original Manager venv:
+The installer calls `sync-manager.py` to export the complete installed `yuki` package into `/opt/yuki-sandbox/releases/<Bot-image-revision>/src`, then updates only `PYTHONPATH` in the existing `90-source-release.conf`. It preserves other unit arguments, media-cache overrides, the original venv, HOME, workspace and old source still mounted by the environment. An existing same-revision release is compared byte-for-byte and reused; differing referenced source is not overwritten. The sync entry itself does not restart services or touch data. The installer then restarts the existing Manager and verifies artifact permissions and a real `environment_status` response as UID 10001. A stale socket file cannot count as success.
+
+The deployment root is the Compose directory mounting `./workspace`. The installer records only `YUKI_MANAGER_WORKSPACE_STORE` in `/etc/yuki-sandbox/deployment.env`, preserves other settings and refuses to replace an already configured artifact root. Without an argument it retains the existing value or legacy default. It does not move home or alter existing mounts. Bot `environment-check` and the host installer share the same standard-library-only checker. Neither starts containers, executes code, calls a model or sends messages. This proves connectivity, not administrator/public-network or QQ sticker delivery acceptance.
+
+For an existing deployment, first back up the original `jobs.sqlite3`, shared `manifest.sqlite3`, configuration and referenced files. Stop Manager before upgrading Bot with the original Compose chain; then run the installer and check above. Old Manager code must not keep running against a manifest migrated by the new Bot. `yuki setup verify` checks Bot core health only; Manager upgrades are accepted through this installer and its live connection check. When upgrading a custom 3.9 unit to 4.0, explicitly change the retired `-m qq_ai_bot.sandbox.manager` module to `-m yuki.sandbox.manager`, preserving other arguments; there is no legacy module alias.
+
+Use the installer above to ship Manager from the same Bot instead of copying `sandbox/` and `workspace/` separately. Install current requirements into the original Manager venv:
 
 ```sh
-sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r /opt/yuki-sandbox/deploy/sandbox/requirements-manager.txt
+sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r deploy/sandbox/requirements-manager.txt
 ```
 
 Set the actual host directory corresponding to Bot's `CONVERSATION_MEDIA_CACHE_DIRECTORY` in the existing `/etc/yuki-sandbox/deployment.env`, preserving all other fields:

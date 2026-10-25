@@ -2,16 +2,12 @@
 
 import hashlib
 import sqlite3
-from pathlib import Path
 from tempfile import TemporaryFile
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from yuki.deployment_setup.environment_check import check_environment
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -61,17 +57,3 @@ def test_cleanup_keeps_original_referenced_blob_and_removes_missing_metadata(tmp
     assert store.read_bytes(original["artifact_id"])[1] == b"original receipt bytes"
     with pytest.raises(WorkspaceError, match="artifact_not_found"):
         store.read_bytes(missing["artifact_id"])
-
-
-async def test_environment_check_uses_existing_status_without_file_rpc(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "yuki.deployment_setup.environment_check.os.geteuid", lambda: 10001, raising=False
-    )
-    execute = AsyncMock(return_value={"ready": True, "workspace": "/workspace"})
-    monkeypatch.setattr(
-        "yuki.deployment_setup.environment_check.SandboxClient",
-        lambda _socket: SimpleNamespace(execute=execute),
-    )
-    assert (await check_environment(Path("unused.sock"), tmp_path))["ok"]
-    assert execute.await_count == 1
-    assert execute.await_args.args[0] == "environment_status"
