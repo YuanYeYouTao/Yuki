@@ -1,5 +1,6 @@
 """Missed result repair keeps exact revisions and the parent's real wait state."""
 
+import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
@@ -50,6 +51,16 @@ async def settled_children(database, tmp_path, count=35):
             [{**child, "work_id": row["id"], "source_key": row["source_key"]} for row in rows],
         )
     return repo, workers, parent_lease, parent, rows
+
+
+async def result_with_execution_owner(database, tmp_path, state="completed"):
+    repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
+    lease = await workers.acquire(identity)
+    assert lease is not None
+    await repo.checkpoint(lease, identity, {"sync_result": "result-0"})
+    current = await repo.get(identity)
+    original = await repo.transition(lease, identity, current["revision"], state)
+    return repo, workers, parent_lease, parent, [original], lease
 
 
 async def test_multiple_pages_repair_once_and_keep_committed_work_unchanged(
@@ -347,16 +358,24 @@ async def test_busy_child_does_not_take_a_maintenance_writer(database, tmp_path,
 async def test_real_terminal_checkpoint_rejects_both_child_and_scope_owners(
     database, tmp_path, state
 ):
-    repo, workers, parent_lease, _parent, originals = await settled_children(database, tmp_path, 1)
+    (
+        repo,
+        workers,
+        parent_lease,
+        _parent,
+        originals,
+        child_lease,
+    ) = await result_with_execution_owner(database, tmp_path, state)
     identity = originals[0]["id"]
-    async with database.immediate_session() as writer:
-        await writer.execute(update(work).where(work.c.id == identity).values(state=state))
-    child_lease = await workers.acquire(identity, reconcile=True)
-    assert child_lease is not None
     for lease in (child_lease, parent_lease):
-        with pytest.raises(WorkConflict, match="work_checkpoint_obsolete"):
+        with pytest.raises(WorkConflict, match=r"work_(activation|checkpoint)_obsolete"):
             await repo.checkpoint(lease, identity, {"sync_result": "not an accepted write"})
-    await workers.finish(child_lease)
+    if state == "completed":
+        await workers.finish(child_lease)
+    else:
+        with pytest.raises(WorkConflict, match="work_activation_obsolete"):
+            await workers.finish(child_lease)
+        await workers.maintain()
     await repo.release(child_lease)
     await repo.release(parent_lease)
 
@@ -365,9 +384,16 @@ async def test_real_terminal_checkpoint_rejects_both_child_and_scope_owners(
 async def test_terminal_resume_between_read_and_publish_never_posts_the_old_result(
     database, tmp_path, monkeypatch, public_finish
 ):
-    repo, workers, parent_lease, parent, originals = await settled_children(database, tmp_path, 1)
+    if public_finish:
+        repo, workers, parent_lease, parent, originals, lease = await result_with_execution_owner(
+            database, tmp_path
+        )
+    else:
+        repo, workers, parent_lease, parent, originals = await settled_children(
+            database, tmp_path, 1
+        )
+        lease = None
     identity = originals[0]["id"]
-    lease = await workers.acquire(identity, reconcile=True) if public_finish else None
     immediate = database.immediate_session
     resumed = False
 
@@ -386,7 +412,7 @@ async def test_terminal_resume_between_read_and_publish_never_posts_the_old_resu
     else:
         await workers.maintain()
     current = await repo.get(identity)
-    assert current["state"] == "queued" and current["revision"] == 8
+    assert current["state"] == "queued" and current["revision"] == originals[0]["revision"] + 1
     async with database.read_session() as reader:
         assert not list(
             await reader.scalars(select(inputs.c.id).where(inputs.c.kind == "subagent"))
@@ -400,13 +426,20 @@ async def test_terminal_resume_between_read_and_publish_never_posts_the_old_resu
 async def test_real_archive_respects_the_child_lease_and_does_not_republish_cleared_body(
     database, tmp_path, monkeypatch, public_finish
 ):
-    repo, workers, parent_lease, _parent, originals = await settled_children(database, tmp_path, 1)
+    if public_finish:
+        repo, workers, parent_lease, _parent, originals, lease = await result_with_execution_owner(
+            database, tmp_path
+        )
+    else:
+        repo, workers, parent_lease, _parent, originals = await settled_children(
+            database, tmp_path, 1
+        )
+        lease = None
     identity = originals[0]["id"]
     async with database.immediate_session() as writer:
         await writer.execute(
             update(work).values(state="completed", updated=time.time() - 8 * 86400)
         )
-    lease = await workers.acquire(identity, reconcile=True) if public_finish else None
     immediate = database.immediate_session
     archived = False
 
@@ -438,3 +471,111 @@ async def test_real_archive_respects_the_child_lease_and_does_not_republish_clea
     if lease is not None:
         await repo.release(lease)
     await repo.release(parent_lease)
+
+
+async def test_expired_execution_is_not_reauthorized_by_result_maintenance(database, tmp_path):
+    repo, workers, parent_lease, _parent, originals, lease = await result_with_execution_owner(
+        database, tmp_path, "waiting_user"
+    )
+    identity = originals[0]["id"]
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(children)
+            .where(children.c.work_id == identity)
+            .values(lease_until=time.time() - 1)
+        )
+    await workers.maintain()
+    async with database.read_session() as reader:
+        current = (
+            (await reader.execute(select(children).where(children.c.work_id == identity)))
+            .mappings()
+            .one()
+        )
+    assert current["owner"] is None and current["lease_until"] == 0
+    assert current["fence"] == lease.fence and current["cancel_epoch"] == lease.cancel_epoch
+    assert current["notified_revision"] == originals[0]["revision"]
+    assert not await repo.valid(lease) and not await repo.renew(lease)
+    with pytest.raises(WorkConflict, match="work_activation_obsolete"):
+        await repo.checkpoint(lease, identity, {"reason": "expired owner cannot change the result"})
+    with pytest.raises(WorkConflict, match="work_activation_obsolete"):
+        await workers.finish(lease)
+    await repo.release(parent_lease)
+
+
+async def test_new_execution_between_read_and_write_remains_busy_and_is_not_polled(
+    database, tmp_path, monkeypatch
+):
+    repo, workers, parent_lease, parent, originals = await settled_children(database, tmp_path, 1)
+    identity = originals[0]["id"]
+    immediate = database.immediate_session
+    active = None
+
+    @asynccontextmanager
+    async def execute_before_writer():
+        nonlocal active
+        if active is None:
+            # Mark the hook before invoking the real writer-owning APIs.
+            active = False
+            await workers.resume(parent_lease, parent["id"], identity, key="new-execution")
+            active = await workers.acquire(identity)
+            await repo.checkpoint(active, identity, {"sync_result": "still running"})
+        async with immediate() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", execute_before_writer)
+    await asyncio.wait_for(workers.maintain(), 5)
+    assert await repo.valid(active)
+    current = await repo.get(identity)
+    assert current["state"] == "running" and current["revision"] == 8
+    async with database.read_session() as reader:
+        assert not list(
+            await reader.scalars(select(inputs.c.id).where(inputs.c.kind == "subagent"))
+        )
+        record = (
+            (await reader.execute(select(children).where(children.c.work_id == identity)))
+            .mappings()
+            .one()
+        )
+    assert record["owner"] == active.owner and record["fence"] == active.fence
+    assert record["notified_revision"] == 0
+    await repo.release(active)
+    await repo.release(parent_lease)
+
+
+async def test_generation_change_between_read_and_write_does_not_post_or_loop(
+    database, tmp_path, monkeypatch
+):
+    from yuki.conversation.hydrate import bump_canonical_generation
+    from yuki.persistence.models import ChatEventModel
+
+    repo, workers, parent_lease, parent, originals = await settled_children(database, tmp_path, 1)
+    immediate = database.immediate_session
+    async with database.read_session() as reader:
+        event_id = await reader.scalar(select(ChatEventModel.id))
+    reset = False
+
+    @asynccontextmanager
+    async def reset_before_writer():
+        nonlocal reset
+        if not reset:
+            reset = True
+            async with immediate() as writer:
+                await bump_canonical_generation(
+                    writer, parent["conversation_id"], event_id=event_id
+                )
+        async with immediate() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", reset_before_writer)
+    await asyncio.wait_for(workers.maintain(), 5)
+    async with database.read_session() as reader:
+        assert not list(
+            await reader.scalars(select(inputs.c.id).where(inputs.c.kind == "subagent"))
+        )
+        assert (
+            await reader.scalar(
+                select(children.c.notified_revision).where(children.c.work_id == originals[0]["id"])
+            )
+            == 0
+        )
+    assert not await repo.valid(parent_lease)

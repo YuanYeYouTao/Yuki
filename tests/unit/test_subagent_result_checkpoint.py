@@ -340,14 +340,23 @@ async def test_children_queue_without_admission_quota(database, tmp_path):
     await repo.release(lease)
 
 
-async def test_scheduler_counts_execution_without_reconcile_lease(database, tmp_path):
+async def test_scheduler_counts_execution_while_maintenance_only_publishes_results(
+    database, tmp_path
+):
     repo, workers, parent_lease, parent, first = await stack(database, tmp_path)
     second = await workers.start(parent_lease, parent["id"], "second", {"goal": "second"})
     parked = await workers.start(parent_lease, parent["id"], "parked", {"goal": "parked"})
     async with database.immediate_session() as session:
         await session.execute(update(work).where(work.c.id == parked).values(state="waiting_user"))
-    reconcile = await workers.acquire(parked, reconcile=True)
-    assert reconcile is not None
+    await workers.maintain()
+    async with database.read_session() as reader:
+        repaired = (
+            (await reader.execute(select(children).where(children.c.work_id == parked)))
+            .mappings()
+            .one()
+        )
+    assert repaired["notified_revision"] == (await repo.get(parked))["revision"]
+    assert repaired["owner"] is None and repaired["fence"] == 0
     started = asyncio.Queue()
     release = asyncio.Event()
 
@@ -393,7 +402,6 @@ async def test_scheduler_counts_execution_without_reconcile_lease(database, tmp_
         assert len(scheduler.running) == 1
     finally:
         await scheduler.close()
-        await repo.release(reconcile)
         await repo.release(parent_lease)
 
 
@@ -443,7 +451,18 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
         parent = await repo.accept(
             parent_lease, source_key="current-parent", source={}, goal="apply verified edit"
         )
-        assert await workers.acquire(obsolete[0], reconcile=True) is None
+        async with database.read_session() as reader:
+            prior = await reader.scalar(
+                select(children.c.notified_revision).where(children.c.work_id == obsolete[0])
+            )
+        await workers.maintain()
+        async with database.read_session() as reader:
+            assert (
+                await reader.scalar(
+                    select(children.c.notified_revision).where(children.c.work_id == obsolete[0])
+                )
+                == prior
+            )
     else:
         await workers.cancel(parent_lease, parent["id"], initial)
     identity = await workers.start(

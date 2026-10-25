@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import case, delete, func, select, text, true, tuple_, update
+from sqlalchemy import case, delete, func, select, text, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -95,10 +95,8 @@ class SubagentRepository:
             )
             return identity
 
-    async def acquire(self, identity: str, *, reconcile: bool = False) -> WorkLease | None:
+    async def acquire(self, identity: str) -> WorkLease | None:
         async with self.database.immediate_session() as session:
-            if reconcile:
-                return (await self._acquire_results(session, [identity])).get(identity)
             owner = str(uuid4())
             now = time.time()
             row = (
@@ -163,56 +161,6 @@ class SubagentRepository:
                 identity,
             )
 
-    async def _acquire_results(
-        self, session: AsyncSession, identities: Sequence[str]
-    ) -> dict[str, WorkLease]:
-        current = {
-            row.id: row
-            for row in await session.execute(
-                select(work.c.id, work.c.conversation_id, work.c.generation)
-                .join(
-                    CanonicalConversationModel,
-                    CanonicalConversationModel.id == work.c.conversation_id,
-                )
-                .where(
-                    work.c.id.in_(identities),
-                    work.c.state.in_(_RESULT_STATES),
-                    work.c.generation == CanonicalConversationModel.generation,
-                )
-            )
-        }
-        if not current:
-            return {}
-        owners = {identity: str(uuid4()) for identity in current}
-        now = time.time()
-        claimed = (
-            await session.execute(
-                update(children)
-                .where(
-                    children.c.work_id.in_(current),
-                    children.c.lease_until <= now,
-                    children.c.archived_at.is_(None),
-                )
-                .values(
-                    owner=case(owners, value=children.c.work_id),
-                    lease_until=now + 60,
-                    fence=children.c.fence + 1,
-                )
-                .returning(children.c.work_id, children.c.cancel_epoch, children.c.fence)
-            )
-        ).mappings()
-        return {
-            row["work_id"]: WorkLease(
-                current[row["work_id"]].conversation_id,
-                current[row["work_id"]].generation,
-                row["cancel_epoch"],
-                row["fence"],
-                owners[row["work_id"]],
-                row["work_id"],
-            )
-            for row in claimed
-        }
-
     async def maintain(self) -> None:
         """Repair a crash after settlement, then archive only expired root trees."""
         after: tuple[str, int] | None = None
@@ -221,22 +169,12 @@ class SubagentRepository:
                 page = (
                     (
                         await session.execute(
-                            _result_statement()
-                            .join(children, children.c.work_id == work.c.id)
-                            .join(
-                                CanonicalConversationModel,
-                                CanonicalConversationModel.id == work.c.conversation_id,
-                            )
+                            _missed_results()
                             .where(
-                                children.c.archived_at.is_(None),
-                                children.c.lease_until <= time.time(),
-                                work.c.generation == CanonicalConversationModel.generation,
-                                work.c.state.in_(_RESULT_STATES),
-                                children.c.notified_revision < work.c.revision,
                                 (work.c.id > after[0])
                                 | ((work.c.id == after[0]) & (work.c.revision > after[1]))
                                 if after is not None
-                                else true(),
+                                else true()
                             )
                             .order_by(work.c.id, work.c.revision)
                             .limit(16)
@@ -251,58 +189,20 @@ class SubagentRepository:
             while page:
                 prepared = [(row, _prepare_result(row)) for row in page]
                 publication = _result_publication(prepared)
-                changed = []
                 async with self.database.immediate_session() as session:
-                    leases = await self._acquire_results(session, [row["id"] for row in page])
                     published = await self._finish_results(
                         session,
-                        [
-                            (leases[row["id"]], row, result)
-                            for row, result in prepared
-                            if row["id"] in leases
-                        ],
+                        [(None, row, result) for row, result in prepared],
                         publication,
                     )
-                    changed = [
-                        row["id"]
-                        for row in page
-                        if row["id"] in leases and row["id"] not in published
-                    ]
-                    if leases:
-                        # This writer acquired these leases and no batch step
-                        # changes Canonical generations. Reuse that source check.
-                        await session.execute(
-                            update(children)
-                            .where(
-                                tuple_(
-                                    children.c.work_id,
-                                    children.c.cancel_epoch,
-                                    children.c.fence,
-                                    children.c.owner,
-                                ).in_(
-                                    [
-                                        (
-                                            lease.work_id,
-                                            lease.cancel_epoch,
-                                            lease.fence,
-                                            lease.owner,
-                                        )
-                                        for lease in leases.values()
-                                    ]
-                                ),
-                                children.c.lease_until
-                                > (func.julianday("now") - 2440587.5) * 86400,
-                                children.c.archived_at.is_(None),
-                            )
-                            .values(owner=None, lease_until=0)
-                        )
+                changed = [row["id"] for row in page if row["id"] not in published]
                 if not changed:
                     break
                 async with self.database.read_session() as session:
                     page = (
                         (
                             await session.execute(
-                                _result_statement()
+                                _missed_results()
                                 .where(work.c.id.in_(changed))
                                 .order_by(work.c.id, work.c.revision)
                             )
@@ -785,7 +685,7 @@ class SubagentRepository:
     async def _finish_results(
         self,
         session: AsyncSession,
-        prepared: Sequence[tuple[WorkLease, RowMapping, tuple[str, str]]],
+        prepared: Sequence[tuple[WorkLease | None, RowMapping, tuple[str, str]]],
         publication: tuple[TextClause, dict[str, Any], dict[str, int]],
     ) -> set[str]:
         if not prepared:
@@ -794,6 +694,8 @@ class SubagentRepository:
         statement, parameters, positions = publication
         bound = dict(parameters)
         for identity, (lease, _, _) in entries.items():
+            if lease is None:
+                continue
             index = positions[identity]
             bound.update(
                 {
@@ -806,7 +708,7 @@ class SubagentRepository:
             )
         published = set(await session.scalars(statement, bound))
         for identity, (lease, _, _) in entries.items():
-            if identity not in published:
+            if identity not in published and lease is not None:
                 # A changed result is prepared again outside this writer. A
                 # lost lease retains the original WorkConflict instead.
                 await self.repository._assert_lease(session, lease)
@@ -820,8 +722,10 @@ class SubagentRepository:
                 insert(inputs).on_conflict_do_nothing(index_elements=[inputs.c.source_key]),
                 [
                     {
-                        "conversation_id": lease.conversation_id,
-                        "generation": lease.generation,
+                        "conversation_id": lease.conversation_id
+                        if lease
+                        else row["conversation_id"],
+                        "generation": lease.generation if lease else row["generation"],
                         "source_key": f"worker-result:{row['id']}:{row['revision']}",
                         "work_id": row["parent_work_id"],
                         "kind": "subagent",
@@ -883,6 +787,8 @@ def _result_statement() -> Select[Any]:
         work.c.state,
         work.c.parent_work_id,
         work.c.reason,
+        work.c.conversation_id,
+        work.c.generation,
         _result_leaf().label("result_leaf"),
     )
 
@@ -917,14 +823,14 @@ def _result_publication(
             "cancel_epoch": None,
             "fence": None,
             "owner": None,
-            "conversation_id": None,
-            "generation": None,
+            "conversation_id": row["conversation_id"],
+            "generation": row["generation"],
         }
         parameters.update({f"{field}_{index}": data[field] for field in fields})
         values.append("(" + ", ".join(f":{field}_{index}" for field in fields) + ")")
     # Checkpoint writers reject terminal Work; resume changes its state/revision.
-    # Archive cannot clear a live child lease. The write-time fences below prove
-    # a terminal leaf is unchanged without parsing its whole checkpoint again.
+    # The write-time source/state and unarchived fences prove a terminal leaf
+    # is unchanged without parsing its whole checkpoint again.
     terminal = []
     for index, state in enumerate(sorted(TERMINAL)):
         key = f"terminal_{index}"
@@ -933,15 +839,22 @@ def _result_publication(
     statement = text(f"""
         WITH prepared({", ".join(fields)}) AS (VALUES {", ".join(values)})
         UPDATE runtime_subagents AS child
-        SET result_json = p.result_json, notified_revision = p.revision
+        SET result_json = p.result_json, notified_revision = p.revision,
+            owner = CASE WHEN p.owner IS NULL THEN NULL ELSE child.owner END,
+            lease_until = CASE WHEN p.owner IS NULL THEN 0 ELSE child.lease_until END
         FROM prepared AS p
             JOIN runtime_work AS w ON w.id = p.work_id
             JOIN canonical_conversations AS c
                 ON c.id = p.conversation_id AND c.generation = p.generation
             WHERE child.work_id = p.work_id
-                AND child.cancel_epoch = p.cancel_epoch AND child.fence = p.fence
-                AND child.owner = p.owner AND child.archived_at IS NULL
-                AND child.lease_until > (julianday('now') - 2440587.5) * 86400
+                AND child.archived_at IS NULL
+                AND w.conversation_id = p.conversation_id AND w.generation = p.generation
+                AND CASE WHEN p.owner IS NULL THEN
+                    child.lease_until <= (julianday('now') - 2440587.5) * 86400
+                    AND child.notified_revision < p.revision
+                ELSE child.cancel_epoch = p.cancel_epoch AND child.fence = p.fence
+                    AND child.owner = p.owner
+                    AND child.lease_until > (julianday('now') - 2440587.5) * 86400 END
                 AND w.revision = p.revision AND w.state = p.state
                 AND w.parent_work_id = p.parent_work_id AND w.reason IS p.reason
                 AND CASE WHEN w.state IN ({", ".join(terminal)}) THEN 1
@@ -949,3 +862,18 @@ def _result_publication(
         RETURNING work_id
     """)
     return statement, parameters, positions
+
+
+def _missed_results() -> Select[Any]:
+    return (
+        _result_statement()
+        .join(children, children.c.work_id == work.c.id)
+        .join(CanonicalConversationModel, CanonicalConversationModel.id == work.c.conversation_id)
+        .where(
+            children.c.archived_at.is_(None),
+            children.c.lease_until <= (func.julianday("now") - 2440587.5) * 86400,
+            work.c.generation == CanonicalConversationModel.generation,
+            work.c.state.in_(_RESULT_STATES),
+            children.c.notified_revision < work.c.revision,
+        )
+    )
