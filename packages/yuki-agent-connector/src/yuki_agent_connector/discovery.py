@@ -14,6 +14,11 @@ from typing import Any
 
 from .config import Instance
 
+if sys.platform != "win32":
+    creation_flags = 0
+else:
+    creation_flags = subprocess.CREATE_NO_WINDOW
+
 
 def candidates(driver: str = "codex") -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
@@ -123,7 +128,7 @@ async def diagnose(spec: Instance) -> dict[str, object]:
                 cwd=str(Path.home()),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                creationflags=creation_flags,
             )
             # The native command reports login state without creating a session.
             # Keep its account information and all native output out of IPC/logs.
