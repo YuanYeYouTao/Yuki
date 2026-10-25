@@ -922,6 +922,14 @@ def _result_publication(
         }
         parameters.update({f"{field}_{index}": data[field] for field in fields})
         values.append("(" + ", ".join(f":{field}_{index}" for field in fields) + ")")
+    # Checkpoint writers reject terminal Work; resume changes its state/revision.
+    # Archive cannot clear a live child lease. The write-time fences below prove
+    # a terminal leaf is unchanged without parsing its whole checkpoint again.
+    terminal = []
+    for index, state in enumerate(sorted(TERMINAL)):
+        key = f"terminal_{index}"
+        parameters[key] = state
+        terminal.append(f":{key}")
     statement = text(f"""
         WITH prepared({", ".join(fields)}) AS (VALUES {", ".join(values)})
         UPDATE runtime_subagents AS child
@@ -936,8 +944,10 @@ def _result_publication(
                 AND child.lease_until > (julianday('now') - 2440587.5) * 86400
                 AND w.revision = p.revision AND w.state = p.state
                 AND w.parent_work_id = p.parent_work_id AND w.reason IS p.reason
-                AND (CASE WHEN w.state = 'completed' THEN w.checkpoint_json -> '$.sync_result'
-                          ELSE w.checkpoint_json -> '$.reason' END) IS p.result_leaf
+                AND CASE WHEN w.state IN ({", ".join(terminal)}) THEN 1
+                    ELSE (CASE WHEN w.state = 'completed'
+                          THEN w.checkpoint_json -> '$.sync_result'
+                          ELSE w.checkpoint_json -> '$.reason' END) IS p.result_leaf END
         RETURNING work_id
     """)
     return statement, parameters, positions

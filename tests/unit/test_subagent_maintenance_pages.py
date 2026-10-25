@@ -11,6 +11,7 @@ from tests.support.subagents_helpers import stack
 
 from yuki.runtime import subagent_repository
 from yuki.runtime.subagent_schema import children
+from yuki.runtime.work_repository import WorkConflict
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait_schema import waits
 
@@ -170,9 +171,10 @@ async def test_result_leaf_is_the_actual_cas_dependency(database, tmp_path, monk
             update(work)
             .where(work.c.id == identity)
             .values(
+                state="waiting_user",
                 checkpoint_json="{}"
                 if change == "missing_to_null"
-                else '{"sync_result":true,"opaque":"original"}'
+                else '{"reason":true,"opaque":"original"}',
             )
         )
     immediate = database.immediate_session
@@ -189,23 +191,18 @@ async def test_result_leaf_is_the_actual_cas_dependency(database, tmp_path, monk
         nonlocal changed
         if not changed:
             changed = True
-            async with immediate() as writer:
-                await writer.execute(
-                    update(work)
-                    .where(work.c.id == identity)
-                    .values(
-                        checkpoint_json=json.dumps(
-                            {
-                                "sync_result": True
-                                if change == "opaque"
-                                else None
-                                if change == "missing_to_null"
-                                else 1,
-                                "opaque": "changed" * 10000,
-                            }
-                        )
-                    )
-                )
+            await repo.checkpoint(
+                parent_lease,
+                identity,
+                {
+                    "reason": True
+                    if change == "opaque"
+                    else None
+                    if change == "missing_to_null"
+                    else 1,
+                    "opaque": "changed" * 10000,
+                },
+            )
         async with immediate() as writer:
             yield writer
 
@@ -343,4 +340,101 @@ async def test_busy_child_does_not_take_a_maintenance_writer(database, tmp_path,
             .one()
         )
     assert row["owner"] == "real-other-owner" and row["notified_revision"] == 0
+    await repo.release(parent_lease)
+
+
+@pytest.mark.parametrize("state", ["completed", "failed", "cancelled"])
+async def test_real_terminal_checkpoint_rejects_both_child_and_scope_owners(
+    database, tmp_path, state
+):
+    repo, workers, parent_lease, _parent, originals = await settled_children(database, tmp_path, 1)
+    identity = originals[0]["id"]
+    async with database.immediate_session() as writer:
+        await writer.execute(update(work).where(work.c.id == identity).values(state=state))
+    child_lease = await workers.acquire(identity, reconcile=True)
+    assert child_lease is not None
+    for lease in (child_lease, parent_lease):
+        with pytest.raises(WorkConflict, match="work_checkpoint_obsolete"):
+            await repo.checkpoint(lease, identity, {"sync_result": "not an accepted write"})
+    await workers.finish(child_lease)
+    await repo.release(child_lease)
+    await repo.release(parent_lease)
+
+
+@pytest.mark.parametrize("public_finish", [False, True])
+async def test_terminal_resume_between_read_and_publish_never_posts_the_old_result(
+    database, tmp_path, monkeypatch, public_finish
+):
+    repo, workers, parent_lease, parent, originals = await settled_children(database, tmp_path, 1)
+    identity = originals[0]["id"]
+    lease = await workers.acquire(identity, reconcile=True) if public_finish else None
+    immediate = database.immediate_session
+    resumed = False
+
+    @asynccontextmanager
+    async def resume_before_writer():
+        nonlocal resumed
+        if not resumed:
+            resumed = True
+            await workers.resume(parent_lease, parent["id"], identity, key="real-resume")
+        async with immediate() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", resume_before_writer)
+    if public_finish:
+        await workers.finish(lease)
+    else:
+        await workers.maintain()
+    current = await repo.get(identity)
+    assert current["state"] == "queued" and current["revision"] == 8
+    async with database.read_session() as reader:
+        assert not list(
+            await reader.scalars(select(inputs.c.id).where(inputs.c.kind == "subagent"))
+        )
+    if lease is not None:
+        await repo.release(lease)
+    await repo.release(parent_lease)
+
+
+@pytest.mark.parametrize("public_finish", [False, True])
+async def test_real_archive_respects_the_child_lease_and_does_not_republish_cleared_body(
+    database, tmp_path, monkeypatch, public_finish
+):
+    repo, workers, parent_lease, _parent, originals = await settled_children(database, tmp_path, 1)
+    identity = originals[0]["id"]
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work).values(state="completed", updated=time.time() - 8 * 86400)
+        )
+    lease = await workers.acquire(identity, reconcile=True) if public_finish else None
+    immediate = database.immediate_session
+    archived = False
+
+    @asynccontextmanager
+    async def archive_before_writer():
+        nonlocal archived
+        if not archived:
+            archived = True
+            await workers.maintain()
+        async with immediate() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", archive_before_writer)
+    if public_finish:
+        await workers.finish(lease)
+    else:
+        await workers.maintain()
+    async with database.read_session() as reader:
+        receipt = (
+            (await reader.execute(select(children).where(children.c.work_id == identity)))
+            .mappings()
+            .one()
+        )
+    assert (receipt["archived_at"] is None) == public_finish
+    assert json.loads(receipt["result_json"])["text"] == "result-0"
+    assert (await repo.get(identity))["checkpoint_json"] == (
+        originals[0]["checkpoint_json"] if public_finish else "{}"
+    )
+    if lease is not None:
+        await repo.release(lease)
     await repo.release(parent_lease)
