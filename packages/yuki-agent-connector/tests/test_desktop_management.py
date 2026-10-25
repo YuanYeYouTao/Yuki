@@ -419,21 +419,29 @@ def test_configure_reads_raw_utf8_json_bytes_under_gbk_text_stdin(
 def test_status_projects_default_data_directory_without_touching_configuration_or_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "data_path", lambda: tmp_path)
+    # macOS uses /private/... for temporary data. Exercise the same legitimate
+    # path component on every runner rather than treating that word as a secret.
+    directory = tmp_path / "private" / "connector"
+    monkeypatch.setattr(cli, "data_path", lambda: directory)
     monkeypatch.setattr(cli.UserService, "state", lambda _: {"installed": False, "running": False})
-    original = Instance("original", "claude", "Claude", "not-launched", env={"SECRET": "private"})
-    path = tmp_path / "config.json"
-    Config("wss://example/agents/v1/connect", "device", "private-token", [original]).save(path)
-    journal = tmp_path / "journal.sqlite3"
+    token = "fixture-connector-private-token"
+    secret = "fixture-native-private-secret"
+    original = Instance("original", "claude", "Claude", "not-launched", env={"SECRET": secret})
+    path = directory / "config.json"
+    Config("wss://example/agents/v1/connect", "device", token, [original]).save(path)
+    journal = directory / "journal.sqlite3"
     journal.write_bytes(b"original receipts")
     before = path.read_bytes()
 
     assert cli.main(["status", "--json"]) == 0
 
     status = json.loads(capsys.readouterr().out)
-    assert status["data_directory"] == str(tmp_path.resolve())
+    assert status["data_directory"] == str(directory.resolve())
     assert status["instances"][0]["driver"] == "claude"
-    assert "private" not in json.dumps(status) and "SECRET" not in json.dumps(status)
+    projected = json.dumps(status)
+    assert "private" in projected
+    assert token not in projected and secret not in projected and "SECRET" not in projected
+    assert "token" not in status and "env" not in status["instances"][0]
     assert path.read_bytes() == before and journal.read_bytes() == b"original receipts"
 
 
