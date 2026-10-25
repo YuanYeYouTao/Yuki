@@ -945,9 +945,7 @@ def _result_publication(
                 AND w.revision = p.revision AND w.state = p.state
                 AND w.parent_work_id = p.parent_work_id AND w.reason IS p.reason
                 AND CASE WHEN w.state IN ({", ".join(terminal)}) THEN 1
-                    ELSE (CASE WHEN w.state = 'completed'
-                          THEN w.checkpoint_json -> '$.sync_result'
-                          ELSE w.checkpoint_json -> '$.reason' END) IS p.result_leaf END
+                    ELSE (w.checkpoint_json -> '$.reason') IS p.result_leaf END
         RETURNING work_id
     """)
     return statement, parameters, positions
