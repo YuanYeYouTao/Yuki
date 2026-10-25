@@ -86,12 +86,12 @@ Character preferences live in one editable `character/SOUL.md`; the character na
 
 For a packaged deployment, download the [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) and follow its [installation and upgrade guide](docs/upgrade-3.9.0.md). Its image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`, for Linux amd64 and arm64.
 
-To work on the 4.0 source, install Python 3.12, uv and a C compiler: GCC/Clang on Linux, Xcode Command Line Tools on macOS, or an MSVC developer terminal on Windows. MinGW GCC can also be selected through `CC`. Vec1 is built with the package; published platform wheels and container images need no compiler at runtime.
+To work on the 4.0 source, install Python 3.12, uv and a C compiler: GCC/Clang on Linux, Xcode Command Line Tools on macOS, or an MSVC developer terminal on Windows. Python's SQLite must support extension loading; the commands below use uv-managed Python. MinGW GCC can also be selected through `CC`. Vec1 is built with the package; published platform wheels and container images need no compiler at runtime.
 
 ```bash
 git clone https://github.com/YuanYeYouTao/Yuki.git
 cd Yuki
-uv sync --all-extras
+uv sync --all-extras --managed-python
 uv run yuki --help
 ```
 

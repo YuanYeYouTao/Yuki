@@ -33,7 +33,7 @@ jobs:
           mv "${original[0]}" "$RUNNER_TEMP/unrepaired-vec1.whl"
           cp repaired/*.whl dist/
       - name: Verify the actual platform wheel outside its source tree
-        run: uv run --no-project --python 3.12 python scripts/verify_vec1_wheel.py
+        run: uv run --no-project --managed-python --python 3.12 python scripts/verify_vec1_wheel.py
       - uses: actions/upload-artifact@v4
         with:
           name: vec1-wheel-${{ matrix.os }}

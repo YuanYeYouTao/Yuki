@@ -10,10 +10,10 @@
 安装器与配置步骤见[对应版本指南](upgrade-3.9.0.md)。4.0 当前提供源码开发基线，
 从 3.9 迁移见 [4.0 指南](upgrade-4.0.0.md)。
 
-源码开发先安装 Python 3.12、uv 和 C 编译器，平台要求见 [README](../README.md#安装与升级)。
+源码开发先安装 Python 3.12、uv 和 C 编译器，Python 的 SQLite 须支持扩展加载；平台要求见 [README](../README.md#安装与升级)。
 
 ```bash
-uv sync --all-extras
+uv sync --all-extras --managed-python
 uv run yuki --help
 ```
 
