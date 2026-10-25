@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender, make_settings
+from tests.support.automation_claims import collect_due
 from tests.support.event_seed import seed_event
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
@@ -752,7 +753,8 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     requests_before = len(case.provider.requests)
     if wait_for_timer:
         next_due = (await case.repository.get(case.row.id)).next_run_at
-        claimed = await case.repository.claim_due(
+        claimed = await collect_due(
+            case.repository,
             worker_id="independent-original-owner",
             now=next_due,
             lease_seconds=case.settings.automation_lease_seconds,

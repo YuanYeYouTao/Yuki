@@ -128,13 +128,12 @@ async def setup_run(
 
     async def dispatch():
         now = clock.now()
-        rows = await repository.claim_due(
+        async for claimed in repository.claim_due(
             worker_id="fixture-owner",
             now=now,
             lease_seconds=settings.automation_lease_seconds,
             clock=clock.now,
-        )
-        for claimed in rows:
+        ):
             await worker._process_guarded(claimed)
         history = await repository.run_history(row.id)
         case.run = history[0] if history else None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -493,7 +493,7 @@ class AutomationRepository:
         lease_seconds: int,
         enabled: bool = True,
         clock: Callable[[], datetime] | None = None,
-    ) -> tuple[AutomationRecord, ...]:
+    ) -> AsyncIterator[AutomationRecord]:
         timestamp = _aware_utc(now)
 
         def due_at(current: datetime) -> Any:
@@ -510,30 +510,43 @@ class AutomationRepository:
                 .exists(),
             )
 
-        async with self._database.read_session() as session:
-            candidate_ids = (
-                await session.scalars(
-                    select(AutomationModel.id)
-                    .where(
-                        due_at(timestamp),
-                        or_(
-                            AutomationModel.claimed_until.is_(None),
-                            AutomationModel.claimed_until < timestamp,
-                        ),
+        after: tuple[datetime, int] | None = None
+        while True:
+            async with self._database.read_session() as session:
+                page = (
+                    await session.execute(
+                        select(AutomationModel.id, AutomationModel.next_run_at)
+                        .where(
+                            due_at(timestamp),
+                            or_(
+                                AutomationModel.claimed_until.is_(None),
+                                AutomationModel.claimed_until < timestamp,
+                            ),
+                            or_(
+                                AutomationModel.next_run_at > after[0],
+                                and_(
+                                    AutomationModel.next_run_at == after[0],
+                                    AutomationModel.id > after[1],
+                                ),
+                            )
+                            if after is not None
+                            else true(),
+                        )
+                        .order_by(AutomationModel.next_run_at.asc(), AutomationModel.id.asc())
+                        .limit(128)
                     )
-                    .order_by(AutomationModel.next_run_at.asc(), AutomationModel.id.asc())
-                )
-            ).all()
-        claimed: list[AutomationRecord] = []
-        for offset in range(0, len(candidate_ids), 128):
-            page = candidate_ids[offset : offset + 128]
+                ).all()
+            if not page:
+                return
+            after = page[-1].next_run_at, page[-1].id
+            candidate_ids = [candidate.id for candidate in page]
             async with self._database.immediate_session() as session:
                 claimed_at = _aware_utc(clock() if clock is not None else datetime.now(UTC))
                 rows = (
                     await session.scalars(
                         update(AutomationModel)
                         .where(
-                            AutomationModel.id.in_(page),
+                            AutomationModel.id.in_(candidate_ids),
                             due_at(timestamp),
                             or_(
                                 AutomationModel.claimed_until.is_(None),
@@ -582,12 +595,9 @@ class AutomationRepository:
             # The returned ORM columns are the accepted writer snapshot. Parse
             # their original JSON only after commit has positively completed.
             by_id = {row.id: row for row in rows}
-            claimed.extend(
-                _automation_record(by_id[identity], versions[identity])
-                for identity in page
-                if identity in by_id
-            )
-        return tuple(claimed)
+            for identity in candidate_ids:
+                if identity in by_id:
+                    yield _automation_record(by_id[identity], versions[identity])
 
     async def release_claim(
         self,
