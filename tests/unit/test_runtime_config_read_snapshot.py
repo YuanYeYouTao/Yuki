@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
 
@@ -285,3 +285,25 @@ async def test_scoped_null_owner_override_is_rejected_by_current_schema(database
                 )
             )
             await writer.flush()
+
+
+async def test_participation_policy_matches_full_owner_resolution_after_override_delete(database):
+    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    _, _, space, _ = await _owners(database)
+    key = "conversation.auto_reply_enabled"
+    await _override(database, None, False, "global", key=key, value_type="boolean")
+    await _override(database, space, True, "group", key=key, value_type="boolean")
+    await _override(database, None, 0.7, "global", key="llm.temperature", value_type="number")
+    for expected in (True, False):
+        narrow = await runtime.participation_policy(group_id=space)
+        full = await runtime.snapshot(group_id=space)
+        assert narrow == full.conversation_policy()
+        assert narrow.auto_reply_enabled is expected
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                delete(RuntimeConfigOverrideModel).where(
+                    RuntimeConfigOverrideModel.config_key == key,
+                    RuntimeConfigOverrideModel.scope_type == "group",
+                )
+            )
+    assert (await runtime.participation_policy(group_id=None)).auto_reply_enabled is False

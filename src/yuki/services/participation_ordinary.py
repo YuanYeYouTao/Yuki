@@ -609,8 +609,8 @@ async def promote_invitations(service: SemanticParticipationService, item: _Sess
             await service.ordinary.get(int(event_identity), generation=item.scene.generation)
             is not None
         ):
-            item.controller.state.consumed[event.ref.event_id] = event.ref.revision
-            item.controller.state.candidates.pop(event.ref.event_id, None)
+            item.controller.set_state_entry("consumed", event.ref.event_id, event.ref.revision)
+            item.controller.remove_state_entry("candidates", event.ref.event_id)
             continue
         row = await service.ledger.get_event(int(event_identity))
         if row is None:

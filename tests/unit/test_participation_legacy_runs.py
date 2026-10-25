@@ -1,6 +1,5 @@
 """Retired memory proposals recover real Host admission without creating new work."""
 
-import json
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -17,8 +16,10 @@ from tests.support.semantic_participation_host_helpers import (
     _observation,
 )
 from tests.unit.test_participation_feedback import social
+from yuki_participation.controller import State
 from yuki_participation.models import CandidateKind, Proposal, Snapshot, SourceRef, Support
 from yuki_participation.self_report import SelfDelta, SelfReport
+from yuki_participation.snapshot import freeze
 
 from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
 from yuki.conversation.initiative_sources import memory_revision
@@ -135,7 +136,9 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
             "kind": "seed",
         }
         payload["host_checkpoint"]["source_versions"][ref.event_id] = [1, memory_revision(fact)]
-        await host._store.save(json.dumps(payload), expected_revision=item.revision)
+        await host._store.save(
+            freeze(State.model_validate(payload)), expected_revision=item.revision
+        )
         host._sessions.clear()
 
         restored = await host._session(item.scene)
@@ -263,7 +266,9 @@ async def test_legacy_ordinary_memory_basis_uses_current_exact_authorized_source
             },
             "expressions": {},
         }
-        await host._store.save(json.dumps(payload), expected_revision=item.revision)
+        await host._store.save(
+            freeze(State.model_validate(payload)), expected_revision=item.revision
+        )
         host._sessions.clear()
         restored = await host._session(item.scene)
         await host._hydrate(restored)

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yuki_participation.controller import Controller, State, original_actor
+from yuki_participation.controller import Controller, original_actor
 from yuki_participation.models import (
     CandidateKind,
     Feedback,
@@ -31,9 +31,10 @@ from yuki_participation.models import (
 )
 from yuki_participation.observer import JevObserver
 from yuki_participation.session import ObservationSession
+from yuki_participation.snapshot import Layout, freeze, thaw
 
 from yuki.admin.config_service import RuntimeConfigService
-from yuki.admin.models import RuntimeConfigSnapshot
+from yuki.admin.models import ConversationRuntimeConfig, RuntimeConfigSnapshot
 from yuki.config import Settings
 from yuki.conversation.autonomy_binding import (
     AcceptedInitiative,
@@ -63,7 +64,7 @@ from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from yuki.memory.self_origin import read_self_initiative_facts
 from yuki.persistence.database import Database
-from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
@@ -124,7 +125,9 @@ class _Session:
     controller: Controller
     observation: ObservationSession | None
     revision: int
-    saved: str
+    layout: Layout | None = None
+    context: tuple[ConversationReadVersion, tuple[EventRecord, ...]] | None = None
+    social_effects: tuple[tuple[tuple[Any, ...], ...], dict[str, Any]] | None = None
     pins: int = 0
 
 
@@ -481,7 +484,7 @@ class SemanticParticipationService:
         loaded = await self._store.load(scene.scope)
         controller = (
             Controller.restore(
-                State.model_validate_json(loaded[1]), time.time(), self._model_parameters
+                thaw(scene.scope, loaded[1], loaded[2]), time.time(), self._model_parameters
             )
             if loaded
             else Controller(scene.scope, time.time(), self._model_parameters)
@@ -501,7 +504,6 @@ class SemanticParticipationService:
             controller,
             observation,
             loaded[0] if loaded else 0,
-            loaded[1] if loaded else "",
         )
         self._sessions[key] = item
         return item
@@ -512,11 +514,22 @@ class SemanticParticipationService:
                 return
             if item.observation is not None:
                 item.observation.checkpoint()
-            # The controller stays on the event loop; only immutable JSON crosses threads.
-            payload = item.controller.state.model_dump_json()
-            if payload == item.saved:
+            # The original save lock owns capture. No await separates the current
+            # revision, dirty flags and the immutable bytes crossing to the Store.
+            progress_changed, changed = item.controller.take_changes()
+            if not progress_changed and not changed and item.layout is not None:
                 return
-            save = asyncio.create_task(self._store.save(payload, expected_revision=item.revision))
+            try:
+                payload = freeze(
+                    item.controller.state, body_changed=changed, saved_layout=item.layout
+                )
+                save = asyncio.create_task(
+                    self._store.save(payload, expected_revision=item.revision)
+                )
+            except BaseException:
+                item.controller.body_changed |= changed
+                item.controller.progress_changed |= progress_changed
+                raise
             cancelled = False
             try:
                 while not save.done():
@@ -528,6 +541,8 @@ class SemanticParticipationService:
                         cancelled = True
                 revision = save.result()
             except Exception as exc:
+                item.controller.body_changed |= changed
+                item.controller.progress_changed |= progress_changed
                 if cancelled:
                     logger.warning(
                         "participation_snapshot_save_failed category=%s", type(exc).__name__
@@ -535,19 +550,26 @@ class SemanticParticipationService:
                     raise asyncio.CancelledError from exc
                 raise
             item.revision = revision
-            item.saved = payload
+            item.layout = payload.layout
             if cancelled:
                 raise asyncio.CancelledError
 
     async def _binding(
-        self, item: _Session, *, runtime: RuntimeConfigSnapshot | None = None
+        self,
+        item: _Session,
+        *,
+        runtime: RuntimeConfigSnapshot | ConversationRuntimeConfig | None = None,
     ) -> AutonomyBinding:
         scene = item.scene
         if runtime is None:
             runtime = await self.runtime_config.snapshot(
                 group_id=scene.space_id if scene.enabled else None
             )
-        policy = runtime.conversation_policy()
+        policy = (
+            runtime
+            if isinstance(runtime, ConversationRuntimeConfig)
+            else runtime.conversation_policy()
+        )
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
         if prior is None:
             prior = await self.repository.ensure_binding(scene.conversation_id, scene.generation)
@@ -582,11 +604,22 @@ class SemanticParticipationService:
         if row.author_is_human() and not row.author_person_id:
             return None
         key = f"event:{row.id}"
-        versions = cast(dict[str, Any], state.host_checkpoint.setdefault("source_versions", {}))
+        versions = cast(dict[str, Any], state.host_checkpoint.get("source_versions", {}))
         prior = versions.get(key)
         digest = str(source_revision(row))
         revision = prior[0] if prior and prior[1] == digest else (prior[0] + 1 if prior else 1)
-        versions[key] = [revision, digest]
+        old = state.events.get(key)
+        if (
+            prior is not None
+            and prior[1] == digest
+            and old is not None
+            and old.ref.revision == revision
+            and len(versions) <= 1024
+        ):
+            return old
+        if versions.get(key) != [revision, digest] or len(versions) > 1024:
+            versions = dict(versions)
+            versions[key] = [revision, digest]
         for expired in tuple(versions):
             if (
                 len(versions) > 1024
@@ -604,6 +637,7 @@ class SemanticParticipationService:
                 )
             ):
                 versions.pop(expired)
+        item.controller.set_state_entry("host_checkpoint", "source_versions", versions)
         ref = SourceRef(event_id=key, revision=revision)
         old = state.events.get(ref.event_id)
         # Rereading an immutable source never rewrites its old unit projection.
@@ -701,16 +735,18 @@ class SemanticParticipationService:
         item: _Session,
         direct: dict[int, bool] | None = None,
         *,
-        runtime: RuntimeConfigSnapshot | None = None,
-    ) -> RuntimeConfigSnapshot | None:
+        runtime: RuntimeConfigSnapshot | ConversationRuntimeConfig | None = None,
+        policy_only: bool = False,
+    ) -> RuntimeConfigSnapshot | ConversationRuntimeConfig | None:
         version, rows = await self.ledger.read_scope_context(
-            item.scene.identity, limit=64, message_only=True
+            item.scene.identity, limit=64, message_only=True, previous=item.context
         )
         if (
             version.generation != item.scene.generation
             or version.conversation_id != item.scene.conversation_id
         ):
             return None
+        item.context = (version, rows)
         identity = await prepare_actor_identity(
             self, item, (row.author_person_id for row in rows if row.author_person_id)
         )
@@ -806,12 +842,18 @@ class SemanticParticipationService:
         )
 
         if runtime is None:
-            runtime = await self.runtime_config.snapshot(
-                group_id=item.scene.space_id if item.scene.enabled else None
+            reader = (
+                self.runtime_config.participation_policy
+                if policy_only
+                else self.runtime_config.snapshot
             )
-        observe_enabled = (
-            item.scene.enabled and runtime.conversation_policy().semantic_participation_enabled
+            runtime = await reader(group_id=item.scene.space_id if item.scene.enabled else None)
+        policy = (
+            runtime
+            if isinstance(runtime, ConversationRuntimeConfig)
+            else runtime.conversation_policy()
         )
+        observe_enabled = item.scene.enabled and policy.semantic_participation_enabled
         units = {
             identity: admission_unit_binding(admission)
             for identity, admission in current_admissions.items()
@@ -851,7 +893,7 @@ class SemanticParticipationService:
                     continuation=admission_continuation(current_admissions[row.id]),
                 )
             if row.id in recovered:
-                item.controller.state.consumed[event.ref.event_id] = event.ref.revision
+                item.controller.set_state_entry("consumed", event.ref.event_id, event.ref.revision)
             if (
                 fresh
                 and event.kind == "human"
@@ -1175,7 +1217,9 @@ class SemanticParticipationService:
                     ),
                 )
                 if result.run is not None:
-                    item.controller.state.consumed[event.ref.event_id] = event.ref.revision
+                    item.controller.set_state_entry(
+                        "consumed", event.ref.event_id, event.ref.revision
+                    )
                     await self._save(item)
                     await self._dispatch(result.run)
                     return True
@@ -1388,7 +1432,7 @@ class SemanticParticipationService:
 
         rows = await _scope_social_rows(self, scene.conversation_id)
         await sync_scope_effects(self, item, rows=rows)
-        runtime = await self._hydrate(item, direct)
+        runtime = await self._hydrate(item, direct, policy_only=True)
         if runtime is None:
             return
         # Hydration creates real SourceRefs; bind late anchors with the same
@@ -1406,32 +1450,30 @@ class SemanticParticipationService:
         # After observer/external work below, _binding reads current policy again.
         binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
-            identity = await prepare_actor_identity(
-                self,
-                item,
-                (
-                    event.author
-                    for event in item.controller.state.events.values()
-                    if event.kind == "human"
-                ),
-            )
-            await item.observation.evaluate_due(
-                time.time(),
-                actor_identity=identity,
-            )
-            # A real source may change while Jev is in flight. Stops have no
-            # remaining candidate, so invalidate their original dependencies
-            # before promotion, scheduling or saving the derived snapshot.
+            now = time.time()
+            # Cleanup is independent of provider availability. Pending quiet
+            # reviews still resolve current identities while Jev backs off.
+            identity: Callable[[str], str] = original_actor
+            item.observation.queue.discard_unavailable(now, item.controller.state.events)
+            if item.observation.queue.pending:
+                identity = await prepare_actor_identity(self, item)
+            now = time.time()
+            if item.observation.ready(now):
+                await item.observation.evaluate_due(now, actor_identity=identity)
+            else:
+                item.observation.maintain(now, actor_identity=identity)
+            # Identity/binding reads can also yield to a source withdrawal.
+            # Preserve the original post-observation verification stage.
             await self._validate_boundaries(item)
         current_scene = await self._scene(scene.conversation_id)
         if current_scene is None or current_scene.generation != scene.generation:
             return
         item.scene = current_scene
-        runtime = await self.runtime_config.snapshot(
+        runtime = await self.runtime_config.participation_policy(
             group_id=current_scene.space_id if current_scene.enabled else None
         )
         binding = await self._binding(item, runtime=runtime)
-        policy = runtime.conversation_policy()
+        policy = runtime
         allowed_kinds = frozenset(
             kind
             for kind, allowed in ((CandidateKind.CONVERSATION, policy.auto_reply_enabled),)

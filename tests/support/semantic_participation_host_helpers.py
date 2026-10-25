@@ -133,7 +133,14 @@ def _message(event):
 
 
 async def _host(database, tmp_path, *, observer=True):
-    policy = SimpleNamespace(
+    from yuki.admin.models import ConversationRuntimeConfig
+
+    policy = ConversationRuntimeConfig(
+        autonomous_debounce_seconds=3,
+        autonomous_admission_threshold=1,
+        autonomous_batch_limit=64,
+        autonomous_presence_window_seconds=300,
+        interrupt_autonomous_on_new_message=True,
         autonomous_enabled=True,
         semantic_participation_enabled=True,
         auto_reply_enabled=True,
@@ -157,6 +164,7 @@ async def _host(database, tmp_path, *, observer=True):
         runtime_config=SimpleNamespace(
             inspect_configs=config.inspect_configs,
             snapshot=AsyncMock(return_value=SimpleNamespace(conversation_policy=lambda: policy)),
+            participation_policy=AsyncMock(return_value=policy),
         ),
         validate_turn_snapshot=AsyncMock(return_value=True),
         promote=AsyncMock(),

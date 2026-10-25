@@ -310,7 +310,12 @@ class EventLedgerRepository:
         return _event_record(row) if row is not None else None
 
     async def read_scope_context(
-        self, scope: ConversationScope, *, limit: int, message_only: bool = False
+        self,
+        scope: ConversationScope,
+        *,
+        limit: int,
+        message_only: bool = False,
+        previous: tuple[ConversationReadVersion, tuple[EventRecord, ...]] | None = None,
     ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
         """Read the current generation, retaining its version for dispatch validation."""
         async with self._database.read_session() as session:
@@ -325,6 +330,19 @@ class EventLedgerRepository:
             )
             if message_only:
                 query = query.where(ChatEventModel.event_kind == "message")
+            if previous is not None and previous[0] == version:
+                # The same narrow ID selection proves page membership, including
+                # insertions and callers changing limit/message_only. The source
+                # revision independently covers body corrections and deletions.
+                ids = tuple(
+                    await session.scalars(
+                        query.with_only_columns(ChatEventModel.id)
+                        .order_by(ChatEventModel.id.desc())
+                        .limit(limit)
+                    )
+                )
+                if ids == tuple(row.id for row in reversed(previous[1])):
+                    return version, previous[1]
             rows = list(
                 (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
             )

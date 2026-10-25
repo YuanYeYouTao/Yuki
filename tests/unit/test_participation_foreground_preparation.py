@@ -14,6 +14,7 @@ from tests.unit.test_participation_ordinary_feedback import ordinary_expression
 from tests.unit.test_participation_pipeline_retirement import _relationship
 from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfDelta
+from yuki_participation.snapshot import thaw
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
@@ -237,8 +238,12 @@ async def test_hint_cancellation_keeps_actual_saved_revision_and_quiet_before_pr
         with pytest.raises(asyncio.CancelledError):
             await task
         assert item.pins == 0
-        loaded_revision, loaded_json = await host._store.load(item.scene.scope)
-        assert item.revision == loaded_revision and item.saved == loaded_json
+        loaded_revision, progress, body = await host._store.load(item.scene.scope)
+        assert item.revision == loaded_revision
+        assert (
+            thaw(item.scene.scope, progress, body).model_dump_json()
+            == item.controller.state.model_dump_json()
+        )
         host._sessions.clear()
         restored = await host._session(item.scene)
         checkpoint = ParticipationCheckpoint.model_validate(

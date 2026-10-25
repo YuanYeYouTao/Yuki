@@ -69,6 +69,7 @@ async def setup(database, *, owner=AutonomyOwner.SEMANTIC):
     )
     item = SimpleNamespace(
         controller=controller,
+        social_effects=None,
         scene=SimpleNamespace(
             conversation_id=scene.conversation,
             generation=1,

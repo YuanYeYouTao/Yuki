@@ -135,12 +135,18 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
     host.runtime_config = runtime_config
     requested_groups = []
     original_snapshot = runtime_config.snapshot
+    original_policy = runtime_config.participation_policy
 
     async def snapshot(**kwargs):
         requested_groups.append(kwargs.get("group_id"))
         return await original_snapshot(**kwargs)
 
+    async def participation_policy(**kwargs):
+        requested_groups.append(kwargs.get("group_id"))
+        return await original_policy(**kwargs)
+
     runtime_config.snapshot = snapshot
+    runtime_config.participation_policy = participation_policy
     try:
         event = await _event_and_route(database, host.ledger)
         item = await host._session(await host._scene(event.canonical_conversation_id))
