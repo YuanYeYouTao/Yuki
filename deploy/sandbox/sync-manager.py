@@ -115,6 +115,11 @@ def sync_manager(container: str, manager_root: Path, override: Path) -> dict[str
                 raise ValueError("Existing release differs from the selected Bot; keep it intact")
         else:
             staged.rename(release)
+    # Published code is read by the Bot UID as well as the root Manager.
+    # These directories are created here, so their public traversal cannot
+    # depend on the installer's private umask. Keep staged exports private.
+    for directory in (release.parent, release, source, source / "yuki"):
+        directory.chmod(0o755)
     override.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(override.stat().st_mode) if override.exists() else 0o644
     descriptor, name = tempfile.mkstemp(dir=override.parent, prefix=".manager-source-")

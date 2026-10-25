@@ -10,8 +10,11 @@ import shlex
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
+import venv
 from pathlib import Path
 from types import ModuleType
 
@@ -189,3 +192,111 @@ def test_shared_checker_has_no_site_package_dependencies(tmp_path):
         check=True,
     )
     assert "--socket" in result.stdout and "--artifact-store" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "linux" or os.geteuid() != 0, reason="Actual Linux UID 10001")
+def test_public_source_can_be_read_by_bot_uid_after_private_umask_and_same_source_reinstall(
+    monkeypatch, sync
+):
+    revision = "c" * 40
+    with tempfile.TemporaryDirectory(prefix="yuki-manager-public-source-") as temporary:
+        root = Path(temporary)
+        root.chmod(0o755)
+        manager = root / "manager"
+        manager.mkdir(mode=0o755)
+        private = manager / "private"
+        private.mkdir(mode=0o700)
+        data = private / "original-data"
+        data.write_bytes(b"original private data")
+        data.chmod(0o600)
+        override = private / "source.conf"
+        override.write_text('[Service]\nEnvironment="PRIVATE_VALUE=keep original"\n')
+        override.chmod(0o600)
+        monkeypatch.setattr(
+            sync,
+            "command",
+            lambda *args: f"image\n{revision}" if args[1] == "inspect" else "/installed/yuki",
+        )
+
+        def copy(args, *, check):
+            assert check and args[:2] == ["docker", "cp"]
+            package = Path(args[-1])
+            directory_mode = stat.S_IMODE(package.stat().st_mode)
+            shutil.copytree(ROOT / "src/yuki", package, dirs_exist_ok=True)
+            # Docker preserves the installed package's 0755/0644 children,
+            # rather than the Windows checkout's synthetic executable modes.
+            for item in package.rglob("*"):
+                item.chmod(0o755 if item.is_dir() else 0o644)
+            package.chmod(directory_mode)
+
+        environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        python_root = root / "venv"
+        venv.EnvBuilder(with_pip=False).create(python_root)
+        python = python_root / "bin/python"
+        # No installed Bot package and no inherited import path can satisfy this check.
+        subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import importlib.util; assert importlib.util.find_spec('yuki') is None",
+            ],
+            env=environment,
+            cwd=root,
+            user=10001,
+            group=10001,
+            extra_groups=[],
+            check=True,
+        )
+        release = manager / "releases" / revision
+        source = release / "src"
+        for reinstall in (False, True):
+            if reinstall:
+                # Reproduce an already published same-byte release from the bad install.
+                for directory in (release, source, source / "yuki"):
+                    directory.chmod(0o700)
+            previous_umask = os.umask(0o077)
+            try:
+                with monkeypatch.context() as copying:
+                    copying.setattr(sync.subprocess, "run", copy)
+                    result = sync.sync_manager("original-bot", manager, override)
+            finally:
+                os.umask(previous_umask)
+            assert Path(result["source"]) == source
+            checked = subprocess.run(
+                [str(python), "-m", "yuki.sandbox.deployment_check", "--help"],
+                env={**environment, "PYTHONPATH": str(source)},
+                cwd=root,
+                user=10001,
+                group=10001,
+                extra_groups=[],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert "--socket" in checked.stdout and "--artifact-store" in checked.stdout
+            subprocess.run(
+                [
+                    str(python),
+                    "-c",
+                    "import os, yuki.sandbox.deployment_check as checker; "
+                    "assert os.geteuid() == 10001; "
+                    "assert not os.access(checker.__file__, os.W_OK)",
+                ],
+                env={**environment, "PYTHONPATH": str(source)},
+                cwd=root,
+                user=10001,
+                group=10001,
+                extra_groups=[],
+                check=True,
+            )
+            assert all(
+                stat.S_IMODE(directory.stat().st_mode) == 0o755
+                for directory in (release.parent, release, source, source / "yuki")
+            )
+            assert sync.source_files(source / "yuki") == sync.source_files(ROOT / "src/yuki")
+            assert data.read_bytes() == b"original private data"
+            assert stat.S_IMODE(private.stat().st_mode) == 0o700
+            assert stat.S_IMODE(data.stat().st_mode) == 0o600
+            assert stat.S_IMODE(override.stat().st_mode) == 0o600
+            assert 'Environment="PRIVATE_VALUE=keep original"' in override.read_text()
