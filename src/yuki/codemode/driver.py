@@ -896,15 +896,21 @@ class CodeModeDriver:
 
     async def _bounded_result(self, body: dict[str, Any], parent_key: str) -> str:
         """Budget the final JSON, retaining control facts and original leaf refs."""
+        from yuki.tool_results.json_length import json_character_count, json_string_prefix
 
         def encode() -> str:
             return json.dumps(body, ensure_ascii=False, default=str, separators=(",", ":"))
 
-        result = encode()
-        if len(result) <= self.host.result_limit:
-            return result
+        def fits() -> bool:
+            size = json_character_count(body, limit=self.host.result_limit, compact=True)
+            return size is not None and size <= self.host.result_limit
+
+        if fits():
+            return encode()
         if self.host.archive is not None:
+            result = encode()
             reference = await self.host.archive(result)
+            del result
             if reference is not None:
                 body["summary_ref"] = reference
         operations = body["operations"]
@@ -918,41 +924,48 @@ class CodeModeDriver:
                 },
             )
             body["operations"] = []
-        if "result" in body and len(encode()) > self.host.result_limit:
+        if "result" in body and not fits():
             body["result_preview"] = json.dumps(body.pop("result"), ensure_ascii=False, default=str)
             body.update(complete=False, truncated=True)
         # Shrink text only when it actually exists and is removed. JSON escaping
         # is included in every measurement; an empty stdout is not truncated.
         for key in ("result_preview", "stdout", "detail"):
             text = body.get(key)
-            if not isinstance(text, str) or len(encode()) <= self.host.result_limit:
+            if not isinstance(text, str) or fits():
                 continue
-            low, high = 0, len(text)
-            while low < high:
-                middle = (low + high + 1) // 2
-                body[key] = text[:middle]
-                if len(encode()) <= self.host.result_limit:
-                    low = middle
-                else:
-                    high = middle - 1
+            body[key] = ""
+            fixed = json_character_count(body, limit=self.host.result_limit, compact=True)
+            low = (
+                json_string_prefix(text, self.host.result_limit - fixed)
+                if fixed is not None and fixed <= self.host.result_limit
+                else 0
+            )
             body[key] = text[:low]
             if key == "stdout" and low < len(text):
                 body["stdout_truncated"] = True
         # IDs in the paired original remain intact; oversized display facts use
         # a digest that can be checked against that original, never a new ID.
         for key in ("uncertain_operation_id", "snapshot_reason", "control"):
-            if len(encode()) <= self.host.result_limit:
+            if fits():
                 break
             if key in body:
                 value = json.dumps(body.pop(key), ensure_ascii=False, default=str)
                 body[key + "_ref_sha256"] = hashlib.sha256(value.encode()).hexdigest()
         # Fill the remaining budget with a prefix of the operation summaries.
         if operations:
-            for operation in operations:
-                body["operations"].append(operation)
-                if len(encode()) > self.host.result_limit:
-                    body["operations"].pop()
-                    break
+            used = json_character_count(body, limit=self.host.result_limit, compact=True)
+            if used is not None and used <= self.host.result_limit:
+                for operation in operations:
+                    size = json_character_count(
+                        operation, limit=self.host.result_limit, compact=True
+                    )
+                    added = (size if size is not None else self.host.result_limit + 1) + bool(
+                        body["operations"]
+                    )
+                    if used + added > self.host.result_limit:
+                        break
+                    body["operations"].append(operation)
+                    used += added
         result = encode()
         return result
 
