@@ -32,6 +32,13 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - run: uv build --wheel --out-dir dist
+      - name: Tag the actual Linux ABI requirements
+        if: runner.os == 'Linux'
+        run: |
+          original=(dist/*.whl)
+          uv tool run --from auditwheel --with patchelf auditwheel repair --wheel-dir repaired "${original[0]}"
+          mv "${original[0]}" "$RUNNER_TEMP/unrepaired-vec1.whl"
+          cp repaired/*.whl dist/
       - run: uv run --no-project --python 3.12 python scripts/verify_vec1_wheel.py
       - uses: actions/upload-artifact@v4
         with:
