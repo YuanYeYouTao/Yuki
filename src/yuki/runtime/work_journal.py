@@ -124,7 +124,6 @@ class WorkJournal:
         *,
         source_control: WorkControl | None = None,
     ) -> JournalSnapshot:
-        self.objects.clear_record_cache()
         if source_control is not None and (
             source_control.lease != lease
             or source_control.current is None
@@ -328,7 +327,6 @@ class WorkJournal:
         source_actor_person_id: str | None = None,
     ) -> None:
         await self.objects.refresh_policy()
-        self.objects.begin_record_chain(work_id, transcript.chain_id)
         request = transcript.request()
         encoded_items: list[dict[str, Any]] = []
         item_digests: list[str | None] = []

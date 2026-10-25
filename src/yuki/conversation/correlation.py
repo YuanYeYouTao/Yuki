@@ -27,27 +27,29 @@ def _token(raw: str | None) -> str | None:
     return value or None
 
 
-async def require_live_conversation(session: AsyncSession, conversation_id: str | None) -> str:
+async def require_live_conversation(
+    session: AsyncSession, conversation_id: str | None
+) -> CanonicalConversationModel:
     """Resolve a live Conversation and reject canonical IDs of another kind."""
 
     token = _token(conversation_id)
     if token is None:
         raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
+    conversation = await session.get(CanonicalConversationModel, token)
+    if conversation is not None:
+        return conversation
     if (
         await session.get(PresenceModel, token) is not None
         or await session.get(CanonicalPersonModel, token) is not None
         or await session.get(CanonicalSpaceModel, token) is not None
     ):
         raise CanonicalIdentityError(CANONICAL_KIND_MISMATCH)
-    conversation = await session.get(CanonicalConversationModel, token)
-    if conversation is None:
-        raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
-    return conversation.id
+    raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
 
 
-async def try_live_conversation_id(
+async def try_live_conversation(
     session: AsyncSession, conversation_id: str | None
-) -> str | None:
+) -> CanonicalConversationModel | None:
     if _token(conversation_id) is None:
         return None
     try:
@@ -63,7 +65,8 @@ async def stamp_conversation_correlation(
     row: ConversationCorrelationRow,
     proven: str | None,
 ) -> None:
-    conversation_id = await try_live_conversation_id(session, proven)
+    conversation = await try_live_conversation(session, proven)
+    conversation_id = conversation.id if conversation is not None else None
     assert_same_shadow(row.canonical_conversation_id, conversation_id)
     if row.canonical_conversation_id is None:
         row.canonical_conversation_id = conversation_id
@@ -98,5 +101,5 @@ __all__ = [
     "load_correlated_chat_event",
     "require_live_conversation",
     "stamp_conversation_correlation",
-    "try_live_conversation_id",
+    "try_live_conversation",
 ]

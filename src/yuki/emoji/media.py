@@ -12,8 +12,6 @@ import warnings
 import zlib
 from typing import Any, BinaryIO
 
-from PIL import Image, UnidentifiedImageError
-
 
 def _ebml_value(stream: BinaryIO, *, identifier: bool = False) -> int:
     first = stream.read(1)
@@ -92,6 +90,8 @@ def media_facts(stream: BinaryIO, *, inspect_pixels: bool = True) -> dict[str, A
         known = {"image_format": "BMP", "mime_type": "image/bmp"}
     if not inspect_pixels:
         return known
+    from PIL import Image, UnidentifiedImageError
+
     try:
         with warnings.catch_warnings(), Image.open(stream) as image:
             warnings.simplefilter("ignore", Image.DecompressionBombWarning)

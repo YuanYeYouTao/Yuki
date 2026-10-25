@@ -408,7 +408,7 @@ class ChatImage:
             raise ValueError("invalid image source")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class ChatMessage:
     """A message sent to a chat completion API, including tool-call turns."""
 
@@ -485,7 +485,7 @@ class ResponseCitation:
     snippet: str | None = field(default=None, repr=False)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class FunctionCallOutput:
     """Result of a local Function Tool for a Responses continuation."""
 

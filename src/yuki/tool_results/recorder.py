@@ -15,7 +15,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.correlation import (
     load_correlated_chat_event,
     require_live_conversation,
-    try_live_conversation_id,
+    try_live_conversation,
 )
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.identity.db_models import (
@@ -97,7 +97,10 @@ class ToolReceiptRepository:
         receipt: dict[str, Any] | None = None
         guards: list[Any] = []
         async with self._database.read_session() as session:
-            proven_conversation = await try_live_conversation_id(session, canonical_conversation_id)
+            source_conversation = await try_live_conversation(session, canonical_conversation_id)
+            proven_conversation = (
+                source_conversation.id if source_conversation is not None else None
+            )
             privacy_generation = (
                 audit_source[2]
                 if audit_source is not None
