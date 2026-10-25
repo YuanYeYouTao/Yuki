@@ -1,5 +1,6 @@
 .git
 .venv
+src/yuki/_native
 .env
 character
 config/system_prompt.md

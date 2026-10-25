@@ -16,6 +16,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="yuki-vec1-wheel-") as temporary:
         with zipfile.ZipFile(wheel) as archive:
             files = [name for name in archive.namelist() if name.startswith("yuki/_native/")]
+            assert not any(name.endswith((".o", ".obj", ".lib", ".exp")) for name in files), files
             (library,) = [name for name in files if name.endswith((".dll", ".so", ".dylib"))]
             # Extract one known wheel resource, not arbitrary paths from the archive.
             path = Path(temporary) / Path(library).name
