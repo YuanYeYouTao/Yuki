@@ -308,20 +308,34 @@ class ToolResultBudgeter:
         )
 
 
-def artifact_page_fits(value: object, max_characters: int) -> bool:
-    """Size the exact final read-only envelope against its configured character budget."""
-    try:
-        payload = ToolExecutionResult(
+def artifact_page_size(value: object, limit: int | None = None) -> int | None:
+    """Count the actual success or error envelope of the Artifact binding."""
+    from yuki.tool_results.json_length import json_character_count
+
+    if isinstance(value, dict) and isinstance(value.get("error_code"), str):
+        data = {key: item for key, item in value.items() if key not in {"error_code", "detail"}}
+        result = ToolExecutionResult(
+            ok=False,
+            data=data or None,
+            error_code=value["error_code"],
+            public_message=str(value.get("detail") or "Artifact 读取失败"),
+            provider_id="artifacts",
+            tool_name="read_tool_artifact",
+        )
+    else:
+        result = ToolExecutionResult(
             ok=True,
             data=value,
             mutation_committed=False,
             provider_id="artifacts",
             tool_name="read_tool_artifact",
-        ).model_payload()
-        rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        return len(rendered) <= max_characters
-    except (RecursionError, ValueError):
-        return False
+        )
+    return json_character_count(result.model_payload(), limit=limit)
+
+
+def artifact_page_fits(value: object, max_characters: int) -> bool:
+    size = artifact_page_size(value, max_characters)
+    return size is not None and size <= max_characters
 
 
 def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:

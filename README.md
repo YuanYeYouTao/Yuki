@@ -86,12 +86,12 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 
 使用现成部署包，可从 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) 下载，按 [3.9.0 安装与升级指南](docs/upgrade-3.9.0.md)配置。它的镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`，提供 Linux amd64 和 arm64。
 
-开发 4.0 源码需要 Python 3.12 和 uv：
+开发 4.0 源码需要 Python 3.12、uv 和 C 编译器。Python 的 SQLite 须支持扩展加载，以下使用 uv 管理的 Python。Linux 使用 GCC/Clang，macOS 使用 Xcode Command Line Tools，Windows 在 MSVC 开发者终端执行，或用 `CC` 指定 MinGW GCC。Vec1 随包构建；安装已发布的平台 wheel 或使用镜像时无需编译器。
 
 ```bash
 git clone https://github.com/YuanYeYouTao/Yuki.git
 cd Yuki
-uv sync --all-extras
+uv sync --all-extras --managed-python
 uv run yuki --help
 ```
 
@@ -99,9 +99,11 @@ uv run yuki --help
 
 后续开发的 B1–B6 代码清理包含连接器 `0.2.0` / WSS 协议 `2` 配套升级、Memory Fake 结果修正及旧 CLI/Python 表面撤销，见[兼容与升级说明](docs/upgrade-code-deletion-20261023.md)。这不代表新的正式 Release 或已部署状态。
 
-4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。当前开发源码为 schema **0148**、Plugin API **7.1**、manifest **30**；聊天历史支持平台/群私聊组合筛选、可分页的原入口/话题发现，显式查询可读取重开上下文前的记录。
+4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。当前开发源码为 schema **0153**、Plugin API **8.0**、manifest **33**；聊天历史支持平台/群私聊组合筛选、可分页的原入口/话题发现，显式查询可读取重开上下文前的记录。
 
 旧库的正文索引转换需要停业务写入，完成升级后再启动 Bot；本次0148仅增加来源定位索引，不重建全文。升级前备份数据库、配置、插件和工作文件，详见[现行历史读取合同](docs/architecture/chat-history.md)、[原实施记录](docs/operations/chat-history-448-implementation-20261022.md)与[来源及执行优化任务书](docs/architecture/Yuki-聊天来源发现与检索执行删减优化任务书-2026-10-22.md)。
+
+0153 将已有向量原样移入同库 Vec1 表，不重新调用 Embedding API。升级前停止旧 writer 并备份主库与参与快照文件，使用带 Vec1 的新构建完成迁移后再启动；步骤及本地性能对照见[算法优化实施记录](docs/operations/algorithm-performance-implementation-20261026.md)。
 
 ## 架构与开发
 

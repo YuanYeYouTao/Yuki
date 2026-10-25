@@ -9,6 +9,37 @@ permissions:
   contents: read
 
 jobs:
+  vec1:
+    name: Vec1 native package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          enable-cache: true
+      - run: uv build --wheel --out-dir dist
+      - name: Tag the actual Linux ABI requirements
+        if: runner.os == 'Linux'
+        run: |
+          original=(dist/*.whl)
+          uv tool run --from auditwheel --with patchelf auditwheel repair --wheel-dir repaired "${original[0]}"
+          mv "${original[0]}" "$RUNNER_TEMP/unrepaired-vec1.whl"
+          cp repaired/*.whl dist/
+      - name: Verify the actual platform wheel outside its source tree
+        run: uv run --no-project --managed-python --python 3.12 python scripts/verify_vec1_wheel.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vec1-wheel-${{ matrix.os }}
+          path: dist/*.whl
+          retention-days: 7
+
   connector:
     name: Local Agent Connector (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -103,12 +134,17 @@ jobs:
           ENV UV_PROJECT_ENVIRONMENT=/opt/yuki-tests UV_PYTHON_INSTALL_DIR=/opt/yuki-python
           WORKDIR /opt/yuki-source
           COPY pyproject.toml uv.lock README.md LICENSE ./
+          COPY hatch_build.py ./
+          COPY scripts/build_vec1.py ./scripts/
+          COPY vendor/sqlite-vec1 ./vendor/sqlite-vec1
           COPY src ./src
-          RUN uv python install 3.12.13 \
+          RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+              && uv python install 3.12.13 \
               && uv sync --frozen --all-extras --no-editable --python 3.12.13 \
               && /opt/yuki-tests/bin/python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"CREATE VIRTUAL TABLE f USING fts5(tokens, content='', contentless_delete=1, detail=none, tokenize='ascii')\"); c.execute(\"INSERT INTO f(rowid,tokens) VALUES(1,'capability')\"); c.execute('DELETE FROM f WHERE rowid=1'); print('SQLite', sqlite3.sqlite_version)"
           DOCKERFILE
           docker build -f "$RUNNER_TEMP/Dockerfile.headed-tests" -t yuki-environment:headed-tests .
+          python3 scripts/build_vec1.py
       - name: Test real display, browser input, control and original receipts offline
         run: |
           mkdir -p test-results

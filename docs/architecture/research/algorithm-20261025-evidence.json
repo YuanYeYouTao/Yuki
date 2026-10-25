@@ -1,0 +1,118 @@
+{
+  "date": "2026-10-25",
+  "status": "Research and task design; no business implementation or deployment",
+  "main_revision": "75e21a5c824876485d75e7fcd58e8111bdddeb4d",
+  "production_business_revision": "35b49fe9ee001c8f51ec5a5c59a41687130493bc",
+  "participation_revision": "79d266918dc6ce19b7d81568565deaed450301d5",
+  "privacy": "Only aggregate metadata and synthetic examples. No conversation text, vectors, credentials, platform references or raw provider requests.",
+  "production_observations": {
+    "bot_sample": {
+      "utc_start": "2026-10-25T14:03:24.647618Z",
+      "seconds": 11.518,
+      "method": "25 Hz nonblocking py-spy plus cgroup counters; temporary profiler removed",
+      "cpu_percent_one_core": 36.0164,
+      "cpu_percent_two_core_host": 18.0082,
+      "memory_bytes_before": 321191936,
+      "memory_bytes_after": 321064960,
+      "swap_bytes_after": 191668224,
+      "threads_before_after": [18, 18],
+      "fd_before_after": [48, 48],
+      "qualification": "Not a leak test or per-function CPU attribution; waiting-thread samples are not CPU work."
+    },
+    "participation": {
+      "utc_window": ["2026-10-25T14:07:40.374226Z", "2026-10-25T14:07:46.396498Z"],
+      "scopes_with_unchanged_chat_watermark_and_snapshot_updates": 8,
+      "revision_increase_range": [2, 3],
+      "combined_active_payload_bytes": 447351,
+      "all_historical_snapshot_rows": 41,
+      "all_historical_payload_bytes": 6102403,
+      "qualification": "Snapshot lengths are not physical disk writes or RSS. An unchanged chat watermark does not exclude other real source changes."
+    },
+    "dream": {
+      "candidate_metadata_upper_bound": 1519,
+      "partition_count": 102,
+      "dimensions": 1024,
+      "largest_partition_candidates": 324,
+      "largest_partition_pair_upper_bound": 52326,
+      "sum_partition_pairs_upper_bound": 82032,
+      "active_planned_or_running": 0,
+      "qualification": "Metadata did not decode or validate vector bodies; unchanged partitions can be skipped in incremental operation."
+    },
+    "sticker_single_readonly_probe": {
+      "docker_python_noop_seconds": 1.5272,
+      "helper_help_importtime_total_seconds": 2.3069,
+      "pillow_image_cumulative_import_seconds": 0.8045,
+      "ranking_sql_seconds": [0.1583, 0.0172],
+      "original_file_hash_seconds": [0.0098, 0.0060],
+      "qualification": "Help/import and read-only SQL/file probe, not historical end-to-end latency. No business search, index rebuild or send."
+    },
+    "memory_tool_receipt": {
+      "source_preparation_selects": 9,
+      "same_conversation_selects": 4,
+      "other_kind_type_probes": 3,
+      "current_isolated_read_probe_seconds": 0.1014,
+      "historical_receipt_entry_to_tool_end_seconds": 14.3347,
+      "qualification": "Current independent read-only engine did not measure historical runtime queue, insert, commit or scheduler waiting."
+    },
+    "artifact_and_route": {
+      "recent_artifact_sample_rows": 100,
+      "largest_sampled_artifact_bytes": 2856586,
+      "largest_sampled_provider_tool": "external_agent",
+      "inspected_protocol": "AGM chat_completions",
+      "opaque_checkpoint_trigger_in_three_inspected_responses": false,
+      "qualification": "Large artifacts exist; their use of the quadratic paging branch was not established. A Gemini model name does not imply native Gemini protocol."
+    },
+    "container_probe": {
+      "uses_livez": true,
+      "uses_healthz": false,
+      "interval_seconds": 10,
+      "timeout_seconds": 5
+    }
+  },
+  "local_synthetic_experiments": {
+    "artifact_prefix_shrinking": {
+      "input_items": [250, 500, 1000],
+      "get_output_items": [5, 5, 5],
+      "get_budget_encodes": [247, 497, 997],
+      "get_cumulative_items_serialized": [31615, 125740, 501490],
+      "inspect_output_items": [7, 7, 7],
+      "inspect_cumulative_items_serialized": [31354, 125229, 500479]
+    },
+    "paging_correctness_cases": [
+      {"case": "Search final cursor", "matches": 10002, "offset": 9999, "limit": 1, "budget_characters": 351, "old_output_characters": 352},
+      {"case": "Text legal final page rejected", "input_characters": 100001, "offset": 99999, "limit": 2, "legal_final_envelope_characters": 271},
+      {"case": "JSON string legal final page rejected", "input_characters": 1000001, "offset": 999999, "limit": 2, "legal_final_envelope_characters": 389}
+    ],
+    "dream_graph": {
+      "prototype_comparisons": 1200,
+      "current_service_full_and_incremental_comparisons": 240,
+      "all_compared_clusters_equal": true,
+      "nodes_in_size_experiment": 324,
+      "dot_calls_for_each_representation": 52326,
+      "edge_counts": [541, 5255, 52326],
+      "all_pair_structure_mib": [6.51, 6.51, 6.52],
+      "dict_adjacency_structure_mib": [0.11, 0.51, 4.11],
+      "bitset_with_weight_structure_mib": [0.12, 0.39, 3.13],
+      "qualification": "Object structure sizes, not RSS. Graph construction/post-processing timings excluded real vector multiplication."
+    },
+    "dot_product": {
+      "dimensions": 1024,
+      "repetitions": 3000,
+      "generator_seconds": 0.164,
+      "map_mul_seconds": 0.089,
+      "hex_equal_inputs": 1001,
+      "qualification": "Same multiply order and fsum on validated vectors; not an end-to-end or production speedup."
+    },
+    "work_record_cache": {
+      "record_bytes_approximate": 20000,
+      "record_counts": [80, 120],
+      "second_pass_reencodes": [0, 120],
+      "qualification": "Real put_record with persistence replaced by encoding counter, no physical file IO."
+    },
+    "cumulative_opaque_checkpoints": {
+      "turn_counts": [16, 32, 64],
+      "retained_tail_items": [136, 528, 2080],
+      "qualification": "Conditional cumulative checkpoint shape; not triggered by the inspected AGM responses."
+    }
+  }
+}

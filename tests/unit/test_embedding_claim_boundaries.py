@@ -78,7 +78,7 @@ def _write(job):
         job_id=job.id,
         fact_id=job.fact_id,
         content_hash=job.content_hash,
-        vector_blob=b"vector",
+        vector_blob=Float32VectorCodec().encode(EmbeddingVector(values=(1.0, 0.0), dimensions=2)),
         claimed_at=job.updated_at,
     )
 
@@ -100,15 +100,19 @@ async def test_semantic_order_and_streamed_health_keep_stale_and_scan_coverage(
                 memory_key=fact.memory_key,
                 content=fact.content,
             )
-            session.add(
-                MemoryEmbeddingModel(
-                    fact_id=fact.id,
-                    profile_id=jobs.profile.id,
-                    content_hash="f" * 64 if fact.id == facts[-1].id else digest,
-                    vector_blob=codec.encode(EmbeddingVector(values=values, dimensions=2)),
-                    created_at=now,
-                    updated_at=now,
-                )
+            await repository.store_vectors(
+                session,
+                profile_id=jobs.profile.id,
+                records=[
+                    dict(
+                        fact_id=fact.id,
+                        profile_id=jobs.profile.id,
+                        content_hash="f" * 64 if fact.id == facts[-1].id else digest,
+                        vector_blob=codec.encode(EmbeddingVector(values=values, dimensions=2)),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                ],
             )
         facts[3].status = "superseded"
     scope = AuthorizedMemoryScope(
@@ -117,7 +121,7 @@ async def test_semantic_order_and_streamed_health_keep_stale_and_scan_coverage(
     )
     query = EmbeddingVector(values=(0.1, 0.2), dimensions=2)
     index = MemorySemanticIndex(repository, documents=jobs.documents)
-    results, truncated, coverage = await index.search_authorized(
+    result = await index.search_authorized(
         scope=scope,
         query_vector=query,
         profile=jobs.profile.profile,
@@ -125,9 +129,9 @@ async def test_semantic_order_and_streamed_health_keep_stale_and_scan_coverage(
         candidate_limit=2,
         kinds=(),
     )
-    assert [hit.fact_id for hit in results] == [facts[2].id, facts[0].id]
-    assert truncated and not coverage
-    for hit in results:
+    assert [hit.fact_id for hit in result.candidates] == [facts[2].id, facts[0].id]
+    assert result.truncated and not result.coverage_complete
+    for hit in result.candidates:
         values = vectors[hit.fact_id - facts[0].id]
         decoded = codec.decode(
             codec.encode(EmbeddingVector(values=values, dimensions=2)), dimensions=2
@@ -147,30 +151,15 @@ async def test_semantic_order_and_streamed_health_keep_stale_and_scan_coverage(
         candidate_limit=3,
         kinds=(),
     )
-    assert [hit.fact_id for hit in explicit] == [facts[2].id, facts[0].id, facts[1].id]
-    rows, scanned_out, active_count = await repository.load_authorized_vectors(
+    assert [hit.fact_id for hit in explicit.candidates] == [facts[2].id, facts[0].id, facts[1].id]
+    loaded = await repository.load_authorized_vectors(
         scope=scope,
         profile_id=jobs.profile.id,
         kinds=(),
-        scan_limit=2,
+        query_blob=codec.encode(query),
+        candidate_count=2,
     )
-    assert len(rows) == 2 and scanned_out and active_count == 4
-    native_load = repository.load_authorized_vectors
-
-    async def scan_page(**kwargs):
-        return await native_load(**kwargs, scan_limit=2)
-
-    monkeypatch.setattr(repository, "load_authorized_vectors", scan_page)
-    scanned, truncated, coverage = await index.search_authorized(
-        scope=scope,
-        query_vector=query,
-        profile=jobs.profile.profile,
-        profile_id=jobs.profile.id,
-        candidate_limit=3,
-        kinds=(),
-    )
-    assert [hit.fact_id for hit in scanned] == [facts[0].id, facts[1].id]
-    assert truncated and not coverage
+    assert len(loaded.rows) == 2 and loaded.approximate and loaded.active_count == 4
     health = await repository.local_health(
         current_profile_id=jobs.profile.id, documents=jobs.documents
     )

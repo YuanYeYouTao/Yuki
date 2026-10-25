@@ -1,6 +1,6 @@
 # 语义参与 V6：宿主接入与验证边界
 
-2026-10-23。独立仓库：
+2026-10-26。独立仓库：
 [Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
@@ -352,3 +352,32 @@ Jev/Host 的诊断沿[执行过程查看合同](execution-trace.md)保存新增�
 参与查询只返回来源、表达、意愿及纠偏进度，不附带无人读取的 belief 概率投影。
 自主机会评分及历史折叠仍使用真实 belief；同一次同步计算只解析一次参与检查点并按讨论/对象归集事实，
 这些局部数据不跨状态修改保留，不增加快照缓存、调用阈值或状态清空流程。
+
+
+## 每两秒推进与窄快照
+
+Controller 仍按原时刻逐 tick 运行，保留 `sample_sequence`、原 scope/generation/epoch 哈希流、
+arrival/selection 两次独立取样和原浮点 decay/fold 次序。参数热更和冷恢复沿原参数解释原锚，
+停机不补抽。共享的 eligible groups 与 pressure 只活在同一次同步计算内。
+
+`ObservationSession.maintain` 保留到期、来源撤销及 quiet 清理；`ready/next_due` 只投影原
+3/12/20 秒与 75 秒有效期，不消费来源或推进 sequence。Host 在真实 ready 后才准备请求；
+退避、无待办或在途不产生新请求。Jev 不可用时，原反馈、既有候选和 intrinsic 仍按原规则推进。
+
+Host 的历史页以当前 generation/floor/source revision 及同一 SQLite 读快照内的 keeper
+窗口成员 ID 判定可复用；插入、修订和删除分别由这些原事实发现。仍按当前 admission、来源、
+人物归属和路由核验，不因历史页未变跳过权限或晚到回执。后台配置只读取 conversation policy
+的原 scope/key；Social 近窗只载入分组、原 caption parent、live event FK 和 Presence 所需字段，
+字段或窗口成员变化便重新分组。原先后顺序及等待后的核验保留。
+
+同一参与数据库由原 Store owner 管理 `snapshot_head` 和 `snapshot_body`。head 保存原时间、
+抽样游标和数值进度；body 保存其余事实与原容器布局，两者只有一个 revision CAS。
+普通数值 tick 只写 head；真实事实、成员、布局或顺序变化原子写两表。逻辑容量仍按原完整
+State JSON 计量：full save 记录 `K=L-H`，热保存取 `K+len(typed_hot_bytes)`，保每 scope 1 MiB、
+总计 16 MiB，不将两份物理 JSON 长度当成原容量。
+
+取得原保存锁后同步捕获 dirty、revision 和不可变 bytes，中间没有 await；worker 不再解析
+State 后重编码。等待期间新来的事实留在 Controller 的 dirty 中，成功只确认原 future 的实际
+revision，再传播取消；失败保留未保存变化，不自动重放。加载用一次 key-driven LEFT JOIN，
+两侧均无才表示不存在，缺一侧报真实格式错误。升级停旧 writer，事务外按固定旧 schema
+准备，单事务创建并填入两表、删除旧 snapshots；不调用 restore/prune、不另设逐 scope 迁移进度。

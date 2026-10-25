@@ -183,6 +183,50 @@ async def test_reconciliation_preserves_missing_work_result_for_legacy_broken_li
         assert row.last_error_category == "runtime_work_missing" and row.attempts == 0
 
 
+async def test_terminal_reconciliation_crosses_pages_without_losing_original_usage(turn_queue):
+    queue = turn_queue
+    for index in range(130):
+        await queue.repo.publish(
+            plugin_id="test.indexed-turn-queue",
+            request=PublishNotificationRequest(
+                event_key=f"terminal-page-{index}",
+                event_type="fixture",
+                external_source="fixture",
+                occurred_at=datetime.now(UTC),
+                target=NotificationTarget(
+                    target_type="group",
+                    target_id=queue.env.space,
+                    conversation_id=queue.env.context.conversation_id,
+                ),
+                summary="original external source",
+                ask_agent=True,
+                agent_intent="original goal",
+            ),
+        )
+    async with queue.db.read_session() as reader:
+        identities = tuple(await reader.scalars(select(Job.id).order_by(Job.id)))
+    assert len(identities) == 131
+    original = {}
+    async with queue.db.immediate_session() as writer:
+        for index, identity in enumerate(identities):
+            state = ("completed", "cancelled", "failed")[index % 3]
+            work_id = str(uuid4())
+            await writer.execute(insert(work).values(**_work_row(queue, work_id, state)))
+            await writer.execute(
+                update(Job)
+                .where(Job.id == identity)
+                .values(work_id=work_id, model_requests=11, tool_calls_used=1)
+            )
+            original[identity] = (work_id, state)
+    await queue.repo.reconcile_terminal_turns()
+    await queue.repo.reconcile_terminal_turns()
+    async with queue.db.read_session() as reader:
+        for row in await reader.scalars(select(Job)):
+            assert (row.work_id, row.status) == original[row.id]
+            assert row.model_requests == 11 and row.tool_calls_used == 3
+            assert row.attempts == 0 and row.lease_until is None
+
+
 async def test_worker_reconciles_at_each_start_without_waiting_for_the_poll(
     turn_queue, monkeypatch
 ):

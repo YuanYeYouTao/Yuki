@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -296,15 +297,20 @@ class RuntimeConfigRepository:
             return records
 
     async def read_relevant_snapshot(
-        self, *, user_id: str | None, group_id: str | None
+        self, *, user_id: str | None, group_id: str | None, keys: tuple[str, ...] | None = None
     ) -> tuple[tuple[RuntimeConfigOverrideRecord, ...], str | None, str | None]:
         """Resolve owners and their overrides once in this preparation's read view."""
         async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
-            return await self._read_relevant(session, user_id=user_id, group_id=group_id)
+            return await self._read_relevant(session, user_id=user_id, group_id=group_id, keys=keys)
 
     async def _read_relevant(
-        self, active: AsyncSession, *, user_id: str | None, group_id: str | None
+        self,
+        active: AsyncSession,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        keys: tuple[str, ...] | None = None,
     ) -> tuple[tuple[RuntimeConfigOverrideRecord, ...], str | None, str | None]:
         conditions: list[Any] = [
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
@@ -322,7 +328,14 @@ class RuntimeConfigRepository:
         rows = (
             await active.scalars(
                 select(RuntimeConfigOverrideModel)
-                .where(or_(*conditions))
+                .where(
+                    or_(*conditions),
+                    *(
+                        [RuntimeConfigOverrideModel.config_key.in_(keys)]
+                        if keys is not None
+                        else []
+                    ),
+                )
                 .order_by(
                     RuntimeConfigOverrideModel.config_key,
                     RuntimeConfigOverrideModel.scope_type,
@@ -1489,6 +1502,28 @@ class RuntimeConfigService:
                 pending.append(config_key)
         return tuple(pending)
 
+    async def participation_policy(self, *, group_id: str | None) -> ConversationRuntimeConfig:
+        """Read only participation keys in the original owner-resolution snapshot."""
+        keys = tuple(key for key in self.registry.keys if key.startswith("conversation."))
+        records, person_id, space_id = await self._repository.read_relevant_snapshot(
+            user_id=None, group_id=group_id, keys=keys
+        )
+        by_key: dict[str, list[RuntimeConfigOverrideRecord]] = defaultdict(list)
+        for row in records:
+            by_key[row.config_key].append(row)
+
+        def value(key: str) -> ConfigValue:
+            return self._resolve(
+                self.registry.get(key),
+                tuple(by_key.get(key, ())),
+                user_id=None,
+                group_id=group_id,
+                person_id=person_id,
+                space_id=space_id,
+            ).value
+
+        return _conversation_policy(value)
+
     async def snapshot(
         self,
         *,
@@ -1635,27 +1670,7 @@ class RuntimeConfigService:
                 ),
                 analysis_retention_days=int(cast(int, value("vision.analysis_retention_days"))),
             ),
-            conversation=ConversationRuntimeConfig(
-                auto_reply_enabled=bool(value("conversation.auto_reply_enabled")),
-                proactive_wakeup_enabled=bool(value("conversation.proactive_wakeup_enabled")),
-                autonomous_enabled=bool(value("conversation.autonomous_enabled")),
-                semantic_participation_enabled=bool(
-                    value("conversation.semantic_participation_enabled")
-                ),
-                autonomous_debounce_seconds=float(
-                    cast(float | int, value("conversation.autonomous_debounce_seconds"))
-                ),
-                autonomous_admission_threshold=int(
-                    cast(int, value("conversation.autonomous_admission_threshold"))
-                ),
-                autonomous_batch_limit=int(cast(int, value("conversation.autonomous_batch_limit"))),
-                autonomous_presence_window_seconds=int(
-                    cast(int, value("conversation.autonomous_presence_window_seconds"))
-                ),
-                interrupt_autonomous_on_new_message=bool(
-                    value("conversation.interrupt_autonomous_on_new_message")
-                ),
-            ),
+            conversation=_conversation_policy(value),
         )
 
     def _resolve(
@@ -1964,3 +1979,25 @@ class RuntimeConfigService:
                 "已保存，重启 Bot 后生效" if pending_restart else "已保存；有效值未变化，无需重启"
             )
         return "已保存"
+
+
+def _conversation_policy(value: Callable[[str], ConfigValue]) -> ConversationRuntimeConfig:
+    return ConversationRuntimeConfig(
+        auto_reply_enabled=bool(value("conversation.auto_reply_enabled")),
+        proactive_wakeup_enabled=bool(value("conversation.proactive_wakeup_enabled")),
+        autonomous_enabled=bool(value("conversation.autonomous_enabled")),
+        semantic_participation_enabled=bool(value("conversation.semantic_participation_enabled")),
+        autonomous_debounce_seconds=float(
+            cast(float | int, value("conversation.autonomous_debounce_seconds"))
+        ),
+        autonomous_admission_threshold=int(
+            cast(int, value("conversation.autonomous_admission_threshold"))
+        ),
+        autonomous_batch_limit=int(cast(int, value("conversation.autonomous_batch_limit"))),
+        autonomous_presence_window_seconds=int(
+            cast(int, value("conversation.autonomous_presence_window_seconds"))
+        ),
+        interrupt_autonomous_on_new_message=bool(
+            value("conversation.interrupt_autonomous_on_new_message")
+        ),
+    )

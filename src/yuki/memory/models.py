@@ -504,6 +504,8 @@ class MemoryRetrievalResult(_MemoryModel):
     mode: MemoryRetrievalMode
     semantic_status: str = "disabled"
     semantic_degraded: bool = False
+    semantic_approximate: bool = False
+    partial_failure: bool = False
     embedding_profile: str | None = None
     exhaustive: bool = True
     truncated: bool = False

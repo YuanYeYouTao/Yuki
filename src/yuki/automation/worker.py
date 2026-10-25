@@ -87,14 +87,13 @@ class AutomationWorker:
     async def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                rows = await self._repository.claim_due(
+                async for row in self._repository.claim_due(
                     worker_id=uuid.uuid4().hex,
                     now=self._time.clock.now(),
                     lease_seconds=self._settings.automation_lease_seconds,
                     enabled=self._settings.automation_enabled,
                     clock=self._time.clock.now,
-                )
-                for row in rows:
+                ):
                     task = asyncio.create_task(
                         self._process_guarded(row), name=f"automation-{row.id}"
                     )

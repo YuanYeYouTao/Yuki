@@ -21,8 +21,10 @@
 子任务状态和调用次数不是修改结果；仅列目录、读文件、
 计算摘要不能报告已删除、清理比例或释放空间。回复效果记录沿内部事件 ID 关联，身份查询在首次写入前完成。
 
-子任务结果先读取原 checkpoint 并在 writer 外编码，再由同一 Database writer 核对原 revision、
-状态、checkpoint 和父子关系；结果摘要、通知水位和父 Work 输入一起提交。归档仍先准备
+子任务通知只读取当前状态实际消费的原 JSON 结果叶或原因叶，在 writer 外解析、编码父输入。
+JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(result or '')` 生成摘要。
+同一 Database writer 核对原租约、revision、状态、实际消费叶、原因和父子关系；未消费的协议
+字段变化不要求重读整份 checkpoint。结果摘要、通知水位和父 Work 输入一起提交。归档仍先准备
 真实资源闭包，在 writer 中检查新增后代、request 与 peer 来源；外部 close 不在写事务中等待。
 
 ## 工具与授权
@@ -79,6 +81,14 @@ child 使用自己的 lease，在取得执行权后复用 root 的激活监督�
 子任务完成不强制附加正文；原目标资料与效果、产物交付查询保留，业务结束沿原决定提交。activation 结算后，父输入与完成回执只读取已提交 Work 行（completed 读 `sync_result`，failed 读原因），通知前崩溃由 maintain 按 notified_revision 收拢同一结果。完成回执保存结果摘要，不再次复制完整 Work checkpoint。仅单项 `result` 查询按原
 child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复后的新版本不冒充
 旧结果。状态与列表查询不加载大笔记，旧已归档结果中已有的快照仍保留。
+
+遗漏通知维护按原 Work ID、revision 读取 16 条候选页，先在 writer 外准备实际结果，再在
+同一短 writer 内核原 child 已无活动执行租约、未归档、当前 Work/Canonical 来源和结果版本，
+原子发布并清理已结束的 owner；纯通知不创建 execution lease，也不推进 fence 或取消代次。
+真正的执行收尾继续核其原 owner、fence、取消代次和 SQL 时刻期限。实际消费依赖变化时释放
+writer 后只重读当前仍合法的候选；其他页继续扫描，没有总通知数上限。忙碌或过时代际的节点只读退出。
+父输入仍用原 child/revision 唯一键，辅助结果不撤销父等待或复活终态；七天归档仍沿原 16 条页
+及真实资源引用收拢，不改变执行器容量与并发策略。
 
 默认全局两个工作者；子任务按现有调度器排队，不设固定入队或每根任务数量拒绝。
 目录按内部 ID 分页，

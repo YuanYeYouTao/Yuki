@@ -147,6 +147,11 @@ class Database:
             _, cancellation = await _complete(driver)
             if cancellation is not None:
                 raise cancellation
+            from yuki.persistence.vec1 import load_vec1
+
+            _, cancellation = await _complete(load_vec1(driver))
+            if cancellation is not None:
+                raise cancellation
             return driver
         except BaseException as failure:
             try:

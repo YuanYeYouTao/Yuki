@@ -13,7 +13,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    LargeBinary,
     String,
     Table,
     Text,
@@ -1361,7 +1360,7 @@ class MemoryEmbeddingProfileModel(Base):
 
 
 class MemoryEmbeddingModel(Base):
-    """Rebuildable float32 vector for one fact and one immutable profile."""
+    """Foreign-key owner of a profile-scoped Vec1 vector with this original id."""
 
     __tablename__ = "memory_embeddings"
     __table_args__ = (
@@ -1369,7 +1368,6 @@ class MemoryEmbeddingModel(Base):
         CheckConstraint(
             "length(content_hash) = 64", name="ck_memory_embeddings_content_hash_length"
         ),
-        CheckConstraint("length(vector_blob) > 0", name="ck_memory_embeddings_vector_nonempty"),
         Index("ix_memory_embeddings_profile_fact", "profile_id", "fact_id"),
     )
 
@@ -1381,7 +1379,6 @@ class MemoryEmbeddingModel(Base):
         ForeignKey("memory_embedding_profiles.id", ondelete="CASCADE"), nullable=False
     )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    vector_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

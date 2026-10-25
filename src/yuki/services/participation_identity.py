@@ -52,6 +52,8 @@ async def actor_identity(
     session: AsyncSession | None = None,
 ) -> Callable[[str], str]:
     ids = actor_ids(item, additional)
+    if not ids:
+        return lambda actor: actor
     async with optional_session(service.database, session, write=False) as reader:
         roots = await current_person_ids(reader, ids)
     return lambda actor: roots.get(actor, actor)

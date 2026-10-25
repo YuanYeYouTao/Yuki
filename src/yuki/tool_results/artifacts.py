@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import json
 import os
 import tempfile
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
+from heapq import nsmallest
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +29,7 @@ from yuki.persistence.models import (
     ToolArtifactModel,
 )
 from yuki.tool_results.access import ArtifactAccess, ArtifactRead
+from yuki.tool_results.json_length import escaped_character_length, json_character_count
 
 _PRIVATE_MEDIA_TYPE = "application/x-yuki-prepared-images"
 
@@ -200,7 +203,7 @@ class ToolArtifactRepository:
         *,
         provider_id: str,
         tool_name: str,
-        content: str,
+        content: str | bytes,
         media_type: str,
         retention_seconds: int | None = None,
         work_id: str | None = None,
@@ -225,7 +228,7 @@ class ToolArtifactRepository:
         handle = uuid.uuid4().hex
         relative = f"{handle}.json"
         path = self._root / relative
-        encoded = content.encode("utf-8")
+        encoded = content if isinstance(content, bytes) else content.encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
         if len(encoded) > self._max_artifact_bytes:
             raise ValueError("tool_artifact_capacity")
@@ -362,12 +365,13 @@ class ToolArtifactRepository:
         ):
             raise ValueError("artifact_media_capacity")
         content = json.dumps({"images": [asdict(image) for image in images]}, ensure_ascii=False)
-        if len(content.encode()) > self._max_media_bytes + 65536:
+        encoded = content.encode("utf-8")
+        if len(encoded) > self._max_media_bytes + 65536:
             raise ValueError("artifact_media_capacity")
         return await self.write_artifact(
             provider_id=provider_id,
             tool_name=tool_name,
-            content=content,
+            content=encoded,
             media_type=_PRIVATE_MEDIA_TYPE,
             retention_seconds=retention_seconds,
             access=access,
@@ -439,34 +443,138 @@ class ToolArtifactRepository:
         root = self._root.resolve()
         if root not in file_path.parents:
             return None
-        try:
-            raw = await asyncio.to_thread(self._read_bounded, file_path, byte_size)
-            if len(raw) != byte_size or (digest and hashlib.sha256(raw).hexdigest() != digest):
-                return _artifact_error("artifact_corrupt", "Artifact 完整性校验失败")
-            content = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return _artifact_error("artifact_corrupt", "Artifact 不是有效 UTF-8")
-        except OSError:
-            return _artifact_error("artifact_missing", "Artifact 正文缺失，执行回执仍然有效")
-        if media_type == _PRIVATE_MEDIA_TYPE:
-            try:
-                decoded_media = json.loads(content)
-                prepared_images = tuple(
-                    replace(ChatImage(**item), source="tool", tool_handle=handle_id)
-                    for item in decoded_media["images"]
+
+        def load() -> tuple[bool, dict[str, object]]:
+            if operation == "text" and not query and media_type != _PRIVATE_MEDIA_TYPE:
+                verified, page = _read_text_file(
+                    file_path,
+                    byte_size,
+                    digest,
+                    handle_id=handle_id,
+                    offset=offset,
+                    limit=limit,
+                    max_characters=max_characters,
                 )
-                if not prepared_images or len(prepared_images) > self._max_media_frames:
-                    raise ValueError("invalid media count")
-            except (ValueError, TypeError, KeyError, RecursionError):
-                return _artifact_error("artifact_corrupt", "图片 Artifact 完整性校验失败")
-            manifest = {
+                return verified, sourced(page) if verified else page
+            try:
+                raw = self._read_bounded(file_path, byte_size)
+                if len(raw) != byte_size or (digest and hashlib.sha256(raw).hexdigest() != digest):
+                    return False, _artifact_error("artifact_corrupt", "Artifact 完整性校验失败")
+                content = raw.decode("utf-8")
+                del raw
+            except UnicodeDecodeError:
+                return False, _artifact_error("artifact_corrupt", "Artifact 不是有效 UTF-8")
+            except OSError:
+                return False, _artifact_error(
+                    "artifact_missing", "Artifact 正文缺失，执行回执仍然有效"
+                )
+            if media_type == _PRIVATE_MEDIA_TYPE:
+                try:
+                    decoded_media = json.loads(content)
+                    del content
+                    prepared_images = tuple(
+                        replace(ChatImage(**item), source="tool", tool_handle=handle_id)
+                        for item in decoded_media["images"]
+                    )
+                    if not prepared_images or len(prepared_images) > self._max_media_frames:
+                        raise ValueError("invalid media count")
+                except (ValueError, TypeError, KeyError, RecursionError):
+                    return False, _artifact_error(
+                        "artifact_corrupt", "图片 Artifact 完整性校验失败"
+                    )
+                manifest = {
+                    "handle": handle_id,
+                    "mode": "image",
+                    "image_count": len(prepared_images),
+                    "available_operations": ["inspect", "image"],
+                    "provider_id": provider_id,
+                    "tool_name": tool_name,
+                }
+                # Generic readers receive only the manifest, never archive pixels.
+                if operation != "image":
+                    return True, manifest
+                return True, PreparedMediaData(manifest, prepared_images)
+            if operation == "image":
+                return True, _artifact_error("artifact_not_image", "该 Artifact 没有原生图片结果")
+            if operation == "text":
+                return True, sourced(
+                    _read_text_artifact(
+                        handle_id,
+                        content,
+                        offset=offset,
+                        limit=limit,
+                        query=query,
+                        max_characters=max_characters,
+                    )
+                )
+            if operation not in {"inspect", "get", "search"}:
+                return True, _artifact_error(
+                    "artifact_operation_invalid",
+                    "Artifact operation 必须是 inspect、get、search、text 或 image",
+                )
+            try:
+                decoded = json.loads(content)
+                del content
+            except (json.JSONDecodeError, RecursionError):
+                return True, _artifact_error(
+                    "artifact_not_json",
+                    "Artifact 不是合法 JSON，请使用 text 模式读取",
+                )
+            logical_root, logical_root_name = _logical_artifact_root(decoded)
+            resolved_ok, resolved = _resolve_artifact_path(logical_root, path)
+            if not resolved_ok:
+                assert isinstance(resolved, dict)
+                return True, resolved
+            base: dict[str, object] = {
                 "handle": handle_id,
-                "mode": "image",
-                "image_count": len(prepared_images),
-                "available_operations": ["inspect", "image"],
+                "mode": "json",
+                "logical_root": logical_root_name,
                 "provider_id": provider_id,
                 "tool_name": tool_name,
             }
+            if operation == "inspect":
+                return True, sourced(
+                    _inspect_json(
+                        resolved,
+                        path=path,
+                        offset=offset,
+                        limit=min(limit, item_limit) if item_limit is not None else limit,
+                        base=base,
+                        max_characters=max_characters,
+                    )
+                )
+            if operation == "get":
+                return True, sourced(
+                    _get_json(
+                        resolved,
+                        path=path,
+                        offset=offset,
+                        limit=limit
+                        if isinstance(resolved, str)
+                        else min(limit, item_limit)
+                        if item_limit is not None
+                        else limit,
+                        base=base,
+                        max_characters=max_characters,
+                    )
+                )
+            if not query:
+                return True, _artifact_error("artifact_query_required", "search 操作必须提供 query")
+            return True, sourced(
+                _search_json(
+                    resolved,
+                    path=path,
+                    query=query,
+                    offset=offset,
+                    limit=min(limit, item_limit) if item_limit is not None else limit,
+                    base=base,
+                    max_characters=max_characters,
+                )
+            )
+
+        verified, page = await asyncio.to_thread(load)
+        if not verified:
+            return page
         if access is not None:
             # Erasure, generation changes and GC may race the bounded file I/O.
             async with self._database.read_session() as session:
@@ -485,87 +593,7 @@ class ToolArtifactRepository:
                     )
                 ):
                     return _artifact_error("artifact_not_authorized", "Artifact 来源已失效")
-        if media_type == _PRIVATE_MEDIA_TYPE:
-            # Generic readers receive only the manifest, never archive pixels.
-            if operation != "image":
-                return manifest
-            return PreparedMediaData(manifest, prepared_images)
-        if operation == "image":
-            return _artifact_error("artifact_not_image", "该 Artifact 没有原生图片结果")
-        if operation == "text":
-            return sourced(
-                _read_text_artifact(
-                    handle_id,
-                    content,
-                    offset=offset,
-                    limit=limit,
-                    query=query,
-                    max_characters=max_characters,
-                )
-            )
-        if operation not in {"inspect", "get", "search"}:
-            return _artifact_error(
-                "artifact_operation_invalid",
-                "Artifact operation 必须是 inspect、get、search、text 或 image",
-            )
-        try:
-            decoded = json.loads(content)
-        except (json.JSONDecodeError, RecursionError):
-            return _artifact_error(
-                "artifact_not_json",
-                "Artifact 不是合法 JSON，请使用 text 模式读取",
-            )
-        logical_root, logical_root_name = _logical_artifact_root(decoded)
-        resolved_ok, resolved = _resolve_artifact_path(logical_root, path)
-        if not resolved_ok:
-            assert isinstance(resolved, dict)
-            return resolved
-        base: dict[str, object] = {
-            "handle": handle_id,
-            "mode": "json",
-            "logical_root": logical_root_name,
-            "provider_id": provider_id,
-            "tool_name": tool_name,
-        }
-        if operation == "inspect":
-            return sourced(
-                _inspect_json(
-                    resolved,
-                    path=path,
-                    offset=offset,
-                    limit=min(limit, item_limit) if item_limit is not None else limit,
-                    base=base,
-                    max_characters=max_characters,
-                )
-            )
-        if operation == "get":
-            return sourced(
-                _get_json(
-                    resolved,
-                    path=path,
-                    offset=offset,
-                    limit=limit
-                    if isinstance(resolved, str)
-                    else min(limit, item_limit)
-                    if item_limit is not None
-                    else limit,
-                    base=base,
-                    max_characters=max_characters,
-                )
-            )
-        if not query:
-            return _artifact_error("artifact_query_required", "search 操作必须提供 query")
-        return sourced(
-            _search_json(
-                resolved,
-                path=path,
-                query=query,
-                offset=offset,
-                limit=min(limit, item_limit) if item_limit is not None else limit,
-                base=base,
-                max_characters=max_characters,
-            )
-        )
+        return page
 
     def _orphan_candidates(self, cutoff: float) -> list[tuple[Path, tuple[int, int, int]]]:
         if self._orphan_iterator is None:
@@ -685,6 +713,131 @@ class ToolArtifactRepository:
         return removed
 
 
+def _read_text_file(
+    path: Path,
+    byte_size: int,
+    digest: str | None,
+    *,
+    handle_id: str,
+    offset: int,
+    limit: int,
+    max_characters: int,
+) -> tuple[bool, dict[str, object]]:
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    hasher = hashlib.sha256()
+    total_bytes = total_characters = 0
+    pieces: list[str] = []
+    invalid_utf8 = False
+
+    def collect(text: str) -> None:
+        nonlocal total_characters
+        start = max(0, offset - total_characters)
+        end = min(len(text), offset + min(limit, max_characters) - total_characters)
+        if end > start:
+            pieces.append(text[start:end])
+        total_characters += len(text)
+
+    try:
+        with path.open("rb") as stream:
+            while total_bytes <= byte_size:
+                chunk = stream.read(min(65536, byte_size + 1 - total_bytes))
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                hasher.update(chunk)
+                if not invalid_utf8:
+                    try:
+                        collect(decoder.decode(chunk))
+                    except UnicodeDecodeError:
+                        invalid_utf8 = True
+        if not invalid_utf8:
+            try:
+                collect(decoder.decode(b"", final=True))
+            except UnicodeDecodeError:
+                invalid_utf8 = True
+    except OSError:
+        return False, _artifact_error("artifact_missing", "Artifact 正文缺失，执行回执仍然有效")
+    if total_bytes != byte_size or (digest and hasher.hexdigest() != digest):
+        return False, _artifact_error("artifact_corrupt", "Artifact 完整性校验失败")
+    if invalid_utf8:
+        return False, _artifact_error("artifact_corrupt", "Artifact 不是有效 UTF-8")
+    return True, _string_page(
+        "".join(pieces),
+        total=total_characters,
+        offset=offset,
+        base={"handle": handle_id, "mode": "text"},
+        max_characters=max_characters,
+    )
+
+
+def _string_page(
+    fragment: str,
+    *,
+    total: int,
+    offset: int,
+    base: dict[str, object],
+    max_characters: int,
+    query_matched: bool | None = None,
+) -> dict[str, object]:
+    text_mode = base.get("mode") == "text"
+    field = "content" if text_mode else "value"
+
+    def page(length: int) -> dict[str, object]:
+        end = offset + length
+        result = {
+            **base,
+            "offset": offset,
+            "next_offset": end if end < total else None,
+            "total_characters": total,
+            field: fragment[:length],
+        }
+        if text_mode:
+            result["query_matched"] = query_matched
+        else:
+            result.update(offset_unit="characters", truncated=end < total)
+        return result
+
+    from yuki.capabilities.results import artifact_page_size
+
+    reference = page(0)
+    reference["next_offset"] = None
+    if not text_mode:
+        reference["truncated"] = False
+    fixed = cast(int, artifact_page_size(reference)) - 4 - (0 if text_mode else 5)
+    used = best = 0
+    terminal = offset + len(fragment) == total
+    for length, character in enumerate(fragment, 1):
+        used += escaped_character_length(character)
+        end = offset + length
+        metadata = (len(str(end)) if end < total else 4) + (
+            0 if text_mode else (4 if end < total else 5)
+        )
+        if fixed + used + metadata <= max_characters:
+            best = length
+        integer_metadata = len(str(end)) + (0 if text_mode else 4)
+        floor = min(integer_metadata, 4 + (0 if text_mode else 5)) if terminal else integer_metadata
+        if fixed + used + floor > max_characters:
+            break
+    result = page(best)
+    if not _fits_json_budget(result, max_characters) or (best == 0 and offset < total):
+        if text_mode:
+            return _artifact_error(
+                "artifact_budget_too_small",
+                "预算不足以返回一个字符",
+                handle=base["handle"],
+                offset=offset,
+                next_offset=offset,
+            )
+        return _artifact_error(
+            "artifact_budget_too_small",
+            "预算不足以返回一个字符",
+            **{key: value for key, value in base.items() if key != "type"},
+            offset=offset,
+            next_offset=offset,
+        )
+    return result
+
+
 def _read_text_artifact(
     handle_id: str,
     content: str,
@@ -696,11 +849,8 @@ def _read_text_artifact(
 ) -> dict[str, object]:
     start = offset
     if query:
-        # Only the searched suffix is folded; offsets and returned pages always
-        # belong to the original text, including characters that expand on folding.
         suffix = content[offset:]
-        folded_query = query.casefold()
-        found = suffix.casefold().find(folded_query)
+        found = suffix.casefold().find(query.casefold())
         if found < 0:
             return {
                 "handle": handle_id,
@@ -717,35 +867,14 @@ def _read_text_artifact(
             if folded_offset > found:
                 start = index
                 break
-
-    def page(length: int) -> dict[str, object]:
-        end = min(len(content), start + length)
-        return {
-            "handle": handle_id,
-            "mode": "text",
-            "offset": start,
-            "next_offset": end if end < len(content) else None,
-            "total_characters": len(content),
-            "content": content[start:end],
-            "query_matched": True if query else None,
-        }
-
-    low, high = 0, min(limit, max(0, len(content) - start))
-    while low < high:
-        middle = (low + high + 1) // 2
-        if _fits_json_budget(page(middle), max_characters):
-            low = middle
-        else:
-            high = middle - 1
-    if not _fits_json_budget(page(low), max_characters) or (low == 0 and start < len(content)):
-        return {
-            "error_code": "artifact_budget_too_small",
-            "handle": handle_id,
-            "offset": start,
-            "next_offset": start,
-            "detail": "预算不足以返回一个字符",
-        }
-    return page(low)
+    return _string_page(
+        content[start : start + min(limit, max_characters)],
+        total=len(content),
+        offset=start,
+        base={"handle": handle_id, "mode": "text"},
+        max_characters=max_characters,
+        query_matched=True if query else None,
+    )
 
 
 def _logical_artifact_root(value: object) -> tuple[object, str]:
@@ -803,6 +932,39 @@ def _resolve_artifact_path(
     return True, value
 
 
+def _page_fixed_size(page: dict[str, object]) -> int:
+    from yuki.capabilities.results import artifact_page_size
+
+    # The reference page contains an empty collection and a null cursor.
+    return cast(int, artifact_page_size(page)) - 4
+
+
+def _prefix_count(
+    sizes: Iterable[int | None],
+    *,
+    fixed: int,
+    offset: int,
+    total: int,
+    limit: int,
+    budget: int,
+) -> int:
+    best = used = 0
+    terminal = offset + min(limit, max(0, total - offset)) == total
+    for count, size in enumerate(islice(sizes, limit), 1):
+        if size is None:
+            break
+        used += size + (2 if count > 1 else 0)
+        end = offset + count
+        cursor_size = len(str(end)) if end < total else 4
+        if fixed + used + cursor_size <= budget:
+            best = count
+        # Future integer cursors cannot shrink. Only the actual EOF can use null.
+        floor = min(len(str(end)), 4) if terminal else len(str(end))
+        if fixed + used + floor > budget:
+            break
+    return best
+
+
 def _inspect_json(
     value: object,
     *,
@@ -813,22 +975,43 @@ def _inspect_json(
     max_characters: int,
 ) -> dict[str, object]:
     result: dict[str, object] = {**base, "path": list(path), "type": _json_type(value)}
-    if isinstance(value, dict):
-        keys = sorted(value, key=lambda item: str(item).casefold())
-        selected = keys[offset : offset + limit]
-        while selected:
-            candidate = {
-                **result,
-                "total_children": len(keys),
-                "children": [{"key": str(key), **_value_shape(value[key])} for key in selected],
-                "next_offset": (
-                    offset + len(selected) if offset + len(selected) < len(keys) else None
-                ),
+    if isinstance(value, (dict, list)):
+        total = len(value)
+        result.update(
+            {
+                "total_children" if isinstance(value, dict) else "length": total,
+                "children": [],
+                "next_offset": None,
             }
-            if _fits_json_budget(candidate, max_characters):
-                return candidate
-            selected.pop()
-        if offset < len(keys):
+        )
+        if offset >= total:
+            return result
+        if isinstance(value, dict):
+            selected = nsmallest(offset + limit, value, key=lambda key: str(key).casefold())[
+                offset:
+            ]
+            children = ({"key": str(key), **_value_shape(value[key])} for key in selected)
+        else:
+            children = (
+                {"index": index, **_value_shape(value[index])}
+                for index in range(offset, min(total, offset + limit))
+            )
+        prepared = []
+
+        def sizes() -> Iterator[int | None]:
+            for child in children:
+                prepared.append(child)
+                yield json_character_count(child, limit=max_characters)
+
+        count = _prefix_count(
+            sizes(),
+            fixed=_page_fixed_size(result),
+            offset=offset,
+            total=total,
+            limit=limit,
+            budget=max_characters,
+        )
+        if not count:
             return _artifact_error(
                 "artifact_budget_too_small",
                 "无法放入一个子项，请增大预算",
@@ -837,34 +1020,10 @@ def _inspect_json(
                 offset=offset,
                 next_offset=offset,
             )
-        result.update({"total_children": len(keys), "children": [], "next_offset": None})
-    elif isinstance(value, list):
-        selected = value[offset : offset + limit]
-        while selected:
-            candidate = {
-                **result,
-                "length": len(value),
-                "children": [
-                    {"index": offset + index, **_value_shape(item)}
-                    for index, item in enumerate(selected)
-                ],
-                "next_offset": (
-                    offset + len(selected) if offset + len(selected) < len(value) else None
-                ),
-            }
-            if _fits_json_budget(candidate, max_characters):
-                return candidate
-            selected = selected[:-1]
-        if offset < len(value):
-            return _artifact_error(
-                "artifact_budget_too_small",
-                "无法放入一个子项，请增大预算",
-                **base,
-                path=list(path),
-                offset=offset,
-                next_offset=offset,
-            )
-        result.update({"length": len(value), "children": [], "next_offset": None})
+        result.update(
+            children=prepared[:count],
+            next_offset=offset + count if offset + count < total else None,
+        )
     elif isinstance(value, str):
         result["characters"] = len(value)
     else:
@@ -882,41 +1041,13 @@ def _get_json(
     max_characters: int,
 ) -> dict[str, object]:
     if isinstance(value, str):
-        # Strings page by Unicode characters; workspace cursors remain bytes.
-        # Fit the encoded page, including escaping and its metadata, not a preview.
-        def string_page(length: int) -> dict[str, object]:
-            end = offset + length
-            return {
-                **base,
-                "path": list(path),
-                "type": "string",
-                "value": value[offset:end],
-                "offset": offset,
-                "offset_unit": "characters",
-                "next_offset": end if end < len(value) else None,
-                "total_characters": len(value),
-                "truncated": end < len(value),
-            }
-
-        low, high = 0, min(limit, max(0, len(value) - offset))
-        while low < high:
-            middle = (low + high + 1) // 2
-            if _fits_json_budget(string_page(middle), max_characters):
-                low = middle
-            else:
-                high = middle - 1
-        if not _fits_json_budget(string_page(low), max_characters) or (
-            low == 0 and offset < len(value)
-        ):
-            return _artifact_error(
-                "artifact_budget_too_small",
-                "预算不足以返回一个字符",
-                **base,
-                path=list(path),
-                offset=offset,
-                next_offset=offset,
-            )
-        return string_page(low)
+        return _string_page(
+            value[offset : offset + min(limit, max_characters)],
+            total=len(value),
+            offset=offset,
+            base={**base, "path": list(path), "type": "string"},
+            max_characters=max_characters,
+        )
     direct = {**base, "path": list(path), "type": _json_type(value), "value": value}
     if (
         offset == 0
@@ -924,67 +1055,57 @@ def _get_json(
         and _fits_json_budget(direct, max_characters)
     ):
         return direct
+    if not isinstance(value, (dict, list)):
+        return _oversized_value(path, value, base=base, max_characters=max_characters)
+    total = len(value)
+    result = {
+        **base,
+        "path": list(path),
+        "type": _json_type(value),
+        "total_items": total,
+        "offset": offset,
+        "value": {} if isinstance(value, dict) else [],
+        "next_offset": None,
+    }
+    if offset >= total:
+        return result
+    cache: dict[int, tuple[object, int, bool]] = {}
     if isinstance(value, dict):
-        keys = sorted(value, key=lambda item: str(item).casefold())
-        selected = keys[offset : offset + limit]
-        if not selected and offset >= len(keys):
-            return {
-                **base,
-                "path": list(path),
-                "type": "object",
-                "total_items": len(keys),
-                "offset": offset,
-                "value": {},
-                "next_offset": None,
-            }
-        while selected:
-            page = {str(key): value[key] for key in selected}
-            candidate = {
-                **base,
-                "path": list(path),
-                "type": "object",
-                "total_items": len(keys),
-                "offset": offset,
-                "value": page,
-                "next_offset": (
-                    offset + len(selected) if offset + len(selected) < len(keys) else None
-                ),
-            }
-            if _fits_json_budget(candidate, max_characters):
-                return candidate
-            selected.pop()
-        return _oversized_value(path, value, base=base, max_characters=max_characters)
-    if isinstance(value, list):
-        selected_values = value[offset : offset + limit]
-        if not selected_values and offset >= len(value):
-            return {
-                **base,
-                "path": list(path),
-                "type": "array",
-                "total_items": len(value),
-                "offset": offset,
-                "value": [],
-                "next_offset": None,
-            }
-        while selected_values:
-            candidate = {
-                **base,
-                "path": list(path),
-                "type": "array",
-                "total_items": len(value),
-                "offset": offset,
-                "value": selected_values,
-                "next_offset": (
-                    offset + len(selected_values)
-                    if offset + len(selected_values) < len(value)
+        selected = nsmallest(offset + limit, value, key=lambda key: str(key).casefold())[offset:]
+
+        def members() -> Iterator[int | None]:
+            for key in selected:
+                key_size = json_character_count(str(key), limit=max_characters)
+                value_size = json_character_count(value[key], limit=max_characters, cache=cache)
+                yield (
+                    key_size + 2 + value_size
+                    if key_size is not None and value_size is not None
                     else None
-                ),
-            }
-            if _fits_json_budget(candidate, max_characters):
-                return candidate
-            selected_values = selected_values[:-1]
+                )
+
+        sizes = members()
+    else:
+        sizes = (
+            json_character_count(value[index], limit=max_characters, cache=cache)
+            for index in range(offset, min(total, offset + limit))
+        )
+    count = _prefix_count(
+        sizes,
+        fixed=_page_fixed_size(result),
+        offset=offset,
+        total=total,
+        limit=limit,
+        budget=max_characters,
+    )
+    if not count:
         return _oversized_value(path, value, base=base, max_characters=max_characters)
-    return _oversized_value(path, value, base=base, max_characters=max_characters)
+    result.update(
+        value={str(key): value[key] for key in selected[:count]}
+        if isinstance(value, dict)
+        else value[offset : offset + count],
+        next_offset=offset + count if offset + count < total else None,
+    )
+    return result
 
 
 def _search_json(
@@ -1000,75 +1121,87 @@ def _search_json(
     folded = query.casefold()
     matches: dict[tuple[str | int, ...], dict[str, object]] = {}
     scanned_nodes = 0
+    current_path = list(path)
 
-    def add_match(
-        record_path: tuple[str | int, ...],
-        matched_path: tuple[str | int, ...],
-        record: object,
-    ) -> None:
-        matches.setdefault(
-            record_path,
-            {
-                "path": list(record_path),
-                "matched_path": list(matched_path),
+    def add_match(record: object, matched_key: str | None = None) -> None:
+        record_path = tuple(current_path)
+        if record_path not in matches:
+            matches[record_path] = {
+                "path": list(current_path),
+                "matched_path": [*current_path, matched_key]
+                if matched_key is not None
+                else list(current_path),
                 "value": record,
-            },
-        )
+            }
 
-    def walk(item: object, item_path: tuple[str | int, ...]) -> None:
+    def walk(item: object, key_match: bool = False) -> None:
         nonlocal scanned_nodes
         scanned_nodes += 1
+        recorded = key_match
+        if key_match:
+            add_match(item)
         if isinstance(item, dict):
             for key in sorted(item, key=lambda candidate: str(candidate).casefold()):
                 child = item[key]
-                child_path = (*item_path, str(key))
-                if folded in str(key).casefold():
-                    if isinstance(child, (dict, list)):
-                        add_match(child_path, child_path, child)
-                    else:
-                        add_match(item_path, child_path, item)
+                matched = folded in str(key).casefold()
                 if _is_json_scalar(child):
-                    if folded in _scalar_text(child).casefold():
-                        add_match(item_path, child_path, item)
+                    if not recorded and (matched or folded in _scalar_text(child).casefold()):
+                        add_match(item, str(key))
+                        recorded = True
                 else:
-                    walk(child, child_path)
+                    current_path.append(str(key))
+                    walk(child, matched)
+                    current_path.pop()
         elif isinstance(item, list):
             for index, child in enumerate(item):
-                child_path = (*item_path, index)
+                current_path.append(index)
                 if _is_json_scalar(child):
                     if folded in _scalar_text(child).casefold():
-                        add_match(child_path, child_path, child)
+                        add_match(child)
                 else:
-                    walk(child, child_path)
-        elif folded in _scalar_text(item).casefold():
-            add_match(item_path, item_path, item)
+                    walk(child)
+                current_path.pop()
+        elif not recorded and folded in _scalar_text(item).casefold():
+            add_match(item)
 
-    walk(value, path)
-    ordered = [matches[key] for key in sorted(matches, key=_path_sort_key)]
-    selected = ordered[offset : offset + limit]
-    rendered: list[dict[str, object]] = []
-    for match in selected:
-        candidate = dict(match)
-        if not _fits_json_budget(candidate, max_characters):
-            record = candidate.pop("value")
-            candidate.update(
-                {
-                    "value_omitted": True,
-                    "value_shape": _value_shape(record),
-                    "instruction": "匹配对象过大，请对 path 执行 inspect 或 get",
-                }
-            )
-        aggregate = {
-            **base,
-            "query": query,
-            "matches": [*rendered, candidate],
-            "next_offset": None,
-            "scanned_nodes": scanned_nodes,
-        }
-        if not _fits_json_budget(aggregate, max_characters):
-            break
-        rendered.append(candidate)
-    if selected and not rendered:
+    walk(value)
+    selected = nsmallest(offset + limit, matches, key=_path_sort_key)[offset:]
+    result = {
+        **base,
+        "query": query,
+        "matches": [],
+        "next_offset": None,
+        "scanned_nodes": scanned_nodes,
+    }
+    prepared = []
+    cache: dict[int, tuple[object, int, bool]] = {}
+
+    def sizes() -> Iterator[int | None]:
+        from yuki.capabilities.results import artifact_page_size
+
+        for key in selected:
+            candidate = dict(matches[key])
+            value_size = json_character_count(candidate["value"], limit=max_characters, cache=cache)
+            fixed = cast(int, artifact_page_size({**candidate, "value": None})) - 4
+            if value_size is None or fixed + value_size > max_characters:
+                record = candidate.pop("value")
+                candidate.update(
+                    value_omitted=True,
+                    value_shape=_value_shape(record),
+                    instruction="匹配对象过大，请对 path 执行 inspect 或 get",
+                )
+            prepared.append(candidate)
+            yield json_character_count(candidate, limit=max_characters, cache=cache)
+
+    count = _prefix_count(
+        sizes(),
+        fixed=_page_fixed_size(result),
+        offset=offset,
+        total=len(matches),
+        limit=limit,
+        budget=max_characters,
+    )
+    if selected and not count:
         return _artifact_error(
             "artifact_budget_too_small",
             "无法放入一个匹配，请增大预算或读取更深path",
@@ -1077,14 +1210,11 @@ def _search_json(
             offset=offset,
             next_offset=offset,
         )
-    has_more = offset + len(rendered) < len(ordered) or len(rendered) < len(selected)
-    return {
-        **base,
-        "query": query,
-        "matches": rendered,
-        "next_offset": offset + len(rendered) if has_more else None,
-        "scanned_nodes": scanned_nodes,
-    }
+    result.update(
+        matches=prepared[:count],
+        next_offset=offset + count if offset + count < len(matches) else None,
+    )
+    return result
 
 
 def _oversized_value(
@@ -1100,8 +1230,12 @@ def _oversized_value(
         **base,
         path=list(path),
         value_shape=_value_shape(value),
-        estimated_characters=_json_size(value),
+        estimated_characters=0,
     )
+    if not _fits_json_budget(result, max_characters):
+        result.pop("estimated_characters", None)
+        return result
+    result["estimated_characters"] = _json_size(value)
     if not _fits_json_budget(result, max_characters):
         result.pop("estimated_characters", None)
     return result
@@ -1163,16 +1297,7 @@ def _fits_json_budget(value: object, max_characters: int) -> bool:
 
 
 def _json_size(value: object, *, compact: bool = False) -> int | None:
-    try:
-        rendered = json.dumps(
-            value,
-            ensure_ascii=False,
-            default=str,
-            separators=(",", ":") if compact else None,
-        )
-    except (RecursionError, ValueError):
-        return None
-    return len(rendered)
+    return json_character_count(value, compact=compact)
 
 
 def _as_utc(value: datetime) -> datetime:

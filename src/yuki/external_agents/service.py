@@ -731,37 +731,52 @@ class ExternalAgentService:
                 self._retiring.pop(identity)
                 # The existing maintenance loop owns error reporting and retry cadence.
                 task.result()
-        async with self.database.read_session() as session:
-            rows = list(
-                await session.scalars(
-                    select(AgentOperationModel)
-                    .join(work, work.c.id == AgentOperationModel.work_id)
-                    .join(
-                        SandboxTaskRunModel,
-                        SandboxTaskRunModel.request_id == AgentOperationModel.id,
-                    )
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == work.c.conversation_id,
-                    )
-                    .where(
-                        AgentOperationModel.run_id.is_not(None),
-                        AgentOperationModel.detached_at.is_(None),
-                        SandboxTaskRunModel.status == "waiting",
-                        or_(
-                            work.c.state.in_(TERMINAL),
-                            func.json_extract(AgentOperationModel.source_json, "$.generation")
-                            != CanonicalConversationModel.generation,
-                        ),
-                    )
-                )
+        devices = tuple(connection.device_id for connection in self.connections.active())
+        if not devices:
+            return
+        online = func.json_each(json.dumps(devices)).table_valued("value")
+        retiring = func.json_each(json.dumps(tuple(self._retiring))).table_valued("value")
+        query = (
+            select(AgentOperationModel.id)
+            .join(work, work.c.id == AgentOperationModel.work_id)
+            .join(AgentInstanceModel, AgentInstanceModel.id == AgentOperationModel.instance_id)
+            .join(
+                SandboxTaskRunModel,
+                SandboxTaskRunModel.request_id == AgentOperationModel.id,
             )
-        for row in rows:
-            if row.id not in self._retiring:
+            .join(
+                CanonicalConversationModel,
+                CanonicalConversationModel.id == work.c.conversation_id,
+            )
+            .where(
+                AgentOperationModel.run_id.is_not(None),
+                AgentOperationModel.detached_at.is_(None),
+                AgentOperationModel.id.not_in(select(retiring.c.value)),
+                AgentInstanceModel.device_id.in_(select(online.c.value)),
+                SandboxTaskRunModel.status == "waiting",
+                or_(
+                    work.c.state.in_(TERMINAL),
+                    func.json_extract(AgentOperationModel.source_json, "$.generation")
+                    != CanonicalConversationModel.generation,
+                ),
+            )
+        )
 
-                async def retire(identity: str) -> None:
-                    await self.cleanup_tasks([identity], f"external-retire:{identity}")
+        async def retire(identity: str) -> None:
+            await self.cleanup_tasks([identity], f"external-retire:{identity}")
 
-                self._retiring[row.id] = asyncio.create_task(
-                    retire(row.id), name=f"external-agent-retire:{row.id}"
+        after: str | None = None
+        while True:
+            page = query.where(AgentOperationModel.id > after) if after is not None else query
+            async with self.database.read_session() as session:
+                identities = tuple(
+                    await session.scalars(page.order_by(AgentOperationModel.id).limit(128))
                 )
+            if not identities:
+                return
+            after = identities[-1]
+            for identity in identities:
+                if identity not in self._retiring:
+                    self._retiring[identity] = asyncio.create_task(
+                        retire(identity), name=f"external-agent-retire:{identity}"
+                    )

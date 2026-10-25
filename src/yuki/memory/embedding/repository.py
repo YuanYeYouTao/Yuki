@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.identity.authority import person_is_superuser
 from yuki.identity.person_identity import person_family_condition
@@ -30,6 +32,7 @@ from yuki.persistence.models import (
     MemoryEmbeddingProfileModel,
     MemoryFactModel,
 )
+from yuki.persistence.vec1 import create_profile_vectors, drop_profile_vectors, vector_table
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +46,14 @@ class StoredTargetVector:
     content: str
 
 
+@dataclass(frozen=True, slots=True)
+class VectorCandidates:
+    rows: tuple[StoredTargetVector, ...]
+    active_count: int
+    indexed_count: int
+    approximate: bool
+
+
 class MemoryEmbeddingRepository:
     """Never loads vectors before SQL has enforced the exact identity target."""
 
@@ -53,6 +64,43 @@ class MemoryEmbeddingRepository:
     def database(self) -> Database:
         return self._database
 
+    @staticmethod
+    async def store_vectors(
+        session: AsyncSession, *, profile_id: int, records: list[dict[str, Any]]
+    ) -> None:
+        """Publish only claim-accepted metadata and raw values in the caller's writer."""
+        statement = insert(MemoryEmbeddingModel)
+        metadata = [
+            {key: value for key, value in row.items() if key != "vector_blob"} for row in records
+        ]
+        accepted = (
+            await session.execute(
+                statement.values(metadata)
+                .on_conflict_do_update(
+                    index_elements=["fact_id", "profile_id"],
+                    set_={
+                        key: getattr(statement.excluded, key)
+                        for key in ("content_hash", "updated_at")
+                    },
+                )
+                .returning(MemoryEmbeddingModel.id, MemoryEmbeddingModel.fact_id)
+            )
+        ).all()
+        vectors = vector_table(profile_id)
+        payloads = {row["fact_id"]: row["vector_blob"] for row in records}
+        # Vec1 has ordinary INSERT/UPDATE/DELETE, not SQLite UPSERT. Replacement
+        # stays inside this same transaction, including a failed/cancelled insert.
+        await session.execute(
+            vectors.delete().where(vectors.c.rowid.in_(row.id for row in accepted))
+        )
+        await session.execute(
+            vectors.insert(),
+            [
+                {"rowid": row.id, "fact_id": row.fact_id, "vector": payloads[row.fact_id]}
+                for row in accepted
+            ],
+        )
+
     async def load_authorized_vectors(
         self,
         *,
@@ -60,9 +108,10 @@ class MemoryEmbeddingRepository:
         profile_id: int,
         kinds: tuple[str, ...],
         temporal: MemoryTemporalIntent | None = None,
-        scan_limit: int = 50000,
-    ) -> tuple[tuple[StoredTargetVector, ...], bool, int]:
-        """Bound the global vector scan; signal if a later owner may be omitted."""
+        query_blob: bytes,
+        candidate_count: int,
+    ) -> VectorCandidates:
+        """Native candidate selection with current SQL authorization inside top-k."""
         fact_conditions: list[Any] = [
             authorized_fact_condition(scope),
             *strict_time_conditions(temporal),
@@ -76,45 +125,66 @@ class MemoryEmbeddingRepository:
         if kinds:
             fact_conditions.append(MemoryFactModel.kind.in_(kinds))
         async with self._database.read_session() as session:
-            rows = (
-                await session.execute(
-                    select(
-                        MemoryFactModel.id,
-                        MemoryEmbeddingModel.content_hash,
-                        MemoryEmbeddingModel.vector_blob,
-                        MemoryFactModel.kind,
-                        MemoryFactModel.category,
-                        MemoryFactModel.memory_key,
-                        MemoryFactModel.content,
-                    )
-                    .join(MemoryEmbeddingModel, MemoryEmbeddingModel.fact_id == MemoryFactModel.id)
-                    .where(*fact_conditions, MemoryEmbeddingModel.profile_id == profile_id)
-                    .order_by(MemoryFactModel.id.asc())
-                    .limit(scan_limit + 1)
-                )
-            ).all()
-            active_count = int(
-                await session.scalar(
-                    select(func.count()).select_from(MemoryFactModel).where(*fact_conditions)
-                )
-                or 0
+            await session.execute(text("BEGIN"))
+            return await self._candidates(
+                session,
+                conditions=fact_conditions,
+                profile_id=profile_id,
+                query_blob=query_blob,
+                candidate_count=candidate_count,
             )
-        truncated = len(rows) > scan_limit
-        return (
-            tuple(
-                StoredTargetVector(
-                    fact_id=int(row.id),
-                    content_hash=str(row.content_hash),
-                    vector_blob=bytes(row.vector_blob),
-                    kind=str(row.kind),
-                    category=str(row.category),
-                    memory_key=str(row.memory_key),
-                    content=str(row.content),
+
+    @staticmethod
+    async def _candidates(
+        session: AsyncSession,
+        *,
+        conditions: list[Any],
+        profile_id: int,
+        query_blob: bytes,
+        candidate_count: int,
+    ) -> VectorCandidates:
+        fact, embedding = MemoryFactModel, MemoryEmbeddingModel
+        active_ids = select(fact.id).where(*conditions)
+        active_count = int(
+            await session.scalar(select(func.count()).select_from(fact).where(*conditions)) or 0
+        )
+        vectors = vector_table(profile_id)
+        indexed_count = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(embedding)
+                .join(vectors, vectors.c.rowid == embedding.id)
+                .where(embedding.profile_id == profile_id, embedding.fact_id.in_(active_ids))
+            )
+            or 0
+        )
+        ann = getattr(func, vectors.name)(
+            query_blob, json.dumps({"K": candidate_count})
+        ).table_valued("rowid", "fact_id")
+        # IN must address a Vec1 metadata column, not rowid or a post-filtered LIMIT.
+        selected = select(ann.c.rowid).where(ann.c.fact_id.in_(active_ids))
+        rows = (
+            await session.execute(
+                select(
+                    fact.id,
+                    embedding.content_hash,
+                    vectors.c.vector.label("vector_blob"),
+                    fact.kind,
+                    fact.category,
+                    fact.memory_key,
+                    fact.content,
                 )
-                for row in rows[:scan_limit]
-            ),
-            truncated,
+                .join(embedding, embedding.fact_id == fact.id)
+                .join(vectors, vectors.c.rowid == embedding.id)
+                .where(embedding.profile_id == profile_id, embedding.id.in_(selected), *conditions)
+                .order_by(fact.id)
+            )
+        ).all()
+        return VectorCandidates(
+            tuple(StoredTargetVector(*row) for row in rows),
             active_count,
+            indexed_count,
+            indexed_count > candidate_count,
         )
 
     async def ensure_profile(
@@ -122,7 +192,7 @@ class MemoryEmbeddingRepository:
     ) -> MemoryEmbeddingProfileRecord:
         now = datetime.now(UTC)
         async with self._database.immediate_session() as session:
-            await session.execute(
+            created = await session.scalar(
                 insert(MemoryEmbeddingProfileModel)
                 .values(
                     fingerprint=profile.fingerprint,
@@ -135,6 +205,7 @@ class MemoryEmbeddingRepository:
                     created_at=now,
                 )
                 .on_conflict_do_nothing(index_elements=["fingerprint"])
+                .returning(MemoryEmbeddingProfileModel.id)
             )
             row = await session.scalar(
                 select(MemoryEmbeddingProfileModel).where(
@@ -142,6 +213,8 @@ class MemoryEmbeddingRepository:
                 )
             )
             assert row is not None
+            if created is not None:
+                await create_profile_vectors(session, int(created))
         return MemoryEmbeddingProfileRecord(id=row.id, profile=profile, created_at=row.created_at)
 
     async def load_target_vectors(
@@ -151,10 +224,11 @@ class MemoryEmbeddingRepository:
         profile_id: int,
         kinds: tuple[str, ...],
         temporal: MemoryTemporalIntent | None = None,
-    ) -> tuple[StoredTargetVector, ...]:
+        query_blob: bytes,
+        candidate_count: int,
+    ) -> VectorCandidates:
         conditions: list[Any] = [
             *strict_time_conditions(temporal),
-            MemoryEmbeddingModel.profile_id == profile_id,
             MemoryFactModel.status == "active",
             MemoryFactModel.review_state != "quarantined",
             MemoryFactModel.scope_type == target.scope_type.value,
@@ -166,10 +240,11 @@ class MemoryEmbeddingRepository:
         if kinds:
             conditions.append(MemoryFactModel.kind.in_(kinds))
         async with self._database.read_session() as session:
+            await session.execute(text("BEGIN"))
             try:
                 owners = await resolve_fact_canonical_owners(session, target)
             except MemoryPartitionResolutionError:
-                return ()
+                return VectorCandidates((), 0, 0, False)
             conditions.extend(
                 (
                     person_family_condition(
@@ -218,56 +293,33 @@ class MemoryEmbeddingRepository:
                         MemoryFactModel.canonical_visibility_space_id.is_(None),
                     )
                 )
-            rows = (
-                await session.execute(
-                    select(
-                        MemoryFactModel.id,
-                        MemoryEmbeddingModel.content_hash,
-                        MemoryEmbeddingModel.vector_blob,
-                        MemoryFactModel.kind,
-                        MemoryFactModel.category,
-                        MemoryFactModel.memory_key,
-                        MemoryFactModel.content,
-                    )
-                    .join(MemoryEmbeddingModel, MemoryEmbeddingModel.fact_id == MemoryFactModel.id)
-                    .where(*conditions)
-                    .order_by(MemoryFactModel.id.asc())
-                )
-            ).all()
-        return tuple(
-            StoredTargetVector(
-                fact_id=int(row.id),
-                content_hash=str(row.content_hash),
-                vector_blob=bytes(row.vector_blob),
-                kind=str(row.kind),
-                category=str(row.category),
-                memory_key=str(row.memory_key),
-                content=str(row.content),
+            return await self._candidates(
+                session,
+                conditions=conditions,
+                profile_id=profile_id,
+                query_blob=query_blob,
+                candidate_count=candidate_count,
             )
-            for row in rows
-        )
 
     async def purge_old_profiles(self, *, current_profile_id: int, actor_person_id: str) -> int:
         async with self._database.immediate_session() as session:
             if not await person_is_superuser(session, actor_person_id):
                 raise PermissionError("embedding_purge_requires_current_superuser")
-            old_ids = select(MemoryEmbeddingProfileModel.id).where(
-                MemoryEmbeddingProfileModel.id != current_profile_id
-            )
-            count = int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(MemoryEmbeddingProfileModel)
-                    .where(MemoryEmbeddingProfileModel.id != current_profile_id)
+            old_ids = tuple(
+                await session.scalars(
+                    select(MemoryEmbeddingProfileModel.id).where(
+                        MemoryEmbeddingProfileModel.id != current_profile_id
+                    )
                 )
-                or 0
             )
             await session.execute(
                 delete(MemoryEmbeddingProfileModel).where(
                     MemoryEmbeddingProfileModel.id.in_(old_ids)
                 )
             )
-        return count
+            for identity in old_ids:
+                await drop_profile_vectors(session, identity)
+        return len(old_ids)
 
     async def active_fact_count(self) -> int:
         async with self._database.read_session() as session:
@@ -307,6 +359,7 @@ class MemoryEmbeddingRepository:
                 )
                 or 0
             )
+            vectors = vector_table(current_profile_id)
             active_embedding_rows = await session.stream(
                 select(
                     MemoryEmbeddingModel.content_hash,
@@ -316,6 +369,13 @@ class MemoryEmbeddingRepository:
                     MemoryFactModel.content,
                 )
                 .join(MemoryFactModel, MemoryFactModel.id == MemoryEmbeddingModel.fact_id)
+                .join(
+                    vectors,
+                    and_(
+                        vectors.c.rowid == MemoryEmbeddingModel.id,
+                        vectors.c.fact_id == MemoryEmbeddingModel.fact_id,
+                    ),
+                )
                 .where(MemoryEmbeddingModel.profile_id == current_profile_id, *active)
                 .execution_options(yield_per=100)
             )

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, make_settings
 from tests.integration.test_self_common_capabilities import runtime, self_actor
+from tests.support.automation_claims import collect_due
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.event_seed import seed_scoped_event
 from tests.support.model_profiles import write_fake_profiles
@@ -357,7 +358,8 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             )
             state.update({"slot": 1, "text": ""})
             clock.advance(2)
-            due = await app.automation_repository.claim_due(
+            due = await collect_due(
+                app.automation_repository,
                 worker_id="contract-fixture",
                 now=clock.now(),
                 lease_seconds=30,

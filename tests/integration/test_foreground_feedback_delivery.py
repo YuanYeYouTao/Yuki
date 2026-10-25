@@ -9,8 +9,8 @@ from tests.conftest import make_settings
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.support.semantic_participation_host_helpers import _host
-from yuki_participation.controller import State
 from yuki_participation.participation import ParticipationCheckpoint
+from yuki_participation.snapshot import thaw
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -44,9 +44,9 @@ async def test_quiet_is_saved_before_split_delivery_and_keeps_original_request_a
             # A quiet decision affects later participation, not this selected turn.
             assert len(env.model.requests) == 1
             item = next(iter(host._sessions.values()))
-            _, saved = await host._store.load(item.scene.scope)
+            _, progress, body = await host._store.load(item.scene.scope)
             checkpoint = ParticipationCheckpoint.model_validate(
-                State.model_validate_json(saved).host_checkpoint["participation_v1"]
+                thaw(item.scene.scope, progress, body).host_checkpoint["participation_v1"]
             )
             unit = next(iter(checkpoint.units.values()))
             assert unit.hint.delta.engage == "quiet"

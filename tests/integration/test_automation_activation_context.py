@@ -355,7 +355,7 @@ async def test_feishu_source_keeps_its_scene_while_sending_to_another_qq_person(
         else "内部执行结束"
     )
     case.clock.advance(3602)
-    for claimed in await case.repository.claim_due(
+    async for claimed in case.repository.claim_due(
         worker_id="cross-platform", now=case.clock.now(), lease_seconds=120, clock=case.clock.now
     ):
         await case.worker._process_guarded(claimed)

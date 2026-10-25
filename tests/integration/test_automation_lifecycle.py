@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import insert, select, update
+from tests.support.automation_claims import collect_due
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.support.canonical_identity import ensure_presence, ensure_space
@@ -303,7 +304,8 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
         )
     case.clock.advance(2)
     claimed = (
-        await case.repository.claim_due(
+        await collect_due(
+            case.repository,
             worker_id="original-claim",
             now=case.clock.now(),
             lease_seconds=30,
@@ -521,8 +523,8 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
     assert "step_id" not in source and source["script_hash"] == case.row.script_hash
     assert original["state"] == "waiting_external"
     assert (
-        await case.repository.claim_due(
-            worker_id="scan-again", now=case.clock.now(), lease_seconds=60
+        await collect_due(
+            case.repository, worker_id="scan-again", now=case.clock.now(), lease_seconds=60
         )
         == ()
     )
@@ -670,8 +672,8 @@ async def test_claimed_old_version_cannot_admit_after_update_or_schedule_cancel(
     case = await setup_run(database, tmp_path, mode="silent")
     case.clock.advance(2)
     claimed = (
-        await case.repository.claim_due(
-            worker_id="old-owner", now=case.clock.now(), lease_seconds=60
+        await collect_due(
+            case.repository, worker_id="old-owner", now=case.clock.now(), lease_seconds=60
         )
     )[0]
     await case.service.update_task(
@@ -778,8 +780,12 @@ async def test_claim_lease_starts_after_competing_writer_releases(database, tmp_
     async with immediate():
         monkeypatch.setattr(database, "immediate_session", attempted_writer)
         claim = asyncio.create_task(
-            case.repository.claim_due(
-                worker_id="real-writer", now=clock.now(), lease_seconds=60, clock=clock.now
+            collect_due(
+                case.repository,
+                worker_id="real-writer",
+                now=clock.now(),
+                lease_seconds=60,
+                clock=clock.now,
             )
         )
         await asyncio.wait_for(waiting.wait(), timeout=5)
@@ -844,8 +850,12 @@ async def test_batch_claimers_accept_disjoint_sets_and_original_versions(
     monkeypatch.setattr(database, "immediate_session", compete)
     first, second = await asyncio.gather(
         *(
-            case.repository.claim_due(
-                worker_id=worker, now=clock.now(), lease_seconds=60, clock=clock.now
+            collect_due(
+                case.repository,
+                worker_id=worker,
+                now=clock.now(),
+                lease_seconds=60,
+                clock=clock.now,
             )
             for worker in ("first-real-writer", "second-real-writer")
         )
@@ -889,13 +899,16 @@ async def test_claim_parses_only_after_successful_commit(
     monkeypatch.setattr(automation_repository, "_automation_record", parse_accepted)
     if unknown_commit:
         with pytest.raises(RuntimeError, match="unknown_claim_commit"):
-            await case.repository.claim_due(
-                worker_id="original-claim", now=case.row.next_run_at, lease_seconds=60
+            await collect_due(
+                case.repository,
+                worker_id="original-claim",
+                now=case.row.next_run_at,
+                lease_seconds=60,
             )
         assert parsed == []
     else:
-        accepted = await case.repository.claim_due(
-            worker_id="original-claim", now=case.row.next_run_at, lease_seconds=60
+        accepted = await collect_due(
+            case.repository, worker_id="original-claim", now=case.row.next_run_at, lease_seconds=60
         )
         assert parsed == [case.row.id] and accepted[0].script == case.row.script
     async with database.read_session() as reader:
@@ -964,7 +977,8 @@ async def test_terminal_work_survives_maintenance_before_late_occurrence_settlem
     case = await setup_run(database, tmp_path, mode="silent")
     case.clock.advance(2)
     claimed = (
-        await case.repository.claim_due(
+        await collect_due(
+            case.repository,
             worker_id="late-settlement",
             now=case.clock.now(),
             lease_seconds=30,
@@ -1025,7 +1039,8 @@ async def test_renew_uses_admitted_clock_and_never_revives_expired_owner(
 ):
     case = await setup_run(database, tmp_path)
     clock = FakeClock(case.row.next_run_at)
-    claimed = await case.repository.claim_due(
+    claimed = await collect_due(
+        case.repository,
         worker_id="renew-owner",
         now=clock.now(),
         lease_seconds=60,

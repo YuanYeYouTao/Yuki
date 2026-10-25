@@ -215,6 +215,9 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 长期记忆沿共同检索工具按需读取。
 
 已有 claim_due → 唯一到期槽 create_run → 共同 Main → 原回执/finish_run 安排链保持。
+到期扫描按 `(next_run_at, id)` 用 SQL keyset 读取 128 条候选页，每页在原 writer 核验、
+领取并提交后即逐项交给现有并发执行器，不先累积整轮定义或等待前页执行结束。
+竞争使某页没有成功领取项时仍扫描下一页；租约起点认实际取得 writer 后的时间。
 到点首次激活使用原版本保存的 hash；同一次发生重扫或重启不购买第二份模型/工具执行，
 不同日期保留不同 run、私有执行身份和效果。时间扫描只负责安排，WorkScheduler 负责
 实际 Work 的等待和恢复，暂停或取消未来安排不停止已经接纳的 Work。
@@ -400,8 +403,9 @@ owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次
 实际文件查证/删除，释放后批量确认仍 deleting 且无拥有者的 metadata。GC 不持 writer
 等待文件锁；publication 保留文件核验至原 journal/ref 提交的保护。同内容对象的新引用在
 原 writer 撤销旧删除标记；GC 取得文件锁后重新读取删除资格，避免删除已复用的对象。
-文件线程在调用方取消后须真正收尾才释放原保护。普通不可变检查点条目可在原 chain
-复用有界 digest/size 缓存，opaque 与会改变媒体外置的条目仍按原协议准备；缓存不代替
+文件线程在调用方取消后须真正收尾才释放原保护。普通不可变检查点条目复用随原记录
+生命周期释放的弱引用 digest/size 元数据，不另留正文，不因前缀超过LRU容量反复编码；
+opaque 与会改变媒体外置的条目仍按原协议准备；复用不代替
 发布前真实文件身份/完整性核验。文件缺失重新准备，变化重新查证，损坏拒绝发布。
 
 热配置 `context.compact_trigger_tokens` 默认 `96000`，环境变量为

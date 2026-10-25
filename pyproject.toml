@@ -27,7 +27,7 @@ dependencies = [
     "tenacity>=9,<10",
     "tzdata>=2025.2",
     "websockets>=16,<17",
-    "yuki-semantic-participation @ https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/79d266918dc6ce19b7d81568565deaed450301d5.tar.gz",
+    "yuki-semantic-participation @ https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/5d9ea2caf82452c33fb7b42c8a175a1549f80f38.tar.gz",
     "tomlkit>=0.13,<1",
     "agent-client-protocol==0.12.1",
     "opencc==1.4.2",
@@ -53,8 +53,19 @@ yuki-bot = "yuki.main:run"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+exclude = ["src/yuki/_native", ".cache"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/yuki", "src/yuki_plugin_sdk"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist.force-include]
+"vendor/sqlite-vec1" = "vendor/sqlite-vec1"
+"scripts/build_vec1.py" = "scripts/build_vec1.py"
+"hatch_build.py" = "hatch_build.py"
 
 [tool.hatch.metadata]
 allow-direct-references = true

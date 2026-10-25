@@ -1,0 +1,14 @@
+SQLite Vec1 0.8
+https://www.sqlite.org/vec1.html
+Source: https://github.com/sqlite/sqlite/tree/4012bdca5f1599d5dd3d6671112f170bfd48a26f/ext/vec1
+SQLite extension headers: SQLite 3.46.1 amalgamation, https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip
+
+The SQLite authors disclaim copyright to this code. The source files carry
+their public-domain notices. No external SQLite library is bundled: Vec1 uses
+the extension API of the host SQLite connection.
+
+x86-64 builds combine the upstream SCALAR and AVX2 variants and use its runtime
+CPU dispatch. ARM builds use the upstream NEON support. Yuki does not compile
+or download this code on import.
+
+Local change: the x86 dispatcher also checks FMA, which the AVX2 variant uses.

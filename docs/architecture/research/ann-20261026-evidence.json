@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-26",
+  "status": "research_and_local_synthetic_prototype_only",
+  "host_revision": "75e21a5c824876485d75e7fcd58e8111bdddeb4d",
+  "source_revision": "4012bdca5f1599d5dd3d6671112f170bfd48a26f",
+  "production_writes": false,
+  "model_calls": false,
+  "production_read_only_counts": {
+    "observed_utc": "2026-10-25T17:07:50.098445+00:00",
+    "dimensions": 1024,
+    "profiles": 1,
+    "stored_vectors": 2373,
+    "stored_vector_blob_bytes": 9719808,
+    "active_nonquarantined_unexpired_vectors": 1511,
+    "qualification": "Global metadata counts, not the number authorized for a particular query. No vector contents, fact text or person identifiers exported."
+  },
+  "local_transaction_probe": {
+    "local_only": true,
+    "synthetic_only": true,
+    "source_commit": "4012bdca5f1599d5dd3d6671112f170bfd48a26f",
+    "sqlite_version": "3.46.1",
+    "extension": "version 0.8 (Scalar, multi-threaded)",
+    "vectors": 512,
+    "dimensions": 1024,
+    "ann_model": "IVF 8 buckets; no PQ; cosine",
+    "compile_seconds": 3.5866143040475436,
+    "train_seconds": 0.1426991750486195,
+    "checks": {
+      "nn_self_match": true,
+      "observer_sees_old_during_update": true,
+      "rollback_restores_index": true,
+      "savepoint_rollback_restores_cascade": true,
+      "ivf_self_match": true,
+      "fk_cascade_removes_index_row_in_tx": true,
+      "ivf_rollback_restores_deleted_row": true,
+      "fk_cascade_removes_committed_index_row": true,
+      "deleted_id_absent_from_ann": true,
+      "reopen_persists_index_and_deletion": true
+    },
+    "qualifications": [
+      "Portable compilation without explicit AVX2 flags; not a performance benchmark.",
+      "Logical deletion/query behavior only; not physical erasure of database pages or compressed tombstones.",
+      "No Yuki runtime, production mutation, real vectors, model calls, or real authorization SQL."
+    ]
+  },
+  "local_allowlist_probe": {
+    "local_only": true,
+    "synthetic_only": true,
+    "sqlite_version": "3.46.1",
+    "allowed_ids_are_outside_global_first_k": true,
+    "nn_metadata_in_returns_allowed_k": true,
+    "ivf_metadata_in_returns_allowed_k": true,
+    "streaming_expands_after_restrictive_filter": true,
+    "query_plan": [
+      [
+        2,
+        0,
+        0,
+        "SCAN filter_vectors VIRTUAL TABLE INDEX 5:PI00"
+      ],
+      [
+        8,
+        0,
+        0,
+        "LIST SUBQUERY 1"
+      ],
+      [
+        10,
+        8,
+        0,
+        "SCAN query_allowed"
+      ]
+    ],
+    "qualifications": [
+      "Synthetic fact-ID allowlist only, not actual Yuki Person/Space SQL.",
+      "IVF test with nprobe=8 covers all eight buckets; streaming test starts at one and may expand.",
+      "No latency, real-data recall, raw-vector layout migration, or production acceptance established."
+    ]
+  },
+  "not_yet_validated": [
+    "Real Yuki authorization SQL and result consumers",
+    "Original raw float32 round-trip in PQ index mode",
+    "Writer hold time / WAL growth / cancellation in actual Database",
+    "Real-data ANN recall and performance",
+    "Linux/Windows/ARM packaged binaries",
+    "Metadata/raw-vector migration and whole deployed privacy lifecycle"
+  ]
+}

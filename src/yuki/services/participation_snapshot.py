@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
 
-from yuki_participation.controller import State
 from yuki_participation.models import Scope
+from yuki_participation.snapshot import SnapshotWrite
 from yuki_participation.store import SnapshotStore
 
 _T = TypeVar("_T")
@@ -49,24 +49,23 @@ class AsyncSnapshotStore:
             asyncio.get_running_loop().run_in_executor(self._executor, operation)
         )
 
-    async def load(self, scope: Scope) -> tuple[int, str] | None:
+    async def load(self, scope: Scope) -> tuple[int, bytes, bytes] | None:
         conversation_id, generation = scope.conversation_id, scope.generation
 
-        def read() -> tuple[int, str] | None:
+        def read() -> tuple[int, bytes, bytes] | None:
             if self._store is None:
                 raise RuntimeError("participation_store_closed")
-            loaded = self._store.load(Scope(conversation_id=conversation_id, generation=generation))
-            return (loaded[0], loaded[1].model_dump_json()) if loaded is not None else None
+            return self._store.load_raw(
+                Scope(conversation_id=conversation_id, generation=generation)
+            )
 
         return await self._run(read)
 
-    async def save(self, payload: str, *, expected_revision: int) -> int:
+    async def save(self, payload: SnapshotWrite, *, expected_revision: int) -> int:
         def write() -> int:
             if self._store is None:
                 raise RuntimeError("participation_store_closed")
-            return self._store.save(
-                State.model_validate_json(payload), expected_revision=expected_revision
-            )
+            return self._store.save_frozen(payload, expected_revision=expected_revision)
 
         return await self._run(write)
 

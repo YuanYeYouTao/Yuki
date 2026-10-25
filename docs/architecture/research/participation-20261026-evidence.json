@@ -1,0 +1,1018 @@
+{
+  "date": "2026-10-26",
+  "status": "research_and_synthetic_local_experiments_only",
+  "host_revision": "75e21a5c824876485d75e7fcd58e8111bdddeb4d",
+  "participation_revision": "79d266918dc6ce19b7d81568565deaed450301d5",
+  "production_changes": false,
+  "paid_calls_or_messages": false,
+  "qualifications": [
+    "Fixed Git revision exported for experiments; installed local dependency differs and was not used.",
+    "All State bodies are synthetic. No private chat, credentials, or production database rows are included.",
+    "Local WAL layout experiments do not establish production latency or end-to-end speedup.",
+    "WAL layout timing excludes the existing logical-capacity metadata queries.",
+    "State split/join prototype performs full dumps for measurement and must not be copied into hot runtime paths."
+  ],
+  "equivalence_counterexamples": {
+    "reanchor": {
+      "tick_times": [
+        1002,
+        1004,
+        1006,
+        1008,
+        1010,
+        1012,
+        1014,
+        1016,
+        1018,
+        1020
+      ],
+      "every_tick_activity": 0.21495939317213694,
+      "every_tick_hex": "0x1.b83ca15d237ffp-3",
+      "single_jump_activity": 0.21495939317213697,
+      "single_jump_hex": "0x1.b83ca15d23800p-3",
+      "equal": false
+    },
+    "cold_tau_change": {
+      "old_tau": 60.0,
+      "new_tau": 30.0,
+      "legacy_saved_restored_activity": 0.014936120510359197,
+      "no_hot_commit_restored_activity": 0.010702198004175741
+    },
+    "sample_cursor": {
+      "legacy_saved_sequence": 5,
+      "unflushed_restored_sequence": 0,
+      "next_legacy_arrival": 0.4518963454237354,
+      "next_unflushed_arrival": 0.854291853456234
+    }
+  },
+  "state_representation": {
+    "python_version": "3.12.13 (main, Jul 18 2026, 17:08:38) [MSC v.1944 64 bit (AMD64)]",
+    "state_field_count": 38,
+    "field_classification": {
+      "tick_math_scalars": [
+        "now",
+        "last_sample_at",
+        "sample_sequence",
+        "skipped_seconds",
+        "replay_after",
+        "baseline_evictions",
+        "baseline_invalidations"
+      ],
+      "tick_math_structures": [
+        "belief_baselines",
+        "trace_baselines",
+        "attentions",
+        "reception_baseline"
+      ],
+      "body_identity_and_business": [
+        "scope",
+        "epoch",
+        "events",
+        "observations",
+        "feedback",
+        "effects",
+        "proposal_runs",
+        "candidates",
+        "consumed",
+        "invalidated",
+        "seen",
+        "boundaries",
+        "proposals",
+        "pending",
+        "last_accepted",
+        "last_human_at",
+        "human_activity_initialized",
+        "last_self_message_at",
+        "capacity_blocked",
+        "observer_checkpoint",
+        "host_checkpoint",
+        "self_reports",
+        "engagement_report",
+        "familiarities",
+        "work_pulses",
+        "outbound_anchors",
+        "receptions"
+      ]
+    },
+    "package_source_hashes": {
+      "src/yuki_participation/__init__.py": "d463d1b6769f5eff634ae511bae9a18b8307e5e57d6713d4be0f13aa58a1bb10",
+      "src/yuki_participation/autonomy_parameters.py": "77560bfb2cfb152da59da85aaaa3e47e813d2e664a19090241bb595d67c57945",
+      "src/yuki_participation/controller.py": "d5cd8db2f7a441b2e6f13af46f2fbe15c5e00377b239df2f6039be615f57cfdd",
+      "src/yuki_participation/dynamics.py": "58041c2a9c7d5fbe3fa2be4222a8d3ee763e632dbe6e2dbabd6e61aa21b641fc",
+      "src/yuki_participation/models.py": "126a96b890d3daceb207653b278f403e83e6513c794faaae4dcdf939d03fcdef",
+      "src/yuki_participation/observer.py": "127a13f0b9acb55b2ab44ba23aedd8c1246dcaea3bb0241ab2f2558bc6dd17a3",
+      "src/yuki_participation/participation.py": "58c6ec21ba7cba7c52f653c2a0a7f8f3f236280fed5572dde5c6a1ed4642a200",
+      "src/yuki_participation/rubric.py": "44ab239025bd8ebb22ba40360749bbfdf123e7aa18a1b22bc1d4232f8f5b3635",
+      "src/yuki_participation/scheduling.py": "0b3da2cd429c8c82330e26cba11d0a8a47047529dee09995190f4d6e705a9631",
+      "src/yuki_participation/self_report.py": "d0e39e9cc1250a59cc7a901af3179bc0a165b65d4369bda3dfe951afbdf32462",
+      "src/yuki_participation/session.py": "293baa230adc7e85737214b92a5a556bec2edbc7dddb4754fa958568bf270e4c",
+      "src/yuki_participation/store.py": "477063d203b0612dfe66531617fc353c98530b6ee284788d014e76ce42d4fbfb"
+    },
+    "cases": [
+      {
+        "case": "empty_host_unavailable",
+        "changed_top_level": [
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.social_context.at",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "last_sample_at"
+        ],
+        "changed_path_count": 8,
+        "full_state_bytes": 1057,
+        "hot_bytes": 505,
+        "cold_bytes": 601,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "empty_intrinsic_enabled_zero_human_rate",
+        "changed_top_level": [
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "sample_sequence",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.social_context.at",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "last_sample_at",
+          "sample_sequence"
+        ],
+        "changed_path_count": 9,
+        "full_state_bytes": 1057,
+        "hot_bytes": 505,
+        "cold_bytes": 601,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "recent_events_no_expiry",
+        "changed_top_level": [
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.social_context.at",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "last_sample_at"
+        ],
+        "changed_path_count": 8,
+        "full_state_bytes": 5137,
+        "hot_bytes": 505,
+        "cold_bytes": 4681,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "eligible_candidate_attention",
+        "changed_top_level": [
+          "attentions",
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "sample_sequence",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "attentions.eligible-open",
+          "replay_after",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.social_context.at",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "last_sample_at",
+          "sample_sequence"
+        ],
+        "changed_path_count": 10,
+        "full_state_bytes": 3493,
+        "hot_bytes": 524,
+        "cold_bytes": 3017,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 1,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "raw_source_crosses_600s",
+        "changed_top_level": [
+          "events",
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "seen",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "events.expires",
+          "seen.expires",
+          "replay_after",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.activity.value",
+          "trace_baselines.social_context.at",
+          "trace_baselines.social_context.value",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "trace_baselines.human_activity.value",
+          "last_sample_at"
+        ],
+        "changed_path_count": 13,
+        "full_state_bytes": 1108,
+        "hot_bytes": 554,
+        "cold_bytes": 603,
+        "cold_bytes_unchanged": false,
+        "cold_without_identity_layout_unchanged": false,
+        "hot_bytes_unchanged": false,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "unit_sources_retire_at_600s",
+        "changed_top_level": [
+          "belief_baselines",
+          "events",
+          "host_checkpoint",
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "events.bound-source",
+          "host_checkpoint.participation_v1.units.[\"topic\",\"A\"].retired_refs",
+          "replay_after",
+          "belief_baselines.[\"topic\",\"A\"]",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.activity.value",
+          "trace_baselines.social_context.at",
+          "trace_baselines.social_context.value",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "trace_baselines.human_activity.value",
+          "last_sample_at"
+        ],
+        "changed_path_count": 14,
+        "full_state_bytes": 1805,
+        "hot_bytes": 634,
+        "cold_bytes": 1176,
+        "cold_bytes_unchanged": false,
+        "cold_without_identity_layout_unchanged": false,
+        "hot_bytes_unchanged": false,
+        "belief_count": 1,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": true,
+        "belief_last_action_changed": true,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "reception_expires_and_archives_positive",
+        "changed_top_level": [
+          "last_sample_at",
+          "now",
+          "reception_baseline",
+          "receptions",
+          "replay_after",
+          "trace_baselines",
+          "work_pulses"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.social_context.at",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "work_pulses.old-run.archived_positive",
+          "receptions.old-reception",
+          "reception_baseline",
+          "last_sample_at"
+        ],
+        "changed_path_count": 11,
+        "full_state_bytes": 1161,
+        "hot_bytes": 535,
+        "cold_bytes": 675,
+        "cold_bytes_unchanged": false,
+        "cold_without_identity_layout_unchanged": false,
+        "hot_bytes_unchanged": false,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "last_action_reorders_cold_identity_layout",
+        "changed_top_level": [
+          "belief_baselines",
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "belief_baselines.[\"other\",\"B\"].at",
+          "belief_baselines.[\"other\",\"B\"].value[0]",
+          "belief_baselines.[\"other\",\"B\"].value[1]",
+          "belief_baselines.[\"other\",\"B\"].value[2]",
+          "belief_baselines.[\"other\",\"B\"].value[3]",
+          "belief_baselines.[\"other\",\"B\"].value[4]",
+          "belief_baselines.[\"topic\",\"A\"].at",
+          "belief_baselines.[\"topic\",\"A\"].value[0]",
+          "belief_baselines.[\"topic\",\"A\"].value[1]",
+          "belief_baselines.[\"topic\",\"A\"].value[2]",
+          "belief_baselines.[\"topic\",\"A\"].value[3]",
+          "belief_baselines.[\"topic\",\"A\"].value[4]",
+          "belief_baselines.[\"topic\",\"A\"].last_action",
+          "trace_baselines.compute.at",
+          "trace_baselines.activity.at",
+          "trace_baselines.social_context.at",
+          "trace_baselines.no_reply.at",
+          "trace_baselines.human_activity.at",
+          "last_sample_at"
+        ],
+        "changed_path_count": 21,
+        "full_state_bytes": 2062,
+        "hot_bytes": 752,
+        "cold_bytes": 1272,
+        "cold_bytes_unchanged": false,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 2,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": true,
+        "belief_last_action_changed": true,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "64_belief_baselines_identity_chars_16",
+        "changed_top_level": [
+          "belief_baselines",
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "belief_baselines.[\"topic-63-tttttttttttttttt\",\"person-63-pppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-63-tttttttttttttttt\",\"person-63-pppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-63-tttttttttttttttt\",\"person-63-pppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-63-tttttttttttttttt\",\"person-63-pppppppppppppppp\"].value[2]",
+          "belief_baselines.[\"topic-63-tttttttttttttttt\",\"person-63-pppppppppppppppp\"].value[3]",
+          "belief_baselines.[\"topic-63-tttttttttttttttt\",\"person-63-pppppppppppppppp\"].value[4]",
+          "belief_baselines.[\"topic-62-tttttttttttttttt\",\"person-62-pppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-62-tttttttttttttttt\",\"person-62-pppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-62-tttttttttttttttt\",\"person-62-pppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-62-tttttttttttttttt\",\"person-62-pppppppppppppppp\"].value[2]",
+          "belief_baselines.[\"topic-62-tttttttttttttttt\",\"person-62-pppppppppppppppp\"].value[3]",
+          "belief_baselines.[\"topic-62-tttttttttttttttt\",\"person-62-pppppppppppppppp\"].value[4]",
+          "belief_baselines.[\"topic-61-tttttttttttttttt\",\"person-61-pppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-61-tttttttttttttttt\",\"person-61-pppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-61-tttttttttttttttt\",\"person-61-pppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-61-tttttttttttttttt\",\"person-61-pppppppppppppppp\"].value[2]",
+          "belief_baselines.[\"topic-61-tttttttttttttttt\",\"person-61-pppppppppppppppp\"].value[3]",
+          "belief_baselines.[\"topic-61-tttttttttttttttt\",\"person-61-pppppppppppppppp\"].value[4]",
+          "belief_baselines.[\"topic-60-tttttttttttttttt\",\"person-60-pppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-60-tttttttttttttttt\",\"person-60-pppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-60-tttttttttttttttt\",\"person-60-pppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-60-tttttttttttttttt\",\"person-60-pppppppppppppppp\"].value[2]"
+        ],
+        "changed_path_count": 392,
+        "full_state_bytes": 219790,
+        "hot_bytes": 8568,
+        "cold_bytes": 208518,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 64,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "64_belief_baselines_identity_chars_1024",
+        "changed_top_level": [
+          "belief_baselines",
+          "last_sample_at",
+          "now",
+          "replay_after",
+          "trace_baselines"
+        ],
+        "changed_paths_sample": [
+          "now",
+          "replay_after",
+          "belief_baselines.[\"topic-63-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-63-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-63-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-63-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-63-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-63-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-63-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-63-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[2]",
+          "belief_baselines.[\"topic-63-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-63-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[3]",
+          "belief_baselines.[\"topic-63-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-63-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[4]",
+          "belief_baselines.[\"topic-62-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-62-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-62-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-62-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-62-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-62-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-62-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-62-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[2]",
+          "belief_baselines.[\"topic-62-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-62-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[3]",
+          "belief_baselines.[\"topic-62-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-62-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[4]",
+          "belief_baselines.[\"topic-61-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-61-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-61-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-61-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-61-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-61-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-61-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-61-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[2]",
+          "belief_baselines.[\"topic-61-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-61-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[3]",
+          "belief_baselines.[\"topic-61-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-61-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[4]",
+          "belief_baselines.[\"topic-60-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-60-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].at",
+          "belief_baselines.[\"topic-60-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-60-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[0]",
+          "belief_baselines.[\"topic-60-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-60-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[1]",
+          "belief_baselines.[\"topic-60-tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"person-60-pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"].value[2]"
+        ],
+        "changed_path_count": 392,
+        "full_state_bytes": 477838,
+        "hot_bytes": 8568,
+        "cold_bytes": 466566,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": false,
+        "belief_count": 64,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "observer_empty_queue_recheckpoint",
+        "changed_top_level": [],
+        "changed_paths_sample": [],
+        "changed_path_count": 0,
+        "full_state_bytes": 1315,
+        "hot_bytes": 505,
+        "cold_bytes": 859,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": true,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true,
+        "observer_checkpoint_object_rebuilt": true
+      },
+      {
+        "case": "observer_pending_fresh_backoff",
+        "changed_top_level": [],
+        "changed_paths_sample": [],
+        "changed_path_count": 0,
+        "full_state_bytes": 1878,
+        "hot_bytes": 505,
+        "cold_bytes": 1422,
+        "cold_bytes_unchanged": true,
+        "cold_without_identity_layout_unchanged": true,
+        "hot_bytes_unchanged": true,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      },
+      {
+        "case": "observer_pending_expired_during_backoff",
+        "changed_top_level": [
+          "observer_checkpoint"
+        ],
+        "changed_paths_sample": [
+          "observer_checkpoint.queue.pending",
+          "observer_checkpoint.queue.expired"
+        ],
+        "changed_path_count": 2,
+        "full_state_bytes": 1752,
+        "hot_bytes": 505,
+        "cold_bytes": 1296,
+        "cold_bytes_unchanged": false,
+        "cold_without_identity_layout_unchanged": false,
+        "hot_bytes_unchanged": true,
+        "belief_count": 0,
+        "trace_keys": [
+          "compute",
+          "activity",
+          "social_context",
+          "no_reply",
+          "human_activity"
+        ],
+        "attention_count": 0,
+        "belief_dict_order_changed": false,
+        "belief_last_action_changed": false,
+        "proposal_produced": false,
+        "reconstructed_exact": true
+      }
+    ],
+    "paired_tick_times": [
+      1012,
+      1014,
+      1020,
+      1300,
+      1600,
+      1602
+    ],
+    "paired_ticks_exact": true,
+    "cold_restore_changed_tau_exact": true,
+    "legacy_hash_uniform_float_hex_checks": 64,
+    "qualifications": [
+      "Synthetic lengths are not online payload/RSS/WAL measurements.",
+      "Hot variable-length JSON bytes are not fixed-width storage.",
+      "All twelve package modules were sourced from the pinned git tree; the unrelated installed package version was not used."
+    ]
+  },
+  "wal_layout": {
+    "environment": {
+      "sqlite_version": "3.46.1",
+      "page_bytes": 4096,
+      "journal": "WAL",
+      "synchronous": "FULL",
+      "auto_checkpoint_disabled_for_frame_measurement": true,
+      "location": "local Debian /tmp"
+    },
+    "cases": [
+      {
+        "layout": "whole_payload",
+        "cold_json_bytes": 65610,
+        "header_padding": 256,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 312,
+        "total_bound_blob_bytes": 792825,
+        "update_count": 12,
+        "hot_byte_range": [
+          459,
+          461
+        ]
+      },
+      {
+        "layout": "same_row",
+        "cold_json_bytes": 65610,
+        "header_padding": 256,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 312,
+        "total_bound_blob_bytes": 5517,
+        "update_count": 12,
+        "hot_byte_range": [
+          459,
+          461
+        ]
+      },
+      {
+        "layout": "vertical",
+        "cold_json_bytes": 65610,
+        "header_padding": 256,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 12,
+        "total_bound_blob_bytes": 5517,
+        "update_count": 12,
+        "hot_byte_range": [
+          459,
+          461
+        ]
+      },
+      {
+        "layout": "whole_payload",
+        "cold_json_bytes": 65610,
+        "header_padding": 16384,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 384,
+        "total_bound_blob_bytes": 986361,
+        "update_count": 12,
+        "hot_byte_range": [
+          16587,
+          16589
+        ]
+      },
+      {
+        "layout": "same_row",
+        "cold_json_bytes": 65610,
+        "header_padding": 16384,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 384,
+        "total_bound_blob_bytes": 199053,
+        "update_count": 12,
+        "hot_byte_range": [
+          16587,
+          16589
+        ]
+      },
+      {
+        "layout": "vertical",
+        "cold_json_bytes": 65610,
+        "header_padding": 16384,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 93,
+        "total_bound_blob_bytes": 199053,
+        "update_count": 12,
+        "hot_byte_range": [
+          16587,
+          16589
+        ]
+      },
+      {
+        "layout": "whole_payload",
+        "cold_json_bytes": 524362,
+        "header_padding": 256,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 2328,
+        "total_bound_blob_bytes": 6297849,
+        "update_count": 12,
+        "hot_byte_range": [
+          459,
+          461
+        ]
+      },
+      {
+        "layout": "same_row",
+        "cold_json_bytes": 524362,
+        "header_padding": 256,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 2328,
+        "total_bound_blob_bytes": 5517,
+        "update_count": 12,
+        "hot_byte_range": [
+          459,
+          461
+        ]
+      },
+      {
+        "layout": "vertical",
+        "cold_json_bytes": 524362,
+        "header_padding": 256,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 12,
+        "total_bound_blob_bytes": 5517,
+        "update_count": 12,
+        "hot_byte_range": [
+          459,
+          461
+        ]
+      },
+      {
+        "layout": "whole_payload",
+        "cold_json_bytes": 524362,
+        "header_padding": 16384,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 2400,
+        "total_bound_blob_bytes": 6491385,
+        "update_count": 12,
+        "hot_byte_range": [
+          16587,
+          16589
+        ]
+      },
+      {
+        "layout": "same_row",
+        "cold_json_bytes": 524362,
+        "header_padding": 16384,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 2400,
+        "total_bound_blob_bytes": 199053,
+        "update_count": 12,
+        "hot_byte_range": [
+          16587,
+          16589
+        ]
+      },
+      {
+        "layout": "vertical",
+        "cold_json_bytes": 524362,
+        "header_padding": 16384,
+        "sqlite_version": "3.46.1",
+        "page_size": 4096,
+        "synchronous": 2,
+        "stale_cas_preserves_state": true,
+        "total_wal_frames": 93,
+        "total_bound_blob_bytes": 199053,
+        "update_count": 12,
+        "hot_byte_range": [
+          16587,
+          16589
+        ]
+      }
+    ],
+    "vertical_atomicity": {
+      "one_join_reads_old_during_full_save": true,
+      "rollback_preserves_old_pair": true,
+      "commit_publishes_new_pair": true
+    },
+    "isolated_width_cases": [
+      {
+        "layout": "same_row",
+        "pattern": "revision_width_only",
+        "updates": [
+          {
+            "revision": 127,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          },
+          {
+            "revision": 128,
+            "hot_bytes": 462,
+            "wal_frames": 258
+          },
+          {
+            "revision": 129,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          },
+          {
+            "revision": 130,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          }
+        ]
+      },
+      {
+        "layout": "same_row",
+        "pattern": "hot_length_only",
+        "updates": [
+          {
+            "revision": 1001,
+            "hot_bytes": 463,
+            "wal_frames": 258
+          },
+          {
+            "revision": 1002,
+            "hot_bytes": 464,
+            "wal_frames": 258
+          },
+          {
+            "revision": 1003,
+            "hot_bytes": 465,
+            "wal_frames": 258
+          },
+          {
+            "revision": 1004,
+            "hot_bytes": 466,
+            "wal_frames": 258
+          }
+        ]
+      },
+      {
+        "layout": "vertical",
+        "pattern": "revision_width_only",
+        "updates": [
+          {
+            "revision": 127,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          },
+          {
+            "revision": 128,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          },
+          {
+            "revision": 129,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          },
+          {
+            "revision": 130,
+            "hot_bytes": 462,
+            "wal_frames": 1
+          }
+        ]
+      },
+      {
+        "layout": "vertical",
+        "pattern": "hot_length_only",
+        "updates": [
+          {
+            "revision": 1001,
+            "hot_bytes": 463,
+            "wal_frames": 1
+          },
+          {
+            "revision": 1002,
+            "hot_bytes": 464,
+            "wal_frames": 1
+          },
+          {
+            "revision": 1003,
+            "hot_bytes": 465,
+            "wal_frames": 1
+          },
+          {
+            "revision": 1004,
+            "hot_bytes": 466,
+            "wal_frames": 1
+          }
+        ]
+      }
+    ]
+  },
+  "host_count_probe": {
+    "kind": "real _advance_scene with counting boundary stubs; not SQL or latency measurement",
+    "ticks": 3,
+    "empty_events_and_candidates": true,
+    "jev_backoff_until_far_future": true,
+    "calls": {
+      "scene": 6,
+      "social_near_window": 3,
+      "sync": 6,
+      "hydrate": 3,
+      "boundary_validation": 6,
+      "binding": 6,
+      "actor_identity": 6,
+      "evaluate_due": 3,
+      "runtime_snapshot": 3,
+      "advance": 3,
+      "save": 3
+    }
+  },
+  "local_ddl_atomicity_probe": {
+    "local_only": true,
+    "sqlite_version": "3.53.1",
+    "reader_sees_old_tables_before_commit": true,
+    "rollback_retains_old_schema_and_values": true,
+    "commit_publishes_only_new_tables_and_original_revision": true
+  }
+}

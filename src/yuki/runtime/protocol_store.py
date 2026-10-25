@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Any, cast
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import and_, delete, or_, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert
@@ -52,8 +53,7 @@ class CodeSnapshotBinding:
     dump_format: str
 
 
-_CACHE_ENTRIES = 1024  # Metadata only; never retain encoded transcript copies.
-_CACHE_RECORD_BYTES = 2 * 1024 * 1024  # Bound the retained immutable source records too.
+_IDENTITY_CACHE_ENTRIES = 1024
 _GC_BRANCH_ROWS = 64  # Two indexed branches visit at most 128 metadata rows per pass.
 _GC_FILE_SECONDS = 0.1  # Yield after the current filesystem operation completes.
 FileIdentity = tuple[int, int, int, int, int]
@@ -97,11 +97,9 @@ class ProtocolStore:
         self.prepared_sizes: dict[str, int] = {}
         self._prepared_sources: dict[str, Callable[[], bytes]] = {}
         self._identities: OrderedDict[str, FileIdentity] = OrderedDict()
-        self._records: OrderedDict[int, tuple[ChatMessage | FunctionCallOutput, str, int]] = (
-            OrderedDict()
+        self._records: WeakKeyDictionary[ChatMessage | FunctionCallOutput, tuple[str, int]] = (
+            WeakKeyDictionary()
         )
-        self._record_chain: tuple[str, str] | None = None
-        self._record_bytes = 0
         if getattr(database, "_protocol_storage_lock", None) is None:
             database._protocol_storage_lock = asyncio.Lock()
         assert database._protocol_storage_lock is not None
@@ -146,38 +144,19 @@ class ProtocolStore:
         self._prepared_sources[digest] = lambda: content
         return digest
 
-    def begin_record_chain(self, work_id: str, chain_id: str) -> None:
-        if self._record_chain != (work_id, chain_id):
-            self.clear_record_cache()
-            self._record_chain = (work_id, chain_id)
-
-    def clear_record_cache(self) -> None:
-        self._records.clear()
-        self._record_bytes = 0
-        self._record_chain = None
-
     async def put_record(self, record: ChatMessage | FunctionCallOutput) -> str:
         """Only deeply immutable, non-media ordinary records can skip encoding."""
         if not self.cacheable_record(record):
             raise ValueError("work_protocol_record_not_cacheable")
-        key = id(record)
-        cached = self._records.get(key)
-        if cached is not None and cached[0] is record:
-            _, digest, size = cached
-            self._records.move_to_end(key)
+        cached = self._records.get(record)
+        if cached is not None:
+            digest, size = cached
             self.prepared_refs.add(digest)
             self.prepared_sizes[digest] = size
         else:
             digest = await self.put(self._encoded_record(record))
             size = self.prepared_sizes[digest]
-            if size <= _CACHE_RECORD_BYTES:
-                self._records[key] = (record, digest, size)
-                self._record_bytes += size
-                while (
-                    len(self._records) > _CACHE_ENTRIES or self._record_bytes > _CACHE_RECORD_BYTES
-                ):
-                    _, (_, _, evicted_size) = self._records.popitem(last=False)
-                    self._record_bytes -= evicted_size
+            self._records[record] = (digest, size)
         self._prepared_sources[digest] = lambda: json.dumps(
             self._encoded_record(record), ensure_ascii=False, allow_nan=False
         ).encode("utf-8")
@@ -225,7 +204,7 @@ class ProtocolStore:
                 raise ValueError("work_protocol_object_corrupt")
         self._identities[digest] = identity
         self._identities.move_to_end(digest)
-        if len(self._identities) > _CACHE_ENTRIES:
+        if len(self._identities) > _IDENTITY_CACHE_ENTRIES:
             self._identities.popitem(last=False)
         return identity
 

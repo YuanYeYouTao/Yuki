@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, exists, literal, or_, select, update
+from sqlalchemy import and_, case, exists, literal, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult, Row
 from sqlalchemy.sql.elements import ColumnElement
@@ -16,6 +16,7 @@ from yuki.memory.embedding.models import (
     MemoryEmbeddingJob,
     MemoryEmbeddingProfileRecord,
 )
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
 from yuki.memory.embedding.text import EmbeddingDocumentBuilder
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
@@ -25,6 +26,7 @@ from yuki.persistence.models import (
     MemoryFactModel,
 )
 from yuki.persistence.unit_of_work import next_updated_at
+from yuki.persistence.vec1 import vector_table
 
 _EMBEDDABLE_STATUSES = ("active", "contested")
 
@@ -87,6 +89,7 @@ class MemoryEmbeddingJobRepository:
         actor_person_id: str | None = None,
     ) -> tuple[Row[Any], ...]:
         fact, job, vector = MemoryFactModel, MemoryEmbeddingJobModel, MemoryEmbeddingModel
+        values = vector_table(self.profile.id)
         query = (
             select(
                 fact.id,
@@ -98,7 +101,7 @@ class MemoryEmbeddingJobRepository:
                 fact.category,
                 fact.memory_key,
                 fact.content,
-                vector.content_hash.label("vector_hash"),
+                case((values.c.rowid.is_not(None), vector.content_hash)).label("vector_hash"),
                 job.id.label("job_id"),
                 job.content_hash.label("job_hash"),
                 job.status.label("job_status"),
@@ -108,6 +111,7 @@ class MemoryEmbeddingJobRepository:
             .outerjoin(
                 vector, and_(vector.fact_id == fact.id, vector.profile_id == self.profile.id)
             )
+            .outerjoin(values, and_(values.c.rowid == vector.id, values.c.fact_id == fact.id))
             .outerjoin(job, and_(job.fact_id == fact.id, job.profile_id == self.profile.id))
             .where(fact.id > after_id, *self._eligible(datetime.now(UTC)))
             .order_by(fact.id)
@@ -116,7 +120,7 @@ class MemoryEmbeddingJobRepository:
         if ids is not None:
             query = query.where(fact.id.in_(ids))
         if only_missing_or_changed:
-            query = query.where(or_(vector.id.is_(None), fact.updated_at > vector.updated_at))
+            query = query.where(or_(values.c.rowid.is_(None), fact.updated_at > vector.updated_at))
         async with self._database.read_session() as reader:
             if actor_person_id is not None and not await person_is_superuser(
                 reader, actor_person_id
@@ -472,16 +476,8 @@ class MemoryEmbeddingJobRepository:
                     )
                 )
             if vectors:
-                statement = insert(MemoryEmbeddingModel)
-                await writer.execute(
-                    statement.on_conflict_do_update(
-                        index_elements=["fact_id", "profile_id"],
-                        set_={
-                            key: getattr(statement.excluded, key)
-                            for key in ("content_hash", "vector_blob", "updated_at")
-                        },
-                    ),
-                    vectors,
+                await MemoryEmbeddingRepository.store_vectors(
+                    writer, profile_id=self.profile.id, records=vectors
                 )
         return len(vectors)
 

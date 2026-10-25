@@ -198,9 +198,18 @@ async def _scope_social_rows(
     service: SemanticParticipationService, conversation_id: str
 ) -> list[SocialOperationModel]:
     async with service.database.read_session() as session:
+        await session.execute(text("BEGIN"))
         rows = list(
             await session.scalars(
                 select(SocialOperationModel)
+                .options(
+                    load_only(
+                        *(getattr(SocialOperationModel, key) for key in _SOCIAL_PROOF_FIELDS),
+                        SocialOperationModel.source_conversation_id,
+                        SocialOperationModel.presence_id,
+                        SocialOperationModel.event_id,
+                    )
+                )
                 .where(
                     SocialOperationModel.source_conversation_id == conversation_id,
                     SocialOperationModel.updated_at >= datetime.now(UTC) - timedelta(seconds=600),
@@ -253,7 +262,13 @@ async def sync_scope_effects(
     current = [
         row for row in rows if row.target_kind == "space" and row.target_id == item.scene.space_id
     ]
-    effects = _logical_social_effects(current)
+    proof = tuple(
+        tuple(getattr(row, key) for key in (*_SOCIAL_PROOF_FIELDS, "presence_id", "event_id"))
+        for row in current
+    )
+    if item.social_effects is None or item.social_effects[0] != proof:
+        item.social_effects = proof, _logical_social_effects(current)
+    effects = item.social_effects[1]
     ordinary = await _ordinary_bindings(service, item, current)
     initiative_ids = {run for run, _ in effects.values() if not run.startswith("social-run:")}
     valid_run_rows = []
@@ -271,8 +286,8 @@ async def sync_scope_effects(
     valid_runs = {run.id for run in valid_run_rows}
     semantic_runs = {run.id for run in valid_run_rows if run.owner == "semantic"}
     run_threads = {run.id: run.thread_key for run in valid_run_rows if run.thread_key}
-    outbound_threads = cast(
-        dict[str, str], item.controller.state.host_checkpoint.setdefault("outbound_threads", {})
+    outbound_threads = dict(
+        cast(dict[str, str], item.controller.state.host_checkpoint.get("outbound_threads", {}))
     )
     by_id = {row.id: row for row in current}
     output_ids = tuple({row.event_id for row in current if row.event_id is not None})
@@ -322,7 +337,9 @@ async def sync_scope_effects(
             outbound_threads[key] = thread
             cached = item.controller.state.events.get(key)
             if cached is not None and cached.kind == "self" and cached.thread != thread:
-                item.controller.state.events[key] = cached.model_copy(update={"thread": thread})
+                item.controller.set_state_entry(
+                    "events", key, cached.model_copy(update={"thread": thread})
+                )
         frozen = ordinary.get(origin.source_turn_id)
         actual = effects.get(_send_effect_id(_send_key(origin, row)))
         if frozen is not None and actual is not None and row.presence_id == frozen[0].presence_id:
@@ -352,12 +369,13 @@ async def sync_scope_effects(
                     and cached.kind == "self"
                     and cached.thread != binding.unit.thread
                 ):
-                    item.controller.state.events[key] = cached.model_copy(
-                        update={"thread": binding.unit.thread}
+                    item.controller.set_state_entry(
+                        "events", key, cached.model_copy(update={"thread": binding.unit.thread})
                     )
     if len(outbound_threads) > 1024:
         for key in tuple(outbound_threads)[:-1024]:
             outbound_threads.pop(key)
+    item.controller.set_state_entry("host_checkpoint", "outbound_threads", outbound_threads)
     for run_ref, effect in effects.values():
         if apply_committed and (run_ref.startswith("social-run:") or run_ref in valid_runs):
             item.controller.observe_committed_effect(run_ref, effect)
