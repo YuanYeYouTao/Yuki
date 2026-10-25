@@ -44,6 +44,13 @@ from yuki.services.turn_coordinator import HistorySourceChangedError
 from yuki.services.turn_execution import _PrimaryDispatch
 
 
+async def _disable_intrinsic_draw(host):
+    config = await host.runtime_config.snapshot()
+    policy = replace(config.conversation_policy(), proactive_wakeup_enabled=False)
+    config.conversation_policy = lambda: policy
+    host.runtime_config.participation_policy.return_value = policy
+
+
 @pytest.mark.parametrize("exit_first", ["semantic", "quiet"])
 async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main(
     database, tmp_path, monkeypatch, exit_first
@@ -55,8 +62,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
     snapshots = []
     try:
         # This fixture exercises ordinary response/review, without an intrinsic draw.
-        config = await host.runtime_config.snapshot()
-        config.conversation_policy().proactive_wakeup_enabled = False
+        await _disable_intrinsic_draw(host)
         item.observation.queue.pending.clear()
         b = await _event_and_route(database, host.ledger, content="synthetic continuation B")
         binding, reason = await host.continuation_for_event(b.id)
@@ -151,9 +157,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
                 assert (await main).text == ""
                 assert not review.done()
 
-            c = await _event_and_route(
-                database, host.ledger, content="synthetic continuation C"
-            )
+            c = await _event_and_route(database, host.ledger, content="synthetic continuation C")
             assert await host.continuation_for_event(c.id) is None
             assert snapshots[0].model_dump_json() == frozen
 
@@ -198,8 +202,8 @@ async def test_selected_same_main_input_survives_late_participation_exit(
     env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )
-    host, policy = await _host(database, tmp_path)
-    policy.proactive_wakeup_enabled = False
+    host, _ = await _host(database, tmp_path)
+    await _disable_intrinsic_draw(host)
     harness.processor.set_participation(host)
     host.validate_turn_snapshot = harness.processor._chat.validate_turn_snapshot
     sender = MemorySender()
