@@ -23,11 +23,16 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /uvx /bin/
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 RUN /app/.venv/bin/python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"CREATE VIRTUAL TABLE f USING fts5(tokens, content='', contentless_delete=1, detail=none, tokenize='ascii')\"); c.execute(\"INSERT INTO f(rowid,tokens) VALUES(1,'capability')\"); c.execute('DELETE FROM f WHERE rowid=1')"
 COPY src ./src
+COPY hatch_build.py ./
+COPY scripts/build_vec1.py ./scripts/
+COPY vendor/sqlite-vec1 ./vendor/sqlite-vec1
 RUN uv sync --frozen --no-dev --no-editable
 FROM builder AS builder-code
 # uv sync removes packages outside uv.lock. Install the wheel from the pinned

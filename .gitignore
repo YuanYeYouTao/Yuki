@@ -12,6 +12,13 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+/src/yuki/_native/*.dll
+/src/yuki/_native/*.so
+/src/yuki/_native/*.dylib
+/src/yuki/_native/*.o
+/src/yuki/_native/*.obj
+/src/yuki/_native/*.lib
+/src/yuki/_native/*.exp
 data/*
 !data/.gitkeep
 logs/
