@@ -546,7 +546,7 @@ class MainAgentBackend(AgentToolBackend):
             return
         namespace = descriptor.namespace_id
         permission: PluginPermission | None = None
-        if namespace.startswith(("sandbox.", "workspace.", "local_device.")):
+        if namespace.startswith(("sandbox.", "workspace.")):
             permission = PluginPermission.AGENT_RUN
         elif namespace in {
             "memory.history",

@@ -227,7 +227,9 @@ def test_configure_without_project_uses_original_instance_cwd(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / "config.json"
-    original = Instance("original", "codex", "Old", sys.executable, cwd=tmp_path.as_posix())
+    original = Instance(
+        "original", "codex", "Old", sys.executable, cwd=str(tmp_path / "deleted-project")
+    )
     Config(
         "wss://example/agents/v1/connect",
         "device",
@@ -412,3 +414,160 @@ def test_configure_reads_raw_utf8_json_bytes_under_gbk_text_stdin(
     )
     assert journal.read_bytes() == b"original operation receipts"
     assert json.loads(capsys.readouterr().out) == {"instance_id": original.id}
+
+
+def test_status_projects_default_data_directory_without_touching_configuration_or_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "data_path", lambda: tmp_path)
+    monkeypatch.setattr(cli.UserService, "state", lambda _: {"installed": False, "running": False})
+    original = Instance("original", "claude", "Claude", "not-launched", env={"SECRET": "private"})
+    path = tmp_path / "config.json"
+    Config("wss://example/agents/v1/connect", "device", "private-token", [original]).save(path)
+    journal = tmp_path / "journal.sqlite3"
+    journal.write_bytes(b"original receipts")
+    before = path.read_bytes()
+
+    assert cli.main(["status", "--json"]) == 0
+
+    status = json.loads(capsys.readouterr().out)
+    assert status["data_directory"] == str(tmp_path.resolve())
+    assert status["instances"][0]["driver"] == "claude"
+    assert "private" not in json.dumps(status) and "SECRET" not in json.dumps(status)
+    assert path.read_bytes() == before and journal.read_bytes() == b"original receipts"
+
+
+@pytest.mark.parametrize("driver", ["codex", "claude"])
+def test_add_does_not_require_project_directory(
+    driver: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "config.json"
+    Config("wss://example/agents/v1/connect", "device", "token").save(path)
+    assert (
+        cli.main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "instance",
+                "add",
+                "--id",
+                "native",
+                "--label",
+                driver,
+                "--driver",
+                driver,
+                "--command",
+                sys.executable,
+            ]
+        )
+        == 0
+    )
+    spec = Config.load(path).instances[0]
+    assert spec.id == "native" and spec.driver == driver and spec.cwd == str(Path.home())
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("existing", [True, False])
+def test_claude_configuration_keeps_original_native_settings(
+    existing: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = Instance(
+        "original",
+        "claude",
+        "Old",
+        sys.executable,
+        args=["--original"],
+        cwd=str(tmp_path),
+        env={"CLAUDE_CONFIG_DIR": "original-profile"},
+        socket="original-socket",
+        endpoint="original-endpoint",
+    )
+    path = tmp_path / "config.json"
+    Config(
+        "wss://example/agents/v1/connect", "device", "token", [original] if existing else []
+    ).save(path)
+    calls: list[str] = []
+
+    def candidates(driver: str) -> list[dict[str, str]]:
+        calls.append(driver)
+        return [
+            {"id": "native", "driver": driver, "source": "path:claude", "command": sys.executable}
+        ]
+
+    monkeypatch.setattr(cli, "candidates", candidates)
+    value = {
+        "driver": "codex" if existing else "claude",
+        "label": "Claude",
+        "candidateId": "native",
+    }
+    if existing:
+        value["id"] = original.id
+    monkeypatch.setattr(
+        sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(value).encode()), encoding="utf-8")
+    )
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+    spec = Config.load(path).instances[0]
+    assert calls == ["claude"] and spec.driver == "claude"
+    if existing:
+        assert spec == replace(original, label="Claude", installation="path:claude")
+
+
+def test_claude_discovery_only_uses_installed_native_executables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "claude.exe"
+    executable.write_bytes(b"native fixture, never executed")
+    (tmp_path / "claude.cmd").write_bytes(b"shell fixture, never executed")
+    monkeypatch.setattr(discovery.sys, "platform", "win32")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(discovery.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(
+        discovery.subprocess, "run", lambda *_a, **_k: pytest.fail("No appx/CLI process")
+    )
+    assert discovery.candidates("claude") == [
+        {
+            "id": discovery.hashlib.sha256(f"path:{executable}".encode()).hexdigest(),
+            "label": "Claude Code",
+            "command": str(executable.resolve()),
+            "source": f"path:{executable}",
+            "driver": "claude",
+        }
+    ]
+
+
+@pytest.mark.parametrize("logged_in", [True, False])
+async def test_claude_readiness_uses_native_auth_status_without_model_or_account_projection(
+    logged_in: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Any] = []
+    spec = Instance(
+        "original",
+        "claude",
+        "Claude",
+        "not-launched",
+        args=["--original"],
+        cwd=str(tmp_path / "deleted-project"),
+        env={"CLAUDE_CONFIG_DIR": "original-profile"},
+    )
+
+    class Process:
+        returncode = 0 if logged_in else 1
+
+        async def communicate(self) -> tuple[bytes, None]:
+            return json.dumps({"loggedIn": logged_in, "email": "private"}).encode(), None
+
+    async def launch(*args: Any, **kwargs: Any) -> Process:
+        calls.append((args, kwargs))
+        return Process()
+
+    monkeypatch.setattr(discovery.asyncio, "create_subprocess_exec", launch)
+    result = await discovery.diagnose(spec)
+    assert result["available"] is logged_in and "private" not in json.dumps(result)
+    args, kwargs = calls[0]
+    assert args == ("not-launched", "--original", "auth", "status")
+    assert kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(
+        (Path(spec.cwd) / "original-profile").resolve()
+    )
+    assert kwargs["cwd"] == str(Path.home())
+    assert spec.env["CLAUDE_CONFIG_DIR"] == "original-profile"
+    assert spec.cwd == str(tmp_path / "deleted-project")

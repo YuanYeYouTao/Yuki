@@ -74,7 +74,6 @@ from yuki.client_api.sessions import ClientSessions
 from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
-from yuki.executor.service import LocalExecutors
 from yuki.identity.credentials import CredentialPurpose
 
 
@@ -93,7 +92,6 @@ class ClientApi:
     automations: Any = None
     capabilities: Any = None
     computer: ClientComputer | None = None
-    executors: LocalExecutors | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -732,14 +730,5 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             },
         )
 
-    from yuki.executor.http import attach_executor_api
-
-    def executors() -> LocalExecutors:
-        service = resolve().executors
-        if service is None:
-            raise ClientError("unavailable")
-        return service
-
     install_identity_errors(app)
     app.include_router(router)
-    attach_executor_api(app, executors, principal)

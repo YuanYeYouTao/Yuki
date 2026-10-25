@@ -112,7 +112,8 @@ class MainAgentContract:
                         # 30: source filters and paged conversation entry discovery.
                         # 31: device-owned native sessions and the unified external Agent contract.
                         # 32: local-device file/system operations with original domain receipts.
-                        "version": 32,
+                        # 33: retire local_device; native Agent connections use external_agent.
+                        "version": 33,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

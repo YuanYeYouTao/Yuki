@@ -2,11 +2,13 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.5`，原生协议仍为 `3`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 从桌面连接
 
-配套 Yuki Desktop 的「编程 Agent」页提供首次接入：确认当前 Yuki 与服务器地址，明确允许这位 Yuki 使用本机 Agent，再点击「连接本机 Codex」。桌面准备随附运行时，以当前已登录的 Person 申请 `purpose=connector` 授权并完成配对，随后发现已有 Codex；多个候选时才需要选择。项目目录可以选择，也可以沿已有原生会话继续。用户不需要安装 wheel、Python、修改 PATH 或另外抄配对码。
+配套 Yuki Desktop 的「本机 Agent」页统一管理 Codex 和 Claude Code：确认当前 Yuki 与服务器地址，明确允许这位 Yuki 使用本机 Agent，再连接电脑。桌面准备随附运行时，以当前已登录的 Person 申请 `purpose=connector` 授权并完成配对，随后发现所选 Agent；多个候选时才需要选择。项目目录可省略，也可以沿已有原生会话继续。用户不需要安装 wheel、Python、修改 PATH 或另外抄配对码。
+
+若本机默认目录已有独立连接器，桌面只读发现原配置及 OS 服务的实际 Python 来源，先展示已有连接。明确点击「使用已有连接」后只关联原运行时和数据目录，保留原 device、instance、journal 和服务。点击普通连接时也先沿用该原安装，不因尚未选中它就创建第二台设备。关联不重新配对或停止服务；迁入随附运行时属于另一个明确的更新操作。发现原配对配置而无法确认原服务运行时，会报告实际缺口，不覆盖配置或猜另一个执行来源。独立 SSH 隧道仍按其原方式管理，桌面不执行额外隧道脚本。
 
 桌面源码、五平台 CI 安装产物和正式 Release 是不同状态；实际可下载版本以桌面仓库对应产物为准。原生 Codex 仍需用户自行安装、登录并处理它自己的权限。服务已启动、服务器已连接和原生握手成功分别展示，不能代替实际模型任务的执行结果。现有独立安装及手动入口继续保留。
 
@@ -19,7 +21,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.3.4-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.3.5-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -53,23 +55,25 @@ yuki-agent-connector pair --url https://yuki.example.com --label "家里的电�
 
 ## 选择原生实例
 
-实例指定电脑上真实安装的程序、profile 与工作目录。程序路径、环境和 owner endpoint 留在电脑配置中，不作为模型工具参数传输。每个实例使用自己的稳定本地 ID，同一安装可登记多个 profile。
+实例指定电脑上真实安装的程序和 profile，默认任务目录可省略。程序路径、环境和 owner endpoint 留在电脑配置中，不作为模型工具参数传输。每个实例使用自己的稳定本地 ID，同一安装可登记多个 profile。目录用于任务上下文，可由单次任务覆盖；它不是 Yuki 的文件访问白名单。
 
 ```sh
-yuki-agent-connector instance add --label "Codex 日常账号" --driver codex --command /path/to/codex --cwd /path/to/project
+yuki-agent-connector instance add --label "Codex 日常账号" --driver codex --command /path/to/codex
 yuki-agent-connector instance list
 yuki-agent-connector doctor
 ```
 
-Windows 的 `--command` 使用实际原生 `.exe` 路径，工作目录可以是 `D:\Code\My_Github_Repo\Yuki-QQbot`。默认 Codex 通过官方 `app-server proxy` 连接当前 OS 用户／`CODEX_HOME` 对应的原 daemon；不自动更新或重启 daemon。明确选择其他 owner 时可配置 `--socket` 或 `--endpoint`，明确选择 profile 时使用 `--env CODEX_HOME=...`。
+Windows 的 `--command` 使用实际原生 `.exe` 路径；只有需要默认任务目录时才提供 `--cwd`。默认 Codex 通过官方 `app-server proxy` 连接当前 OS 用户／`CODEX_HOME` 对应的原 daemon；不自动更新或重启 daemon。proxy 从用户主目录启动，不依赖项目目录仍存在。旧配置中的相对 `CODEX_HOME` 和 `--socket` 按原实例目录解析，仅在本次子进程中派生绝对路径，原配置和原 owner 保留。已有会话按原 ID 恢复，沿其原生目录。明确选择其他 owner 时可配置 `--socket` 或 `--endpoint`，明确选择 profile 时使用 `--env CODEX_HOME=...`。
 
 Claude 使用已安装的真实 CLI：
 
 ```sh
-yuki-agent-connector instance add --label "Claude" --driver claude --command /path/to/claude --cwd /path/to/project
+yuki-agent-connector instance add --label "Claude" --driver claude --command /path/to/claude
 ```
 
 连接器通过官方 Claude Agent SDK 指定这个 CLI，使用原生 preset 和用户／项目／本地设置。Windows `.cmd`／`.bat` 不能冒充原生 CLI。SDK 管理的新执行或明确 resume 与任意接管一个正在运行的独立 Claude 终端不同，工具按真实能力返回结果。
+
+`discover --driver claude --json` 只读发现真实原生 Claude Code 程序；普通 `discover --json` 仍默认 Codex。候选包含 driver，编辑已有实例保留原 driver、args、env、socket、endpoint。Claude 的 `diagnose --instance ID` 从主目录调用原 CLI 的 `auth status`，不要求原项目仍存在；相对 `CLAUDE_CONFIG_DIR` 按原实例目录解析，仅对本次诊断派生绝对值以保留原 profile。诊断只报告是否就绪或需登录，不返回账号正文或发起模型任务；原生 CLI 太旧或诊断失败按实际问题报告。[原生命令说明](https://code.claude.com/docs/en/cli-reference)。
 
 通用 ACP 使用明确安装的程序及参数：
 
@@ -81,7 +85,7 @@ yuki-agent-connector instance add --label "ACP Agent" --driver acp --command /pa
 
 `doctor` 查询实际程序与原生目录，不发模型任务；ACP 检查可启动所选协议程序完成握手。它不证明模型额度、真实代码修改、审批或端到端委托已经验收。配置变更后重启连接器应用新实例清单。
 
-Desktop 可以先登记原生安装并选择已有会话，不要求先选新项目。`instance configure` 的 JSON 可省略 `cwd`：已有实例沿用原目录，新实例使用 `Instance` 原本的用户主目录默认值；只有显式选择项目才修改目录。登记和读取目录都不创建原生 thread。
+Desktop 可以先登记原生安装并选择已有会话，不要求先选新项目。`instance configure` 的 JSON 和 `instance add` 都可省略 `cwd`：已有实例沿用原目录，新实例使用 `Instance` 原本的用户主目录默认值；只有显式选择目录才修改默认值。Claude／ACP 的会话目录仍按各自原生语义处理。登记和读取目录都不创建原生 thread。`status --json` 只读输出实际 `data_directory` 和安全元数据，不输出 token、env、owner endpoint 或 journal 正文。
 
 由发现候选登记的 Codex 按原安装来源跟随正常程序升级。0.3.4 的 `discover --instance ID --json` 只读解析该原实例当前的程序路径，返回 `{"instance_id":"原ID","command":"当前路径"}`，不启动原生程序、不改配置或 journal。编辑同一实例的名称或项目时也先解析原来源，再保存；原实例、环境、owner 与回执保留。用户明确换成手工绝对路径时按该路径配置；原来源消失时明确报错，不自动选择另一个 Codex。
 

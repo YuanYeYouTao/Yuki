@@ -1,4 +1,8 @@
-"""Executor grants and original invocation receipts; physical paths stay on the host."""
+"""Frozen local-executor tables retained for original receipt history only.
+
+No live executor service writes or dispatches these records. Migration 0152 and
+the original identities remain intact for Work recovery and existing data.
+"""
 
 from datetime import datetime
 

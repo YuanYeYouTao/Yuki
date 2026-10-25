@@ -11,7 +11,53 @@ from websockets.asyncio.server import serve
 
 from yuki_agent_connector.config import Instance
 from yuki_agent_connector.drivers import DriverError
-from yuki_agent_connector.drivers.codex import CodexDriver
+from yuki_agent_connector.drivers.codex import CodexDriver, CodexRPC
+
+
+@pytest.mark.parametrize("relative", [True, False])
+async def test_proxy_does_not_require_task_directory_and_preserves_native_owner_paths(
+    relative: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "missing-project"
+    native_home = "profile" if relative else str(tmp_path / "profile")
+    owner_socket = "owner.sock" if relative else str(tmp_path / "owner.sock")
+    spec = Instance(
+        "native",
+        "codex",
+        "Codex",
+        "not-launched",
+        args=["--original"],
+        cwd=str(project),
+        env={"CODEX_HOME": native_home},
+        socket=owner_socket,
+    )
+    calls: list[Any] = []
+
+    async def launch(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        raise RuntimeError("captured without starting native process")
+
+    async def discard(_: Any) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    with pytest.raises(RuntimeError, match="captured"):
+        await CodexRPC(spec, discard).start()
+    args, kwargs = calls[0]
+    assert args == (
+        "not-launched",
+        "--original",
+        "app-server",
+        "proxy",
+        "--sock",
+        str((project / owner_socket).resolve()) if relative else owner_socket,
+    )
+    assert kwargs["cwd"] == str(Path.home())
+    assert kwargs["env"]["CODEX_HOME"] == (
+        str((project / native_home).resolve()) if relative else native_home
+    )
+    assert spec.cwd == str(project) and spec.env["CODEX_HOME"] == native_home
+    assert not project.exists()
 
 
 class Owner:
