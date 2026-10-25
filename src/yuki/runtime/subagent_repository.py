@@ -923,28 +923,21 @@ def _result_publication(
         parameters.update({f"{field}_{index}": data[field] for field in fields})
         values.append("(" + ", ".join(f":{field}_{index}" for field in fields) + ")")
     statement = text(f"""
-        WITH prepared({", ".join(fields)}) AS (VALUES {", ".join(values)}),
-        eligible AS (
-            SELECT p.work_id, p.result_json, p.revision
-            FROM prepared AS p
-            JOIN runtime_subagents AS child ON child.work_id = p.work_id
+        WITH prepared({", ".join(fields)}) AS (VALUES {", ".join(values)})
+        UPDATE runtime_subagents AS child
+        SET result_json = p.result_json, notified_revision = p.revision
+        FROM prepared AS p
             JOIN runtime_work AS w ON w.id = p.work_id
             JOIN canonical_conversations AS c
                 ON c.id = p.conversation_id AND c.generation = p.generation
-            WHERE child.cancel_epoch = p.cancel_epoch AND child.fence = p.fence
+            WHERE child.work_id = p.work_id
+                AND child.cancel_epoch = p.cancel_epoch AND child.fence = p.fence
                 AND child.owner = p.owner AND child.archived_at IS NULL
                 AND child.lease_until > (julianday('now') - 2440587.5) * 86400
                 AND w.revision = p.revision AND w.state = p.state
                 AND w.parent_work_id = p.parent_work_id AND w.reason IS p.reason
                 AND (CASE WHEN w.state = 'completed' THEN w.checkpoint_json -> '$.sync_result'
                           ELSE w.checkpoint_json -> '$.reason' END) IS p.result_leaf
-        )
-        UPDATE runtime_subagents
-        SET result_json = (SELECT e.result_json FROM eligible AS e
-                           WHERE e.work_id = runtime_subagents.work_id),
-            notified_revision = (SELECT e.revision FROM eligible AS e
-                                 WHERE e.work_id = runtime_subagents.work_id)
-        WHERE work_id IN (SELECT work_id FROM eligible)
         RETURNING work_id
     """)
     return statement, parameters, positions
