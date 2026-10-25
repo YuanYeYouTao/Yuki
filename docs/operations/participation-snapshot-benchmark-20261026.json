@@ -1,0 +1,64 @@
+{
+  "environment": {
+    "python": "3.12.13",
+    "sqlite": "3.53.1",
+    "pydantic": "2.13.4",
+    "os": "Windows"
+  },
+  "baseline_pin": "79d266918dc6ce19b7d81568565deaed450301d5",
+  "pipeline": "Real old Host dump -> adapter State.validate_json -> Store dump; new freeze -> Store bytes. Executor scheduling excluded for both. One local sample, not production latency.",
+  "scenarios": [
+    {
+      "scopes": 8,
+      "ticks_per_scope": 80,
+      "padding_utf8_bytes_per_scope": 60000,
+      "belief_baselines_retained": 0,
+      "actual_advance": true,
+      "wal_autocheckpoint": 0,
+      "runs": [
+        {
+          "name": "old",
+          "elapsed_seconds": 0.6404839996248484,
+          "wal_bytes": 6262432,
+          "encoded_bytes": 78171136,
+          "cold_writes": 640,
+          "commits": 640
+        },
+        {
+          "name": "narrow",
+          "elapsed_seconds": 0.3156287996098399,
+          "wal_bytes": 2636832,
+          "encoded_bytes": 260608,
+          "cold_writes": 0,
+          "commits": 640
+        }
+      ]
+    },
+    {
+      "scopes": 8,
+      "ticks_per_scope": 80,
+      "padding_utf8_bytes_per_scope": 60000,
+      "belief_baselines_retained": 64,
+      "actual_advance": true,
+      "wal_autocheckpoint": 0,
+      "runs": [
+        {
+          "name": "old",
+          "elapsed_seconds": 1.4635582999326289,
+          "wal_bytes": 11601952,
+          "encoded_bytes": 90382080,
+          "cold_writes": 640,
+          "commits": 640
+        },
+        {
+          "name": "narrow",
+          "elapsed_seconds": 0.9591999002732337,
+          "wal_bytes": 2636832,
+          "encoded_bytes": 2254720,
+          "cold_writes": 0,
+          "commits": 640
+        }
+      ]
+    }
+  ]
+}

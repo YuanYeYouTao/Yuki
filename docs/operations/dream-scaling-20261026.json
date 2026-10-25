@@ -1,0 +1,283 @@
+{
+  "synthetic_only": true,
+  "generated_at_utc": "2026-10-25T18:55:13.011124+00:00",
+  "legacy_revision": "7c0e53aa855f0f2cb979862b418bb6c31fd8a8c2",
+  "new_revision": "b75f4a0ceeaa48b8ad994acc04ecb7a92c5fbcce",
+  "legacy_service_sha256": "d278e429c81ae53b398848d29e3f6027b4df87eb3b9a17078084ef2e20a942ba",
+  "python": "3.12.13",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "cpu_count": 20,
+  "dimensions": 1024,
+  "threshold": 0.8,
+  "max_cluster_size": 12,
+  "timing_repetitions": 2,
+  "cases": [
+    {
+      "vectors": 250,
+      "kind": "sparse",
+      "partition_sizes": [
+        250
+      ],
+      "pair_dot_calls_per_algorithm": 31125,
+      "threshold_edges": 0,
+      "edge_density": 0.0,
+      "cluster_count": 250,
+      "isolated_count": 0,
+      "groups_sha256": "374cf7c344d9600bc1ff4e5baf5ddfeb1f51ad06b7b86d998beaa18847477465",
+      "groups_equal": true,
+      "legacy_dense": {
+        "wall_median_seconds": 2.0184274499770254,
+        "cpu_median_seconds": 0.1328125,
+        "wall_samples_seconds": [
+          1.9889159998856485,
+          2.0479389000684023
+        ],
+        "cpu_samples_seconds": [
+          0.125,
+          0.140625
+        ],
+        "python_peak_bytes": 12225232
+      },
+      "new_exact_graph": {
+        "wall_median_seconds": 0.9102482001762837,
+        "cpu_median_seconds": 0.0625,
+        "wall_samples_seconds": [
+          0.9640128002502024,
+          0.856483600102365
+        ],
+        "cpu_samples_seconds": [
+          0.09375,
+          0.03125
+        ],
+        "python_peak_bytes": 112560
+      }
+    },
+    {
+      "vectors": 250,
+      "kind": "dense",
+      "partition_sizes": [
+        250
+      ],
+      "pair_dot_calls_per_algorithm": 31125,
+      "threshold_edges": 31125,
+      "edge_density": 1.0,
+      "cluster_count": 21,
+      "isolated_count": 0,
+      "groups_sha256": "ecaf0442f44c334eb68509ffa6ce09f8680c4c3c255a5e4f30e4f22c57c35806",
+      "groups_equal": true,
+      "legacy_dense": {
+        "wall_median_seconds": 1.8367128998506814,
+        "cpu_median_seconds": 0.078125,
+        "wall_samples_seconds": [
+          1.853345399722457,
+          1.820080399978906
+        ],
+        "cpu_samples_seconds": [
+          0.078125,
+          0.078125
+        ],
+        "python_peak_bytes": 11487592
+      },
+      "new_exact_graph": {
+        "wall_median_seconds": 1.039323850069195,
+        "cpu_median_seconds": 0.0546875,
+        "wall_samples_seconds": [
+          1.1159733003005385,
+          0.9626743998378515
+        ],
+        "cpu_samples_seconds": [
+          0.046875,
+          0.0625
+        ],
+        "python_peak_bytes": 2425864
+      }
+    },
+    {
+      "vectors": 250,
+      "kind": "partitioned_blocks",
+      "partition_sizes": [
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25
+      ],
+      "pair_dot_calls_per_algorithm": 3000,
+      "threshold_edges": 1000,
+      "edge_density": 0.3333333333333333,
+      "cluster_count": 30,
+      "isolated_count": 0,
+      "groups_sha256": "d37f061a984695e6abead86bd76a7c6030198b637d5d5fbb21bd0924663bb87f",
+      "groups_equal": true,
+      "legacy_dense": {
+        "wall_median_seconds": 0.25430570007301867,
+        "cpu_median_seconds": 0.0390625,
+        "wall_samples_seconds": [
+          0.242437900044024,
+          0.26617350010201335
+        ],
+        "cpu_samples_seconds": [
+          0.046875,
+          0.03125
+        ],
+        "python_peak_bytes": 1737648
+      },
+      "new_exact_graph": {
+        "wall_median_seconds": 0.09510234976187348,
+        "cpu_median_seconds": 0.0,
+        "wall_samples_seconds": [
+          0.0996667998842895,
+          0.09053789963945746
+        ],
+        "cpu_samples_seconds": [
+          0.0,
+          0.0
+        ],
+        "python_peak_bytes": 45344
+      }
+    },
+    {
+      "vectors": 500,
+      "kind": "sparse",
+      "partition_sizes": [
+        500
+      ],
+      "pair_dot_calls_per_algorithm": 124750,
+      "threshold_edges": 0,
+      "edge_density": 0.0,
+      "cluster_count": 500,
+      "isolated_count": 0,
+      "groups_sha256": "69ceb7b8ced5a4c9182027078c09e7d3e47594e289c93598f1e9b0c0ea27af08",
+      "groups_equal": true,
+      "legacy_dense": {
+        "wall_median_seconds": 8.188040200155228,
+        "cpu_median_seconds": 0.40625,
+        "wall_samples_seconds": [
+          7.9548110999166965,
+          8.42126930039376
+        ],
+        "cpu_samples_seconds": [
+          0.328125,
+          0.484375
+        ],
+        "python_peak_bytes": 32098420
+      },
+      "new_exact_graph": {
+        "wall_median_seconds": 3.765989949926734,
+        "cpu_median_seconds": 0.3671875,
+        "wall_samples_seconds": [
+          3.753468899987638,
+          3.77851099986583
+        ],
+        "cpu_samples_seconds": [
+          0.3125,
+          0.421875
+        ],
+        "python_peak_bytes": 254796
+      }
+    },
+    {
+      "vectors": 500,
+      "kind": "dense",
+      "partition_sizes": [
+        500
+      ],
+      "pair_dot_calls_per_algorithm": 124750,
+      "threshold_edges": 124750,
+      "edge_density": 1.0,
+      "cluster_count": 42,
+      "isolated_count": 0,
+      "groups_sha256": "01d62fff0f6d0825f541d78279806122df38e4053ad4fb967ff22de55115d8a1",
+      "groups_equal": true,
+      "legacy_dense": {
+        "wall_median_seconds": 8.659843700006604,
+        "cpu_median_seconds": 0.5,
+        "wall_samples_seconds": [
+          9.062035900074989,
+          8.25765149993822
+        ],
+        "cpu_samples_seconds": [
+          0.546875,
+          0.453125
+        ],
+        "python_peak_bytes": 29505960
+      },
+      "new_exact_graph": {
+        "wall_median_seconds": 4.377364249899983,
+        "cpu_median_seconds": 0.2578125,
+        "wall_samples_seconds": [
+          4.533103699795902,
+          4.221624800004065
+        ],
+        "cpu_samples_seconds": [
+          0.25,
+          0.265625
+        ],
+        "python_peak_bytes": 9496036
+      }
+    },
+    {
+      "vectors": 500,
+      "kind": "partitioned_blocks",
+      "partition_sizes": [
+        50,
+        50,
+        50,
+        50,
+        50,
+        50,
+        50,
+        50,
+        50,
+        50
+      ],
+      "pair_dot_calls_per_algorithm": 12250,
+      "threshold_edges": 2250,
+      "edge_density": 0.1836734693877551,
+      "cluster_count": 50,
+      "isolated_count": 0,
+      "groups_sha256": "0920cd8818210dd57cb6c3ac9c9efd1e722f08264a4e76a766d4425ac6399a50",
+      "groups_equal": true,
+      "legacy_dense": {
+        "wall_median_seconds": 0.8532232001889497,
+        "cpu_median_seconds": 0.078125,
+        "wall_samples_seconds": [
+          0.8791790003888309,
+          0.8272673999890685
+        ],
+        "cpu_samples_seconds": [
+          0.109375,
+          0.046875
+        ],
+        "python_peak_bytes": 3560880
+      },
+      "new_exact_graph": {
+        "wall_median_seconds": 0.394605650100857,
+        "cpu_median_seconds": 0.015625,
+        "wall_samples_seconds": [
+          0.3974208002910018,
+          0.39179049991071224
+        ],
+        "cpu_samples_seconds": [
+          0.015625,
+          0.015625
+        ],
+        "python_peak_bytes": 118608
+      }
+    }
+  ],
+  "qualifications": [
+    "Pure planner runtime and allocations on local synthetic vectors, not complete Dream or production latency.",
+    "Actual former planner and codec methods are compiled unchanged from the fixed Git source; current planner and codec are imported from src.",
+    "Compatible candidate views carry exact 1024-D Hadamard vectors and synthetic partition identities; candidate construction, database loading, raw decode and normalized-vector preparation are outside timing.",
+    "The former planner still performs its original normalization inside the timed method; current normalized input preparation occurs earlier at the loader boundary and is not free end-to-end.",
+    "CPU/wall timings are uninstrumented. Python peak is a separate full planner run under tracemalloc, excluding already-created input vectors; this is not total RSS or native allocations.",
+    "All-pairs dot work remains sum(n_partition*(n_partition-1)/2)*D. Sparse-graph storage is O(N+E), with quadratic dense worst case; this benchmark does not claim ANN or linear distance work.",
+    "The CPU fields retain raw Windows time.process_time readings only. A separate pure-Python control on this machine showed strong undercounting and about 15.6ms granularity; these readings cannot establish actual CPU usage or a reduction in CPU consumption. Wall/runtime and structural work counts remain separate measurements."
+  ]
+}

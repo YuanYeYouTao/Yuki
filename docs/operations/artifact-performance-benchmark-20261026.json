@@ -1,0 +1,60 @@
+{
+  "artifact_differential_cases": 2700,
+  "codemode_differential_cases": 1200,
+  "get": [
+    {
+      "items": 1000,
+      "returned": 117,
+      "old": {
+        "milliseconds": 650.136,
+        "peak_bytes": 18208,
+        "calls": 885,
+        "encoded_characters": 2660252
+      },
+      "new": {
+        "milliseconds": 2.114,
+        "peak_bytes": 66772
+      }
+    },
+    {
+      "items": 2000,
+      "returned": 117,
+      "old": {
+        "milliseconds": 2573.528,
+        "peak_bytes": 34489,
+        "calls": 1885,
+        "encoded_characters": 10881252
+      },
+      "new": {
+        "milliseconds": 2.382,
+        "peak_bytes": 66490
+      }
+    },
+    {
+      "items": 4000,
+      "returned": 117,
+      "old": {
+        "milliseconds": 9540.67,
+        "peak_bytes": 66168,
+        "calls": 3885,
+        "encoded_characters": 45323252
+      },
+      "new": {
+        "milliseconds": 2.937,
+        "peak_bytes": 50580
+      }
+    }
+  ],
+  "text": {
+    "file_bytes": 8000000,
+    "returned_characters": 100,
+    "old": {
+      "milliseconds": 15.951,
+      "peak_bytes": 56000151
+    },
+    "new": {
+      "milliseconds": 9.502,
+      "peak_bytes": 468531
+    }
+  }
+}

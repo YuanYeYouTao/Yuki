@@ -1,0 +1,175 @@
+{
+  "kind": "isolated_synthetic_benchmark",
+  "date": "2026-10-26",
+  "comparison": "Subagent missed-result maintenance before and after direct idle publication",
+  "source": {
+    "baseline_commit": "a9dd566a7b07ea501b56db73c607ebb25607619d",
+    "measured_patch_committed_as": "88473d2da98ba8b998a86961a1953bc59ce727d2",
+    "integrated_commit": "ffc24680fca9d77b021259f5dd8cdcc0d49e28d8"
+  },
+  "environment": {
+    "os": "Windows-11-10.0.22631-SP0",
+    "python": "3.12.13",
+    "sqlite": "3.53.1",
+    "sqlalchemy": "2.0.51",
+    "pool": "AsyncAdaptedQueuePool",
+    "tracemalloc": false
+  },
+  "workload": {
+    "committed_child_results": 140,
+    "child_state": "completed",
+    "unconsumed_opaque_bytes_per_checkpoint": 262144,
+    "maintenance_page_size": 16,
+    "foreground_insert_requests": 50,
+    "scheduled_foreground_spacing_ms": 5,
+    "foreground_start": "First maintenance writer entry",
+    "execution": "Old then new, each with a fresh isolated database, repeated three times",
+    "result_oracle": "140 original notifications with unchanged result text in each run"
+  },
+  "measurement": {
+    "maintenance_wall": "Time awaiting maintain(); remaining foreground requests are awaited afterward",
+    "engine_statements": "SQLAlchemy before_cursor_execute events, including reads and BEGIN; subtract 50 foreground BEGIN and 50 foreground INSERT statements",
+    "owner_interval": "FIFO admission granted through connection checkout, BEGIN, transaction, commit and physical/session cleanup before owner release",
+    "foreground_entry_wait": "Requesting immediate_session() through entry after BEGIN, including FIFO, connection checkout and BEGIN",
+    "percentile": "Sorted samples at floor((n - 1) * 0.95); owner samples are 420 old and 9 new, foreground samples are 50 per run",
+    "diagnostic_elapsed_clock": "perf_counter in the isolated probe; only Database and diagnostic elapsed-time clocks were replaced",
+    "windows_monotonic_resolution_seconds": 0.015625,
+    "perf_counter_resolution_seconds": 1e-07,
+    "clock_limit": "Native Python 3.12 Windows monotonic diagnostics showed roughly 15.6 ms steps. High-resolution phase timing does not remove event-loop timer coalescing; 5 ms is the scheduled arrival spacing, not a guaranteed observed interval.",
+    "raw_intervals": "Retained in local Reports; excluded from this public summary"
+  },
+  "runs": [
+    {
+      "pair": 1,
+      "old": {
+        "maintenance_wall_ms": 2337.914,
+        "maintenance_engine_statements": 2102,
+        "writer_transactions": 420,
+        "owner_ms": {
+          "total": 1773.39,
+          "max": 11.687,
+          "p95": 7.577
+        },
+        "foreground_entry_wait_ms": {
+          "p95": 14.742,
+          "max": 16.036
+        },
+        "foreground_entry_phase_p95_ms": {
+          "fifo_admission": 14.1719,
+          "connection_checkout": 0.141,
+          "begin_immediate": 0.5633
+        }
+      },
+      "new": {
+        "maintenance_wall_ms": 211.143,
+        "maintenance_engine_statements": 47,
+        "writer_transactions": 9,
+        "owner_ms": {
+          "total": 59.184,
+          "max": 11.092,
+          "p95": 8.54
+        },
+        "foreground_entry_wait_ms": {
+          "p95": 24.099,
+          "max": 25.548
+        },
+        "foreground_entry_phase_p95_ms": {
+          "fifo_admission": 23.3394,
+          "connection_checkout": 0.1825,
+          "begin_immediate": 1.5574
+        }
+      },
+      "foreground_p95_delta_ms": 9.357
+    },
+    {
+      "pair": 2,
+      "old": {
+        "maintenance_wall_ms": 2306.61,
+        "maintenance_engine_statements": 2102,
+        "writer_transactions": 420,
+        "owner_ms": {
+          "total": 1737.402,
+          "max": 46.167,
+          "p95": 7.022
+        },
+        "foreground_entry_wait_ms": {
+          "p95": 19.363,
+          "max": 24.556
+        },
+        "foreground_entry_phase_p95_ms": {
+          "fifo_admission": 17.7349,
+          "connection_checkout": 0.1457,
+          "begin_immediate": 0.6774
+        }
+      },
+      "new": {
+        "maintenance_wall_ms": 166.933,
+        "maintenance_engine_statements": 47,
+        "writer_transactions": 9,
+        "owner_ms": {
+          "total": 43.528,
+          "max": 7.586,
+          "p95": 6.267
+        },
+        "foreground_entry_wait_ms": {
+          "p95": 23.855,
+          "max": 26.448
+        },
+        "foreground_entry_phase_p95_ms": {
+          "fifo_admission": 19.0838,
+          "connection_checkout": 0.1571,
+          "begin_immediate": 1.1134
+        }
+      },
+      "foreground_p95_delta_ms": 4.492
+    },
+    {
+      "pair": 3,
+      "old": {
+        "maintenance_wall_ms": 2700.54,
+        "maintenance_engine_statements": 2102,
+        "writer_transactions": 420,
+        "owner_ms": {
+          "total": 2032.782,
+          "max": 14.313,
+          "p95": 9.639
+        },
+        "foreground_entry_wait_ms": {
+          "p95": 32.894,
+          "max": 37.428
+        },
+        "foreground_entry_phase_p95_ms": {
+          "fifo_admission": 31.5882,
+          "connection_checkout": 0.1615,
+          "begin_immediate": 0.8556
+        }
+      },
+      "new": {
+        "maintenance_wall_ms": 351.747,
+        "maintenance_engine_statements": 47,
+        "writer_transactions": 9,
+        "owner_ms": {
+          "total": 86.152,
+          "max": 20.428,
+          "p95": 12.422
+        },
+        "foreground_entry_wait_ms": {
+          "p95": 49.955,
+          "max": 55.12
+        },
+        "foreground_entry_phase_p95_ms": {
+          "fifo_admission": 48.9156,
+          "connection_checkout": 0.2195,
+          "begin_immediate": 1.1836
+        }
+      },
+      "foreground_p95_delta_ms": 17.061
+    }
+  ],
+  "interpretation": {
+    "maintenance": "Maintenance wall time and total writer ownership fell in all three pairs; the final publisher performs three business SQL operations per page.",
+    "foreground": "Foreground p95 increased by 9.357, 4.492 and 17.061 ms. This fixed burst workload remains a latency regression and is not an across-the-board performance win.",
+    "phase_reading": "Most foreground entry wait was FIFO admission. Connection-checkout p95 stayed below 0.22 ms; BEGIN p95 was 0.56-1.56 ms.",
+    "scope": "Synthetic local maintenance and foreground inserts, not production latency or a full Agent/model/platform benchmark."
+  }
+}

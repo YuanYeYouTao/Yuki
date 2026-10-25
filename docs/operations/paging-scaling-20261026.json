@@ -1,0 +1,90 @@
+{
+  "baseline_pin": "7c0e53aa855f0f2cb979862b418bb6c31fd8a8c2",
+  "current_head": "cd1609a9120be6531784f49a7310140cfbff48ef",
+  "python": "3.12.13",
+  "scope": "Pure real _get_json array paging selection, fixed 800-character budget; no I/O, parser, final output serialization, models or production data",
+  "instrumentation": "Old real fits encodes count calls/output characters/value-items; current real json_character_count AST increments one counter per actual recursive count entry. No runtime files modified. Work measures differ and are reported separately.",
+  "input_construction_excluded": true,
+  "scenarios": [
+    {
+      "items": 250,
+      "returned": 118,
+      "next_offset": 118,
+      "output_characters": 800,
+      "same_result": true,
+      "old": {
+        "full_page_encodes": 134,
+        "encoded_characters": 151698,
+        "serialized_value_items": 24722
+      },
+      "new": {
+        "full_page_encodes": 0,
+        "counter_nodes_visited": 327
+      }
+    },
+    {
+      "items": 500,
+      "returned": 118,
+      "next_offset": 118,
+      "output_characters": 800,
+      "same_result": true,
+      "old": {
+        "full_page_encodes": 384,
+        "encoded_characters": 674823,
+        "serialized_value_items": 118847
+      },
+      "new": {
+        "full_page_encodes": 0,
+        "counter_nodes_visited": 327
+      }
+    },
+    {
+      "items": 1000,
+      "returned": 117,
+      "next_offset": 117,
+      "output_characters": 796,
+      "same_result": true,
+      "old": {
+        "full_page_encodes": 885,
+        "encoded_characters": 2660252,
+        "serialized_value_items": 494714
+      },
+      "new": {
+        "full_page_encodes": 0,
+        "counter_nodes_visited": 326
+      }
+    },
+    {
+      "items": 2000,
+      "returned": 117,
+      "next_offset": 117,
+      "output_characters": 796,
+      "same_result": true,
+      "old": {
+        "full_page_encodes": 1885,
+        "encoded_characters": 10881252,
+        "serialized_value_items": 1996214
+      },
+      "new": {
+        "full_page_encodes": 0,
+        "counter_nodes_visited": 326
+      }
+    },
+    {
+      "items": 4000,
+      "returned": 117,
+      "next_offset": 117,
+      "output_characters": 796,
+      "same_result": true,
+      "old": {
+        "full_page_encodes": 3885,
+        "encoded_characters": 45323252,
+        "serialized_value_items": 7999214
+      },
+      "new": {
+        "full_page_encodes": 0,
+        "counter_nodes_visited": 326
+      }
+    }
+  ]
+}
