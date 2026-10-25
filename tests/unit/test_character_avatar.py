@@ -122,7 +122,7 @@ async def test_set_replay_immutable_variants_and_original_request(avatar_env, da
         await env.client.get(current["avatar"]["sizes"]["64"], headers=bearer(env.other))
     ).status_code == 200
     meta = (await env.client.get("/client/v1/meta")).json()["data"]
-    assert meta["api_revision"] == 6 and "character_avatar" in meta["capabilities"]
+    assert meta["api_revision"] == 7 and "character_avatar" in meta["capabilities"]
     assert meta["character"]["avatar_url"] == current["avatar"]["sizes"]["128"]
     replay, _ = await upload(
         env, png(metadata=True), 0, request_id=request["request_id"], device=env.second
@@ -448,4 +448,4 @@ def test_actual_avatar_routes_export_binary_contract_and_original_ids():
         "size",
     }
     assert "/client/v1/character/avatar/{sha256}/{size}.png" in document["paths"]
-    assert document["info"]["x-yuki-api-revision"] == 6
+    assert document["info"]["x-yuki-api-revision"] == 7

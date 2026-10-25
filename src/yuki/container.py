@@ -211,7 +211,6 @@ class ApplicationContainer:
         )
         from yuki.client_api.identity import ClientIdentityService
         from yuki.conversation.media_service import ConversationMediaService
-        from yuki.executor.service import LocalExecutors
         from yuki.external_agents.service import ExternalAgentService
         from yuki.sandbox.client import SandboxClient
         from yuki.sandbox.completion_receiver import CompletionReceiver
@@ -226,8 +225,6 @@ class ApplicationContainer:
         self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
         self.database.external_agents = self.external_agents
         self.client_identity = ClientIdentityService(self.database, self.presence_router)
-        self.local_executors = LocalExecutors(self.client_identity, store)
-        self.database.local_executors = self.local_executors
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.conversation_media = ConversationMediaService(
             self.database,
@@ -287,7 +284,6 @@ class ApplicationContainer:
             workspace=self.workspace_service,
             sandbox=self.sandbox_client,
             external_agents=self.external_agents,
-            local_executors=self.local_executors,
             short_state=ShortState(store),
             observe_main_response=self._observe_main_response,
             participation_runtime_context=self._participation_runtime_context,
@@ -714,7 +710,6 @@ class ApplicationContainer:
                 self.client_identity, self.plugin_manager, self.sandbox_client
             ),
             computer=self.client_computer,
-            executors=self.local_executors,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None

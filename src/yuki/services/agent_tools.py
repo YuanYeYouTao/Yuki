@@ -70,7 +70,6 @@ from yuki.services.evidence_state import evidence_state
 from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, history_schema
 
 if TYPE_CHECKING:
-    from yuki.executor.service import LocalExecutors
     from yuki.external_agents.service import ExternalAgentService
     from yuki.sandbox.client import SandboxClient
     from yuki.social.service import SocialService
@@ -427,7 +426,6 @@ class AgentToolService:
         workspace_service: WorkspaceService,
         sandbox_client: SandboxClient,
         external_agent_service: ExternalAgentService,
-        local_executors: LocalExecutors,
         memory_context: MemoryContextService | None = None,
         memory_mutations: MemoryMutationService | None = None,
         web_provider: WebSearchProvider | None = None,
@@ -462,7 +460,6 @@ class AgentToolService:
         self.workspace_service = workspace_service
         self.sandbox_client = sandbox_client
         self.external_agent_service = external_agent_service
-        self.local_executors = local_executors
 
     @staticmethod
     def _work_source() -> dict[str, str]:
@@ -778,7 +775,6 @@ class AgentToolService:
                     ),
                 )
             )
-        from yuki.executor.tools import local_device_tools
         from yuki.external_agents.tools import external_agent_tools
         from yuki.sandbox.client import sandbox_tools
         from yuki.social.tools import social_tool_definitions
@@ -789,7 +785,6 @@ class AgentToolService:
             *social_tool_definitions(),
             *workspace_tools(),
             *external_agent_tools(),
-            *local_device_tools(),
             *sandbox_tools(),
         )
 
@@ -823,48 +818,6 @@ class AgentToolService:
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
                 from yuki.social.tools import SOCIAL_TOOL_NAMES
-
-                if name == "local_device":
-                    from yuki.capabilities.invocation import current_invocation
-                    from yuki.client_api.errors import ClientError
-                    from yuki.runtime.effect_outcomes import current_result_capture
-
-                    if runtime.tools_closed:
-                        return self._result(error="permission_denied", detail="本轮未授权执行操作")
-                    invocation = current_invocation.get()
-                    if invocation is None:
-                        return self._result(
-                            error="local_device_unavailable", detail="缺少原工具调用身份"
-                        )
-                    capture = current_result_capture.get()
-                    operation_key = (
-                        capture.effect_key
-                        if capture is not None and capture.work_id
-                        else ":".join(
-                            (
-                                str(runtime.conversation_id),
-                                str(runtime.effective_execution_id),
-                                invocation.invocation_key,
-                            )
-                        )
-                    )
-                    try:
-                        local_result = await self.local_executors.tools(
-                            runtime.actor_person_id,
-                            arguments.get("action", ""),
-                            arguments,
-                            operation_key,
-                            capture.work_id if capture is not None and capture.work_id else None,
-                        )
-                    except ClientError as exc:
-                        return self._result(error=exc.code, detail="本地设备操作未接纳")
-                    return self._result(
-                        data=local_result,
-                        error="local_device_failed"
-                        if local_result.get("state") == "failed"
-                        else None,
-                        uncertain=bool(local_result.get("uncertain")),
-                    )
 
                 if name in SANDBOX_TOOLS or name == "external_agent":
                     from yuki.capabilities.invocation import current_invocation

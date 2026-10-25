@@ -44,7 +44,9 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--label", required=True)
     add.add_argument("--driver", choices=["codex", "claude", "acp"], required=True)
     add.add_argument("--command", required=True, help="Installed native executable")
-    add.add_argument("--cwd", type=Path, required=True)
+    add.add_argument(
+        "--cwd", type=Path, default=Path.home(), help="Optional default task directory"
+    )
     add.add_argument("--socket", help="Existing Codex daemon control socket")
     add.add_argument("--endpoint", help="Existing Codex owner WebSocket endpoint")
     add.add_argument("--agent-arg", action="append", default=[])
@@ -56,10 +58,11 @@ def parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="Local configuration and user service status")
     status.add_argument("--json", action="store_true", help="Print one machine-readable object")
     discover = commands.add_parser(
-        "discover", help="Read installed Codex locations without starting it"
+        "discover", help="Read installed native agent locations without starting them"
     )
     discover.add_argument("--json", action="store_true")
     discover.add_argument("--instance", help="Resolve one original instance's installed executable")
+    discover.add_argument("--driver", choices=["codex", "claude"], default="codex")
     diagnostic = commands.add_parser("diagnose", help="Explicit native handshake; no model task")
     diagnostic.add_argument("--instance", required=True)
     commands.add_parser("run", help="Run independently of any Desktop UI")
@@ -133,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The original instance does not exist")
                 discovered = {"instance_id": original.id, "command": refresh(original).command}
             else:
-                discovered = candidates()
+                discovered = candidates() if args.driver == "codex" else candidates(args.driver)
             print(json.dumps(discovered, ensure_ascii=True))
         elif args.action == "pair":
             if path.exists():
@@ -185,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 "version": __version__,
                 "protocol": PROTOCOL_VERSION,
                 "runtime": sys.executable,
+                "data_directory": str(directory),
                 "paired": config is not None,
                 "service": service.state(),
                 "instances": [
@@ -231,8 +235,18 @@ def main(argv: list[str] | None = None) -> int:
                     if value.get("id") and previous is None:
                         raise ValueError("The original instance does not exist")
                     candidate_id = value.get("candidateId")
+                    driver = previous.driver if previous else value.get("driver", "codex")
+                    if driver not in {"codex", "claude", "acp"}:
+                        raise ValueError("Choose a supported native driver")
                     candidate = (
-                        next((c for c in candidates() if c["id"] == candidate_id), None)
+                        next(
+                            (
+                                c
+                                for c in (candidates() if driver == "codex" else candidates(driver))
+                                if c["id"] == candidate_id
+                            ),
+                            None,
+                        )
                         if candidate_id
                         else None
                     )
@@ -255,12 +269,12 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError("Choose an installed native executable")
                     if sys.platform == "win32" and Path(command).suffix.lower() != ".exe":
                         raise ValueError("Choose the native executable, not a shell script")
-                    original = previous or Instance(identity, "codex", "", command)
+                    original = previous or Instance(identity, driver, "", command)
                     cwd = original.cwd
                     if "cwd" in value:
                         directory = Path(value["cwd"])
                         if not directory.is_absolute() or not directory.is_dir():
-                            raise ValueError("Choose an existing project directory")
+                            raise ValueError("Choose an existing task directory")
                         cwd = str(directory)
                     spec = replace(
                         original,

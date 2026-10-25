@@ -6,7 +6,7 @@ mirror native transcripts or send chat messages itself.
 
 For ordinary Desktop users, use the bundled setup UI; no Python or terminal installation is required.
 For an independently managed CLI installation, install the wheel with Python 3.12, for example
-`uv tool install path/to/yuki_agent_connector-0.3.4-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.3.5-py3-none-any.whl`.
 The connector uses its own lock file and does not install the Bot project. The pinned
 Claude SDK currently includes its own large CLI payload; the driver nevertheless
 requires the explicitly selected native executable and never silently runs that payload.
@@ -138,9 +138,11 @@ Desktop copies the bundle to a stable per-user runtime directory before installi
 a service. The selected data directory remains unchanged across runtime upgrades:
 config, device/profile IDs and journal are not copied or recreated. The runtime
 content digest distinguishes builds with the same package version. A separate
-installation is created only through the explicit UI action. Existing installations
-can be selected with their original absolute Python path and data directory;
-Desktop does not upgrade an externally managed Python installation.
+installation is created only through the explicit UI action. Desktop discovers
+the default independent installation through readonly status and its registered
+service's actual Python target. Explicitly using it selects the original runtime
+and data directory without pairing, stopping the service or recreating receipts.
+An external-runtime upgrade remains a separate explicit adoption action.
 
 Managed launches use `-I -B -m yuki_agent_connector`; the installed user service
 and Claude inspection subprocess preserve isolated mode. Thus project/CWD Python
@@ -172,6 +174,21 @@ Codex or changing configuration or the journal. Editing that instance's label
 or project also re-resolves its source before validating the executable. An
 explicitly changed manual path clears the registered source; a missing original
 installation fails rather than selecting another candidate.
+
+Version 0.3.5 adds `discover --driver claude --json` for installed native Claude
+Code executables, and `driver` in candidate metadata. New configuration accepts
+the chosen driver; editing an original instance retains its driver, arguments,
+environment, socket and endpoint. Claude readiness invokes only `auth status`
+with that original profile and omits the native account output. It does not
+create a model task or claim live attachment to an arbitrary running Claude TUI.
+`status --json` includes the safe `data_directory` used for Desktop association.
+`instance add --cwd` is optional as well: a new instance defaults to the user's
+home, an existing one retains its configured task directory, and a task may
+override it. A directory is working context, not a Yuki file access boundary.
+Codex's transport proxy launches from home independently of the default task
+directory. Relative `CODEX_HOME` and socket paths are anchored to their original
+directory for this subprocess only, preserving the selected native profile/owner;
+the original configuration and native session cwd remain unchanged.
 
 Example build-machine command (choose a new output directory):
 

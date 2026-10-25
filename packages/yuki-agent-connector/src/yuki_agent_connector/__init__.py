@@ -1,4 +1,4 @@
 """A transport and native-agent adapter, independent of the Yuki Bot package."""
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 PROTOCOL_VERSION = 3

@@ -589,7 +589,7 @@ async def test_automation_transitions_keep_current_definition_and_original_recei
 
 def test_management_openapi_comes_from_real_response_models():
     document = client_openapi()
-    assert document["info"]["x-yuki-api-revision"] == 6
+    assert document["info"]["x-yuki-api-revision"] == 7
     paths = document["paths"]
     for path in (
         "/client/v1/memory/facts",

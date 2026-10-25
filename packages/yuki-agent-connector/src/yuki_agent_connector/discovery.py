@@ -1,7 +1,8 @@
-"""Installed Codex locations, not credentials or a second native runtime."""
+"""Installed native agent locations, not credentials or a second runtime."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -13,8 +14,13 @@ from typing import Any
 
 from .config import Instance
 
+if sys.platform != "win32":
+    creation_flags = 0
+else:
+    creation_flags = subprocess.CREATE_NO_WINDOW
 
-def candidates() -> list[dict[str, Any]]:
+
+def candidates(driver: str = "codex") -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
 
     def add(path: Path, source: str, label: str) -> None:
@@ -32,11 +38,12 @@ def candidates() -> list[dict[str, Any]]:
                 "label": label,
                 "command": str(path.resolve()),
                 "source": source,
+                "driver": driver,
             },
         )
 
     # Registered app locations survive an application version directory change.
-    if sys.platform == "win32":
+    if driver == "codex" and sys.platform == "win32":
         result = subprocess.run(
             [
                 "powershell",
@@ -62,32 +69,36 @@ def candidates() -> list[dict[str, Any]]:
             location = Path(package["InstallLocation"])
             for relative in ("app/resources/codex.exe", "resources/codex.exe"):
                 add(location / relative, f"appx:{package['Name']}:{relative}", package["Name"])
-    elif sys.platform == "darwin":
+    elif driver == "codex" and sys.platform == "darwin":
         for applications in (Path("/Applications"), Path.home() / "Applications"):
             app = applications / "Codex.app"
             add(app / "Contents/Resources/codex", f"app:{app}", "Codex App")
-    executable = "codex.exe" if sys.platform == "win32" else "codex"
+    executable = driver + (".exe" if sys.platform == "win32" else "")
+    label = "Claude Code" if driver == "claude" else "Codex CLI"
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         path = Path(directory)
         if directory and path.is_absolute():
-            add(path / executable, f"path:{path / executable}", "Codex CLI")
+            add(path / executable, f"path:{path / executable}", label)
+    if driver == "claude":
+        path = Path.home() / ".local/bin" / executable
+        add(path, f"path:{path}", label)
     if sys.platform != "win32":
         for path in (
-            Path.home() / ".local/bin/codex",
-            Path("/opt/homebrew/bin/codex"),
-            Path("/usr/local/bin/codex"),
+            Path.home() / ".local/bin" / driver,
+            Path("/opt/homebrew/bin") / driver,
+            Path("/usr/local/bin") / driver,
         ):
-            add(path, f"path:{path}", "Codex CLI")
+            add(path, f"path:{path}", label)
     return list(found.values())
 
 
 def refresh(spec: Instance) -> Instance:
     if not spec.installation:
         return spec
-    for candidate in candidates():
+    for candidate in candidates() if spec.driver == "codex" else candidates(spec.driver):
         if candidate["source"] == spec.installation:
             return replace(spec, command=candidate["command"])
-    raise FileNotFoundError("The selected Codex installation is no longer available")
+    raise FileNotFoundError("The selected native installation is no longer available")
 
 
 async def diagnose(spec: Instance) -> dict[str, object]:
@@ -97,6 +108,44 @@ async def diagnose(spec: Instance) -> dict[str, object]:
     async def discard(message: Any) -> None:
         pass
 
+    if spec.driver == "claude":
+        try:
+            spec = refresh(spec)
+            environment = spec.environment()
+            if (
+                environment.get("CLAUDE_CONFIG_DIR")
+                and not Path(environment["CLAUDE_CONFIG_DIR"]).is_absolute()
+            ):
+                environment["CLAUDE_CONFIG_DIR"] = str(
+                    (Path(spec.cwd) / environment["CLAUDE_CONFIG_DIR"]).resolve()
+                )
+            process = await asyncio.create_subprocess_exec(
+                spec.command,
+                *spec.args,
+                "auth",
+                "status",
+                env=environment,
+                cwd=str(Path.home()),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+            # The native command reports login state without creating a session.
+            # Keep its account information and all native output out of IPC/logs.
+            output, _ = await process.communicate()
+            account = json.loads(output)
+            if process.returncode not in (0, 1) or not isinstance(account.get("loggedIn"), bool):
+                return {"id": spec.id, "available": False, "problem": "native_diagnostic_failed"}
+            available = process.returncode == 0 and account["loggedIn"]
+            return {
+                "id": spec.id,
+                "available": available,
+                **({"problem": "native_login_required"} if not available else {}),
+            }
+        except FileNotFoundError:
+            return {"id": spec.id, "available": False, "problem": "native_not_installed"}
+        except (OSError, ValueError, AttributeError):
+            return {"id": spec.id, "available": False, "problem": "native_diagnostic_failed"}
     if spec.driver != "codex":
         return {"id": spec.id, "available": False, "problem": "diagnostic_not_supported"}
     rpc = CodexRPC(spec, discard)
