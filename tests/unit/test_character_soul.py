@@ -1,4 +1,4 @@
-"""Actual SQLite, file publication, HTTP ownership and hot activation."""
+"""Actual SQLite, shared client access, file publication and hot activation."""
 
 import asyncio
 import json
@@ -22,12 +22,11 @@ async def character(database, tmp_path):
     path = tmp_path / "SOUL.md"
     path.write_bytes(b"Hello {{name}}\r\n")
     settings = make_settings(database.url, soul_file=path)
-    identity, person, issued = await code_for(database)
+    identity, _person, issued = await code_for(database)
     paired = await identity.pair(issued["code"], "owner")
     principal = await identity.authenticate(paired["token"])
     repository = CharacterRepository(identity, settings)
     await repository.initialize("Aria")
-    await repository.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
     soul = CharacterSoul(identity, settings)
     app = FastAPI()
     attach_client_api(app, lambda: ClientApi(identity, character=repository, soul=soul))
@@ -52,7 +51,45 @@ async def test_empty_soul_survives_file_hot_activation_and_original_receipt(char
     assert cold.soul == "" and cold.active_soul_revision == settings.active_soul_revision
 
 
-async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocation(
+async def test_shared_character_edit_ignores_and_preserves_retired_grants(character):
+    from datetime import UTC, datetime
+
+    from yuki.character.db_models import CharacterOwnerGrantModel
+    from yuki.identity.db_models import CanonicalPersonModel
+
+    client, repository, _soul, _settings, principal, _path = character
+    revoked = datetime.now(UTC)
+    issuer = str(uuid4())
+    async with repository.database.immediate_session() as session:
+        person = await session.get(CanonicalPersonModel, principal.person_id)
+        assert not person.is_superuser
+        session.add(
+            CharacterOwnerGrantModel(
+                person_id=person.id,
+                granted_by_principal=issuer,
+                granted_at=revoked,
+                revoked_at=revoked,
+            )
+        )
+    original = (await client.get("/client/v1/character")).json()["data"]
+    assert original["viewer"]["is_owner"] is True
+    assert (await repository.get())["viewer"]["is_owner"] is False
+    changed = await client.patch(
+        "/client/v1/character",
+        json={
+            "request_id": str(uuid4()),
+            "expected_revision": original["revision"],
+            "display_name": "Shared role",
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    async with repository.database.read_session() as session:
+        historical = await session.get(CharacterOwnerGrantModel, principal.person_id)
+        assert historical.granted_by_principal == issuer
+        assert historical.revoked_at.replace(tzinfo=UTC) == revoked
+
+
+async def test_character_hints_follow_commits_and_stop_after_device_revocation(
     character, monkeypatch
 ):
     client, repo, soul, settings, principal, _path = character
@@ -117,34 +154,11 @@ async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocati
     assert changed["soul"]["active_revision"] == saved.json()["data"]["active_revision"]
     assert "private replacement" not in json.dumps(changed)
     pending = asyncio.create_task(anext(stream))
-    await repo.set_owner(str(uuid4()), principal.person_id, str(uuid4()), granted=False)
-    kind, changed = decode(await asyncio.wait_for(pending, 2))
-    assert kind == "character" and changed["is_owner"] is False
-    assert "soul" not in changed
-    assert (await client.get("/client/v1/character/soul")).status_code == 403
-    assert (await views.sync(principal))["character"] == changed
+    await repo.identity.revoke(principal, principal.device_id, str(uuid4()))
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(pending, 2)
+    assert (await client.get("/client/v1/character/soul")).status_code == 401
     await stream.aclose()
-
-
-async def test_forgetting_an_owner_without_accounts_removes_its_grant(character):
-    from sqlalchemy import select
-    from tests.unit.test_person_authority import person as new_person
-
-    from yuki.character.db_models import CharacterOwnerGrantModel
-    from yuki.identity.canonical_repository import forget_person_by_id
-
-    _client, repository, _soul, _settings, _principal, _path = character
-    person = await new_person(repository.database)
-    await repository.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
-    async with repository.database.immediate_session() as session:
-        await forget_person_by_id(session, person)
-    async with repository.database.read_session() as session:
-        assert (
-            await session.scalar(
-                select(CharacterOwnerGrantModel).where(CharacterOwnerGrantModel.person_id == person)
-            )
-            is None
-        )
 
 
 async def test_name_commit_replay_never_restores_an_old_name(character):
@@ -173,7 +187,7 @@ async def test_name_commit_replay_never_restores_an_old_name(character):
     assert (await repository.current()).id == original.id
 
 
-async def test_compare_and_swap_keeps_raw_bytes_and_owner_revoke_stops_reads(character):
+async def test_compare_and_swap_keeps_raw_bytes_and_disabled_person_stops_reads(character):
     client, repository, _soul, settings, principal, path = character
     original = (await client.get("/client/v1/character/soul")).json()["data"]
     body = "Raw\r\n{{name}}\r\n"
@@ -203,10 +217,14 @@ async def test_compare_and_swap_keeps_raw_bytes_and_owner_revoke_stops_reads(cha
     async with repository.database.read_session() as session:
         audit = " ".join(await session.scalars(select(AdminOperationEventModel.after_json)))
     assert "Raw" not in audit and "{{name}}" not in audit
-    await repository.set_owner(str(uuid4()), principal.person_id, str(uuid4()), granted=False)
+    from yuki.identity.db_models import CanonicalPersonModel
+
+    async with repository.database.immediate_session() as session:
+        person = await session.get(CanonicalPersonModel, principal.source_person_id)
+        person.enabled = False
     denied = await client.get("/client/v1/character/soul")
-    assert denied.status_code == 403 and body not in denied.text
-    assert (await client.get("/client/v1/character")).json()["data"]["viewer"]["is_owner"] is False
+    assert denied.status_code == 401 and body not in denied.text
+    assert (await client.get("/client/v1/character")).status_code == 401
 
 
 async def test_written_but_lost_file_ack_resumes_the_same_request(character, monkeypatch):

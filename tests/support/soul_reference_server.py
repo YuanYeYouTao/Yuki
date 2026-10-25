@@ -16,11 +16,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from tests.conftest import make_settings
 from tests.support.model_profiles import write_fake_profiles
 
-from yuki.character.db_models import CharacterOwnerGrantModel
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.identity.canonical_repository import create_presence
@@ -81,7 +80,6 @@ async def serve(
                 await create_presence(
                     session, external_account_id="yuki-app", platform="app", now=now
                 )
-            await runtime.character.set_owner(operator_id, owner_id, str(uuid4()), granted=True)
         else:
             original_state = json.loads(
                 await asyncio.to_thread(state_file.read_text, encoding="utf-8")
@@ -91,9 +89,7 @@ async def serve(
             async with database.read_session() as session:
                 assert await session.get(CanonicalPersonModel, owner_id) is not None
                 assert await session.get(CanonicalPersonModel, nonowner_id) is not None
-                grant = await session.get(CharacterOwnerGrantModel, owner_id)
-                assert grant is not None
-                operator_id = grant.granted_by_principal
+            operator_id = original_state["operator_id"]
 
         async def issue_code(person_id: str) -> dict:
             return await runtime.client_identity.issue_for_operator(
@@ -345,10 +341,11 @@ async def serve(
         async def owner_link_code() -> dict:
             return await issue_code(owner_id)
 
-        @api.post("/__test/revoke-owner")
-        async def revoke_owner() -> dict:
-            return await runtime.character.set_owner(
-                operator_id, owner_id, str(uuid4()), granted=False
+        @api.post("/__test/revoke-device")
+        async def revoke_device(request: Request) -> dict:
+            body = await request.json()
+            return await runtime.client_identity.revoke_for_operator(
+                body["device_id"], operator_id, str(uuid4())
             )
 
         @api.post("/__test/shutdown")
@@ -377,6 +374,7 @@ async def serve(
                     await asyncio.sleep(0.01)
                 state = {
                     "base_url": f"http://127.0.0.1:{actual_port}{base_path}",
+                    "operator_id": operator_id,
                     "owner_person_id": owner_id,
                     "nonowner_person_id": nonowner_id,
                     "owner_pairing_code": owner_code["code"],

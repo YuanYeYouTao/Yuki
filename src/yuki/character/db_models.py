@@ -28,6 +28,8 @@ class CharacterProfileModel(Base):
 
 
 class CharacterOwnerGrantModel(Base):
+    """Retired grant rows retained for original database and receipt history."""
+
     __tablename__ = "character_owner_grants"
 
     person_id: Mapped[str] = mapped_column(

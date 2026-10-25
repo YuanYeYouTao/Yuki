@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 
 
-async def test_desktop_reference_restarts_same_port_without_regranting_owner(tmp_path):
+async def test_desktop_reference_restarts_same_port_and_keeps_original_device_revoked(tmp_path):
     root, state_file = tmp_path / "server", tmp_path / "state.json"
     log_file = tmp_path / "server.log"
     process = None
@@ -55,7 +55,7 @@ async def test_desktop_reference_restarts_same_port_without_regranting_owner(tmp
         async def stop(client):
             # Keep an actual SSE connection open during server shutdown. This exercises
             # the listener's active-close/TIME_WAIT path, not just a vacant port bind.
-            async with client.stream("GET", "client/v1/stream", headers=owner) as stream:
+            async with client.stream("GET", "client/v1/stream", headers=observer) as stream:
                 assert stream.status_code == 200
                 assert (await client.post("__test/shutdown")).status_code == 200
                 assert await asyncio.wait_for(process.wait(), 10) == 0
@@ -68,7 +68,14 @@ async def test_desktop_reference_restarts_same_port_without_regranting_owner(tmp
                     json={"code": state["owner_pairing_code"], "device_label": "Restart"},
                 )
                 assert paired.status_code == 200
+                owner_device = paired.json()["data"]["device_id"]
                 owner = {"Authorization": "Bearer " + paired.json()["data"]["token"]}
+                visitor = await client.post(
+                    "client/v1/pair",
+                    json={"code": state["nonowner_pairing_code"], "device_label": "Observer"},
+                )
+                assert visitor.status_code == 200
+                observer = {"Authorization": "Bearer " + visitor.json()["data"]["token"]}
                 me = (await client.get("client/v1/me", headers=owner)).json()["data"]
                 profile = (await client.get("client/v1/character", headers=owner)).json()["data"]
                 soul = (root / "character" / "SOUL.md").read_bytes()
@@ -81,20 +88,28 @@ async def test_desktop_reference_restarts_same_port_without_regranting_owner(tmp
                 assert restarted["owner_person_id"] == state["owner_person_id"]
                 assert restarted["nonowner_person_id"] == state["nonowner_person_id"]
                 async with httpx.AsyncClient(base_url=state["base_url"] + "/") as client:
-                    assert (await client.get("client/v1/me", headers=owner)).json()["data"] == me
-                    current = (await client.get("client/v1/character", headers=owner)).json()[
+                    original = await client.get("client/v1/me", headers=owner)
+                    if revoked:
+                        assert original.status_code == 401
+                    else:
+                        assert original.json()["data"] == me
+                    current = (await client.get("client/v1/character", headers=observer)).json()[
                         "data"
                     ]
-                    assert current["viewer"]["is_owner"] is not revoked
+                    assert current["viewer"]["is_owner"] is True
                     assert current["id"] == profile["id"]
                     assert current["display_name"] == profile["display_name"]
                     assert (root / "character" / "SOUL.md").read_bytes() == soul
                     if not revoked:
-                        assert (await client.post("__test/revoke-owner")).status_code == 200
+                        assert (
+                            await client.post(
+                                "__test/revoke-device", json={"device_id": owner_device}
+                            )
+                        ).status_code == 200
                     else:
                         assert (
                             await client.get("client/v1/character/soul", headers=owner)
-                        ).status_code == 403
+                        ).status_code == 401
                     await stop(client)
         finally:
             if process is not None:
@@ -103,7 +118,7 @@ async def test_desktop_reference_restarts_same_port_without_regranting_owner(tmp
                 await asyncio.wait_for(process.wait(), 10)
 
 
-async def test_soul_reference_process_uses_real_owners_files_and_personal_views(tmp_path):
+async def test_soul_reference_process_uses_paired_shared_access_files_and_personal_views(tmp_path):
     root, state_file = tmp_path / "server", tmp_path / "state.json"
     log_file = tmp_path / "server.log"
     with log_file.open("wb") as log:
@@ -139,11 +154,14 @@ async def test_soul_reference_process_uses_real_owners_files_and_personal_views(
                         "client/v1/pair", json={"code": code, "device_label": "Desktop E2E"}
                     )
                     assert response.status_code == 200, response.text
-                    return {"Authorization": "Bearer " + response.json()["data"]["token"]}
+                    return (
+                        {"Authorization": "Bearer " + response.json()["data"]["token"]},
+                        response.json()["data"]["device_id"],
+                    )
 
-                owner = await pair(state["owner_pairing_code"])
-                nonowner = await pair(state["nonowner_pairing_code"])
-                second = await pair((await client.post("__test/link-code")).json()["code"])
+                owner, owner_device = await pair(state["owner_pairing_code"])
+                nonowner, _ = await pair(state["nonowner_pairing_code"])
+                second, _ = await pair((await client.post("__test/link-code")).json()["code"])
                 first_me = (await client.get("client/v1/me", headers=owner)).json()["data"]
                 second_me = (await client.get("client/v1/me", headers=second)).json()["data"]
                 assert first_me["person_id"] == second_me["person_id"]
@@ -178,8 +196,8 @@ async def test_soul_reference_process_uses_real_owners_files_and_personal_views(
                 renamed = (await client.get("client/v1/meta")).json()["data"]["character"]
                 assert renamed["display_name"] == "新名称" and renamed["id"] == profile["id"]
 
-                denied = await client.get("client/v1/character/soul", headers=nonowner)
-                assert denied.status_code == 403, denied.text
+                shared = await client.get("client/v1/character/soul", headers=nonowner)
+                assert shared.status_code == 200, shared.text
                 document = (await client.get("client/v1/character/soul", headers=owner)).json()[
                     "data"
                 ]
@@ -200,14 +218,16 @@ async def test_soul_reference_process_uses_real_owners_files_and_personal_views(
                     json={"request_id": str(uuid4())},
                 )
                 assert reloaded.status_code == 200, reloaded.text
-                revoked = await client.post("__test/revoke-owner")
+                revoked = await client.post(
+                    "__test/revoke-device", json={"device_id": owner_device}
+                )
                 assert revoked.status_code == 200
                 assert (
                     await client.get("client/v1/character/soul", headers=owner)
-                ).status_code == 403
+                ).status_code == 401
                 assert (
                     await client.get("client/v1/character/soul", headers=second)
-                ).status_code == 403
+                ).status_code == 200
                 assert (await client.post("__test/shutdown")).json() == {"ok": True}
                 assert await asyncio.wait_for(process.wait(), 10) == 0
         finally:

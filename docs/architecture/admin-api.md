@@ -48,13 +48,12 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `POST /plugin-outbox/{id}/retry` | `plugin retry-outbox` | `control.plugin.mutate` |
 | `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set` | `control.config.file.content.read\|mutate` |
 | `GET /character`；`PATCH /character` | `admin character show\|update` | `control.character.read\|mutate` |
-| `GET /character/owners`；`POST /character/owners/{person_id}/{grant\|revoke}` | `admin character owner list\|grant\|revoke` | `control.character.read\|mutate` |
 | `GET /character/soul`；`PUT` 同路径；`POST /character/soul/reload` | `admin character soul show\|set\|reload` | `control.character.read\|mutate` |
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
 
 健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
 角色名称与单 SOUL 沿同一领域服务发布，保原 UUID、profile revision、文件 CAS 和实际生效结果；
-不会编辑工具或授权规则，也不重写已付请求。角色 owner 不等于 operator，资格按原 Person 授予或撤销。
+不会编辑工具或授权规则，也不重写已付请求。有效配对的个人客户端可编辑共享角色资料、头像和 SOUL；旧 character owner 授予入口已退出，历史授权行与回执保留。operator 的独立控制凭据及能力不因此改变。
 平台项来自已登记 Provider 的平台声明、实际 Presence 与原生网关 owner，公共 `/health`
 的 `gateways` 与管理健康行复用同一事实投影。旧 `onebot_connected`、`telegram_gateway`
 字段保留原形状；未知健康证据保持 null。数据库分别报告 reader 可读与 writer 接受写入。

@@ -1,4 +1,4 @@
-"""Owner computer reads, disposable tickets, Manager observations and RFB proxy."""
+"""Paired-client computer reads, tickets, Manager observations and RFB proxy."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from starlette.websockets import WebSocketState
 
-from yuki.character.repository import is_character_owner, require_character_owner
 from yuki.client_api.computer_commands import ComputerCommands, public_control, release_key
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
@@ -56,15 +55,15 @@ class ClientComputer:
             self.revision += 1
             self.identity.database.commit_hints.publish()
 
-    def control_view(self, control: dict[str, Any], *, owner: bool = True) -> dict[str, Any]:
-        result = public_control(control, owner=owner)
-        if owner and control.get("holder") == "human":
+    def control_view(self, control: dict[str, Any]) -> dict[str, Any]:
+        result = public_control(control)
+        if control.get("holder") == "human":
             result["device_online"] = bool(self._online.get(control["device_id"]))
         return result
 
-    async def owner(self, principal: ClientPrincipal) -> ClientPrincipal:
+    async def authenticate(self, principal: ClientPrincipal) -> ClientPrincipal:
         async with self.identity.database.read_session() as reader:
-            return await require_character_owner(self.identity, reader, principal)
+            return await self.identity.require_principal(reader, principal)
 
     async def rpc(self, method: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.sandbox.execute(method, args or {}, request_id=str(uuid4()))
@@ -91,14 +90,13 @@ class ClientComputer:
         )
         async with self.identity.database.read_session() as reader:
             principal = await self.identity.require_principal(reader, principal)
-            owner = await is_character_owner(reader, principal.person_id)
         available = "error" not in status and type(status.get("ready")) is bool
         known_control = snapshot.get("control") if "error" not in snapshot else None
         return {
             "state": ("running" if status["ready"] else "stopped") if available else "unavailable",
             "display": display.get("display", "unavailable"),
             "generation": status.get("generation"),
-            "control": self.control_view(known_control, owner=owner)
+            "control": self.control_view(known_control)
             if isinstance(known_control, dict)
             else None,
             "help_requested": any(
@@ -109,7 +107,7 @@ class ClientComputer:
         }
 
     async def get(self, principal: ClientPrincipal) -> dict[str, Any]:
-        principal = await self.owner(principal)
+        principal = await self.authenticate(principal)
         await self.start()
         status, display, snapshot, browser = await asyncio.gather(
             self.rpc("environment_status"),
@@ -132,7 +130,7 @@ class ClientComputer:
                 if work_ids
                 else {}
             )
-        await self.owner(principal)
+        await self.authenticate(principal)
         return {
             "environment": ("running" if status["ready"] else "stopped")
             if "error" not in status
@@ -164,7 +162,7 @@ class ClientComputer:
     async def command(
         self, principal: ClientPrincipal, request_id: str, action: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        principal = await self.owner(principal)
+        principal = await self.authenticate(principal)
         await self.start()
 
         async def confirm_sleep() -> None:
@@ -198,7 +196,7 @@ class ClientComputer:
         )
 
     async def ticket(self, principal: ClientPrincipal, root_path: str = "") -> dict[str, Any]:
-        principal = await self.owner(principal)
+        principal = await self.authenticate(principal)
         await self.start()
         now = time.monotonic()
         self._tickets = {key: value for key, value in self._tickets.items() if value[0] > now}
@@ -213,17 +211,17 @@ class ClientComputer:
     async def files(
         self, principal: ClientPrincipal, path: str, after: str | None, limit: int
     ) -> dict[str, Any]:
-        await self.owner(principal)
+        await self.authenticate(principal)
         result = await self.rpc("files_list", {"path": path, "after": after or "", "limit": limit})
         if result.get("error"):
             raise ClientError("not_found")
-        await self.owner(principal)
+        await self.authenticate(principal)
         return result
 
     async def content(
         self, principal: ClientPrincipal, path: str
     ) -> tuple[dict[str, Any], AsyncIterator[bytes], Callable[[], Awaitable[None]]]:
-        await self.owner(principal)
+        await self.authenticate(principal)
         stack = AsyncExitStack()
         try:
             metadata, reader, _ = await stack.enter_async_context(
@@ -232,7 +230,7 @@ class ClientComputer:
         except (OSError, ValueError):
             raise ClientError("not_found") from None
         try:
-            await self.owner(principal)
+            await self.authenticate(principal)
         except BaseException:
             await stack.aclose()
             raise
@@ -240,7 +238,7 @@ class ClientComputer:
         async def body() -> AsyncIterator[bytes]:
             try:
                 while data := await reader.read(65536):
-                    await self.owner(principal)
+                    await self.authenticate(principal)
                     yield data
             finally:
                 await stack.aclose()
@@ -318,7 +316,7 @@ class ClientComputer:
         async with self._authority_lock:
             for socket, principal in tuple(self._streams.items()):
                 try:
-                    await self.owner(principal)
+                    await self.authenticate(principal)
                 except ClientError:
                     if socket.application_state != WebSocketState.DISCONNECTED:
                         await socket.close(code=1008)
@@ -348,8 +346,6 @@ class ClientComputer:
                     if person is None
                     else "person_disabled"
                     if not person.enabled or root is None or not root.enabled
-                    else "owner_revoked"
-                    if not await is_character_owner(reader, control["person_id"])
                     else "device_revoked"
                     if device is None or device.revoked_at is not None
                     else None
@@ -383,7 +379,7 @@ class ClientComputer:
             await socket.close(code=1008)
             return
         try:
-            principal = await self.owner(saved[1])
+            principal = await self.authenticate(saved[1])
         except ClientError:
             await socket.close(code=1008)
             return
@@ -413,7 +409,7 @@ class ClientComputer:
                 async def send() -> None:
                     while True:
                         data = await socket.receive_bytes()
-                        await self.owner(principal)
+                        await self.authenticate(principal)
                         await input_update()
                         async with lock:
                             writer.write(parser.feed(data))
@@ -421,7 +417,7 @@ class ClientComputer:
 
                 async def receive() -> None:
                     while data := await reader.read(65536):
-                        await self.owner(principal)
+                        await self.authenticate(principal)
                         await socket.send_bytes(data)
 
                 tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]

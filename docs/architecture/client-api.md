@@ -1,7 +1,7 @@
 # 个人客户端 API
 
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
-聊天设备凭据解析当前 Person，保留原设备与 App 入口。个人管理核本人范围，角色编辑和远程电脑控制另核当前角色 owner；个人 token 不替代 operator 授权。公开服务沿部署提供 HTTPS。
+聊天设备凭据解析当前 Person，保留原设备与 App 入口。有效配对的客户端均可使用共享角色资料、头像、SOUL、角色电脑和 SELF 安排目录，不再叠加管理员或 character owner 资格。Person 私有资料、安排创建者、Work、Native 设备与实际电脑租约仍认原归属；个人 token 不替代 operator 控制凭据。公开服务沿部署提供 HTTPS。
 
 ## 本机 Agent 设备
 
@@ -13,7 +13,7 @@
 
 ## 个人管理、产物与工作步骤
 
-`GET /memory/facts?about=me|self` 和详情只返回本人及当前可见 SELF 事实，证据另核原 Conversation 的实际读取资格。本人可以用原 UUID、事实 revision 和明确正文纠正或撤回自己的事实；角色 owner 不是读取或修改其他人私有记忆的凭据。SELF 页只读。
+`GET /memory/facts?about=me|self` 和详情只返回本人及当前可见 SELF 事实，证据另核原 Conversation 的实际读取资格。本人可以用原 UUID、事实 revision 和明确正文纠正或撤回自己的事实；共享角色编辑不允许读取或修改其他人的私有记忆。SELF 页只读。
 
 明确的桌面纠正动作作为真实本人 App 输入，以 `origin=memory_correction` 入原账本，不调用 Main。原 namespace、UUID 和实际操作正文用于定位同一次动作。源事件先短写落账，然后在 reader 准备现行 Memory mutation；同一 writer 提交事实、原 mutation receipt 和个人命令回执。崩溃后查原 UUID，缺少个人命令结果不把源事件误当成纠正成功；沿同一源事件继续，不再生成第二条输入。embedding 在提交后调度。
 
@@ -25,7 +25,7 @@
 
 ## 远程电脑与本机原生 Agent
 
-远程电脑的画面、控制租约、休眠/唤醒、截图与文件来自真实 Manager 环境。ClientComputer 核当前 owner；控制先登记原操作，再向 Manager 查原 key，原回执丢失不授予重复效果资格。画面使用一次性 ticket 与同一 HTTPS/WSS 入口；有头组件未配置或不可达时返回实际不可用状态，不影响聊天和其他页面。其生命周期与原生 Agent 会话独立。
+远程电脑的画面、控制租约、休眠/唤醒、截图与文件来自真实 Manager 环境。ClientComputer 核当前有效设备与 Person；控制先登记原操作，再向 Manager 查原 key，原回执丢失不授予重复效果资格。画面使用一次性 ticket 与同一 HTTPS/WSS 入口；有头组件未配置或不可达时返回实际不可用状态，不影响聊天和其他页面。其生命周期与原生 Agent 会话独立。
 
 Bot 启动仍恢复电脑观察，以便没有桌面客户端时也能按当前撤权归还旧 human 租约。协议明确不支持或宿主没有 Unix transport 时停止无用重连，实际电脑访问可重新启动；暂时网络失败保原恢复路径。观察任务的启动与关闭共用同一实例生命周期锁。授权提示过载丢失时，先关画面输入，再读一次当前授权并沿原 release key 归还，不依赖下一条通知，也不重放原控制命令。
 
@@ -36,8 +36,8 @@ Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_
 ## 角色资料与单 SOUL
 
 `GET /meta` 公开当前角色名称、API revision `7` 和实际能力声明，不推断未实现的客户端功能。
-设备读取 `GET /character`；获准 owner 使用 `PATCH /character`，按原 UUID 和 profile revision 修改名称等资料。
-owner 资格归 Person，账号转交不转交角色编辑权；operator 通过独立管理入口授权。
+有效设备读取 `GET /character` 并使用 `PATCH /character`，按原 UUID 和 profile revision 修改名称等资料。
+API7 的 `viewer.is_owner` 与 SSE `character.is_owner` 为旧客户端保留：有效 principal 投影为 true，未认证的公开资料投影为 false，不查询历史授权表，也不授予 Person 管理员资格。`character_owner_grants`、旧迁移及已保存回执只保留原历史；没有活授予或撤销入口。
 
 `GET /character/soul`、`PUT /character/soul` 和 `POST /character/soul/reload` 只处理同一份 `SOUL_FILE`。
 保存使用原 UUID、文件 hash CAS 和原子替换；写入与当前生效 hash 分别报告。
@@ -51,7 +51,7 @@ SDK 的 SOUL 受控写在确认丢失后先查原 UUID，恢复仍用原 payload
 头像属于原 `character_profile.id`，跨该角色的桌面设备共用，不与 Person、QQ 等平台账号头像混合。
 
 `PUT /character/avatar?request_id=&expected_revision=&sha256=&size=` 接收裁切后的 1024×1024 PNG
-字节。设备的当前角色拥有者资格在收流前和提交前分别核验。流长及 SHA-256 必须与原声明一致，
+字节。当前设备与 Person 的有效性在收流前和提交前分别核验。流长及 SHA-256 必须与原声明一致，
 客户端以 sRGB 导出；服务端完整解码、去元数据并发布 sRGB PNG，生成 1024/512/256/128/64 图。图片 I/O、解码和变体生成
 全部在写事务外执行；同盘临时目录在变体写入并刷新后原子发布，短事务才推进头像版本及原命令回执。
 没有新增文件大小经验上限、持久上传队列或后台重放。
@@ -71,7 +71,7 @@ reset 的 sha256/size 明确为 null。同一 UUID 按原个人入口命名空�
 每个变体文件的字节摘要。旧资产目录保留，不自动删除默认图或原回执指向的内容。
 
 头像提交沿现有数据库 commit hint 发布 `character.avatar_revision` 变化，其他设备据此刷新角色资料，
-不新增轮询。普通修改不重建角色、Person、Binding、Conversation、历史或 Work，也不自动授予拥有者。
+不新增轮询。普通修改不重建角色、Person、Binding、Conversation、历史或 Work，也不改人物管理员资格或历史 owner 授权行。
 
 ## 配对与账号绑定
 
@@ -335,7 +335,7 @@ ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；
 
 ### 可选配对链接与真实参考服务
 
-显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link` 在原一次性 chat 码旁附 `yuki://pair?server=...&code=...`；未配置时保留原裸码输出，不猜服务器地址。链接只帮助填写已有信息，purpose 与 Person／owner 权限不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
+显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link` 在原一次性 chat 码旁附 `yuki://pair?server=...&code=...`；未配置时保留原裸码输出，不猜服务器地址。链接只帮助填写已有信息，purpose 与 Person、原执行归属不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
 
 个人 API 的 me、home、events、activity、Work、request、upload、pair 和 link-code 使用真实投影的响应模型；保留现有公开扩展字段，不因类型收敛静默删字段。新增可选输入与只读路由延续原请求与响应语义；revision 7 的破坏性变化仅为退出旧 LocalExecutor 活 API。
 

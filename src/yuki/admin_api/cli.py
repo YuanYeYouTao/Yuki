@@ -51,12 +51,6 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     saved.add_argument("--revision")
     _mutation(saved, revision=False)
     _mutation(soul.add_parser("reload"), revision=False)
-    owners = character.add_parser("owner").add_subparsers(dest="owner_action", required=True)
-    owners.add_parser("list")
-    for action in ("grant", "revoke"):
-        parser = owners.add_parser(action)
-        parser.add_argument("--person", required=True)
-        _mutation(parser, revision=False)
     operation = commands.add_parser("operation")
     operation.add_argument("id", help="原 operation ID 或本 operator 的请求 UUID")
     trace = commands.add_parser("trace")
@@ -186,16 +180,6 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                         for key in ("display_name", "slug", "bio")
                         if getattr(args, key) is not None
                     },
-                )
-            elif args.character_action == "owner":
-                data = (
-                    await read(client, "character/owners")
-                    if args.owner_action == "list"
-                    else await identity_mutation(
-                        client,
-                        f"character/owners/{args.person}/{args.owner_action}",
-                        request_id=args.request_id,
-                    )
                 )
             elif args.soul_action == "show":
                 data = await read(client, "character/soul")

@@ -8,7 +8,6 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -32,10 +31,9 @@ app_env = app_fixture
 async def test_http_file_etag_identifies_the_original_snapshot_after_source_changes(
     app_env, database, tmp_path, monkeypatch
 ):
-    device, person = await owner(app_env, database)
+    device, _person = await owner(app_env, database)
     character = CharacterRepository(app_env.identity, app_env.harness.settings)
     await character.initialize("Computer snapshot test")
-    await character.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
     manager = manager_at(tmp_path)
     manager.files.root.mkdir()
     source = manager.files.root / "中文快照.bin"

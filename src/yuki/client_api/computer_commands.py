@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from yuki.admin.authority.json_types import JsonValue
-from yuki.character.repository import is_character_owner, require_character_owner
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
@@ -20,12 +19,11 @@ from yuki.sandbox.computer_keys import manager_key as manager_key
 from yuki.sandbox.computer_keys import release_key as release_key
 
 
-def public_control(control: dict[str, Any], *, owner: bool = True) -> dict[str, Any]:
+def public_control(control: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in control.items()
-        if key == "holder"
-        or (owner and key in {"lease_id", "device_id", "device_label", "work_id", "since"})
+        if key in {"holder", "lease_id", "device_id", "device_label", "work_id", "since"}
     }
 
 
@@ -74,7 +72,7 @@ class ComputerCommands:
         key = manager_key(principal.request_scope, request_id)
         row_id: int
         async with self.identity.database.immediate_session() as writer:
-            current = await require_character_owner(self.identity, writer, principal)
+            current = await self.identity.require_principal(writer, principal)
             previous = await personal_command(
                 writer,
                 current.request_person_id,
@@ -147,11 +145,7 @@ class ComputerCommands:
             )
             try:
                 async with self.identity.database.read_session() as reader:
-                    actor = await self.identity.require_device(
-                        reader, original["actor"]["device_id"]
-                    )
-                    if not await is_character_owner(reader, actor.person_id):
-                        raise ClientError("owner_required")
+                    await self.identity.require_device(reader, original["actor"]["device_id"])
                 if before_effect:
                     await before_effect()
             except ClientError as exc:
@@ -172,7 +166,7 @@ class ComputerCommands:
                 "control_held",
                 "precondition_failed",
                 "unauthenticated",
-                "owner_required",
+                "owner_required",  # Keep the original failure from retired operation receipts.
                 "not_found",
             }
             else "unavailable"

@@ -178,25 +178,6 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             )
         }
 
-    @router.get("/character/owners")
-    async def character_owners(actor: Actor) -> Any:
-        authorize(actor, "control.character.read")
-        return {"data": {"items": await character().owners()}}
-
-    @router.post("/character/owners/{person_id}/{action}")
-    async def character_owner(
-        person_id: UUID4, action: Literal["grant", "revoke"], body: IdentityRequest, actor: Actor
-    ) -> Any:
-        authorize(actor, "control.character.mutate")
-        return {
-            "data": await character().set_owner(
-                actor.principal_id.text,
-                str(person_id),
-                str(body.request_id),
-                granted=action == "grant",
-            )
-        }
-
     @router.get("/character/soul", response_model=Envelope[SoulDocument])
     async def read_soul(actor: Actor) -> Any:
         authorize(actor, "control.character.read")
