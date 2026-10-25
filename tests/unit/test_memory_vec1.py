@@ -242,6 +242,10 @@ async def test_missing_raw_value_is_visible_to_audit_hygiene_and_original_job(da
     )
     plan = await MemoryProvenanceHygiene(database).scan()
     assert plan.enqueue_embedding_fact_ids == (fact.id,)
+    health = await MemoryEmbeddingRepository(database).local_health(
+        current_profile_id=jobs.profile.id, documents=jobs.documents
+    )
+    assert health["active_fact_count"] == 1 and health["ready_embedding_count"] == 0
     assert await jobs.reconcile() == 1
 
 

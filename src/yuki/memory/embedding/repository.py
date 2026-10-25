@@ -359,6 +359,7 @@ class MemoryEmbeddingRepository:
                 )
                 or 0
             )
+            vectors = vector_table(current_profile_id)
             active_embedding_rows = await session.stream(
                 select(
                     MemoryEmbeddingModel.content_hash,
@@ -368,6 +369,13 @@ class MemoryEmbeddingRepository:
                     MemoryFactModel.content,
                 )
                 .join(MemoryFactModel, MemoryFactModel.id == MemoryEmbeddingModel.fact_id)
+                .join(
+                    vectors,
+                    and_(
+                        vectors.c.rowid == MemoryEmbeddingModel.id,
+                        vectors.c.fact_id == MemoryEmbeddingModel.fact_id,
+                    ),
+                )
                 .where(MemoryEmbeddingModel.profile_id == current_profile_id, *active)
                 .execution_options(yield_per=100)
             )

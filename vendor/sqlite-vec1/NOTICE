@@ -10,3 +10,5 @@ the extension API of the host SQLite connection.
 x86-64 builds combine the upstream SCALAR and AVX2 variants and use its runtime
 CPU dispatch. ARM builds use the upstream NEON support. Yuki does not compile
 or download this code on import.
+
+Local change: the x86 dispatcher also checks FMA, which the AVX2 variant uses.

@@ -732,7 +732,7 @@ def _read_text_file(
     def collect(text: str) -> None:
         nonlocal total_characters
         start = max(0, offset - total_characters)
-        end = min(len(text), offset + limit - total_characters)
+        end = min(len(text), offset + min(limit, max_characters) - total_characters)
         if end > start:
             pieces.append(text[start:end])
         total_characters += len(text)
@@ -868,7 +868,7 @@ def _read_text_artifact(
                 start = index
                 break
     return _string_page(
-        content[start : start + limit],
+        content[start : start + min(limit, max_characters)],
         total=len(content),
         offset=start,
         base={"handle": handle_id, "mode": "text"},
@@ -1042,7 +1042,7 @@ def _get_json(
 ) -> dict[str, object]:
     if isinstance(value, str):
         return _string_page(
-            value[offset : offset + limit],
+            value[offset : offset + min(limit, max_characters)],
             total=len(value),
             offset=offset,
             base={**base, "path": list(path), "type": "string"},

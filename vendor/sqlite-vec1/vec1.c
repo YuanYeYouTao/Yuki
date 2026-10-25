@@ -13097,6 +13097,7 @@ static int vec1HasAvx2(void)
   int regs[4];
   __cpuid(regs, 1);
   int ecx = regs[2];
+  if (!(ecx & (1 << 12))) return 0;  // FMA used by the AVX2 variant
   if (!(ecx & (1 << 28))) return 0;  // AVX
   if (!(ecx & (1 << 27))) return 0;  // OSXSAVE
   unsigned long long xcr0 = _xgetbv(0);
@@ -13109,7 +13110,7 @@ static int vec1HasAvx2(void)
 static int vec1HasAvx2(void){
   /* Clang/GCC */
   __builtin_cpu_init();
-  return __builtin_cpu_supports("avx2");
+  return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 }
 # endif
 

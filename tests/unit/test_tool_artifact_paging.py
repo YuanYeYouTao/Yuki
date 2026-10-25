@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import threading
+import tracemalloc
 
 import pytest
 from sqlalchemy import update
@@ -23,6 +24,27 @@ from yuki.tool_results.artifacts import (
 )
 
 BASE = {"handle": "h", "mode": "json", "logical_root": "data", "provider_id": "p", "tool_name": "t"}
+
+
+def test_small_text_budget_does_not_materialize_a_large_requested_page(tmp_path):
+    raw = b"x" * (16 * 1024 * 1024) + "中😀\n".encode()
+    path = tmp_path / "text"
+    path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    _, expected = _read_text_file(
+        path, len(raw), digest, handle_id="h", offset=0, limit=512, max_characters=512
+    )
+    tracemalloc.start()
+    try:
+        valid, actual = _read_text_file(
+            path, len(raw), digest, handle_id="h", offset=0, limit=len(raw), max_characters=512
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert valid and actual == expected
+    assert artifact_page_size(actual) <= 512
+    assert peak < len(raw)
 
 
 @pytest.mark.parametrize("text_mode", [False, True])
