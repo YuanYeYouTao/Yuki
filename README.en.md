@@ -97,7 +97,7 @@ uv run yuki --help
 
 The CLI is `yuki` and the server entry point is `yuki-bot`. See the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) for migration from 3.9. QQ uses SnowLuma; Feishu, Lark, Telegram or personal-client-only setups need no QQ account.
 
-The 4.0.0 release baseline is schema **0143**, Plugin API **7.0**, and manifest **25**. Current development uses schema **0153**, Plugin API **8.0**, and manifest **32**. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
+The 4.0.0 release baseline is schema **0143**, Plugin API **7.0**, and manifest **25**. Current development uses schema **0153**, Plugin API **8.0**, and manifest **33**. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
 
 Migration 0153 moves existing vectors into Vec1 tables in the same database without purchasing new embeddings. Stop old writers and back up both the main database and participation snapshots before upgrading with the new Vec1 build. See the [algorithm implementation record](docs/operations/algorithm-performance-implementation-20261026.md) for the migration procedure and local measurements.
 

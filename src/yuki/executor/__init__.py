@@ -1,1 +1,1 @@
-"""Person-owned local execution, separate from chat and operator credentials."""
+"""Retired local-executor persistence retained for original history queries."""

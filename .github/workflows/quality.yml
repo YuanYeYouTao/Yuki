@@ -156,7 +156,7 @@ jobs:
             yuki-environment:headed-tests -m pytest \
             tests/unit/test_computer_control.py tests/unit/test_computer_runtime.py \
             tests/unit/test_computer_transport.py tests/unit/test_computer_authority.py \
-            tests/unit/test_local_device_reintegration.py \
+            tests/unit/test_retired_local_device_history.py \
             tests/unit/test_computer_observer_lifecycle.py \
             -q --strict-markers -o cache_dir=/tmp/yuki-pytest-cache \
             --basetemp=/tmp/yuki-pytest --junitxml=/results/desktop-headed.xml

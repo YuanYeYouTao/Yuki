@@ -1,6 +1,6 @@
 # 主 Agent 执行与恢复合同
 
-个人明确授权的本地文件和系统操作由部署固定的 `local_device` 工具执行，与原生 Agent 会话的 `external_agent` 分开。实际设备、Person 与目录授权在执行处核验；Work 使用原效果键绑定 `local_device:<op UUID>`。冷恢复只读取该原域结果，pending/unknown 不转成已完成，也不重新派发旧操作。远程电脑的有头界面继续沿现役终端/Manager 能力，不复制 Main。
+个人明确授权的本机 Codex、Claude 沿现有 NativeConnector 和固定 `external_agent` 工具执行。桌面建立连接不要求选择项目；原生会话、任务目录与真实授权仍各认原事实。`local_device` 工具和活执行协议已退出；旧 Work 保留原表、内部 ID 与效果键的只读回执查询，pending/unknown 不转成已完成，不重派，也不转换为 Native 操作。远程电脑的有头界面继续沿现役终端/Manager 能力，不复制 Main。
 
 本文定义当前执行合同；实际部署版本以运行镜像和提交记录为准。
 

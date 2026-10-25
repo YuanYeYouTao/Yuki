@@ -108,12 +108,39 @@ class RuntimeEffectQueries:
     async def inspect_local_operation(
         self, *, reference: str, work_id: str, operation_key: str
     ) -> ToolExecutionResult | None:
-        service = self._database.local_executors
-        if service is None:
-            return None
-        original = await service.original_operation(operation_key, work_id)
-        if original is None or reference != "local_device:" + original["op_id"]:
-            return None
+        """Read a retired executor's original receipt, without a live executor."""
+        from yuki.executor.db_models import ExecutorOperationModel
+        from yuki.time.formatting import utc_iso
+
+        async with self._database.read_session() as reader:
+            row = await reader.scalar(
+                select(ExecutorOperationModel).where(
+                    ExecutorOperationModel.op_id == reference.removeprefix("local_device:"),
+                    ExecutorOperationModel.tool_call_key == operation_key,
+                    ExecutorOperationModel.work_id == work_id,
+                )
+            )
+            if row is None or reference != "local_device:" + row.op_id:
+                return None
+            original = {
+                "tool": "local_device",
+                "op_id": row.op_id,
+                "operation_id": row.op_id,
+                "capability": row.capability,
+                "params": json.loads(row.params_json or "{}"),
+                "state": row.state,
+                "status": row.state,
+                "level": row.level,
+                "result": json.loads(row.result_json or "{}"),
+                "observation": json.loads(row.observation_json) if row.observation_json else None,
+                "created_at": utc_iso(row.created_at),
+                "dispatched_at": utc_iso(row.dispatched_at),
+                "acknowledged_at": utc_iso(row.acknowledged_at),
+                "settled_at": utc_iso(row.settled_at),
+                "pending": row.state not in {"succeeded", "failed", "unknown"},
+                "ok": row.state != "failed",
+                "uncertain": row.state == "unknown",
+            }
         uncertain = bool(original["uncertain"])
         return ToolExecutionResult(
             ok=original["state"] != "failed" and not uncertain,

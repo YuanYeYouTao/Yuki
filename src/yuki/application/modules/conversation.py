@@ -14,7 +14,6 @@ from yuki.application.modules.persistence import PersistenceBundle
 from yuki.capabilities import ToolArtifactWriter
 from yuki.config import Settings
 from yuki.conversation.features import AdmissionFeatureBuilder
-from yuki.executor.service import LocalExecutors
 from yuki.external_agents.service import ExternalAgentService
 from yuki.memory.dream.repository import DreamRepository
 from yuki.memory.dream.service import DreamService
@@ -79,7 +78,6 @@ class ConversationModule:
         workspace: WorkspaceService,
         sandbox: SandboxClient,
         external_agents: ExternalAgentService,
-        local_executors: LocalExecutors,
         short_state: ShortState,
         observe_main_response: Callable[..., Awaitable[None]],
         participation_runtime_context: Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]],
@@ -101,7 +99,6 @@ class ConversationModule:
         self._workspace = workspace
         self._sandbox = sandbox
         self._external_agents = external_agents
-        self._local_executors = local_executors
         self._short_state = short_state
         self._observe_main_response = observe_main_response
         self._participation_runtime_context = participation_runtime_context
@@ -139,7 +136,6 @@ class ConversationModule:
             workspace_service=self._workspace,
             sandbox_client=self._sandbox,
             external_agent_service=self._external_agents,
-            local_executors=self._local_executors,
             memory_context=persistence.memory_context,
             memory_mutations=memory_mutations,
             web_provider=self._web_provider,

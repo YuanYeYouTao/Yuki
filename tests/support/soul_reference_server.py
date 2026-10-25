@@ -265,14 +265,6 @@ async def serve(
         if (
             desktop
             and real_model_source is None
-            and os.environ.get("YUKI_DESKTOP_EXECUTOR_FIXTURE") == "1"
-        ):
-            from tests.support.desktop_executor_fixture import attach_executor_fixture
-
-            attach_executor_fixture(api, runtime, work_script)
-        if (
-            desktop
-            and real_model_source is None
             and os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1"
         ):
             from tests.support.desktop_character_fixture import attach_character_fixture

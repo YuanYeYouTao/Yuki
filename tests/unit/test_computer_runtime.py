@@ -178,19 +178,38 @@ def actual_browser(tmp_path, monkeypatch):
         process.wait(timeout=5)
 
 
+def editor_page(browser, html, name):
+    # Opening returns the target receipt, not completion of an asynchronous navigation.
+    # Prepare this input fixture synchronously before exercising AX/CLI behavior.
+    target = browser.open("about:blank", name)["target_id"]
+    result = browser.call(
+        "Runtime.evaluate",
+        {
+            "expression": (
+                f"document.documentElement.innerHTML = {json.dumps(html)};"
+                "document.querySelector('input').getAttribute('aria-label')"
+            ),
+            "returnByValue": True,
+        },
+        target,
+    )
+    assert result["result"]["value"] == "editor", result
+    return target
+
+
 def test_real_chromium_target_ownership_snapshot_click_unicode_and_restore_unknown(
     actual_browser, monkeypatch, tmp_path
 ):
     browser = actual_browser
     first_work, second_work = str(uuid4()), str(uuid4())
     page = (
-        "data:text/html,<title>same</title><input aria-label='editor'>"
+        "<title>same</title><input aria-label='editor'>"
         "<button onclick='document.title=\"clicked\"'>click me</button>"
     )
     monkeypatch.setenv("YUKI_WORK_ID", first_work)
-    first = browser.open(page, "same")["target_id"]
+    first = editor_page(browser, page, "same")
     monkeypatch.setenv("YUKI_WORK_ID", second_work)
-    second = browser.open(page, "same")["target_id"]
+    second = editor_page(browser, page, "same")
     assert browser.target("same") == second
     monkeypatch.setenv("YUKI_WORK_ID", first_work)
     assert browser.target("same") == first
@@ -213,7 +232,7 @@ def test_real_chromium_target_ownership_snapshot_click_unicode_and_restore_unkno
     )
     assert value["result"]["value"] == "真文字🙂"
     # A user-created/restored target has no original ownership record.
-    unknown = browser.call("Target.createTarget", {"url": page})["targetId"]
+    unknown = browser.call("Target.createTarget", {"url": "data:text/html," + page})["targetId"]
     tabs = {tab["target_id"]: tab for tab in browser.tabs()}
     assert tabs[first]["work_id"] == first_work and tabs[second]["work_id"] == second_work
     assert "work_id" not in tabs[unknown]
@@ -231,7 +250,7 @@ async def test_actual_cli_types_and_screenshots_through_manager_lease_and_releas
     manager = manager_at(tmp_path)
     work = str(uuid4())
     monkeypatch.setenv("YUKI_WORK_ID", work)
-    target = browser.open("data:text/html,<input aria-label='editor'>", "edit")["target_id"]
+    target = editor_page(browser, "<input aria-label='editor'>", "edit")
     tree = browser.snapshot(target)["text"]
     node = int(
         next(line.split("]")[0][1:] for line in tree.splitlines() if "textbox: editor" in line)

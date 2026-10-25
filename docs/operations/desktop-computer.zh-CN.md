@@ -41,4 +41,4 @@ sh deploy/sandbox/install-desktop.sh --container ORIGINAL_ENVIRONMENT_NAME
 
 核验应分别记录：实际 manifest、`display_status`、Xvnc/RFB 画面、浏览器真实输入与截图、控制权撤销、原请求重试和原工作接续。仅有一个返回成功的 fixture 不能证明现场有头环境健康。源码测试中的协议 fixture 使用可控 RFB 端点验证 UI 和授权；独立的 `test_real_headed_service_renders_unicode_exposes_rfb_and_stops_children` 启动真实 Xvnc、Openbox、Chromium，读取真实 RFB banner、中文页面和 PNG，验证进程退出。完整容器与生产接入另外验收。
 
-本机文件执行器另用固定 `local_device` 工具：`list` 返回本人真实设备和授权，`execute` 立即返回原 `operation_id/op_id`，`get` 查原回执。文件读写的 `confirmed` 与系统 URL／文件打开／通知的 `submitted` 分别认真实结果。升级保留旧执行器、原授权、原操作 UUID 和原字节；旧未决记录不因服务重启自动派发，`unknown` 不转成成功或重做。
+本机 Codex、Claude 由桌面的原生 Agent 连接入口管理，云端复用固定 `external_agent` 操作。连接本身不要求项目目录；角色 owner 和本人 Connector 凭据分别按实际权限处理，不自动授予角色管理资格。旧 `local_device` 文件执行器及活 API 已退出；原表、授权记录、操作 UUID 和回执字节保留，旧 Work 仅查询原事实，不重派、不转成 Native 操作，`unknown` 不转成成功或重做。

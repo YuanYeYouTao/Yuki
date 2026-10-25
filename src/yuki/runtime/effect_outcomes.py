@@ -94,6 +94,7 @@ def execution_evidence(
         args = json.loads(arguments)
     except ValueError:
         args = {}
+    # local_device names only retained here to interpret original durable receipts.
     if (
         tool in {"external_agent", "local_device"}
         and isinstance(args, dict)

@@ -75,7 +75,7 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         if tool == "workspace_publish"
         else ("agent", "委託其他 Agent")
         if tool == "external_agent"
-        else ("device", "使用你的電腦")
+        else ("device", "本機操作（歷史）")
         if tool == "local_device"
         else ("memory", "記憶")
         if "memory" in tool

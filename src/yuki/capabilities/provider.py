@@ -22,11 +22,6 @@ from yuki.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
-    "local_device": (
-        "local_device.control",
-        CapabilityEffect.WRITE_STATE,
-        CapabilityRisk.MUTATE,
-    ),
     "external_agent": (
         "external_agent.control",
         CapabilityEffect.WRITE_STATE,

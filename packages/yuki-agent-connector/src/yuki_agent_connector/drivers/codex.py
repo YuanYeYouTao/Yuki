@@ -7,6 +7,7 @@ import contextlib
 import json
 import socket
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
@@ -47,14 +48,27 @@ class CodexRPC:
             relay.setblocking(False)
             try:
                 proxy_args = ["app-server", "proxy"]
+                environment = self.spec.environment()
+                # Preserve the selected native profile/owner when its original
+                # configuration used paths relative to the default task directory.
+                if (
+                    environment.get("CODEX_HOME")
+                    and not Path(environment["CODEX_HOME"]).is_absolute()
+                ):
+                    environment["CODEX_HOME"] = str(
+                        (Path(self.spec.cwd) / environment["CODEX_HOME"]).resolve()
+                    )
                 if self.spec.socket:
-                    proxy_args.extend(["--sock", self.spec.socket])
+                    owner_socket = Path(self.spec.socket)
+                    if not owner_socket.is_absolute():
+                        owner_socket = (Path(self.spec.cwd) / owner_socket).resolve()
+                    proxy_args.extend(["--sock", str(owner_socket)])
                 self.proxy = await asyncio.create_subprocess_exec(
                     self.spec.command,
                     *self.spec.args,
                     *proxy_args,
-                    env=self.spec.environment(),
-                    cwd=self.spec.cwd,
+                    env=environment,
+                    cwd=str(Path.home()),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,

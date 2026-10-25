@@ -23,19 +23,19 @@
 
 桌面使用 `home?works=active` 与 `stream?works=active` 读取活动根 Work，先过滤终态再聚合步骤提示；省略参数继续保持全量兼容。事件页的 `work_ids` 仅按本页内部事件、原 Work 触发来源或真实已送达 Social 回执关联，再核当前 Work ACL。历史终态卡片不依赖活动 Home，当前已打开的详情与目录可由既有提交提示复读，不逐提交扫描整份历史步骤。
 
-## 远程电脑与本地系统操作
+## 远程电脑与本机原生 Agent
 
 远程电脑的画面、控制租约、休眠/唤醒、截图与文件来自真实 Manager 环境。ClientComputer 核当前 owner；控制先登记原操作，再向 Manager 查原 key，原回执丢失不授予重复效果资格。画面使用一次性 ticket 与同一 HTTPS/WSS 入口；有头组件未配置或不可达时返回实际不可用状态，不影响聊天和其他页面。其生命周期与原生 Agent 会话独立。
 
 Bot 启动仍恢复电脑观察，以便没有桌面客户端时也能按当前撤权归还旧 human 租约。协议明确不支持或宿主没有 Unix transport 时停止无用重连，实际电脑访问可重新启动；暂时网络失败保原恢复路径。观察任务的启动与关闭共用同一实例生命周期锁。授权提示过载丢失时，先关画面输入，再读一次当前授权并沿原 release key 归还，不依赖下一条通知，也不重放原控制命令。
 
-本地系统操作沿 `/client/v1/executors` 的本人显式授权管理与独立 `/executor/v1` 设备 token 执行。真实目录路径留在桌面主进程，服务端只保存该设备的能力、目录别名与摘要。固定 `local_device` 工具提供 list/get/execute；目录查询不改变声明，也不沿 `external_agent` 创建原生会话。工具来源使用原 Person 与 Host 的调用键，不能由模型提供另一个人的身份或调用键。
+桌面只管理现有 NativeConnector 连接，云端通过固定 `external_agent` 操作本人明确授权的 Codex、Claude 实例。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
 
-原 op UUID、调用键与参数保存于 `executor_operations`；当前 Work 同事务绑定原域回执。登记后即返回 pending，不用固定秒数等待结果或循环扫描 SQL。SSE 只派发本进程实际接纳的新操作；重启后的旧未决行只查询，不能自动变成可派发任务。文件/URL/通知的回执区分系统已接纳与用户已看到；unknown 保持未知，恢复读取原回执，不重做外部动作。迁移 0152 建立三张领域表，已有同名旧功能表保留原行与原身份。
+Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_device` 活执行功能。迁移 0152 的原三张表、原操作 UUID、调用键和历史字节继续保留；旧 Work 只按原 Work、调用键和 `local_device:<op UUID>` 读取原回执，不创建 Native 操作、不重发或重做。已确认效果保持原事实，pending/unknown 不转成成功，也不恢复派发资格。
 
 ## 角色资料与单 SOUL
 
-`GET /meta` 公开当前角色名称、API revision `6` 和实际能力声明，不推断未实现的客户端功能。
+`GET /meta` 公开当前角色名称、API revision `7` 和实际能力声明，不推断未实现的客户端功能。
 设备读取 `GET /character`；获准 owner 使用 `PATCH /character`，按原 UUID 和 profile revision 修改名称等资料。
 owner 资格归 Person，账号转交不转交角色编辑权；operator 通过独立管理入口授权。
 
@@ -47,7 +47,7 @@ SDK 的 SOUL 受控写在确认丢失后先查原 UUID，恢复仍用原 payload
 
 ## 角色头像
 
-API revision `6` 保持兼容；`/meta.capabilities` 中的 `character_avatar` 表示实际提供头像写入与读取。
+`/meta.capabilities` 中的 `character_avatar` 表示实际提供头像写入与读取；原 UUID、revision 和读取 URL 合同继续保留。
 头像属于原 `character_profile.id`，跨该角色的桌面设备共用，不与 Person、QQ 等平台账号头像混合。
 
 `PUT /character/avatar?request_id=&expected_revision=&sha256=&size=` 接收裁切后的 1024×1024 PNG
@@ -337,6 +337,6 @@ ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；
 
 显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link` 在原一次性 chat 码旁附 `yuki://pair?server=...&code=...`；未配置时保留原裸码输出，不猜服务器地址。链接只帮助填写已有信息，purpose 与 Person／owner 权限不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
 
-个人 API 的 me、home、events、activity、Work、request、upload、pair 和 link-code 使用真实投影的响应模型；保留现有公开扩展字段，不因类型收敛静默删字段。新增可选输入与只读路由保持 revision 6 兼容。
+个人 API 的 me、home、events、activity、Work、request、upload、pair 和 link-code 使用真实投影的响应模型；保留现有公开扩展字段，不因类型收敛静默删字段。新增可选输入与只读路由延续原请求与响应语义；revision 7 的破坏性变化仅为退出旧 LocalExecutor 活 API。
 
 `python -m tests.support.desktop_reference_server --root DIR --state-file FILE` 仅为临时隔离测试：装配原 ApplicationContainer、SQLite、App/Work/Social、个人与 connector HTTP 路由，模型出口采用脚本化 provider，不访问付费模型或生产。旧 soul_reference_server 保持原入口。测试 state 中 artifact_id/artifact_version 来自真不可变快照与已成功 Social 发送，授权只属于 fixture 原 Person。`POST /__test/work` 在该隔离 Person 原事件下沿 WorkRepository 接纳、Social 发送问题并转 waiting_user，供真实输入、取消与跨设备回执联调；这些测试控制不进入正式应用。
