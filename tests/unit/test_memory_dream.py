@@ -79,7 +79,6 @@ from yuki.model_runtime.structured import StructuredTaskRunner
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
-    MemoryEmbeddingModel,
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryFactRelationModel,
@@ -200,7 +199,9 @@ async def test_cluster_degree_updates_preserve_seed_ties_and_incremental_checkpo
                 updated_at=now,
             ),
             bot_user_id="self",
-            vector=EmbeddingVector(values=values, dimensions=2),
+            normalized_vector=Float32VectorCodec.normalize(
+                EmbeddingVector(values=values, dimensions=2)
+            ),
             signature=f"chain-signature-{index}",
         )
         for index, values in enumerate(vectors, start=1)
@@ -285,9 +286,11 @@ async def test_candidate_provenance_includes_hidden_bot_and_cluster_preserves_or
                 created_at=now,
             )
         )
-        session.add_all(
-            [
-                MemoryEmbeddingModel(
+        await MemoryEmbeddingRepository.store_vectors(
+            session,
+            profile_id=profile.id,
+            records=[
+                dict(
                     fact_id=fact.id,
                     profile_id=profile.id,
                     content_hash=documents.content_hash(fact),
@@ -298,7 +301,7 @@ async def test_candidate_provenance_includes_hidden_bot_and_cluster_preserves_or
                     updated_at=now,
                 )
                 for fact in sources
-            ]
+            ],
         )
     loaded = await dreams.load_candidates(profile_id=profile.id, dimensions=2, documents=documents)
     assert [item.fact.id for item in loaded.candidates] == [fact.id for fact in sources]

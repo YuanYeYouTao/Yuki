@@ -576,50 +576,47 @@ class DreamService:
             if incremental and not any(item.fact.id in changed for item in rows):
                 continue
             by_id = {item.fact.id: item for item in rows}
-            vectors = {item.fact.id: self._codec.normalize(item.vector) for item in rows}
-            similarities: dict[tuple[int, int], float] = {}
-            degrees = dict.fromkeys(by_id, 0)
+            vectors = {item.fact.id: item.normalized_vector for item in rows}
+            neighbors: dict[int, dict[int, float]] = {identity: {} for identity in by_id}
             for index, left in enumerate(rows):
                 for right in rows[index + 1 :]:
                     similarity = self._codec.dot_normalized(
                         vectors[left.fact.id], vectors[right.fact.id]
                     )
-                    similarities[(left.fact.id, right.fact.id)] = similarity
                     if similarity >= self._settings.memory_dream_similarity_threshold:
-                        degrees[left.fact.id] += 1
-                        degrees[right.fact.id] += 1
+                        neighbors[left.fact.id][right.fact.id] = similarity
+                        neighbors[right.fact.id][left.fact.id] = similarity
+            degrees = {identity: len(adjacent) for identity, adjacent in neighbors.items()}
             remaining = set(by_id)
             while remaining:
                 seed = max(
                     remaining,
                     key=lambda fact_id: (degrees[fact_id], -fact_id),
                 )
+                if degrees[seed] == 0:
+                    for identity in sorted(remaining):
+                        if not incremental or identity in changed:
+                            clusters.append((by_id[identity],))
+                            clustered_ids.add(identity)
+                    break
                 group = [seed]
                 remaining.remove(seed)
                 candidates = sorted(
-                    remaining,
+                    remaining.intersection(neighbors[seed]),
                     key=lambda fact_id: (
-                        -self._similarity(seed, fact_id, similarities),
+                        -neighbors[seed][fact_id],
                         fact_id,
                     ),
                 )
                 for candidate_id in candidates:
                     if len(group) >= self._settings.memory_dream_max_cluster_size:
                         break
-                    if all(
-                        self._similarity(candidate_id, member, similarities)
-                        >= self._settings.memory_dream_similarity_threshold
-                        for member in group
-                    ):
+                    if all(member in neighbors[candidate_id] for member in group):
                         group.append(candidate_id)
                         remaining.remove(candidate_id)
                 for removed_id in group:
-                    for fact_id in remaining:
-                        if (
-                            self._similarity(removed_id, fact_id, similarities)
-                            >= self._settings.memory_dream_similarity_threshold
-                        ):
-                            degrees[fact_id] -= 1
+                    for fact_id in remaining.intersection(neighbors[removed_id]):
+                        degrees[fact_id] -= 1
                 ids = tuple(sorted(group))
                 if not incremental or changed.intersection(ids):
                     cluster = tuple(by_id[fact_id] for fact_id in ids)
@@ -632,16 +629,6 @@ class DreamService:
         )
         clusters.sort(key=lambda items: tuple(item.fact.id for item in items))
         return tuple(clusters), isolated
-
-    @staticmethod
-    def _similarity(
-        left: int,
-        right: int,
-        similarities: dict[tuple[int, int], float],
-    ) -> float:
-        if left == right:
-            return 1.0
-        return similarities[(min(left, right), max(left, right))]
 
     def _stored_clusters(
         self,

@@ -29,15 +29,34 @@ query instruct 等非密钥配置生成。
 ## 存储与任务
 
 - `memory_embedding_profiles`：不可变配置指纹及非密钥能力信息。
-- `memory_embeddings`：`fact_id + profile_id` 唯一，保存内容哈希、维度和 little-endian
-  float32 BLOB。
-- `memory_embedding_jobs`：持久化 pending/running/retry/failed/done 状态、租约、尝试次数与
-  无正文错误类别。
+- `memory_embeddings`：`fact_id + profile_id` 唯一，保留原 id、内容哈希、时间和真实
+  fact/profile 外键；原始向量正文不再放在这张普通表。
+- `memory_vectors_<profile_id>`：同一 SQLite 数据库中的 Vec1 虚表。rowid 为原 embedding id，
+  metadata fact_id 供本次授权 SQL 下推；vector 保存原 little-endian float32 BLOB。每个不可变
+  profile 一张表，不复制人物权限，也不保存第二份应用向量。
+- `memory_embedding_jobs`：持久化 pending/processing/failed/done 状态、原 claim、重试时刻、
+  尝试次数与无正文错误类别。
 
 事实写入事务提交后才排队。排队和启动协调统一选择当前 active、contested 事实，排除隔离和
 过期事实；使用当前 profile，不读取聊天历史。调度故障在事实服务中记录一次，不改变已提交的结果。
 文档内容变化会产生新哈希并重新生成；事实删除通过外键级联删除向量和任务。模型或模板配置
 变化会建立新 profile，旧 profile 数据保持隔离，直到管理员显式清理。
+元数据删除触发器在同一事务清理对应 Vec1 值，包含事实/人物清退的 FK 级联；purge-old
+先完成原级联，再删除旧 profile 的触发器和虚表。回滚保留原元数据与向量配对。
+
+固定 SQLite 官方 Vec1 0.8 源码随平台 wheel/镜像构建；每个物理连接在迁移、启动检查和业务
+SQL 之前加载包内扩展，随后关闭扩展装载能力。开发环境先运行 `python scripts/build_vec1.py`；
+运行时不编译、不下载，也不在缺少原生模块时换另一套存储。关闭 Embedding HTTP 服务不会
+关闭数据库的 Vec1 能力，已有删除触发器仍可工作。
+
+正式 profile 使用 flat cosine 原生 NN，无启动训练或按规模自动切换。SQL 当前授权/profile/
+类型/日期/有效性限定 fact ID，metadata IN 在原生 top-k 选择内生效；同一个显式读取快照中
+计量事实与索引行并召回四倍语义候选，只有候选正文与向量进入原 hash、codec 和 fsum 精排。
+输出分数仍来自原 codec。有限候选可能漏掉旧 binary64 分数的全局最优或同分项，因此以
+`semantic_approximate` 独立说明；不把原生 f32 候选精排宣传为原算法的全局精确 top-k。
+coverage 对照当前合法事实与 Vec1 值的数量，并核候选内容 hash；不在每次查询全库 hash 正文，
+不声称证明了未召回项的内容新鲜度。正常近似/结果上限不是故障；缺失向量、已发现 stale hash
+和实际原生查询失败分别报告，失败继续沿既有 FTS 降级链。
 
 按 fact ID 的 correction 会创建新 fact，因此生成新的 FTS row 和 Embedding job；旧版本进入
 superseded 后不会参与普通语义检索。只改变 authority、confidence、conflict_state 或
@@ -96,7 +115,8 @@ MEMORY_HYBRID_RRF_K=60
 失败批次仍沿原任务、尝试次数和重试时间恢复。
 
 完成按 128 条页一次读取任务、一次读取事实小列，hash 在锁外计算；短 writer 复核原 claim 的
-updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late complete/fail/skip 都必须携带
+updated_at 和 attempts，仅成功 CAS 的结果发布元数据及 Vec1 值。Vec1 替换与元数据 upsert
+共用同一个 writer/事务；虚表不假装支持 SQLite UPSERT。late complete/fail/skip 都必须携带
 原 claim。输入在准备后变化时只将该原领取返回 pending，下一次重新读取，不写旧向量。
 启动恢复单独按 128 条页接管 interrupted processing，保留 attempts；同一 worker 重复 start
 不执行恢复，普通 reconcile 也不会把在飞任务重置。
@@ -118,7 +138,10 @@ updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late com
 - `rebuild`：为当前 active facts 建立当前 profile 的任务，不修改事实或 FTS。
 - `purge-old`：删除非当前 profile 的旧向量、任务和 profile。
 
-部署时先备份 `data/`，执行 `uv run alembic upgrade head`，再只重建 Bot：
+升级 0153 前停止旧 Bot writer、备份 `data/`，用含固定扩展的新构建执行
+`uv run alembic upgrade head`，再只重建 Bot。迁移保全部原 embedding id/profile/hash、任务和
+原始向量字节，不重购 Embedding；普通表旧 vector_blob 列在同次迁移清退。`--sql` 不能执行
+这次数据搬迁，迁移中断回滚保旧表示。
 
 ```bash
 docker compose up -d --build --no-deps bot
@@ -130,3 +153,6 @@ docker compose up -d --build --no-deps bot
 所有主库写入使用共享 `immediate_session()`，在连接获取前排队；普通查询使用不自动提交的
 `read_session()`。embedding HTTP、文档 hash 和 vector 编码继续在 writer 外完成，原 claim/profile
 字段在短提交内核验，不新增逐事实远程验证。
+原生计算沿 SQLite driver 线程执行；取消等实际操作/physical_exit 结束后才释放连接与 writer，
+不承诺取消协程会立即终止扩展内部距离循环。手动训练可在 reader/离线环境生成模型，安装模型
+的 rebuild 是受控维护写操作，不混进普通查询或每次启动。

@@ -7,7 +7,7 @@ import logging
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import event, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -36,11 +36,13 @@ def run_migrations_offline() -> None:
     )
     migration = context.get_context()
     starting = context.get_starting_revision_argument()
-    steps = migration.opts["fn"]((starting,) if starting else (), migration)
+    steps = tuple(migration.opts["fn"]((starting,) if starting else (), migration))
     if any(step.is_upgrade and step.revision.revision == "0145" for step in steps):
         raise RuntimeError(
             "history search upgrade needs a live offline database; --sql cannot convert source text"
         )
+    if any(step.is_upgrade and step.revision.revision == "0153" for step in steps):
+        raise RuntimeError("Vec1 upgrade needs a live stopped database; --sql cannot move vectors")
     with context.begin_transaction():
         context.run_migrations()
 
@@ -133,6 +135,13 @@ async def _run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+    )
+    from yuki.persistence.vec1 import load_vec1
+
+    event.listen(
+        connectable.sync_engine,
+        "connect",
+        lambda connection, _record: connection.run_async(load_vec1),
     )
     try:
         async with connectable.connect() as connection:

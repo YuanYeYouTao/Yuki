@@ -1,0 +1,27 @@
+{
+  "synthetic_only": true,
+  "vectors": 1511,
+  "dimensions": 1024,
+  "queries": 8,
+  "all_results_and_scores_exact": true,
+  "timings": {
+    "former_full_pipeline": {
+      "median_seconds": 0.4409449999220669,
+      "max_seconds": 0.46741260029375553
+    },
+    "vec1_repository_pipeline": {
+      "median_seconds": 0.06302395020611584,
+      "max_seconds": 0.07494729990139604
+    }
+  },
+  "python_peak_bytes": {
+    "former_full_pipeline": 7509845,
+    "vec1_repository_pipeline": 1495727
+  },
+  "qualifications": [
+    "Local synthetic single-owner data, not production latency or corpus recall.",
+    "Former pipeline excludes its separate active_count query; no advantage credited for that omission.",
+    "tracemalloc is Python allocations, not total native RSS; SQL and vector data in same in-memory SQLite.",
+    "Remote query embedding, FTS and final RRF are not measured."
+  ]
+}

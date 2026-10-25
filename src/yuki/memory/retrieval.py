@@ -6,6 +6,8 @@ import hashlib
 import logging
 import time
 
+from sqlalchemy.exc import DBAPIError
+
 from yuki.identity.person_identity import current_person_ids
 from yuki.memory.authorized_scope import (
     AuthorizedMemoryScope,
@@ -163,6 +165,7 @@ class MemoryRetriever:
         semantic: tuple[AuthorizedSemanticCandidate, ...] = ()
         semantic_truncated = False
         semantic_coverage_complete = True
+        semantic_approximate = False
         semantic_status = "disabled"
         semantic_degraded = False
         if query.semantic_enabled:
@@ -181,11 +184,7 @@ class MemoryRetriever:
                         profile = self._embedding_profile
 
                         embedded, _ = await self._embed_query(query_text, provider, profile)
-                        (
-                            semantic,
-                            semantic_truncated,
-                            semantic_coverage_complete,
-                        ) = await self._semantic_index.search_authorized(
+                        semantic_result = await self._semantic_index.search_authorized(
                             scope=scope,
                             query_vector=embedded.vectors[0],
                             profile=profile.profile,
@@ -194,12 +193,16 @@ class MemoryRetriever:
                             kinds=query.kinds,
                             temporal=query.intent.temporal if query.intent else None,
                         )
+                        semantic = semantic_result.candidates
+                        semantic_truncated = semantic_result.truncated
+                        semantic_coverage_complete = semantic_result.coverage_complete
+                        semantic_approximate = semantic_result.approximate
                         semantic_status = (
                             "ready" if semantic_coverage_complete else "index_incomplete"
                         )
                     else:
                         semantic_status = "empty_query"
-                except (EmbeddingProviderError, ValueError) as exc:
+                except (EmbeddingProviderError, ValueError, DBAPIError) as exc:
                     semantic_status = (
                         exc.code
                         if isinstance(exc, EmbeddingProviderError)
@@ -297,6 +300,8 @@ class MemoryRetriever:
             partial_reason = "semantic_index_incomplete"
         if output_truncated and partial_reason is None:
             partial_reason = "global_result_limit"
+        if semantic_approximate and partial_reason is None:
+            partial_reason = "semantic_approximate"
         return MemoryRetrievalResult(
             blocks=blocks,
             hits=selected,
@@ -306,6 +311,10 @@ class MemoryRetriever:
             mode=query.mode,
             semantic_status=semantic_status,
             semantic_degraded=semantic_degraded,
+            semantic_approximate=semantic_approximate,
+            partial_failure=semantic_degraded
+            or semantic_unavailable
+            or not semantic_coverage_complete,
             embedding_profile=(
                 self._embedding_profile.profile.fingerprint
                 if semantic and self._embedding_profile is not None
@@ -315,6 +324,7 @@ class MemoryRetriever:
             and not semantic_degraded
             and not semantic_unavailable
             and semantic_coverage_complete
+            and not semantic_approximate
             and not output_truncated,
             truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
@@ -340,6 +350,8 @@ class MemoryRetriever:
         query_vector = None
         semantic_degraded = False
         semantic_status = "disabled"
+        semantic_approximate = False
+        semantic_coverage_complete = True
         semantic_requested = (
             lexical_enabled
             and query.mode is MemoryRetrievalMode.RELEVANT
@@ -422,7 +434,7 @@ class MemoryRetriever:
                     assert self._embedding_profile is not None
                     semantic_started = time.perf_counter()
                     try:
-                        semantic_candidates = await self._semantic_index.search(
+                        semantic_result = await self._semantic_index.search(
                             target=target,
                             query_vector=query_vector,
                             profile=self._embedding_profile.profile,
@@ -431,7 +443,13 @@ class MemoryRetriever:
                             kinds=query.kinds,
                             temporal=query.intent.temporal if query.intent is not None else None,
                         )
-                    except ValueError:
+                        semantic_candidates = semantic_result.candidates
+                        semantic_approximate |= semantic_result.approximate
+                        semantic_coverage_complete &= semantic_result.coverage_complete
+                        candidate_truncated |= semantic_result.truncated
+                        if not semantic_result.coverage_complete:
+                            semantic_status = "index_incomplete"
+                    except (ValueError, DBAPIError):
                         semantic_degraded = True
                         semantic_status = "embedding_index_invalid"
                         logger.warning(
@@ -518,8 +536,10 @@ class MemoryRetriever:
             if semantic_unavailable
             else "explicit_result_limit"
             if output_truncated
-            else "explicit_semantic_coverage_unknown"
-            if query.semantic_enabled
+            else "semantic_index_incomplete"
+            if not semantic_coverage_complete
+            else "semantic_approximate"
+            if semantic_approximate
             else None
         )
         result = MemoryRetrievalResult(
@@ -531,6 +551,10 @@ class MemoryRetriever:
             mode=query.mode,
             semantic_status=semantic_status,
             semantic_degraded=semantic_degraded,
+            semantic_approximate=semantic_approximate,
+            partial_failure=semantic_degraded
+            or semantic_unavailable
+            or not semantic_coverage_complete,
             embedding_profile=(
                 self._embedding_profile.profile.fingerprint
                 if query_vector is not None and self._embedding_profile is not None
@@ -538,7 +562,10 @@ class MemoryRetriever:
             ),
             exhaustive=not candidate_truncated
             and not output_truncated
-            and not query.semantic_enabled,
+            and not semantic_degraded
+            and not semantic_unavailable
+            and semantic_coverage_complete
+            and not semantic_approximate,
             truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
             ranked_count=len(ranked),

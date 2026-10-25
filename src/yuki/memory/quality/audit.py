@@ -18,6 +18,7 @@ from yuki.memory.eligibility import (
 from yuki.memory.quality.event_evidence import audit_event_evidence
 from yuki.memory.quality.models import ProductionAuditIssue, ProductionAuditReport
 from yuki.persistence.database import Database
+from yuki.persistence.vec1 import vector_table
 
 _SAMPLE_LIMIT: Final = 20
 
@@ -32,9 +33,38 @@ class MemoryProductionQualityAudit:
         self._database = database
 
     async def run(self) -> ProductionAuditReport:
-        checks = self._checks()
+        checks = list(self._checks())
         issues: list[ProductionAuditIssue] = []
         async with self._database.read_session() as session:
+            profiles = (
+                await session.execute(text("SELECT id,dimensions FROM memory_embedding_profiles"))
+            ).all()
+            for profile_id, dimensions in profiles:
+                name = vector_table(profile_id).name
+                checks.append(
+                    (
+                        "embedding_dimension_mismatch",
+                        "error",
+                        _query(
+                            f"memory_embeddings e LEFT JOIN {name} v ON v.rowid=e.id",
+                            f"e.profile_id={int(profile_id)} AND (v.rowid IS NULL "
+                            f"OR length(v.vector)!={int(dimensions) * 4} OR v.fact_id!=e.fact_id)",
+                            id_expression="e.id",
+                        ),
+                    )
+                )
+                checks.append(
+                    (
+                        "embedding_vector_orphan_row",
+                        "error",
+                        _query(
+                            f"{name} v LEFT JOIN memory_embeddings e ON e.id=v.rowid",
+                            f"e.id IS NULL OR e.profile_id!={int(profile_id)} "
+                            "OR e.fact_id!=v.fact_id",
+                            id_expression="v.rowid",
+                        ),
+                    )
+                )
             try:
                 issues.extend(await audit_event_evidence(session))
             except (DatabaseError, ValueError, TypeError):
@@ -347,15 +377,6 @@ class MemoryProductionQualityAudit:
                     "OR NOT EXISTS (SELECT 1 FROM memory_embedding_profiles p "
                     "WHERE p.id=j.profile_id)",
                     id_expression="j.id",
-                ),
-            ),
-            (
-                "embedding_dimension_mismatch",
-                "error",
-                _query(
-                    "memory_embeddings e JOIN memory_embedding_profiles p ON p.id=e.profile_id",
-                    "length(e.vector_blob)!=p.dimensions*4",
-                    id_expression="e.id",
                 ),
             ),
             (

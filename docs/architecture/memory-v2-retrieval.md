@@ -22,7 +22,12 @@ FTS 和向量候选先在授权 SQL 范围内检索，再在共同候选池用�
 query 不按字符数截断；无实际消费者的 entities、preferred_kinds 参数已退出工具 schema 和调用链。
 语义检索不按经验相似度阈值
 提前丢掉候选。真实候选工作预算和返回数量预算继续生效，并明确报告 truncated/exhaustive 和原因。
-Embedding 的来源资格、profile、向量维度和内容指纹仍核验，不能拿过期索引冒充完整覆盖。
+Embedding 的来源资格、profile、向量维度和候选内容指纹仍核验，不能拿过期索引冒充完整覆盖。
+Vec1 在同一 SQLite 读取快照内按 metadata fact_id IN 接收原授权子查询，然后只搬运候选值
+做原 codec 精排，不先取全库固定 top-N 再删除无权限项。原生候选有限时以
+`semantic_approximate=true` 和 `exhaustive=false` 说明，未召回项的 hash 新鲜度保持未知。
+近似性和普通结果截断不等于 `partial_failure`；缺失覆盖、已发现的 stale 候选与实际降级才是
+检索的部分失败，不能因精排成功抹去这些事实。
 
 用户指定的严格日期在 SQL 候选阶段应用，采用 start-inclusive/end-exclusive；不重复在应用层过滤，
 不自动放宽日期。实际事件时间与事实更新时间不同，不能用 updated_at 声称事情发生日期。

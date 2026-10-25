@@ -280,7 +280,6 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     from yuki.memory.embedding.semantic import MemorySemanticIndex
     from yuki.memory.embedding.text import EmbeddingDocumentBuilder
     from yuki.memory.tool_intent import parse_memory_tool_intent
-    from yuki.persistence.models import MemoryEmbeddingModel
 
     facts, retriever = _retriever(database)
     old = await _remember(facts, user_id="1001", memory_key="camera", content="camera old")
@@ -338,20 +337,24 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     vector = EmbeddingVector(values=(1.0, 0.0), dimensions=2)
     async with database.immediate_session() as session:
         for fact in (old, inside, end, unknown):
-            session.add(
-                MemoryEmbeddingModel(
-                    fact_id=fact.id,
-                    profile_id=profile.id,
-                    content_hash=documents.content_hash_fields(
-                        kind=fact.kind.value,
-                        category=fact.category,
-                        memory_key=fact.memory_key,
-                        content=fact.content,
-                    ),
-                    vector_blob=Float32VectorCodec().encode(vector),
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                )
+            await vectors.store_vectors(
+                session,
+                profile_id=profile.id,
+                records=[
+                    dict(
+                        fact_id=fact.id,
+                        profile_id=profile.id,
+                        content_hash=documents.content_hash_fields(
+                            kind=fact.kind.value,
+                            category=fact.category,
+                            memory_key=fact.memory_key,
+                            content=fact.content,
+                        ),
+                        vector_blob=Float32VectorCodec().encode(vector),
+                        created_at=datetime.now(UTC),
+                        updated_at=datetime.now(UTC),
+                    )
+                ],
             )
     semantic = await MemorySemanticIndex(vectors, documents=documents).search(
         target=_target("1001"),
@@ -362,7 +365,7 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
         kinds=(MemoryKind.FACT,),
         temporal=intent.temporal,
     )
-    assert [item.fact_id for item in semantic] == [inside.id]
+    assert [item.fact_id for item in semantic.candidates] == [inside.id]
     assert not {old.id, end.id, unknown.id} & {hit.fact.id for hit in result.hits}
     assert parse_memory_tool_intent({}).mode.value == "overview"
     assert parse_memory_tool_intent({"query": "camera"}).mode.value == "hybrid"

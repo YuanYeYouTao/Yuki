@@ -62,6 +62,7 @@ from yuki.persistence.models import (
     MemoryToolReceiptModel,
 )
 from yuki.persistence.unit_of_work import optional_session
+from yuki.persistence.vec1 import vector_table
 
 _DREAM_PREVIEW_SCHEMA_VERSION = 2
 
@@ -70,7 +71,7 @@ _DREAM_PREVIEW_SCHEMA_VERSION = 2
 class DreamCandidate:
     fact: MemoryFact
     bot_user_id: str
-    vector: EmbeddingVector
+    normalized_vector: EmbeddingVector
     signature: str
     current_owner: tuple[str | None, str | None, str | None, str | None] | None = None
 
@@ -156,19 +157,21 @@ class DreamRepository:
             missing = 0
             ambiguous = 0
             after_id = 0
+            vectors = vector_table(profile_id)
             while True:
                 rows = (
                     await active.execute(
                         select(
                             MemoryFactModel.id,
                             MemoryEmbeddingModel.content_hash,
-                            MemoryEmbeddingModel.vector_blob,
+                            vectors.c.vector.label("vector_blob"),
                         )
                         .outerjoin(
                             MemoryEmbeddingModel,
                             (MemoryEmbeddingModel.fact_id == MemoryFactModel.id)
                             & (MemoryEmbeddingModel.profile_id == profile_id),
                         )
+                        .outerjoin(vectors, vectors.c.rowid == MemoryEmbeddingModel.id)
                         .where(*conditions, MemoryFactModel.id > after_id)
                         .order_by(MemoryFactModel.id)
                         .limit(256)
@@ -260,7 +263,7 @@ class DreamRepository:
                         DreamCandidate(
                             fact=fact,
                             bot_user_id=next(iter(bot_ids), "self"),
-                            vector=self._codec.decode(
+                            normalized_vector=self._codec.decode_normalized(
                                 bytes(row.vector_blob), dimensions=dimensions
                             ),
                             signature=fact_signature(fact),

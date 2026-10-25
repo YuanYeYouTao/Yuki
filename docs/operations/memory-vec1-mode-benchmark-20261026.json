@@ -1,0 +1,83 @@
+{
+  "synthetic_only": true,
+  "sqlite_version": "3.53.1",
+  "extension": "version 0.8 (AVX2, multi-threaded)",
+  "seed": 20261026,
+  "vectors": 1511,
+  "dimensions": 1024,
+  "queries": 12,
+  "old_score_only_median_seconds": 0.046778650023043156,
+  "results": {
+    "native_flat": {
+      "median_seconds": 0.024723049951717257,
+      "max_seconds": 0.027770800050348043,
+      "mean_recall_at_50": 1.0,
+      "minimum_recall_at_50": 1.0,
+      "candidate_rows": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ]
+    },
+    "ivf_raw": {
+      "median_seconds": 0.025755099952220917,
+      "max_seconds": 0.037472700234502554,
+      "mean_recall_at_50": 0.34833333333333333,
+      "minimum_recall_at_50": 0.26,
+      "candidate_rows": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "training_seconds": 0.03434709971770644,
+      "rebuild_seconds": 0.02444060007110238,
+      "original_blobs_unchanged": true
+    },
+    "ivf_pq32": {
+      "median_seconds": 0.02386999991722405,
+      "max_seconds": 0.026228399947285652,
+      "mean_recall_at_50": 0.30333333333333334,
+      "minimum_recall_at_50": 0.24,
+      "candidate_rows": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "training_seconds": 0.17651840019971132,
+      "rebuild_seconds": 0.027865299955010414,
+      "original_blobs_unchanged": true
+    }
+  },
+  "qualifications": [
+    "Local synthetic random vectors, not online recall or end-to-end latency.",
+    "Python baseline excludes original ORM, hash, and decoding costs.",
+    "Native timings include candidate BLOB read, normalization and original fsum reranking."
+  ]
+}

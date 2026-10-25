@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from alembic.script import ScriptDirectory
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -25,6 +25,9 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "memory_embeddings": frozenset(
+        {"id", "fact_id", "profile_id", "content_hash", "created_at", "updated_at"}
+    ),
     "automations": frozenset(
         {"canonical_conversation_id", "source_event_id", "creation_source_key", "creation_max_runs"}
     ),
@@ -306,6 +309,13 @@ async def _check_canonical_schema(database_url: str) -> None:
 
     expected_revision = canonical_schema_revision()
     engine = create_async_engine(database_url, poolclass=NullPool)
+    from yuki.persistence.vec1 import delete_trigger, load_vec1, vector_table
+
+    event.listen(
+        engine.sync_engine,
+        "connect",
+        lambda connection, _record: connection.run_async(load_vec1),
+    )
     try:
         async with engine.connect() as connection:
             table_rows = await connection.execute(
@@ -350,6 +360,14 @@ async def _check_canonical_schema(database_url: str) -> None:
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
+            vector_triggers = {}
+            for profile_id in await connection.scalars(
+                text("SELECT id FROM memory_embedding_profiles")
+            ):
+                name = vector_table(profile_id).name
+                if name not in tables:
+                    raise CanonicalSchemaError("database vector storage is incomplete")
+                vector_triggers[f"{name}_delete"] = delete_trigger(profile_id)
             from yuki.runtime.protocol_schema import QUOTA_SQL
 
             protocol_triggers = {
@@ -366,6 +384,7 @@ async def _check_canonical_schema(database_url: str) -> None:
                 **ARTIFACT_REFERENCE_TRIGGERS,
                 **protocol_triggers,
                 **_identity_triggers(),
+                **vector_triggers,
             }.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 expected = expected.replace("IF NOT EXISTS ", "")

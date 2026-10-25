@@ -15,7 +15,9 @@ from tests.unit.test_memory_rebuild import _admin
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.models import AdminActor
 from yuki.identity.db_models import CanonicalPersonModel
+from yuki.memory.embedding.codec import Float32VectorCodec
 from yuki.memory.embedding.fake import FakeEmbeddingProvider
+from yuki.memory.embedding.models import EmbeddingVector
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
 from yuki.memory.fts import SQLiteMemoryFTSIndex
 from yuki.memory.retrieval import MemoryRetriever
@@ -47,15 +49,21 @@ async def scene(database):
     now = datetime.now(UTC)
     async with database.immediate_session() as writer:
         for job in await writer.scalars(select(MemoryEmbeddingJobModel)):
-            writer.add(
-                MemoryEmbeddingModel(
-                    fact_id=job.fact_id,
-                    profile_id=job.profile_id,
-                    content_hash=job.content_hash,
-                    vector_blob=b"original-vector",
-                    created_at=now,
-                    updated_at=now,
-                )
+            await runtime.repository.store_vectors(
+                writer,
+                profile_id=job.profile_id,
+                records=[
+                    dict(
+                        fact_id=job.fact_id,
+                        profile_id=job.profile_id,
+                        content_hash=job.content_hash,
+                        vector_blob=Float32VectorCodec().encode(
+                            EmbeddingVector(values=(1.0, 0.0), dimensions=2)
+                        ),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                ],
             )
     owner = await _admin(database)
     admin = MemoryAdminService(

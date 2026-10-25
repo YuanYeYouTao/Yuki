@@ -1385,12 +1385,13 @@ class AgentToolService:
                 "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 "semantic_status": result.semantic_status,
                 "semantic_degraded": result.semantic_degraded,
+                "semantic_approximate": result.semantic_approximate,
                 "candidate_count": result.candidate_count,
                 "target_count": len({hit.target.block_id for hit in result.hits}),
                 "result_scope": "authorized_maximum" if target is None else "explicit_targets",
                 "exhaustive": result.exhaustive,
                 "truncated": result.truncated,
-                "partial_failure": not result.exhaustive,
+                "partial_failure": result.partial_failure,
                 "partial_reason": result.partial_reason,
                 "memories": [
                     {

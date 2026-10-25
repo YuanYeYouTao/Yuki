@@ -23,6 +23,7 @@ from yuki.persistence.models import (
     MemoryEmbeddingProfileModel,
     MemoryEvidenceModel,
 )
+from yuki.persistence.vec1 import vector_table
 
 _SCAN_PAGE_SIZE = 500
 
@@ -76,14 +77,16 @@ class MemoryProvenanceHygiene:
             profile = latest_profile.first()
             missing_embeddings: tuple[int, ...] = ()
             if profile is not None:
+                vectors = vector_table(int(profile.id)).name
                 missing_embeddings = tuple(
                     int(item)
                     for item in await session.scalars(
                         text(
-                            """
+                            f"""
                             SELECT f.id FROM memory_facts f
                             WHERE f.status='active'
                               AND NOT EXISTS (SELECT 1 FROM memory_embeddings e
+                                JOIN {vectors} v ON v.rowid=e.id AND v.fact_id=e.fact_id
                                 WHERE e.fact_id=f.id AND e.profile_id=:profile_id)
                               AND NOT EXISTS (SELECT 1 FROM memory_embedding_jobs j
                                 WHERE j.fact_id=f.id AND j.profile_id=:profile_id
@@ -109,7 +112,10 @@ class MemoryProvenanceHygiene:
                     )
                 )
             )
-        issue_counts = {item.issue_code: item.count for item in audit.issues if item.count}
+        issue_counts: dict[str, int] = {}
+        for item in audit.issues:
+            if item.count:
+                issue_counts[item.issue_code] = issue_counts.get(item.issue_code, 0) + item.count
         rebuild_fts = bool(
             issue_counts.get("fts_missing_active_fact") or issue_counts.get("fts_orphan_row")
         )
