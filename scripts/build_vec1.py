@@ -81,6 +81,10 @@ def build_vec1(root: Path, output: Path) -> Path:
             command.append("-static-libgcc")
         else:
             command.append("-pthread")
+        if sys.platform == "darwin":
+            target_version = sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET")
+            if target_version:
+                command.append(f"-mmacosx-version-min={target_version}")
     subprocess.run(command, check=True, cwd=output)
     return library
 
