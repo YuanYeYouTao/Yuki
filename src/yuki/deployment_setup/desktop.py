@@ -98,6 +98,7 @@ class DesktopPairing(BaseModel):
     display_name: str
     person_request_id: UUID
     pair_request_id: UUID
+    # Older Desktop setup inputs include this UUID; pairing no longer grants a role.
     owner_request_id: UUID | None = None
     person_id: UUID | None = None
 
@@ -119,12 +120,6 @@ async def pair(body: DesktopPairing) -> dict[str, object]:
         else:
             person = str(body.person_id)
             await read(client, f"persons/{person}")
-        if body.owner_request_id is not None:
-            await identity_mutation(
-                client,
-                f"character/owners/{person}/grant",
-                request_id=str(body.owner_request_id),
-            )
         issued = await identity_mutation(
             client,
             f"persons/{person}/client-pair",

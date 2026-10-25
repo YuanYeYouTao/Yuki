@@ -14,7 +14,6 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from yuki.character.repository import require_character_owner
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
@@ -83,7 +82,7 @@ class CharacterSoul:
         self, session: Any, principal: ClientPrincipal | None, operator_id: str | None
     ) -> ClientPrincipal | None:
         if principal is not None:
-            return await require_character_owner(self.identity, session, principal)
+            return await self.identity.require_principal(session, principal)
         assert operator_id is not None
         return None
 

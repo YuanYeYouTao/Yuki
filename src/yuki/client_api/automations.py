@@ -15,7 +15,6 @@ from yuki.automation.repository import (
 )
 from yuki.automation.service import AutomationService
 from yuki.automation.task_spec import TaskSpec
-from yuki.character.repository import require_character_owner
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.domain.tool_actor import ToolActor
@@ -81,8 +80,6 @@ class ClientAutomations:
         async with self.identity.database.read_session() as session:
             await session.execute(text("BEGIN"))
             current = await self.identity.require_principal(session, principal)
-            if scope == "self":
-                await require_character_owner(self.identity, session, current)
             rows = await session.execute(
                 _definition_statement()
                 .where(

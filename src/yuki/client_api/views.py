@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.character.repository import CharacterRepository, is_character_owner
+from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
@@ -357,14 +357,13 @@ class ClientViews:
             }
             if self.character is not None:
                 current = await self.character.current(session)
-                owner = await is_character_owner(session, principal.person_id)
                 hint: dict[str, Any] = {
                     "id": current.id,
                     "revision": current.revision,
                     "avatar_revision": current.avatar_revision,
-                    "is_owner": owner,
+                    "is_owner": True,
                 }
-                if owner and self.soul is not None:
+                if self.soul is not None:
                     hint["soul"] = {
                         "revision": self.soul.revision,
                         "active_revision": self.soul.settings.active_soul_revision,

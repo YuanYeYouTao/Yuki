@@ -11,16 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki import __version__
-from yuki.character.db_models import CharacterOwnerGrantModel, CharacterProfileModel
+from yuki.character.db_models import CharacterProfileModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.client_api.version import CLIENT_API_REVISION
-from yuki.identity.credentials import require_person
-from yuki.identity.person_identity import (
-    current_person_id,
-    person_enabled_condition,
-    person_family_condition,
-)
 from yuki.time.formatting import utc_iso
 
 if TYPE_CHECKING:
@@ -33,29 +27,6 @@ class CharacterCurrent:
     display_name: str
     revision: int
     avatar_revision: int
-
-
-async def is_character_owner(session: AsyncSession, person_id: str) -> bool:
-    return bool(
-        await session.scalar(
-            select(CharacterOwnerGrantModel.person_id)
-            .where(
-                person_family_condition(CharacterOwnerGrantModel.person_id, person_id),
-                person_enabled_condition(CharacterOwnerGrantModel.person_id),
-                CharacterOwnerGrantModel.revoked_at.is_(None),
-            )
-            .limit(1)
-        )
-    )
-
-
-async def require_character_owner(
-    identity: ClientIdentityService, session: AsyncSession, principal: ClientPrincipal
-) -> ClientPrincipal:
-    current = await identity.require_principal(session, principal)
-    if not await is_character_owner(session, current.person_id):
-        raise ClientError("owner_required")
-    return current
 
 
 def avatar_view(sha256: str | None) -> dict[str, Any] | None:
@@ -162,11 +133,9 @@ class CharacterRepository:
 
     async def get(self, principal: ClientPrincipal | None = None) -> dict[str, Any]:
         async with self.database.read_session() as session:
-            owner = False
             if principal is not None:
-                current = await self.identity.require_principal(session, principal)
-                owner = await is_character_owner(session, current.person_id)
-            return profile_view(await self._profile(session), owner=owner)
+                await self.identity.require_principal(session, principal)
+            return profile_view(await self._profile(session), owner=principal is not None)
 
     async def update(
         self,
@@ -179,9 +148,7 @@ class CharacterRepository:
     ) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
             current = (
-                await require_character_owner(self.identity, session, principal)
-                if principal
-                else None
+                await self.identity.require_principal(session, principal) if principal else None
             )
             issuer = current.device_id if current else operator_id
             assert issuer is not None
@@ -228,75 +195,3 @@ class CharacterRepository:
             active_name, active_revision = row.display_name, row.revision
         self.settings.apply_character_name(active_name, active_revision)
         return result
-
-    async def owners(self) -> list[dict[str, Any]]:
-        async with self.database.read_session() as session:
-            rows = await session.scalars(
-                select(CharacterOwnerGrantModel).order_by(
-                    CharacterOwnerGrantModel.granted_at, CharacterOwnerGrantModel.person_id
-                )
-            )
-            return [
-                {
-                    "person_id": row.person_id,
-                    "granted_by_principal": row.granted_by_principal,
-                    "granted_at": utc_iso(row.granted_at),
-                    "revoked_at": utc_iso(row.revoked_at),
-                }
-                for row in rows
-            ]
-
-    async def set_owner(
-        self, operator_id: str, person_id: str, request_id: str, *, granted: bool
-    ) -> dict[str, Any]:
-        operation = "client.character_owner_grant" if granted else "client.character_owner_revoke"
-        bound = fingerprint(operation, person_id, {})
-        async with self.database.immediate_session() as session:
-            old = await self.identity.replay(session, operator_id, request_id, bound)
-            if old is not None:
-                return old
-            if granted:
-                try:
-                    await require_person(session, person_id)
-                except ClientError:
-                    raise ClientError("not_found") from None
-            root = await current_person_id(session, person_id)
-            now = datetime.now(UTC)
-            family = list(
-                await session.scalars(
-                    select(CharacterOwnerGrantModel).where(
-                        person_family_condition(CharacterOwnerGrantModel.person_id, root)
-                    )
-                )
-            )
-            if granted:
-                grant = next((row for row in family if row.person_id == root), None)
-                if grant is None:
-                    session.add(
-                        CharacterOwnerGrantModel(
-                            person_id=root, granted_by_principal=operator_id, granted_at=now
-                        )
-                    )
-                else:
-                    grant.granted_by_principal, grant.granted_at, grant.revoked_at = (
-                        operator_id,
-                        now,
-                        None,
-                    )
-            else:
-                for grant in family:
-                    grant.revoked_at = now
-            result: dict[str, Any] = {"person_id": root, "granted": granted}
-            await self.identity.receipts.record_personal_command(
-                session,
-                principal_id=operator_id,
-                principal_kind="control",
-                person_id=root,
-                request_id=request_id,
-                operation=operation,
-                operation_ref=root,
-                payload_hash=bound,
-                resource_id=root,
-                result=result,
-            )
-            return result

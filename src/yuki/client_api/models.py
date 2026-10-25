@@ -36,6 +36,7 @@ class Meta(BaseModel):
 
 
 class Viewer(BaseModel):
+    # API7 clients use this presentation bit; every valid paired client can edit.
     is_owner: bool
 
 

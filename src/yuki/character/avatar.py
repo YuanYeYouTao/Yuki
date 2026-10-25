@@ -12,7 +12,7 @@ from typing import Any, Literal
 from PIL import Image, PngImagePlugin, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.character.repository import CharacterRepository, profile_view, require_character_owner
+from yuki.character.repository import CharacterRepository, profile_view
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientPrincipal, fingerprint
 from yuki.services.media_resolver import _media_directory, _media_io
@@ -153,7 +153,7 @@ class CharacterAvatars:
     ) -> dict[str, Any]:
         operation = "client.character_avatar"
         async with self.identity.database.read_session() as session:
-            current = await require_character_owner(self.identity, session, principal)
+            current = await self.identity.require_principal(session, principal)
             row = await self.repository._profile(session)
             bound = fingerprint(
                 operation,
@@ -175,7 +175,7 @@ class CharacterAvatars:
             assert chunks is not None and sha256 is not None and size is not None
             await self.store.store(chunks, sha256, size)
         async with self.identity.database.immediate_session() as session:
-            current = await require_character_owner(self.identity, session, principal)
+            current = await self.identity.require_principal(session, principal)
             previous = await self.identity.replay(
                 session, issuer, request_id, bound, principal=current
             )

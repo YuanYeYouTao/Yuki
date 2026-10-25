@@ -1,4 +1,4 @@
-"""Real avatar HTTP, immutable files, original receipts and current owner checks."""
+"""Real avatar HTTP, immutable files, original receipts and current device checks."""
 
 import asyncio
 import hashlib
@@ -47,7 +47,6 @@ async def avatar_env(database, tmp_path):
     other = await identity.pair(other_code["code"], "viewer")
     repository = CharacterRepository(identity, make_settings(database.url))
     await repository.initialize("Avatar character")
-    await repository.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
     avatars = CharacterAvatars(repository, AvatarStore(tmp_path / "avatars"))
     views = ClientViews(identity, ClientWorks(identity, {}), character=repository)
     app = FastAPI()
@@ -96,6 +95,29 @@ async def upload(env, content, revision, *, request_id=None, device=None, **over
         headers={**bearer(device or env.first), "Content-Type": "image/png"},
     )
     return response, params
+
+
+async def test_other_paired_person_can_change_shared_avatar_but_keeps_own_receipt(avatar_env):
+    from yuki.character.db_models import CharacterOwnerGrantModel
+    from yuki.identity.db_models import CanonicalPersonModel
+
+    env = avatar_env
+    other = await env.identity.authenticate(env.other["token"])
+    async with env.repository.database.read_session() as session:
+        person = await session.get(CanonicalPersonModel, other.person_id)
+        assert not person.is_superuser
+        assert await session.scalar(select(func.count()).select_from(CharacterOwnerGrantModel)) == 0
+    changed, request = await upload(env, png(), 0, device=env.other)
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["data"]["viewer"]["is_owner"] is True
+    own = await env.client.get(
+        "/client/v1/requests/" + request["request_id"], headers=bearer(env.other)
+    )
+    foreign = await env.client.get(
+        "/client/v1/requests/" + request["request_id"], headers=bearer(env.first)
+    )
+    assert own.json()["data"]["found"] is True
+    assert foreign.json()["data"]["found"] is False
 
 
 async def test_set_replay_immutable_variants_and_original_request(avatar_env, database):
@@ -273,7 +295,7 @@ async def test_reset_uses_existing_default_without_reinitializing_character(avat
     assert reset.json()["data"]["avatar"]["sha256"] == digest
 
 
-async def test_owner_is_checked_before_consuming_image_and_after_publication(
+async def test_device_is_checked_before_consuming_image_and_after_publication(
     avatar_env, monkeypatch
 ):
     env = avatar_env
@@ -284,26 +306,29 @@ async def test_owner_is_checked_before_consuming_image_and_after_publication(
         consumed = True
         yield png()
 
+    other = await env.identity.authenticate(env.other["token"])
+    await env.identity.revoke_for_operator(other.device_id, str(uuid4()), str(uuid4()))
     denied = await env.client.put(
         "/client/v1/character/avatar",
         params={"request_id": str(uuid4()), "expected_revision": 0, "sha256": "0" * 64, "size": 1},
         headers=bearer(env.other),
         content=input_image(),
     )
-    assert denied.status_code == 403 and consumed is False
+    assert denied.status_code == 401 and consumed is False
     store = env.avatars.store.store
 
-    async def revoke_owner(*args):
+    async def revoke_device(*args):
         result = await store(*args)
-        await env.repository.set_owner(str(uuid4()), env.person, str(uuid4()), granted=False)
+        await env.identity.revoke_for_operator(env.principal.device_id, str(uuid4()), str(uuid4()))
         return result
 
-    monkeypatch.setattr(env.avatars.store, "store", revoke_owner)
+    monkeypatch.setattr(env.avatars.store, "store", revoke_device)
     response, request = await upload(env, png(), 0)
-    assert response.status_code == 403 and response.json()["problem"]["code"] == "owner_required"
-    assert (await profile(env))["avatar"] is None
+    assert response.status_code == 401 and response.json()["problem"]["code"] == "unauthenticated"
+    current = await env.client.get("/client/v1/character", headers=bearer(env.second))
+    assert current.json()["data"]["avatar"] is None
     receipt = await env.client.get(
-        "/client/v1/requests/" + request["request_id"], headers=bearer(env.first)
+        "/client/v1/requests/" + request["request_id"], headers=bearer(env.second)
     )
     assert receipt.json()["data"]["found"] is False
 

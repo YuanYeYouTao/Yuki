@@ -70,10 +70,11 @@ async def attach_character_fixture(
         queries.set()
         return {"released": True}
 
-    @app.post("/__test/revoke-character-owner")
-    async def revoke_character_owner() -> dict:
-        return await container.character.set_owner(
-            str(uuid4()), person, str(uuid4()), granted=False
+    @app.post("/__test/revoke-character-device")
+    async def revoke_character_device(request: Request) -> dict:
+        body = await request.json()
+        return await container.client_identity.revoke_for_operator(
+            body["device_id"], str(uuid4()), str(uuid4())
         )
 
     @app.post("/__test/qq-binding-without-destination")

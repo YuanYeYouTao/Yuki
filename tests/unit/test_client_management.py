@@ -244,13 +244,12 @@ async def test_memory_interrupted_preparation_resumes_one_original_user_action(
     assert not case.env.calls
 
 
-async def test_memory_self_is_read_only_and_owner_does_not_read_other_private_facts(
+async def test_memory_self_is_read_only_and_shared_access_keeps_other_private_facts(
     management, database
 ):
     case = management
     first, person = await owner(case.env, database)
     other, other_person = await owner(case.env, database, "1002")
-    await case.character.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
     private = await fact_for(case, other_person, "1002")
     private_self = await fact_for(case, other_person, "1002", self_for=other_person)
     own_self = await fact_for(case, person, self_for=person)
@@ -534,6 +533,10 @@ async def test_automation_transitions_keep_current_definition_and_original_recei
     case = management
     device, person = await owner(case.env, database)
     principal = await case.env.identity.authenticate(device["token"])
+    shared = await case.client.get(
+        "/client/v1/automations?scope=self", headers=bearer(device["token"])
+    )
+    assert shared.status_code == 200 and shared.json()["data"]["items"] == []
     async with database.read_session() as reader:
         presence = await reader.get(PresenceModel, principal.presence_id)
     actor = ToolActor(

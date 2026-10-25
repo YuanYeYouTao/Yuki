@@ -176,6 +176,17 @@ async def test_operator_permissions_rotation_and_secret_validation(admin, databa
     assert (await client.get("/admin/v1/health")).status_code == 401
 
 
+async def test_character_owner_grant_endpoints_are_retired(admin):
+    client, *_ = admin
+    assert (await client.get("/admin/v1/character/owners")).status_code == 404
+    assert (
+        await client.post(
+            f"/admin/v1/character/owners/{uuid4()}/grant",
+            json={"request_id": str(uuid4())},
+        )
+    ).status_code == 404
+
+
 async def test_identity_creation_binding_attach_disable_and_original_replay(admin, database):
     client, *_ = admin
     async with database.read_session() as session:

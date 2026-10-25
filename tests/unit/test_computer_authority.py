@@ -33,7 +33,7 @@ async def changed(service, condition):
         hints.unsubscribe(queue)
 
 
-@pytest.mark.parametrize("revocation", ["owner", "device"])
+@pytest.mark.parametrize("revocation", ["person", "device"])
 @pytest.mark.parametrize("observation", ["live", "cold", "overflow"])
 async def test_real_revocation_returns_same_release_key_once_and_keeps_watch_alive(
     app_env, database, tmp_path, revocation, observation, monkeypatch
@@ -42,8 +42,6 @@ async def test_real_revocation_returns_same_release_key_once_and_keeps_watch_ali
     principal = await app_env.identity.authenticate(device["token"])
     character = CharacterRepository(app_env.identity, app_env.harness.settings)
     await character.initialize("Computer authority test")
-    operator = str(uuid4())
-    await character.set_owner(operator, person, str(uuid4()), granted=True)
     manager = manager_at(tmp_path)
     short = tempfile.TemporaryDirectory(prefix="yc-auth-", dir="/tmp")
     socket = Path(short.name) / "manager.sock"
@@ -89,8 +87,12 @@ async def test_real_revocation_returns_same_release_key_once_and_keeps_watch_ali
             await asyncio.wait_for(observed.wait(), 10)
 
         async def revoke():
-            if revocation == "owner":
-                await character.set_owner(operator, person, str(uuid4()), granted=False)
+            if revocation == "person":
+                from yuki.identity.db_models import CanonicalPersonModel
+
+                async with database.immediate_session() as session:
+                    original = await session.get(CanonicalPersonModel, person)
+                    original.enabled = False
             else:
                 await app_env.identity.revoke(principal, principal.device_id, str(uuid4()))
 
@@ -123,7 +125,7 @@ async def test_real_revocation_returns_same_release_key_once_and_keeps_watch_ali
                     "action": "return",
                     "lease_id": lease,
                     "actor": {"system": True},
-                    "reason": "owner_revoked" if revocation == "owner" else "device_revoked",
+                    "reason": "person_disabled" if revocation == "person" else "device_revoked",
                 },
             )
         ]
