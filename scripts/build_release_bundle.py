@@ -34,6 +34,21 @@ _CONFIG_FILES = frozenset(
         "config/Caddyfile.example",
     }
 )
+_MANAGER_DEPLOY_FILES = frozenset(
+    {
+        f"deploy/sandbox/{name}"
+        for name in (
+            "sync-manager.py",
+            "install-manager.sh",
+            "configure-manager.py",
+            "requirements-manager.txt",
+            "yuki-sandbox.service",
+            "yuki-environment-storage.service",
+            "network-guard.sh",
+            "environment-storage.sh",
+        )
+    }
+)
 _EMPTY_DIRECTORIES = (
     "data",
     "character",
@@ -78,6 +93,7 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
     required = (
         _ROOT_FILES
         | _CONFIG_FILES
+        | _MANAGER_DEPLOY_FILES
         | {
             release_note,
             upgrade_guide,
