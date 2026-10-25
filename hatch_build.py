@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import runpy
-import sysconfig
 from pathlib import Path
 from typing import Any
 
@@ -15,14 +14,15 @@ class CustomBuildHook(BuildHookInterface):
         if self.target_name != "wheel":
             return
         root = Path(self.root)
-        build = runpy.run_path(str(root / "scripts" / "build_vec1.py"))["build_vec1"]
-        platform_tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+        module = runpy.run_path(str(root / "scripts" / "build_vec1.py"))
+        metadata = module["native_build_metadata"]()
+        platform_tag = metadata.platform_tag
         output = (
             root / "src" / "yuki" / "_native"
             if version == "editable"
             else root / ".cache" / "vec1" / platform_tag
         )
-        library = build(root, output)
+        library = module["build_vec1"](root, output, metadata=metadata)
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{platform_tag}"
         build_data["force_include"][str(library)] = f"yuki/_native/{library.name}"

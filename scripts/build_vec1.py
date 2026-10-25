@@ -8,10 +8,39 @@ import platform
 import subprocess
 import sys
 import sysconfig
+from dataclasses import dataclass
 from pathlib import Path
 
 
-def build_vec1(root: Path, output: Path) -> Path:
+@dataclass(frozen=True, slots=True)
+class NativeBuildMetadata:
+    architecture: str
+    platform_tag: str
+    macosx_target: str | None = None
+
+
+def native_build_metadata() -> NativeBuildMetadata:
+    architecture = platform.machine().lower()
+    raw_platform = sysconfig.get_platform()
+    if sys.platform == "darwin":
+        _, target, _ = raw_platform.split("-")
+        major, minor = (int(value) for value in target.split(".")[:2])
+        if architecture == "arm64":
+            major, minor = max((major, minor), (11, 0))
+        return NativeBuildMetadata(
+            architecture,
+            f"macosx_{major}_{minor}_{architecture}",
+            f"{major}.{minor}",
+        )
+    return NativeBuildMetadata(
+        architecture, raw_platform.replace("-", "_").replace(".", "_")
+    )
+
+
+def build_vec1(
+    root: Path, output: Path, *, metadata: NativeBuildMetadata | None = None
+) -> Path:
+    metadata = metadata or native_build_metadata()
     root, output = root.resolve(), output.resolve()
     source = root / "vendor" / "sqlite-vec1"
     output.mkdir(parents=True, exist_ok=True)
@@ -19,7 +48,7 @@ def build_vec1(root: Path, output: Path) -> Path:
     library = output / f"vec1{suffix}"
     compiler = os.environ.get("CC") or ("cl" if sys.platform == "win32" else "cc")
     msvc = Path(compiler).name.lower() in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}
-    x86 = platform.machine().lower() in {"amd64", "x86_64", "x64"}
+    x86 = metadata.architecture in {"amd64", "x86_64", "x64"}
     variants = ("SCALAR", "AVX2") if x86 else ("native",)
     objects: list[Path] = []
     for variant in variants:
@@ -61,9 +90,13 @@ def build_vec1(root: Path, output: Path) -> Path:
             if variant == "AVX2":
                 command.extend(("-mavx2", "-mfma"))
             if sys.platform == "darwin":
-                target_version = sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET")
-                if target_version:
-                    command.append(f"-mmacosx-version-min={target_version}")
+                command.extend(
+                    (
+                        "-arch",
+                        metadata.architecture,
+                        f"-mmacosx-version-min={metadata.macosx_target}",
+                    )
+                )
         subprocess.run(command, check=True, cwd=output)
         objects.append(target)
     if msvc:
@@ -82,9 +115,13 @@ def build_vec1(root: Path, output: Path) -> Path:
         else:
             command.append("-pthread")
         if sys.platform == "darwin":
-            target_version = sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET")
-            if target_version:
-                command.append(f"-mmacosx-version-min={target_version}")
+            command.extend(
+                (
+                    "-arch",
+                    metadata.architecture,
+                    f"-mmacosx-version-min={metadata.macosx_target}",
+                )
+            )
     subprocess.run(command, check=True, cwd=output)
     return library
 
