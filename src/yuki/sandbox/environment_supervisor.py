@@ -29,20 +29,21 @@ def atomic(path: Path, value: dict[str, Any]) -> None:
 
 
 def children(parent: int) -> set[int]:
-    pairs = {}
+    pairs: dict[int, list[int]] = {}
     for entry in Path("/proc").iterdir():
         if entry.name.isdigit():
             try:
                 fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-                pairs[int(entry.name)] = int(fields[1])
+                pairs.setdefault(int(fields[1]), []).append(int(entry.name))
             except (OSError, ValueError, IndexError):
                 pass
     found = {parent}
-    while True:
-        added = {pid for pid, ppid in pairs.items() if ppid in found} - found
-        if not added:
-            break
-        found.update(added)
+    pending = [parent]
+    while pending:
+        for pid in pairs.get(pending.pop(), ()):
+            if pid not in found:
+                found.add(pid)
+                pending.append(pid)
     return found
 
 

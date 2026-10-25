@@ -11,7 +11,7 @@ from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import DateTime, and_, bindparam, func, or_, select, text, update
+from sqlalchemy import DateTime, and_, bindparam, case, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import (
@@ -956,21 +956,69 @@ class PluginNotificationRepository:
             job.work_id.is_not(None),
             or_(work.c.id.is_(None), work.c.state.in_(tuple(TERMINAL))),
         )
-        async with self._database.read_session() as reader:
-            identities = list(
-                await reader.scalars(
-                    select(job.id).outerjoin(work, work.c.id == job.work_id).where(*conditions)
-                )
-            )
-        for identity in identities:
+        after: int | None = None
+        while True:
+            query = select(job.id).outerjoin(work, work.c.id == job.work_id).where(*conditions)
+            if after is not None:
+                query = query.where(job.id > after)
+            async with self._database.read_session() as reader:
+                identities = tuple(await reader.scalars(query.order_by(job.id).limit(128)))
+            if not identities:
+                return
+            after = identities[-1]
             async with self._database.immediate_session() as writer:
-                row = await writer.scalar(
-                    select(job)
-                    .outerjoin(work, work.c.id == job.work_id)
-                    .where(job.id == identity, *conditions)
+                now = datetime.now(UTC)
+                # The current Work row supplies status and actual usage in the
+                # same SQL statement, after FIFO admission, without N readers.
+                await writer.execute(
+                    update(job)
+                    .where(
+                        job.id.in_(identities),
+                        job.status.in_(("pending", "processing")),
+                        job.work_id == work.c.id,
+                        work.c.state.in_(tuple(TERMINAL)),
+                    )
+                    .values(
+                        status=case(
+                            (work.c.state == "completed", "completed"),
+                            (work.c.state == "cancelled", "cancelled"),
+                            else_="failed",
+                        ),
+                        last_error_category=case(
+                            (work.c.state == "completed", None),
+                            (work.c.state == "cancelled", "runtime_work_cancelled"),
+                            else_="runtime_work_failed",
+                        ),
+                        completed_at=case(
+                            (work.c.state == "completed", now), else_=job.completed_at
+                        ),
+                        model_requests=func.max(
+                            func.coalesce(job.model_requests, 0), work.c.model_requests
+                        ),
+                        tool_calls_used=func.max(
+                            func.coalesce(job.tool_calls_used, 0), work.c.tool_calls
+                        ),
+                        lease_until=None,
+                        updated_at=now,
+                    )
+                    .execution_options(synchronize_session=False)
                 )
-                if row is not None:
-                    await _close_with_terminal_work(writer, row, now=datetime.now(UTC))
+                await writer.execute(
+                    update(job)
+                    .where(
+                        job.id.in_(identities),
+                        job.status.in_(("pending", "processing")),
+                        job.work_id.is_not(None),
+                        ~select(work.c.id).where(work.c.id == job.work_id).exists(),
+                    )
+                    .values(
+                        status="failed",
+                        last_error_category="runtime_work_missing",
+                        lease_until=None,
+                        updated_at=now,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
 
     async def validate_turn_attempt(
         self,
