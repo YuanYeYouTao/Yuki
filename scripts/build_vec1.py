@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 
@@ -59,6 +60,10 @@ def build_vec1(root: Path, output: Path) -> Path:
                 command.append(f"-DVEC1SIMD={variant}")
             if variant == "AVX2":
                 command.extend(("-mavx2", "-mfma"))
+            if sys.platform == "darwin":
+                target_version = sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET")
+                if target_version:
+                    command.append(f"-mmacosx-version-min={target_version}")
         subprocess.run(command, check=True, cwd=output)
         objects.append(target)
     if msvc:
