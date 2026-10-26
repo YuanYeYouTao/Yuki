@@ -223,10 +223,11 @@ class WorkspaceStore:
         # Check the original manifest path before preparing an unpublished file.
         self._index()
         held = self._files.acquire(exclusive=False)
-        path = self.root / f"{uuid4()}.pending"
+        path: Path | None = None
         digest = hashlib.sha256()
         total = 0
         try:
+            path = self.root / f"{uuid4()}.pending"
             os.lseek(descriptor, 0, os.SEEK_SET)
             with path.open("xb") as output:
                 while chunk := os.read(descriptor, 65536):
@@ -285,5 +286,6 @@ class WorkspaceStore:
                     result = self._metadata(self._row(db, identity))
             return result
         finally:
-            self._unlink([path])
+            if path is not None:
+                self._unlink([path])
             self._files.release(held)

@@ -54,6 +54,7 @@ class _TgsSniff:
         self.in_string = False
         self.escape = False
         self.unicode_left = 0
+        self._unicode = ""
         self.expect_key = False
         self.collecting_key = False
         self.key = ""
@@ -80,20 +81,28 @@ class _TgsSniff:
             if self.unicode_left:
                 self.unicode_left -= 1
                 if self.collecting_key:
-                    self.key += char
+                    self._unicode += char
+                    if self.unicode_left == 0:
+                        try:
+                            self.key += chr(int(self._unicode, 16))
+                        except ValueError:
+                            pass
+                        self._unicode = ""
                 continue
             if self.in_string:
                 if self.escape:
                     self.escape = False
                     if char == "u":
                         self.unicode_left = 4
-                    if self.collecting_key:
-                        self.key += char
+                        self._unicode = ""
+                        continue
+                    if self.collecting_key and len(self.key) < 16:
+                        self.key += {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}.get(
+                            char, char
+                        )
                     continue
                 if char == "\\":
                     self.escape = True
-                    if self.collecting_key:
-                        self.key += char
                     continue
                 if char == '"':
                     self.in_string = False
@@ -330,7 +339,6 @@ def header_facts(stream: BinaryIO) -> dict[str, Any] | None:
                 ),
                 "width": image.width,
                 "height": image.height,
-                "animated": bool(getattr(image, "is_animated", False)),
             }
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return facts or None

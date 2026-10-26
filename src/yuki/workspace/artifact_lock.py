@@ -7,7 +7,9 @@ replace it, and it stores no pid, age, or version.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+from typing import Any
 
 _LOCK_NAME = ".artifact.lock"
 
@@ -37,84 +39,87 @@ class ArtifactRootLock:
             os.close(descriptor)
 
 
-def _lock(descriptor: int, *, exclusive: bool, wait: bool) -> None:
-    if os.name == "nt":
-        _lock_windows(descriptor, exclusive=exclusive, wait=wait)
-        return
-    import fcntl
+if sys.platform == "win32":
 
-    flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-    if not wait:
-        flags |= fcntl.LOCK_NB
-    try:
-        fcntl.flock(descriptor, flags)
-    except BlockingIOError as exc:
-        raise ArtifactLockBusy("artifact_lock_busy") from exc
+    def _lock(descriptor: int, *, exclusive: bool, wait: bool) -> None:
+        # LockFileEx shared/exclusive. msvcrt.locking is exclusive-only and is not used.
+        ctypes, msvcrt, kernel32, overlapped = _windows_locking()
+        flags = 0x2 if exclusive else 0
+        if not wait:
+            flags |= 0x1
+        locked = kernel32.LockFileEx(
+            msvcrt.get_osfhandle(descriptor),
+            flags,
+            0,
+            1,
+            0,
+            ctypes.byref(overlapped()),
+        )
+        if locked:
+            return
+        error = ctypes.get_last_error()
+        if error in {33, 167}:  # ERROR_LOCK_VIOLATION, ERROR_LOCK_FAILED
+            raise ArtifactLockBusy("artifact_lock_busy")
+        raise OSError(error, "LockFileEx failed")
 
-
-def _unlock(descriptor: int) -> None:
-    if os.name == "nt":
-        _unlock_windows(descriptor)
-        return
-    import fcntl
-
-    fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
-def _lock_windows(descriptor: int, *, exclusive: bool, wait: bool) -> None:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    flags = 0x2 if exclusive else 0
-    if not wait:
-        flags |= 0x1
-
-    class _Overlapped(ctypes.Structure):
-        _fields_ = (
-            ("Internal", ctypes.c_void_p),
-            ("InternalHigh", ctypes.c_void_p),
-            ("Offset", wintypes.DWORD),
-            ("OffsetHigh", wintypes.DWORD),
-            ("hEvent", wintypes.HANDLE),
+    def _unlock(descriptor: int) -> None:
+        ctypes, msvcrt, kernel32, overlapped = _windows_locking()
+        kernel32.UnlockFileEx(
+            msvcrt.get_osfhandle(descriptor),
+            0,
+            1,
+            0,
+            ctypes.byref(overlapped()),
         )
 
-    overlapped = _Overlapped()
-    handle = msvcrt.get_osfhandle(descriptor)
-    locked = kernel32.LockFileEx(
-        wintypes.HANDLE(handle),
-        wintypes.DWORD(flags),
-        wintypes.DWORD(0),
-        wintypes.DWORD(0xFFFFFFFF),
-        wintypes.DWORD(0xFFFFFFFF),
-        ctypes.byref(overlapped),
-    )
-    if not locked:
-        raise ArtifactLockBusy("artifact_lock_busy")
+    def _windows_locking() -> tuple[Any, Any, Any, type[Any]]:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
 
+        class _Overlapped(ctypes.Structure):
+            _fields_ = (
+                ("Internal", ctypes.c_void_p),
+                ("InternalHigh", ctypes.c_void_p),
+                ("Offset", wintypes.DWORD),
+                ("OffsetHigh", wintypes.DWORD),
+                ("hEvent", wintypes.HANDLE),
+            )
 
-def _unlock_windows(descriptor: int) -> None:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-    class _Overlapped(ctypes.Structure):
-        _fields_ = (
-            ("Internal", ctypes.c_void_p),
-            ("InternalHigh", ctypes.c_void_p),
-            ("Offset", wintypes.DWORD),
-            ("OffsetHigh", wintypes.DWORD),
-            ("hEvent", wintypes.HANDLE),
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.LockFileEx.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(_Overlapped),
         )
+        kernel32.LockFileEx.restype = wintypes.BOOL
+        kernel32.UnlockFileEx.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(_Overlapped),
+        )
+        kernel32.UnlockFileEx.restype = wintypes.BOOL
+        return ctypes, msvcrt, kernel32, _Overlapped
 
-    handle = msvcrt.get_osfhandle(descriptor)
-    kernel32.UnlockFileEx(
-        wintypes.HANDLE(handle),
-        wintypes.DWORD(0),
-        wintypes.DWORD(0xFFFFFFFF),
-        wintypes.DWORD(0xFFFFFFFF),
-        ctypes.byref(_Overlapped()),
-    )
+else:
+
+    def _lock(descriptor: int, *, exclusive: bool, wait: bool) -> None:
+        import fcntl
+
+        flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not wait:
+            flags |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(descriptor, flags)
+        except BlockingIOError as exc:
+            raise ArtifactLockBusy("artifact_lock_busy") from exc
+
+    def _unlock(descriptor: int) -> None:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)

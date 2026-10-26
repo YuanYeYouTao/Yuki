@@ -17,13 +17,20 @@ from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
-from weakref import WeakSet, WeakValueDictionary
+from weakref import WeakKeyDictionary, WeakSet, WeakValueDictionary
 
 from sqlalchemy import and_, func, or_, select, text, tuple_, update
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
-from yuki.conversation.media_index import indexed_media_segments
+from yuki.conversation.media_index import (
+    attachment_origin,
+    attachment_source_version,
+    indexed_media_segments,
+    live_media_data,
+    observed_reply_media_segments,
+    segment_origin,
+)
 from yuki.domain.messages import AttachmentKind, ChatImage, InboundMessage, MessageAttachment
 from yuki.gateway.media import MediaKind, PlatformMediaFile, PlatformMediaGateway
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
@@ -162,34 +169,14 @@ class _EventMediaGateway:
         return await gateway.resolve_media_file(file, kind, max_download_bytes=max_download_bytes)
 
 
-def attachment_origin(data: dict[str, Any]) -> str:
-    """Stable file identity. Caption and segment position are not part of it."""
-    picked = {
-        key: data[key]
-        for key in ("file", "url", "file_id", "media_id")
-        if isinstance(data.get(key), str) and data[key]
-    }
-    return json.dumps(picked, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def live_media_data(segments_json: str, attachment_index: int) -> dict[str, Any] | None:
-    try:
-        segments = json.loads(segments_json)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(segments, list):
-        return None
-    for index, _position, _kind, data in indexed_media_segments(segments):
-        if index == attachment_index and isinstance(data, dict):
-            return data
-    return None
-
-
 def _original_still_current(event: Any, live: Any, item: Any, data: dict[str, Any]) -> bool:
     if (
         event is None
         or live is None
         or event.suppression_status != "keeper"
+        or event.direction != "inbound"
+        or event.canonical_conversation_id != live.conversation_id
+        or live.kind != item.kind
         or live.source_snapshot_json != item.source_snapshot_json
     ):
         return False
@@ -269,6 +256,7 @@ class ConversationMediaService:
         self._pending: set[asyncio.Task[None]] = set()
         self._cleaner: asyncio.Task[None] | None = None
         self._prepared: WeakSet[PreparedAttachment] = WeakSet()
+        self._prepared_origin: WeakKeyDictionary[PreparedAttachment, str] = WeakKeyDictionary()
         self._originals: WeakValueDictionary[tuple[int, int, bool, bool], PreparedAttachment] = (
             WeakValueDictionary()
         )
@@ -300,6 +288,21 @@ class ConversationMediaService:
                     await _gc_io(closer)
                 self._gc_iterator = None
             self._gc_pending = ()
+
+    def _attachment_slot(
+        self, message: InboundMessage, attachment: MessageAttachment
+    ) -> int | None:
+        """Stable attachment slot. Caption text does not move it."""
+        if attachment.source == "reply" and message.reply_to_event_id is None:
+            positions = observed_reply_media_segments(message.segments, message.reply_segments)
+        elif attachment.source == "reply":
+            positions = indexed_media_segments(message.reply_segments)
+        else:
+            positions = indexed_media_segments(message.segments)
+        for index, position, _kind, _data in positions:
+            if position == attachment.segment_index:
+                return index
+        return None
 
     def prepare_message(
         self,
@@ -388,6 +391,9 @@ class ConversationMediaService:
                 source_segments=segments,
             )
             self._prepared.add(shared)
+            self._prepared_origin[shared] = segment_origin(
+                segments, attachment.segment_index, preview=not original
+            )
             event_id = (
                 message.reply_to_event_id
                 if attachment.source == "reply"
@@ -395,11 +401,12 @@ class ConversationMediaService:
             )
             if event_id is None and attachment.source == "reply":
                 event_id = message.source_event_id
-            if event_id is not None:
+            slot = self._attachment_slot(message, attachment)
+            if event_id is not None and slot is not None:
                 self._originals[
                     (
                         event_id,
-                        attachment.segment_index,
+                        slot,
                         attachment.source == "reply" and message.reply_to_event_id is None,
                         not original,
                     )
@@ -447,14 +454,14 @@ class ConversationMediaService:
         gateway: PlatformMediaGateway | None,
         message: InboundMessage | None = None,
     ) -> None:
-        originals = (
-            {
-                (attachment.source, attachment.segment_index): attachment.prepared_media
-                for attachment in (*message.attachments, *message.reply_attachments)
-            }
-            if message is not None
-            else {}
-        )
+        originals: dict[tuple[str, int], PreparedAttachment] = {}
+        if message is not None:
+            for attachment in (*message.attachments, *message.reply_attachments):
+                slot = self._attachment_slot(message, attachment)
+                if slot is None or attachment.prepared_media is None:
+                    continue
+                source_name = "reply" if attachment.source == "reply" else "current"
+                originals[(source_name, slot)] = attachment.prepared_media
         async with self.database.read_session() as session:
             items = (
                 await session.scalars(
@@ -473,7 +480,7 @@ class ConversationMediaService:
                         prepared_media=originals.get(
                             (
                                 "reply" if item.source_snapshot_json is not None else "current",
-                                item.segment_index,
+                                item.attachment_index,
                             )
                         ),
                     )
@@ -583,17 +590,16 @@ class ConversationMediaService:
         if task is None:
             explicit_original = prepared_media is not None
             prepared_media = prepared_media or self._originals.get(
-                (event_id, item.segment_index, item.source_snapshot_json is not None, False)
+                (event_id, item.attachment_index, item.source_snapshot_json is not None, False)
             )
-            if prepared_media is not None:
-                prepared_segment = json.loads(prepared_media.source_segments)[item.segment_index]
-                if (
-                    prepared_segment.get("type") != item.kind
-                    or prepared_segment.get("data") != source[1]
-                ):
-                    if explicit_original:
-                        raise ConversationMediaError("attachment_source_changed")
-                    prepared_media = None
+            if (
+                prepared_media is not None
+                and self._prepared_origin.get(prepared_media) != attachment_origin(source[1])
+            ):
+                # An admitted download still names its original file.
+                if explicit_original:
+                    raise ConversationMediaError("attachment_source_changed")
+                prepared_media = None
             task = asyncio.create_task(
                 self._cache_original(
                     event_id, index, gateway, source=source, prepared_media=prepared_media
@@ -615,11 +621,16 @@ class ConversationMediaService:
     async def _cache_preview(
         self, source: tuple[ConversationMediaItemModel, dict[str, Any], str]
     ) -> Path:
-        item, _data, segments = source
+        item, data, _segments = source
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                data.get("preview"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
         key = (
             item.source_event_id,
             item.attachment_index,
-            segments,
+            fingerprint,
             item.source_snapshot_json,
             "preview",
         )
@@ -647,12 +658,17 @@ class ConversationMediaService:
         if not original.is_file() or item.cache_status == "expired":
             raise ConversationMediaError("attachment_expired")
         shared = self._originals.get(
-            (item.source_event_id, item.segment_index, item.source_snapshot_json is not None, True)
+            (
+                item.source_event_id,
+                item.attachment_index,
+                item.source_snapshot_json is not None,
+                True,
+            )
         )
-        if shared is not None:
-            segment = json.loads(shared.source_segments)[item.segment_index]
-            if segment.get("data", {}).get("preview") != preview:
-                shared = None
+        if shared is not None and self._prepared_origin.get(shared) != attachment_origin(
+            preview if isinstance(preview, dict) else {}
+        ):
+            shared = None
         temporary = original.with_name(f"{uuid4().hex}.part")
         self._staging_paths.add(temporary)
         try:
@@ -953,9 +969,7 @@ class ConversationMediaService:
                 attachment_index=item.attachment_index,
                 content_hash=digest,
                 expires_at=_aware(item.expires_at).isoformat() if item.expires_at else None,
-                version=hashlib.sha256(
-                    (item.source_snapshot_json or attachment_origin(source_data)).encode()
-                ).hexdigest()
+                version=attachment_source_version(source_data, item.source_snapshot_json)
                 if is_tgs
                 else None,
             )
@@ -1008,13 +1022,12 @@ class ConversationMediaService:
         sources = await self._sources(tuple(seen))
         for key, dependency in seen.items():
             conversation_id, content_hash, source_version = dependency
-            item, _, _segments = sources[key]
+            item, data, _segments = sources[key]
             if item.conversation_id != conversation_id:
                 raise ConversationMediaError("attachment_source_changed")
             if (
                 source_version is not None
-                and source_version
-                != hashlib.sha256((item.source_snapshot_json or _segments).encode()).hexdigest()
+                and source_version != attachment_source_version(data, item.source_snapshot_json)
             ):
                 raise ConversationMediaError("attachment_source_changed")
             # The selected pixels already belong to the tool result or private

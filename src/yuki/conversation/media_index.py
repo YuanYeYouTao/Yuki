@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
@@ -16,6 +17,72 @@ from yuki.persistence.models import ConversationMediaItemModel
 
 _IGNORED = frozenset({"text", "at", "mention", "face", "reply", "yuki_context", "agent_target"})
 _MEDIA = frozenset({"image", "video", "file", "record", "audio"})
+_ORIGIN_KEYS = ("file", "url", "file_id", "media_id")
+
+
+def attachment_origin(data: Mapping[str, Any]) -> str:
+    """Identity of the bytes. Caption text and segment position are not part of it."""
+    picked = {
+        key: data[key]
+        for key in _ORIGIN_KEYS
+        if isinstance(data.get(key), str) and data[key]
+    }
+    return json.dumps(picked, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def live_media_data(segments_json: str, attachment_index: int) -> dict[str, Any] | None:
+    """Return the media payload at one stable attachment slot."""
+    try:
+        segments = json.loads(segments_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(segments, list):
+        return None
+    for index, _position, _kind, data in indexed_media_segments(segments):
+        if index == attachment_index and isinstance(data, dict):
+            return data
+    return None
+
+
+def segment_origin(segments_json: str, segment_index: int, *, preview: bool = False) -> str:
+    """Origin captured with the admitted segment, before later position edits."""
+    try:
+        segment = json.loads(segments_json)[segment_index]
+    except (TypeError, ValueError, IndexError):
+        return attachment_origin({})
+    data = segment.get("data") if isinstance(segment, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    if preview:
+        nested = data.get("preview")
+        data = nested if isinstance(nested, dict) else {}
+    return attachment_origin(data)
+
+
+def attachment_source_version(data: Mapping[str, Any] | None, snapshot: str | None = None) -> str:
+    """Source version for selected pixels. A caption edit does not change it."""
+    if snapshot is not None:
+        material = snapshot
+    else:
+        body = data or {}
+        material = json.dumps(
+            {"origin": attachment_origin(body), "preview": body.get("preview")},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def same_attachment_origin(previous: Any, prepared: Any) -> bool:
+    """True when both segments still name the same file, regardless of position."""
+    if not isinstance(previous, dict) or not isinstance(prepared, dict):
+        return False
+    if previous.get("type") != prepared.get("type"):
+        return False
+    previous_data = previous.get("data") if isinstance(previous.get("data"), dict) else {}
+    prepared_data = prepared.get("data") if isinstance(prepared.get("data"), dict) else {}
+    return attachment_origin(previous_data) == attachment_origin(prepared_data)
 
 
 def indexed_media_segments(

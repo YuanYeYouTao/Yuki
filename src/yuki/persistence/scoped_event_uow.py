@@ -25,7 +25,7 @@ from yuki.conversation.hydrate import (
     touch_canonical_watermarks,
 )
 from yuki.conversation.initiative_sources import source_revision
-from yuki.conversation.media_index import prepare_event_media
+from yuki.conversation.media_index import prepare_event_media, same_attachment_origin
 from yuki.conversation.scope_models import ConversationScopeState
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
@@ -436,10 +436,15 @@ class ScopedEventLedgerUnitOfWork:
                     if current is None:
                         session.add(prepared)
                         continue
+                    try:
+                        same_origin = same_attachment_origin(
+                            decoded[current.segment_index],
+                            prepared_segments[prepared.segment_index],
+                        )
+                    except (IndexError, TypeError):
+                        same_origin = False
                     if current.source_snapshot_json != prepared.source_snapshot_json or (
-                        current.source_snapshot_json is None
-                        and decoded[current.segment_index]
-                        != prepared_segments[prepared.segment_index]
+                        current.source_snapshot_json is None and not same_origin
                     ):
                         current.cache_status = "uncached"
                         current.content_sha256 = current.cache_name = None

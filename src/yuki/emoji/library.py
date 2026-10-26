@@ -40,6 +40,19 @@ def _naming_facts(path: Path) -> dict[str, Any]:
     return facts
 
 
+def _read_original(path: Path, expected: str) -> bytes:
+    """Read one original after the winner is known, and reject a changed source."""
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    with path.open("rb") as stream:
+        while piece := stream.read(65536):
+            digest.update(piece)
+            chunks.append(piece)
+    if digest.hexdigest() != expected:
+        raise ValueError("attachment_source_changed")
+    return b"".join(chunks)
+
+
 def snapshot_identity(platform: str, digest: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"yuki:sticker:{platform}:{digest}"))
 
@@ -175,13 +188,20 @@ class EmojiLibrary:
             is_sticker=is_sticker,
         )
         asset = EmojiAsset.model_validate(result["asset"])
-        if result["created"] and self.provider is not None and self.preprocessor is not None:
-            try:
-                content = await _media_io(cached_path.read_bytes)
-                if hashlib.sha256(content).hexdigest() == digest:
-                    self._submit(self.describe(asset, content=content, preview=preview))
-            except OSError:
-                return asset
+        if (
+            result["created"]
+            and self.provider is not None
+            and self.preprocessor is not None
+            and self.vision_runtime is not None
+        ):
+            self._submit(
+                self.describe(
+                    asset,
+                    source_path=cached_path,
+                    expected_sha=digest,
+                    preview=preview,
+                )
+            )
         return asset
 
     async def rebuild(self, *, platform: str | None = None) -> dict[str, Any]:
@@ -243,6 +263,8 @@ class EmojiLibrary:
         *,
         content: bytes | None = None,
         preview: MessageAttachment | None = None,
+        source_path: Path | None = None,
+        expected_sha: str | None = None,
     ) -> EmojiAsset:
         if self.provider is None or self.preprocessor is None or self.vision_runtime is None:
             return asset
@@ -251,19 +273,22 @@ class EmojiLibrary:
             if preview is None or preview.prepared_media is None:
                 return asset
             preview_path, _ = await preview.prepared_media.source()
-            content = await _media_io(preview_path.read_bytes)
-        runtime = await self.vision_runtime()
+            try:
+                content = await _media_io(preview_path.read_bytes)
+            except OSError:
+                return asset
+        elif content is None:
+            if source_path is None:
+                return asset
+            try:
+                content = await _media_io(
+                    _read_original, source_path, expected_sha or asset.sha256
+                )
+            except (OSError, ValueError):
+                return asset
         if content is None:
-            import base64
-
-            result = await self.workspace.sandbox.execute(
-                "workspace_media_read",
-                {"path": asset.relative_path, "expected_version": asset.sha256},
-                request_id=str(uuid4()),
-            )
-            if result.get("error"):
-                raise WorkspaceError(str(result["error"]))
-            content = base64.b64decode(result["base64"])
+            return asset
+        runtime = await self.vision_runtime()
         facts = await asyncio.to_thread(inspect_content, content) if is_preview else None
         downloaded = DownloadedMedia(
             content=content,

@@ -101,22 +101,28 @@ class StickerIndex:
     def facts(self, path: Path, *, inspect_pixels: bool = True) -> dict[str, Any]:
         candidate = path
         if candidate.is_symlink():
-            resolved = candidate.resolve()
-            relative = resolved.relative_to(self.root.resolve())
-            if len(relative.parts) < 2 or relative.parts[1] != "files":
+            link_relative = candidate.absolute().relative_to(self.root.absolute())
+            if len(link_relative.parts) < 3 or link_relative.parts[1] != "files":
                 raise ValueError("unsupported_sticker_link")
-            if resolved.is_symlink() or not resolved.is_file():
+            files = (self.directory(link_relative.parts[0]) / "files").resolve()
+            resolved = candidate.resolve()
+            resolved.relative_to(files)
+            info = resolved.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
                 raise ValueError("unsupported_sticker_link")
             candidate = resolved
-        with candidate.open("rb") as stream:
-            info = os.fstat(stream.fileno())
+        descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise ValueError("unsupported_sticker_file")
             result = inspect_path(
-                stream.fileno(),
+                descriptor,
                 candidate.relative_to(self.workspace).as_posix(),
                 inspect_pixels=inspect_pixels,
             )
+        finally:
+            os.close(descriptor)
         if result is None:
             raise ValueError("file_changed_during_read")
         return result
@@ -482,24 +488,38 @@ class StickerIndex:
         with self.cache_writer(platform):
             self._unlink_cache(platform)
 
+    def _cache_still_readable(self, platform: str) -> bool:
+        try:
+            return self._cache_readable(platform)
+        except sqlite3.DatabaseError as error:
+            if not self.corrupt(error):
+                raise
+            return False
+
     def search(self, platform: str, query: str, *, limit: int = 20) -> dict[str, Any]:
         try:
             return self._search_ready(platform, query, limit=limit)
         except sqlite3.DatabaseError as error:
             # Corrupted pages are rebuildable; SQL, lock and storage failures stay failures.
             if not self.corrupt(error):
-                if (getattr(error, "sqlite_errorcode", 0) & 255) == sqlite3.SQLITE_ERROR:
+                code = getattr(error, "sqlite_errorcode", 0) & 255
+                if code == sqlite3.SQLITE_ERROR and not self._cache_still_readable(platform):
                     return {"needs_build": True}
                 raise
+        # The reader is already closed. Look again under the writer lock; do not
+        # call ready(), which would take that same lock.
         with self.cache_writer(platform):
-            try:
-                if self._cache_readable(platform):
-                    return self._search_ready(platform, query, limit=limit)
-            except sqlite3.DatabaseError as error:
-                if not self.corrupt(error):
-                    raise
-            self._unlink_cache(platform)
-        return {"needs_build": True}
+            kept = self._cache_still_readable(platform)
+            if not kept:
+                self._unlink_cache(platform)
+        if not kept:
+            return {"needs_build": True}
+        try:
+            return self._search_ready(platform, query, limit=limit)
+        except sqlite3.DatabaseError as error:
+            if self.corrupt(error):
+                return {"needs_build": True}
+            raise
 
     def _search_ready(self, platform: str, query: str, *, limit: int) -> dict[str, Any]:
         wanted = terms(query)
