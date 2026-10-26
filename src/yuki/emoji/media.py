@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import io
-import json
 import os
 import struct
 import warnings
@@ -46,6 +44,213 @@ def _ebml_format(stream: BinaryIO) -> str | None:
     return None
 
 
+class _TgsSniff:
+    """Top-level v/layers/w/h only. It does not validate the rest of the JSON or the gzip CRC."""
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.started = False
+        self.ended = False
+        self.in_string = False
+        self.escape = False
+        self.unicode_left = 0
+        self.expect_key = False
+        self.collecting_key = False
+        self.key = ""
+        self.after_colon = False
+        self.number = ""
+        self.reading_number = False
+        self.saw_v = False
+        self.saw_layers = False
+        self.width: int | None = None
+        self.height: int | None = None
+
+    def feed(self, data: bytes) -> bool:
+        for raw in data:
+            if (
+                self.width is not None
+                and self.height is not None
+                and self.saw_v
+                and self.saw_layers
+            ):
+                return True
+            if self.ended:
+                return self.ready
+            char = chr(raw)
+            if self.unicode_left:
+                self.unicode_left -= 1
+                if self.collecting_key:
+                    self.key += char
+                continue
+            if self.in_string:
+                if self.escape:
+                    self.escape = False
+                    if char == "u":
+                        self.unicode_left = 4
+                    if self.collecting_key:
+                        self.key += char
+                    continue
+                if char == "\\":
+                    self.escape = True
+                    if self.collecting_key:
+                        self.key += char
+                    continue
+                if char == '"':
+                    self.in_string = False
+                    if self.collecting_key:
+                        self.collecting_key = False
+                        self.expect_key = False
+                    elif self.depth == 1 and self.after_colon:
+                        self._note_scalar()
+                    continue
+                if self.collecting_key:
+                    if len(self.key) < 8:
+                        self.key += char
+                    else:
+                        self.collecting_key = False
+                        self.key = ""
+                continue
+            if char in " \t\r\n":
+                if self.reading_number:
+                    self._finish_number()
+                continue
+            if not self.started:
+                if char != "{":
+                    self.ended = True
+                    return False
+                self.started = True
+                self.depth = 1
+                self.expect_key = True
+                continue
+            if self.reading_number and char not in "-0123456789.eE+":
+                self._finish_number()
+            if char == '"':
+                self.in_string = True
+                if self.depth == 1 and self.expect_key:
+                    self.collecting_key = True
+                    self.key = ""
+                continue
+            if char == ":" and self.depth == 1:
+                self.after_colon = True
+                self.expect_key = False
+                continue
+            if char == "{":
+                if self.depth == 1 and self.after_colon:
+                    self._note_container()
+                self.depth += 1
+                self.after_colon = False
+                continue
+            if char == "[":
+                if self.depth == 1 and self.after_colon:
+                    self._note_container()
+                self.depth += 1
+                self.after_colon = False
+                continue
+            if char == "}":
+                self.depth -= 1
+                if self.depth == 0:
+                    self.ended = True
+                    return self.ready
+                if self.depth == 1:
+                    self.expect_key = True
+                continue
+            if char == "]":
+                self.depth -= 1
+                if self.depth == 1:
+                    self.expect_key = True
+                continue
+            if char == ",":
+                if self.depth == 1:
+                    self.expect_key = True
+                    self.after_colon = False
+                continue
+            if self.depth == 1 and self.after_colon and char in "-0123456789":
+                self.reading_number = True
+                self.number += char
+                continue
+            if self.depth == 1 and self.after_colon and char in "tfn":
+                self._note_scalar()
+        return self.ready
+
+    def _note_container(self) -> None:
+        if self.key == "v":
+            self.saw_v = True
+        elif self.key == "layers":
+            self.saw_layers = True
+        self.key = ""
+        self.after_colon = False
+
+    def _note_scalar(self) -> None:
+        if self.key in {"v", "layers"}:
+            if self.key == "v":
+                self.saw_v = True
+            else:
+                self.saw_layers = True
+        self.key = ""
+        self.after_colon = False
+
+    def _finish_number(self) -> None:
+        if self.key == "w":
+            self.width = _plain_int(self.number)
+        elif self.key == "h":
+            self.height = _plain_int(self.number)
+        elif self.key == "v":
+            self.saw_v = True
+        elif self.key == "layers":
+            self.saw_layers = True
+        self.number = ""
+        self.reading_number = False
+        self.key = ""
+        self.after_colon = False
+
+    @property
+    def ready(self) -> bool:
+        return (
+            self.saw_v
+            and self.saw_layers
+            and (self.width is not None or self.height is not None or self.ended)
+        )
+
+
+def _plain_int(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _tgs_header(stream: BinaryIO) -> dict[str, Any] | None:
+    stream.seek(0)
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    sniff = _TgsSniff()
+    try:
+        pending = b""
+        while True:
+            if not pending:
+                pending = stream.read(32)
+                if not pending and decoder.eof:
+                    break
+            produced = decoder.decompress(pending, 128)
+            pending = decoder.unconsumed_tail
+            if sniff.feed(produced) and sniff.width is not None and sniff.height is not None:
+                break
+            if not produced and not pending:
+                sniff.feed(decoder.flush())
+                break
+    except zlib.error:
+        if not (sniff.saw_v and sniff.saw_layers):
+            return None
+    if not (sniff.started and sniff.saw_v and sniff.saw_layers):
+        return None
+    return {
+        "image_format": "TGS",
+        "mime_type": "application/x-tgsticker",
+        "animated": True,
+        "width": sniff.width,
+        "height": sniff.height,
+    }
+
+
 def media_facts(stream: BinaryIO, *, inspect_pixels: bool = True) -> dict[str, Any] | None:
     stream.seek(0)
     prefix = stream.read(16)
@@ -60,19 +265,7 @@ def media_facts(stream: BinaryIO, *, inspect_pixels: bool = True) -> dict[str, A
             "animated": True,
         }
     if prefix.startswith(b"\x1f\x8b"):
-        try:
-            value = json.load(gzip.GzipFile(fileobj=stream))
-        except (EOFError, OSError, ValueError, zlib.error):
-            return None
-        if isinstance(value, dict) and "layers" in value and "v" in value:
-            return {
-                "image_format": "TGS",
-                "mime_type": "application/x-tgsticker",
-                "animated": True,
-                "width": value.get("w"),
-                "height": value.get("h"),
-            }
-        return None
+        return _tgs_header(stream)
     # Original storage does not require pixels to fit a visual decoder's budget.
     # The real header remains useful even when optional Pillow inspection fails.
     known: dict[str, Any] | None = None
@@ -113,6 +306,34 @@ def media_facts(stream: BinaryIO, *, inspect_pixels: bool = True) -> dict[str, A
         struct.error,
     ):
         return known
+
+
+def header_facts(stream: BinaryIO) -> dict[str, Any] | None:
+    """Name a file from its header. GIF frames are not enumerated."""
+    facts = media_facts(stream, inspect_pixels=False)
+    if facts is not None and facts.get("image_format") in {"TGS", "WEBM", "MKV"}:
+        return facts
+    if facts is None:
+        facts = {}
+    from PIL import Image, UnidentifiedImageError
+
+    stream.seek(0)
+    try:
+        with warnings.catch_warnings(), Image.open(stream) as image:
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            kind = (image.format or facts.get("image_format") or "").upper()
+            return {
+                **facts,
+                "image_format": kind or facts.get("image_format", "BIN"),
+                "mime_type": Image.MIME.get(
+                    kind, facts.get("mime_type", "application/octet-stream")
+                ),
+                "width": image.width,
+                "height": image.height,
+                "animated": bool(getattr(image, "is_animated", False)),
+            }
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        return facts or None
 
 
 def inspect_content(content: bytes) -> dict[str, Any]:

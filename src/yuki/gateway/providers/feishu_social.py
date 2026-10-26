@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from yuki.gateway.providers.feishu import FeishuAPIError, FeishuClient, decode_account_id
 from yuki.gateway.social import (
+    TransportEffectError,
     TransportMention,
     TransportMessage,
     TransportReceipt,
@@ -117,22 +118,25 @@ class FeishuSocialOperations:
                 raise ValueError("use_separate_delivery_operations")
             media = message.media
             image = media.kind == "image"
-            upload = await client.call(
-                "POST",
-                "/open-apis/im/v1/images" if image else "/open-apis/im/v1/files",
-                json=(
-                    {"image_type": "message"}
-                    if image
-                    else {"file_type": "stream", "file_name": media.filename}
-                ),
-                files={
-                    "image" if image else "file": (
-                        media.filename,
-                        media.content,
-                        media.mime_type,
-                    )
-                },
-            )
+            try:
+                upload = await client.call(
+                    "POST",
+                    "/open-apis/im/v1/images" if image else "/open-apis/im/v1/files",
+                    json=(
+                        {"image_type": "message"}
+                        if image
+                        else {"file_type": "stream", "file_name": media.filename}
+                    ),
+                    files={
+                        "image" if image else "file": (
+                            media.filename,
+                            media.content,
+                            media.mime_type,
+                        )
+                    },
+                )
+            except Exception as exc:
+                raise TransportEffectError(type(exc).__name__, uncertain=False) from exc
             data = upload.get("data")
             key_name = "image_key" if image else "file_key"
             if (
@@ -140,7 +144,7 @@ class FeishuSocialOperations:
                 or not isinstance(data.get(key_name), str)
                 or not data[key_name]
             ):
-                raise FeishuAPIError("feishu_upload_receipt_missing")
+                raise TransportEffectError("feishu_upload_receipt_missing", uncertain=False)
             body = {
                 "msg_type": "image" if image else "file",
                 "content": json.dumps({key_name: data[key_name]}, separators=(",", ":")),

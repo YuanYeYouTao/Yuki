@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -13,7 +14,7 @@ from yuki.admin.models import VisionRuntimeConfig
 from yuki.conversation.media_index import indexed_media_segments
 from yuki.conversation.media_service import ConversationMediaError
 from yuki.domain.messages import InboundMessage, MessageAttachment
-from yuki.emoji.media import extension, inspect_content
+from yuki.emoji.media import extension, header_facts, inspect_content
 from yuki.emoji.models import EmojiAsset
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import _media_io
@@ -29,6 +30,14 @@ from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError
 
 logger = logging.getLogger(__name__)
+
+
+def _naming_facts(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        facts = header_facts(stream)
+    if facts is None:
+        return {"image_format": "BIN", "mime_type": "application/octet-stream"}
+    return facts
 
 
 def snapshot_identity(platform: str, digest: str) -> str:
@@ -146,10 +155,7 @@ class EmojiLibrary:
                     is_sticker=True,
                 )
             return EmojiAsset.model_validate(previous["asset"])
-        content = await _media_io(cached_path.read_bytes)
-        facts = await _media_io(inspect_content, content)
-        if facts["sha256"] != digest:
-            raise WorkspaceError("attachment_source_changed")
+        facts = await _media_io(_naming_facts, cached_path)
         name = f"{digest}.{extension(facts['image_format'])}"
         destination = f"stickers/{platform}/files/{name}"
         metadata = await self.workspace.copy_from_cache(
@@ -170,7 +176,12 @@ class EmojiLibrary:
         )
         asset = EmojiAsset.model_validate(result["asset"])
         if result["created"] and self.provider is not None and self.preprocessor is not None:
-            self._submit(self.describe(asset, content=content, preview=preview))
+            try:
+                content = await _media_io(cached_path.read_bytes)
+                if hashlib.sha256(content).hexdigest() == digest:
+                    self._submit(self.describe(asset, content=content, preview=preview))
+            except OSError:
+                return asset
         return asset
 
     async def rebuild(self, *, platform: str | None = None) -> dict[str, Any]:

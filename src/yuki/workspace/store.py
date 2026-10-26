@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from yuki.workspace.artifact_lock import ArtifactLockBusy, ArtifactRootLock
+
 
 class WorkspaceError(RuntimeError):
     pass
@@ -33,6 +35,7 @@ class PreparedArtifact:
 class WorkspaceStore:
     def __init__(self, root: Path) -> None:
         self.root = root.absolute()
+        self._files = ArtifactRootLock(self.root)
         self._initialize()
 
     def _index(self) -> Path:
@@ -156,6 +159,14 @@ class WorkspaceStore:
                 :128
             ]
         self._unlink(garbage)
+        try:
+            held = self._files.acquire(exclusive=True, wait=False)
+        except ArtifactLockBusy:
+            return
+        try:
+            self._unlink(list(self.root.glob("*.pending"))[:128])
+        finally:
+            self._files.release(held)
 
     def _publish_file(self, item: PreparedArtifact) -> None:
         if item.pending.parent != self.root:
@@ -211,6 +222,7 @@ class WorkspaceStore:
         identity, blob = self._id(artifact_id) if artifact_id else str(uuid4()), f"{uuid4()}.blob"
         # Check the original manifest path before preparing an unpublished file.
         self._index()
+        held = self._files.acquire(exclusive=False)
         path = self.root / f"{uuid4()}.pending"
         digest = hashlib.sha256()
         total = 0
@@ -274,3 +286,4 @@ class WorkspaceStore:
             return result
         finally:
             self._unlink([path])
+            self._files.release(held)

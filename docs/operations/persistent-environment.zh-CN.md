@@ -61,6 +61,8 @@ Docker 自定义 bridge 的 `127.0.0.11` loopback DNS 无法由 gVisor 访问，
 
 本次 Bot 与 Manager 须配套更新：模型只调用 `send`，Manager 保留私有发布并新增直接复制，旧 checkout 和导入迁移不再接受新调用。保留原 Manager 数据库、`environment_mutations`、HOME、图库、工作目录和已发布 artifact；已有任务、付费协议和真实回执不改名、不重放。工具合同切换形成合法新链，不修改已提交的工具声明或承诺复用旧前缀缓存。
 
+私有 artifact 根上的 `.artifact.lock` 是 Bot 与 Manager 共用的共享/独占文件锁。两边都切换到这把锁之后才能启用 pending 回收；旧发布者不持锁时，不要让新回收和它同时写。切换前按真实生命周期收拢两边的文件工作。锁文件不写 PID，正常运行不删除、不覆盖。Bot 的真实 UID 和 Manager 都要能打开它，不因此放宽整个 artifact 根的权限。
+
 源码的图库指引已更新；已有 `/workspace/stickers/AGENT.md` 是用户文件，升级时只将其中失效的模型工具名改为 `send`、Code 投影名改为 `yuki_send`，保留其余正文。不要用仓库整份文件覆盖用户指引，不批量改旧 TaskSpec 或通知的原参数。
 
 旧中转快照清退使用 [离线脚本](../../scripts/retire_media_snapshots.py)。它不停止服务，也不提供常驻 GC；在完整停写副本上审计，或在 Bot、Manager 与环境终端均停写的窗口执行。主业务库、Manager 数据库、artifact 根、普通工作目录和私有协议资料须来自同一部署：

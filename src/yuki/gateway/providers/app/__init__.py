@@ -41,5 +41,5 @@ class AppProvider:
             provider_id=self.provider_id,
             platform=self.platform,
             external_account_id=handle.self_id,
-            capabilities=frozenset({"send_private"}),
+            capabilities=frozenset({"send_private", "local_ledger"}),
         )

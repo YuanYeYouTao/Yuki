@@ -45,6 +45,7 @@ class NotificationDeliveryReceipt:
     sender_account_id: str
     external_target_id: str
     route_kind: str
+    remote_confirmed: bool = True
     presence_id: str = ""
     binding_id: str = ""
     platform: str = "qq"
@@ -76,6 +77,7 @@ class NotificationTransport(Protocol):
         target_type: str,
         local_path: Path,
         content_type: str,
+        content: bytes,
         prepared: dict[str, Any],
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
@@ -171,6 +173,7 @@ class PlatformNotificationTransport:
         target_type: str,
         local_path: Path,
         content_type: str,
+        content: bytes,
         prepared: dict[str, Any],
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
@@ -178,7 +181,6 @@ class PlatformNotificationTransport:
         canonical_presence_id: str | None = None,
         source_event_id: int | None = None,
     ) -> NotificationDeliveryReceipt:
-        content = await asyncio.to_thread(local_path.read_bytes)
         return await self._send(
             target_type=target_type,
             message=prepared_transport(
@@ -241,10 +243,11 @@ class PlatformNotificationTransport:
             raise ProactiveGatewayError(
                 "platform_transport_error", uncertain=getattr(exc, "uncertain", True)
             ) from exc
-        if result.reference is None:
+        if result.reference is None and result.remote_confirmed:
             raise ProactiveGatewayError("platform_receipt_missing", uncertain=True)
         return NotificationDeliveryReceipt(
-            message_id=result.reference,
+            message_id=result.reference or "",
+            remote_confirmed=result.remote_confirmed,
             sender_account_id=resolved.sender_account_id,
             external_target_id=resolved.external_target_id,
             route_kind=resolved.kind,
@@ -419,7 +422,7 @@ class PluginNotificationOutboxWorker:
             if item.part_type == "media":
                 if item.media_handle_id is None:
                     raise PluginPermanentDeliveryError("media_handle_missing")
-                artifact = await self._artifacts.resolve(
+                artifact, verified = await self._artifacts.read_owned(
                     plugin_id=item.plugin_id,
                     handle_id=item.media_handle_id,
                 )
@@ -427,6 +430,7 @@ class PluginNotificationOutboxWorker:
                     target_type=item.target_type,
                     local_path=artifact.local_path,
                     content_type=artifact.content_type,
+                    content=verified,
                     prepared=item.prepared,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
@@ -601,19 +605,21 @@ class PluginNotificationOutboxWorker:
         from yuki.persistence.scoped_event_uow import prepare_append
 
         prepared_append = await prepare_append(content, segments=segments)
+        ledger_key = receipt.message_id or f"notification-outbox:{item.id}"
+        native_id = receipt.message_id if receipt.remote_confirmed else None
         async with self._ledger._database.immediate_session() as session:
             completed = await self._repository.finish_outbox(
                 item.id,
                 attempt=item.attempts,
                 status="sent",
-                platform_message_id=receipt.message_id,
+                platform_message_id=native_id,
                 session=session,
             )
             if not completed:
                 return False
             appended = await ScopedEventLedgerUnitOfWork(self._ledger._database).append(
                 scope=identity,
-                platform_message_id=receipt.message_id,
+                platform_message_id=ledger_key,
                 sender_user_id=sender,
                 direction="outbound",
                 content=content,
@@ -630,6 +636,11 @@ class PluginNotificationOutboxWorker:
                 and event.canonical_conversation_id != item.canonical_conversation_id
             ):
                 raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+            from yuki.plugin_host.db_models import PluginNotificationOutboxModel
+
+            row = await session.get(PluginNotificationOutboxModel, item.id)
+            if row is not None:
+                row.event_id = event.id
         return True
 
 

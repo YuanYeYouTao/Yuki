@@ -785,6 +785,7 @@ class PluginNotificationRepository:
         attempt: int,
         status: str,
         platform_message_id: str | None = None,
+        event_id: int | None = None,
         error_category: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
@@ -805,6 +806,8 @@ class PluginNotificationRepository:
             assert row is not None
             row.status = status
             row.platform_message_id = platform_message_id
+            if event_id is not None:
+                row.event_id = event_id
             row.last_error_category = error_category
             row.lease_until = None
             row.updated_at = now

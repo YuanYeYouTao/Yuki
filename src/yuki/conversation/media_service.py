@@ -162,6 +162,43 @@ class _EventMediaGateway:
         return await gateway.resolve_media_file(file, kind, max_download_bytes=max_download_bytes)
 
 
+def attachment_origin(data: dict[str, Any]) -> str:
+    """Stable file identity. Caption and segment position are not part of it."""
+    picked = {
+        key: data[key]
+        for key in ("file", "url", "file_id", "media_id")
+        if isinstance(data.get(key), str) and data[key]
+    }
+    return json.dumps(picked, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def live_media_data(segments_json: str, attachment_index: int) -> dict[str, Any] | None:
+    try:
+        segments = json.loads(segments_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(segments, list):
+        return None
+    for index, _position, _kind, data in indexed_media_segments(segments):
+        if index == attachment_index and isinstance(data, dict):
+            return data
+    return None
+
+
+def _original_still_current(event: Any, live: Any, item: Any, data: dict[str, Any]) -> bool:
+    if (
+        event is None
+        or live is None
+        or event.suppression_status != "keeper"
+        or live.source_snapshot_json != item.source_snapshot_json
+    ):
+        return False
+    if item.source_snapshot_json is not None:
+        return True
+    current = live_media_data(event.segments_json, item.attachment_index)
+    return current is not None and attachment_origin(current) == attachment_origin(data)
+
+
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
@@ -502,14 +539,15 @@ class ConversationMediaService:
                 raise ConversationMediaError("attachment_not_found")
             item = row
             try:
-                source_segments = item.source_snapshot_json or raw_segments[key[0]]
-                if source_segments not in parsed:
-                    parsed[source_segments] = json.loads(source_segments)
-                segment = (
-                    parsed[source_segments]
-                    if item.source_snapshot_json is not None
-                    else parsed[source_segments][item.segment_index]
-                )
+                if item.source_snapshot_json is not None:
+                    source_segments = item.source_snapshot_json
+                    if source_segments not in parsed:
+                        parsed[source_segments] = json.loads(source_segments)
+                    segment = parsed[source_segments]
+                else:
+                    source_segments = raw_segments[key[0]]
+                    data = live_media_data(source_segments, item.attachment_index)
+                    segment = {"type": item.kind, "data": data} if data is not None else None
             except (ValueError, TypeError, IndexError) as exc:
                 raise ConversationMediaError("attachment_source_invalid") from exc
             if (
@@ -540,7 +578,7 @@ class ConversationMediaService:
         if source is None:
             source = (await self._sources(((event_id, index),)))[(event_id, index)]
         item = source[0]
-        key = event_id, index, source[-1], item.source_snapshot_json, "original"
+        key = event_id, index, attachment_origin(source[1]), item.source_snapshot_json, "original"
         task = self._cache_tasks.get(key)
         if task is None:
             explicit_original = prepared_media is not None
@@ -667,7 +705,7 @@ class ConversationMediaService:
         source: tuple[ConversationMediaItemModel, dict[str, Any], str],
         prepared_media: PreparedAttachment | None,
     ) -> Path:
-        item, data, source_segments = source
+        item, data, _source_segments = source
         if item.cache_name:
             path = self._path(item)
             if path.is_file() and not path.is_symlink():
@@ -712,9 +750,7 @@ class ConversationMediaService:
                 async with self.database.read_session() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
                     event = await session.get(ChatEventModel, event_id)
-                    if event is None or event.segments_json != source_segments:
-                        raise ConversationMediaError("attachment_source_changed")
-                    if live is None or live.source_snapshot_json != item.source_snapshot_json:
+                    if not _original_still_current(event, live, item, data):
                         raise ConversationMediaError("attachment_source_changed")
                     if live.cache_status == "expired":
                         raise ConversationMediaError("attachment_expired")
@@ -730,9 +766,7 @@ class ConversationMediaService:
                 async with self.database.immediate_session() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
                     event = await session.get(ChatEventModel, event_id)
-                    if event is None or event.segments_json != source_segments:
-                        raise ConversationMediaError("attachment_source_changed")
-                    if live is None or live.source_snapshot_json != item.source_snapshot_json:
+                    if not _original_still_current(event, live, item, data):
                         raise ConversationMediaError("attachment_source_changed")
                     if live.cache_status == "expired":
                         raise ConversationMediaError("attachment_expired")
@@ -760,10 +794,15 @@ class ConversationMediaService:
     ) -> tuple[ConversationMediaItemModel, Path]:
         key = (event_id, attachment_index)
         source = (await self._sources((key,)))[key]
-        item, _, source_segments = source
+        item, data, _source_segments = source
+        expected = (
+            live_media_data(expected_source_segments, item.attachment_index)
+            if expected_source_segments is not None
+            else None
+        )
         if expected_source_segments is not None and (
             item.source_snapshot_json is not None
-            or json.loads(source_segments) != json.loads(expected_source_segments)
+            or attachment_origin(data) != attachment_origin(expected or {})
         ):
             raise ConversationMediaError("attachment_source_changed")
         path = await self._cache(event_id, attachment_index, None, source=source)
@@ -771,12 +810,7 @@ class ConversationMediaService:
         async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, event_id)
             live = await session.get(ConversationMediaItemModel, key)
-            if (
-                event is None
-                or event.segments_json != source_segments
-                or live is None
-                or live.source_snapshot_json != item.source_snapshot_json
-            ):
+            if not _original_still_current(event, live, item, data):
                 raise ConversationMediaError("attachment_source_changed")
         return live, path
 
@@ -917,7 +951,7 @@ class ConversationMediaService:
                 content_hash=digest,
                 expires_at=_aware(item.expires_at).isoformat() if item.expires_at else None,
                 version=hashlib.sha256(
-                    (item.source_snapshot_json or source_segments).encode()
+                    (item.source_snapshot_json or attachment_origin(source_data)).encode()
                 ).hexdigest()
                 if is_tgs
                 else None,
