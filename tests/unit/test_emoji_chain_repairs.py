@@ -6,7 +6,7 @@ import json
 import threading
 from pathlib import Path
 
-from yuki.conversation.media_service import attachment_origin
+from yuki.conversation.media_index import attachment_origin, same_attachment_origin
 from yuki.emoji.media import media_facts
 from yuki.gateway.social import TransportEffectError
 from yuki.workspace.artifact_lock import ArtifactLockBusy, ArtifactRootLock
@@ -18,6 +18,11 @@ def test_attachment_origin_ignores_caption_and_segment_text() -> None:
     replaced = {"file_id": "photo-2", "caption": "午饭"}
     assert attachment_origin(original) == attachment_origin(edited)
     assert attachment_origin(original) != attachment_origin(replaced)
+    previous = {"type": "file", "data": {"file": "animated", "preview": {"file": "old"}}}
+    caption = {"type": "file", "data": {"file": "animated", "preview": {"file": "old"}}}
+    thumbnail = {"type": "file", "data": {"file": "animated", "preview": {"file": "new"}}}
+    assert same_attachment_origin(previous, caption)
+    assert not same_attachment_origin(previous, thumbnail)
 
 
 def test_tgs_sniff_reads_top_level_fields_and_stops_before_a_huge_string() -> None:

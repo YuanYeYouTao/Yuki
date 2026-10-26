@@ -74,8 +74,20 @@ def attachment_source_version(data: Mapping[str, Any] | None, snapshot: str | No
     return hashlib.sha256(material.encode()).hexdigest()
 
 
+def _preview_origin(data: Mapping[str, Any]) -> str:
+    preview = data.get("preview")
+    if not isinstance(preview, Mapping):
+        return attachment_origin({})
+    return attachment_origin(preview)
+
+
 def same_attachment_origin(previous: Any, prepared: Any) -> bool:
-    """True when both segments still name the same file, regardless of position."""
+    """True when both segments still name the same file and preview.
+
+    Caption text and segment position are not part of this comparison. A
+    different preview file is a different source, so the cached original is
+    published again with the new preview.
+    """
     if not isinstance(previous, dict) or not isinstance(prepared, dict):
         return False
     if previous.get("type") != prepared.get("type"):
@@ -86,7 +98,9 @@ def same_attachment_origin(previous: Any, prepared: Any) -> bool:
         previous_data = {}
     if not isinstance(prepared_data, dict):
         prepared_data = {}
-    return attachment_origin(previous_data) == attachment_origin(prepared_data)
+    return attachment_origin(previous_data) == attachment_origin(prepared_data) and (
+        _preview_origin(previous_data) == _preview_origin(prepared_data)
+    )
 
 
 def indexed_media_segments(

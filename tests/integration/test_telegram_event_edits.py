@@ -227,7 +227,9 @@ async def test_caption_before_and_during_download_reuses_one_original(
     await env.gateway.receive(original)
     await drain(env)
     source = await _source(database)
-    await env.gateway.receive(_edit(2, "caption before download"))
+    before = _edit(2, "caption before download")
+    _photo(before["edited_message"])
+    await env.gateway.receive(before)
     entered, release = asyncio.Event(), asyncio.Event()
     resolve = reader.gateway.resolve_media_file
 
@@ -240,7 +242,9 @@ async def test_caption_before_and_during_download_reuses_one_original(
     task = asyncio.create_task(_path(reader, source))
     try:
         await asyncio.wait_for(entered.wait(), 5)
-        await env.gateway.receive(_edit(3, "caption during download", edited_at=1792070011))
+        during = _edit(3, "caption during download", edited_at=1792070011)
+        _photo(during["edited_message"])
+        await env.gateway.receive(during)
         release.set()
         item, path = await task
         assert item.segment_index == 1
