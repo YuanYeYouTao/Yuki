@@ -36,10 +36,12 @@ class FeishuWebSocket:
         *,
         on_connected: Callable[[], None] = lambda: None,
         on_disconnected: Callable[[], None] = lambda: None,
+        before_connect: Callable[[], Awaitable[None]] | None = None,
         connector: Callable[..., Any] = connect,
     ) -> None:
         self.client, self.handler = client, handler
         self.on_connected, self.on_disconnected = on_connected, on_disconnected
+        self.before_connect = before_connect
         self.connector = connector
         self._connection: Any = None
         self._task: asyncio.Task[None] | None = None
@@ -67,7 +69,6 @@ class FeishuWebSocket:
         self._config.update({key: config[key] for key in self._config if key in config})
 
     async def start(self) -> None:
-        await self._connect()
         self._task = asyncio.create_task(self._run(), name=f"{self.client.platform}-websocket")
 
     async def close(self) -> None:
@@ -77,6 +78,8 @@ class FeishuWebSocket:
         await self._disconnect()
 
     async def _connect(self) -> None:
+        if self.before_connect is not None:
+            await self.before_connect()
         try:
             endpoint = await self.client.websocket_endpoint()
         except FeishuAPIError as exc:
@@ -131,9 +134,13 @@ class FeishuWebSocket:
         try:
             while True:
                 try:
+                    if self._connection is None:
+                        await self._connect()
                     await self._serve()
                     self.last_error_category = "connection_closed"
                 except asyncio.CancelledError:
+                    raise
+                except PermissionError:
                     raise
                 except Exception as exc:
                     self.last_error_category = type(exc).__name__
