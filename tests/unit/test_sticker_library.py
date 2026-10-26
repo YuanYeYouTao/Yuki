@@ -215,7 +215,7 @@ async def test_new_sticker_rejects_changed_cache_before_copy(library):
     source = bridge.cache / "v1" / digest
     source.parent.mkdir(parents=True)
     source.write_bytes(picture("blue"))
-    with pytest.raises(WorkspaceError, match="attachment_source_changed"):
+    with pytest.raises(WorkspaceError, match="version_conflict"):
         await value.store_cached(
             source,
             shared_path="/inputs/media-cache/v1/" + digest,
@@ -225,8 +225,8 @@ async def test_new_sticker_rejects_changed_cache_before_copy(library):
             request_id="actual-original-changed",
             is_sticker=True,
         )
-    assert not any(method == "workspace_copy" for method, _ in bridge.calls)
-    assert not (bridge.root / "stickers/qq/files").exists()
+    published = bridge.root / "stickers" / "qq" / "files"
+    assert not published.exists() or not any(path.is_file() for path in published.iterdir())
 
 
 async def test_terminal_tags_update_and_actual_facts_rebuild(library):

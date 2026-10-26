@@ -378,6 +378,39 @@ class EmojiDeliveryService:
             args["reply_to_event_id"] = reply_id
         return args, SocialContext(**values)
 
+    async def _committed_target_conversation(self, intent: EmojiIntent) -> str | None:
+        """Use the conversation the original text send already committed."""
+        import json
+
+        from yuki.social.db_models import SocialOperationModel
+        from yuki.social.repository import sequence_prefix
+
+        parent_id = intent.source.get("after_operation_id")
+        if not parent_id:
+            return None
+        async with self.social.database.read_session() as session:
+            parent = await session.get(SocialOperationModel, parent_id)
+            if parent is None:
+                return None
+            if parent.prepared_json:
+                route = json.loads(parent.prepared_json).get("route")
+                if isinstance(route, dict) and route.get("conversation_id"):
+                    return str(route["conversation_id"])
+            if parent.original_conversation_id:
+                return parent.original_conversation_id
+            if parent.action != "send_message_sequence":
+                return None
+            prefix = sequence_prefix(parent.tool_call_id)
+            return await session.scalar(
+                select(SocialOperationModel.original_conversation_id).where(
+                    SocialOperationModel.source_turn_id == parent.source_turn_id,
+                    SocialOperationModel.tool_call_id.in_(
+                        tuple(f"{prefix}{index}" for index in range(parent.planned_parts or 0))
+                    ),
+                    SocialOperationModel.original_conversation_id.is_not(None),
+                )
+            )
+
     async def _deliver(self, intent: EmojiIntent) -> None:
         started = time.monotonic()
         _mark(intent.id, "background_scheduled", started)
@@ -431,23 +464,14 @@ class EmojiDeliveryService:
                 text_finished = await EmojiIntentRepository._text_dispatch_finished(session, intent)
             if not text_finished:
                 return
-            stored_route = intent.source.get("route") or {}
+            stored_route = dict(intent.source.get("route") or {})
             if not stored_route.get("conversation_id"):
-                parent_id = intent.source.get("after_operation_id")
-                recovered = None
-                if parent_id:
-                    import json
-
-                    from yuki.social.db_models import SocialOperationModel
-
-                    async with self.social.database.read_session() as session:
-                        parent = await session.get(SocialOperationModel, parent_id)
-                    if parent is not None and parent.prepared_json:
-                        recovered = json.loads(parent.prepared_json).get("route")
-                if not isinstance(recovered, dict) or not recovered.get("conversation_id"):
+                conversation_id = await self._committed_target_conversation(intent)
+                if not conversation_id:
                     await self.intents.close(intent.id, "emoji_target_unavailable")
                     return
-                intent.source["route"] = recovered
+                stored_route["conversation_id"] = conversation_id
+                intent.source["route"] = stored_route
             args, context = self._send_input(intent, metadata["artifact_id"])
             _mark(intent.id, "text_dispatch_finished", started)
             await self.social.execute("send", args, context)

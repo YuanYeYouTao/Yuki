@@ -541,12 +541,10 @@ async def test_illustration_preserves_explicit_account_among_same_person_same_pr
     await delivery.start()
     try:
         result = await settle(delivery, env.context)
-        if swapped_prepared_route:
-            assert result["status"] == "not_sent" and result["error"] == "emoji_route_changed"
-            expected = [10002]
-        else:
-            assert result["status"] == "succeeded"
-            expected = [10002, 10002]
+        # The illustration keeps the conversation the text send committed.
+        # A later send_route swap does not choose a different account.
+        assert result["status"] == "succeeded"
+        expected = [10002, 10002]
         assert [
             payload["user_id"] for action, payload in sends(env) if action == "send_private_msg"
         ] == expected

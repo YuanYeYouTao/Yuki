@@ -81,17 +81,17 @@ async def test_cache_deleted_between_ready_and_query_rebuilds_from_actual_files(
     Image.new("RGB", (8, 8), "green").save(output, format="PNG")
     asset = await seed_cached_sticker(value, output.getvalue(), platform="qq", tags=("selected",))
     await value.rebuild()
-    original_ready = StickerIndex.ready
+    original_search = StickerIndex._search_ready
     removed = False
 
-    def remove_after_ready(engine, platform):
+    def remove_before_query(engine, platform, query, *, limit=20):
         nonlocal removed
-        result = original_ready(engine, platform)
-        if result and not removed:
+        path = bridge.root / f"stickers/{platform}/search.sqlite3"
+        if path.is_file() and not removed:
             removed = True
-            (bridge.root / f"stickers/{platform}/search.sqlite3").unlink()
-        return result
+            path.unlink()
+        return original_search(engine, platform, query, limit=limit)
 
-    monkeypatch.setattr(StickerIndex, "ready", remove_after_ready)
+    monkeypatch.setattr(StickerIndex, "_search_ready", remove_before_query)
     assert (await value.select("selected", platform="qq")).id == asset.id
     assert removed and StickerIndex(bridge.root).ready("qq")
