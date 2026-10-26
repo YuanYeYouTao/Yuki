@@ -20,6 +20,7 @@ from yuki.identity.db_models import (
 )
 from yuki.identity.person_identity import person_enabled_condition, person_family_condition
 from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.db_models import PluginNotificationOutboxModel
 from yuki.services.history_query import HistorySource, HistoryTarget
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.models import SocialError
@@ -40,6 +41,13 @@ def history_delivery_predicates(acp_conversation_ids: tuple[str, ...]) -> tuple[
             .where(
                 SocialOperationModel.event_id == ChatEventModel.id,
                 SocialOperationModel.status == "succeeded",
+                ChatEventModel.direction == "outbound",
+            )
+            .exists(),
+            select(PluginNotificationOutboxModel.id)
+            .where(
+                PluginNotificationOutboxModel.event_id == ChatEventModel.id,
+                PluginNotificationOutboxModel.status == "sent",
                 ChatEventModel.direction == "outbound",
             )
             .exists(),

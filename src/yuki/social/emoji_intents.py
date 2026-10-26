@@ -322,14 +322,15 @@ class EmojiIntentRepository:
                 for row in rows:
                     intent = self.record(row)
                     finished = await self._text_dispatch_finished(session, intent)
+                    source_live = True
                     if not finished:
                         try:
                             await validate_source(session, intent.source)
                         except SocialError:
                             # Revocation is settled even when the original text
                             # connection or an unsent later step is still pending.
-                            finished = True
-                    if finished:
+                            source_live = False
+                    if intent.selected is None or finished or not source_live:
                         ready.append(intent)
                 if ready or not rows:
                     return tuple(ready)

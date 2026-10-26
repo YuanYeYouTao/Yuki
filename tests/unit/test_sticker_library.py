@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import zlib
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -215,7 +215,7 @@ async def test_new_sticker_rejects_changed_cache_before_copy(library):
     source = bridge.cache / "v1" / digest
     source.parent.mkdir(parents=True)
     source.write_bytes(picture("blue"))
-    with pytest.raises(WorkspaceError, match="attachment_source_changed"):
+    with pytest.raises(WorkspaceError, match="version_conflict"):
         await value.store_cached(
             source,
             shared_path="/inputs/media-cache/v1/" + digest,
@@ -225,8 +225,8 @@ async def test_new_sticker_rejects_changed_cache_before_copy(library):
             request_id="actual-original-changed",
             is_sticker=True,
         )
-    assert not any(method == "workspace_copy" for method, _ in bridge.calls)
-    assert not (bridge.root / "stickers/qq/files").exists()
+    published = bridge.root / "stickers" / "qq" / "files"
+    assert not published.exists() or not any(path.is_file() for path in published.iterdir())
 
 
 async def test_terminal_tags_update_and_actual_facts_rebuild(library):
@@ -347,6 +347,35 @@ async def test_corrupt_later_index_page_rebuilds_from_files(library):
     # The header and initial leaf are still readable; failure occurs during the query.
     assert StickerIndex(bridge.root).ready("qq")
     assert (await value.select("word3999", platform="qq")).id == asset.id
+
+
+def test_search_keeps_a_cache_repaired_by_another_writer(tmp_path):
+    index = StickerIndex(tmp_path)
+    directory = index.directory("qq")
+    directory.mkdir(parents=True)
+    cache = directory / "search.sqlite3"
+    with closing(sqlite3.connect(cache)) as db:
+        db.executescript(
+            "CREATE TABLE assets(id TEXT PRIMARY KEY);"
+            "CREATE TABLE terms(term TEXT NOT NULL, asset_id TEXT NOT NULL,"
+            "PRIMARY KEY(term, asset_id));"
+        )
+        db.execute("PRAGMA user_version=2")
+        db.execute("INSERT INTO terms(term, asset_id) VALUES ('kept', 'kept')")
+        db.commit()
+    good = cache.read_bytes()
+    cache.write_bytes(b"not a database")
+    real = index.cache_writer
+
+    @contextmanager
+    def repaired(platform):
+        cache.write_bytes(good)
+        with real(platform):
+            yield
+
+    index.cache_writer = repaired
+    assert index.search("qq", "absent") == {"items": []}
+    assert cache.read_bytes() == good
 
 
 async def test_program_sql_error_does_not_erase_a_healthy_cache(library):

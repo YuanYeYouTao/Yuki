@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -98,12 +99,33 @@ class StickerIndex:
             temporary.unlink(missing_ok=True)
 
     def facts(self, path: Path, *, inspect_pixels: bool = True) -> dict[str, Any]:
-        with path.open("rb") as stream:
+        candidate = path
+        if candidate.is_symlink():
+            link_relative = candidate.absolute().relative_to(self.root.absolute())
+            if len(link_relative.parts) < 3 or link_relative.parts[1] != "files":
+                raise ValueError("unsupported_sticker_link")
+            files = (self.directory(link_relative.parts[0]) / "files").resolve()
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(files)
+            except ValueError:
+                raise ValueError("unsupported_sticker_link") from None
+            info = resolved.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise ValueError("unsupported_sticker_link")
+            candidate = resolved
+        descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("unsupported_sticker_file")
             result = inspect_path(
-                stream.fileno(),
-                path.relative_to(self.workspace).as_posix(),
+                descriptor,
+                candidate.relative_to(self.workspace).as_posix(),
                 inspect_pixels=inspect_pixels,
             )
+        finally:
+            os.close(descriptor)
         if result is None:
             raise ValueError("file_changed_during_read")
         return result
@@ -204,27 +226,77 @@ class StickerIndex:
         )
         return db
 
-    def ready(self, platform: str) -> bool:
+    def _cache_readable(self, platform: str) -> bool:
         path = self.directory(platform) / "search.sqlite3"
         if not path.exists():
             return False
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+            if not self.valid_schema(db):
+                return False
+            db.execute("SELECT id FROM assets LIMIT 1").fetchone()
+            db.execute("SELECT term,asset_id FROM terms LIMIT 1").fetchone()
+            return bool(db.execute("PRAGMA user_version").fetchone()[0] == CACHE_VERSION)
+
+    def ready(self, platform: str) -> bool:
+        path = self.directory(platform) / "search.sqlite3"
         try:
-            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
-                valid = self.valid_schema(db)
-                if valid:
-                    db.execute("SELECT id FROM assets LIMIT 1").fetchone()
-                    db.execute("SELECT term,asset_id FROM terms LIMIT 1").fetchone()
-                    return bool(db.execute("PRAGMA user_version").fetchone()[0] == CACHE_VERSION)
+            if self._cache_readable(platform):
+                return True
+            if not path.exists():
+                return False
         except sqlite3.DatabaseError as error:
             if not path.exists():
                 return False
             if not self.corrupt(error):
                 raise
-        self.discard_cache(platform)
+        with self.cache_writer(platform):
+            try:
+                if self._cache_readable(platform):
+                    return True
+            except sqlite3.DatabaseError as error:
+                if not self.corrupt(error):
+                    raise
+            self._unlink_cache(platform)
         return False
 
     def update_cache(self, platform: str, asset_id: str) -> None:
         self._cache_batch(platform, (asset_id,))
+
+    @staticmethod
+    def _write_cache_rows(
+        db: sqlite3.Connection,
+        prepared: list[tuple[str, dict[str, Any] | None, set[str]]],
+    ) -> None:
+        with db:
+            for asset_id, current, indexed in prepared:
+                db.execute("DELETE FROM terms WHERE asset_id=?", (asset_id,))
+                if current is None:
+                    db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+                else:
+                    db.execute("INSERT OR IGNORE INTO assets VALUES(?)", (asset_id,))
+                    db.executemany(
+                        "INSERT OR IGNORE INTO terms VALUES(?,?)",
+                        ((term, asset_id) for term in indexed),
+                    )
+
+    def _rank_corrupt(self, platform: str, query: str, *, limit: int) -> bool:
+        """True when the rank query still sees a corrupt or missing cache."""
+        path = self.directory(platform) / "search.sqlite3"
+        wanted = terms(query)
+        if not path.exists() or not wanted:
+            return not path.exists()
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+                db.execute(
+                    "SELECT asset_id FROM terms WHERE term IN (SELECT value FROM json_each(?)) "
+                    "GROUP BY asset_id ORDER BY COUNT(*) DESC,asset_id LIMIT ?",
+                    (json.dumps(sorted(wanted)), limit),
+                ).fetchall()
+        except sqlite3.DatabaseError as error:
+            if not self.corrupt(error):
+                raise
+            return True
+        return False
 
     def _cache_batch(
         self,
@@ -252,18 +324,18 @@ class StickerIndex:
                 prepared.append((asset_id, current, indexed))
             db = self.cache(platform)
             try:
-                with db:
-                    for asset_id, current, indexed in prepared:
-                        db.execute("DELETE FROM terms WHERE asset_id=?", (asset_id,))
-                        if current is None:
-                            db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
-                        else:
-                            db.execute("INSERT OR IGNORE INTO assets VALUES(?)", (asset_id,))
-                            db.executemany(
-                                "INSERT OR IGNORE INTO terms VALUES(?,?)",
-                                ((term, asset_id) for term in indexed),
-                            )
-            finally:
+                self._write_cache_rows(db, prepared)
+            except sqlite3.DatabaseError as error:
+                db.close()
+                if not self.corrupt(error):
+                    raise
+                self._unlink_cache(platform)
+                db = self.cache(platform)
+                try:
+                    self._write_cache_rows(db, prepared)
+                finally:
+                    db.close()
+            else:
                 db.close()
 
     def catalog(
@@ -386,12 +458,17 @@ class StickerIndex:
                         errors.append({"path": str(metadata), "error": type(exc).__name__})
             originals = directory / "files"
             files_complete = True
+            seen: set[Path] = set()
             for path in originals.rglob("*") if originals.exists() else ():
-                if not path.is_file() or path.is_symlink():
+                if not path.is_file() and not path.is_symlink():
                     continue
                 files += 1
                 try:
                     facts = self.facts(path)
+                    real = (self.workspace / facts["relative_path"]).resolve()
+                    if real in seen:
+                        continue
+                    seen.add(real)
                     asset_id = identity(current, facts["sha256"])
                     if asset_id in bad:
                         continue
@@ -450,22 +527,42 @@ class StickerIndex:
         with self.cache_writer(platform):
             self._unlink_cache(platform)
 
+    def _cache_still_readable(self, platform: str) -> bool:
+        try:
+            return self._cache_readable(platform)
+        except sqlite3.DatabaseError as error:
+            if not self.corrupt(error):
+                raise
+            return False
+
     def search(self, platform: str, query: str, *, limit: int = 20) -> dict[str, Any]:
-        if not self.ready(platform):
-            return {"needs_build": True}
         try:
             return self._search_ready(platform, query, limit=limit)
         except sqlite3.DatabaseError as error:
             # Corrupted pages are rebuildable; SQL, lock and storage failures stay failures.
             if not self.corrupt(error):
-                if (
-                    getattr(error, "sqlite_errorcode", 0) & 255
-                ) == sqlite3.SQLITE_ERROR and not self.ready(platform):
-                    # A terminal can remove the cache between readiness and query.
+                code = getattr(error, "sqlite_errorcode", 0) & 255
+                if code == sqlite3.SQLITE_ERROR and not self._cache_still_readable(platform):
                     return {"needs_build": True}
                 raise
-            self.discard_cache(platform)
+        # The reader is already closed. Look again under the writer lock; do not
+        # call ready(), which would take that same lock.
+        with self.cache_writer(platform):
+            kept = self._cache_still_readable(platform)
+            if not kept:
+                self._unlink_cache(platform)
+        if not kept:
             return {"needs_build": True}
+        try:
+            return self._search_ready(platform, query, limit=limit)
+        except sqlite3.DatabaseError as error:
+            if not self.corrupt(error):
+                raise
+            with self.cache_writer(platform):
+                if self._rank_corrupt(platform, query, limit=limit):
+                    self._unlink_cache(platform)
+                    return {"needs_build": True}
+            return self._search_ready(platform, query, limit=limit)
 
     def _search_ready(self, platform: str, query: str, *, limit: int) -> dict[str, Any]:
         wanted = terms(query)
@@ -475,8 +572,14 @@ class StickerIndex:
             "SELECT asset_id FROM terms WHERE term IN (SELECT value FROM json_each(?)) "
             "GROUP BY asset_id ORDER BY COUNT(*) DESC,asset_id LIMIT ?"
         )
+        path = self.directory(platform) / "search.sqlite3"
+        if not path.exists():
+            return {"needs_build": True}
         while True:
-            with closing(sqlite3.connect(self.directory(platform) / "search.sqlite3")) as db:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                if not self.valid_schema(db) or version != CACHE_VERSION:
+                    return {"needs_build": True}
                 rows = db.execute(sql, (json.dumps(sorted(wanted)), limit)).fetchall()
             if not rows:
                 return {"items": []}

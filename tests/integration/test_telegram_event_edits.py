@@ -218,6 +218,43 @@ async def test_caption_repositions_existing_index_and_reuses_original_cache_life
     assert not original_path.exists()
 
 
+async def test_caption_before_and_during_download_reuses_one_original(
+    telegram_env, database, media_reader
+):
+    env, reader = telegram_env, media_reader
+    original = update(text="")
+    _photo(original["message"])
+    await env.gateway.receive(original)
+    await drain(env)
+    source = await _source(database)
+    before = _edit(2, "caption before download")
+    _photo(before["edited_message"])
+    await env.gateway.receive(before)
+    entered, release = asyncio.Event(), asyncio.Event()
+    resolve = reader.gateway.resolve_media_file
+
+    async def delayed(file, kind, *, max_download_bytes):
+        entered.set()
+        await release.wait()
+        return await resolve(file, kind, max_download_bytes=max_download_bytes)
+
+    reader.gateway.resolve_media_file = delayed
+    task = asyncio.create_task(_path(reader, source))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        during = _edit(3, "caption during download", edited_at=1792070011)
+        _photo(during["edited_message"])
+        await env.gateway.receive(during)
+        release.set()
+        item, path = await task
+        assert item.segment_index == 1
+        assert path.read_bytes() == reader.contents["old-photo"]
+        assert reader.downloads == ["old-photo"]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_inflight_old_download_cannot_publish_over_new_media(
     telegram_env, database, media_reader
 ):

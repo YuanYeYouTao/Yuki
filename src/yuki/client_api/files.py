@@ -23,6 +23,7 @@ from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.persistence.models import ChatEventArtifactRefModel, ChatEventModel
+from yuki.plugin_host.db_models import PluginNotificationOutboxModel
 from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_schema_v1 import effects, work
 from yuki.social.db_models import SocialOperationModel
@@ -51,6 +52,16 @@ class ClientFiles:
                 SocialOperationModel.status == "succeeded",
             )
             .correlate(ChatEventModel)
+        )
+        published = or_(
+            social.exists(),
+            select(PluginNotificationOutboxModel.id)
+            .where(
+                PluginNotificationOutboxModel.event_id == ChatEventModel.id,
+                PluginNotificationOutboxModel.status == "sent",
+            )
+            .correlate(ChatEventModel)
+            .exists(),
         )
         linked = union_all(
             select(deliveries.c.work_id).where(deliveries.c.id.in_(social)),
@@ -98,7 +109,7 @@ class ClientFiles:
                 ChatEventModel.direction == "outbound",
                 ChatEventModel.author_kind == "yuki",
                 ChatEventModel.suppression_status == "keeper",
-                social.exists(),
+                published,
                 or_(private, visible_work.exists()),
                 artifact.is_not(None),
                 version.is_not(None),

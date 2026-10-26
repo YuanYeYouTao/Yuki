@@ -18,7 +18,7 @@ class AppSocialOperations:
     async def send(
         self, handle: object, target: TransportTarget, message: TransportMessage
     ) -> TransportReceipt:
-        return TransportReceipt(None)
+        return TransportReceipt(None, remote_confirmed=False)
 
     async def recall(self, handle: object, target: TransportTarget, reference: str) -> None:
         raise ValueError("capability_unavailable")

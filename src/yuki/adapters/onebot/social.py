@@ -14,11 +14,17 @@ from uuid import uuid4
 
 from yuki.adapters.onebot.sender import parse_onebot_send_receipt
 from yuki.gateway.social import (
+    TransportEffectError,
     TransportMention,
     TransportMessage,
     TransportReceipt,
     TransportTarget,
 )
+
+
+def _write_handoff(path: Path, content: bytes) -> None:
+    path.write_bytes(content)
+    path.chmod(0o644)
 
 
 class OneBotSocialOperations:
@@ -45,16 +51,27 @@ class OneBotSocialOperations:
     @asynccontextmanager
     async def _file(self, content: bytes) -> AsyncIterator[str]:
         if self._root is None or not PurePosixPath(self._gateway_root).is_absolute():
-            raise ValueError("artifact_transport_unavailable")
+            raise TransportEffectError("artifact_transport_unavailable", uncertain=False)
         root = self._root
         if root.is_symlink() or root.resolve() != root:
-            raise ValueError("unsafe_transfer_root")
+            raise TransportEffectError("unsafe_transfer_root", uncertain=False)
         token = str(uuid4())
         path = root / token
         root.mkdir(parents=True, exist_ok=True)
+        worker = asyncio.create_task(asyncio.to_thread(_write_handoff, path, content))
+        cancelled = None
         try:
-            await asyncio.to_thread(path.write_bytes, content)
-            path.chmod(0o644)
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+            if cancelled is not None:
+                raise cancelled
+            try:
+                worker.result()
+            except OSError as exc:
+                raise TransportEffectError(type(exc).__name__, uncertain=False) from exc
             yield str(PurePosixPath(self._gateway_root) / token)
         finally:
             try:

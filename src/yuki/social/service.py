@@ -540,6 +540,9 @@ class SocialService:
             "conversation_id": route.conversation_id,
             "platform": route.platform,
             "kind": route.kind,
+            "thread_id": route.thread_id,
+            "provider_id": route.connection.snapshot.provider,
+            "local_ledger": "local_ledger" in route.connection.snapshot.capabilities,
         }
 
     async def _stored_route(self, target: SocialTarget, route: dict[str, Any]) -> ResolvedSend:
@@ -547,6 +550,8 @@ class SocialService:
             resolved = await self.router.resolve_send_for_conversation(
                 route["conversation_id"], presence_id=route["presence_id"]
             )
+            if route.get("kind") in {None, "conversation"}:
+                return resolved
             return replace(resolved, kind=route["kind"])
         if target.kind == "person":
             return await self.router.resolve_send_for_binding(
@@ -1000,8 +1005,6 @@ class SocialService:
                 route = await self.router.resolve_send_for_conversation(
                     selected_entry, presence_id=context.target_presence_id
                 )
-                if selected_entry != context.conversation_id:
-                    route = replace(route, kind=target.kind)
                 async with self.database.read_session() as reader:
                     selected_conversation = await reader.get(
                         CanonicalConversationModel, selected_entry
@@ -1374,6 +1377,8 @@ class SocialService:
                 )
                 if claimed:
                     self.router.validate_prepared_connection(route)
+        if illustration is not None:
+            self.emoji_delivery.wake()
         if not claimed:
             current = await self.receipts.get(receipt.operation_id)
             await self._record_work_delivery(current)
@@ -1430,13 +1435,18 @@ class SocialService:
             destination = TransportTarget(
                 destination_kind, route.external_target_id, route.thread_id
             )
+            remote_confirmed = True
             with model_detail("social_transport"):
                 if action == "send":
-                    reference = (
-                        await operations.send(route.connection.bot, destination, params["message"])
-                    ).reference
+                    transport_receipt = await operations.send(
+                        route.connection.bot, destination, params["message"]
+                    )
+                    reference = transport_receipt.reference
+                    remote_confirmed = transport_receipt.remote_confirmed
                 elif action == "recall":
-                    await operations.recall(route.connection.bot, destination, params["reference"])
+                    await operations.recall(
+                        route.connection.bot, destination, params["reference"]
+                    )
                 else:
                     raise SocialError("unknown_transport_effect")
             confirmed = True
@@ -1450,7 +1460,7 @@ class SocialService:
                 async with self.database.immediate_session() as session:
                     from yuki.social.confirmed_content import content_sources_retained
 
-                    if content is not None and await content_sources_retained(
+                    sources_kept = content is None or await content_sources_retained(
                         session,
                         conversation_id=context.conversation_id,
                         target=target,
@@ -1460,7 +1470,19 @@ class SocialService:
                             reply_to_event_id,
                         ),
                         person_id=getattr(context.actor, "person_id", None),
-                    ):
+                    )
+                    if content is not None and not sources_kept and not remote_confirmed:
+                        settlement = await self.receipts.finish(
+                            operation_id,
+                            status=OperationStatus.FAILED,
+                            error_category="content_not_retained",
+                            session=session,
+                        )
+                        await self._record_work_delivery(settlement.receipt, session=session)
+                        continue_settlement = False
+                    else:
+                        continue_settlement = True
+                    if content is not None and sources_kept:
                         scope = (
                             ConversationScope.private(
                                 route.sender_account_id,
@@ -1500,14 +1522,15 @@ class SocialService:
                             else None,
                             space_binding_id=route.binding_id if target.kind == "space" else None,
                         )
-                    settlement = await self.receipts.finish(
-                        operation_id,
-                        status=OperationStatus.SUCCEEDED,
-                        platform_reference=reference,
-                        event_id=appended.event.id if appended is not None else None,
-                        session=session,
-                    )
-                    await self._record_work_delivery(settlement.receipt, session=session)
+                    if continue_settlement:
+                        settlement = await self.receipts.finish(
+                            operation_id,
+                            status=OperationStatus.SUCCEEDED,
+                            platform_reference=reference,
+                            event_id=appended.event.id if appended is not None else None,
+                            session=session,
+                        )
+                        await self._record_work_delivery(settlement.receipt, session=session)
         except BaseException as exc:
             try:
                 persisted = await self.receipts.get(operation_id)

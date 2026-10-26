@@ -155,4 +155,4 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platfo
 私有恢复媒体按原 Work 的配额、引用和备份合同保存，不据此取得再次发送资格。
 Genie 出站 record 构造已退出；历史 record、真实转写和已接受回执继续按原来源读取。
 
-自动化 TaskSpec 到期激活共同 Main，发送仍用 `send` 和原 canonical Social 路由；`delivery=none` 不发消息。模型需要表情时使用同一工具的结构化参数。语音合成与出站录音已退役，入站 ASR 和历史 record 继续读取。历史终态脚本和回执只读保留，不猜测或重发外部效果。自动化主 Agent 的 OneBot 辅助网关禁止直接 `send_*` 和 `upload_*`。插件通知仍走插件自身的持久 outbox 和授权传输。
+自动化 TaskSpec 到期激活共同 Main，发送仍用 `send` 和原 canonical Social 路由。模型需要表情时使用同一工具的结构化参数。选图和原件快照可以在第一段正文提交后开始，图片发送仍等正文派发结束。App 本地成功是同一事务里的事件和回执；飞书资源上传失败且尚未调用消息接口记为未发，进入消息接口后的超时仍是未知。语音合成与出站录音已退役，入站 ASR 和历史 record 继续读取。历史终态脚本和回执只读保留，不猜测或重发外部效果。自动化主 Agent 的 OneBot 辅助网关禁止直接 `send_*` 和 `upload_*`。插件通知仍走插件自身的持久 outbox 和授权传输；本地账本不要求外部消息号，已发送的 outbox 记下真实 event。

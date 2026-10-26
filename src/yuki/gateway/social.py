@@ -106,6 +106,16 @@ def split_transport_message(
 @dataclass(frozen=True, slots=True)
 class TransportReceipt:
     reference: str | None
+    remote_confirmed: bool = True
+
+
+class TransportEffectError(Exception):
+    """A send adapter's own boundary between preparation and a message call."""
+
+    def __init__(self, category: str, *, uncertain: bool) -> None:
+        super().__init__(category)
+        self.category = category
+        self.uncertain = uncertain
 
 
 class PlatformSocialOperations(Protocol):

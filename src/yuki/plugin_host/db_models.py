@@ -450,6 +450,7 @@ class PluginNotificationOutboxModel(Base):
         Index("ix_plugin_notification_outbox_due", "status", "next_attempt_at"),
         Index("ix_plugin_notification_outbox_plugin", "plugin_id", "status"),
         Index("ix_plugin_notification_outbox_source", "source_event_id"),
+        Index("ix_plugin_notification_outbox_event", "event_id"),
         Index(
             "ix_plugin_notification_outbox_canonical_target_person_id",
             "canonical_target_person_id",
@@ -474,6 +475,9 @@ class PluginNotificationOutboxModel(Base):
     part_key: Mapped[str] = mapped_column(String(255), nullable=False)
     source_event_id: Mapped[int] = mapped_column(
         ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
     )
     plugin_id: Mapped[str] = mapped_column(
         ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False

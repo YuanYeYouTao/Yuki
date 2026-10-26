@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import time
 from dataclasses import asdict
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,18 @@ if TYPE_CHECKING:
     from yuki.social.service import SocialContext, SocialService
 
 logger = logging.getLogger(__name__)
+
+
+def _mark(intent_id: str, stage: str, started: float) -> None:
+    try:
+        logger.info(
+            "emoji_stage intent_id=%s stage=%s elapsed_ms=%d",
+            intent_id,
+            stage,
+            int((time.monotonic() - started) * 1000),
+        )
+    except Exception:
+        logger.debug("emoji_stage_unavailable", exc_info=True)
 
 
 class EmojiDeliveryService:
@@ -148,6 +161,16 @@ class EmojiDeliveryService:
             "binding_id": route.binding_id,
             "target_presence_id": route.presence_id,
             "platform": route.platform,
+            "route": {
+                "presence_id": route.presence_id,
+                "binding_id": route.binding_id,
+                "conversation_id": route.conversation_id,
+                "platform": route.platform,
+                "kind": route.kind,
+                "thread_id": route.thread_id,
+                "provider_id": route.connection.snapshot.provider,
+                "local_ledger": "local_ledger" in route.connection.snapshot.capabilities,
+            },
             "generation": control.lease.generation
             if control is not None
             else conversation.generation,
@@ -245,6 +268,8 @@ class EmojiDeliveryService:
                     source("$.context.trigger_event_id").label("trigger_event_id"),
                     source("$.context.caused_by_event_id").label("caused_by_event_id"),
                     source("$.context.actor.person_id").label("person_id"),
+                    source("$.route.conversation_id").label("target_conversation_id"),
+                    source("$.route.thread_id").label("target_thread_id"),
                 ).where(SocialEmojiIntentModel.id == identity)
             )
         ).first()
@@ -262,6 +287,11 @@ class EmojiDeliveryService:
             or current.presence_id != route.presence_id
             or current.binding_id != route.binding_id
             or current.platform != route.platform
+            or (
+                current.target_conversation_id
+                and current.target_conversation_id != route.conversation_id
+            )
+            or (current.target_thread_id and current.target_thread_id != route.thread_id)
         ):
             raise SocialError("emoji_route_changed")
         await validate_source(
@@ -324,16 +354,20 @@ class EmojiDeliveryService:
             values["actor"] = ToolActor(**actor)
         content = prepared_transport(intent.source["content"])
         reply_id = intent.source.get("reply_to_event_id")
+        stored_route = intent.source.get("route") or {}
         values.update(
             call_id=derived_call_id(intent.id),
             deferred_emoji_id=intent.id,
             media_metadata=intent.selected,
-            target_presence_id=intent.source["target_presence_id"],
+            target_presence_id=stored_route.get("presence_id")
+            or intent.source["target_presence_id"],
             prepared_content=intent.source["content"],
         )
         target = {"kind": intent.target.kind, "target_id": str(intent.target.id)}
+        if stored_route.get("conversation_id"):
+            target["conversation_id"] = stored_route["conversation_id"]
         if intent.target.kind == "person":
-            target["binding_id"] = intent.source["binding_id"]
+            target["binding_id"] = stored_route.get("binding_id") or intent.source["binding_id"]
         args: dict[str, Any] = {
             "text": content.text,
             "target": target,
@@ -344,8 +378,42 @@ class EmojiDeliveryService:
             args["reply_to_event_id"] = reply_id
         return args, SocialContext(**values)
 
-    async def _deliver(self, intent: EmojiIntent) -> None:
+    async def _committed_target_conversation(self, intent: EmojiIntent) -> str | None:
+        """Use the conversation the original text send already committed."""
+        import json
 
+        from yuki.social.db_models import SocialOperationModel
+        from yuki.social.repository import sequence_prefix
+
+        parent_id = intent.source.get("after_operation_id")
+        if not parent_id:
+            return None
+        async with self.social.database.read_session() as session:
+            parent = await session.get(SocialOperationModel, parent_id)
+            if parent is None:
+                return None
+            if parent.prepared_json:
+                route = json.loads(parent.prepared_json).get("route")
+                if isinstance(route, dict) and route.get("conversation_id"):
+                    return str(route["conversation_id"])
+            if parent.original_conversation_id:
+                return parent.original_conversation_id
+            if parent.action != "send_message_sequence":
+                return None
+            prefix = sequence_prefix(parent.tool_call_id)
+            return await session.scalar(
+                select(SocialOperationModel.original_conversation_id).where(
+                    SocialOperationModel.source_turn_id == parent.source_turn_id,
+                    SocialOperationModel.tool_call_id.in_(
+                        tuple(f"{prefix}{index}" for index in range(parent.planned_parts or 0))
+                    ),
+                    SocialOperationModel.original_conversation_id.is_not(None),
+                )
+            )
+
+    async def _deliver(self, intent: EmojiIntent) -> None:
+        started = time.monotonic()
+        _mark(intent.id, "background_scheduled", started)
         try:
             if intent.selected is not None:
                 facts = await self._project(intent)
@@ -389,9 +457,25 @@ class EmojiDeliveryService:
                 return
             assert intent.selected is not None
             asset = EmojiAsset.model_validate(intent.selected)
+            _mark(intent.id, "immutable_prepare", started)
             metadata = await self.library.publish(asset, request_id=intent.id)
+            _mark(intent.id, "artifact_read", started)
+            async with self.social.database.read_session() as session:
+                text_finished = await EmojiIntentRepository._text_dispatch_finished(session, intent)
+            if not text_finished:
+                return
+            stored_route = dict(intent.source.get("route") or {})
+            if not stored_route.get("conversation_id"):
+                conversation_id = await self._committed_target_conversation(intent)
+                if not conversation_id:
+                    await self.intents.close(intent.id, "emoji_target_unavailable")
+                    return
+                stored_route["conversation_id"] = conversation_id
+                intent.source["route"] = stored_route
             args, context = self._send_input(intent, metadata["artifact_id"])
+            _mark(intent.id, "text_dispatch_finished", started)
             await self.social.execute("send", args, context)
+            _mark(intent.id, "settlement", started)
             await self.intents.close(intent.id)
         except asyncio.CancelledError:
             raise

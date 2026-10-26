@@ -1,0 +1,363 @@
+{
+  "source_revision": "d6b4ec167f5c982eed7f62bb216c5e987b529af0",
+  "natural_query_time_utc": "2026-10-26T06:28:07.829239+00:00",
+  "natural_freshness": "Latest intent is2026-10-25 21:28:41UTC. These are historical latest-eight records, not fresh current-load traffic.",
+  "natural_chains": [
+    {
+      "platform": "qq",
+      "asset_bytes": 23556,
+      "text_parts": 3,
+      "intent_created_at_utc": "2026-10-25 21:28:41.092977",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 21:28:46.406933",
+      "emoji_receipt_created_at_utc": "2026-10-25 21:29:08.288906",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 21:29:10.707416",
+      "timing_seconds": {
+        "intent_to_success_settlement": 29.614439,
+        "intent_to_last_text_success_timestamp": 5.313956,
+        "last_text_success_to_emoji_receipt_created": 21.881973,
+        "emoji_receipt_created_to_success_timestamp": 2.41851,
+        "success_to_intent_closed_timestamp": 0.073937
+      }
+    },
+    {
+      "platform": "telegram",
+      "asset_bytes": 101391,
+      "text_parts": 2,
+      "intent_created_at_utc": "2026-10-25 21:24:35.308899",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 21:24:38.160236",
+      "emoji_receipt_created_at_utc": "2026-10-25 21:24:38.695598",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 21:24:41.238543",
+      "timing_seconds": {
+        "intent_to_success_settlement": 5.929644,
+        "intent_to_last_text_success_timestamp": 2.851337,
+        "last_text_success_to_emoji_receipt_created": 0.535362,
+        "emoji_receipt_created_to_success_timestamp": 2.542945,
+        "success_to_intent_closed_timestamp": 0.012412
+      }
+    },
+    {
+      "platform": "telegram",
+      "asset_bytes": 101391,
+      "text_parts": 2,
+      "intent_created_at_utc": "2026-10-25 21:23:51.376094",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 21:23:54.647286",
+      "emoji_receipt_created_at_utc": "2026-10-25 21:23:56.167625",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 21:24:01.715827",
+      "timing_seconds": {
+        "intent_to_success_settlement": 10.339733,
+        "intent_to_last_text_success_timestamp": 3.271192,
+        "last_text_success_to_emoji_receipt_created": 1.520339,
+        "emoji_receipt_created_to_success_timestamp": 5.548202,
+        "success_to_intent_closed_timestamp": 0.014155
+      }
+    },
+    {
+      "platform": "qq",
+      "asset_bytes": 29317,
+      "text_parts": 1,
+      "intent_created_at_utc": "2026-10-25 20:56:10.507279",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 20:56:12.178303",
+      "emoji_receipt_created_at_utc": "2026-10-25 20:56:21.170016",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 20:56:28.318383",
+      "timing_seconds": {
+        "intent_to_success_settlement": 17.811104,
+        "intent_to_last_text_success_timestamp": 1.671024,
+        "last_text_success_to_emoji_receipt_created": 8.991713,
+        "emoji_receipt_created_to_success_timestamp": 7.148367,
+        "success_to_intent_closed_timestamp": 0.014556
+      }
+    },
+    {
+      "platform": "qq",
+      "asset_bytes": 1209888,
+      "text_parts": 2,
+      "intent_created_at_utc": "2026-10-25 20:54:01.728427",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 20:54:21.644274",
+      "emoji_receipt_created_at_utc": "2026-10-25 20:55:05.807678",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 20:55:14.245424",
+      "timing_seconds": {
+        "intent_to_success_settlement": 72.516997,
+        "intent_to_last_text_success_timestamp": 19.915847,
+        "last_text_success_to_emoji_receipt_created": 44.163404,
+        "emoji_receipt_created_to_success_timestamp": 8.437746,
+        "success_to_intent_closed_timestamp": 0.149205
+      }
+    },
+    {
+      "platform": "qq",
+      "asset_bytes": 23556,
+      "text_parts": 3,
+      "intent_created_at_utc": "2026-10-25 13:58:53.529787",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 13:58:57.566732",
+      "emoji_receipt_created_at_utc": "2026-10-25 13:59:04.208453",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 13:59:07.628743",
+      "timing_seconds": {
+        "intent_to_success_settlement": 14.098956,
+        "intent_to_last_text_success_timestamp": 4.036945,
+        "last_text_success_to_emoji_receipt_created": 6.641721,
+        "emoji_receipt_created_to_success_timestamp": 3.42029,
+        "success_to_intent_closed_timestamp": 0.009706
+      }
+    },
+    {
+      "platform": "qq",
+      "asset_bytes": 23556,
+      "text_parts": 2,
+      "intent_created_at_utc": "2026-10-25 13:50:43.357959",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 13:50:46.360997",
+      "emoji_receipt_created_at_utc": "2026-10-25 13:50:54.777793",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 13:50:57.604275",
+      "timing_seconds": {
+        "intent_to_success_settlement": 14.246316,
+        "intent_to_last_text_success_timestamp": 3.003038,
+        "last_text_success_to_emoji_receipt_created": 8.416796,
+        "emoji_receipt_created_to_success_timestamp": 2.826482,
+        "success_to_intent_closed_timestamp": 0.666022
+      }
+    },
+    {
+      "platform": "qq",
+      "asset_bytes": 1708695,
+      "text_parts": 1,
+      "intent_created_at_utc": "2026-10-25 13:47:03.508659",
+      "last_text_part_succeeded_updated_at_utc": "2026-10-25 13:47:03.919434",
+      "emoji_receipt_created_at_utc": "2026-10-25 13:47:11.048793",
+      "emoji_receipt_succeeded_updated_at_utc": "2026-10-25 13:47:15.416532",
+      "timing_seconds": {
+        "intent_to_success_settlement": 11.907873,
+        "intent_to_last_text_success_timestamp": 0.410775,
+        "last_text_success_to_emoji_receipt_created": 7.129359,
+        "emoji_receipt_created_to_success_timestamp": 4.367739,
+        "success_to_intent_closed_timestamp": 0.042722
+      }
+    }
+  ],
+  "controlled_component_query_time_utc": "2026-10-26T06:40:08.298706+00:00",
+  "controlled_original_bytes": 23556,
+  "readonly_equivalent_helper_runs": [
+    {
+      "wall_seconds": 1.757728953845799,
+      "returncode": 0,
+      "result": {
+        "import_seconds": 0.2561994680436328,
+        "search_seconds": 0.13713162194471806,
+        "timings": {
+          "connection_seconds": 0.020280634984374046,
+          "other_sql_seconds": 0.03024447790812701,
+          "ready_seconds": 0.048918879008851945,
+          "ranking_sql_seconds": 0.053899099002592266,
+          "read_json_seconds": 0.0063950479961931705,
+          "facts_seconds": 0.015396625967696309
+        },
+        "needs_build": false,
+        "candidate_count": 1,
+        "candidate_bytes": [
+          23556
+        ],
+        "selected_matches_current_candidate": true,
+        "query_term_count": 39
+      },
+      "error_class": null
+    },
+    {
+      "wall_seconds": 0.6898720404133201,
+      "returncode": 0,
+      "result": {
+        "import_seconds": 0.10330709302797914,
+        "search_seconds": 0.01914678595494479,
+        "timings": {
+          "connection_seconds": 0.002176602021791041,
+          "other_sql_seconds": 0.004188915132544935,
+          "ready_seconds": 0.0063432620372623205,
+          "ranking_sql_seconds": 0.0024464450543746352,
+          "read_json_seconds": 0.0003277199575677514,
+          "facts_seconds": 0.0017947300802916288
+        },
+        "needs_build": false,
+        "candidate_count": 1,
+        "candidate_bytes": [
+          23556
+        ],
+        "selected_matches_current_candidate": true,
+        "query_term_count": 39
+      },
+      "error_class": null
+    },
+    {
+      "wall_seconds": 0.5180502319708467,
+      "returncode": 0,
+      "result": {
+        "import_seconds": 0.08544223103672266,
+        "search_seconds": 0.018364615039899945,
+        "timings": {
+          "connection_seconds": 0.002327681053429842,
+          "other_sql_seconds": 0.0019752910593524575,
+          "ready_seconds": 0.004855795996263623,
+          "ranking_sql_seconds": 0.005110626923851669,
+          "read_json_seconds": 0.00035396299790591,
+          "facts_seconds": 0.0005474489880725741
+        },
+        "needs_build": false,
+        "candidate_count": 1,
+        "candidate_bytes": [
+          23556
+        ],
+        "selected_matches_current_candidate": true,
+        "query_term_count": 39
+      },
+      "error_class": null
+    }
+  ],
+  "docker_python_noop_runs": [
+    {
+      "wall_seconds": 0.23782417830079794,
+      "returncode": 0,
+      "result": null,
+      "error_class": null
+    },
+    {
+      "wall_seconds": 0.3030608035624027,
+      "returncode": 0,
+      "result": null,
+      "error_class": null
+    },
+    {
+      "wall_seconds": 0.4562972579151392,
+      "returncode": 0,
+      "result": null,
+      "error_class": null
+    }
+  ],
+  "verified_store_and_status_rpc": {
+    "wall_seconds": 0.659628446213901,
+    "returncode": 0,
+    "result": {
+      "store_import_seconds": 0.1477353060618043,
+      "actual_store_read_bytes": [
+        {
+          "seconds": 0.005016620270907879,
+          "bytes": 23556,
+          "immutable": true
+        },
+        {
+          "seconds": 0.000599004328250885,
+          "bytes": 23556,
+          "immutable": true
+        },
+        {
+          "seconds": 0.0004850560799241066,
+          "bytes": 23556,
+          "immutable": true
+        }
+      ],
+      "read_only_status_rpc": [
+        {
+          "seconds": 0.10348740499466658,
+          "ready": true,
+          "has_error": false
+        },
+        {
+          "seconds": 0.007011678069829941,
+          "ready": true,
+          "has_error": false
+        },
+        {
+          "seconds": 0.004996762610971928,
+          "ready": true,
+          "has_error": false
+        }
+      ]
+    },
+    "error_class": null
+  },
+  "host_sample_summary": {
+    "start_utc": "2026-10-26T14:28:53.397073+08:00",
+    "end_utc": "2026-10-26T14:29:53.429451+08:00",
+    "seconds": 60.03237447794527,
+    "host_logical_cpus": 2,
+    "host_cpu_percent": {
+      "user": 18.61522911051213,
+      "system": 3.3692722371967654,
+      "idle": 73.8628706199461,
+      "io_wait": 4.152628032345014,
+      "steal": 0.0
+    },
+    "memory_available_mib_min": 685.375,
+    "memory_available_mib_end": 721.09375,
+    "swap_used_mib_end": 1024.7265625,
+    "swap_in_mib": 11.4921875,
+    "swap_out_mib": 22.26953125,
+    "pressure_stall_percent": {
+      "cpu": {
+        "some": 3.604206928038301,
+        "full": 0.0
+      },
+      "memory": {
+        "some": 0.7071051306756991,
+        "full": 0.5615120223569368
+      },
+      "io": {
+        "some": 4.984978565356304,
+        "full": 4.197798307854395
+      }
+    },
+    "containers": {
+      "qq-ai-bot-bot-1": {
+        "cpu_percent_one_core": 35.72368274034998,
+        "memory_mib_min": 286.5390625,
+        "memory_mib_max": 296.76953125,
+        "swap_mib_end": 173.84765625,
+        "io_read_mib": 23.18359375,
+        "io_write_mib": 15.57421875,
+        "major_page_faults": 517
+      },
+      "qq-ai-bot-snowluma-1": {
+        "cpu_percent_one_core": 2.505638021285684,
+        "memory_mib_min": 370.24609375,
+        "memory_mib_max": 433.00390625,
+        "swap_mib_end": 602.4921875,
+        "io_read_mib": 63.6328125,
+        "io_write_mib": 16.09765625,
+        "major_page_faults": 1365
+      },
+      "yuki-environment": {
+        "cpu_percent_one_core": 0.42243706367664563,
+        "memory_mib_min": 88.30859375,
+        "memory_mib_max": 113.265625,
+        "swap_mib_end": 52.55078125,
+        "io_read_mib": 31.85546875,
+        "io_write_mib": 0.078125,
+        "major_page_faults": 565
+      },
+      "mihomo-host": {
+        "cpu_percent_one_core": 0.2633645618300245,
+        "memory_mib_min": 50.51171875,
+        "memory_mib_max": 70.73046875,
+        "swap_mib_end": 7.38671875,
+        "io_read_mib": 35.63671875,
+        "io_write_mib": 0.0859375,
+        "major_page_faults": 39
+      },
+      "yuki-sandbox-egress": {
+        "cpu_percent_one_core": 0.024037030228250097,
+        "memory_mib_min": 6.23828125,
+        "memory_mib_max": 10.73828125,
+        "swap_mib_end": 14.0625,
+        "io_read_mib": 0.0,
+        "io_write_mib": 0.0,
+        "major_page_faults": 0
+      }
+    }
+  },
+  "qualifications": [
+    "Observed sequential diagnostic runs warm caches; these are not matched production emoji-stage timings or a cold-cache test.",
+    "Search uses the installed helper fast path with read-only SQLite; all repair/write branches are blocked. Candidate failure is reported, never repaired.",
+    "Bot reads its immutable snapshot through the actual verified reader without invoking Store initialization or cleanup.",
+    "No search query, tags, source JSON, image bytes or credentials are printed.",
+    "No Manager sticker request, publication, platform send or model call is issued; environment_status is an existing read-only request.",
+    "Natural receipt timestamps give durable checkpoints, not pure network time; claims and final settlement are included.",
+    "Historical slow natural samples and current controlled probes were not obtained under the same load; no speedup multiplier or platform floor follows from subtracting them.",
+    "No new natural emoji sample was generated, no platform message or paid model call was issued, and no business files/index/receipts were changed.",
+    "Current helper measurements block all cache write/repair branches and use mode=ro; normal production writes were not invoked."
+  ]
+}
