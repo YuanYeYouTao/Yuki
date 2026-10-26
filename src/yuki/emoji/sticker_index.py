@@ -262,6 +262,42 @@ class StickerIndex:
     def update_cache(self, platform: str, asset_id: str) -> None:
         self._cache_batch(platform, (asset_id,))
 
+    @staticmethod
+    def _write_cache_rows(
+        db: sqlite3.Connection,
+        prepared: list[tuple[str, dict[str, Any] | None, set[str]]],
+    ) -> None:
+        with db:
+            for asset_id, current, indexed in prepared:
+                db.execute("DELETE FROM terms WHERE asset_id=?", (asset_id,))
+                if current is None:
+                    db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+                else:
+                    db.execute("INSERT OR IGNORE INTO assets VALUES(?)", (asset_id,))
+                    db.executemany(
+                        "INSERT OR IGNORE INTO terms VALUES(?,?)",
+                        ((term, asset_id) for term in indexed),
+                    )
+
+    def _rank_corrupt(self, platform: str, query: str, *, limit: int) -> bool:
+        """True when the rank query still sees a corrupt or missing cache."""
+        path = self.directory(platform) / "search.sqlite3"
+        wanted = terms(query)
+        if not path.exists() or not wanted:
+            return not path.exists()
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+                db.execute(
+                    "SELECT asset_id FROM terms WHERE term IN (SELECT value FROM json_each(?)) "
+                    "GROUP BY asset_id ORDER BY COUNT(*) DESC,asset_id LIMIT ?",
+                    (json.dumps(sorted(wanted)), limit),
+                ).fetchall()
+        except sqlite3.DatabaseError as error:
+            if not self.corrupt(error):
+                raise
+            return True
+        return False
+
     def _cache_batch(
         self,
         platform: str,
@@ -288,18 +324,18 @@ class StickerIndex:
                 prepared.append((asset_id, current, indexed))
             db = self.cache(platform)
             try:
-                with db:
-                    for asset_id, current, indexed in prepared:
-                        db.execute("DELETE FROM terms WHERE asset_id=?", (asset_id,))
-                        if current is None:
-                            db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
-                        else:
-                            db.execute("INSERT OR IGNORE INTO assets VALUES(?)", (asset_id,))
-                            db.executemany(
-                                "INSERT OR IGNORE INTO terms VALUES(?,?)",
-                                ((term, asset_id) for term in indexed),
-                            )
-            finally:
+                self._write_cache_rows(db, prepared)
+            except sqlite3.DatabaseError as error:
+                db.close()
+                if not self.corrupt(error):
+                    raise
+                self._unlink_cache(platform)
+                db = self.cache(platform)
+                try:
+                    self._write_cache_rows(db, prepared)
+                finally:
+                    db.close()
+            else:
                 db.close()
 
     def catalog(
@@ -520,9 +556,13 @@ class StickerIndex:
         try:
             return self._search_ready(platform, query, limit=limit)
         except sqlite3.DatabaseError as error:
-            if self.corrupt(error):
-                return {"needs_build": True}
-            raise
+            if not self.corrupt(error):
+                raise
+            with self.cache_writer(platform):
+                if self._rank_corrupt(platform, query, limit=limit):
+                    self._unlink_cache(platform)
+                    return {"needs_build": True}
+            return self._search_ready(platform, query, limit=limit)
 
     def _search_ready(self, platform: str, query: str, *, limit: int) -> dict[str, Any]:
         wanted = terms(query)
