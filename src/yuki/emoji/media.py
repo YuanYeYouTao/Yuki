@@ -234,18 +234,31 @@ def _tgs_header(stream: BinaryIO) -> dict[str, Any] | None:
     sniff = _TgsSniff()
     try:
         pending = b""
-        while True:
-            if not pending:
-                pending = stream.read(32)
-                if not pending and decoder.eof:
-                    break
-            produced = decoder.decompress(pending, 128)
-            pending = decoder.unconsumed_tail
-            if sniff.feed(produced) and sniff.width is not None and sniff.height is not None:
+        complete = False
+        while not complete:
+            complete = (
+                sniff.saw_v
+                and sniff.saw_layers
+                and sniff.width is not None
+                and sniff.height is not None
+            )
+            if complete:
                 break
-            if not produced and not pending:
+            if not pending:
+                pending = stream.read(4096)
+                if not pending:
+                    sniff.feed(decoder.flush())
+                    break
+            produced = decoder.decompress(pending, 256)
+            pending = decoder.unconsumed_tail
+            if produced:
+                sniff.feed(produced)
+                continue
+            more = stream.read(4096)
+            if not more:
                 sniff.feed(decoder.flush())
                 break
+            pending += more
     except zlib.error:
         if not (sniff.saw_v and sniff.saw_layers):
             return None

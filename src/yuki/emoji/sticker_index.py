@@ -106,7 +106,10 @@ class StickerIndex:
                 raise ValueError("unsupported_sticker_link")
             files = (self.directory(link_relative.parts[0]) / "files").resolve()
             resolved = candidate.resolve()
-            resolved.relative_to(files)
+            try:
+                resolved.relative_to(files)
+            except ValueError:
+                raise ValueError("unsupported_sticker_link") from None
             info = resolved.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
                 raise ValueError("unsupported_sticker_link")
