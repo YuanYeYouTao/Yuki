@@ -752,6 +752,7 @@ class ConversationMediaService:
                     event = await session.get(ChatEventModel, event_id)
                     if not _original_still_current(event, live, item, data):
                         raise ConversationMediaError("attachment_source_changed")
+                    assert live is not None
                     if live.cache_status == "expired":
                         raise ConversationMediaError("attachment_expired")
                     if live.cache_status == "cached" and live.cache_name:
@@ -768,6 +769,7 @@ class ConversationMediaService:
                     event = await session.get(ChatEventModel, event_id)
                     if not _original_still_current(event, live, item, data):
                         raise ConversationMediaError("attachment_source_changed")
+                    assert live is not None
                     if live.cache_status == "expired":
                         raise ConversationMediaError("attachment_expired")
                     live.cache_status = "cached"
@@ -812,6 +814,7 @@ class ConversationMediaService:
             live = await session.get(ConversationMediaItemModel, key)
             if not _original_still_current(event, live, item, data):
                 raise ConversationMediaError("attachment_source_changed")
+            assert live is not None
         return live, path
 
     async def inspect(
