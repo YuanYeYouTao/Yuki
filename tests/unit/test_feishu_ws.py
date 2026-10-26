@@ -10,9 +10,14 @@ from unittest.mock import AsyncMock
 import pytest
 from websockets.asyncio.server import serve
 
+from yuki.application.lifecycle import LifecycleRegistry
+from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.feishu import FeishuAPIError
+from yuki.gateway.providers.feishu_ingress import FeishuGateway
 from yuki.gateway.providers.feishu_protocol import Frame
 from yuki.gateway.providers.feishu_ws import FeishuWebSocket
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.routing import PresenceRouter
 
 
 def frame(payload=b"{}", **headers):
@@ -224,6 +229,85 @@ async def test_actual_async_websocket_accepts_event_ack_without_debug_secret_lea
         finally:
             await ws.close()
     assert "fixture-secret" not in caplog.text and "fixture-private-chat" not in caplog.text
+
+
+async def test_start_returns_while_the_first_dial_is_still_waiting():
+    release = asyncio.Event()
+
+    async def endpoint():
+        await release.wait()
+        return {
+            "code": 0,
+            "data": {"URL": "wss://example.invalid/event?service_id=9"},
+        }
+
+    ws = FeishuWebSocket(
+        SimpleNamespace(platform="feishu", websocket_endpoint=endpoint),
+        AsyncMock(),
+        connector=AsyncMock(),
+    )
+    await asyncio.wait_for(ws.start(), 1)
+    assert ws.running and not ws.connected
+    release.set()
+    await ws.close()
+    assert not ws.running
+
+
+async def test_feishu_identity_dial_lets_the_rest_of_startup_finish(database):
+    release = asyncio.Event()
+
+    async def get_me():
+        await release.wait()
+        return {"open_id": "ou_yuki", "app_name": "Yuki"}
+
+    client = SimpleNamespace(
+        platform="feishu",
+        app_id="cli_test",
+        self_id="",
+        get_me=get_me,
+        close=AsyncMock(),
+    )
+    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+    gateway = FeishuGateway(
+        database,
+        registry,
+        PresenceRouter(database, registry),
+        None,
+        None,
+        client,
+    )
+    finished = asyncio.Event()
+
+    async def rest():
+        finished.set()
+
+    lifecycle = LifecycleRegistry()
+    lifecycle.register("feishu_gateway", start=gateway.start, close=gateway.close)
+    lifecycle.register("runtime", start=rest)
+    try:
+        await asyncio.wait_for(lifecycle.start(), 1)
+        assert finished.is_set()
+        assert gateway._websocket.running
+        assert not gateway._websocket.connected
+        assert not registry.has_any_active(platform="feishu")
+    finally:
+        release.set()
+        await lifecycle.close()
+
+
+async def test_rejected_first_dial_stops_only_the_socket():
+    client = SimpleNamespace(
+        platform="feishu",
+        websocket_endpoint=AsyncMock(
+            side_effect=FeishuAPIError("feishu_rejected", error_code=1000040344)
+        ),
+    )
+    ws = FeishuWebSocket(client, AsyncMock(), connector=AsyncMock())
+    await ws.start()
+    await asyncio.wait_for(ws._task, 1)
+    assert not ws.running
+    assert ws.last_error_category == "PermissionError"
+    client.websocket_endpoint.assert_awaited_once()
 
 
 async def test_endpoint_auth_rejection_stops_reconnection_without_replaying_or_logging_secret():

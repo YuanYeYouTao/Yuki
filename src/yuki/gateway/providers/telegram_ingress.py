@@ -336,6 +336,9 @@ class TelegramGateway:
         self._last_error_category: str | None = None
 
     async def start(self) -> None:
+        self._poll = asyncio.create_task(self._run(), name="telegram-ingress")
+
+    async def _announce(self) -> None:
         await self.client.get_me()
         self._last_success_at = datetime.now(UTC)
         self._last_error_category = None
@@ -346,9 +349,9 @@ class TelegramGateway:
                 now=datetime.now(UTC),
                 platform="telegram",
             )
-            self.presence_id = presence.id
-        self.registry.connect(self.client, provider_id="telegram", presence_id=self.presence_id)
-        self._poll = asyncio.create_task(self._run(), name="telegram-ingress")
+            presence_id = presence.id
+        self.registry.connect(self.client, provider_id="telegram", presence_id=presence_id)
+        self.presence_id = presence_id
 
     async def close(self) -> None:
         if self._poll is not None:
@@ -377,6 +380,8 @@ class TelegramGateway:
         offset = None
         while True:
             try:
+                if not self.presence_id:
+                    await self._announce()
                 params = {"timeout": 30, "allowed_updates": ["message", "edited_message"]}
                 if offset is not None:
                     params["offset"] = offset

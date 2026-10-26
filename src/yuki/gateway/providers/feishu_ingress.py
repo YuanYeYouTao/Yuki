@@ -287,6 +287,7 @@ class FeishuGateway:
             self.receive,
             on_connected=self._connected,
             on_disconnected=self._disconnected,
+            before_connect=self._identify,
         )
 
     def _connected(self) -> None:
@@ -297,7 +298,9 @@ class FeishuGateway:
     def _disconnected(self) -> None:
         self.registry.disconnect(self.client)
 
-    async def start(self) -> None:
+    async def _identify(self) -> None:
+        if self.presence_id:
+            return
         await self.client.get_me()
         async with self.database.immediate_session() as session:
             presence = await create_presence(
@@ -306,7 +309,10 @@ class FeishuGateway:
                 platform=self.client.platform,
                 now=datetime.now(UTC),
             )
-            self.presence_id = presence.id
+            presence_id = presence.id
+        self.presence_id = presence_id
+
+    async def start(self) -> None:
         await self._websocket.start()
 
     async def close(self) -> None:

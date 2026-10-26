@@ -76,6 +76,45 @@ def health_container(database, gateway):
     )
 
 
+async def test_unanswered_telegram_dial_lets_the_rest_of_startup_finish(database):
+    failed = asyncio.Event()
+
+    async def http(_request):
+        failed.set()
+        return httpx.Response(500, json={"ok": False, "description": "down"})
+
+    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
+        gateway = TelegramGateway(
+            database,
+            registry,
+            PresenceRouter(database, registry),
+            None,
+            None,
+            TelegramClient("private-token", client=transport),
+        )
+        finished = asyncio.Event()
+
+        async def rest():
+            finished.set()
+
+        lifecycle = LifecycleRegistry()
+        lifecycle.register("telegram_gateway", start=gateway.start, close=gateway.close)
+        lifecycle.register("runtime", start=rest)
+        try:
+            await asyncio.wait_for(lifecycle.start(), 1)
+            assert finished.is_set()
+            await asyncio.wait_for(failed.wait(), 1)
+            health = await gateway.health()
+            assert health["running"] is True
+            assert health["healthy"] is False
+            assert health["last_error_category"] == "TelegramAPIError"
+            assert health["last_success_at"] is None
+            assert not registry.has_any_active(platform="telegram")
+        finally:
+            await lifecycle.close()
+
+
 async def test_absent_telegram_is_disabled_and_does_not_degrade_health(database):
     payload = await build_health_payload(health_container(database, None))
     assert payload["status"] == "ok"
