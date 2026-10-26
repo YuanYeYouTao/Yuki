@@ -80,8 +80,12 @@ def same_attachment_origin(previous: Any, prepared: Any) -> bool:
         return False
     if previous.get("type") != prepared.get("type"):
         return False
-    previous_data = previous.get("data") if isinstance(previous.get("data"), dict) else {}
-    prepared_data = prepared.get("data") if isinstance(prepared.get("data"), dict) else {}
+    previous_data = previous.get("data")
+    prepared_data = prepared.get("data")
+    if not isinstance(previous_data, dict):
+        previous_data = {}
+    if not isinstance(prepared_data, dict):
+        prepared_data = {}
     return attachment_origin(previous_data) == attachment_origin(prepared_data)
 
 
