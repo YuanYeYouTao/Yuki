@@ -73,7 +73,11 @@ async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(d
         host.settings.character_identity = BotIdentity("阿澪", ("阿澪", "小澪"))
         async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
             observer = JevObserver(
-                "synthetic-key", identity=host._observer_identity, client=transport
+                "synthetic-key",
+                identity=host._observer_identity,
+                endpoint="https://semantic.example/systemone",
+                request_model="fixture-model",
+                client=transport,
             )
             await observer.evaluate(snapshot)
             host.settings.character_identity = BotIdentity("林舟", ("林舟", "阿舟"))

@@ -32,6 +32,15 @@ from yuki.model_runtime.secrets import (
     model_secrets_path,
     read_model_secrets,
 )
+from yuki.model_runtime.semantic_observation import (
+    INVALID,
+    UNLOADED,
+    SemanticConfigError,
+    normalize_semantic_section,
+    provider_catalog,
+    semantic_key_envs,
+    take_semantic_submission,
+)
 from yuki.web.base import WebSearchProvider
 
 if TYPE_CHECKING:
@@ -109,7 +118,31 @@ class ConfigFileService:
         self._catalog = catalog
         self._model_executor = model_executor
         self._web_module = web_module
+        self._semantic: Any = None
         self._lock = asyncio.Lock()
+
+    def set_semantic_runtime(self, runtime: Any) -> None:
+        self._semantic = runtime
+
+    @staticmethod
+    def _semantic_from_raw(raw: Mapping[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+        if "semantic_observation" not in raw:
+            return None, True
+        try:
+            return normalize_semantic_section(raw["semantic_observation"]), True
+        except SemanticConfigError:
+            return None, False
+
+    def _semantic_matches(self, section: dict[str, Any] | None, *, valid: bool) -> bool | None:
+        runtime = self._semantic
+        if runtime is None:
+            return None
+        loaded = runtime.semantic_loaded_for_compare()
+        if loaded is UNLOADED:
+            return None
+        if not valid:
+            return loaded is INVALID
+        return bool(loaded == section)
 
     @property
     def loaded_catalog(self) -> ModelProfileCatalog | None:
@@ -142,6 +175,9 @@ class ConfigFileService:
             "apply_mode": "hot_reload" if self._model_executor else "restart",
             "valid": True,
             "matches_loaded": None,
+            "semantic_matches_loaded": None,
+            "semantic_valid": True,
+            "semantic_providers": provider_catalog(),
             "writable_directory": await asyncio.to_thread(os.access, path.parent, os.W_OK),
         }
         try:
@@ -150,11 +186,11 @@ class ConfigFileService:
             secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
             result["revision"] = _bundle_revision(content, secret_bytes)
             # Headers are kept server-side even for content-authorized readers.
-            raw: dict[str, Any] = (
+            loaded: dict[str, Any] = (
                 tomllib.loads(text) if text else {"schema_version": 3, "profiles": {}, "routes": {}}
             )
             raw = normalize_model_profile_document(
-                raw,
+                loaded,
                 environment=model_profile_environment(self._settings),
                 web_mode=self._settings.web.mode,
                 search_backend=self._settings.web_search_backend,
@@ -202,6 +238,18 @@ class ConfigFileService:
                     if isinstance(routes.get(task.value), str)
                 },
             }
+            semantic_section, semantic_valid = self._semantic_from_raw(loaded)
+            if semantic_section is not None:
+                result["document"]["semantic_observation"] = semantic_section
+            result["semantic_valid"] = semantic_valid
+            result["semantic_matches_loaded"] = self._semantic_matches(
+                semantic_section, valid=semantic_valid
+            )
+            result["saved_semantic_keys"] = [
+                name
+                for name, item in (semantic_section or {}).get("connections", {}).items()
+                if isinstance(item, dict) and item.get("api_key_env") in saved_keys
+            ]
             result["profile_schema"] = ModelProfile.model_json_schema()
             result["tasks"] = [task.value for task in ModelTask]
             result["saved_api_key_profiles"] = [
@@ -261,14 +309,27 @@ class ConfigFileService:
                 updates = spec.get("api_keys", {})
                 if not isinstance(updates, Mapping):
                     raise ValueError("invalid key updates")
+                existing = tomllib.loads(original.decode("utf-8")) if original else {}
+                if not isinstance(existing, dict):
+                    raise ValueError("invalid previous document")
+                try:
+                    semantic_section, semantic_to_write, semantic_usable = take_semantic_submission(
+                        document, existing
+                    )
+                except SemanticConfigError as exc:
+                    raise ValueError(exc.category) from exc
+                referenced_keys = semantic_key_envs(semantic_section)
                 for name, value in updates.items():
                     if (
                         type(name) is not str
                         or KEY_ALIAS.fullmatch(name) is None
                         or type(value) is not str
-                        or not any(
-                            isinstance(profile, dict) and profile.get("api_key_env") == name
-                            for profile in profiles.values()
+                        or (
+                            name not in referenced_keys
+                            and not any(
+                                isinstance(profile, dict) and profile.get("api_key_env") == name
+                                for profile in profiles.values()
+                            )
                         )
                     ):
                         raise ValueError("invalid model key update")
@@ -279,7 +340,6 @@ class ConfigFileService:
                         previous_secret_bytes,
                         encode_model_secrets(saved_keys),
                     )
-                existing = tomllib.loads(original.decode("utf-8")) if original else {}
                 old_profiles = existing.get("profiles", {})
                 if not isinstance(old_profiles, dict):
                     raise ValueError("invalid previous profiles")
@@ -297,6 +357,8 @@ class ConfigFileService:
                     web_mode=self._settings.web.mode,
                     search_backend=self._settings.web_search_backend,
                 )
+                if semantic_to_write is not None:
+                    document["semantic_observation"] = _plain(semantic_to_write)
                 text = tomlkit.dumps(document)
                 pending_catalog = self._catalog_from(text)
                 content = text.encode("utf-8")
@@ -358,6 +420,12 @@ class ConfigFileService:
                             self._web_module.activate(pending_search)
                         self._model_executor.apply_catalog(pending_catalog, pending_pool)
                         self._catalog = pending_catalog
+                    if self._semantic is not None:
+                        await self._semantic.apply_configuration(
+                            semantic_section,
+                            saved_keys,
+                            usable=semantic_usable,
+                        )
                     return revision
                 except BaseException:
                     if pending_catalog is not None and self._catalog is not pending_catalog:

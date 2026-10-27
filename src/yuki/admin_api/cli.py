@@ -18,6 +18,11 @@ from yuki.admin_api.client import (
     soul_mutation,
 )
 from yuki.config import Settings
+from yuki.model_runtime.semantic_observation import (
+    PROVIDER_IDS,
+    SemanticConfigError,
+    semantic_use_document,
+)
 
 
 def _mutation(parser: argparse.ArgumentParser, *, revision: bool = True) -> None:
@@ -149,6 +154,17 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     setting.add_argument("name")
     setting.add_argument("--from-env", required=True)
     _mutation(setting)
+    semantic = model.add_parser("semantic").add_subparsers(dest="semantic_action", required=True)
+    use = semantic.add_parser("use")
+    use.add_argument("--provider", required=True, choices=PROVIDER_IDS)
+    use.add_argument("--name")
+    use.add_argument("--endpoint")
+    use.add_argument("--request-model", required=True)
+    use.add_argument("--response-model")
+    use.add_argument("--timeout", type=float)
+    use.add_argument("--key-env")
+    use.add_argument("--from-env")
+    _mutation(use)
     work = commands.add_parser("work").add_subparsers(dest="work_action", required=True)
     listing = work.add_parser("list")
     _listing(listing)
@@ -222,6 +238,31 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                     args.revision,
                     request_id=args.request_id,
                     document=document,
+                )
+            elif args.model_action == "semantic":
+                shown = await read(client, "models")
+                try:
+                    document, key_env = semantic_use_document(
+                        shown["document"],
+                        provider=args.provider,
+                        request_model=args.request_model,
+                        name=args.name,
+                        endpoint=args.endpoint,
+                        response_model=args.response_model,
+                        timeout_seconds=args.timeout,
+                        key_env=args.key_env,
+                    )
+                except SemanticConfigError as exc:
+                    raise SystemExit(exc.category) from None
+                semantic_fields: dict[str, Any] = {"document": document}
+                if args.from_env:
+                    semantic_fields["api_keys"] = {key_env: os.environ[args.from_env]}
+                data = await mutate(
+                    client,
+                    "models/apply",
+                    args.revision,
+                    request_id=args.request_id,
+                    **semantic_fields,
                 )
             else:
                 data = await mutate(

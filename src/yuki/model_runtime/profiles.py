@@ -137,6 +137,8 @@ def normalize_model_profile_document(
     search_backend: str = "model",
 ) -> dict[str, Any]:
     """Prepare the same complete search configuration for every model entry point."""
+    document = dict(document)
+    document.pop("semantic_observation", None)
     validated = _ProfileDocument.model_validate(document)
     for profile_id, payload in validated.profiles.items():
         ModelProfile.model_validate(

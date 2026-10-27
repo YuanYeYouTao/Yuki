@@ -71,6 +71,8 @@ API Base URL、模型与任务路由，通过 `admin model apply` 保存并热�
 新增密钥使用 `admin model secret set`，密钥进入服务器私有文件，不回显。
 连接配置与命令见[管理 API](architecture/admin-api.md)。
 
+语义观察不是聊天模型。`yuki admin model show` 会列出 `jev`、`tencent_jev`、`aliyun_decision` 和 `custom`。用 `yuki admin model semantic use` 选定一条连接；需要新钥匙时加 `--from-env`，连接和钥匙同一次保存。没有语义段时仍使用 `SEMANTIC_PARTICIPATION_API_KEY` 和 `SEMANTIC_PARTICIPATION_MODEL`。省略该段的模型保存会留下原段，提交空段才回到这两个环境变量。模型名和地址按所填的保存，程序不另设版本。保存不请求供应商。
+
 验证一项新连接时：
 
 1. 用 `admin model show` 读取当前配置与 revision；先只修改主对话的路由。

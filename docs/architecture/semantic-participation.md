@@ -265,6 +265,7 @@ Jev 固定问句使用 `{{name}}`，实际新请求沿当前 CharacterIdentity �
 工作必须继续恢复；`RUNTIME_WORK_ENABLED` 只控制普通聊天新工作接纳，不是恢复停机开关。
 SubagentScheduler 同样持续接管已接纳的子任务；子任务接纳开关不取消原父子执行关系。
 Jev 密钥不得写入公开配置、提示词或验收记录。
+观测供应商写在 `model_profiles.toml` 的 `semantic_observation`，与聊天 Profile 分开，热保存沿模型文件的同一 revision。可选 provider 是 `jev`、`tencent_jev`、`aliyun_decision` 和 `custom`；观察请求只使用所选连接已经保存的地址和模型名。`config/autonomous-model.json` 仍是自主参与概率，不是供应商。操作顺序见[管理 API](admin-api.md)。
 
 开放群聊来源机会率由 `source_interval_seconds` 调节；参数含义与挂载覆盖见[自主参与模型](autonomous-participation-model.md#在线调参)。
 
@@ -274,8 +275,8 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 | `conversation.proactive_wakeup_enabled` / `CONVERSATION_PROACTIVE_WAKEUP_ENABLED` | 默认 true；只控制新 intrinsic SELF 机会 |
 | `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留 SELF 总开关及群 Space 的 enabled/autonomous_enabled；普通真人接话独立 |
 | `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启使用 semantic，显式关闭使用 legacy；观测故障不自动回退 |
-| `SEMANTIC_PARTICIPATION_API_KEY` | 默认空；Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
-| `SEMANTIC_PARTICIPATION_MODEL` | 默认 `jev-1.13.0` |
+| `SEMANTIC_PARTICIPATION_API_KEY` | 默认空。没有 `semantic_observation` 段时，这是 Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
+| `SEMANTIC_PARTICIPATION_MODEL` | 默认 `jev-1.13.0`，只在文件没有语义段时作为请求模型和响应修订。语义段里的模型名以文件为准 |
 | `SEMANTIC_PARTICIPATION_STATE_PATH` | 默认 `data/participation.sqlite3`，控制器快照；不代替 Host 的 run/Work/回执数据库 |
 
 四个 conversation 配置支持现有全局/群作用域管理接口。两个产品开关都是 HOT，
