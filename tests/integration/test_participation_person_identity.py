@@ -216,6 +216,8 @@ async def test_new_native_jev_http_uses_current_person_but_returns_original_snap
             observer = JevObserver(
                 "synthetic-key",
                 identity=lambda: {"display_name": "测试角色", "aliases": ()},
+                endpoint="https://semantic.example/systemone",
+                request_model="fixture-model",
                 client=transport,
             )
             result = await TracedSemanticObserver(observer, None, database=database).evaluate(

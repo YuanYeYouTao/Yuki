@@ -46,7 +46,7 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `GET /plugins/{id}/configuration`；`POST` 同路径 | `plugin configuration\|configure` | `control.plugin.config.content.read\|mutate` |
 | `GET /plugins/{id}/observe` | `plugin observe` | `control.plugin.config.content.read` |
 | `POST /plugin-outbox/{id}/retry` | `plugin retry-outbox` | `control.plugin.mutate` |
-| `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set` | `control.config.file.content.read\|mutate` |
+| `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set`、`admin model semantic use` | `control.config.file.content.read\|mutate` |
 | `GET /character`；`PATCH /character` | `admin character show\|update` | `control.character.read\|mutate` |
 | `GET /character/soul`；`PUT` 同路径；`POST /character/soul/reload` | `admin character soul show\|set\|reload` | `control.character.read\|mutate` |
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
@@ -114,8 +114,23 @@ Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用
 重启配置装配直接消费注册项声明的 Settings 字段；保存值复用这些字段的实际类型与取值约束。
 字段验证器由每个 ConfigRegistry 依据其当前 Settings 元数据在构造时派生一次，
 后续转换复用该实例的验证器；不同 registry 不共享全局缓存。
-配置文件中的 `api_key_env` 必须引用该别名。
+配置文件中的 `api_key_env` 必须引用该别名。聊天 Profile 与语义连接都可以引用它。
 读取模型时只返回配置与已配置状态，响应、审计和 TOML 不包含密钥值。
+`matches_loaded` 只比较聊天目录。`semantic_matches_loaded` 只比较语义段；`semantic_providers` 是四个可选 provider 的目录，不写入 TOML。
+
+语义观察写在同一份 `model_profiles.toml` 的 `semantic_observation` 段，不进入聊天 Profile，保存时也不创建聊天客户端。`route` 选定一条已保存的连接。`jev` 和 `tencent_jev` 省略地址时分别补上各自的公开 System One 地址，写了地址就按所写的保存。`aliyun_decision` 和 `custom` 必须自己写地址。请求模型和响应修订都按提交原样保存；省略响应修订时与请求模型相同。程序不设默认模型版本。第五个 provider 名、缺少请求模型，或后两家缺少地址时，保存失败。
+
+没有这段时，新观察继续使用进程里的 `SEMANTIC_PARTICIPATION_API_KEY` 和 `SEMANTIC_PARTICIPATION_MODEL`，地址是 Jev 的预设地址，记录的 provider 是 `typesafe`。段一旦存在，环境变量里的模型不再补洞。空路由、未知连接或空密钥不产生新观察，也不改试另一条。普通 `model apply` 省略该段时保留磁盘上的原段；提交空段才删除并回到环境变量。已开始的请求保持进入时的连接。
+
+```sh
+yuki admin model show
+yuki admin model semantic use --provider jev --request-model <id> --revision <revision>
+yuki admin model semantic use --provider tencent_jev --request-model <id> --response-model <id> --from-env NEW_KEY --revision <revision>
+yuki admin model semantic use --provider aliyun_decision --endpoint <完整地址> --request-model <id> --revision <revision>
+yuki admin model semantic use --provider custom --name custom_example --endpoint <完整地址> --request-model <id> --key-env YUKI_SEMANTIC_CUSTOM_API_KEY --from-env NEW_KEY --revision <revision>
+```
+
+`--name` 省略时用 provider 值作为连接名。`--from-env` 在同一次 apply 里把钥匙写入该连接的 `api_key_env`。自定义连接用 `--key-env` 指定这个名字。腾讯公开接口返回的模型修订和请求模型不是同一个字符串，响应修订要按该端点的实际返回值填写。保存不请求供应商。
 
 例如，先读取 `admin model show` 的 revision，再执行：
 

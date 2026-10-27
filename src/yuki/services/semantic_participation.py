@@ -10,8 +10,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
-from collections.abc import Awaitable, Callable
+import tomllib
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,7 +31,7 @@ from yuki_participation.models import (
     ScopedEvent,
     SourceRef,
 )
-from yuki_participation.observer import JevObserver
+from yuki_participation.observer import JevObserver, SemanticConnection
 from yuki_participation.session import ObservationSession
 from yuki_participation.snapshot import Layout, freeze, thaw
 
@@ -63,6 +65,14 @@ from yuki.domain.messages import InboundMessage, mention_snapshots
 from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.model_runtime.secrets import read_model_secrets
+from yuki.model_runtime.semantic_observation import (
+    INVALID,
+    UNLOADED,
+    SemanticConfigError,
+    normalize_semantic_section,
+    runtime_connection,
+)
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
@@ -156,6 +166,7 @@ class SemanticParticipationService:
         self._promotions: dict[str, asyncio.Task[None]] = {}
         self._store: AsyncSnapshotStore | None = None
         self._observer: JevObserver | None = None
+        self._loaded_semantic: Any = UNLOADED
         self._traces = traces
         self._sessions: dict[tuple[str, int], _Session] = {}
         self._dirty: dict[str, dict[int, bool]] = {}
@@ -206,16 +217,126 @@ class SemanticParticipationService:
         for item in self._sessions.values():
             item.controller.set_parameters(parameters)
 
+    def semantic_loaded_for_compare(self) -> Any:
+        return self._loaded_semantic
+
+    def _observation_ready(self) -> bool:
+        observer = self._observer
+        if observer is None:
+            return False
+        available = getattr(observer, "available", None)
+        return True if available is None else bool(available())
+
+    def _semantic_lookup(self, keys: Mapping[str, str]) -> Callable[[str], str]:
+        def lookup(name: str) -> str:
+            if name in keys:
+                return keys[name]
+            env = os.environ.get(name, "")
+            if env:
+                return env
+            if name == "SEMANTIC_PARTICIPATION_API_KEY":
+                return self.settings.semantic_participation_api_key.get_secret_value()
+            return ""
+
+        return lookup
+
+    async def apply_configuration(
+        self,
+        section: Mapping[str, Any] | None,
+        keys: Mapping[str, str],
+        *,
+        usable: bool,
+    ) -> None:
+        """Install the connection selected by the current model file. No provider I/O."""
+
+        self._loaded_semantic = section if usable else INVALID
+        fields = (
+            runtime_connection(
+                section,
+                environment_model=self.settings.semantic_participation_model,
+                lookup=self._semantic_lookup(keys),
+            )
+            if usable
+            else None
+        )
+        if fields is None:
+            if self._observer is not None:
+                self._observer.replace_connection(
+                    SemanticConnection(
+                        endpoint="inactive",
+                        api_key="",
+                        request_model="inactive",
+                        response_model="inactive",
+                        timeout_seconds=12,
+                        name="inactive",
+                        revision="",
+                    )
+                )
+            return
+        connection = SemanticConnection(**fields)
+        if self._observer is None:
+            self._observer = JevObserver(
+                connection.api_key,
+                identity=self._observer_identity,
+                endpoint=connection.endpoint,
+                request_model=connection.request_model,
+                response_model=connection.response_model,
+                timeout_seconds=connection.timeout_seconds,
+                name=connection.name,
+                revision=connection.revision,
+            )
+            await self._attach_observer()
+            return
+        self._observer.replace_connection(connection)
+
+    async def _attach_observer(self) -> None:
+        if self._observer is None:
+            return
+        from yuki.services.participation_trace import TracedSemanticObserver
+
+        async with self._session_lock:
+            for item in self._sessions.values():
+                if item.observation is None:
+                    item.observation = ObservationSession(
+                        item.controller,
+                        TracedSemanticObserver(
+                            self._observer, self._traces, database=self.database
+                        ),
+                    )
+
+    async def reload_semantic_configuration(self) -> None:
+        path = self.settings.model_profiles_file
+        try:
+            _secret_bytes, keys = read_model_secrets(path)
+        except ValueError:
+            keys = {}
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            await self.apply_configuration(None, keys, usable=True)
+            return
+        except OSError:
+            await self.apply_configuration(None, keys, usable=False)
+            return
+        try:
+            raw = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            await self.apply_configuration(None, keys, usable=False)
+            return
+        if "semantic_observation" not in raw:
+            await self.apply_configuration(None, keys, usable=True)
+            return
+        try:
+            section = normalize_semantic_section(raw["semantic_observation"])
+        except SemanticConfigError:
+            await self.apply_configuration(None, keys, usable=False)
+            return
+        await self.apply_configuration(section, keys, usable=True)
+
     async def start(self) -> None:
         self._refresh_model_parameters()
         self._store = await AsyncSnapshotStore.open(self.settings.semantic_participation_state_path)
-        key = self.settings.semantic_participation_api_key.get_secret_value()
-        if key:
-            self._observer = JevObserver(
-                key,
-                identity=self._observer_identity,
-                model=self.settings.semantic_participation_model,
-            )
+        await self.reload_semantic_configuration()
         for conversation_id, generation in await self.repository.list_current_autonomous_scopes():
             scene = await self._scene(conversation_id)
             if scene is not None and scene.generation == generation:
@@ -316,7 +437,7 @@ class SemanticParticipationService:
         return {
             "model_profile": self._model_active_digest[:12],
             "model_config_error": self._model_config_error,
-            "observer_configured": self._observer is not None,
+            "observer_configured": self._observation_ready(),
             "running": self._task is not None and not self._task.done(),
             "scopes": [
                 {
@@ -348,7 +469,7 @@ class SemanticParticipationService:
             "scopes": len(self._sessions),
             "failures": self._failures,
             "dirty_overflows": self._dirty_overflows,
-            "configured": self._observer is not None,
+            "configured": self._observation_ready(),
             "model_profile": self._model_active_digest[:12],
             "model_config_error": self._model_config_error,
             "diagnostics": await participation_diagnostics(

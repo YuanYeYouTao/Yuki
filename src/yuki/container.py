@@ -516,6 +516,7 @@ class ApplicationContainer:
             promote=self._promote_semantic_event,
             traces=self.models.traces,
         )
+        self.config_files.set_semantic_runtime(self.semantic_participation)
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,

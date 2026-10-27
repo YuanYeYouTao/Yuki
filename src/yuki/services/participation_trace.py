@@ -36,6 +36,15 @@ class TracedSemanticObserver:
         self._recorder = recorder
         self._database = database
 
+    @property
+    def connection_revision(self) -> str | None:
+        revision = getattr(self._observer, "connection_revision", None)
+        return revision if isinstance(revision, str) else None
+
+    def available(self) -> bool:
+        available = getattr(self._observer, "available", None)
+        return True if available is None else bool(available())
+
     async def evaluate(
         self, snapshot: Snapshot, *, actor_identity: ActorIdentity = original_actor
     ) -> Observation:
