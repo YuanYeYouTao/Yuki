@@ -10,6 +10,7 @@ from alembic.config import Config
 from sqlalchemy import select
 from tests.unit.test_canonical_ingress import _admit_private
 
+from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 from yuki.memory.extraction import source_event_fingerprint
 from yuki.persistence.metadata import Base
 from yuki.persistence.models import ChatEventModel
@@ -22,6 +23,7 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
 ):
     uow, admitted = await _admit_private(database, "142301", text="original source 字节")
     first = await uow.append_inbound(admitted.message, admitted)
+    complete_key = "142301" + "0" * 124
     async with database.immediate_session() as session:
         source = await session.get(ChatEventModel, first.event.id)
         values = {
@@ -31,6 +33,26 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
         }
         for key in ("app-request-original", "social-operation:original", "file:resource"):
             session.add(ChatEventModel(**values, origin_key=key, canonical_event_id=str(uuid4())))
+        extended = ChatEventModel(
+            **values, origin_key=complete_key, canonical_event_id=str(uuid4())
+        )
+        session.add(extended)
+        receipt = await session.scalar(
+            select(CanonicalEventReceiptModel).where(
+                CanonicalEventReceiptModel.canonical_event_id == first.event.canonical_event_id
+            )
+        )
+        session.add(
+            CanonicalEventReceiptModel(
+                **{
+                    column.name: getattr(receipt, column.name)
+                    for column in CanonicalEventReceiptModel.__table__.columns
+                    if column.name not in {"id", "ingress_key", "canonical_event_id"}
+                },
+                ingress_key=complete_key,
+                canonical_event_id=extended.canonical_event_id,
+            )
+        )
     async with database.read_session() as session:
         originals = {
             row.id: source_event_fingerprint(_event_record(row))
@@ -60,7 +82,7 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
             projected = [
                 '"origin_key"'
                 if table == "chat_events" and name == "platform_message_id"
-                else '"ingress_key"'
+                else 'substr("ingress_key",1,128)'
                 if table == "canonical_event_receipts" and name == "platform_message_id"
                 else '"' + name + '"'
                 for name in names
@@ -94,13 +116,22 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
             row["id"]: source_event_fingerprint(_event_record(dict(row))) for row in rows
         } == originals
         assert rows[0]["native_message_id"] == "142301"
-        assert all(row["native_message_id"] is None for row in rows[1:])
+        assert all(row["native_message_id"] is None for row in rows[1:4])
+        assert rows[4]["native_message_id"] == complete_key
         assert [row["origin_key"] for row in rows] == [
             "142301",
             "app-request-original",
             "social-operation:original",
             "file:resource",
+            complete_key,
         ]
+        assert (
+            connection.execute(
+                "SELECT ingress_key FROM canonical_event_receipts WHERE canonical_event_id=?",
+                (rows[4]["canonical_event_id"],),
+            ).fetchone()[0]
+            == complete_key
+        )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert (
             connection.execute(

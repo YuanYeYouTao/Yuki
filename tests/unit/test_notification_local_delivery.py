@@ -329,10 +329,12 @@ async def test_grant_revoked_after_media_preparation_rolls_back_local_effect(
     with monkeypatch.context() as patch:
         patch.setattr(worker, "_record_outbound", revoke)
         await worker._deliver(item)
-    assert await repository.claim_outbox() is None
+    retry = await repository.claim_outbox()
+    assert retry.id == item.id
+    await worker._deliver(retry)
     async with database.read_session() as session:
         row = await session.get(PluginNotificationOutboxModel, item.id)
-        assert row.event_id is None and row.status == "failed"
+        assert row.event_id is None and row.status == "cancelled"
         assert (
             await session.scalar(
                 select(func.count(ChatEventModel.id)).where(ChatEventModel.direction == "outbound")

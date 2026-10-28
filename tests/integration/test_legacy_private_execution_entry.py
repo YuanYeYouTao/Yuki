@@ -161,7 +161,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             dict(
                 id=10,
                 bot_user_id="testB",
-                origin_key="external-original-B",
+                platform_message_id="external-original-B",
                 scope_type="private",
                 private_peer_user_id="0",
                 sender_user_id="testB",
