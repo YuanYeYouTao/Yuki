@@ -1085,7 +1085,7 @@ async def test_expired_send_is_quarantined_and_late_original_receipt_is_retained
     async with database.read_session() as session:
         row = await session.get(PluginNotificationOutboxModel, claimed.id)
         assert row is not None
-        assert (row.status, row.origin_key, row.attempts) == (
+        assert (row.status, row.platform_message_id, row.attempts) == (
             "sent",
             "accepted",
             claimed.attempts,

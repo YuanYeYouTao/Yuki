@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from tests.support.migration_columns import preserved_projection
 from tests.unit.test_migration_0110 import insert_row
 
 from yuki_plugin_sdk.models import NotificationTarget
@@ -465,15 +466,19 @@ def test_monitor_upgrade_keeps_original_publication_and_delivery_evidence(tmp_pa
         for table in ("plugin_notification_outbox", "plugin_background_turn_jobs"):
             for before, after in zip(evidence[table], saved_rows(connection, table), strict=True):
                 assert {key: after[key] for key in before} == before
-        after_event = saved_rows(connection, "chat_events")[0]
-        for key in (
+        kept_event_columns = (
             "id",
             "platform_message_id",
             "content",
             "external_payload_json",
             "canonical_conversation_id",
             "ingress_presence_id",
-        ):
+        )
+        columns = preserved_projection(connection, "chat_events", kept_event_columns)
+        after_event = dict(
+            connection.execute(f"SELECT {columns} FROM chat_events ORDER BY id").fetchone()
+        )
+        for key in kept_event_columns:
             assert after_event[key] == evidence["chat_events"][0][key]
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
 

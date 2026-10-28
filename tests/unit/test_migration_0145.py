@@ -11,6 +11,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from tests.support.migration_columns import preserved_projection
 from tests.unit.test_migration_0119 import _seed_0118
 
 from yuki.persistence.history_search import compile_match, prepare_query
@@ -73,6 +74,7 @@ def test_upgrade_backfills_before_head_without_conversion_under_writer(
     monkeypatch.setattr(module, "prepare_terms", prepare)
     with closing(sqlite3.connect(path)) as connection:
         before = connection.execute("SELECT * FROM chat_events ORDER BY id").fetchall()
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(chat_events)")]
     command.upgrade(Config("alembic.ini"), target)
     assert calls == len(before)
     with closing(sqlite3.connect(path)) as connection, connection:
@@ -80,7 +82,11 @@ def test_upgrade_backfills_before_head_without_conversion_under_writer(
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
             expected_revision,
         )
-        assert connection.execute("SELECT * FROM chat_events ORDER BY id").fetchall() == before
+        projection = preserved_projection(connection, "chat_events", columns)
+        assert (
+            connection.execute(f"SELECT {projection} FROM chat_events ORDER BY id").fetchall()
+            == before
+        )
         assert (
             connection.execute(
                 "SELECT name FROM sqlite_master WHERE name='chat_events_fts'"

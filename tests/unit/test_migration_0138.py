@@ -5,6 +5,7 @@ import sqlite3
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from tests.support.migration_columns import preserved_projection
 from tests.unit.test_migration_0119 import _seed_0118
 
 
@@ -92,7 +93,7 @@ def test_sticker_upgrade_retires_pool_and_active_config_but_keeps_original_facts
                 ).fetchall()
                 assert set(preserved) == set(original)
                 continue
-            columns = ",".join(original_columns[table])
+            columns = preserved_projection(connection, table, original_columns[table])
             assert (
                 connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY rowid').fetchall()
                 == original

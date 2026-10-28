@@ -288,7 +288,7 @@ async def _social_sender(env, sender, monkeypatch):
                 else "".join(part["data"]["text"] for part in parts if part["type"] == "text")
             )
             receipt = await sender.send(OutboundMessage(text=text))
-            return {"message_id": int(receipt.origin_key)}
+            return {"message_id": int(receipt.platform_message_id)}
         return await original(action, **params)
 
     monkeypatch.setattr(env.bot, "call_api", gateway)
