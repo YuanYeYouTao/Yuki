@@ -47,7 +47,7 @@ async def test_evidence_order_limit_and_counts_are_preserved(database):
                     [
                         dict(
                             template,
-                            platform_message_id=f"scale-{i}",
+                            origin_key=f"scale-{i}",
                             canonical_event_id=str(uuid4()),
                         )
                         for i in range(size)

@@ -230,7 +230,16 @@ class StickerIndex:
         path = self.directory(platform) / "search.sqlite3"
         if not path.exists():
             return False
-        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+        try:
+            connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.OperationalError as error:
+            if (
+                getattr(error, "sqlite_errorcode", 0) & 255 == sqlite3.SQLITE_CANTOPEN
+                and not path.exists()
+            ):
+                return False
+            raise
+        with closing(connection) as db:
             if not self.valid_schema(db):
                 return False
             db.execute("SELECT id FROM assets LIMIT 1").fetchone()
@@ -245,8 +254,6 @@ class StickerIndex:
             if not path.exists():
                 return False
         except sqlite3.DatabaseError as error:
-            if not path.exists():
-                return False
             if not self.corrupt(error):
                 raise
         with self.cache_writer(platform):
@@ -541,9 +548,6 @@ class StickerIndex:
         except sqlite3.DatabaseError as error:
             # Corrupted pages are rebuildable; SQL, lock and storage failures stay failures.
             if not self.corrupt(error):
-                code = getattr(error, "sqlite_errorcode", 0) & 255
-                if code == sqlite3.SQLITE_ERROR and not self._cache_still_readable(platform):
-                    return {"needs_build": True}
                 raise
         # The reader is already closed. Look again under the writer lock; do not
         # call ready(), which would take that same lock.
@@ -576,7 +580,16 @@ class StickerIndex:
         if not path.exists():
             return {"needs_build": True}
         while True:
-            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+            try:
+                connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            except sqlite3.OperationalError as error:
+                if (
+                    getattr(error, "sqlite_errorcode", 0) & 255 == sqlite3.SQLITE_CANTOPEN
+                    and not path.exists()
+                ):
+                    return {"needs_build": True}
+                raise
+            with closing(connection) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 if not self.valid_schema(db) or version != CACHE_VERSION:
                     return {"needs_build": True}

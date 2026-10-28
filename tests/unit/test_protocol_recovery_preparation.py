@@ -462,7 +462,8 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
     runner.main_contract = MainAgentContract(chat, ShortState(WorkspaceStore(tmp_path / "main")))
     config = await chat._runtime_config.snapshot()
     inbound = InboundMessage(
-        message_id=selected.platform_message_id,
+        ingress_key=selected.origin_key,
+        native_message_id=selected.origin_key,
         source_event_id=selected.id,
         event_type="message",
         scope_type=selected.scope_type,

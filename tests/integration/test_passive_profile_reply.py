@@ -54,9 +54,7 @@ async def _reply_environment(database, tmp_path):
             return ChatResponse(
                 "",
                 0,
-                tool_calls=(
-                    ToolCall("reply", ToolFunction("send", json.dumps({"text": "收到"}))),
-                ),
+                tool_calls=(ToolCall("reply", ToolFunction("send", json.dumps({"text": "收到"}))),),
             )
         return "NO_REPLY"
 
@@ -98,9 +96,7 @@ async def test_native_mention_reaches_first_reply_without_remote_profile_reads(
         ]
         async with database.read_session() as reader:
             original = await reader.scalar(
-                select(ChatEventModel).where(
-                    ChatEventModel.platform_message_id == message.message_id
-                )
+                select(ChatEventModel).where(ChatEventModel.origin_key == message.ingress_key)
             )
             assert original is not None and original.author_person_id == env.person
             assert original.sender_nickname == sender_fields.get("nickname", "")
@@ -165,7 +161,7 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
             )
             assert {"旧昵称", "新昵称", "原名片"} <= account_names
             original_event = await reader.scalar(
-                select(ChatEventModel).where(ChatEventModel.platform_message_id == "401")
+                select(ChatEventModel).where(ChatEventModel.origin_key == "401")
             )
             assert original_event.sender_nickname == "旧昵称"
             assert original_event.sender_group_card == "原名片"

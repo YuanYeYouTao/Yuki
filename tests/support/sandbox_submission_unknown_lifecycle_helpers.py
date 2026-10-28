@@ -56,7 +56,8 @@ async def host_case(database, tmp_path):
     tasks = SandboxTaskRepository(database)
     chat._tools.sandbox_client = SandboxClient(tmp_path / "never-opened.sock", tasks=tasks)
     inbound = InboundMessage(
-        message_id="offline-rpc-fixture",
+        ingress_key="offline-rpc-fixture",
+        native_message_id="offline-rpc-fixture",
         event_type="message:test",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001"),
@@ -76,9 +77,7 @@ async def host_case(database, tmp_path):
         runtime_config=await chat._runtime_config.snapshot(),
     )
     backend = MainAgentBackend(chat, tool_runtime)
-    runtime = SimpleNamespace(
-        work_control=work.control, origin=TurnOrigin.USER_MESSAGE
-    )
+    runtime = SimpleNamespace(work_control=work.control, origin=TurnOrigin.USER_MESSAGE)
     await backend.prepare()
     backend.refresh_catalog(runtime)
     return work, tasks, backend, runtime

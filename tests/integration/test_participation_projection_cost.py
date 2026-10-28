@@ -129,7 +129,7 @@ async def _append(host, *, author="1001", reply_to=None, cause=None, age=20):
     row, created = await seed_event(
         host.ledger,
         bot_user_id="8000",
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         scope_type=ScopeType.GROUP,
         sender_user_id=author,
         direction="outbound" if author == "8000" else "inbound",

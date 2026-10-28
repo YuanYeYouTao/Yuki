@@ -592,7 +592,7 @@ class PluginNotificationRepository:
                 try:
                     appended = await self._scoped_events.append_external(
                         scope=scope,
-                        platform_message_id=f"external2-{notification_id}",
+                        origin_key=None,
                         source_plugin_id=plugin_id,
                         external_source=request.external_source,
                         external_event_key=request.event_key,
@@ -745,8 +745,13 @@ class PluginNotificationRepository:
                 )
             )
             for item in expired:
-                item.status = "uncertain"
-                item.last_error_category = "processing_lease_expired"
+                local = _prepared_local_outbox(item)
+                item.status = (
+                    "sent" if item.event_id is not None else "pending" if local else "uncertain"
+                )
+                item.last_error_category = (
+                    None if item.status == "sent" else "processing_lease_expired"
+                )
                 item.lease_until = None
                 item.updated_at = now
             await session.flush()
@@ -778,6 +783,55 @@ class PluginNotificationRepository:
                 return None
         return _outbox_record(row)
 
+    async def settle_local_outbox(self, item: OutboxRecord, *, session: AsyncSession) -> bool:
+        """Claim a new local ledger effect under its original live lease."""
+        now = datetime.now(UTC)
+        claimed = await session.scalar(
+            update(PluginNotificationOutboxModel)
+            .where(
+                PluginNotificationOutboxModel.id == item.id,
+                PluginNotificationOutboxModel.status == "processing",
+                PluginNotificationOutboxModel.attempts == item.attempts,
+                func.julianday(PluginNotificationOutboxModel.lease_until) > func.julianday("now"),
+            )
+            .values(
+                status="sent",
+                lease_until=None,
+                updated_at=now,
+                sent_at=now,
+                platform_message_id=None,
+                last_error_category=None,
+            )
+            .returning(PluginNotificationOutboxModel.id)
+        )
+        if claimed is None:
+            return False
+        row = await session.get(PluginNotificationOutboxModel, item.id)
+        assert row is not None
+        await require_queued_work_readable(session, row)
+        creator = await self.granted_canonical_creator(
+            plugin_id=row.plugin_id,
+            person_id=row.canonical_target_person_id,
+            space_id=row.canonical_target_space_id,
+            conversation_id=row.canonical_conversation_id,
+            session=session,
+        )
+        if creator is None:
+            raise PluginOwnershipError("target_grant_revoked")
+        return True
+
+    async def recover_local_outbox(self, item: OutboxRecord) -> None:
+        """Reconcile the original transaction before allowing another local attempt."""
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginNotificationOutboxModel, item.id)
+            if row is None or row.status == "sent" or row.event_id is not None:
+                return
+            if _owns_processing_attempt(row, attempt=item.attempts) and _prepared_local_outbox(row):
+                row.status = "pending"
+                row.lease_until = None
+                row.last_error_category = "local_settlement_retry"
+                row.updated_at = datetime.now(UTC)
+
     async def finish_outbox(
         self,
         item_id: int,
@@ -799,7 +853,6 @@ class PluginNotificationRepository:
                 and row.attempts == attempt
                 and row.status == "uncertain"
                 and status in {"sent", "uncertain"}
-                and platform_message_id
                 and row.platform_message_id in {None, platform_message_id}
             ):
                 return False
@@ -1312,10 +1365,13 @@ class PluginNotificationRepository:
         person_id: str | None,
         space_id: str | None,
         conversation_id: str | None = None,
+        session: AsyncSession | None = None,
     ) -> str | None:
         """Read a grant by persisted Person XOR Space. No raw QQ/group key."""
 
-        async with self._database.read_session() as session:
+        from yuki.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as session:
             try:
                 grant = await _canonical_enabled_grant(
                     session,
@@ -1447,6 +1503,12 @@ def queued_work_error_category(exc: PluginOwnershipError, row: object) -> str:
     if exc.category == STATE_MISMATCH and person_id and space_id:
         return "canonical_target_ambiguous"
     return exc.category
+
+
+def _prepared_local_outbox(row: PluginNotificationOutboxModel) -> bool:
+    prepared = json.loads(row.prepared_json) if row.prepared_json else {}
+    route = prepared.get("route", {})
+    return route.get("local_ledger") is True and bool(route.get("provider_id"))
 
 
 def _owns_processing_attempt(row: object | None, *, attempt: int) -> bool:

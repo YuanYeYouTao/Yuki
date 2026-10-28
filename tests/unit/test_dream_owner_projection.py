@@ -71,7 +71,7 @@ async def _scene(database, provider, *, owner):
         event, _ = await seed_event(
             ledger,
             bot_user_id="8000",
-            platform_message_id=f"owner-proof-{owner}-{index}",
+            origin_key=f"owner-proof-{owner}-{index}",
             scope_type=ScopeType.PRIVATE if private else ScopeType.GROUP,
             sender_user_id="1001",
             direction="inbound",

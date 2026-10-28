@@ -21,7 +21,6 @@ class ToolActor:
     instruction: str
     event_id: int | None = None
     execution_id: str = ""
-    platform_message_id: str = ""
     person_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
@@ -56,7 +55,6 @@ class ToolActor:
                 or self.user_id
                 or self.person_id
                 or self.event_id is not None
-                or self.platform_message_id
                 or self.mentioned_user_ids
                 or self.mentioned_person_ids
             ):
@@ -101,7 +99,6 @@ class ToolActor:
             instruction=inbound.text,
             event_id=inbound.source_event_id,
             execution_id=inbound.source_execution_id or "",
-            platform_message_id=inbound.message_id,
             person_id=inbound.person_id,
             conversation_id=inbound.conversation_id,
             presence_id=inbound.presence_id,

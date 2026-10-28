@@ -62,6 +62,7 @@ async def test_current_media_shares_native_platform_facts_without_byte_locators(
     )
     inbound = InboundMessage(
         "1",
+        "1",
         "message",
         ScopeType.PRIVATE,
         SenderIdentity("1001"),
@@ -175,7 +176,8 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
         invocation_scope=context.invocation_scope,
     )
     inbound = InboundMessage(
-        message_id="1",
+        ingress_key="1",
+        native_message_id="1",
         bot_user_id="99999",
         sender=SenderIdentity("10001"),
         text="pick",

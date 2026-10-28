@@ -26,7 +26,7 @@ async def _cache(database, tmp_path, count=1):
     source, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="cleanup-media",
+        origin_key="cleanup-media",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         private_peer_user_id="1001",

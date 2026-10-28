@@ -76,7 +76,7 @@ async def scene(database, count):
                 dict(
                     seed,
                     canonical_event_id=str(uuid4()),
-                    platform_message_id=f"missing-history-{i}",
+                    origin_key=f"missing-history-{i}",
                     content=f"synthetic history {i}",
                     occurred_at=now + timedelta(seconds=i),
                     reply_to_event_id=receipt.event.id if i % 3 == 0 else None,
@@ -351,7 +351,7 @@ async def test_metadata_and_bodies_share_wal_snapshot_and_fixed_highwater(
                             dict(
                                 seed,
                                 canonical_event_id=str(uuid4()),
-                                platform_message_id="beyond-highwater",
+                                origin_key="beyond-highwater",
                                 content="next request only",
                             )
                         )

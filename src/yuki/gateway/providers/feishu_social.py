@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import quote
 
+from yuki.domain.conversations import ConversationScope
 from yuki.gateway.providers.feishu import FeishuAPIError, FeishuClient, decode_account_id
 from yuki.gateway.social import (
     TransportEffectError,
@@ -90,6 +91,17 @@ def _text_parts(message: TransportMessage) -> tuple[TransportMessage, ...]:
 
 
 class FeishuSocialOperations:
+    def native_reference_namespace(
+        self, *, account_id: str, scope: ConversationScope
+    ) -> tuple[str | None, ...]:
+        return (
+            scope.platform,
+            account_id,
+            scope.scope_type.value,
+            scope.group_id or scope.private_peer_user_id,
+            scope.thread_id,
+        )
+
     def native_mention(self, text: str, offset: int) -> TransportMention | None:
         # Display names alone do not provide an Open ID. Shared local resolution owns them.
         return None

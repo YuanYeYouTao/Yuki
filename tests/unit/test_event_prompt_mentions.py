@@ -15,7 +15,7 @@ def test_canonical_mentions_keep_original_names_and_positions_in_every_prompt_vi
     event = EventRecord(
         id=9,
         bot_user_id="9999",
-        platform_message_id="mention-message",
+        origin_key="mention-message",
         platform="qq",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
@@ -71,7 +71,7 @@ def test_canonical_current_text_does_not_rewrite_quoted_or_literal_markers() -> 
     event = EventRecord(
         id=1,
         bot_user_id="9999",
-        platform_message_id="current",
+        origin_key="current",
         platform="qq",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
@@ -95,7 +95,7 @@ def test_account_author_is_displayed_without_a_fabricated_person():
     event = EventRecord(
         id=11,
         bot_user_id="yuki",
-        platform_message_id="unknown-source",
+        origin_key="unknown-source",
         platform="third",
         scope_type=ScopeType.GROUP,
         sender_user_id="tenant/user",
@@ -121,7 +121,7 @@ def test_outbound_text_is_not_hidden_by_media_like_wording(content: str) -> None
     event = EventRecord(
         id=1,
         bot_user_id="yuki",
-        platform_message_id="plain-text",
+        origin_key="plain-text",
         platform="qq",
         scope_type=ScopeType.GROUP,
         sender_user_id="yuki",

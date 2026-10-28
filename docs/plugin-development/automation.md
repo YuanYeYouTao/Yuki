@@ -3,7 +3,7 @@
 定时安排保存结构化时间与完整要求；到点激活同一个 Main Agent，使用共同工具和执行后端。
 插件工具统一使用 `register_tool(ToolRegistration(...))` 注册，没有独立 Automation Action。
 
-Plugin API 8.0 的 `ctx.automation` 提供 `list_current_owner`、`create_task`、`update_task`、
+Plugin API 9.0 的 `ctx.automation` 提供 `list_current_owner`、`create_task`、`update_task`、
 `pause`、`resume` 和 `cancel`。读需要 `automation.read`，创建与管理需要 `automation.manage_self`。
 
 ```python

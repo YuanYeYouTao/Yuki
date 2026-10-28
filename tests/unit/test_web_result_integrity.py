@@ -208,7 +208,7 @@ async def test_main_history_search_archives_original_requested_page(
         await seed_scoped_event(
             case.env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id=f"history-{index}",
+            origin_key=f"history-{index}",
             sender_user_id="10001",
             direction="inbound",
             content=content,

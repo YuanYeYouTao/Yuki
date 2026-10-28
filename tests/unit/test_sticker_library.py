@@ -883,3 +883,39 @@ async def test_long_index_rpc_is_not_a_seven_second_observation(tmp_path):
         server.close()
         await server.wait_closed()
         await owner.close()
+
+
+async def test_real_eight_mib_original_without_vision_stays_streamed(
+    library, monkeypatch, record_property
+):
+    import time
+    import tracemalloc
+
+    value, bridge = library
+    prefix = picture()
+    payload = prefix + b"x" * (8 * 1024 * 1024 - len(prefix))
+    source = cached_sticker_source(value, payload)
+    digest = source["sha256"]
+    del payload
+
+    def no_full_original(self):
+        raise AssertionError("the complete original was materialized")
+
+    monkeypatch.setattr(Path, "read_bytes", no_full_original)
+    tracemalloc.start()
+    started = time.perf_counter()
+    try:
+        asset = await value.store_cached(**source, request_id="real-eight-mib", platform="qq")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    elapsed = time.perf_counter() - started
+    original = bridge.root / asset.relative_path
+    assert original.stat().st_size == 8 * 1024 * 1024
+    with original.open("rb") as stream:
+        assert hashlib.file_digest(stream, "sha256").hexdigest() == digest
+    assert asset.byte_size == 8 * 1024 * 1024 and asset.sha256 == digest
+    assert value._tasks == set()
+    assert peak < 4 * 1024 * 1024
+    record_property("eight_mib_peak_bytes", peak)
+    record_property("eight_mib_seconds", elapsed)

@@ -424,7 +424,8 @@ def normalize_event(
         raise TypeError(f"unsupported OneBot event: {type(event).__name__}")
 
     return InboundMessage(
-        message_id=str(event.message_id),
+        ingress_key=str(event.message_id),
+        native_message_id=str(event.message_id),
         event_type=f"message:{event.message_type}:{event.sub_type}",
         scope_type=scope,
         sender=SenderIdentity(

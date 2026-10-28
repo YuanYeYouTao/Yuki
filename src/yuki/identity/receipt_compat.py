@@ -77,7 +77,7 @@ async def transport_receipt(
     presence_id: str,
     scope: ConversationScope,
     event_type: str,
-    platform_message_id: str,
+    ingress_key: str | None,
 ) -> CanonicalEventReceiptModel | None:
     account = (
         select(AccountAssignmentModel.account_id)
@@ -91,7 +91,7 @@ async def transport_receipt(
                 CanonicalEventReceiptModel.ingress_account_id == account,
                 CanonicalEventReceiptModel.transport_namespace == transport_namespace(scope),
                 CanonicalEventReceiptModel.event_type == event_type,
-                CanonicalEventReceiptModel.platform_message_id == platform_message_id,
+                CanonicalEventReceiptModel.ingress_key == ingress_key,
             )
         ),
     )
@@ -136,7 +136,7 @@ def require_compatible_v2_live(
     scope: ConversationScope,
     conversation_id: str | None,
     presence_id: str,
-    platform_message_id: str,
+    origin_key: str | None,
     sender_user_id: str,
     direction: str,
     event_kind: str,
@@ -160,7 +160,7 @@ def require_compatible_v2_live(
     if receipt is not None:
         if (
             receipt.event_type != receipt_event_type
-            or receipt.platform_message_id != platform_message_id[:128]
+            or receipt.ingress_key != origin_key
             or receipt.canonical_event_id != existing.canonical_event_id
         ):
             raise CanonicalIdentityError("receipt_conflict")
@@ -188,7 +188,7 @@ def require_compatible_v2_live(
         existing.scope_type != scope.scope_type.value
         or existing.group_id != scope.group_id
         or existing.private_peer_user_id != scope.private_peer_user_id
-        or existing.platform_message_id != platform_message_id
+        or existing.origin_key != origin_key
     ):
         raise CanonicalIdentityError("receipt_conflict")
 

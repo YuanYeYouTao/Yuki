@@ -132,7 +132,7 @@ async def test_unreadable_old_request_does_not_block_home_other_requests_or_watc
     await seed_scoped_event(
         env.harness.scoped_events,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         sender_user_id="1002",
         direction="inbound",
         content="another group member",

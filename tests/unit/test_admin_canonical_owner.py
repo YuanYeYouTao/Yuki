@@ -71,7 +71,8 @@ async def identities(database):
 
 def inbound(person, *, user="9000", space=None):
     return InboundMessage(
-        message_id=str(uuid4()),
+        ingress_key=str(uuid4()),
+        native_message_id=str(uuid4()),
         event_type="message:telegram",
         scope_type=ScopeType.GROUP if space else ScopeType.PRIVATE,
         sender=SenderIdentity(user),
@@ -85,11 +86,16 @@ def inbound(person, *, user="9000", space=None):
 
 
 async def execute(harness, event, command, argument):
-    event = replace(event, message_id=str(uuid4()), text=f"/ai {command.value} {argument}")
+    event = replace(
+        event,
+        ingress_key=str(uuid4()),
+        native_message_id=str(uuid4()),
+        text=f"/ai {command.value} {argument}",
+    )
     appended = await seed_scoped_event(
         harness.ledger._writer,
         scope=event.scope(),
-        platform_message_id=event.message_id,
+        origin_key=event.ingress_key,
         sender_user_id=event.sender.user_id,
         direction="inbound",
         content=event.text,
@@ -132,7 +138,7 @@ async def test_group_command_uses_real_person_grant_and_internal_space(database)
         appended = await seed_scoped_event(
             app.ledger._writer,
             scope=trusted.scope(),
-            platform_message_id=trusted.message_id,
+            origin_key=trusted.ingress_key,
             sender_user_id=trusted.sender.user_id,
             direction="inbound",
             content=f"/ai admin group {space} disable",

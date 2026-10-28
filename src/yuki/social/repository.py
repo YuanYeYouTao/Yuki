@@ -313,6 +313,7 @@ class SocialOperationRepository:
         expected_payload_hash: str | None = None,
         parent_operation_id: str | None = None,
         sequence_part_index: int | None = None,
+        resume_local: bool = False,
     ) -> bool:
         """Commit the send boundary before issuing any network action."""
         async with optional_session(self.database, session, write=True) as active:
@@ -322,8 +323,26 @@ class SocialOperationRepository:
                     return False
             predicates = [
                 SocialOperationModel.id == operation_id,
-                SocialOperationModel.status == OperationStatus.PREPARED.value,
+                SocialOperationModel.status
+                == (
+                    OperationStatus.EXECUTING.value
+                    if resume_local
+                    else OperationStatus.PREPARED.value
+                ),
             ]
+            if resume_local:
+                predicates.extend(
+                    (
+                        SocialOperationModel.presence_id == presence_id,
+                        SocialOperationModel.event_id.is_(None),
+                        SocialOperationModel.original_event_id.is_(None),
+                        SocialOperationModel.platform_reference.is_(None),
+                        func.json_extract(
+                            SocialOperationModel.prepared_json, "$.route.local_ledger"
+                        )
+                        == 1,
+                    )
+                )
             if expected_payload_hash is not None:
                 predicates.append(SocialOperationModel.payload_hash == expected_payload_hash)
             result = await active.execute(
@@ -377,8 +396,6 @@ class SocialOperationRepository:
             or not all(c.isascii() and (c.isalnum() or c == "_") for c in error_category)
         ):
             raise SocialError("invalid_error_category")
-        if platform_reference is not None and len(platform_reference) > 255:
-            raise SocialError("invalid_platform_reference")
         if event_id is not None and (
             type(event_id) is not int or event_id <= 0 or status is not OperationStatus.SUCCEEDED
         ):
@@ -479,29 +496,10 @@ class SocialOperationRepository:
                     updated_at=datetime.now(UTC),
                 )
             )
-            local_count = 0
-            local_rows = await session.scalars(
-                select(SocialOperationModel).where(
-                    SocialOperationModel.status == OperationStatus.EXECUTING.value,
-                    local_ledger == 1,
-                )
-            )
-            for row in local_rows:
-                event_id = await session.scalar(
-                    select(ChatEventModel.id).where(
-                        ChatEventModel.platform_message_id == f"social-operation:{row.id}"
-                    )
-                )
-                row.status = (
-                    OperationStatus.SUCCEEDED.value
-                    if event_id is not None
-                    else OperationStatus.FAILED.value
-                )
-                row.event_id = event_id
-                row.error_category = None if event_id is not None else "process_interrupted"
-                row.updated_at = datetime.now(UTC)
-                local_count += 1
-            recovered = cast(CursorResult[Any], result).rowcount + local_count
+            # Historical local EXECUTING receipts retain their original evidence.
+            # A legal caller may settle that same local operation; startup neither
+            # guesses publication from platform columns nor declares it failed.
+            recovered = cast(CursorResult[Any], result).rowcount
             steps = SocialOperationModel.__table__.alias("original_text_step")
             for identity, source_turn_id, keys in interrupted:
                 original = select(steps.c.id).where(

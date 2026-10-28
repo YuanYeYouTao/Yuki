@@ -1085,7 +1085,7 @@ async def test_expired_send_is_quarantined_and_late_original_receipt_is_retained
     async with database.read_session() as session:
         row = await session.get(PluginNotificationOutboxModel, claimed.id)
         assert row is not None
-        assert (row.status, row.platform_message_id, row.attempts) == (
+        assert (row.status, row.origin_key, row.attempts) == (
             "sent",
             "accepted",
             claimed.attempts,
@@ -1127,7 +1127,7 @@ async def test_original_raw_target_publication_returns_same_receipt_after_canoni
     async with database.immediate_session() as session:
         stored = await session.get(ChatEventModel, receipt.source_event_id)
         stored.external_target_id = "1001"
-        stored.platform_message_id = "external-" + original_id
+        stored.origin_key = "external-" + original_id
         import json
 
         segments = json.loads(stored.segments_json)

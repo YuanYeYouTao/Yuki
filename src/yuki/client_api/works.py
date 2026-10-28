@@ -156,7 +156,7 @@ async def input_result(
         or event.origin != "work_input"
         or event.direction != "inbound"
         or event.suppression_status != "keeper"
-        or event.platform_message_id != principal.message_key(request_id)
+        or event.origin_key != principal.message_key(request_id)
         or mailbox["source_key"] != f"client-input:{principal.message_key(request_id)}"
         or fingerprint(
             "client.work_input",

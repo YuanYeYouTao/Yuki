@@ -18,7 +18,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import MetaData
 
-from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
+from yuki.conversation.projection_identity_schema import PROJECTION_TRIGGERS_CURRENT
 from yuki.persistence.models import Base
 
 

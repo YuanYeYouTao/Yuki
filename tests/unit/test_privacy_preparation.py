@@ -39,7 +39,7 @@ async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database
     event, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="9999",
-        platform_message_id="numeric-privacy",
+        origin_key="numeric-privacy",
         scope_type=ScopeType.GROUP,
         group_id="2001",
         sender_user_id="1002",
@@ -202,7 +202,7 @@ async def test_prepared_forget_rejects_actual_new_sources_before_dml(database, c
     original, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="9999",
-        platform_message_id="source-proof",
+        origin_key="source-proof",
         scope_type=ScopeType.GROUP,
         group_id="2001",
         sender_user_id="1002",
@@ -218,7 +218,7 @@ async def test_prepared_forget_rejects_actual_new_sources_before_dml(database, c
         await seed_event(
             EventLedgerRepository(database),
             bot_user_id="9999",
-            platform_message_id="new-source",
+            origin_key="new-source",
             scope_type=ScopeType.GROUP,
             group_id="2001",
             sender_user_id="1002",

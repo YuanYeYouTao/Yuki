@@ -190,7 +190,13 @@ async def test_external_bot_title_is_local_metadata_without_a_person_or_membersh
         persons = tuple(await session.scalars(select(CanonicalPersonModel.id)))
     await uow.append_inbound(incoming.message, incoming)
     following = await resolver.pre_admit(
-        bot, replace(message, message_id="external-empty-title", group_name="")
+        bot,
+        replace(
+            message,
+            ingress_key="external-empty-title",
+            native_message_id="external-empty-title",
+            group_name="",
+        ),
     )
     await uow.append_inbound(following.message, following)
     async with database.read_session() as session:

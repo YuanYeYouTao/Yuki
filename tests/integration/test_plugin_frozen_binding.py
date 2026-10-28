@@ -130,7 +130,8 @@ async def run(*, native_child=False):
             name = registry.list(kind=ExtensionKind.TOOL)[0].model_name
             tr = ToolRuntime(
                 inbound=InboundMessage(
-                    message_id="1",
+                    ingress_key="1",
+                    native_message_id="1",
                     bot_user_id="9999",
                     sender=SenderIdentity("1001"),
                     text="inspect",

@@ -83,7 +83,8 @@ _EVENT_SOURCE_COLUMNS = _CURSOR_SOURCE_COLUMNS + tuple(
         "direction",
         "author_kind",
         "bot_user_id",
-        "platform_message_id",
+        "origin_key",
+        "native_message_id",
         "scope_type",
         "sender_user_id",
         "group_id",
@@ -574,9 +575,7 @@ class SelfReflectionRepository:
                         (state.canonical_person_id, state.canonical_space_id): state
                         for state in await writer.scalars(
                             select(MemorySelfReflectionStateModel).where(
-                                or_(
-                                    *(self._owner_state_filter(*owner) for owner in prepared)
-                                )
+                                or_(*(self._owner_state_filter(*owner) for owner in prepared))
                             )
                         )
                     }

@@ -58,7 +58,7 @@ async def test_quiet_only_covers_observed_same_actor_inputs_in_its_original_acti
         d, _ = await seed_event(
             host.ledger,
             bot_user_id=a.bot_user_id,
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             scope_type=ScopeType.GROUP,
             sender_user_id="1002",
             direction="inbound",

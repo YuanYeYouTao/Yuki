@@ -194,11 +194,23 @@ async def test_pending_code_interleave(
         await snap("parent_pending_child_note_committed")
         assert len(domain.log) == (1 if pause == "pending" else 2)
         await harness.processor.handle(
-            replace(inbound, message_id="ordinary-between", text=ORD), MemorySender()
+            replace(
+                inbound,
+                ingress_key="ordinary-between",
+                native_message_id="ordinary-between",
+                text=ORD,
+            ),
+            MemorySender(),
         )
         await snap("ordinary_observed_child_note")
         await harness.processor.handle(
-            replace(inbound, message_id="other-work", text="W2 new task"), MemorySender()
+            replace(
+                inbound,
+                ingress_key="other-work",
+                native_message_id="other-work",
+                text="W2 new task",
+            ),
+            MemorySender(),
         )
         await snap("other_work_note_committed")
         repository = WorkRepository(database)
@@ -230,7 +242,7 @@ async def test_pending_code_interleave(
                         group_id=inbound.group_id,
                         scope_type=inbound.scope_type,
                         sender_user_id=inbound.sender.user_id,
-                        platform_message_id="late-after-boundary-selection",
+                        origin_key="late-after-boundary-selection",
                         direction="inbound",
                         content=LATE,
                     )
@@ -294,7 +306,12 @@ async def test_pending_code_interleave(
             assert restored_public.selected_summary_coverage == 1
             assert "W1 initial request" in restored_public.payload_json
         await harness.processor.handle(
-            replace(inbound, message_id="ordinary-after-resume", text="after recovery"),
+            replace(
+                inbound,
+                ingress_key="ordinary-after-resume",
+                native_message_id="ordinary-after-resume",
+                text="after recovery",
+            ),
             MemorySender(),
         )
         ordinary = json.dumps(wires[-1], ensure_ascii=False)

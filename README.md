@@ -99,11 +99,13 @@ uv run yuki --help
 
 后续开发的 B1–B6 代码清理包含连接器 `0.2.0` / WSS 协议 `2` 配套升级、Memory Fake 结果修正及旧 CLI/Python 表面撤销，见[兼容与升级说明](docs/upgrade-code-deletion-20261023.md)。这不代表新的正式 Release 或已部署状态。
 
-4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。当前开发源码为 schema **0153**、Plugin API **8.0**、manifest **33**；聊天历史支持平台/群私聊组合筛选、可分页的原入口/话题发现，显式查询可读取重开上下文前的记录。
+4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。当前开发源码为 schema **0155**、Plugin API **9.0**、manifest **33**；聊天历史支持平台/群私聊组合筛选、可分页的原入口/话题发现，显式查询可读取重开上下文前的记录。
 
 旧库的正文索引转换需要停业务写入，完成升级后再启动 Bot；本次0148仅增加来源定位索引，不重建全文。升级前备份数据库、配置、插件和工作文件，详见[现行历史读取合同](docs/architecture/chat-history.md)、[原实施记录](docs/operations/chat-history-448-implementation-20261022.md)与[来源及执行优化任务书](docs/architecture/Yuki-聊天来源发现与检索执行删减优化任务书-2026-10-22.md)。
 
 0153 将已有向量原样移入同库 Vec1 表，不重新调用 Embedding API。升级前停止旧 writer 并备份主库与参与快照文件，使用带 Vec1 的新构建完成迁移后再启动；步骤及本地性能对照见[算法优化实施记录](docs/operations/algorithm-performance-implementation-20261026.md)。
+
+0155 分开原信封、原接入键和真实原生消息引用；本地消息与通知在原事务中发表，媒体保留精确 artifact/version。升级需停止旧 writer，插件同步适配 SDK9 并按真实 manifest 重新批准。步骤见[消息身份升级](docs/upgrade-message-identity-20261028.md)。
 
 ## 架构与开发
 
@@ -124,7 +126,7 @@ uv run pytest
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | 人物、账号、空间和会话 |
 | [飞书与 Lark 接入](docs/operations/feishu.zh-CN.md) | 自建应用、群消息权限、长连接和媒体 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话和执行上下文整理 |
-| [Plugin API 8.0](docs/plugin-development/index.md) | 插件开发与 SDK |
+| [Plugin API 9.0](docs/plugin-development/index.md) | 插件开发与 SDK |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答和恢复 |
 | [CHANGELOG](CHANGELOG.md) | 历史版本变化 |
 

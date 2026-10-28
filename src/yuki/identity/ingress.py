@@ -28,6 +28,7 @@ from yuki.domain.messages import InboundMessage, snapshot_mention_segments
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.gateway.models import ConnectionSnapshot
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
+from yuki.gateway.social import PlatformSocialOperations
 from yuki.identity.canonical_repository import (
     create_person_binding,
     external_id,
@@ -35,7 +36,12 @@ from yuki.identity.canonical_repository import (
     find_presence,
     find_space_binding,
 )
-from yuki.identity.db_models import IdentityBindingModel, PresenceModel
+from yuki.identity.db_models import (
+    AccountAssignmentModel,
+    AccountModel,
+    IdentityBindingModel,
+    PresenceModel,
+)
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.event_author import EventAuthorProjection
 from yuki.identity.mentions import resolve_message_mentions
@@ -304,7 +310,7 @@ class CanonicalIngressResolver:
             presence_id=presence_id,
             scope=overlay.scope(),
             event_type=overlay.event_type,
-            platform_message_id=overlay.message_id,
+            ingress_key=overlay.ingress_key,
         )
         if receipt is not None:
             original = require_claimed_event(
@@ -536,6 +542,9 @@ class CanonicalIngressResolver:
         reply_to_yuki, reply_author_kind, reply_event_id = await resolve_canonical_reply(
             session,
             conversation_id=hydrated.conversation_id,
+            scope=overlay.scope(),
+            receiving_account_id=presence.account_id,
+            operations=self._registry.social(connection),
             reply_to_message_id=overlay.reply_to_message_id,
             reply_to_event_id=overlay.reply_to_event_id,
         )
@@ -589,6 +598,9 @@ async def resolve_canonical_reply(
     session: AsyncSession,
     *,
     conversation_id: str,
+    scope: ConversationScope,
+    receiving_account_id: str,
+    operations: PlatformSocialOperations,
     reply_to_message_id: str | None,
     reply_to_event_id: int | None = None,
 ) -> tuple[bool | None, str | None, int | None]:
@@ -599,36 +611,84 @@ async def resolve_canonical_reply(
     must not be overridden by ``reply_sender_user_id``.
     """
 
+    keepers: list[tuple[int, str]]
     if reply_to_event_id is not None:
-        target = ChatEventModel.id == reply_to_event_id
-    else:
-        reply_id = (reply_to_message_id or "").strip()
-        if not reply_id:
-            return None, None, None
-        target = ChatEventModel.platform_message_id == reply_id
-    keepers = list(
-        await session.scalars(
-            select(ChatEventModel).where(
+        matches = await session.execute(
+            select(ChatEventModel.id, ChatEventModel.author_kind).where(
                 ChatEventModel.canonical_conversation_id == conversation_id,
-                target,
+                ChatEventModel.id == reply_to_event_id,
                 ChatEventModel.suppression_status == _KEEPER_STATUS,
             )
         )
-    )
+        keepers = [(row.id, row.author_kind) for row in matches]
+    else:
+        if not reply_to_message_id:
+            return None, None, None
+        namespace = operations.native_reference_namespace(
+            account_id=receiving_account_id, scope=scope
+        )
+        if namespace is None:
+            return None, None, None
+        candidates = await session.execute(
+            select(
+                ChatEventModel.id,
+                ChatEventModel.author_kind,
+                ChatEventModel.bot_user_id,
+                ChatEventModel.scope_type,
+                ChatEventModel.group_id,
+                ChatEventModel.private_peer_user_id,
+                AccountModel.id.label("receiving_account_id"),
+                AccountModel.platform,
+                CanonicalConversationModel.thread_id,
+            )
+            .join(
+                AccountAssignmentModel,
+                AccountAssignmentModel.id == ChatEventModel.ingress_presence_id,
+            )
+            .join(AccountModel, AccountModel.id == AccountAssignmentModel.account_id)
+            .join(
+                CanonicalConversationModel,
+                CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+            )
+            .where(
+                ChatEventModel.canonical_conversation_id == conversation_id,
+                ChatEventModel.native_message_id == reply_to_message_id,
+                ChatEventModel.suppression_status == _KEEPER_STATUS,
+            )
+        )
+        keepers = []
+        for row in candidates:
+            original_scope = ConversationScope(
+                bot_user_id=row.bot_user_id,
+                scope_type=ScopeType(row.scope_type),
+                key=f"conversation:{conversation_id}",
+                conversation_id=conversation_id,
+                platform=row.platform,
+                private_peer_user_id=row.private_peer_user_id,
+                group_id=row.group_id,
+                thread_id=row.thread_id,
+            )
+            if (
+                operations.native_reference_namespace(
+                    account_id=row.receiving_account_id, scope=original_scope
+                )
+                == namespace
+            ):
+                keepers.append((row.id, row.author_kind))
     if len(keepers) > 1:
         return False, _AMBIGUOUS_REPLY_AUTHOR, None
     if not keepers:
         return None, None, None
-    kind = keepers[0].author_kind
+    event_id, kind = keepers[0]
     if kind == AuthorKind.YUKI.value:
-        return True, kind, keepers[0].id
+        return True, kind, event_id
     if kind in {
         AuthorKind.PERSON.value,
         AuthorKind.ACCOUNT.value,
         AuthorKind.EXTERNAL_BOT.value,
         AuthorKind.SYSTEM.value,
     }:
-        return False, kind, keepers[0].id
+        return False, kind, event_id
     return None, None, None
 
 

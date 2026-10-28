@@ -157,7 +157,7 @@ class VisionService:
             _media_reference(
                 attachment,
                 message_id=(
-                    message.message_id
+                    message.native_message_id
                     if attachment.source == "current"
                     else message.reply_to_message_id
                 ),

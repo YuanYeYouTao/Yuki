@@ -28,7 +28,10 @@ async def test_overlong_message_is_reported_before_work_staging(
     sender = MemorySender()
     result = await harness.processor.handle(
         replace(
-            message, message_id="overlong", text="x" * (harness.settings.max_input_characters + 1)
+            message,
+            ingress_key="overlong",
+            native_message_id="overlong",
+            text="x" * (harness.settings.max_input_characters + 1),
         ),
         sender,
     )

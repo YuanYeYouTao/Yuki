@@ -162,7 +162,7 @@ async def _append_public(database, text):
     return await seed_scoped_event(
         ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="new-public-event",
+        origin_key="new-public-event",
         sender_user_id="10001",
         direction="inbound",
         content=text,
@@ -443,7 +443,7 @@ async def test_manual_compact_uses_public_main_and_existing_authority(
     await seed_scoped_event(
         harness.scoped_events,
         scope=scope,
-        platform_message_id="prior-public",
+        origin_key="prior-public",
         sender_user_id=user_id,
         direction="inbound",
         content="public decision",

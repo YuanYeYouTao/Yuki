@@ -182,7 +182,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
     await seed_scoped_event(
         case.env.service.writer,
         scope=ConversationScope.private("80001", "10001"),
-        platform_message_id="original-private-material",
+        origin_key="original-private-material",
         sender_user_id="10001",
         direction="inbound",
         content="ORIGINAL_PRIVATE_MATERIAL",

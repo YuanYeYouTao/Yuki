@@ -103,7 +103,7 @@ def message(account, conversation_id, *, when=NOW, duplicate=False, external=Fal
     """An explicit accepted historical fact, independent of today's recipient Assignment."""
     return ChatEventModel(
         bot_user_id="9000",
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         scope_type="group",
         group_id="71999",
         sender_user_id=account.external_account_id,

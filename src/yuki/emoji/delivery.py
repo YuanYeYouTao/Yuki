@@ -7,6 +7,7 @@ import contextvars
 import logging
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -44,16 +45,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _mark(intent_id: str, stage: str, started: float) -> None:
-    try:
-        logger.info(
-            "emoji_stage intent_id=%s stage=%s elapsed_ms=%d",
-            intent_id,
-            stage,
-            int((time.monotonic() - started) * 1000),
-        )
-    except Exception:
-        logger.debug("emoji_stage_unavailable", exc_info=True)
+def _mark(intent_id: str, stage: str, started: float, phase_started: float) -> float:
+    now = time.monotonic()
+    logger.info(
+        "emoji_stage intent_id=%s stage=%s since_attempt_ms=%d phase_ms=%d",
+        intent_id,
+        stage,
+        int((now - started) * 1000),
+        int((now - phase_started) * 1000),
+    )
+    return now
 
 
 class EmojiDeliveryService:
@@ -106,7 +107,6 @@ class EmojiDeliveryService:
         actor = asdict(context.actor) if context.actor is not None else None
         if actor is not None:
             actor["instruction"] = ""
-            actor["platform_message_id"] = ""
             actor["mentioned_user_ids"] = ()
             actor["mentioned_person_ids"] = ()
         original = {
@@ -317,7 +317,7 @@ class EmojiDeliveryService:
         while not self._stop.is_set():
             self._wake.clear()
             cursor = None
-            while pending := await self.intents.pending(cursor):
+            while pending := await self.intents.pending(cursor, active=self._deliveries):
                 for intent in pending:
                     if intent.id not in self._deliveries:
                         task = asyncio.create_task(
@@ -350,6 +350,7 @@ class EmojiDeliveryService:
         values = dict(intent.source["context"])
         actor = values.pop("actor")
         if actor is not None:
+            actor = {key: value for key, value in actor.items() if key != "platform_message_id"}
             actor["origin"] = TurnOrigin(actor["origin"])
             values["actor"] = ToolActor(**actor)
         content = prepared_transport(intent.source["content"])
@@ -413,7 +414,20 @@ class EmojiDeliveryService:
 
     async def _deliver(self, intent: EmojiIntent) -> None:
         started = time.monotonic()
-        _mark(intent.id, "background_scheduled", started)
+        phase_started = started
+        phase = "source_validation"
+        artifact_id = None
+        created = (
+            intent.created_at.replace(tzinfo=UTC)
+            if intent.created_at.tzinfo is None
+            else intent.created_at
+        )
+        logger.info(
+            "emoji_attempt intent_id=%s call_id=%s created_to_attempt_ms=%d",
+            intent.id,
+            derived_call_id(intent.id),
+            int((datetime.now(UTC) - created).total_seconds() * 1000),
+        )
         try:
             if intent.selected is not None:
                 facts = await self._project(intent)
@@ -422,6 +436,8 @@ class EmojiDeliveryService:
                     return
             async with self.social.database.read_session() as session:
                 await validate_source(session, intent.source)
+            phase_started = _mark(intent.id, "source_validated", started, phase_started)
+            phase = "selection"
             if intent.selected is None:
                 try:
                     asset = await self.library.select(
@@ -457,12 +473,17 @@ class EmojiDeliveryService:
                 return
             assert intent.selected is not None
             asset = EmojiAsset.model_validate(intent.selected)
-            _mark(intent.id, "immutable_prepare", started)
+            phase_started = _mark(intent.id, "selection_settled", started, phase_started)
+            phase = "artifact_publication"
             metadata = await self.library.publish(asset, request_id=intent.id)
-            _mark(intent.id, "artifact_read", started)
+            artifact_id = metadata["artifact_id"]
+            phase_started = _mark(intent.id, "artifact_published", started, phase_started)
+            phase = "text_dispatch_check"
             async with self.social.database.read_session() as session:
                 text_finished = await EmojiIntentRepository._text_dispatch_finished(session, intent)
+            phase_started = _mark(intent.id, "text_dispatch_checked", started, phase_started)
             if not text_finished:
+                phase = "waiting_for_text"
                 return
             stored_route = dict(intent.source.get("route") or {})
             if not stored_route.get("conversation_id"):
@@ -473,10 +494,13 @@ class EmojiDeliveryService:
                 stored_route["conversation_id"] = conversation_id
                 intent.source["route"] = stored_route
             args, context = self._send_input(intent, metadata["artifact_id"])
-            _mark(intent.id, "text_dispatch_finished", started)
+            phase = "social_execution"
             await self.social.execute("send", args, context)
-            _mark(intent.id, "settlement", started)
+            phase_started = _mark(intent.id, "social_finished", started, phase_started)
+            phase = "intent_close"
             await self.intents.close(intent.id)
+            _mark(intent.id, "intent_closed", started, phase_started)
+            phase = "closed"
         except asyncio.CancelledError:
             raise
         except SQLAlchemyError:
@@ -493,4 +517,14 @@ class EmojiDeliveryService:
             await self.intents.close(
                 intent.id,
                 str(exc) if isinstance(exc, (SocialError, WorkspaceError)) else type(exc).__name__,
+            )
+        finally:
+            logger.info(
+                "emoji_attempt_finished intent_id=%s call_id=%s artifact_id=%s "
+                "phase=%s since_attempt_ms=%d",
+                intent.id,
+                derived_call_id(intent.id),
+                artifact_id,
+                phase,
+                int((time.monotonic() - started) * 1000),
             )

@@ -60,7 +60,7 @@ async def test_wait_rechecks_source_after_external_preparation(database, tmp_pat
         appended = await seed_event(
             EventLedgerRepository(database),
             bot_user_id="80001",
-            platform_message_id="new-wait-source",
+            origin_key="new-wait-source",
             scope_type="group",
             sender_user_id="10001",
             direction="inbound",

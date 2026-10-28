@@ -230,9 +230,11 @@ def test_upgrade_keeps_proven_high_water_and_never_reuses_deleted_ids(
             row[2:] for row in foreign_keys
         }
         columns.remove("id")
+        columns = ["origin_key" if name == "platform_message_id" else name for name in columns]
+        original["origin_key"] = original.pop("platform_message_id")
 
         def insert():
-            original.update(platform_message_id=str(uuid4()), canonical_event_id=str(uuid4()))
+            original.update(origin_key=str(uuid4()), canonical_event_id=str(uuid4()))
             return connection.execute(
                 "INSERT INTO chat_events("
                 + ",".join(columns)

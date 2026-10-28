@@ -13,7 +13,7 @@ from tests.support.semantic_participation_host_helpers import _event_and_route
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from yuki.conversation.projection_chunks_schema import EVENT_METADATA_COLUMNS_CURRENT
+from yuki.conversation.projection_identity_schema import EVENT_METADATA_COLUMNS_CURRENT
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage
 from yuki.identity.canonical_repository import ensure_account
@@ -309,7 +309,7 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     old_image, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="shared-pixels",
+        origin_key="shared-pixels",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         group_id="2002",

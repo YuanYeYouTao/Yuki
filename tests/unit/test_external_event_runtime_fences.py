@@ -61,7 +61,7 @@ async def _seed_job(
     source, _created = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="human-before-external",
+        origin_key="human-before-external",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         private_peer_user_id="1001",
@@ -148,7 +148,7 @@ async def test_later_human_message_is_terminal_before_claim(database: Database) 
     await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="human-after-external",
+        origin_key="human-after-external",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         private_peer_user_id="1001",
@@ -170,7 +170,7 @@ async def test_message_history_filters_external_before_limit(database: Database)
     await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="human-after-external",
+        origin_key="human-after-external",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         private_peer_user_id="1001",

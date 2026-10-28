@@ -41,7 +41,7 @@ async def test_dream_rejects_hidden_input_even_when_readable_evidence_count_is_u
     alternate, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="dream-input-alternate",
+        origin_key="dream-input-alternate",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",

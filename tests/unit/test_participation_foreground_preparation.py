@@ -314,7 +314,7 @@ async def test_binding_hydrates_unseen_confirmed_self_quote_before_freezing_its_
         focus, _ = await seed_event(
             host.ledger,
             bot_user_id="8000",
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             scope_type=ScopeType.GROUP,
             sender_user_id="1002",
             direction="inbound",

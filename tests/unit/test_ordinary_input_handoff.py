@@ -169,7 +169,7 @@ async def _start_and_observe(
         async with database.read_session() as reader:
             c = await reader.scalar(
                 select(ChatEventModel).where(
-                    ChatEventModel.platform_message_id == incoming.message_id,
+                    ChatEventModel.origin_key == incoming.ingress_key,
                     ChatEventModel.direction == "inbound",
                 )
             )
@@ -288,7 +288,7 @@ async def _social_sender(env, sender, monkeypatch):
                 else "".join(part["data"]["text"] for part in parts if part["type"] == "text")
             )
             receipt = await sender.send(OutboundMessage(text=text))
-            return {"message_id": int(receipt.platform_message_id)}
+            return {"message_id": int(receipt.origin_key)}
         return await original(action, **params)
 
     monkeypatch.setattr(env.bot, "call_api", gateway)

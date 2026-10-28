@@ -95,7 +95,8 @@ async def seed_qq_entry(runtime, owner_id, bot):
             await replace_assignment(session, account, None, person, now=now)
     runtime.gateway_registry.connect(bot, provider_id="snowluma", presence_id=presence.id)
     message = InboundMessage(
-        message_id=str(uuid4()),
+        ingress_key=str(uuid4()),
+        native_message_id=str(uuid4()),
         event_type="message:private:friend",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity("1001", nickname="Owner"),

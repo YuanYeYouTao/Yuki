@@ -1,5 +1,7 @@
 # Plugin API 8.0 自动化合同迁移
 
+> 本页保留 8.0 的历史变更；当前合同见 [Plugin API 9.0](api-9.0-migration.md)。
+
 8.0 是公开 TaskSpec 的破坏性变化。Host 仅加载同 major 且 minor 不高于自身的插件；旧 7.x 声明需先适配实际调用，再将 `plugin_api` 改为 `8.0`，重新发现并按真实 manifest 批准。
 产品版本、Plugin API 与持久定义格式分别演进，不保留旧创建执行器。
 

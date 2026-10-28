@@ -217,7 +217,7 @@ async def test_account_original_reply_cannot_become_yuki_from_a_native_hint(data
         _message(
             message_id="reply-to-account",
             group_id="2001",
-            reply_to_message_id=original.message_id,
+            reply_to_message_id=original.native_message_id,
             reply_sender_user_id="8000",
         ),
     )

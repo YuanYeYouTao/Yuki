@@ -36,7 +36,7 @@ async def _append(
         await seed_scoped_event(
             uow,
             scope=scope,
-            platform_message_id=f"message-{scope.bot_user_id}-{index}",
+            origin_key=f"message-{scope.bot_user_id}-{index}",
             sender_user_id=f"{actor_prefix}-{index % 2}",
             direction="inbound",
             content=f"event-{index}",

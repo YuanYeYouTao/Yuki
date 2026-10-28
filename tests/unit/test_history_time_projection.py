@@ -15,7 +15,7 @@ def _event(event_id: int, at: datetime, content: str = "消息") -> EventRecord:
     return EventRecord(
         id=event_id,
         bot_user_id="8000",
-        platform_message_id=f"platform-{event_id}",
+        origin_key=f"platform-{event_id}",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         sender_group_card="阿明",
@@ -90,7 +90,7 @@ def test_current_event_time_is_visible_without_changing_single_event_watermark()
 
 def test_frozen_old_fragment_keeps_its_text_when_new_event_is_appended() -> None:
     first = _event(1, datetime(2026, 9, 25, 6, 2, 11, tzinfo=UTC), "旧消息")
-    second = replace(first, id=2, platform_message_id="platform-2", content="新消息")
+    second = replace(first, id=2, origin_key="platform-2", content="新消息")
     renderer = ChatEventPromptRenderer((first, second))
     grouped = tuple(
         (ids, message) for _, ids, message in renderer.main_agent_history((first, second))

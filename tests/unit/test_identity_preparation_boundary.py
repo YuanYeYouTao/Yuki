@@ -54,7 +54,7 @@ async def test_fresh_ledger_append_reuses_prepared_json(database, monkeypatch, e
     elif entry == "outbound":
         result = await ScopedEventLedgerUnitOfWork(database).append(
             scope=source.scope.scope,
-            platform_message_id="codec-outbound",
+            origin_key="codec-outbound",
             sender_user_id="8000",
             direction="outbound",
             content=marker,
@@ -64,7 +64,7 @@ async def test_fresh_ledger_append_reuses_prepared_json(database, monkeypatch, e
     else:
         result = await ScopedEventLedgerUnitOfWork(database).append_external(
             scope=source.scope.scope,
-            platform_message_id="codec-external",
+            origin_key="codec-external",
             source_plugin_id="fixture",
             external_source="fixture",
             external_event_key="codec-original-key",
@@ -129,7 +129,7 @@ async def test_cold_identity_writer_releases_before_decoding_original_reply(data
         bot,
         _message(
             message_id="cold-reply",
-            reply_to_message_id=original_message.message_id,
+            reply_to_message_id=original_message.native_message_id,
         ),
     )
     assert forced and not admitted.dropped

@@ -528,7 +528,7 @@ async def test_operator_transfer_pauses_current_root_route_without_moving_histor
     accepted = await seed_scoped_event(
         env.harness.scoped_events,
         scope=ConversationScope.private("8000", "1001"),
-        platform_message_id="original-before-transfer",
+        origin_key="original-before-transfer",
         sender_user_id="1001",
         direction="inbound",
         content="original owner",

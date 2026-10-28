@@ -460,7 +460,7 @@ async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(
     event = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.private(second.self_id, "10001", presence_id=presence_id),
-        platform_message_id="second-private-entry",
+        origin_key="second-private-entry",
         sender_user_id="10001",
         direction="inbound",
         content="原入口请求",

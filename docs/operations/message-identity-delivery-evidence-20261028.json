@@ -1,0 +1,164 @@
+{
+  "source_revision": "afb509e7c96f1949651b505e601758f14d2f8fd8",
+  "stage": "investigation_and_taskbook_only",
+  "planning": {
+    "fingerprint-split-probe.json": {
+      "source_revision": "afb509e7c96f1949651b505e601758f14d2f8fd8",
+      "mechanical_attribute_changes": 1,
+      "cases": [
+        {
+          "case": "native_transport",
+          "old_codec_bytes_preserved": true,
+          "native_is_none": false,
+          "same_fingerprint": true
+        },
+        {
+          "case": "old_app_envelope",
+          "old_codec_bytes_preserved": true,
+          "native_is_none": true,
+          "same_fingerprint": true
+        },
+        {
+          "case": "old_local_ledger",
+          "old_codec_bytes_preserved": true,
+          "native_is_none": true,
+          "same_fingerprint": true
+        }
+      ],
+      "qualification": "Planned-codec equivalence experiment; no implementation or migration performed."
+    },
+    "ingress-dto-probe.json": {
+      "sdk_version": "8.0",
+      "nullable_row_record_platform_message_id": "None",
+      "record_is_actual_none": false,
+      "none": {
+        "accepted": false,
+        "errors": [
+          {
+            "field": [
+              "message_id"
+            ],
+            "type": "string_type"
+          }
+        ]
+      },
+      "long_native": {
+        "accepted": false,
+        "errors": [
+          {
+            "field": [
+              "message_id"
+            ],
+            "type": "string_too_long"
+          }
+        ]
+      }
+    },
+    "telegram-reference-scope.json": {
+      "platform": "telegram",
+      "same_chat_key": true,
+      "receiver_changed": true,
+      "original_event_resolved": true,
+      "network_calls": 0
+    },
+    "automation-provenance-counts.json": {
+      "automations": 139,
+      "nonempty_created_from_message_id": 109,
+      "without_matching_original_version_provenance": 4
+    },
+    "automation-provenance-unmatched-counts.json": {
+      "unmatched_rows": 4,
+      "unmatched_nonempty": 4,
+      "unmatched_original_event_exists": 0,
+      "unmatched_original_event_matches": 0
+    },
+    "internal_reply_gate_probe": {
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "cases": [
+        "test_clearing_native_reference_alone_still_loses_internal_reply[False]",
+        "test_clearing_native_reference_alone_still_loses_internal_reply[True]"
+      ],
+      "qualification": "Counterexample with only native reply helper returning None; confirms downstream internal reply loss in current source, not a fix."
+    }
+  },
+  "prior_ingress_counterexamples": {
+    "cross_receiver_reply": {
+      "current_ingress_is_B": true,
+      "resolved_reply_belongs_to_A": true,
+      "native_credential": "777",
+      "same_conversation": true,
+      "reply_text_from_other_receiver": true,
+      "native_reply_author": "1002",
+      "resolved_reply_author": "1001",
+      "qualification": "Same group after receiver takeover, when per-receiver native credentials collide; not cross-Conversation access."
+    },
+    "long_opaque_id": {
+      "first_length": 129,
+      "receipt_length": 128,
+      "pre_admit_replay_missed": true,
+      "same_long_id_writer_replay_created": false,
+      "second_distinct_id_error": "receipt_conflict",
+      "qualification": "Generic InboundMessage accepts this key; built-in QQ/TG/Feishu/App keys currently shorter."
+    }
+  },
+  "runtime_internal_id_contracts": {
+    "source_revision": "afb509e7c96f1949651b505e601758f14d2f8fd8",
+    "checks": {
+      "actor_source_ignores_platform_message_id": true,
+      "actor_rejects_platform_id_only_anchor": true,
+      "runtime_uses_internal_event_anchor": true,
+      "runtime_rejects_platform_id_only_execution": true,
+      "history_accepts_internal_event_and_rejects_platform_selectors": true,
+      "native_agent_ids_are_scoped_by_internal_instance_and_session": true
+    }
+  },
+  "prior_natural_observation": {
+    "samples": 13,
+    "median_s": 3.093363,
+    "min_s": 1.859569,
+    "max_s": 13.447179,
+    "qualification": "Readonly observation from earlier audit, not matched performance acceptance."
+  },
+  "qualifications": [
+    "Synthetic and isolated experiments do not send real platform messages.",
+    "Fingerprint equivalence is a planned-codec experiment, not an implemented migration.",
+    "Automation provenance values are aggregate readonly counts; no accounts, messages or original identifiers exported.",
+    "No new business implementation, CI, merge or deployment claimed."
+  ],
+  "desktop_media": {
+    "desktop_revision": "1d42784a17bfc09f509e9f50f0f5c0be877b2d7d",
+    "server_revision": "afb509e7c96f1949651b505e601758f14d2f8fd8",
+    "stage": "readonly_review_and_taskbook_addendum",
+    "event_view_synthetic_probe": {
+      "normal_social_artifact": {
+        "attachment_index": 0,
+        "segment_index": 0,
+        "kind": "image",
+        "artifact_id": "00000000-0000-4000-8000-000000000001",
+        "version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "filename": "picture.png",
+        "name": "picture.png",
+        "size": 2048
+      },
+      "app_uploaded_image": {
+        "attachment_index": 0,
+        "segment_index": 0,
+        "kind": "image",
+        "media_id": "synthetic-upload",
+        "filename": "picture.png"
+      },
+      "notification_image": {
+        "attachment_index": 0,
+        "segment_index": 0,
+        "kind": "image"
+      }
+    },
+    "qualifications": [
+      "Backend DTO probe uses synthetic events, not live notification delivery.",
+      "Desktop support findings are current-source observations; no real playback or Electron acceptance was run in this planning update.",
+      "Audio byte filtering applies to actual audio MIME; extension-inferred video/webm may take another path."
+    ]
+  }
+}

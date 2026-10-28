@@ -29,7 +29,7 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
         await seed_scoped_event(
             writer,
             scope=scope,
-            platform_message_id=f"cache-{index}",
+            origin_key=f"cache-{index}",
             sender_user_id="10001",
             direction="inbound",
             content=f"other chat {index}",
@@ -462,7 +462,7 @@ async def test_status_does_not_report_source_invalidated_checkpoint(database, tm
     await seed_scoped_event(
         harness.scoped_events,
         scope=scope,
-        platform_message_id="source-for-status",
+        origin_key="source-for-status",
         sender_user_id="9000",
         direction="inbound",
         content="original public source",
@@ -564,7 +564,7 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
     await seed_scoped_event(
         ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("80001", "20002"),
-        platform_message_id="eviction-other",
+        origin_key="eviction-other",
         sender_user_id="10001",
         direction="inbound",
         content="other scope",

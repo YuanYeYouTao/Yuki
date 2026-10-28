@@ -131,7 +131,7 @@ async def test_notification_finish_and_ledger_rollback_together_after_platform_r
 
     async def fail_ledger(self, **kwargs):
         row = await kwargs["session"].get(PluginNotificationOutboxModel, item.id)
-        observed.append((row.status, row.platform_message_id))
+        observed.append((row.status, row.origin_key))
         await original_append(self, **kwargs)
         raise RuntimeError("settlement fault after ledger append")
 
@@ -140,7 +140,7 @@ async def test_notification_finish_and_ledger_rollback_together_after_platform_r
     assert len(observed) == 1 and observed[0][0] == "sent"
     async with database.read_session() as reader:
         row = await reader.get(PluginNotificationOutboxModel, item.id)
-        assert row.status == "uncertain" and row.platform_message_id == observed[0][1]
+        assert row.status == "uncertain" and row.origin_key == observed[0][1]
         assert row.last_error_category == "post_send_persistence_failed"
         assert not tuple(
             await reader.scalars(

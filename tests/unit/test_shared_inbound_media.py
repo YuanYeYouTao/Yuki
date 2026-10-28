@@ -58,7 +58,7 @@ async def admitted_media(database, tmp_path):
         appended = await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="shared-media",
+            origin_key="shared-media",
             sender_user_id="10001",
             direction="inbound",
             content="look",
@@ -66,6 +66,7 @@ async def admitted_media(database, tmp_path):
         )
         event = appended.event
         message = InboundMessage(
+            "shared-media",
             "shared-media",
             "message",
             ScopeType.GROUP,
@@ -155,7 +156,7 @@ async def test_prefetch_keeps_every_admitted_original_past_old_pending_limit(
         appended = await seed_scoped_event(
             events,
             scope=env.event.scope,
-            platform_message_id=f"queued-media-{index}",
+            origin_key=f"queued-media-{index}",
             sender_user_id=env.event.sender_user_id,
             direction="inbound",
             content="original",
@@ -261,7 +262,12 @@ async def test_stale_collection_does_not_download_an_edited_source(admitted_medi
 async def test_same_locator_in_new_message_does_not_share_original(admitted_media):
     env = admitted_media
     other = env.media.prepare_message(
-        replace(env.message, message_id="new-intent", source_event_id=env.event.id + 1),
+        replace(
+            env.message,
+            ingress_key="new-intent",
+            native_message_id="new-intent",
+            source_event_id=env.event.id + 1,
+        ),
         None,
         source_segments=env.event.segments,
     )

@@ -224,7 +224,7 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
     await seed_scoped_event(
         ledger,
         scope=ConversationScope.private("80001", "10001"),
-        platform_message_id="independent-private-source",
+        origin_key="independent-private-source",
         sender_user_id="10001",
         direction="inbound",
         content="Continue the independent private work.",

@@ -119,7 +119,7 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
         await seed_scoped_event(
             writer,
             scope=ConversationScope.private("8000", "1001"),
-            platform_message_id="old-owner",
+            origin_key="old-owner",
             sender_user_id="1001",
             direction="inbound",
             content="old person's private history",
@@ -161,7 +161,7 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
         await seed_scoped_event(
             writer,
             scope=ConversationScope.private("8000", "1001"),
-            platform_message_id="new-owner",
+            origin_key="new-owner",
             sender_user_id="1001",
             direction="inbound",
             content="new person's private history",

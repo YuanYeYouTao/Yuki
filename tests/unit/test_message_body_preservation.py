@@ -24,7 +24,7 @@ def test_history_preserves_body_inside_its_structured_event_envelope(body):
     row = EventRecord(
         id=91,
         bot_user_id="8000",
-        platform_message_id="transport-91",
+        origin_key="transport-91",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",

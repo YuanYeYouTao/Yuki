@@ -47,7 +47,8 @@ async def ordinary_backend(database, content, *, callback=None):
     chat.observe_main_response = callback
     config = await chat._runtime_config.snapshot()
     inbound = InboundMessage(
-        message_id="transport-only",
+        ingress_key="transport-only",
+        native_message_id="transport-only",
         event_type="message",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001"),
@@ -158,7 +159,7 @@ async def ordinary_expression(database, tmp_path, *, admission=True, status="suc
     own, _ = await seed_event(
         host.ledger,
         bot_user_id="8000",
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         scope_type=ScopeType.GROUP,
         sender_user_id="8000",
         direction="outbound",

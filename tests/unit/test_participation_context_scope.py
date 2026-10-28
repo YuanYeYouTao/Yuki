@@ -116,7 +116,7 @@ async def test_latest_other_discussion_does_not_replace_original_scope(
             other, _ = await seed_event(
                 host.ledger,
                 bot_user_id="8000",
-                platform_message_id=str(uuid4()),
+                origin_key=str(uuid4()),
                 scope_type=ScopeType.GROUP,
                 sender_user_id="1002",
                 group_id="2001",
@@ -220,7 +220,7 @@ async def test_other_author_group_stop_is_visible_to_original_main_until_release
         stop, _ = await seed_event(
             host.ledger,
             bot_user_id="8000",
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             scope_type=ScopeType.GROUP,
             sender_user_id="1002",
             group_id="2001",
@@ -265,7 +265,7 @@ async def test_other_author_group_stop_is_visible_to_original_main_until_release
         invitation, _ = await seed_event(
             host.ledger,
             bot_user_id="8000",
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             scope_type=ScopeType.GROUP,
             sender_user_id="1002",
             group_id="2001",
@@ -315,7 +315,7 @@ async def test_quiet_covers_observed_same_person_alias_without_rewriting_its_ori
             row, _ = await seed_event(
                 host.ledger,
                 bot_user_id="8000",
-                platform_message_id=str(uuid4()),
+                origin_key=str(uuid4()),
                 scope_type=ScopeType.GROUP,
                 sender_user_id=account,
                 group_id="2001",

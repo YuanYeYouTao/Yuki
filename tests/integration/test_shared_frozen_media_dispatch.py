@@ -82,7 +82,7 @@ async def test_cross_conversation_attachment_reaches_main_model(attachment_tools
                 thread_id="other-topic",
             ),
             sender_user_id="43",
-            platform_message_id="-10042:other-topic-input",
+            origin_key="-10042:other-topic-input",
             direction="inbound",
             content="read the shared image from the other topic",
         )

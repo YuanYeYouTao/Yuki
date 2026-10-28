@@ -15,7 +15,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.automation.authority import AutomationScene
+from yuki.automation.authority import AutomationScene, project_authority_snapshot
 from yuki.automation.models import (
     AutomationCreatorIdentity,
     AutomationDirectoryEntry,
@@ -133,7 +133,7 @@ class AutomationRepository:
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,
                 status=AutomationStatus.ACTIVE.value,
-                created_from_message_id=authority.created_from_message_id,
+                created_from_message_id="",
                 creation_source_key=creation_source_key,
                 source_event_id=source_event_id,
                 canonical_conversation_id=authority.canonical_conversation_id,
@@ -1075,7 +1075,9 @@ def _automation_record(
         definition.authority_snapshot
         if definition
         else (
-            json.loads(version.authority_snapshot_json) if version.authority_snapshot_json else {}
+            project_authority_snapshot(json.loads(version.authority_snapshot_json))
+            if version.authority_snapshot_json
+            else {}
         )
     )
     return AutomationRecord(
@@ -1092,7 +1094,6 @@ def _automation_record(
         schedule=definition.task.trigger if definition else schedule_from_script(script),
         script_hash=version.script_hash,
         authority_snapshot=scene,
-        created_from_message_id=row.created_from_message_id,
         next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
         last_run_at=_aware_utc(row.last_run_at) if row.last_run_at else None,
         run_count=row.run_count,

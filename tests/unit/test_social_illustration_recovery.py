@@ -405,7 +405,7 @@ async def test_pure_illustration_keeps_internal_reply_and_mention_without_foregr
     assert len(sends(env.bot)) == 2
     method, payload = sends(env.bot)[-1]
     assert method == "send_group_msg" and [part["type"] for part in payload["message"]] == ["image"]
-    assert sends(env.bot)[0][1]["message"][0]["data"]["id"] == event.platform_message_id
+    assert sends(env.bot)[0][1]["message"][0]["data"]["id"] == event.origin_key
     assert library.select_calls == 1
 
 

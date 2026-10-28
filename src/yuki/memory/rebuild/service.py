@@ -792,7 +792,8 @@ class MemoryRebuildService:
                         for name in (
                             "id",
                             "bot_user_id",
-                            "platform_message_id",
+                            "origin_key",
+                            "native_message_id",
                             "scope_type",
                             "sender_user_id",
                             "group_id",

@@ -126,7 +126,7 @@ async def _fact_with_evidence(
     event, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=message_id,
+        origin_key=message_id,
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
@@ -250,7 +250,7 @@ async def test_candidate_provenance_includes_hidden_bot_and_cluster_preserves_or
     hidden, _ = await seed_event(
         ledger,
         bot_user_id="88002",
-        platform_message_id="hidden-other-bot",
+        origin_key="hidden-other-bot",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
@@ -834,7 +834,7 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
         event, _ = await seed_event(
             ledger,
             bot_user_id="8000",
-            platform_message_id=f"dream-recompose-evidence-{index}",
+            origin_key=f"dream-recompose-evidence-{index}",
             scope_type=ScopeType.GROUP,
             sender_user_id="1001",
             direction="inbound",

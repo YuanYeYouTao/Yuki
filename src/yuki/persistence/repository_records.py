@@ -49,7 +49,7 @@ class EventRecord:
 
     id: int
     bot_user_id: str
-    platform_message_id: str
+    origin_key: str | None
     scope_type: ScopeType
     sender_user_id: str
     direction: str
@@ -57,6 +57,7 @@ class EventRecord:
     visual_summary: str
     segments: tuple[dict[str, Any], ...]
     occurred_at: datetime
+    native_message_id: str | None = None
     platform: str = ""
     thread_id: str | None = None
     audio_transcript: str = ""
@@ -110,6 +111,7 @@ class EventRecord:
             platform=self.platform or ("" if self.canonical_conversation_id else "qq"),
             presence_id=self.ingress_presence_id,
             conversation_id=self.canonical_conversation_id,
+            thread_id=self.thread_id,
         )
 
     @property

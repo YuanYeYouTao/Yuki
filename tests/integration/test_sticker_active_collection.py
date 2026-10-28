@@ -183,7 +183,8 @@ async def test_main_reads_an_uploaded_file_only_after_its_explicit_tool_call(
     chat.runtime.runner.code_mode_settings = harness.settings
     locator = "base64://" + base64.b64encode(content).decode()
     incoming = InboundMessage(
-        message_id="file-is-data-not-a-reading-command",
+        ingress_key="file-is-data-not-a-reading-command",
+        native_message_id="file-is-data-not-a-reading-command",
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity("1001"),

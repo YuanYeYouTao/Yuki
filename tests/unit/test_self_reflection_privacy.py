@@ -94,7 +94,7 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
         mention, _ = await seed_event(
             ledger,
             bot_user_id="8000",
-            platform_message_id="original-mention",
+            origin_key="original-mention",
             scope_type=ScopeType.GROUP,
             group_id="2001",
             sender_user_id="1002",
@@ -116,7 +116,8 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
         await ScopedEventLedgerUnitOfWork(database).update_platform_message(
             mention.id,
             InboundMessage(
-                message_id="original-mention",
+                ingress_key="original-mention",
+                native_message_id="original-mention",
                 event_type="message",
                 scope_type=ScopeType.GROUP,
                 group_id="2001",

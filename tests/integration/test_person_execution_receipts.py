@@ -72,7 +72,8 @@ async def invocation(
         space_id=space_id,
         source_event_id=event.id,
         inbound=InboundMessage(
-            message_id=event.platform_message_id,
+            ingress_key=event.origin_key,
+            native_message_id=event.origin_key,
             event_type="message",
             scope_type=event.scope_type,
             sender=SenderIdentity(event.sender_user_id),
@@ -422,7 +423,7 @@ async def test_forget_during_dispatch_keeps_only_the_original_transport_fact(
     appended = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.private(env.bot.self_id, "10001"),
-        platform_message_id="private-original",
+        origin_key="private-original",
         sender_user_id="10001",
         direction="inbound",
         content="original private source",

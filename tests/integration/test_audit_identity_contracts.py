@@ -249,7 +249,7 @@ async def test_delegated_history_reads_person_material_without_send_availability
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.private("80001", "10002"),
-            platform_message_id="private-material",
+            origin_key="private-material",
             sender_user_id="10002",
             direction="inbound",
             content="private original",
@@ -288,7 +288,7 @@ async def test_delegated_history_scope_is_still_required(database, tmp_path):
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.private("80001", "10002"),
-            platform_message_id="other-person-material",
+            origin_key="other-person-material",
             sender_user_id="10002",
             direction="inbound",
             content="private",

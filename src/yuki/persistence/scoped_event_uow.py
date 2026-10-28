@@ -111,7 +111,8 @@ class _DerivedTextUpdate:
 _DERIVED_EVENT_FIELDS = (
     "id",
     "bot_user_id",
-    "platform_message_id",
+    "origin_key",
+    "native_message_id",
     "scope_type",
     "sender_user_id",
     "sender_nickname",
@@ -175,7 +176,7 @@ class ScopedEventLedgerUnitOfWork:
         self,
         *,
         scope: ConversationScope,
-        platform_message_id: str,
+        origin_key: str | None,
         source_plugin_id: str,
         external_source: str,
         external_event_key: str,
@@ -192,7 +193,7 @@ class ScopedEventLedgerUnitOfWork:
 
         return await self.append(
             scope=scope,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
             sender_user_id=scope.bot_user_id,
             direction="external",
             content=content,
@@ -214,7 +215,8 @@ class ScopedEventLedgerUnitOfWork:
         self,
         *,
         scope: ConversationScope,
-        platform_message_id: str,
+        origin_key: str | None,
+        native_message_id: str | None = None,
         sender_user_id: str,
         direction: Literal["outbound", "external"],
         content: str,
@@ -257,7 +259,8 @@ class ScopedEventLedgerUnitOfWork:
         append = partial(
             self._append_canonical,
             scope=scope,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
+            native_message_id=native_message_id,
             sender_user_id=sender_user_id,
             direction=direction,
             content=content,
@@ -298,7 +301,7 @@ class ScopedEventLedgerUnitOfWork:
                     reader,
                     scope=scope,
                     presence_id=scope.presence_id,
-                    platform_message_id=platform_message_id,
+                    origin_key=origin_key,
                     event_type=(external_event_type or "message")[:64],
                     source_plugin_id=source_plugin_id,
                     external_event_key=external_event_key,
@@ -336,7 +339,7 @@ class ScopedEventLedgerUnitOfWork:
                 original = await reader.get(ChatEventModel, event_id)
                 if (
                     original is None
-                    or original.platform_message_id != message.message_id
+                    or original.origin_key != message.ingress_key
                     or original.sender_user_id != message.sender.user_id
                     or original.direction != "inbound"
                 ):
@@ -602,19 +605,23 @@ class ScopedEventLedgerUnitOfWork:
         *,
         scope: ConversationScope,
         presence_id: str,
-        platform_message_id: str,
+        origin_key: str | None,
         event_type: str,
         source_plugin_id: str | None = None,
         external_event_key: str | None = None,
         external_target_id: str | None = None,
         event_kind: str = "message",
     ) -> tuple[ChatEventModel | None, CanonicalEventReceiptModel | None]:
-        receipt = await transport_receipt(
-            session,
-            presence_id=presence_id,
-            scope=scope,
-            event_type=event_type,
-            platform_message_id=platform_message_id,
+        receipt = (
+            await transport_receipt(
+                session,
+                presence_id=presence_id,
+                scope=scope,
+                event_type=event_type,
+                ingress_key=origin_key,
+            )
+            if origin_key is not None
+            else None
         )
         if receipt is not None:
             claimed = await load_claimed_keeper(session, receipt.canonical_event_id)
@@ -672,14 +679,18 @@ class ScopedEventLedgerUnitOfWork:
         scope: ConversationScope,
         presence_id: str,
         event_type: str,
-        platform_message_id: str,
+        origin_key: str | None,
     ) -> tuple[CanonicalEventReceiptModel | None, ChatEventModel | None]:
-        receipt = await transport_receipt(
-            session,
-            presence_id=presence_id,
-            scope=scope,
-            event_type=event_type,
-            platform_message_id=platform_message_id,
+        receipt = (
+            await transport_receipt(
+                session,
+                presence_id=presence_id,
+                scope=scope,
+                event_type=event_type,
+                ingress_key=origin_key,
+            )
+            if origin_key is not None
+            else None
         )
         if receipt is None:
             return None, None
@@ -734,7 +745,7 @@ class ScopedEventLedgerUnitOfWork:
         scope: ConversationScope,
         conversation_id: str,
         presence_id: str,
-        platform_message_id: str,
+        origin_key: str | None,
         sender_user_id: str,
         direction: Literal["outbound", "external"],
         event_kind: str,
@@ -757,7 +768,7 @@ class ScopedEventLedgerUnitOfWork:
             scope=scope,
             conversation_id=conversation_id,
             presence_id=presence_id,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
             sender_user_id=sender_user_id,
             direction=direction,
             event_kind=event_kind,
@@ -796,7 +807,7 @@ class ScopedEventLedgerUnitOfWork:
         scope: ConversationScope,
         conversation: CanonicalConversationModel,
         presence_id: str,
-        platform_message_id: str,
+        origin_key: str | None,
         sender_user_id: str,
         direction: Literal["outbound", "external"],
         event_kind: str,
@@ -816,7 +827,7 @@ class ScopedEventLedgerUnitOfWork:
             scope=scope,
             conversation_id=conversation.id,
             presence_id=presence_id,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
             sender_user_id=sender_user_id,
             direction=direction,
             event_kind=event_kind,
@@ -845,7 +856,8 @@ class ScopedEventLedgerUnitOfWork:
         session: AsyncSession,
         *,
         scope: ConversationScope,
-        platform_message_id: str,
+        origin_key: str | None,
+        native_message_id: str | None = None,
         sender_user_id: str,
         direction: Literal["outbound", "external"],
         content: str,
@@ -988,7 +1000,7 @@ class ScopedEventLedgerUnitOfWork:
             session,
             scope=scope,
             presence_id=presence_id,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
             event_type=receipt_event_type,
             source_plugin_id=source_plugin_id,
             external_event_key=external_event_key,
@@ -1013,7 +1025,7 @@ class ScopedEventLedgerUnitOfWork:
                 scope=scope,
                 conversation=conversation,
                 presence_id=presence_id,
-                platform_message_id=platform_message_id,
+                origin_key=origin_key,
                 sender_user_id=sender_user_id,
                 direction=direction,
                 event_kind=event_kind,
@@ -1037,7 +1049,7 @@ class ScopedEventLedgerUnitOfWork:
             or bool(external_source)
             or bool(external_event_key)
         )
-        if not plugin_external:
+        if not plugin_external and origin_key is not None:
             try:
                 async with session.begin_nested():
                     session.add(
@@ -1046,7 +1058,7 @@ class ScopedEventLedgerUnitOfWork:
                             ingress_account_id=presence.account_id,
                             transport_namespace=transport_namespace(scope),
                             event_type=receipt_event_type,
-                            platform_message_id=platform_message_id[:128],
+                            ingress_key=origin_key,
                             canonical_event_id=canonical_event_id,
                             created_at=observed_at,
                             observed_at=observed_at,
@@ -1059,7 +1071,7 @@ class ScopedEventLedgerUnitOfWork:
                     scope=scope,
                     presence_id=presence_id,
                     event_type=receipt_event_type,
-                    platform_message_id=platform_message_id,
+                    origin_key=origin_key,
                 )
                 if raced_receipt is None or raced is None:
                     raise CanonicalIdentityError("receipt_conflict") from exc
@@ -1069,7 +1081,7 @@ class ScopedEventLedgerUnitOfWork:
                     scope=scope,
                     conversation=conversation,
                     presence_id=presence_id,
-                    platform_message_id=platform_message_id,
+                    origin_key=origin_key,
                     sender_user_id=sender_user_id,
                     direction=direction,
                     event_kind=event_kind,
@@ -1089,7 +1101,8 @@ class ScopedEventLedgerUnitOfWork:
         )
         row = ChatEventModel(
             bot_user_id=scope.bot_user_id,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
+            native_message_id=native_message_id,
             scope_type=scope.scope_type.value,
             group_id=scope.group_id,
             private_peer_user_id=scope.private_peer_user_id,
@@ -1151,7 +1164,7 @@ class ScopedEventLedgerUnitOfWork:
                 scope=scope,
                 conversation=conversation,
                 presence_id=presence_id,
-                platform_message_id=platform_message_id,
+                origin_key=origin_key,
                 sender_user_id=sender_user_id,
                 direction=direction,
                 event_kind=event_kind,

@@ -23,6 +23,7 @@ async def test_unknown_native_mention_records_account_without_creating_person(da
         )
     message = InboundMessage(
         "original",
+        "original",
         "message:group",
         ScopeType.GROUP,
         SenderIdentity("10001", nickname="Sender", nickname_known=True),

@@ -160,7 +160,7 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
         group_id="20001",
         sender_user_id="11002",
         direction="inbound",
-        platform_message_id="second-known-person",
+        origin_key="second-known-person",
         content="known inbound",
     )
     matches = await env.service.contacts("person", "same", exact=True)

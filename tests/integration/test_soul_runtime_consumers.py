@@ -65,7 +65,13 @@ async def test_main_rename_keeps_the_active_prefix_and_frozen_tool_contract(
         original_public = row.epoch_id
     assert (
         await harness.processor.handle(
-            replace(message, message_id="after-rename", text="继续处理"), MemorySender()
+            replace(
+                message,
+                ingress_key="after-rename",
+                native_message_id="after-rename",
+                text="继续处理",
+            ),
+            MemorySender(),
         )
     ).reason == "chat"
     assert "当前角色的名称是 Aurora。" in prefix(observed[-1])
@@ -190,7 +196,13 @@ async def test_public_compact_adoption_keeps_the_original_activation_soul(
 
     provider._responder = respond
     await harness.processor.handle(
-        replace(message, message_id="compact-during-rename", text="继续原决定"), MemorySender()
+        replace(
+            message,
+            ingress_key="compact-during-rename",
+            native_message_id="compact-during-rename",
+            text="继续原决定",
+        ),
+        MemorySender(),
     )
     assert compacted
     active = provider.requests[previous_count:]

@@ -1,6 +1,6 @@
 # Plugin API 2.0 历史迁移
 
-> 本页保留该版本的历史变更；当前开发和部署使用 [Plugin API 8.0](api-8.0-migration.md)。
+> 本页保留该版本的历史变更；当前开发和部署使用 [Plugin API 9.0](api-9.0-migration.md)。
 > 本页记录当时从 1.x 迁移到 2.0 的变更，不代表当前 Host 的兼容策略。当前 Host
 
 Plugin API `2.0` 是破坏性升级。Host 在导入插件代码前校验 `plugin_api` 主版本；声明 `1.0` 或 `1.1` 的插件会被拒绝，不会半加载。

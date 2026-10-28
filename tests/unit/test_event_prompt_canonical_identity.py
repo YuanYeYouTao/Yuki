@@ -21,7 +21,7 @@ def _event(event_id: int, **changes: object) -> EventRecord:
     event = EventRecord(
         id=event_id,
         bot_user_id="8000",
-        platform_message_id=f"native-{event_id}",
+        origin_key=f"native-{event_id}",
         platform="qq",
         scope_type=ScopeType.GROUP,
         sender_user_id="9912345",

@@ -608,7 +608,8 @@ async def resume_plugin_work(
             raise PluginPermissionError("plugin work source is unavailable")
 
         inbound = InboundMessage(
-            message_id=event.platform_message_id,
+            ingress_key=None,
+            native_message_id=event.native_message_id,
             source_event_id=event.id,
             author_kind=event.author_kind,
             author_account_id=event.author_account_id,
@@ -634,7 +635,9 @@ async def resume_plugin_work(
     actor = (
         ToolActor(
             **{
-                **saved_actor,
+                **{
+                    key: value for key, value in saved_actor.items() if key != "platform_message_id"
+                },
                 "origin": TurnOrigin(saved_actor["origin"]),
                 "mentioned_user_ids": tuple(saved_actor["mentioned_user_ids"]),
                 "mentioned_person_ids": tuple(saved_actor.get("mentioned_person_ids", ())),

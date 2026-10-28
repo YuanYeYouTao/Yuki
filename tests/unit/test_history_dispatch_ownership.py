@@ -55,7 +55,8 @@ async def _scene(database, tmp_path, provider, *, request_limit=24, code_enabled
     chat.runtime.runner.code_mode_settings = harness.settings
     chat._tools.short_state = state
     message = InboundMessage(
-        message_id="history-ownership",
+        ingress_key="history-ownership",
+        native_message_id="history-ownership",
         event_type="message:test",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001", nickname="original-nickname"),
@@ -161,7 +162,8 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
             result = await harness.processor.handle(
                 replace(
                     message,
-                    message_id="observation-before-work-bind",
+                    ingress_key="observation-before-work-bind",
+                    native_message_id="observation-before-work-bind",
                     text="新的普通群消息",
                     mentions_bot=False,
                 ),
@@ -336,9 +338,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         original_epoch, original_key = saved.epoch_id, saved.view_key
         assert "original-snapshot" not in saved.payload_json
         original_event = await reader.scalar(
-            select(ChatEventModel.id).where(
-                ChatEventModel.platform_message_id == message.message_id
-            )
+            select(ChatEventModel.id).where(ChatEventModel.origin_key == message.ingress_key)
         )
     state.update({"slot": 1, "text": "current-safe-snapshot"})
     if boundary == "deleted":
@@ -369,7 +369,12 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
 
         monkeypatch.setattr(chat.runtime.main_turns, "compose", restricted_compose)
     await database.engine.dispose()
-    next_message = replace(message, message_id="history-boundary-next", text="继续说明当前状态")
+    next_message = replace(
+        message,
+        ingress_key="history-boundary-next",
+        native_message_id="history-boundary-next",
+        text="继续说明当前状态",
+    )
     result = await harness.processor.handle(next_message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 4
     current_input = json.dumps(
@@ -410,7 +415,7 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
         await seed_scoped_event(
             env.service.writer,
             scope=scope,
-            platform_message_id=f"history-{index}",
+            origin_key=f"history-{index}",
             sender_user_id="10001",
             direction="inbound",
             content=f"source {index}",

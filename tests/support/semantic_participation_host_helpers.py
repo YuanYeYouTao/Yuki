@@ -82,7 +82,7 @@ async def _event_and_route(database, ledger, *, group="2001", content="Yukiä¹Ÿæ
     event, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
@@ -119,7 +119,8 @@ async def _event_and_route(database, ledger, *, group="2001", content="Yukiä¹Ÿæ
 
 def _message(event):
     return InboundMessage(
-        message_id=event.platform_message_id,
+        ingress_key=event.origin_key,
+        native_message_id=event.origin_key,
         event_type="message",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id=event.sender_user_id),

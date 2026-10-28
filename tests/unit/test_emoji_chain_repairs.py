@@ -31,10 +31,14 @@ def test_tgs_sniff_reads_top_level_fields_and_stops_before_a_huge_string() -> No
     blob = gzip.compress(prefix + filler)
 
     class Limited(io.BytesIO):
+        bytes_read = 0
+
         def read(self, size: int = -1) -> bytes:  # type: ignore[override]
-            if self.tell():
+            if size < 0 or self.bytes_read + size > 8192:
                 raise AssertionError("sniff kept reading after the header")
-            return super().read(8192)
+            content = super().read(size)
+            self.bytes_read += len(content)
+            return content
 
     facts = media_facts(Limited(blob))
     assert facts is not None

@@ -156,7 +156,7 @@ class CommandService:
         actor = AdminActor(
             user_id=message.sender.user_id,
             is_superuser=is_superuser,
-            trigger_message_id=message.message_id,
+            trigger_message_id=message.native_message_id or "",
             trigger_event_id=message.source_event_id,
             canonical_conversation_id=message.conversation_id,
             ingress_presence_id=message.presence_id,

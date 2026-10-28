@@ -13,7 +13,6 @@ from tests.unit.test_client_api import bearer
 
 import yuki.client_api.prompts as prompt_service
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.gateway.providers.app.social import AppSocialOperations
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import work
@@ -77,14 +76,18 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
         env, queue_input=work_kind != "completed_parent"
     )
     claimed, release = asyncio.Event(), asyncio.Event()
-    send = AppSocialOperations.send
+    receipt_result = env.app.social_service._receipt_result
 
-    async def wait_after_claim(operations, handle, target, message):
+    async def wait_after_local_commit(receipt, context):
+        result = await receipt_result(receipt, context)
+        assert receipt.status == "succeeded" and receipt.event_id is not None
+        # The local publication and delivery intent have committed. Keep the
+        # original activation alive while cancellation joins its completion.
         claimed.set()
         await release.wait()
-        return await send(operations, handle, target, message)
+        return result
 
-    monkeypatch.setattr(AppSocialOperations, "send", wait_after_claim)
+    monkeypatch.setattr(env.app.social_service, "_receipt_result", wait_after_local_commit)
     cancelled = asyncio.Event()
     manage, commit = prompt_service.manage_work, AsyncSession.commit
 
@@ -146,7 +149,7 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
             assert facts["work"]["state"] == expected_state
             assert facts["work"]["active"] is True
             assert not cancellation.done()
-            assert not facts["result_event_ids"]
+            assert len(facts["result_event_ids"]) == 1
             completions = env.app.runtime.bindings.completions(execution_id)
             if cancel_waiter:
                 cancellation.cancel()
@@ -273,14 +276,15 @@ async def test_results_use_a_new_snapshot_after_the_original_activation_exits(
     env = acp_runtime
     session, request_id, work_id = await prepare_resumable_work(env)
     claimed, release = asyncio.Event(), asyncio.Event()
-    send = AppSocialOperations.send
+    append_delivery = env.app.social_service._append_delivery
 
-    async def wait_after_claim(operations, handle, target, message):
+    async def wait_before_local_append(*args, **kwargs):
+        # Retain a reader snapshot before the original atomic publication.
         claimed.set()
         await release.wait()
-        return await send(operations, handle, target, message)
+        return await append_delivery(*args, **kwargs)
 
-    monkeypatch.setattr(AppSocialOperations, "send", wait_after_claim)
+    monkeypatch.setattr(env.app.social_service, "_append_delivery", wait_before_local_append)
     owners = await env.app.work_scheduler.dispatch_once()
     assert len(owners) == 1
     projection = env.app.client_api.prompts.projection

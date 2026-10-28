@@ -25,7 +25,7 @@ async def _source(database):
     result = await seed_scoped_event(
         uow,
         scope=scope,
-        platform_message_id="derived-source",
+        origin_key="derived-source",
         sender_user_id="1001",
         direction="inbound",
         content="source",
@@ -104,7 +104,7 @@ async def test_late_audio_rechecks_original_source_before_commit(database, chang
                 await seed_scoped_event(
                     uow,
                     scope=scope,
-                    platform_message_id=f"new-source-{preparations}",
+                    origin_key=f"new-source-{preparations}",
                     sender_user_id="1001",
                     direction="inbound",
                     content="new concurrent keeper",
@@ -116,7 +116,8 @@ async def test_late_audio_rechecks_original_source_before_commit(database, chang
                     uow,
                     scope=scope,
                     inbound=InboundMessage(
-                        message_id="reset-source",
+                        ingress_key="reset-source",
+                        native_message_id="reset-source",
                         event_type="message:test",
                         sender=SenderIdentity("1001"),
                         scope_type=scope.scope_type,

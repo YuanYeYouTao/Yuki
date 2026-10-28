@@ -6,7 +6,9 @@ import asyncio
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from tempfile import TemporaryFile
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from yuki.automation.gateway import ProactiveGatewayError
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -17,7 +19,7 @@ from yuki.gateway.social import (
     prepared_transport,
     transport_payload,
 )
-from yuki.identity.routing import PresenceRouter, RouteSendError
+from yuki.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -34,6 +36,8 @@ from yuki.services.effect_gate import (
     ConversationEffectGate,
     EffectGateTimeoutError,
 )
+from yuki.services.media_resolver import _media_io
+from yuki.workspace.store import WorkspaceError, WorkspaceStore
 from yuki_plugin_sdk.errors import PluginPermissionError
 
 logger = logging.getLogger(__name__)
@@ -41,11 +45,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class NotificationDeliveryReceipt:
-    message_id: str
+    message_id: str | None
     sender_account_id: str
     external_target_id: str
     route_kind: str
-    remote_confirmed: bool = True
     presence_id: str = ""
     binding_id: str = ""
     platform: str = "qq"
@@ -54,6 +57,8 @@ class NotificationDeliveryReceipt:
 
 
 class NotificationTransport(Protocol):
+    async def resolve(self, item: OutboxRecord) -> ResolvedSend: ...
+
     async def prepare(
         self, item: OutboxRecord, message: TransportMessage
     ) -> tuple[dict[str, Any], ...]: ...
@@ -139,11 +144,44 @@ class PlatformNotificationTransport:
             "binding_id": route.binding_id,
             "conversation_id": item.canonical_conversation_id,
             "platform": route.platform,
+            "provider_id": route.connection.snapshot.provider,
+            "local_ledger": "local_ledger" in route.connection.snapshot.capabilities,
         }
         return tuple(
             {"message": transport_payload(part), "route": provenance}
             for part in operations.plan_send(message)
         )
+
+    async def resolve(self, item: OutboxRecord) -> ResolvedSend:
+        if self._router is None or item.canonical_conversation_id is None:
+            raise ProactiveGatewayError("none")
+        try:
+            resolved = await self._router.resolve_send_for_conversation(
+                item.canonical_conversation_id,
+                presence_id=item.canonical_presence_id,
+                source_event_id=item.source_event_id,
+            )
+        except RouteSendError as exc:
+            raise ProactiveGatewayError(exc.category) from exc
+        assert item.prepared is not None
+        self._validate_route(item.prepared["route"], resolved)
+        return resolved
+
+    @staticmethod
+    def _validate_route(original: dict[str, Any], resolved: ResolvedSend) -> None:
+        local = "local_ledger" in resolved.connection.snapshot.capabilities
+        if local and not (original.get("local_ledger") is True and original.get("provider_id")):
+            raise PluginPermanentDeliveryError("local_delivery_proof_missing")
+        current = {
+            "presence_id": resolved.presence_id,
+            "binding_id": resolved.binding_id,
+            "conversation_id": resolved.conversation_id,
+            "platform": resolved.platform,
+            "provider_id": resolved.connection.snapshot.provider,
+            "local_ledger": local,
+        }
+        if any(original[key] != value for key, value in current.items() if key in original):
+            raise PluginPermanentDeliveryError("delivery_route_changed")
 
     async def send_text(
         self,
@@ -159,6 +197,7 @@ class PlatformNotificationTransport:
     ) -> NotificationDeliveryReceipt:
         return await self._send(
             target_type=target_type,
+            prepared=prepared,
             message=prepared_transport(prepared["message"]),
             canonical_target_person_id=canonical_target_person_id,
             canonical_target_space_id=canonical_target_space_id,
@@ -183,6 +222,7 @@ class PlatformNotificationTransport:
     ) -> NotificationDeliveryReceipt:
         return await self._send(
             target_type=target_type,
+            prepared=prepared,
             message=prepared_transport(
                 prepared["message"],
                 TransportMedia(
@@ -204,6 +244,7 @@ class PlatformNotificationTransport:
         *,
         target_type: str,
         message: TransportMessage,
+        prepared: dict[str, Any],
         canonical_target_person_id: str | None,
         canonical_target_space_id: str | None,
         canonical_conversation_id: str | None,
@@ -228,6 +269,7 @@ class PlatformNotificationTransport:
                 else exc.category
             )
             raise ProactiveGatewayError(category) from exc
+        self._validate_route(prepared["route"], resolved)
         operations = self._router.operations(resolved)
         try:
             result = await operations.send(
@@ -243,11 +285,8 @@ class PlatformNotificationTransport:
             raise ProactiveGatewayError(
                 "platform_transport_error", uncertain=getattr(exc, "uncertain", True)
             ) from exc
-        if result.reference is None and result.remote_confirmed:
-            raise ProactiveGatewayError("platform_receipt_missing", uncertain=True)
         return NotificationDeliveryReceipt(
-            message_id=result.reference or "",
-            remote_confirmed=result.remote_confirmed,
+            message_id=result.reference,
             sender_account_id=resolved.sender_account_id,
             external_target_id=resolved.external_target_id,
             route_kind=resolved.kind,
@@ -268,10 +307,12 @@ class PluginNotificationOutboxWorker:
         ledger: EventLedgerRepository,
         transport: NotificationTransport,
         effect_gate: ConversationEffectGate,
+        workspace_store: WorkspaceStore,
         effect_gate_timeout_seconds: float = 5.0,
     ) -> None:
         self._repository = repository
         self._artifacts = artifacts
+        self._workspace = workspace_store
         self._ledger = ledger
         self._transport = transport
         self._effect_gate = effect_gate
@@ -418,7 +459,10 @@ class PluginNotificationOutboxWorker:
         space_id: str | None,
     ) -> None:
         assert item.prepared is not None
+        stable_media = None
+        local = item.prepared.get("route", {}).get("local_ledger") is True
         try:
+            resolved = await self._transport.resolve(item) if local else None
             if item.part_type == "media":
                 if item.media_handle_id is None:
                     raise PluginPermanentDeliveryError("media_handle_missing")
@@ -426,18 +470,27 @@ class PluginNotificationOutboxWorker:
                     plugin_id=item.plugin_id,
                     handle_id=item.media_handle_id,
                 )
-                receipt = await self._transport.send_media(
-                    target_type=item.target_type,
-                    local_path=artifact.local_path,
-                    content_type=artifact.content_type,
-                    content=verified,
-                    prepared=item.prepared,
-                    canonical_target_person_id=person_id,
-                    canonical_target_space_id=space_id,
-                    canonical_conversation_id=item.canonical_conversation_id,
-                    canonical_presence_id=item.canonical_presence_id,
-                    source_event_id=item.source_event_id,
+                stable_media = await _media_io(
+                    self._publish_media, item, artifact.filename, artifact.sha256, verified
                 )
+                stable_media["mime_type"] = artifact.content_type
+                if resolved is not None:
+                    receipt = self._local_receipt(resolved)
+                else:
+                    receipt = await self._transport.send_media(
+                        target_type=item.target_type,
+                        local_path=artifact.local_path,
+                        content_type=artifact.content_type,
+                        content=verified,
+                        prepared=item.prepared,
+                        canonical_target_person_id=person_id,
+                        canonical_target_space_id=space_id,
+                        canonical_conversation_id=item.canonical_conversation_id,
+                        canonical_presence_id=item.canonical_presence_id,
+                        source_event_id=item.source_event_id,
+                    )
+            elif resolved is not None:
+                receipt = self._local_receipt(resolved)
             else:
                 receipt = await self._transport.send_text(
                     target_type=item.target_type,
@@ -449,7 +502,7 @@ class PluginNotificationOutboxWorker:
                     canonical_presence_id=item.canonical_presence_id,
                     source_event_id=item.source_event_id,
                 )
-        except (PluginPermanentDeliveryError, PluginPermissionError) as exc:
+        except (PluginPermanentDeliveryError, PluginPermissionError, WorkspaceError) as exc:
             category = (
                 exc.category if isinstance(exc, PluginPermanentDeliveryError) else "media_invalid"
             )
@@ -482,7 +535,14 @@ class PluginNotificationOutboxWorker:
                     error_category=exc.category,
                 )
             return
+        except asyncio.CancelledError:
+            if local:
+                await self._repository.recover_local_outbox(item)
+            raise
         except Exception as exc:
+            if local:
+                await self._repository.recover_local_outbox(item)
+                raise
             logger.warning(
                 "notification_outbox_delivery_failed plugin_id=%s part_type=%s error_category=%s",
                 item.plugin_id,
@@ -496,24 +556,27 @@ class PluginNotificationOutboxWorker:
                 error_category=type(exc).__name__,
             )
             return
-        if not isinstance(receipt, NotificationDeliveryReceipt) or not receipt.message_id.strip():
-            await self._repository.finish_outbox(
-                item.id,
-                attempt=item.attempts,
-                status="uncertain",
-                error_category="delivery_receipt_invalid",
-            )
-            return
         try:
-            completed = await self._record_outbound(item, receipt)
+            completed = await self._record_outbound(item, receipt, stable_media=stable_media)
             if not completed:
+                if local:
+                    await self._repository.recover_local_outbox(item)
+                    return
                 logger.error(
                     "notification_post_send_attempt_reclaimed plugin_id=%s part_type=%s",
                     item.plugin_id,
                     item.part_type,
                 )
                 return
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            if local:
+                await self._repository.recover_local_outbox(item)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                logger.exception("notification_local_record_failed outbox_id=%s", item.id)
+                return
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.exception(
                 "notification_post_send_record_failed plugin_id=%s error_category=%s",
                 item.plugin_id,
@@ -534,6 +597,36 @@ class PluginNotificationOutboxWorker:
             item.attempts,
         )
 
+    def _publish_media(
+        self, item: OutboxRecord, name: str, digest: str, content: bytes
+    ) -> dict[str, Any]:
+        source = f"plugin-notification:{item.id}"
+        identity = str(uuid5(NAMESPACE_URL, source))
+        with TemporaryFile() as stream:
+            stream.write(content)
+            stream.flush()
+            return self._workspace.snapshot(
+                stream.fileno(),
+                name,
+                artifact_id=identity,
+                source_key=source,
+                expected_version=digest,
+            )
+
+    @staticmethod
+    def _local_receipt(route: ResolvedSend) -> NotificationDeliveryReceipt:
+        return NotificationDeliveryReceipt(
+            message_id=None,
+            sender_account_id=route.sender_account_id,
+            external_target_id=route.external_target_id,
+            route_kind=route.kind,
+            presence_id=route.presence_id,
+            binding_id=route.binding_id,
+            platform=route.platform,
+            conversation_id=route.conversation_id,
+            thread_id=route.thread_id,
+        )
+
     async def _canonical_delivery_target(self, item: OutboxRecord) -> tuple[str | None, str | None]:
         person_id = item.canonical_target_person_id
         space_id = item.canonical_target_space_id
@@ -546,7 +639,11 @@ class PluginNotificationOutboxWorker:
         raise PluginPermanentDeliveryError("canonical_target_missing")
 
     async def _record_outbound(
-        self, item: OutboxRecord, receipt: NotificationDeliveryReceipt
+        self,
+        item: OutboxRecord,
+        receipt: NotificationDeliveryReceipt,
+        *,
+        stable_media: dict[str, Any] | None = None,
     ) -> bool:
         scope = ScopeType(item.target_type)
         source = await self._ledger.get_event(item.source_event_id)
@@ -556,11 +653,16 @@ class PluginNotificationOutboxWorker:
         content = actual_message.text
         segments: tuple[dict[str, object], ...]
         if item.part_type == "media":
+            assert stable_media is not None
             segments = (
                 {
                     "type": "image",
                     "data": {
-                        "media_handle_id": item.media_handle_id,
+                        "artifact_id": stable_media["artifact_id"],
+                        "version": stable_media["sha256"],
+                        "filename": stable_media["name"],
+                        "size": stable_media["size"],
+                        "mime_type": stable_media["mime_type"],
                         "summary": summary[:500],
                     },
                 },
@@ -605,21 +707,26 @@ class PluginNotificationOutboxWorker:
         from yuki.persistence.scoped_event_uow import prepare_append
 
         prepared_append = await prepare_append(content, segments=segments)
-        ledger_key = receipt.message_id or f"notification-outbox:{item.id}"
-        native_id = receipt.message_id if receipt.remote_confirmed else None
+        local = item.prepared.get("route", {}).get("local_ledger") is True
+        native_id = receipt.message_id or None
         async with self._ledger._database.immediate_session() as session:
-            completed = await self._repository.finish_outbox(
-                item.id,
-                attempt=item.attempts,
-                status="sent",
-                platform_message_id=native_id,
-                session=session,
+            completed = (
+                await self._repository.settle_local_outbox(item, session=session)
+                if local
+                else await self._repository.finish_outbox(
+                    item.id,
+                    attempt=item.attempts,
+                    status="sent",
+                    platform_message_id=native_id,
+                    session=session,
+                )
             )
             if not completed:
                 return False
             appended = await ScopedEventLedgerUnitOfWork(self._ledger._database).append(
                 scope=identity,
-                platform_message_id=ledger_key,
+                origin_key=native_id,
+                native_message_id=native_id,
                 sender_user_id=sender,
                 direction="outbound",
                 content=content,

@@ -50,7 +50,8 @@ class MessageTaskSource:
         """The original ledger event as the trusted inbound; never a new message."""
 
         return InboundMessage(
-            message_id=original.platform_message_id,
+            ingress_key=None,
+            native_message_id=original.native_message_id,
             source_event_id=original.id,
             author_kind=original.author_kind,
             author_account_id=original.author_account_id,

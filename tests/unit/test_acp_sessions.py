@@ -96,7 +96,7 @@ async def test_acp_threads_keep_events_and_generation_separate_from_app(database
         event = await seed_scoped_event(
             writer,
             scope=scope,
-            platform_message_id=principal.message_key(request_id),
+            origin_key=principal.message_key(request_id),
             sender_user_id=principal.external_account_id,
             direction="inbound",
             content=f"original session {index}",
@@ -268,14 +268,14 @@ async def test_acp_history_does_not_replay_unconfirmed_raw_outbound(app_env, dat
     inbound = await seed_scoped_event(
         writer,
         scope=scope,
-        platform_message_id="real-user",
+        origin_key="real-user",
         sender_user_id=principal.external_account_id,
         direction="inbound",
         content="Visible original user input",
     )
     await writer.append(
         scope=scope,
-        platform_message_id="raw-without-social-receipt",
+        origin_key="raw-without-social-receipt",
         sender_user_id="yuki-acp",
         direction="outbound",
         content="Unconfirmed output must not become ACP history",

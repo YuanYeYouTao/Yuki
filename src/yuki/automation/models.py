@@ -94,7 +94,6 @@ class AutomationRecord(StrictModel):
     schedule: Schedule
     script_hash: str
     authority_snapshot: dict[str, Any]
-    created_from_message_id: str
     next_run_at: datetime | None
     last_run_at: datetime | None
     run_count: int

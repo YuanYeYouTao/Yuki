@@ -6,6 +6,7 @@ import io
 import json
 import os
 import threading
+from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
@@ -162,6 +163,36 @@ async def test_personal_attachment_enters_original_main_and_media_index(app_env,
     item, path = await env.media.authorized_path(
         event_id=sent.json()["data"]["event_id"], attachment_index=0
     )
+    principal = await env.identity.authenticate(device["token"])
+    event_id = sent.json()["data"]["event_id"]
+    headers = bearer(device["token"])
+    history = await env.client.get(
+        f"/client/v1/conversations/{principal.conversation_id}/events", headers=headers
+    )
+    public = next(
+        value for value in history.json()["data"]["items"] if value["event_id"] == event_id
+    )
+    assert public["attachments"][0]["size"] == len(content)
+    assert public["attachments"][0]["filename"] == name
+    async with database.read_session() as session:
+        original_segments = (await session.get(ChatEventModel, event_id)).segments_json
+    assert next(
+        segment["data"] for segment in json.loads(original_segments) if segment["type"] == kind
+    )["file_size"] == len(content)
+    download_url = (
+        f"/client/v1/conversations/{principal.conversation_id}/events/{event_id}/attachments/0"
+    )
+    original = await env.client.get(download_url, headers=headers)
+    assert original.status_code == 200 and original.content == content
+    assert original.headers["X-Yuki-Expires-At"] == item.expires_at.replace(tzinfo=UTC).isoformat()
+    expiry = datetime.now(UTC) + timedelta(hours=1)
+    async with database.immediate_session() as session:
+        (await session.get(ConversationMediaItemModel, (event_id, 0))).expires_at = expiry
+    expiring = await env.client.get(download_url, headers=headers)
+    assert expiring.content == content
+    assert expiring.headers["X-Yuki-Expires-At"] == expiry.isoformat()
+    async with database.read_session() as session:
+        assert (await session.get(ChatEventModel, event_id)).segments_json == original_segments
     inspected = await env.media.inspect(item, path, "查看我选定的附件")
     if kind == "image":
         assert inspected.images
@@ -282,7 +313,11 @@ async def test_local_audio_uses_original_asr_and_does_not_store_bytes(
     async with database.read_session() as session:
         binding = await session.get(IdentityBindingModel, principal.binding_id)
     message = env.gateway.message(
-        binding, str(uuid4()), "voice", segments, attachments,
+        binding,
+        str(uuid4()),
+        "voice",
+        segments,
+        attachments,
         conversation_id=principal.conversation_id,
     )
     result = await service.prepare(message, None)
@@ -310,7 +345,7 @@ async def test_group_result_file_is_readable_only_through_owned_work(app_env, da
         await seed_scoped_event(
             env.harness.scoped_events,
             scope=ConversationScope.group("8000", "2001"),
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             sender_user_id="8000",
             direction="outbound",
             content="file",

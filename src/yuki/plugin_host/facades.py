@@ -2704,7 +2704,8 @@ async def _send_onebot(
                 appended = (
                     await ledger._writer.append(
                         scope=scope,
-                        platform_message_id=confirmed.platform_message_id,
+                        origin_key=confirmed.platform_message_id,
+                        native_message_id=confirmed.platform_message_id,
                         sender_user_id=invocation.bot_user_id,
                         direction="outbound",
                         content=outbound.content,
@@ -2911,7 +2912,7 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
         event_id=inbound.source_event_id,
         author_kind=inbound.author_kind,
         author_account_id=inbound.author_account_id,
-        message_id=inbound.message_id,
+        native_message_id=inbound.native_message_id,
         sender_user_id=inbound.sender.user_id,
         scope_type=inbound.scope_type.value,
         group_id=inbound.group_id,
@@ -2932,7 +2933,7 @@ def _record_message(record: Any) -> CurrentMessage:
         platform=record.platform,
         author_kind=record.author_kind,
         author_account_id=record.author_account_id,
-        message_id=record.platform_message_id,
+        native_message_id=record.native_message_id,
         sender_user_id=record.sender_user_id,
         scope_type=record.scope_type.value,
         group_id=record.group_id,
@@ -2959,7 +2960,7 @@ def _control_audit_ref(invocation: PluginInvocation) -> ControlAuditRef:
     inbound = invocation.inbound
     return ControlAuditRef(
         user_id=invocation.actor_user_id,
-        trigger_message_id=inbound.message_id if inbound else "plugin-task",
+        trigger_message_id=(inbound.native_message_id or "") if inbound else "",
         trigger_event_id=invocation.source_event_id,
         canonical_conversation_id=invocation.conversation_id,
         ingress_presence_id=invocation.presence_id,
@@ -2989,7 +2990,7 @@ def _memory_mutation_subject(
     return MemoryPreferenceTrigger(
         user_id=invocation.actor_user_id,
         bot_user_id=invocation.bot_user_id,
-        trigger_message_id=inbound.message_id if inbound else "plugin-task",
+        trigger_message_id=(inbound.native_message_id or "") if inbound else "",
         trigger_event_id=invocation.source_event_id,
         canonical_conversation_id=invocation.conversation_id,
         ingress_presence_id=invocation.presence_id,

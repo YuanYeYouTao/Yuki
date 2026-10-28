@@ -887,7 +887,7 @@ async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(da
         for index in range(2):
             event = ChatEventModel(
                 bot_user_id="80001",
-                platform_message_id=f"repair-{index}",
+                origin_key=f"repair-{index}",
                 scope_type="group",
                 group_id="20001",
                 sender_user_id="10001",

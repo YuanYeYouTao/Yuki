@@ -483,6 +483,11 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             headers={
                 "ETag": f'"{metadata["sha256"]}"',
                 "Content-Disposition": f"attachment; filename*=UTF-8''{quote(metadata['name'])}",
+                **(
+                    {"X-Yuki-Expires-At": metadata["expires_at"]}
+                    if metadata.get("expires_at") is not None
+                    else {}
+                ),
             },
         )
 

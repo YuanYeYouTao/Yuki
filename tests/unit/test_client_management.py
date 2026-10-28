@@ -393,7 +393,7 @@ async def test_event_pages_retain_completed_work_links_from_original_delivery_an
             await seed_scoped_event(
                 case.env.harness.scoped_events,
                 scope=ConversationScope.private("8000", "1001"),
-                platform_message_id=str(uuid4()),
+                origin_key=str(uuid4()),
                 sender_user_id="8000",
                 direction="outbound",
                 content=f"actual result {len(result_ids)}",

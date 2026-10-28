@@ -47,7 +47,7 @@ def _event(
     return EventRecord(
         id=event_id,
         bot_user_id="8000",
-        platform_message_id=f"event-{event_id}",
+        origin_key=f"event-{event_id}",
         scope_type=scope_type,
         sender_user_id=sender_user_id,
         direction="inbound",
@@ -141,7 +141,7 @@ async def _append_event(
     row, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=message_id,
+        origin_key=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
         sender_user_id=user_id,
         direction=direction,

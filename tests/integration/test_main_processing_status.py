@@ -35,7 +35,8 @@ class RecordingStatus:
 
 def incoming(text="查询一下聊天记录"):
     return InboundMessage(
-        message_id="main-processing-status",
+        ingress_key="main-processing-status",
+        native_message_id="main-processing-status",
         event_type="message:private",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity("1001"),
@@ -92,6 +93,8 @@ async def test_no_status_for_empty_input_or_help_command(database):
     sender = MemorySender()
 
     assert (await harness.processor.handle(incoming(""), sender)).reason == "empty"
-    await harness.processor.handle(replace(incoming("/ai"), message_id="help"), sender)
+    await harness.processor.handle(
+        replace(incoming("/ai"), ingress_key="help", native_message_id="help"), sender
+    )
 
     assert not provider.requests and not status.entries and not status.active

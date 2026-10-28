@@ -110,7 +110,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 
 迁移顺序为 `0122` 会话入口、`0123` Memory 操作身份、`0124` 通知 Conversation、`0126` 监控目标、`0127` Rebuild 原 canonical 目标与 `0128` 通知原媒体 handle。保留既有库、挂载和配置，运行真实随包迁移；不能 `stamp` 跳过，也不能覆盖旧库来回退代码。
 
-当前 Plugin API 为 **7.1**，Main 合同随固定声明生成新 revision，Code API 仍为 `yuki.codemode.api.v2`。插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，身份升级见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)，旧表情 facade 退役见 [API 5.0 迁移](../plugin-development/api-5.0-migration.md)。原位置提及快照见 [API 6.0 迁移](../plugin-development/api-6.0-migration.md)，独立 Session 无效参数退役见 [API 7.0 迁移](../plugin-development/api-7.0-migration.md)，历史查询可选扩展见 [API 7.1 迁移](../plugin-development/api-7.1-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。迁移 0141 一次替换双归属表，保原 UUID 和原 Work；使用退役工具合同的私有链只读封存，在现有新链边界以当前合同继续，不保旧执行器。
+当前 Plugin API 为 **9.0**，Main 合同随固定声明生成新 revision，Code API 仍为 `yuki.codemode.api.v2`。插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，身份升级见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)，旧表情 facade 退役见 [API 5.0 迁移](../plugin-development/api-5.0-migration.md)。原位置提及快照见 [API 6.0 迁移](../plugin-development/api-6.0-migration.md)，独立 Session 无效参数退役见 [API 7.0 迁移](../plugin-development/api-7.0-migration.md)，历史查询可选扩展见 [API 7.1 迁移](../plugin-development/api-7.1-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。迁移 0141 一次替换双归属表，保原 UUID 和原 Work；使用退役工具合同的私有链只读封存，在现有新链边界以当前合同继续，不保旧执行器。
 
 监控旧状态只按真实历史 grant 迁移。来源未知、存在歧义或目标合并冲突时，完整保留源 JSON 并报告具体升级问题，不能创建空状态覆盖它，也不能用今天的同数字账号猜 owner。监控迁移保原游标、源指纹、正文、notification/source_event ID、状态和已接受投递，不能重新抓取或重发代替恢复。
 

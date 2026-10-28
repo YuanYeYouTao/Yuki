@@ -31,14 +31,15 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     current = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="ordinary-reply",
+        origin_key="ordinary-reply",
         sender_user_id="10001",
         direction="inbound",
         content="read the quoted message",
         reply_to_event_id=original.id,
-        reply_to_message_id=original.platform_message_id,
+        reply_to_message_id=original.origin_key,
     )
     inbound = InboundMessage(
+        "ordinary-reply",
         "ordinary-reply",
         "message",
         ScopeType.GROUP,
@@ -65,7 +66,7 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     assert result["status"] == "succeeded"
     sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
     assert len(sends) == 1
-    assert sends[0]["message"][0] == {"type": "reply", "data": {"id": original.platform_message_id}}
+    assert sends[0]["message"][0] == {"type": "reply", "data": {"id": original.origin_key}}
     receipt = await env.service.receipts.find(
         f"{env.context.conversation_id}:event:{current.event.id}", "ordinary-reply-send"
     )
@@ -108,6 +109,7 @@ async def test_social_refs_use_original_person_after_external_account_transfer(
     async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     inbound = InboundMessage(
+        "inbound",
         "inbound",
         "message",
         ScopeType.GROUP,

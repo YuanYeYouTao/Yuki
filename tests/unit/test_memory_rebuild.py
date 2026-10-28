@@ -135,7 +135,7 @@ async def _event(
     event, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=message_id,
+        origin_key=message_id,
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         direction="inbound",
@@ -325,7 +325,7 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     referenced, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="reply-source",
+        origin_key="reply-source",
         scope_type=ScopeType.GROUP,
         sender_user_id="2002",
         direction="inbound",
@@ -335,13 +335,13 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     event, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="legacy-subjects",
+        origin_key="legacy-subjects",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
         content="确定性元数据",
         group_id="3001",
-        reply_to_message_id=referenced.platform_message_id,
+        reply_to_message_id=referenced.origin_key,
         reply_to_event_id=referenced.id,
         segments=({"type": "at", "data": {"qq": "3003"}},),
     )
@@ -352,26 +352,26 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     cross_group, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="cross-group",
+        origin_key="cross-group",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
         content="跨群回复",
         group_id="3002",
-        reply_to_message_id=referenced.platform_message_id,
+        reply_to_message_id=referenced.origin_key,
     )
     assert (await ledger.hydrate_rebuild_subjects(cross_group)).reply_sender_user_id is None
 
     old_event, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="old-subjects",
+        origin_key="old-subjects",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
         content="旧引用缺内部编号",
         group_id="3001",
-        reply_to_message_id=referenced.platform_message_id,
+        reply_to_message_id=referenced.origin_key,
     )
     assert (await ledger.hydrate_rebuild_subjects(old_event)).reply_sender_user_id is None
 

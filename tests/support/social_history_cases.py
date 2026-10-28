@@ -36,7 +36,7 @@ async def stored_private_entry(env, platform, *, content="之前讨论过雷达�
     added = await seed_scoped_event(
         env.service.writer,
         scope=scope,
-        platform_message_id="before-new",
+        origin_key="before-new",
         sender_user_id=peer_id,
         direction="inbound",
         content=content,
@@ -103,7 +103,8 @@ async def history_agent_loop(
     sender = MemorySender()
     result = await harness.processor.handle(
         InboundMessage(
-            message_id="read-other-conversation",
+            ingress_key="read-other-conversation",
+            native_message_id="read-other-conversation",
             event_type="message:test",
             scope_type=ScopeType.GROUP,
             sender=SenderIdentity("10001"),
@@ -126,5 +127,5 @@ async def history_agent_loop(
     )
     async with env.db.read_session() as session:
         assert not await session.scalar(
-            select(ChatEventModel.id).where(ChatEventModel.platform_message_id.in_(("50", "51")))
+            select(ChatEventModel.id).where(ChatEventModel.origin_key.in_(("50", "51")))
         )

@@ -34,7 +34,7 @@ async def test_actual_main_recovers_paid_public_compact_with_new_history(
     await seed_scoped_event(
         harness.scoped_events,
         scope=scope,
-        platform_message_id="old-public",
+        origin_key="old-public",
         sender_user_id="1001",
         direction="inbound",
         content="Old public decision.",
@@ -59,7 +59,7 @@ async def test_actual_main_recovers_paid_public_compact_with_new_history(
     await seed_scoped_event(
         harness.scoped_events,
         scope=scope,
-        platform_message_id="new-public",
+        origin_key="new-public",
         sender_user_id="1001",
         direction="inbound",
         content="Fresh public correction.",

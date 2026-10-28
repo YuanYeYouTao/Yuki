@@ -235,6 +235,7 @@ async def test_memory_search_rechecks_role_before_disclosing_awaited_result(
         )
         incoming = InboundMessage(
             "original-private-search",
+            "original-private-search",
             "message",
             ScopeType.PRIVATE,
             SenderIdentity("9000"),
@@ -421,6 +422,7 @@ async def test_queued_privileged_plugin_rechecks_person_after_scope_wait(databas
     )
     runtime = ToolRuntime(
         inbound=InboundMessage(
+            "source",
             "source",
             "message",
             ScopeType.PRIVATE,

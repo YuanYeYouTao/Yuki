@@ -102,7 +102,7 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
             own, _ = await seed_event(
                 host.ledger,
                 bot_user_id=event.bot_user_id,
-                platform_message_id=str(uuid4()),
+                origin_key=str(uuid4()),
                 scope_type=ScopeType.GROUP,
                 sender_user_id=event.bot_user_id,
                 direction="outbound",
@@ -163,7 +163,7 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
             reply, _ = await seed_event(
                 host.ledger,
                 bot_user_id=event.bot_user_id,
-                platform_message_id=str(uuid4()),
+                origin_key=str(uuid4()),
                 scope_type=ScopeType.GROUP,
                 sender_user_id=event.sender_user_id,
                 direction="inbound",

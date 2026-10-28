@@ -158,7 +158,7 @@ async def test_app_message_and_local_reply_stay_in_app_conversation(app_env, dat
             ("outbound", "App reply"),
         ]
         assert rows[0].author_person_id == person and rows[0].ingress_provider == "app"
-        assert rows[1].platform_message_id.startswith("social-operation:")
+        assert rows[1].origin_key is None and rows[1].native_message_id is None
         assert rows[1].author_presence_id == rows[0].ingress_presence_id
     queried = await env.client.get(
         f"/client/v1/requests/{request['request_id']}", headers=bearer(device["token"])

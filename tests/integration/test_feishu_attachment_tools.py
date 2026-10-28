@@ -108,7 +108,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
                     presence_id=first_id,
                 ),
                 sender_user_id=author,
-                platform_message_id="om_original",
+                origin_key="om_original",
                 direction="inbound",
                 content="原图",
                 segments=(
@@ -137,7 +137,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
                     presence_id=second_id,
                 ),
                 sender_user_id=reader,
-                platform_message_id="om_request",
+                origin_key="om_request",
                 direction="inbound",
                 content="查看原图",
             )
@@ -145,7 +145,8 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
         assert source.canonical_conversation_id == request.canonical_conversation_id
         runtime = ToolRuntime(
             inbound=InboundMessage(
-                message_id="om_request",
+                ingress_key="om_request",
+                native_message_id="om_request",
                 event_type="message:feishu",
                 platform="feishu",
                 bot_user_id=current.self_id,

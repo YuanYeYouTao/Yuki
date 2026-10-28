@@ -130,7 +130,8 @@ def _prepare_event_row(
     utterance_fingerprint = _fingerprint(message.text)
     row = ChatEventModel(
         bot_user_id=scope.bot_user_id,
-        platform_message_id=message.message_id,
+        origin_key=message.ingress_key,
+        native_message_id=message.native_message_id,
         scope_type=scope.scope_type.value,
         group_id=scope.group_id,
         private_peer_user_id=scope.private_peer_user_id,
@@ -203,7 +204,7 @@ class CanonicalIngressUnitOfWork:
                 scope=scope,
                 presence_id=cast(str, admitted.presence_id),
                 event_type=message.event_type,
-                platform_message_id=message.message_id,
+                ingress_key=message.ingress_key,
             )
             if existing is not None:
                 original_parts = json.loads(existing.segments_json)
@@ -219,7 +220,7 @@ class CanonicalIngressUnitOfWork:
                     scope=scope,
                     conversation_id=None,
                     presence_id=cast(str, admitted.presence_id),
-                    platform_message_id=message.message_id,
+                    origin_key=message.ingress_key,
                     sender_user_id=message.sender.user_id,
                     direction="inbound",
                     event_kind="message",
@@ -234,14 +235,15 @@ class CanonicalIngressUnitOfWork:
                         presence_id=cast(str, admitted.presence_id),
                         scope=scope,
                         event_type=message.event_type,
-                        platform_message_id=message.message_id,
+                        ingress_key=message.ingress_key,
                     ),
                     external_event_type=message.event_type,
                 )
                 return _event_record(existing, segments=tuple(original_parts))
             row = ChatEventModel(
                 bot_user_id=message.bot_user_id,
-                platform_message_id=message.message_id,
+                origin_key=message.ingress_key,
+                native_message_id=message.native_message_id,
                 scope_type=message.scope_type.value,
                 group_id=message.group_id,
                 private_peer_user_id=message.sender.user_id,
@@ -279,7 +281,7 @@ class CanonicalIngressUnitOfWork:
                         ingress_account_id=presence.account_id,
                         transport_namespace=transport_namespace(scope),
                         event_type=message.event_type,
-                        platform_message_id=message.message_id,
+                        ingress_key=message.ingress_key,
                         canonical_event_id=canonical_id,
                         created_at=now,
                         observed_at=now,
@@ -296,7 +298,7 @@ class CanonicalIngressUnitOfWork:
                 scope=scope,
                 presence_id=cast(str, admitted.presence_id),
                 event_type=message.event_type,
-                platform_message_id=message.message_id,
+                ingress_key=message.ingress_key,
             )
             if existing is not None:
                 return await record(reader)
@@ -433,7 +435,7 @@ class CanonicalIngressUnitOfWork:
                 scope=scope,
                 presence_id=presence_id,
                 event_type=message.event_type[:64],
-                platform_message_id=message.message_id[:128],
+                ingress_key=message.ingress_key,
             )
             if existing is not None:
                 return await _reuse_claimed_inbound(
@@ -466,7 +468,7 @@ class CanonicalIngressUnitOfWork:
             if message.platform in LOCAL_CLIENT_PLATFORMS and admitted.author_person_id is not None:
                 from yuki.client_api.requests import personal_command
 
-                request_id = message.message_id.rsplit(":", 1)[-1]
+                request_id = (message.ingress_key or "").rsplit(":", 1)[-1]
                 if (
                     await personal_command(
                         session,
@@ -504,7 +506,7 @@ class CanonicalIngressUnitOfWork:
                             ingress_account_id=ingress_presence.account_id,
                             transport_namespace=transport_namespace(scope),
                             event_type=message.event_type[:64],
-                            platform_message_id=message.message_id[:128],
+                            ingress_key=message.ingress_key,
                             canonical_event_id=canonical_event_id,
                             created_at=now,
                             observed_at=now,
@@ -517,7 +519,7 @@ class CanonicalIngressUnitOfWork:
                     scope=scope,
                     presence_id=presence_id,
                     event_type=message.event_type[:64],
-                    platform_message_id=message.message_id[:128],
+                    ingress_key=message.ingress_key,
                 )
                 if raced is None:
                     raise CanonicalIdentityError("receipt_conflict") from exc
@@ -585,7 +587,7 @@ class CanonicalIngressUnitOfWork:
                     scope=scope,
                     presence_id=presence_id,
                     event_type=message.event_type[:64],
-                    platform_message_id=message.message_id[:128],
+                    ingress_key=message.ingress_key,
                 )
                 if existing is not None:
                     return await _reuse_claimed_inbound(
@@ -688,14 +690,14 @@ async def _load_receipt(
     presence_id: str,
     scope: ConversationScope,
     event_type: str,
-    platform_message_id: str,
+    ingress_key: str | None,
 ) -> CanonicalEventReceiptModel | None:
     return await transport_receipt(
         session,
         presence_id=presence_id,
         scope=scope,
         event_type=event_type,
-        platform_message_id=platform_message_id,
+        ingress_key=ingress_key,
     )
 
 
@@ -705,14 +707,14 @@ async def _existing_claimed_event(
     presence_id: str,
     scope: ConversationScope,
     event_type: str,
-    platform_message_id: str,
+    ingress_key: str | None,
 ) -> ChatEventModel | None:
     receipt = await _load_receipt(
         session,
         scope=scope,
         presence_id=presence_id,
         event_type=event_type,
-        platform_message_id=platform_message_id,
+        ingress_key=ingress_key,
     )
     if receipt is None:
         return None
@@ -740,7 +742,7 @@ async def _reuse_claimed_inbound(
         scope=scope,
         presence_id=admitted.presence_id,
         event_type=message.event_type[:64],
-        platform_message_id=message.message_id[:128],
+        ingress_key=message.ingress_key,
     )
     require_claimed_event(receipt, existing)
     if conversation.kind == "private":
@@ -773,7 +775,7 @@ async def _reuse_claimed_inbound(
         scope=scope,
         conversation_id=conversation.id,
         presence_id=admitted.presence_id,
-        platform_message_id=message.message_id,
+        origin_key=message.ingress_key,
         sender_user_id=message.sender.user_id,
         direction="inbound",
         event_kind="message",

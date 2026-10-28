@@ -32,7 +32,7 @@ async def private_entry(env, account, message_id):
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.private(account, "10001"),
-            platform_message_id=message_id,
+            origin_key=message_id,
             sender_user_id="10001",
             direction="inbound",
             content="entry-local history",
@@ -168,7 +168,7 @@ async def test_platform_personal_history_and_cross_entry_binding_survive_new_win
         await seed_scoped_event(
             env.service.writer,
             scope=entry.scope,
-            platform_message_id="after-new",
+            origin_key="after-new",
             sender_user_id=entry.scope.private_peer_user_id,
             direction="inbound",
             content="现在重新聊",
@@ -256,7 +256,7 @@ async def test_history_discovers_original_entries_after_person_merge(
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.private("80001", "10002"),
-            platform_message_id="target-entry",
+            origin_key="target-entry",
             sender_user_id="10002",
             direction="inbound",
             content="target entry history",
@@ -301,7 +301,7 @@ async def test_delegated_history_keeps_same_person_scope_after_merge(database, t
     await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="known-foreign-person",
+        origin_key="known-foreign-person",
         sender_user_id="1003",
         direction="inbound",
         content="separate person",

@@ -56,7 +56,7 @@ async def test_outbound_prepare_is_outside_writer_and_append_rollback_is_atomic(
     result = await seed_scoped_event(
         writer,
         scope=ConversationScope.private("8000", "1001"),
-        platform_message_id="new-outbound",
+        origin_key="new-outbound",
         sender_user_id="8000",
         direction="outbound",
         content="繁體與乾坤",
@@ -85,7 +85,7 @@ async def test_asr_indexes_only_current_speech_and_delete_removes_it(database):
     result = await seed_scoped_event(
         writer,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id="asr-index",
+        origin_key="asr-index",
         sender_user_id="1001",
         direction="inbound",
         content="",
@@ -114,7 +114,7 @@ async def test_external_event_indexes_actual_summary_without_payload_json(databa
     original = await seed_scoped_event(
         writer,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id="external-entry",
+        origin_key="external-entry",
         sender_user_id="1001",
         direction="inbound",
         content="入口",
@@ -127,7 +127,7 @@ async def test_external_event_indexes_actual_summary_without_payload_json(databa
             presence_id=original.event.ingress_presence_id,
             conversation_id=conversation_id,
         ),
-        platform_message_id="external-summary",
+        origin_key="external-summary",
         source_plugin_id="test.history",
         external_source="fixture",
         external_event_key="external-summary",
@@ -147,7 +147,7 @@ async def test_person_forget_removes_owned_index_and_redacts_mentions(database):
     first = await seed_scoped_event(
         writer,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id="forget-original",
+        origin_key="forget-original",
         sender_user_id="1001",
         direction="inbound",
         content="秘密記錄",
@@ -155,7 +155,7 @@ async def test_person_forget_removes_owned_index_and_redacts_mentions(database):
     other = await seed_scoped_event(
         writer,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id="forget-mention",
+        origin_key="forget-mention",
         sender_user_id="1002",
         direction="inbound",
         content=f"引用 {first.event.author_person_id} 的记录",
@@ -184,7 +184,7 @@ async def test_asr_stale_preparation_cannot_restore_forgotten_content(
     result = await seed_scoped_event(
         writer,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id="stale-asr",
+        origin_key="stale-asr",
         sender_user_id="1002" if mention_only else "1001",
         direction="inbound",
         content=content,

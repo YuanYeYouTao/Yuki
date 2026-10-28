@@ -80,7 +80,7 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
                 other = await seed_scoped_event(
                     env.service.writer,
                     scope=ConversationScope.group("80001", "20001"),
-                    platform_message_id="other-execution-outbound",
+                    origin_key="other-execution-outbound",
                     sender_user_id="80001",
                     direction="outbound",
                     origin="social_tool",
@@ -91,7 +91,8 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
                     observed = await harness.processor.handle(
                         replace(
                             message,
-                            message_id="concurrent-ordinary-inbound",
+                            ingress_key="concurrent-ordinary-inbound",
+                            native_message_id="concurrent-ordinary-inbound",
                             text=incoming_text,
                             mentions_bot=False,
                         ),
@@ -146,10 +147,15 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
                     )
                 )
             )
-        assert len(delivered) == 1 and delivered[0].platform_message_id
+        assert len(delivered) == 1 and delivered[0].origin_key
         # A later independent activation still reads the permanent outbound fact.
         next_result = await harness.processor.handle(
-            replace(message, message_id="later-independent-inbound", text="随后继续这段聊天。"),
+            replace(
+                message,
+                ingress_key="later-independent-inbound",
+                native_message_id="later-independent-inbound",
+                text="随后继续这段聊天。",
+            ),
             sender,
         )
         assert next_result.reason == "chat" and len(wire) == 3

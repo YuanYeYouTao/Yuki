@@ -93,8 +93,13 @@ writer 复核两个 root、完整相关配置成员、原行版本和旧名别�
 ## Conversation 与事件账本
 
 平台适配器先将原始消息投影为正文、附件、按位置保序的 mention 和 reply，再解析 Person、Space、
-Presence 与 canonical Conversation。事件账本保留平台 message ID、sender/group 外部 ID、Provider
-和 Gateway provenance，以便幂等、审计和故障定位；这些字段不再承担业务所有权。
+Presence 与 canonical Conversation。新输入用完整 `ingress_key` 在原接收 Account、协议 chat/topic namespace 和 event_type 下去重；
+原账本信封资料存 `origin_key`，真实可引用消息号另存可空 `native_message_id`。内部来源和恢复只认
+原 event/operation/outbox/request ID。平台账号、原 Provider 和 Gateway 继续保留作出处，不承担业务所有权。
+
+迁移0155原样改名旧信封列，保原PK/FK、历史receipt及原件字节，只回填可证明的native引用。Memory
+既有来源fingerprint仍使用冻结wire键 `platform_message_id`，值取原 `origin_key`；native字段不加入
+旧hash编码。历史自动化的冷来源列和不可变authority/actor JSON保留，新活DTO不再携带无用平台来源。
 
 原生 mention 在入账前用已有本地资料解析展示名，正文原位置写为 `@名字`，结构化 segment
 保存原位置、名字与已知的 Person/Presence；重复提及不丢失。Main 与 JEV 读取同一份命名
@@ -133,7 +138,14 @@ ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `sessio
 
 私聊以内部 Binding＋Presence＋可选 thread 确定入口，群以 SpaceBinding＋topic 确定入口。每个入口各有 Conversation；同一 Person/Space 的长期身份和已定义记忆语义共享，聊天上下文不串入口。旧记录、冻结 primary alias 和 generation 不重写。
 
-GatewayProvider 提供连接事实、接入投影和实际原生社交操作。公共 Social 准备内部目标、核授权、claim 原操作并记录回执；各适配器编码文本、提及、引用、文件及协议实际限制。Provider 的纯发送计划不发送消息，每个实际平台步骤各有原回执。公共层不调用任意 OneBot action，也不按 Telegram/QQ 分叉一套领域服务。
+GatewayProvider 提供连接事实、接入投影和实际原生社交操作。公共 Social 准备内部目标、核授权、claim 原操作并记录回执；各适配器编码文本、提及、引用、文件及协议实际限制。原生引用namespace由既有operations的纯codec
+描述，QQ/飞书包含原接收Account，TG引用认真实chat；可信内部reply不再按native号重新解析。无真实
+native号保内部reply关系，协议不发送伪引用，撤回返回实际不可用。Provider 的纯发送计划不发送消息，每个实际平台步骤各有原回执。公共层不调用任意 OneBot action，也不按 Telegram/QQ 分叉一套领域服务。
+
+注册Provider声明 `local_ledger` 的入口直接在原短writer中claim、append、结算成功与Work效果；不调用
+App send noop，也不写伪平台号。本地通知先冻结媒体为精确artifact/version，在最终SQL时核原attempt
+与有效lease，再原子append和标sent。远端仍是原claim、一次API、原回执结算；真实晚到确认不因
+本地新发表的lease规则被抹掉。恢复认原operation/outbox与event FK，不扫描平台列猜成功。
 
 Telegram token 配置后使用 long polling，原生 getMe 确认 Bot，实际 getChatMember 用于新群接纳与发送探针。消息引用在适配器中用 chat＋message 定位，进入业务后传内部事件 ID；topic、编辑和群迁移沿原绑定。媒体 file/token URL 留在 Telegram 适配器，公共媒体接收真实字节或适配器提供的流，不获得凭据 URL。原件缓存不设经验容量门槛，显式模型读取仍受实际输入预算限制。
 
@@ -222,7 +234,7 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 Person 按原永久身份与当前同人关系核权限，纯内部工作无需当前账号或发送路由。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `7.1`，Host 加载同主版本且所需次版本不高于 Host 的插件；已批准 manifest
+Plugin API 当前为 `9.0`，Host 加载同主版本且所需次版本不高于 Host 的插件；已批准 manifest
 仍需精确匹配。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。

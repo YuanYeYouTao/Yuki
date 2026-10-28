@@ -79,10 +79,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
             event = await session.get(ChatEventModel, stored.event_id)
             assert event.content == "#62052>真实正文"
         count = gateway.await_count
-        assert (
-            await env.service.execute("send", {"text": "#62052>真实正文"}, context)
-            == result
-        )
+        assert await env.service.execute("send", {"text": "#62052>真实正文"}, context) == result
         assert gateway.await_count == count
     artifact = snapshot_bytes(env.store, "receipt.txt", b"test")
     gateway.return_value = {}
@@ -116,7 +113,7 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         unrelated = await seed_scoped_event(
             env.service.writer,
             scope=scope,
-            platform_message_id=f"unrelated-{scope.bot_user_id}-{scope.group_id}",
+            origin_key=f"unrelated-{scope.bot_user_id}-{scope.group_id}",
             sender_user_id=scope.bot_user_id,
             direction="outbound",
             content="其他目标或账号",
@@ -128,12 +125,12 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         # pre-existing imported/corrupt ledger data to exercise read isolation.
         async with database.immediate_session() as session:
             other = await session.get(ChatEventModel, unrelated.event.id)
-            other.platform_message_id = actual.platform_message_id
+            other.origin_key = actual.origin_key
         unrelated_ids.append(unrelated.event.id)
     assert await env.service.execute("send", args, env.context) == receipt
     async with database.immediate_session() as session:
         actual = await session.get(ChatEventModel, receipt["event_id"])
-        actual.platform_message_id = "transport-metadata-changed"
+        actual.origin_key = "transport-metadata-changed"
         actual.occurred_at = datetime(2020, 1, 1, tzinfo=UTC)
     # Neither transport reference nor timestamps are used to locate the event.
     assert await env.service.execute("send", args, env.context) == receipt
@@ -343,10 +340,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
         assert result["status"] == "succeeded" and result["sent_messages"] == 2
         assert control.current["sent_messages"] == 17
         assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 17
-        assert (
-            await env.service.execute("send", {"text": "第十六条\n第十七条"}, context)
-            == result
-        )
+        assert await env.service.execute("send", {"text": "第十六条\n第十七条"}, context) == result
         assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 17
     finally:
         current_work_control.reset(token)
@@ -355,7 +349,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     source_event = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="123",
+        origin_key="123",
         sender_user_id="10001",
         direction="inbound",
         content="quote source",
@@ -385,7 +379,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
             )
         )
     assert [row.reply_to_event_id for row in sent] == [source_event.event.id, None]
-    assert sent[0].reply_to_message_id == source_event.event.platform_message_id
+    assert sent[0].reply_to_message_id == source_event.event.origin_key
     assert sent[1].reply_to_message_id is None
 
 

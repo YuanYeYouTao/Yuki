@@ -86,7 +86,7 @@ async def social_env(database, tmp_path):
     await seed_scoped_event(
         writer,
         scope=ConversationScope.group(bot.self_id, "20001"),
-        platform_message_id="inbound",
+        origin_key="inbound",
         sender_user_id="10001",
         direction="inbound",
         content="hello",
@@ -141,7 +141,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
         "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="recall")
     )
     assert result["status"] == "succeeded"
-    assert env.bot.calls[-1] == ("delete_msg", {"message_id": event.platform_message_id})
+    assert env.bot.calls[-1] == ("delete_msg", {"message_id": event.origin_key})
     assert other.calls == []
     env.registry.disconnect(env.bot)
     with pytest.raises(RouteSendError, match="original_presence_unavailable"):

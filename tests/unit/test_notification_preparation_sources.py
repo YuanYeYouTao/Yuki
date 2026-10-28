@@ -19,6 +19,7 @@ from yuki.plugin_host.notification_delivery import (
     PluginNotificationOutboxWorker,
 )
 from yuki.services.effect_gate import ConversationEffectGate
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
 
@@ -72,6 +73,7 @@ async def prepare_fixture(database, tmp_path, *, private=False):
         ),
     )
     worker = PluginNotificationOutboxWorker(
+        workspace_store=WorkspaceStore(tmp_path / "workspace"),
         repository=repository,
         artifacts=PluginMediaArtifactStore(database, tmp_path / "media"),
         ledger=EventLedgerRepository(database),

@@ -37,7 +37,7 @@ async def append(database, message, account="1001", group=False):
             scope=ConversationScope.group("8000", "2001")
             if group
             else ConversationScope.private("8000", account),
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             sender_user_id=account,
             direction="inbound",
             content=message,
@@ -226,7 +226,7 @@ async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(datab
     await seed_scoped_event(
         ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("8000", "2002"),
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         sender_user_id="1001",
         direction="inbound",
         content="previous owner's group message",

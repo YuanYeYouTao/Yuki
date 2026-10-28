@@ -26,6 +26,7 @@ from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.persistence.models import ChatEventModel
 from yuki.services.agent_tools import ToolRuntime
 from yuki.social.agent_adapter import invoke_social
+from yuki.workspace.store import WorkspaceStore
 
 
 async def append_message(env, native, name, *, at, message_id, mentions=(), group_id="20001"):
@@ -72,9 +73,7 @@ async def send(env, text, *, call_id="send", **arguments):
     runtime = ToolRuntime(inbound=env.source)
     token = current_invocation.set(ToolInvocationContext(runtime=runtime, invocation_key=call_id))
     try:
-        return await invoke_social(
-            env.service, "send", {"text": text, **arguments}, runtime
-        )
+        return await invoke_social(env.service, "send", {"text": text, **arguments}, runtime)
     finally:
         current_invocation.reset(token)
 
@@ -567,6 +566,7 @@ async def test_notification_preparation_uses_its_target_conversation_and_keeps_t
         ),
     )
     worker = PluginNotificationOutboxWorker(
+        workspace_store=WorkspaceStore(tmp_path / "workspace"),
         repository=repository,
         artifacts=PluginMediaArtifactStore(env.db, tmp_path / "notification-artifacts"),
         ledger=EventLedgerRepository(env.db),

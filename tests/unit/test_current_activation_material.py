@@ -67,7 +67,13 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
     for number, value in enumerate(("original-snapshot", "new-value", "", ""), 1):
         state.update({"slot": 1, "text": value})
         await harness.processor.handle(
-            replace(message, message_id=f"current-{number}", text=f"继续{number}"), MemorySender()
+            replace(
+                message,
+                ingress_key=f"current-{number}",
+                native_message_id=f"current-{number}",
+                text=f"继续{number}",
+            ),
+            MemorySender(),
         )
         current = "\n".join(item.content or "" for item in provider.requests[-1].messages)
         assert (provider.requests[-1].messages[-1].content or "").endswith(f"继续{number}")
@@ -84,7 +90,13 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
     )
     await database.engine.dispose()
     await harness.processor.handle(
-        replace(message, message_id="after-restart", text="重启后继续"), MemorySender()
+        replace(
+            message,
+            ingress_key="after-restart",
+            native_message_id="after-restart",
+            text="重启后继续",
+        ),
+        MemorySender(),
     )
     assert "new-value" not in json.dumps([m.content for m in provider.requests[-1].messages])
     await _assert_public_chat_only(database)
@@ -98,7 +110,10 @@ async def test_current_values_repeat_then_clear_without_entering_history(databas
 
     chat.runtime.main_turns.compose = capture
     await harness.processor.handle(
-        replace(message, message_id="empty-current", text="空資料"), MemorySender()
+        replace(
+            message, ingress_key="empty-current", native_message_id="empty-current", text="空資料"
+        ),
+        MemorySender(),
     )
     context = replace(captured[0]["context"], metadata_payload={})
     empty = chat._prompt_composer.compose(
@@ -117,7 +132,13 @@ async def test_subject_switch_keeps_identical_old_chat_without_scene_or_slots(da
     await harness.processor.handle(message, MemorySender())
     first_saved = await _saved(database)
     await harness.processor.handle(
-        replace(message, message_id="same-person-next", text="同一人的第二条原输入"), MemorySender()
+        replace(
+            message,
+            ingress_key="same-person-next",
+            native_message_id="same-person-next",
+            text="同一人的第二条原输入",
+        ),
+        MemorySender(),
     )
     frozen = await _saved(database)
     adopted = json.loads(frozen.payload_json)
@@ -128,7 +149,8 @@ async def test_subject_switch_keeps_identical_old_chat_without_scene_or_slots(da
         other = await ensure_person(writer, "10002")
     second = replace(
         message,
-        message_id="another-person",
+        ingress_key="another-person",
+        native_message_id="another-person",
         sender=SenderIdentity("10002", nickname="另一位"),
         person_id=other,
         text="另一人的当前要求",
@@ -152,8 +174,20 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
     provider = FakeLLMProvider(lambda request: "内部结束")
     _, harness, chat, _, message = await _scene(database, tmp_path, provider)
     observed = [
-        replace(message, message_id="group-first", text="第一条原输入", mentions_bot=False),
-        replace(message, message_id="group-second", text="第二条原输入", mentions_bot=False),
+        replace(
+            message,
+            ingress_key="group-first",
+            native_message_id="group-first",
+            text="第一条原输入",
+            mentions_bot=False,
+        ),
+        replace(
+            message,
+            ingress_key="group-second",
+            native_message_id="group-second",
+            text="第二条原输入",
+            mentions_bot=False,
+        ),
     ]
     for inbound in observed:
         result = await harness.processor.handle(inbound, MemorySender())
@@ -173,7 +207,7 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
         event_ids = list(
             await reader.scalars(
                 select(ChatEventModel.id)
-                .where(ChatEventModel.platform_message_id.in_([m.message_id for m in observed]))
+                .where(ChatEventModel.origin_key.in_([m.ingress_key for m in observed]))
                 .order_by(ChatEventModel.id)
             )
         )
@@ -231,7 +265,13 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
             )
         ] == original_selected
     await harness.processor.handle(
-        replace(message, message_id="ordinary-new-source", text="真正的全新输入"), MemorySender()
+        replace(
+            message,
+            ingress_key="ordinary-new-source",
+            native_message_id="ordinary-new-source",
+            text="真正的全新输入",
+        ),
+        MemorySender(),
     )
     latest = json.loads((await _saved(database)).payload_json)
     assert latest[: len(adopted)] == adopted
@@ -303,7 +343,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
                 presence_id=env.presence,
                 conversation_id=env.context.conversation_id,
             ),
-            platform_message_id="old-external-source",
+            origin_key="old-external-source",
             source_plugin_id="test.common-external",
             external_source="offline-fixture",
             external_event_key="original-source",
@@ -332,7 +372,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         created = await seed_scoped_event(
             env.service.writer,
             scope=scope,
-            platform_message_id="original-sandbox-user-source",
+            origin_key="original-sandbox-user-source",
             sender_user_id="10001",
             direction="inbound",
             content=body,
@@ -347,7 +387,8 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         source_runtime = ToolRuntime(
             inbound=replace(
                 message,
-                message_id="original-sandbox-user-source",
+                ingress_key="original-sandbox-user-source",
+                native_message_id="original-sandbox-user-source",
                 text=body,
                 source_event_id=created.event.id,
             ),
@@ -361,7 +402,6 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
             origin=TurnOrigin.USER_MESSAGE,
             read_scope=scope,
             trigger_event_id=created.event.id,
-            trigger_message_id="original-sandbox-user-source",
         )
         old = None
     event = await harness.ledger.get_event(created.event.id)
@@ -466,7 +506,12 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
     assert source_checks and guard.fingerprint is not None
     provider._responder = lambda request: "内部结束"
     await harness.processor.handle(
-        replace(message, message_id="ordinary-after-host-trigger", text="唤醒之后的普通当前消息"),
+        replace(
+            message,
+            ingress_key="ordinary-after-host-trigger",
+            native_message_id="ordinary-after-host-trigger",
+            text="唤醒之后的普通当前消息",
+        ),
         MemorySender(),
     )
     following = "\n".join(item.content or "" for item in provider.requests[-1].messages)
@@ -614,7 +659,13 @@ async def test_image_activation_keeps_shared_prefix_and_current_pixels(database,
 
     chat.runtime.main_turns.compose = with_current_pixels
     await harness.processor.handle(
-        replace(message, message_id="image-current", text="这是当前图片附件"), MemorySender()
+        replace(
+            message,
+            ingress_key="image-current",
+            native_message_id="image-current",
+            text="这是当前图片附件",
+        ),
+        MemorySender(),
     )
     actual = provider.requests[-1].messages
     assert [m.images for m in actual if m.images] == [(image,)]
@@ -626,7 +677,10 @@ async def test_image_activation_keeps_shared_prefix_and_current_pixels(database,
     assert image.data_url not in current.payload_json
     chat.runtime.main_turns.compose = compose
     await harness.processor.handle(
-        replace(message, message_id="after-image", text="继续原聊天"), MemorySender()
+        replace(
+            message, ingress_key="after-image", native_message_id="after-image", text="继续原聊天"
+        ),
+        MemorySender(),
     )
     assert not any(m.images for m in provider.requests[-1].messages)
     assert (await _saved(database)).epoch_id == first.epoch_id

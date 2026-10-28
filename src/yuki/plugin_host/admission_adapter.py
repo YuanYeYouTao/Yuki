@@ -79,7 +79,7 @@ class PluginAdmissionSignalAdapter:
                 mentions=mention_snapshots(
                     snapshot_mention_segments(message.segments, message.mentions)
                 ),
-                message_id=message.message_id,
+                native_message_id=message.native_message_id,
                 sender_user_id=message.sender.user_id,
                 scope_type=message.scope_type.value,
                 group_id=message.group_id,

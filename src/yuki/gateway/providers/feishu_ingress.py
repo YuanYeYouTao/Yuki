@@ -197,7 +197,8 @@ def normalize_message(event: dict[str, Any], client: FeishuClient) -> InboundMes
         )
     account = encode_account_id(client.app_id, str(open_id))
     return InboundMessage(
-        message_id=message_id,
+        ingress_key=message_id,
+        native_message_id=message_id,
         event_type=f"message:{client.platform}",
         scope_type=ScopeType.PRIVATE if raw["chat_type"] == "p2p" else ScopeType.GROUP,
         sender=SenderIdentity(
@@ -373,7 +374,7 @@ class FeishuGateway:
                 presence_id=self.presence_id,
                 scope=message.scope(),
                 event_type=message.event_type,
-                platform_message_id=message.message_id,
+                ingress_key=message.ingress_key,
             )
             original = await load_claimed_keeper(
                 session, receipt.canonical_event_id if receipt is not None else None
@@ -415,7 +416,7 @@ class FeishuGateway:
                     acknowledged.set_result(result) if not acknowledged.done() else None
                 ),
             ),
-            name=f"{self.client.platform}-message:{message.message_id}",
+            name=f"{self.client.platform}-message:{message.native_message_id}",
         )
         self._turns.add(task)
 

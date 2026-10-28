@@ -316,7 +316,7 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
     private = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.private(actor.bot_user_id, "10001"),
-        platform_message_id="independent-real-source",
+        origin_key="independent-real-source",
         sender_user_id="10001",
         direction="inbound",
         content="separate caller",

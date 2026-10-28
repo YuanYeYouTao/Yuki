@@ -50,7 +50,8 @@ def inbound(
     mentioned_user_ids: tuple[str, ...] = (),
 ) -> InboundMessage:
     return InboundMessage(
-        message_id=message_id,
+        ingress_key=message_id,
+        native_message_id=message_id,
         event_type="message:test",
         scope_type=ScopeType.GROUP if group_id is not None else ScopeType.PRIVATE,
         sender=SenderIdentity(

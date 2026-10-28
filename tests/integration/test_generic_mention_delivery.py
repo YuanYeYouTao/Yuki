@@ -35,6 +35,15 @@ class Operations:
     def native_mention(self, text, offset):
         return None
 
+    def native_reference_namespace(self, *, account_id, scope):
+        return (
+            scope.platform,
+            account_id,
+            scope.scope_type.value,
+            scope.group_id or scope.private_peer_user_id,
+            scope.thread_id,
+        )
+
     def plan_send(self, message):
         self.plans += 1
         return split_transport_message(message, 16)
@@ -109,6 +118,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
     uow = CanonicalIngressUnitOfWork(database, router)
     raw = InboundMessage(
         "source:1",
+        "source:1",
         "message:scopedchat",
         ScopeType.GROUP,
         SenderIdentity(native_sender, nickname="Ice", nickname_known=True),
@@ -160,10 +170,7 @@ async def test_third_platform_admission_names_exact_accounts_layout_and_ack(data
         for item in part.mentions
     )
     before, plans = len(operations.sent), operations.plans
-    assert (
-        await social.execute("send", {"text": "前😀@Guest，@Ice看看！后文"}, context)
-        == natural
-    )
+    assert await social.execute("send", {"text": "前😀@Guest，@Ice看看！后文"}, context) == natural
     assert len(operations.sent) == before and operations.plans == plans
     exact = await social.execute(
         "send", {"text": f"@{{account:{guest.id}}}"}, replace(context, call_id="exact")

@@ -42,7 +42,7 @@ async def _event(database, ledger, key, content, **fields):
         group_id=fields.pop("group_id", "2001"),
         sender_user_id=fields.pop("sender_user_id", "10001"),
         direction="inbound",
-        platform_message_id=key,
+        origin_key=key,
         content=content,
         **fields,
     )
@@ -157,7 +157,7 @@ async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
         direction="inbound",
-        platform_message_id="multi-outside",
+        origin_key="multi-outside",
         content="電動車 archive",
     )
     wrong_author = await _event(
@@ -262,7 +262,7 @@ async def test_multi_conversation_media_hits_keep_each_neighbors_in_its_original
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
         direction="inbound",
-        platform_message_id="scene-outside",
+        origin_key="scene-outside",
         content="电动车",
         segments=({"type": "image", "data": {}},),
     )
@@ -672,7 +672,7 @@ async def test_merged_family_text_query_keeps_original_authors_and_separate_conv
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10002",
         direction="inbound",
-        platform_message_id="family-other-entry",
+        origin_key="family-other-entry",
         content="同族稀有证据",
     )
     first, middle, root = (row.author_person_id for row in rows)

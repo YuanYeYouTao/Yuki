@@ -82,14 +82,14 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
         await seed_scoped_event(
             probe.env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="later-input",
+            origin_key="later-input",
             sender_user_id="10001",
             direction="inbound",
             content="a real later request",
         )
         async with database.read_session() as reader:
             source["trigger_event_id"] = await reader.scalar(
-                select(ChatEventModel.id).where(ChatEventModel.platform_message_id == "later-input")
+                select(ChatEventModel.id).where(ChatEventModel.origin_key == "later-input")
             )
     async with database.read_session() as reader:
         before = set(await reader.scalars(select(work.c.id)))

@@ -76,7 +76,7 @@ async def privacy_case(database, *, status="completed", acp=True, run_id=True):
     appended = await seed_scoped_event(
         ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.private("8000", "1001"),
-        platform_message_id="private-cleanup",
+        origin_key="private-cleanup",
         sender_user_id="1001",
         direction="inbound",
         content="private original context",

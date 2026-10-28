@@ -78,7 +78,7 @@ async def test_qq_discovers_telegram_group_reads_all_authors_and_replies_to_orig
                 await seed_scoped_event(
                     env.service.writer,
                     scope=tg_scope,
-                    platform_message_id=f"tg-radar-{index}",
+                    origin_key=f"tg-radar-{index}",
                     sender_user_id=person.external_account_id,
                     direction="inbound",
                     content=f"雷达站方案{index}",
@@ -89,7 +89,7 @@ async def test_qq_discovers_telegram_group_reads_all_authors_and_replies_to_orig
         incoming = await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="qq-radar-decoy",
+            origin_key="qq-radar-decoy",
             sender_user_id="10001",
             direction="inbound",
             content="雷达站在QQ说过的另一件事",

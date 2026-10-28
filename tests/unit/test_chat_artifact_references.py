@@ -27,7 +27,7 @@ async def test_original_segment_pairs_are_distinct_and_follow_edit_and_forget(da
         await seed_scoped_event(
             ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.private("8000", "1001"),
-            platform_message_id="original-file-reference",
+            origin_key="original-file-reference",
             sender_user_id="8000",
             direction="outbound",
             content="original delivery",

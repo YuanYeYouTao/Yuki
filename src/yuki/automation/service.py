@@ -133,7 +133,6 @@ class AutomationService:
         authority = AutomationScene(
             creator_user_id=actor.user_id,
             bot_user_id=actor.bot_user_id,
-            created_from_message_id=actor.platform_message_id,
             current_group_id=actor.group_id,
             principal_kind=actor.principal_kind,
             canonical_creator_person_id=None if creator_person_id == "self" else creator_person_id,
@@ -222,10 +221,10 @@ class AutomationService:
                 )
             return row
 
-    async def list_current(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
+    async def list_current(self, creator_person_id: str) -> tuple[AutomationRecord, ...]:
         """Return only active and paused tasks in current display order."""
 
-        creator_person_id = await self._resolve_creator_person(creator_user_id)
+        creator_person_id = await self._resolve_creator_person(creator_person_id)
         return await self._repository.list_current_for_creator(creator_person_id)
 
     async def list_for_actor(self, actor: ToolActor) -> tuple[AutomationRecord, ...]:
@@ -254,11 +253,13 @@ class AutomationService:
             offset=offset,
         )
 
-    async def list_completed(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
+    async def list_completed(self, creator_person_id: str) -> tuple[AutomationRecord, ...]:
         """Return terminal tasks in a separate newest-first history queue."""
 
         creator_person_id = (
-            "self" if not creator_user_id else await self._resolve_creator_person(creator_user_id)
+            "self"
+            if not creator_person_id
+            else await self._resolve_creator_person(creator_person_id)
         )
         return await self._repository.list_terminal_for_creator(creator_person_id)
 
@@ -526,7 +527,6 @@ class AutomationService:
             user_id=actor.user_id,
             principal_kind=actor.principal_kind,
             principal_id="self" if actor.principal_kind == "self" else actor.person_id,
-            trigger_message_id=actor.platform_message_id,
             trigger_event_id=actor.event_id,
             decision_actor_id=actor.execution_id or None,
             canonical_conversation_id=actor.conversation_id,

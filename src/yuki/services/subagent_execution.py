@@ -265,7 +265,6 @@ class SubagentExecution:
                         actor_context=actor,
                         actor_is_superuser=actor_is_superuser,
                         conversation_key=f"worker:{identity}",
-                        trigger_message_id=original.platform_message_id if original else "",
                         trigger_event_id=original.id if original else None,
                         initiative_run_id=(
                             recovered.run_id if isinstance(recovered, SelfTaskSource) else None

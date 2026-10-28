@@ -64,7 +64,7 @@ async def test_rebuild_internal_filters_keep_platforms_and_merged_person_facts(d
             scope=ConversationScope.group(
                 "80001", "20001", platform=platform, presence_id=presence.id
             ),
-            platform_message_id=f"{platform}-source",
+            origin_key=f"{platform}-source",
             sender_user_id="10001",
             direction="inbound",
             content="我住杭州",

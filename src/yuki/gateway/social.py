@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Protocol
 
+from yuki.domain.conversations import ConversationScope
+
 
 @dataclass(frozen=True, slots=True)
 class TransportTarget:
@@ -106,7 +108,6 @@ def split_transport_message(
 @dataclass(frozen=True, slots=True)
 class TransportReceipt:
     reference: str | None
-    remote_confirmed: bool = True
 
 
 class TransportEffectError(Exception):
@@ -119,6 +120,12 @@ class TransportEffectError(Exception):
 
 
 class PlatformSocialOperations(Protocol):
+    def native_reference_namespace(
+        self, *, account_id: str, scope: ConversationScope
+    ) -> tuple[str | None, ...] | None:
+        """Pure native reference namespace; account_id is the receiving account."""
+        ...
+
     def native_mention(self, text: str, offset: int) -> TransportMention | None:
         """Recognize protocol addresses after local names have been resolved."""
         ...
