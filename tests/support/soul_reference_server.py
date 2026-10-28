@@ -381,7 +381,11 @@ async def serve(
                     "nonowner_pairing_code": nonowner_code["code"],
                     **artifact_state,
                 }
-                await asyncio.to_thread(state_file.write_text, json.dumps(state), encoding="utf-8")
+                pending_state = state_file.with_name(state_file.name + ".pending")
+                await asyncio.to_thread(
+                    pending_state.write_text, json.dumps(state), encoding="utf-8"
+                )
+                await asyncio.to_thread(pending_state.replace, state_file)
                 print("Isolated backend ready; connection details in state file.", flush=True)
                 await serving
     finally:

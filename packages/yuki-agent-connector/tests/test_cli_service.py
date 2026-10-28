@@ -158,6 +158,7 @@ def test_machine_status_preserves_unicode_through_a_non_utf8_cli_pipe(
                 "driver": "codex",
                 "command": "not-executed-native-agent",
                 "cwd": str(Path.home()),
+                "args": [],
             },
         ],
         "service": {"installed": False, "running": False},

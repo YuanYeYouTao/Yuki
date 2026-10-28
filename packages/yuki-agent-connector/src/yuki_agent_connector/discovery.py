@@ -20,15 +20,55 @@ else:
     creation_flags = subprocess.CREATE_NO_WINDOW
 
 
+NPM_WINDOWS_TARGETS = {
+    "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
+    "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+}
+
+
+def installed_executable(path: Path) -> bool:
+    return (
+        path.is_absolute()
+        and path.is_file()
+        and (path.suffix.lower() == ".exe" if sys.platform == "win32" else os.access(path, os.X_OK))
+    )
+
+
+def npm_codex(package: Path, target: str) -> Path | None:
+    """Resolve the active npm package, never sibling update leftovers."""
+    if not (package / "package.json").is_file():
+        return None
+    dependency = NPM_WINDOWS_TARGETS[target]
+    # npm can nest the optional native package or hoist it beside @openai/codex.
+    for modules in (package / "node_modules", package.parent.parent):
+        native = modules / dependency
+        if (native / "package.json").is_file():
+            vendor = native / "vendor"
+            break
+    else:
+        # The original npm distribution shipped vendor within the main package.
+        vendor = package / "vendor"
+    for relative in ("bin/codex.exe", "codex/codex.exe"):
+        executable = vendor / target / relative
+        if executable.is_file():
+            return executable
+    return None
+
+
+def codex_package(manifest: Path) -> Path | None:
+    """The selected native package owns its entrypoint and current-version link."""
+    if not manifest.is_file():
+        return None
+    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+    entrypoint: str = metadata["entrypoint"]
+    return manifest.parent / entrypoint
+
+
 def candidates(driver: str = "codex") -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
 
     def add(path: Path, source: str, label: str) -> None:
-        if not path.is_absolute() or not path.is_file():
-            return
-        if sys.platform == "win32" and path.suffix.lower() != ".exe":
-            return
-        if sys.platform != "win32" and not os.access(path, os.X_OK):
+        if not installed_executable(path):
             return
         key = hashlib.sha256(source.encode()).hexdigest()
         found.setdefault(
@@ -36,7 +76,7 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
             {
                 "id": key,
                 "label": label,
-                "command": str(path.resolve()),
+                "command": str(path),
                 "source": source,
                 "driver": driver,
             },
@@ -75,10 +115,22 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
             add(app / "Contents/Resources/codex", f"app:{app}", "Codex App")
     executable = driver + (".exe" if sys.platform == "win32" else "")
     label = "Claude Code" if driver == "claude" else "Codex CLI"
+    if driver == "codex":
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().absolute()
+        manifest = home / "packages/app-server-daemon/current/codex-package.json"
+        command = codex_package(manifest)
+        if command is not None:
+            add(command, f"codex-package:{manifest}", "Codex daemon")
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         path = Path(directory)
         if directory and path.is_absolute():
             add(path / executable, f"path:{path / executable}", label)
+            if driver == "codex" and sys.platform == "win32":
+                package = path / "node_modules/@openai/codex"
+                for target in NPM_WINDOWS_TARGETS:
+                    command = npm_codex(package, target)
+                    if command is not None:
+                        add(command, f"npm:{target}:{package}", "Codex CLI (npm)")
     if driver == "claude":
         path = Path.home() / ".local/bin" / executable
         add(path, f"path:{path}", label)
@@ -95,9 +147,18 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
 def refresh(spec: Instance) -> Instance:
     if not spec.installation:
         return spec
-    for candidate in candidates() if spec.driver == "codex" else candidates(spec.driver):
-        if candidate["source"] == spec.installation:
-            return replace(spec, command=candidate["command"])
+    command = None
+    if spec.driver == "codex" and spec.installation.startswith("codex-package:"):
+        command = codex_package(Path(spec.installation.removeprefix("codex-package:")))
+    elif spec.driver == "codex" and spec.installation.startswith("npm:"):
+        _, target, package = spec.installation.split(":", 2)
+        command = npm_codex(Path(package), target)
+    else:
+        for candidate in candidates() if spec.driver == "codex" else candidates(spec.driver):
+            if candidate["source"] == spec.installation:
+                return replace(spec, command=candidate["command"])
+    if command is not None and installed_executable(command):
+        return replace(spec, command=str(command))
     raise FileNotFoundError("The selected native installation is no longer available")
 
 
