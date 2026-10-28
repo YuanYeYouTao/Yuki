@@ -26,6 +26,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sqlite_large_history_seed import message_identity_fields
+
 
 def distribution(values: list[float]) -> dict[str, float | int]:
     ordered = sorted(values)
@@ -704,6 +706,8 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
     from yuki.runtime.work_schema_v1 import effects, inputs, work
     from yuki.social.db_models import SocialOperationModel
 
+    event_identity, _, message_fields = message_identity_fields(ChatEventModel.__table__)
+    event_origin = ChatEventModel.__table__.c[event_identity]
     source = await asyncio.to_thread(Path(database_module.__file__).resolve)
     assert source.is_relative_to(checkout), source
     args.scratch.mkdir(parents=True, exist_ok=True)
@@ -912,7 +916,9 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                 await app._freeze_main_manifest()
                 await repository.scan_new_events()
                 # Warm the same real Main entry before measuring arrivals.
-                await app.processor.handle(replace(message, message_id="warmup"), sender)
+                await app.processor.handle(
+                    replace(message, **{field: "warmup" for field in message_fields}), sender
+                )
                 await app.work_scheduler.drain_once()
                 warmup_calls = len(provider.requests)
                 domain_run = domain_verify = None
@@ -1000,7 +1006,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                         handled = await app.processor.handle(
                             replace(
                                 message,
-                                message_id=f"measured-{index}",
+                                **{field: f"measured-{index}" for field in message_fields},
                                 text=f"CURRENT_CHAT_INSTRUCTION arrival {index:08d}",
                             ),
                             sender,
@@ -1103,7 +1109,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                                     select(inputs.c.id)
                                     .join(ChatEventModel, inputs.c.event_id == ChatEventModel.id)
                                     .where(
-                                        ChatEventModel.platform_message_id.like("measured-%"),
+                                        event_origin.like("measured-%"),
                                         inputs.c.state.in_(("pending", "staged")),
                                     )
                                 )
@@ -1141,11 +1147,11 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                             await snapshot.execute(
                                 select(
                                     ChatEventModel.id,
-                                    ChatEventModel.platform_message_id,
+                                    event_origin.label("platform_message_id"),
                                     ChatEventModel.content,
                                     ChatEventModel.canonical_conversation_id,
                                 ).where(
-                                    ChatEventModel.platform_message_id.like("measured-%"),
+                                    event_origin.like("measured-%"),
                                     ChatEventModel.direction == "inbound",
                                 )
                             )
@@ -1174,7 +1180,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                                     ChatEventModel,
                                     OrdinaryTurnAdmissionModel.event_id == ChatEventModel.id,
                                 )
-                                .where(ChatEventModel.platform_message_id.like("measured-%"))
+                                .where(event_origin.like("measured-%"))
                             )
                         )
                         .mappings()

@@ -84,3 +84,7 @@ python -m pytest tests/unit/test_workspace_artifact_lock.py \
 复现了通知准备与本地发表之间的三个竞争：Presence 停用、Binding 结束、Registry 连接更替。原实现三项均仍会发表；现在将原 `ResolvedSend` 传至最终 writer，在原 attempt/lease CAS 成功后复用 `validate_prepared_send`，校验当前路由后再 append。只使用当前 session 和内存连接快照，不在 writer 中访问文件、网络或另开 reader。校验失败时 sent CAS 与事件一同回滚，恢复仍认原 outbox。远端已确认的效果不受这项本地新发表校验影响。
 
 Windows 两个相关通知模块 19 项通过，新增竞争用例在修复前均失败；Ruff、格式、定向 mypy 和 diff 检查通过。完整 CI、合并、镜像与生产升级分别核对，本次本地回归不代表生产已升级。
+
+最终引用检查补齐两份离线工具：`benchmark_sqlite_writer.py` 的旧 InboundMessage 替换字段和 ORM 列，以及 `sqlite_large_history_seed.py` 的事件、receipt 和计数列。按所选 checkout 的实际表结构一次选择 0155／旧字段，保留同一脚本旧新对照、原报告键、语料、内部 ID、512 行批量和计时边界。直接 bulk 合成的历史没有原生接入证明，native 明确为空；经测试平台入口处理的测量消息保留其真实测试 ingress/native。没有给生产模型增加旧字段 alias。
+
+旧实现四个实际反例分别触发 ORM AttributeError、域消息 replace TypeError、旧 receipt 列 SQL 错误及批量 ingress 唯一键冲突。修后 0155 最小真实 Main＋两行历史验证通过：event／FTS／receipt 各两行，一条测量入站及其原 Social 成功回执可查，workload_errors 为空。模型使用既有 Fake Provider，没有真实付费或生产请求；原始反例和修后结果保存在独立 review 工作区 `.cache/cli-identity-proof-20261029/`。
