@@ -37,10 +37,11 @@ PluginResult(ok=False, error_code="weather.rate_limited", detail="稍后再试")
 
 ```python
 class CurrentMessage(CanonicalIdentityProjection):
+    event_id: int | None = None
     platform: str = ""
     author_kind: str | None = None
     author_account_id: str | None = None
-    message_id: str
+    native_message_id: str | None = None
     sender_user_id: str
     scope_type: Literal["private", "group"]
     group_id: str | None
@@ -49,7 +50,7 @@ class CurrentMessage(CanonicalIdentityProjection):
     mentions: tuple[dict[str, JsonValue], ...] = ()
 ```
 
-它是当前事件的投影。`mentions` 保原生提及的顺序、重复、位置、展示名和已证明的内部 Account／Assignment／Person／Presence；未知账号或外部 Bot 不必有 Person。人物业务读取 `person_id`，账号定位读取 `account_id`，不从 `source` 中的传输数字猜业务身份。需要此字段时调用 `ctx.features.require("message.current.mentions.v2")`。
+它是当前事件的投影。`event_id` 是内部来源；入账前的 hook 可以为空。`native_message_id` 只表示真实平台消息引用，App/ACP 返回 `None`，没有 128 字符上限。`mentions` 保原生提及的顺序、重复、位置、展示名和已证明的内部 Account／Assignment／Person／Presence；未知账号或外部 Bot 不必有 Person。人物业务读取 `person_id`，账号定位读取 `account_id`，不从 `source` 中的传输数字猜业务身份。需要此字段时调用 `ctx.features.require("message.current.mentions.v2")`。
 
 ## Agent Session
 

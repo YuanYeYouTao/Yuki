@@ -75,7 +75,7 @@ async def test_four_bindings_keep_identity_but_separate_prompts_and_generation(d
         event = await seed_scoped_event(
             writer,
             scope=scope,
-            platform_message_id=f"in-{index}",
+            origin_key=f"in-{index}",
             sender_user_id=scope.private_peer_user_id,
             direction="inbound",
             content=f"private-{index}",
@@ -115,7 +115,7 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
     original = await seed_scoped_event(
         writer,
         scope=first,
-        platform_message_id="old",
+        origin_key="old",
         sender_user_id="1001",
         direction="inbound",
         content="old needle secret",
@@ -136,7 +136,7 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
             event = await seed_scoped_event(
                 writer,
                 scope=second,
-                platform_message_id=f"new-{index}-{direction}",
+                origin_key=f"new-{index}-{direction}",
                 sender_user_id="second-qq" if direction == "inbound" else "8000",
                 direction=direction,
                 content=f"new needle {index} {direction}",
@@ -198,7 +198,7 @@ async def test_person_erasure_removes_all_private_binding_conversations(database
         event = await seed_scoped_event(
             writer,
             scope=scope,
-            platform_message_id=f"erase-{index}",
+            origin_key=f"erase-{index}",
             direction="inbound",
             sender_user_id=scope.private_peer_user_id,
             content="private attribution",

@@ -489,7 +489,7 @@ async def test_two_sessions_keep_same_uuid_work_inputs_in_their_original_mailbox
                 == event.canonical_conversation_id
                 == session["session_id"]
             )
-            assert event.platform_message_id == principal.message_key(shared_id)
+            assert event.origin_key == principal.message_key(shared_id)
             assert event.origin == "work_input" and event.content == body
             assert (
                 json.loads(mailbox["payload_json"])["source_conversation_id"]
@@ -675,7 +675,7 @@ async def test_acp_history_requires_confirmed_outbound_and_keeps_deleted_keyset_
         added = await seed_scoped_event(
             env.app.scoped_events,
             scope=scope,
-            platform_message_id=f"acp-history-{index}",
+            origin_key=f"acp-history-{index}",
             sender_user_id=principal.external_account_id,
             direction="inbound",
             content=f"Accepted ACP input {index}",
@@ -684,7 +684,7 @@ async def test_acp_history_requires_confirmed_outbound_and_keeps_deleted_keyset_
     pending = await seed_scoped_event(
         env.app.scoped_events,
         scope=scope,
-        platform_message_id="acp-unconfirmed-outbound",
+        origin_key="acp-unconfirmed-outbound",
         sender_user_id=scope.bot_user_id,
         direction="outbound",
         content="No successful Social delivery receipt exists for this row",

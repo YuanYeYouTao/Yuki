@@ -1,0 +1,41 @@
+{
+  "checked_on": "2026-10-29",
+  "organization": "Institute-of-Agent-Life",
+  "repositories": [
+    {
+      "repository": "Yuki-GitHub-Monitor",
+      "manifest": "plugin.toml",
+      "main_plugin_api": "8.0",
+      "planned_plugin_api": "9.0",
+      "status": "paired PR open; CI passed",
+      "paired_commit": "37d2f25420b41abc5918a424447fc3d09edf9254",
+      "pull_request": "https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/4"
+    },
+    {
+      "repository": "Yuki-Kun-Game",
+      "manifest": "plugin.toml",
+      "main_commit": "4605d394d5b34e161021da758b4c9544dc715fad",
+      "main_plugin_api": "8.0",
+      "planned_plugin_api": "9.0",
+      "status": "paired PR open; CI passed",
+      "paired_commit": "d766ff9bc3a51dc3029e51342e1b6a3f1807c001",
+      "pull_request": "https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game/pull/6"
+    },
+    {
+      "repository": "Yuki-Desktop",
+      "manifest": null,
+      "type": "desktop client"
+    },
+    {
+      "repository": "Yuki-Semantic-Participation",
+      "manifest": null,
+      "type": "participation controller library"
+    },
+    {
+      "repository": "Yuki-SWE-bench-Lite-20261020",
+      "manifest": null,
+      "type": "benchmark evidence repository"
+    }
+  ],
+  "method": "Current organization repository listing, public default-main recursive path inventory, and current main plugin.toml contents. No production or secret state read."
+}

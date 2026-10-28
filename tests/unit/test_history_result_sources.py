@@ -101,9 +101,10 @@ async def test_erased_text_cannot_enter_journal_or_reexecute_but_sent_receipt_su
             select(effects.c.receipt_json).where(effects.c.effect_key == session.call_key(call.id))
         )
         assert "old private body" not in receipt
-        assert await reader.scalar(
-            select(effects.c.state).where(effects.c.effect_key == sent)
-        ) == "accepted"
+        assert (
+            await reader.scalar(select(effects.c.state).where(effects.c.effect_key == sent))
+            == "accepted"
+        )
 
     async def forbidden():
         pytest.fail("A failed publication does not authorize replay")
@@ -234,7 +235,7 @@ async def test_forget_follows_copied_history_sources_across_conversations(databa
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10002",
         direction="inbound",
-        platform_message_id="private-source",
+        origin_key="private-source",
         content="only in the other person's private chat",
     )
     identity = str(uuid4())

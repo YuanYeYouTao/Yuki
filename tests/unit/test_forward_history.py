@@ -30,7 +30,8 @@ async def setup_forward(database, tmp_path, segments):
         )
     env.bot.calls.clear()
     message = InboundMessage(
-        message_id="inbound",
+        ingress_key="inbound",
+        native_message_id="inbound",
         event_type="message:test",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001"),

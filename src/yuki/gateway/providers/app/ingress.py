@@ -145,7 +145,8 @@ class AppGateway:
         from yuki.client_api.identity import request_message_key
 
         return InboundMessage(
-            message_id=request_message_key(
+            native_message_id=None,
+            ingress_key=request_message_key(
                 binding.external_account_id,
                 request_id,
                 conversation_id=conversation_id if self.platform == "acp" else None,

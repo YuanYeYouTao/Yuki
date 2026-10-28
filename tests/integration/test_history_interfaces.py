@@ -36,7 +36,7 @@ async def test_plugin_history_has_no_old_caps_and_projects_real_asr_and_ids(data
                 await seed_scoped_event(
                     env.service.writer,
                     scope=scope,
-                    platform_message_id=f"plugin-history-{index}",
+                    origin_key=f"plugin-history-{index}",
                     sender_user_id="10001",
                     direction="inbound",
                     content=f"row {index}",
@@ -47,7 +47,7 @@ async def test_plugin_history_has_no_old_caps_and_projects_real_asr_and_ids(data
         await seed_scoped_event(
             env.service.writer,
             scope=scope,
-            platform_message_id="only-asr",
+            origin_key="only-asr",
             sender_user_id="10001",
             direction="inbound",
             content="",
@@ -91,7 +91,7 @@ async def test_plugin_history_has_no_old_caps_and_projects_real_asr_and_ids(data
             assert len(recent) == 101 and recent[-1].event_id == spoken.id
             found = await host.messages.search_history("乾 电动车", exclude=("北京",))
             assert len(found) == 1 and found[0].event_id == spoken.id
-            assert found[0].message_id == spoken.platform_message_id
+            assert found[0].native_message_id == spoken.native_message_id
             assert found[0].person_id == spoken.author_person_id
             assert found[0].author_presence_id == spoken.author_presence_id
             assert found[0].presence_id == spoken.ingress_presence_id
@@ -142,7 +142,7 @@ async def test_sdk_history_and_reply_use_actual_entry_delivery_facts(
             await seed_scoped_event(
                 env.service.writer,
                 scope=entry.scope,
-                platform_message_id=f"sdk-output-{index}",
+                origin_key=f"sdk-output-{index}",
                 sender_user_id=entry.scope.bot_user_id,
                 direction="outbound",
                 content=f"SDK output {index}",
@@ -201,7 +201,8 @@ async def test_sdk_history_and_reply_use_actual_entry_delivery_facts(
             assert {row.event_id for row in found} == expected
         for row, status in outbound:
             inbound = InboundMessage(
-                message_id="actual-current-message",
+                ingress_key="actual-current-message",
+                native_message_id="actual-current-message",
                 event_type="message",
                 scope_type="private",
                 sender=SenderIdentity(entry.scope.private_peer_user_id),
@@ -258,7 +259,7 @@ async def test_sdk_fake_preserves_literal_all_any_phrase_exclude_and_cursor():
     def row(identity, text):
         return CurrentMessage(
             event_id=identity,
-            message_id=str(identity),
+            native_message_id=str(identity),
             sender_user_id="1001",
             scope_type="private",
             text=text,
@@ -315,7 +316,7 @@ async def test_explicit_event_kind_preserves_external_source_without_payload_sea
         scope=ConversationScope.group(
             "80001", "20001", conversation_id=env.context.conversation_id, presence_id=env.presence
         ),
-        platform_message_id="external-history",
+        origin_key="external-history",
         source_plugin_id="test.history",
         external_source="subscription",
         external_event_key="one",
@@ -371,7 +372,7 @@ async def test_deleted_receipt_anchor_returns_original_identity_and_allows_only_
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="current-approved",
+            origin_key="current-approved",
             sender_user_id="10001",
             direction="inbound",
             content="current approved fact",

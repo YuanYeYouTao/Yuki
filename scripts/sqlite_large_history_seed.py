@@ -17,6 +17,13 @@ from pathlib import Path
 from uuid import UUID
 
 
+def message_identity_fields(event_table) -> tuple[str, str, tuple[str, ...]]:
+    """Select the 0155 or pre-0155 identity names for the paired checkout."""
+    if "origin_key" in event_table.c:
+        return "origin_key", "ingress_key", ("ingress_key", "native_message_id")
+    return "platform_message_id", "platform_message_id", ("message_id",)
+
+
 def history_templates() -> tuple[str, ...]:
     subjects = (
         "今天把消息接入和数据库提交的路径又读了一遍。平台消息号只用来去重，已经入账的事件继续传内部编号，后面的工具不能拿昵称重新认人。",
@@ -68,6 +75,7 @@ async def prepare_large_history(database, environment, rows: int, checkout: Path
     from yuki.persistence.history_search import namespace_terms, prepare_terms
     from yuki.persistence.models import ChatEventModel
 
+    event_identity, receipt_identity, _ = message_identity_fields(ChatEventModel.__table__)
     if rows <= 0:
         raise ValueError("--history-rows must be positive when the history seed is requested")
     started = time.perf_counter()
@@ -134,7 +142,7 @@ async def prepare_large_history(database, environment, rows: int, checkout: Path
             value = {
                 **sample,
                 "id": event_id,
-                "platform_message_id": platform_id,
+                event_identity: platform_id,
                 "canonical_event_id": identity,
                 "content": bodies[variant],
                 "segments_json": segments[variant],
@@ -149,9 +157,12 @@ async def prepare_large_history(database, environment, rows: int, checkout: Path
                 "reply_to_event_id": event_id - 1 if ordinal and ordinal % 8 == 0 else None,
                 "caused_by_event_id": None,
             }
+            if event_identity == "origin_key":
+                # Bulk ledger rows have no actual platform-native receipt.
+                value["native_message_id"] = None
             claim = {key: value for key, value in receipt.items() if key != "id"}
             claim.update(
-                platform_message_id=platform_id,
+                {receipt_identity: platform_id},
                 canonical_event_id=identity,
                 created_at=observed,
                 observed_at=observed,
@@ -210,7 +221,7 @@ async def prepare_large_history(database, environment, rows: int, checkout: Path
             (
                 await connection.exec_driver_sql(
                     "SELECT count(*) FROM canonical_event_receipts "
-                    "WHERE platform_message_id LIKE 'synthetic-history-%'"
+                    f"WHERE {receipt_identity} LIKE 'synthetic-history-%'"
                 )
             ).scalar_one()
         )

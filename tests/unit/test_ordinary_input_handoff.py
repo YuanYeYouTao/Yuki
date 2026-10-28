@@ -169,7 +169,7 @@ async def _start_and_observe(
         async with database.read_session() as reader:
             c = await reader.scalar(
                 select(ChatEventModel).where(
-                    ChatEventModel.platform_message_id == incoming.message_id,
+                    ChatEventModel.origin_key == incoming.ingress_key,
                     ChatEventModel.direction == "inbound",
                 )
             )

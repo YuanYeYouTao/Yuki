@@ -45,7 +45,7 @@ async def _external_event(
 ) -> int:
     result = await writer.append_external(
         scope=await _scope(writer._database, peer),
-        platform_message_id=f"external:{key}",
+        origin_key=f"external:{key}",
         source_plugin_id="test.causality",
         external_source="fixture",
         external_event_key=key,
@@ -67,7 +67,7 @@ async def test_plugin_outbound_requires_and_projects_same_conversation_cause(
 
     result = await writer.append(
         scope=await _scope(database, "1001"),
-        platform_message_id="reply-1",
+        origin_key="reply-1",
         sender_user_id="8000",
         direction="outbound",
         content="proactive reply",
@@ -86,7 +86,7 @@ async def test_plugin_outbound_without_cause_fails_closed(database: Database) ->
     with pytest.raises(CanonicalIdentityError) as exc:
         await writer.append(
             scope=await _scope(database, "1001"),
-            platform_message_id="reply-without-cause",
+            origin_key="reply-without-cause",
             sender_user_id="8000",
             direction="outbound",
             content="orphan reply",
@@ -104,7 +104,7 @@ async def test_plugin_outbound_rejects_cross_conversation_cause(database: Databa
     with pytest.raises(CanonicalIdentityError) as exc:
         await writer.append(
             scope=await _scope(database, "1001"),
-            platform_message_id="reply-cross-conversation",
+            origin_key="reply-cross-conversation",
             sender_user_id="8000",
             direction="outbound",
             content="wrong cause",
@@ -130,7 +130,7 @@ async def test_raw_reply_hydrates_cause_metadata_after_source_is_covered(
     await _publish_checkpoint(database, conversation_id, source_event_id, "covered external source")
     await writer.append(
         scope=await _scope(database, "1001"),
-        platform_message_id="reply-after-covered-source",
+        origin_key="reply-after-covered-source",
         sender_user_id="8000",
         direction="outbound",
         content="proactive after coverage",

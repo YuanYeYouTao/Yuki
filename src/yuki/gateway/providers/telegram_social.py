@@ -7,6 +7,7 @@ import re
 from dataclasses import replace
 from typing import cast
 
+from yuki.domain.conversations import ConversationScope
 from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient
 from yuki.gateway.social import (
     TransportMedia,
@@ -32,6 +33,16 @@ _NATIVE_ADDRESS = re.compile(r"@[a-zA-Z0-9_]+")
 
 
 class TelegramSocialOperations:
+    def native_reference_namespace(
+        self, *, account_id: str, scope: ConversationScope
+    ) -> tuple[str | None, ...]:
+        return (
+            scope.platform,
+            scope.scope_type.value,
+            scope.group_id or scope.private_peer_user_id,
+            scope.thread_id,
+        )
+
     def native_mention(self, text: str, offset: int) -> TransportMention | None:
         match = _NATIVE_ADDRESS.match(text, offset)
         return (

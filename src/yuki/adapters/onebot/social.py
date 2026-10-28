@@ -13,6 +13,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from yuki.adapters.onebot.sender import parse_onebot_send_receipt
+from yuki.domain.conversations import ConversationScope
 from yuki.gateway.social import (
     TransportEffectError,
     TransportMention,
@@ -28,6 +29,17 @@ def _write_handoff(path: Path, content: bytes) -> None:
 
 
 class OneBotSocialOperations:
+    def native_reference_namespace(
+        self, *, account_id: str, scope: ConversationScope
+    ) -> tuple[str | None, ...]:
+        return (
+            scope.platform,
+            account_id,
+            scope.scope_type.value,
+            scope.group_id or scope.private_peer_user_id,
+            scope.thread_id,
+        )
+
     def native_mention(self, text: str, offset: int) -> TransportMention | None:
         for name in ("@全体成员", "@all"):
             if text.startswith(name, offset):
@@ -57,7 +69,10 @@ class OneBotSocialOperations:
             raise TransportEffectError("unsafe_transfer_root", uncertain=False)
         token = str(uuid4())
         path = root / token
-        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise TransportEffectError(type(exc).__name__, uncertain=False) from exc
         worker = asyncio.create_task(asyncio.to_thread(_write_handoff, path, content))
         cancelled = None
         try:
@@ -66,6 +81,8 @@ class OneBotSocialOperations:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError as exc:
                     cancelled = exc
+                except OSError as exc:
+                    raise TransportEffectError(type(exc).__name__, uncertain=False) from exc
             if cancelled is not None:
                 raise cancelled
             try:
@@ -96,15 +113,13 @@ class OneBotSocialOperations:
                 )
             reference = None
             if isinstance(result, dict):
-                for key, prefix in (("message_id", ""), ("file_id", "file:")):
-                    value = result.get(key)
-                    if (
-                        isinstance(value, str | int)
-                        and not isinstance(value, bool)
-                        and str(value).strip()
-                    ):
-                        reference = prefix + str(value).strip()
-                        break
+                value = result.get("message_id")
+                if (
+                    isinstance(value, str | int)
+                    and not isinstance(value, bool)
+                    and str(value).strip()
+                ):
+                    reference = str(value).strip()
             return TransportReceipt(reference)
         parts: list[dict[str, Any]] = []
         if message.reply_reference is not None:

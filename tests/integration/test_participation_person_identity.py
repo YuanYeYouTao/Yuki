@@ -50,7 +50,7 @@ async def append(host, original, sender, *, reply=None):
     row, _ = await seed_event(
         host.ledger,
         bot_user_id=original.bot_user_id,
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         scope_type=ScopeType.GROUP,
         group_id=original.group_id,
         sender_user_id=sender,

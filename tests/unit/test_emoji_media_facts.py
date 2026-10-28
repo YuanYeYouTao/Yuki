@@ -110,3 +110,39 @@ def test_header_names_pillow_formats_without_enumerating_gif_frames(tmp_path, mo
     facts = header_facts(io.BytesIO(gif.getvalue()))
     assert facts is not None and facts["image_format"] == "GIF"
     assert opened["frames"] == 0
+
+
+def test_tgs_dimensions_use_json_number_grammar_and_skip_unrelated_numbers():
+    payload = b'{"unused":' + b"1" * (8 * 1024 * 1024) + b',"w":128.0,"h":1e3,"layers":[],"v":"5"}'
+    header = _tgs(payload)
+    assert header is not None and header["width"] == 128 and header["height"] == 1000
+    sniff = _TgsSniff()
+    text = b'{"w":1.28e+2,"h":2.56E2,"layers":[],"v":"5"}'
+    for byte in text:
+        sniff.feed(bytes((byte,)))
+    assert sniff.width == 128 and sniff.height == 256
+
+
+def test_tgs_late_facts_survive_bad_crc_and_unknown_escaped_keys():
+    payload = (
+        b'{"pad":"' + b"x" * (8 * 1024 * 1024) + b'","\\u0076":"5","layers":[],"w":128.0,"h":1e3}'
+    )
+    damaged = bytearray(gzip.compress(payload))
+    damaged[-8] ^= 0xFF
+    header = _tgs_header(io.BytesIO(damaged))
+    assert header is not None and header["width"] == 128 and header["height"] == 1000
+    assert _tgs(b'{"nested":{"v":"5","layers":[],"w":1,"h":2}}') is None
+
+
+def test_tgs_missing_gzip_trailer_keeps_all_payload_and_optional_header_fields():
+    payload = b'{"v":"5","layers":[],"w":128.0,"h":1e3}'
+    blob = gzip.compress(payload)
+    header = _tgs_header(io.BytesIO(blob[:-8]))
+    assert header is not None and header["width"] == 128 and header["height"] == 1000
+    short = _tgs_header(io.BytesIO(gzip.compress(b'{"v":"5","layers":[]}')[:-8]))
+    assert short is not None
+    optional = bytearray(blob[:10])
+    optional[3] |= 4 | 8 | 16 | 2
+    encoded = bytes(optional) + b"\x03\x00xyz" + b"name.tgs\0comment\0\0\0" + blob[10:]
+    named = _tgs_header(io.BytesIO(encoded))
+    assert named is not None and named["width"] == 128 and named["height"] == 1000

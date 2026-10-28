@@ -887,7 +887,7 @@ async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(da
         for index in range(2):
             event = ChatEventModel(
                 bot_user_id="80001",
-                platform_message_id=f"repair-{index}",
+                origin_key=f"repair-{index}",
                 scope_type="group",
                 group_id="20001",
                 sender_user_id="10001",
@@ -1225,7 +1225,8 @@ async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_r
             **{
                 **values,
                 "canonical_event_id": str(uuid4()),
-                "platform_message_id": "late-human",
+                "origin_key": "late-human",
+                "native_message_id": "late-human",
                 "content": "late human body",
             }
         )
@@ -1236,7 +1237,8 @@ async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_r
             **{
                 **values,
                 "canonical_event_id": str(uuid4()),
-                "platform_message_id": "early-plugin",
+                "origin_key": None,
+                "native_message_id": None,
                 "content": "early plugin body",
                 "event_kind": "external_event",
                 "direction": "external",

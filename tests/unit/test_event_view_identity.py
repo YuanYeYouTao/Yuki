@@ -22,7 +22,7 @@ def test_event_view_does_not_rename_historical_bot_authors(tmp_path, nickname, c
     row = EventRecord(
         id=42,
         bot_user_id="bot-account",
-        platform_message_id="original-message",
+        origin_key="original-message",
         scope_type=ScopeType.GROUP,
         sender_user_id="bot-account",
         direction="outbound",

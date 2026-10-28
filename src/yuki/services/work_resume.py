@@ -427,7 +427,6 @@ class WorkResumer:
                         inbound=inbound,
                         actor_is_superuser=actor_is_superuser,
                         conversation_key=key,
-                        trigger_message_id=original.platform_message_id,
                         execution_id=item["id"],
                         origin=TurnOrigin(recovered.origin),
                         conversation_id=recovered.conversation_id,

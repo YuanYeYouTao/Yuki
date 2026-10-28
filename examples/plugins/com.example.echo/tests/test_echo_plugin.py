@@ -95,7 +95,7 @@ async def test_echo_extensions_use_fake_context_without_network() -> None:
 
     context = FakePluginContext("com.example.echo")
     context.messages.current = CurrentMessage(
-        message_id="message-1",
+        native_message_id="message-1",
         sender_user_id="10001",
         scope_type="group",
         group_id="20001",

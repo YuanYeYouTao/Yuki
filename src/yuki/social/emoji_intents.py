@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -298,7 +299,12 @@ class EmojiIntentRepository:
         )
         return project_intent(intent, facts)
 
-    async def pending(self, after: tuple[datetime, str] | None = None) -> tuple[EmojiIntent, ...]:
+    async def pending(
+        self,
+        after: tuple[datetime, str] | None = None,
+        *,
+        active: Collection[str] = (),
+    ) -> tuple[EmojiIntent, ...]:
         async with self.database.read_session() as session:
             while True:
                 cursor = (
@@ -318,12 +324,32 @@ class EmojiIntentRepository:
                         .limit(100)
                     )
                 )
+                candidates = [row for row in rows if row.id not in active]
+                parents = {
+                    json.loads(row.source_json).get("after_operation_id") for row in candidates
+                } - {None}
+                # Keep these objects alive so session.get reuses this page's one read.
+                _parent_rows = (
+                    tuple(
+                        await session.scalars(
+                            select(SocialOperationModel).where(SocialOperationModel.id.in_(parents))
+                        )
+                    )
+                    if parents
+                    else ()
+                )
+                finished_parents: dict[str | None, bool] = {}
                 ready = []
-                for row in rows:
+                for row in candidates:
                     intent = self.record(row)
-                    finished = await self._text_dispatch_finished(session, intent)
+                    parent = intent.source.get("after_operation_id")
+                    if parent not in finished_parents:
+                        finished_parents[parent] = await self._text_dispatch_finished(
+                            session, intent
+                        )
+                    finished = finished_parents[parent]
                     source_live = True
-                    if not finished:
+                    if not finished and intent.selected is not None:
                         try:
                             await validate_source(session, intent.source)
                         except SocialError:

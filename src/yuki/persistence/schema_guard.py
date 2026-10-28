@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from yuki.conversation.projection_chunks_schema import (
+from yuki.conversation.projection_identity_schema import (
     PROJECTION_TRIGGERS_CURRENT,
 )
 from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
@@ -35,7 +35,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "chat_history_fts": frozenset({"tokens"}),
     "chat_event_artifact_refs": frozenset({"event_id", "artifact_id", "version"}),
     "canonical_event_receipts": frozenset(
-        {"ingress_account_id", "transport_namespace", "ingress_presence_id"}
+        {"ingress_account_id", "transport_namespace", "ingress_presence_id", "ingress_key"}
     ),
     "ordinary_turn_admissions": frozenset(
         {
@@ -250,6 +250,8 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "conversation_legacy_aliases": frozenset({"id", "conversation_id", "scope_key", "is_primary"}),
     "chat_events": frozenset(
         {
+            "origin_key",
+            "native_message_id",
             "canonical_event_id",
             "audio_transcript",
             "canonical_conversation_id",

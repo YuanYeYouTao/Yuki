@@ -1,0 +1,54 @@
+{
+  "scope": "TGS format sniff, 8 MiB irrelevant string followed by root v/layers/w/h",
+  "environment": "WSL Debian; CPython 3.12.15; one warm-up; seven measured calls; tracemalloc Python allocations",
+  "payload_suffix": "v=5.7; layers=[]; w=128.0; h=1e3",
+  "previous_revision": "afb509e7",
+  "implementation_revision": "8720d929057cb91290c911d09b282bcd8fa7e394",
+  "results": {
+    "current": {
+      "median_ms": 9.475081000005048,
+      "samples_ms": [
+        9.739121000052364,
+        9.5321869999907,
+        9.255273999997371,
+        9.232322000002569,
+        9.508568000001105,
+        9.475081000005048,
+        6.277283000031275
+      ],
+      "peak_bytes": 245311,
+      "width": 128,
+      "height": 1000
+    },
+    "previous_streaming": {
+      "median_ms": 392.60560899992925,
+      "samples_ms": [
+        385.76719100001355,
+        394.9930079999149,
+        403.186681999955,
+        407.05744299998514,
+        384.88803999996435,
+        392.60560899992925,
+        386.9399359999761
+      ],
+      "peak_bytes": 49336,
+      "width": 1280,
+      "height": 13
+    },
+    "whole_json": {
+      "median_ms": 21.833378999986053,
+      "samples_ms": [
+        21.845286000029773,
+        31.215138999982628,
+        13.753053000073123,
+        22.442657999931725,
+        21.018815000047653,
+        21.191469999962464,
+        21.833378999986053
+      ],
+      "peak_bytes": 22429393,
+      "width": 128.0,
+      "height": 1000.0
+    }
+  }
+}

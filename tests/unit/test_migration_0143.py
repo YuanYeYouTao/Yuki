@@ -9,6 +9,7 @@ from contextlib import closing
 import pytest
 from alembic import command
 from alembic.config import Config
+from tests.support.migration_columns import preserved_projection
 from tests.unit.test_migration_0119 import _seed_0118
 
 from yuki.persistence.schema_guard import require_canonical_schema
@@ -90,6 +91,10 @@ def test_upgrade_preserves_sources_and_backfills_exact_pairs(
             table: connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
             for table in PROTECTED
         }
+        original_columns = {
+            table: [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]
+            for table in PROTECTED
+        }
         session_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(plugin_agent_sessions)")
         }
@@ -102,7 +107,11 @@ def test_upgrade_preserves_sources_and_backfills_exact_pairs(
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         for table, rows in before.items():
-            assert connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() == rows
+            projection = preserved_projection(connection, table, original_columns[table])
+            assert (
+                connection.execute(f'SELECT {projection} FROM "{table}" ORDER BY rowid').fetchall()
+                == rows
+            )
         assert connection.execute("SELECT * FROM chat_event_artifact_refs").fetchall() == [
             (event_id, "old", "v1")
         ]

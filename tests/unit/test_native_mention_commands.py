@@ -20,6 +20,7 @@ def message(text, *, kind="yuki", target="cli_app:ou_yuki", native=True):
     start = text.index("@Yuki") if "@Yuki" in text else 0
     return InboundMessage(
         "om_command",
+        "om_command",
         "message:feishu",
         ScopeType.GROUP,
         SenderIdentity("cli_app:ou_person"),

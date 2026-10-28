@@ -48,7 +48,7 @@ async def _seed(
     first, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id=str(uuid.uuid4()),
+        origin_key=str(uuid.uuid4()),
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         private_peer_user_id="1001",
@@ -95,7 +95,7 @@ async def _seed(
                         dict(
                             template,
                             canonical_event_id=str(uuid.uuid4()),
-                            platform_message_id=str(uuid.uuid4()),
+                            origin_key=str(uuid.uuid4()),
                         )
                         for _ in range(count - 1)
                     ],

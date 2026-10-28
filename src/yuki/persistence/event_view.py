@@ -59,6 +59,11 @@ def event_view(row: EventRecord, *, timezone: str = "Asia/Taipei") -> dict[str, 
                         "size",
                     }
                 },
+                **(
+                    {"size": data["file_size"]}
+                    if "size" not in data and "file_size" in data
+                    else {}
+                ),
             }
             for index, position, kind, data in indexed_media_segments(row.segments)
         ],

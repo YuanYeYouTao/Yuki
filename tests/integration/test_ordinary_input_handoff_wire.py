@@ -86,14 +86,23 @@ async def test_actual_adapters_continue_original_ordinary_chain_after_input_hand
             )
         worker = app.autonomous_groups
         try:
-            first = replace(original, message_id="wire-a", text=A, mentions_bot=False)
+            first = replace(
+                original,
+                ingress_key="wire-a",
+                native_message_id="wire-a",
+                text=A,
+                mentions_bot=False,
+            )
             assert (await app.processor.handle(first, sender)).reason == "ordinary_deferred"
             await asyncio.wait_for(arrived[1].wait(), 10)
             key = next(iter(worker._states))
             for message_id, text in (("wire-b", B), ("wire-c", C)):
                 assert (
                     await app.processor.handle(
-                        replace(first, message_id=message_id, text=text), sender
+                        replace(
+                            first, ingress_key=message_id, native_message_id=message_id, text=text
+                        ),
+                        sender,
                     )
                 ).reason == "ordinary_deferred"
             release[1].set()

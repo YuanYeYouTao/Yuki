@@ -26,6 +26,7 @@ from yuki.runtime.work_repository import WorkRepository
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.time.service import TimeContextService
 from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -359,22 +360,18 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
     assert json.loads(child["source_json"])["trigger_event_id"] == actor.event_id
 
 
-async def test_unknown_sdk_send_does_not_block_next_explicit_send(app_env, database, monkeypatch):
+async def test_local_sdk_send_does_not_call_a_native_transport(app_env, database, monkeypatch):
     from yuki.gateway.providers.app.social import AppSocialOperations
 
     env = app_env
     chat, source = await app_source(env, database, monkeypatch)
-    original_operations = env.social.router.operations
     attempts = []
 
     class Transport(AppSocialOperations):
         async def send(self, handle, target, message):
             attempts.append(message.text)
-            if len(attempts) == 1:
-                raise TimeoutError("synthetic lost native response")
-            return await original_operations(route).send(handle, target, message)
+            raise AssertionError("local ledger publication has no native send")
 
-    route = await env.social.router.resolve_send_for_conversation(source.effective_conversation_id)
     monkeypatch.setattr(env.social.router, "operations", lambda _: Transport())
     host = HostPluginContext(
         plugin_id="test.explicit-calls",
@@ -385,9 +382,9 @@ async def test_unknown_sdk_send_does_not_block_next_explicit_send(app_env, datab
         with host.invocation_scope(host.plugin_id, source):
             first = await host.messages.send_text("first explicit call")
             second = await host.messages.send_text("second explicit call")
-        assert first.data.get("uncertain") is True and not first.ok, first.model_dump()
+        assert first.ok and not first.data.get("uncertain"), first.model_dump()
         assert second.ok, second.model_dump()
-        assert attempts == ["first explicit call", "second explicit call"]
+        assert attempts == []
         assert first.data["operation_id"] != second.data["operation_id"]
     finally:
         await host.close_host_resources()
@@ -766,6 +763,7 @@ async def test_app_sdk_admin_grants_an_explicit_telegram_topic(
                 )
             )
         worker = PluginNotificationOutboxWorker(
+            workspace_store=WorkspaceStore(tmp_path / "workspace"),
             repository=repository,
             ledger=tg.harness.ledger,
             artifacts=PluginMediaArtifactStore(database, tmp_path / "cross-entry-media"),

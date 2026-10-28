@@ -13,7 +13,7 @@ from tests.support.semantic_participation_host_helpers import _event_and_route
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from yuki.conversation.projection_chunks_schema import EVENT_METADATA_COLUMNS_CURRENT
+from yuki.conversation.projection_identity_schema import EVENT_METADATA_COLUMNS_CURRENT
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage
 from yuki.identity.canonical_repository import ensure_account
@@ -179,8 +179,10 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
         "canonical_conversation_id",
         "audio_transcript",
     }
-    assert columns == set(EVENT_METADATA_COLUMNS_CURRENT) | content_columns
-    source = await _event_and_route(database, EventLedgerRepository(database))
+    transport_columns = {"native_message_id"}
+    assert columns == set(EVENT_METADATA_COLUMNS_CURRENT) | content_columns | transport_columns
+    ledger = EventLedgerRepository(database)
+    source = await _event_and_route(database, ledger)
     async with database.read_session() as session:
         before = await session.scalar(
             select(CanonicalConversationModel.prompt_source_revision).where(
@@ -200,6 +202,27 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
             )
         )
     assert before == after
+    from yuki.memory.extraction import source_event_fingerprint
+
+    persisted = await ledger.get_event(source.id)
+    assert persisted is not None
+    fingerprint = source_event_fingerprint(persisted)
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(ChatEventModel)
+            .where(ChatEventModel.id == source.id)
+            .values(native_message_id="confirmed-native-reference")
+        )
+    async with database.read_session() as session:
+        transport_revision = await session.scalar(
+            select(CanonicalConversationModel.prompt_source_revision).where(
+                CanonicalConversationModel.id == source.canonical_conversation_id
+            )
+        )
+    retained = await ledger.get_event(source.id)
+    assert retained is not None
+    assert transport_revision == before
+    assert source_event_fingerprint(retained) == fingerprint
 
 
 async def test_account_author_only_change_invalidates_original_work_source(database):
@@ -309,7 +332,7 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     old_image, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="shared-pixels",
+        origin_key="shared-pixels",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         group_id="2002",

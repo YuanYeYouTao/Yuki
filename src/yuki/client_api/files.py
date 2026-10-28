@@ -291,7 +291,11 @@ class ClientFiles:
             raise ClientError("not_found")
         if await self._event_source(principal, conversation_id, event_id) != source:
             raise ClientError("not_found")
-        return {"sha256": digest, "name": item.display_name or f"attachment-{index}"}, content
+        return {
+            "sha256": digest,
+            "name": item.display_name or f"attachment-{index}",
+            "expires_at": utc_iso(item.expires_at) if item.expires_at is not None else None,
+        }, content
 
     async def attachments(
         self, principal: ClientPrincipal, references: tuple[str, ...]

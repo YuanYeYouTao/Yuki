@@ -103,7 +103,7 @@ async def _boundary_scene(database, tmp_path):
         appended = await seed_scoped_event(
             env.service.writer,
             scope=message.scope(),
-            platform_message_id=f"boundary-{len(candidates)}",
+            origin_key=f"boundary-{len(candidates)}",
             sender_user_id=sender,
             direction="inbound",
             content="原始的普通补充",

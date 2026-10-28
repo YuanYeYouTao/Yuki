@@ -304,7 +304,7 @@ async def feishu_source_case(database, tmp_path, *, goal=None):
             platform="feishu",
             presence_id=presence.id,
         ),
-        platform_message_id="om_original_request",
+        origin_key="om_original_request",
         sender_user_id=author.external_account_id,
         direction="inbound",
         content="一个小时后在 QQ 私聊提醒另一个人背单词",

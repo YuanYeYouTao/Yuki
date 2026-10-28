@@ -158,7 +158,7 @@ async def seeded(
             scope=ConversationScope.group("8000", "2001")
             if group
             else ConversationScope.private("8000", account),
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             sender_user_id=account,
             direction="inbound",
             content="original request",
@@ -485,7 +485,7 @@ async def test_home_and_group_work_show_only_this_works_confirmed_question(app_e
             await seed_scoped_event(
                 env.harness.scoped_events,
                 scope=ConversationScope.group("8000", "2001"),
-                platform_message_id=str(uuid4()),
+                origin_key=str(uuid4()),
                 sender_user_id="8000",
                 direction="outbound",
                 content=body,
@@ -526,7 +526,7 @@ async def test_home_and_group_work_show_only_this_works_confirmed_question(app_e
     await seed_scoped_event(
         env.harness.scoped_events,
         scope=ConversationScope.group("8000", "2001"),
-        platform_message_id=str(uuid4()),
+        origin_key=str(uuid4()),
         sender_user_id="1002",
         direction="inbound",
         content="hidden group message",

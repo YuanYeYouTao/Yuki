@@ -49,7 +49,7 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
         direction="inbound",
-        platform_message_id="same-platform-id",
+        origin_key="same-platform-id",
         content="old Presence",
     )
     await seed_event(
@@ -58,7 +58,7 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
         direction="inbound",
-        platform_message_id="new-message",
+        origin_key="new-message",
         content="new Presence",
     )
     collision, _ = await seed_event(
@@ -67,7 +67,7 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10002",
         direction="inbound",
-        platform_message_id="same-platform-id",
+        origin_key="same-platform-id",
         content="other conversation",
     )
     new_scope = ConversationScope.private("8001", "10001")
@@ -110,7 +110,7 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
             scope_type=ScopeType.PRIVATE,
             sender_user_id="10001",
             direction="inbound",
-            platform_message_id=f"snapshot-{index}",
+            origin_key=f"snapshot-{index}",
             content=f"original-{index}",
         )
         events.append(row)
@@ -147,7 +147,7 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
         direction="inbound",
-        platform_message_id="duplicate-center",
+        origin_key="duplicate-center",
         content="current generation",
     )
     async with database.immediate_session() as writer:

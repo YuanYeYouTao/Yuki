@@ -228,7 +228,8 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
     )
     chat_id = str(chat["id"])
     return InboundMessage(
-        message_id=f"{chat_id}:{raw['message_id']}",
+        ingress_key=f"{chat_id}:{raw['message_id']}",
+        native_message_id=f"{chat_id}:{raw['message_id']}",
         event_type="message:telegram",
         platform="telegram",
         bot_user_id=client.self_id,
@@ -439,7 +440,7 @@ class TelegramGateway:
                 presence_id=self.presence_id,
                 scope=message.scope(),
                 event_type=message.event_type,
-                platform_message_id=message.message_id,
+                ingress_key=message.ingress_key,
             )
             original = await load_claimed_keeper(
                 session, receipt.canonical_event_id if receipt is not None else None

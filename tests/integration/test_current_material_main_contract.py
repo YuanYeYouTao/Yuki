@@ -103,7 +103,8 @@ async def _deployment(
     app.gateway_registry.connect(env.bot, provider_id="snowluma", presence_id=env.presence)
     await app.model_invocations.writer.start()
     message = InboundMessage(
-        message_id="full-deployment-inbound",
+        ingress_key="full-deployment-inbound",
+        native_message_id="full-deployment-inbound",
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001", nickname="真实参与者"),
@@ -195,7 +196,8 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             app.main_agent_contract.state.update({"slot": 1, "text": "CURRENT_MATERIAL_VALUE"})
             current = replace(
                 message,
-                message_id="layout-second-current",
+                ingress_key="layout-second-current",
+                native_message_id="layout-second-current",
                 text="FINAL_CURRENT_USER_BODY\nEND_CURRENT_USER_BODY",
             )
             assert (await app.processor.handle(current, sender)).reason == "chat"
@@ -331,9 +333,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
 
             async with database.read_session() as reader:
                 current = await reader.scalar(
-                    select(ChatEventModel).where(
-                        ChatEventModel.platform_message_id == message.message_id
-                    )
+                    select(ChatEventModel).where(ChatEventModel.origin_key == message.ingress_key)
                 )
             clock = FakeClock(datetime.now(UTC))
             app.time_context._clock = clock
@@ -664,7 +664,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     added = await seed_scoped_event(
         scoped,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="new-public-source-before-sdk",
+        origin_key="new-public-source-before-sdk",
         sender_user_id="10001",
         direction="inbound",
         content="SDK先采用的真实新公共事件",
@@ -714,7 +714,12 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
         epoch = rows[0].epoch_id
     provider._responder = lambda request: "内部结束"
     await harness.processor.handle(
-        replace(message, message_id="ordinary-after-sdk", text="SDK之后的普通当前输入"),
+        replace(
+            message,
+            ingress_key="ordinary-after-sdk",
+            native_message_id="ordinary-after-sdk",
+            text="SDK之后的普通当前输入",
+        ),
         MemorySender(),
     )
     async with database.read_session() as reader:

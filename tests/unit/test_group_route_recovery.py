@@ -63,7 +63,8 @@ def message(
     text: str = "/ai admin group current enable", *, message_id: str = "restore-1"
 ) -> InboundMessage:
     return InboundMessage(
-        message_id=message_id,
+        ingress_key=message_id,
+        native_message_id=message_id,
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="9000"),
@@ -522,8 +523,13 @@ async def test_superuser_on_registers_proven_new_group_atomically_and_replay_is_
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
         )
-    await app.processor.handle(replace(request, message_id="new-enable"), sender)
-    await app.processor.handle(replace(request, text="/ai ping", message_id="new-ping"), sender)
+    await app.processor.handle(
+        replace(request, ingress_key="new-enable", native_message_id="new-enable"), sender
+    )
+    await app.processor.handle(
+        replace(request, text="/ai ping", ingress_key="new-ping", native_message_id="new-ping"),
+        sender,
+    )
     assert sender.messages[-1].text.startswith("pong")
 
 

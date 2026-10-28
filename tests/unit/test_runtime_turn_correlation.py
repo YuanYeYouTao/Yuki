@@ -26,7 +26,8 @@ async def test_message_exit_preserves_result_or_error_and_does_no_tail_sql(
     harness = build_harness(database, make_settings(database.url))
     processor = harness.processor
     message = InboundMessage(
-        message_id="original-input",
+        ingress_key="original-input",
+        native_message_id="original-input",
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity("1001"),

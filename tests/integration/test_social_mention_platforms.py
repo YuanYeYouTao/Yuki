@@ -32,7 +32,7 @@ async def invoke(env, arguments, *, account="10001"):
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group(env.bot.self_id, "20001"),
-            platform_message_id="second-account-input",
+            origin_key="second-account-input",
             sender_user_id=account,
             direction="inbound",
             content="hello from my other account",
@@ -44,7 +44,7 @@ async def invoke(env, arguments, *, account="10001"):
             )
         )
     message = replace(
-        inbound("test", message_id=event.platform_message_id, user_id=account, group_id="20001"),
+        inbound("test", message_id=event.origin_key, user_id=account, group_id="20001"),
         bot_user_id=env.bot.self_id,
         source_event_id=event.id,
         conversation_id=event.canonical_conversation_id,

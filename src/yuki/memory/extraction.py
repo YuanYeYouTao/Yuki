@@ -118,7 +118,7 @@ def source_event_fingerprint(event: EventRecord) -> str:
     payload = {
         "event_id": event.id,
         "bot_user_id": event.bot_user_id,
-        "platform_message_id": event.platform_message_id,
+        "platform_message_id": event.origin_key,
         "scope_type": event.scope_type.value,
         "sender_user_id": event.sender_user_id,
         "group_id": event.group_id,

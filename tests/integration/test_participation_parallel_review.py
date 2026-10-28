@@ -221,7 +221,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
         prior = await seed_scoped_event(
             env.service.writer,
             scope=message(0, "original exchange").scope(),
-            platform_message_id="prior-participation-source",
+            origin_key="prior-participation-source",
             sender_user_id="10001",
             direction="inbound",
             content="synthetic original exchange",
@@ -371,7 +371,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
         later = await seed_scoped_event(
             env.service.writer,
             scope=message(3, "later unselected input").scope(),
-            platform_message_id="later-unselected-source",
+            origin_key="later-unselected-source",
             sender_user_id="10001",
             direction="inbound",
             content="synthetic later unselected input",

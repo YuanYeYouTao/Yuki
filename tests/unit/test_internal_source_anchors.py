@@ -88,14 +88,18 @@ async def test_prompt_and_inbound_identity_use_internal_event_not_platform_id(da
     assert ChatEventPromptRenderer.event_content(other, event_id, "replacement") == original.content
     assert ChatEventPromptRenderer.event_content(original, event_id, "replacement") == "replacement"
     inbound = InboundMessage(
-        message_id="reused",
+        ingress_key="reused",
+        native_message_id="reused",
         event_type="message",
         scope_type=original.scope_type,
         sender=SenderIdentity(original.sender_user_id),
         text="hello",
         source_event_id=event_id,
     )
-    assert inbound.source_key == replace(inbound, message_id="changed").source_key
+    assert (
+        inbound.source_key
+        == replace(inbound, ingress_key="changed", native_message_id="changed").source_key
+    )
     assert inbound.source_key != replace(inbound, source_event_id=event_id + 1).source_key
     with pytest.raises(ValueError, match="missing_internal"):
         _ = replace(inbound, source_event_id=None).source_key

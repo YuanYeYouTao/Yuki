@@ -117,7 +117,8 @@ async def _qq_turn(env):
     env.gateway.registry.connect(bot, provider_id="snowluma")
     result = await env.harness.processor.handle(
         InboundMessage(
-            message_id="qq-first",
+            ingress_key="qq-first",
+            native_message_id="qq-first",
             event_type="message:test",
             platform="qq",
             bot_user_id=bot.self_id,

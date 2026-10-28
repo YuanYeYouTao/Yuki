@@ -140,7 +140,6 @@ class PluginCommandAdapter:
         tool_runtime = ToolRuntime(
             inbound=message,
             conversation_key=plugin_conversation_key(message, identity),
-            trigger_message_id=message.message_id,
             trigger_event_id=message.source_event_id,
             actor_is_superuser=privileged,
             runtime_config=runtime,

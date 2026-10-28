@@ -680,7 +680,7 @@ class CanonicalEventReceiptModel(Base):
             "ingress_account_id",
             "transport_namespace",
             "event_type",
-            "platform_message_id",
+            "ingress_key",
             name="uq_canonical_event_receipts_transport",
         ),
         ForeignKeyConstraint(
@@ -698,10 +698,6 @@ class CanonicalEventReceiptModel(Base):
             name="ck_canonical_event_receipts_event_type",
         ),
         CheckConstraint(
-            trimmed_token_sql("platform_message_id", 128),
-            name="ck_canonical_event_receipts_platform_message_id",
-        ),
-        CheckConstraint(
             uuid4_text36_sql("canonical_event_id"),
             name="ck_canonical_event_receipts_canonical_event_id",
         ),
@@ -715,7 +711,7 @@ class CanonicalEventReceiptModel(Base):
     transport_namespace: Mapped[str] = mapped_column(String, nullable=False)
     ingress_presence_id: Mapped[str] = mapped_column(String(36), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    platform_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    ingress_key: Mapped[str] = mapped_column(String, nullable=False)
     canonical_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

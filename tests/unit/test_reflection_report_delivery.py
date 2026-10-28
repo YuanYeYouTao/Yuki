@@ -24,7 +24,7 @@ async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp
     bad = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80001", "2002"),
-        platform_message_id="disabled-report-source",
+        origin_key="disabled-report-source",
         sender_user_id="10001",
         direction="inbound",
         content="original manual source",

@@ -34,8 +34,8 @@ from yuki.conversation.observations import (
     encode,
     validate_observations,
 )
-from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
 from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
+from yuki.conversation.projection_identity_schema import PROJECTION_TRIGGERS_CURRENT
 from yuki.conversation.projection_models import PromptProjectionChunkModel, PromptProjectionModel
 from yuki.domain.conversations import ConversationScope
 from yuki.persistence.database import Database
@@ -602,7 +602,10 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
         assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert not after.execute("PRAGMA foreign_key_check").fetchall()
         for table, rows in original_rows.items():
-            columns = ",".join(original_columns[table])
+            columns = ",".join(
+                "origin_key" if table == "chat_events" and name == "platform_message_id" else name
+                for name in original_columns[table]
+            )
             assert after.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
         assert not after.execute(
             "SELECT 1 FROM sqlite_master WHERE name='context_observation_reset'"
@@ -628,7 +631,12 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     with sqlite3.connect(copied) as after:
         for table, rows in original_rows.items():
             if table != "runtime_work":
-                columns = ",".join(original_columns[table])
+                columns = ",".join(
+                    "origin_key"
+                    if table == "chat_events" and name == "platform_message_id"
+                    else name
+                    for name in original_columns[table]
+                )
                 assert (
                     after.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall()
                     == rows
@@ -836,7 +844,7 @@ async def _trigger_sources(database, tmp_path, privacy_update):
     await seed_scoped_event(
         ledger,
         scope=ConversationScope.group(env.bot.self_id, "20002"),
-        platform_message_id="unrelated-trigger-owner",
+        origin_key="unrelated-trigger-owner",
         sender_user_id="10001",
         direction="inbound",
         content="unrelated real event",

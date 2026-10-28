@@ -154,6 +154,7 @@ async def test_stale_socket_file_does_not_pass_manager_deployment_check(tmp_path
     else:
         path.touch()
     assert path.exists()
+    (tmp_path / ".artifact.lock").touch()
     result = await check_environment(path, tmp_path)
     assert result == {"ok": False, "error": "manager_connection_failed"}
 
@@ -176,6 +177,7 @@ async def test_live_manager_status_is_read_without_starting_a_job(tmp_path, monk
         await writer.wait_closed()
 
     path = tmp_path / "manager.sock"
+    (tmp_path / ".artifact.lock").touch()
     async with await asyncio.start_unix_server(respond, str(path)):
         result = await check_environment(path, tmp_path)
     assert result == {"ok": True, "uid": 10001, "manager": "connected", "workspace": "/workspace"}

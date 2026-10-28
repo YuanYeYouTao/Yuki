@@ -343,7 +343,7 @@ async def test_forget_qq_same_number_preserves_telegram_conversation_and_work(
     await seed_scoped_event(
         env.harness.scoped_events,
         scope=ConversationScope.private("80001", "42"),
-        platform_message_id="qq-original",
+        origin_key="qq-original",
         sender_user_id="42",
         direction="inbound",
         content="QQ owner",
@@ -429,6 +429,7 @@ async def test_another_platform_uses_the_same_processor_and_social_contract(tele
     )
     result = await env.harness.processor.handle(
         InboundMessage(
+            "original",
             "original",
             "message:extra",
             ScopeType.PRIVATE,

@@ -130,7 +130,7 @@ async def attachment_tools(database, tmp_path, request):
                     thread_id="10",
                 ),
                 sender_user_id="42",
-                platform_message_id="-10042:1",
+                origin_key="-10042:1",
                 direction="inbound",
                 content="原接收账号的图片",
                 segments=(
@@ -152,7 +152,7 @@ async def attachment_tools(database, tmp_path, request):
                     thread_id="10",
                 ),
                 sender_user_id="43",
-                platform_message_id="-10042:2",
+                origin_key="-10042:2",
                 direction="inbound",
                 content="请看之前的图片",
             )
@@ -161,7 +161,8 @@ async def attachment_tools(database, tmp_path, request):
         assert source.ingress_presence_id != current.ingress_presence_id
         runtime = ToolRuntime(
             inbound=InboundMessage(
-                message_id=current.platform_message_id,
+                ingress_key=current.origin_key,
+                native_message_id=current.origin_key,
                 event_type="message:telegram",
                 platform="telegram",
                 bot_user_id=current_client.self_id,
@@ -349,7 +350,7 @@ async def test_attachment_bridge_keeps_qq_adapter_and_inline_without_connection(
     source, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="qq-original-image",
+        origin_key="qq-original-image",
         scope_type=ScopeType.GROUP,
         group_id="2001",
         sender_user_id="1001",

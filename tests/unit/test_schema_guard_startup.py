@@ -12,7 +12,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
+from yuki.conversation.projection_identity_schema import PROJECTION_TRIGGERS_CURRENT
 from yuki.persistence.database import Database
 from yuki.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
 

@@ -121,7 +121,7 @@ async def test_more_than_twenty_people_are_reachable_through_subject_name_pages(
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id=f"person-directory-{account}",
+            origin_key=f"person-directory-{account}",
             sender_user_id=account,
             direction="inbound",
             content="observed person",

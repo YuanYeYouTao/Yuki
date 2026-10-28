@@ -698,7 +698,7 @@ class MessageProcessor:
             self._event_publisher,
             EventName.MESSAGE_NORMALIZED,
             {
-                "message_id": message.message_id,
+                "native_message_id": message.native_message_id,
                 "scope_type": message.scope_type.value,
                 "has_text": bool(message.text),
                 "attachment_count": len(message.attachments),
@@ -828,7 +828,7 @@ class MessageProcessor:
                 self._event_publisher,
                 EventName.MESSAGE_TRIGGERED,
                 {
-                    "message_id": message.message_id,
+                    "native_message_id": message.native_message_id,
                     "scope_type": message.scope_type.value,
                     "trigger_reason": decision.reason,
                     "command": (
@@ -2080,8 +2080,12 @@ class MessageProcessor:
                 self._event_publisher,
                 EventName.REPLY_SENT,
                 {
-                    "trigger_message_id": inbound.message_id,
-                    "platform_message_id": receipt.platform_message_id,
+                    "trigger_event_id": inbound.source_event_id,
+                    "native_message_id": (
+                        receipt.platform_message_id
+                        if isinstance(receipt, OutboundSendReceipt)
+                        else None
+                    ),
                     "scope_type": inbound.scope_type.value,
                     "character_count": len(outbound.text),
                     "delivered": True,

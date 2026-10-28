@@ -135,7 +135,9 @@ async def test_canonical_read_duplicate_retains_compatibility_and_ingest_fence(d
         if change == "paused":
             reused = await uow.append_inbound(message, admitted)
             assert reused.event.id == original.event.id and not reused.created
-            message = replace(message, message_id="new-after-pause")
+            message = replace(
+                message, ingress_key="new-after-pause", native_message_id="new-after-pause"
+            )
         with pytest.raises(CanonicalIdentityError) as error:
             await uow.append_inbound(message, admitted)
     assert error.value.category == ("receipt_conflict" if change == "content" else "paused")

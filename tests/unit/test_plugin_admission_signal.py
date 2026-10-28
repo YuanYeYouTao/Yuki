@@ -42,7 +42,8 @@ async def test_signal_retains_full_sdk_summary_and_real_source(database, score, 
     results = await PluginAdmissionSignalAdapter(registry).collect(
         message=InboundMessage(
             event_type="message",
-            message_id="1",
+            ingress_key="1",
+            native_message_id="1",
             bot_user_id="8000",
             scope_type=ScopeType.GROUP,
             group_id="3001",

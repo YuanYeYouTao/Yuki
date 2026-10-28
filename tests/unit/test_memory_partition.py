@@ -48,7 +48,8 @@ async def _canonical_message(database, message):
     if message.reply_sender_user_id is not None and message.reply_to_event_id is None:
         quoted = replace(
             message,
-            message_id=f"{message.message_id}:reply",
+            ingress_key=f"{message.ingress_key}:reply",
+            native_message_id=f"{message.ingress_key}:reply",
             sender=replace(message.sender, user_id=message.reply_sender_user_id),
             text="original reply source",
             mentioned_user_ids=(),
@@ -58,7 +59,7 @@ async def _canonical_message(database, message):
         admitted_reply = await ingress.pre_admit(None, quoted)
         reply = await ingress.uow.append_inbound(admitted_reply.message, admitted_reply)
         message = replace(
-            message, reply_to_event_id=reply.event.id, reply_to_message_id=quoted.message_id
+            message, reply_to_event_id=reply.event.id, reply_to_message_id=quoted.native_message_id
         )
     if message.mentioned_user_ids:
         message = replace(
@@ -102,7 +103,7 @@ async def _owners(database):
 def _event(*, message_id: str, peer: str | None = None, group: str | None = None) -> ChatEventModel:
     return ChatEventModel(
         bot_user_id="8000",
-        platform_message_id=message_id,
+        origin_key=message_id,
         scope_type="group" if group else "private",
         group_id=group,
         private_peer_user_id=peer,

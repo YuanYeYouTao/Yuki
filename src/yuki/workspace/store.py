@@ -7,9 +7,10 @@ import os
 import sqlite3
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -127,7 +128,7 @@ class WorkspaceStore:
         }
 
     @staticmethod
-    def _unlink(paths: list[Path]) -> None:
+    def _unlink(paths: Iterable[Path]) -> None:
         for path in paths:
             try:
                 path.unlink(missing_ok=True)
@@ -150,7 +151,10 @@ class WorkspaceStore:
                 safe = False
             if not safe:
                 invalid.append((row["id"], row["blob"], row["revision"]))
-        candidates = list(self.root.glob("*.blob"))
+        with os.scandir(self.root) as entries:
+            candidates = [
+                self.root / entry.name for entry in entries if entry.name.endswith(".blob")
+            ]
         with self._transaction() as db:
             db.executemany("DELETE FROM artifacts WHERE id=? AND blob=? AND revision=?", invalid)
             db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
@@ -164,7 +168,11 @@ class WorkspaceStore:
         except ArtifactLockBusy:
             return
         try:
-            self._unlink(list(self.root.glob("*.pending"))[:128])
+            with os.scandir(self.root) as entries:
+                pending = (
+                    self.root / entry.name for entry in entries if entry.name.endswith(".pending")
+                )
+                self._unlink(islice(pending, 128))
         finally:
             self._files.release(held)
 

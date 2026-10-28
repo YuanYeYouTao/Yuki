@@ -106,14 +106,14 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
     await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="new-request",
+        origin_key="new-request",
         sender_user_id="10001",
         direction="inbound",
         content="make an exam document",
     )
     async with database.read_session() as session:
         event_id = await session.scalar(
-            select(ChatEventModel.id).where(ChatEventModel.platform_message_id == "new-request")
+            select(ChatEventModel.id).where(ChatEventModel.origin_key == "new-request")
         )
     source = {**source, "trigger_event_id": event_id}
     source_key = f"event:{env.context.conversation_id}:{event_id}"
@@ -213,16 +213,14 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="resend-request",
+            origin_key="resend-request",
             sender_user_id="10001",
             direction="inbound",
             content="send the same document again",
         )
         async with database.read_session() as session:
             resend_id = await session.scalar(
-                select(ChatEventModel.id).where(
-                    ChatEventModel.platform_message_id == "resend-request"
-                )
+                select(ChatEventModel.id).where(ChatEventModel.origin_key == "resend-request")
             )
         steps = iter(
             [
@@ -328,7 +326,7 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
     appended = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="other-binding-new-request",
+        origin_key="other-binding-new-request",
         sender_user_id="11099",
         direction="inbound",
         content="new independent request",
@@ -418,16 +416,14 @@ async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_o
     appended = await seed_scoped_event(
         env.service.writer,
         scope=ConversationScope.group("80002", "20001"),
-        platform_message_id="new-independent-after-merge",
+        origin_key="new-independent-after-merge",
         sender_user_id="10002",
         direction="inbound",
         content="please start an independent second goal",
     )
     event = appended.event
     message = replace(
-        inbound(
-            event.content, message_id=event.platform_message_id, user_id="10002", group_id="20001"
-        ),
+        inbound(event.content, message_id=event.origin_key, user_id="10002", group_id="20001"),
         bot_user_id="80002",
         source_event_id=event.id,
         conversation_id=env.context.conversation_id,

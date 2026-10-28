@@ -39,6 +39,17 @@ fi
 test ! -L "$workspace"
 getent group 10001 >/dev/null || groupadd --gid 10001 yuki-sandbox
 install -d -o 10001 -g 10001 -m 700 "$workspace"
+python3 - "$workspace" <<'PY'
+import os
+import sys
+
+descriptor = os.open(os.path.join(sys.argv[1], ".artifact.lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o660)
+try:
+    os.fchown(descriptor, 10001, 10001)
+    os.fchmod(descriptor, 0o660)
+finally:
+    os.close(descriptor)
+PY
 if [ -n "$deployment_root" ]; then
     python3 "$helper" --deployment-root "$deployment_root" >/dev/null
 fi

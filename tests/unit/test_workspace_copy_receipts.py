@@ -70,6 +70,7 @@ async def save_tool_result(database, workspace, request_id):
     runtime = ToolRuntime(
         inbound=InboundMessage(
             "trigger",
+            "trigger",
             "message:private:normal",
             ScopeType.PRIVATE,
             SenderIdentity("1001"),

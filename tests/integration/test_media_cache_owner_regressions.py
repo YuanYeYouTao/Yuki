@@ -170,7 +170,7 @@ async def test_onebot_inline_audio_remains_shared_original_media(database, tmp_p
     event, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id=incoming.bot_user_id,
-        platform_message_id=incoming.message_id,
+        origin_key=incoming.ingress_key,
         scope_type=incoming.scope_type,
         sender_user_id=incoming.sender.user_id,
         private_peer_user_id=incoming.sender.user_id,

@@ -29,7 +29,7 @@ async def test_current_identity_revocation_does_not_publish_prepared_admission(
     event, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="prepared-current-identity",
+        origin_key="prepared-current-identity",
         scope_type=scope,
         sender_user_id="1001",
         group_id="2001" if scope is ScopeType.GROUP else None,
@@ -62,7 +62,7 @@ async def test_current_group_revocation_does_not_publish_prepared_admission(data
     event, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="prepared-current-group",
+        origin_key="prepared-current-group",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         group_id="2001",

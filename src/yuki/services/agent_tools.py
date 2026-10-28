@@ -137,7 +137,6 @@ class ToolRuntime:
     inbound: InboundMessage | None
     declaration_only: bool = False
     conversation_key: str = ""
-    trigger_message_id: str = ""
     trigger_event_id: int | None = None
     actor_context: ToolActor | None = None
     actor_is_superuser: bool = False

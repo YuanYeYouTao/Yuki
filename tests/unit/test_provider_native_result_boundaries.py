@@ -264,7 +264,8 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
     try:
         result = await harness.processor.handle(
             InboundMessage(
-                message_id="native-after-send",
+                ingress_key="native-after-send",
+                native_message_id="native-after-send",
                 event_type="message:test",
                 scope_type=ScopeType.GROUP,
                 sender=SenderIdentity("10001"),

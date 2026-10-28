@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -235,6 +236,8 @@ async def test_text_failure_ends_its_dispatch_without_requiring_success_for_imag
         "send", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
     )
     assert result["emoji"]["status"] == "accepted"
+    text = await env.service.receipts.find(context.turn_id, f"{sequence_prefix(context.call_id)}0")
+    assert text.status == ("uncertain" if uncertain else "failed")
     await delivery.start()
     try:
         assert (await settle(delivery, context))["status"] == "succeeded"
@@ -255,8 +258,8 @@ async def test_later_text_preflight_exit_does_not_leave_image_pending_forever(
     validate_route = env.router.validate_prepared_send
     validations = 0
 
-    async def observe_pending(after=None):
-        result = await pending(after)
+    async def observe_pending(after=None, **kwargs):
+        result = await pending(after, **kwargs)
         if not result and await delivery.intents.find(context.turn_id, context.call_id) is not None:
             discovered.set()
         return result
@@ -417,5 +420,74 @@ async def test_startup_keeps_fully_confirmed_text_sequence_parent_facts(database
         replay = await env.service.execute("send", arguments, context)
         assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "succeeded"
         assert len(messages(env)) == 3
+    finally:
+        await delivery.close()
+
+
+@pytest.mark.parametrize("with_text", [False, True])
+async def test_committed_first_admission_cancel_wakes_and_settles_unattempted_text(
+    database, tmp_path, monkeypatch, with_text
+):
+    env = await social_env(database, tmp_path)
+    delivery, library = make_delivery(env)
+    scanned = asyncio.Event()
+    pending = delivery.intents.pending
+
+    async def observe(*args, **kwargs):
+        result = await pending(*args, **kwargs)
+        if not result:
+            scanned.set()
+        return result
+
+    monkeypatch.setattr(delivery.intents, "pending", observe)
+    await delivery.start()
+    await asyncio.wait_for(scanned.wait(), 3)
+    wake = Mock(wraps=delivery.wake)
+    monkeypatch.setattr(delivery, "wake", wake)
+    boundary, admit = database.immediate_session, delivery.admit
+    armed = False
+
+    async def arm(*args, **kwargs):
+        nonlocal armed
+        result = await admit(*args, **kwargs)
+        armed = True
+        return result
+
+    @asynccontextmanager
+    async def commit_then_cancel():
+        nonlocal armed
+        async with boundary() as session:
+            yield session
+        if armed:
+            armed = False
+            error = asyncio.CancelledError()
+            error.add_note("database_write_phase:commit")
+            error.add_note("database_commit:confirmed")
+            raise error
+
+    monkeypatch.setattr(delivery, "admit", arm)
+    arguments = {"emoji": {"goal": "happy"}}
+    if with_text:
+        arguments["text"] = "first"
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(database, "immediate_session", commit_then_cancel)
+            if with_text:
+                with pytest.raises(asyncio.CancelledError):
+                    await env.service.execute("send", arguments, env.context)
+            else:
+                assert (await env.service.execute("send", arguments, env.context))[
+                    "status"
+                ] == "accepted"
+        assert wake.call_count >= 1
+        intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+        assert intent is not None
+        if with_text:
+            text = await env.service.receipts.get(intent.source["after_operation_id"])
+            assert text.status == "failed"
+        assert (await settle(delivery, env.context))["status"] == "succeeded"
+        assert library.select_calls == 1
+        sent = messages(env)
+        assert len(sent) == 1 and sent[0][0]["type"] == "image"
     finally:
         await delivery.close()

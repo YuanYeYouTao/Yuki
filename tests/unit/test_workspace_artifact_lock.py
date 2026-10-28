@@ -8,11 +8,13 @@ import subprocess
 import sys
 import textwrap
 import threading
+import weakref
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from yuki.workspace.artifact_lock import ArtifactRootLock
+from yuki.workspace.artifact_lock import ArtifactLockBusy, ArtifactRootLock
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
@@ -198,3 +200,113 @@ def test_failed_publish_releases_the_lock_and_keeps_a_renamed_blob(tmp_path, mon
     assert store.root.joinpath(".artifact.lock").stat().st_size == 0
     exclusive = store._files.acquire(exclusive=True, wait=False)
     store._files.release(exclusive)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or os.geteuid() != 0, reason="Actual Linux dual UID requires root"
+)
+def test_manager_first_lock_and_installer_keep_bot_access_and_inode():
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory(prefix="yuki-artifact-dual-uid-", dir="/tmp") as directory:
+        root = Path(directory)
+        os.chown(root, 10001, 10001)
+        os.chmod(root, 0o700)
+        script = """
+import os, sys
+from pathlib import Path
+from yuki.workspace.artifact_lock import ArtifactRootLock
+os.setgid(10001)
+os.umask(0o007)
+if sys.argv[2] == 'bot':
+    os.setuid(10001)
+lock = ArtifactRootLock(Path(sys.argv[1]))
+held = lock.acquire(exclusive=False)
+print('locked', flush=True)
+sys.stdin.readline()
+lock.release(held)
+"""
+        manager = subprocess.Popen(
+            [sys.executable, "-c", script, str(root), "manager"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        bot = None
+        try:
+            assert manager.stdout.readline().strip() == "locked"
+            path = root / ".artifact.lock"
+            before = path.stat()
+            assert before.st_gid == 10001 and before.st_mode & 0o777 == 0o660
+            # Run the actual installer snippet over an already-held inode.
+            installer = (_SRC.parent / "deploy/sandbox/install-manager.sh").read_text()
+            snippet = installer.split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+            subprocess.run([sys.executable, "-c", snippet, str(root)], check=True)
+            bot = subprocess.Popen(
+                [sys.executable, "-c", script, str(root), "bot"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            assert bot.stdout.readline().strip() == "locked"
+            after = path.stat()
+            assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+            assert after.st_uid == 10001 and after.st_gid == 10001
+            with pytest.raises(ArtifactLockBusy):
+                ArtifactRootLock(root).acquire(exclusive=True, wait=False)
+        finally:
+            for child in (bot, manager):
+                if child is not None:
+                    child.communicate("release\n", timeout=3)
+                    assert child.returncode == 0
+
+
+def test_cleanup_only_consumes_the_pending_batch(tmp_path, monkeypatch):
+    store = WorkspaceStore(tmp_path / "artifacts")
+    for number in range(200):
+        (store.root / f"{number}.pending").touch()
+    original = os.scandir
+    count = 0
+    resident = weakref.WeakSet()
+
+    class ObservedEntry:
+        def __init__(self, entry):
+            self.entry = entry
+            resident.add(self)
+
+        def __getattr__(self, name):
+            return getattr(self.entry, name)
+
+    @contextmanager
+    def observed(path):
+        # Only the pending phase holds the exclusive file lock. The earlier
+        # blob discovery keeps its original pre-transaction snapshot ordering.
+        observer = ArtifactRootLock(store.root)
+        try:
+            held = observer.acquire(exclusive=False, wait=False)
+        except ArtifactLockBusy:
+            exclusive = True
+        else:
+            observer.release(held)
+            exclusive = False
+        with original(path) as entries:
+
+            def scan():
+                nonlocal count
+                for entry in entries:
+                    entry = ObservedEntry(entry)
+                    # Neither phase may retain the entire set of unrelated
+                    # entries, including pathlib's hidden list(scandir_it).
+                    assert len(resident) <= 128
+                    if exclusive and entry.name.endswith(".pending"):
+                        count += 1
+                        assert count <= 128
+                    yield entry
+
+            yield scan()
+
+    monkeypatch.setattr(os, "scandir", observed)
+    store.cleanup()
+    assert count == 128
+    with original(store.root) as entries:
+        assert sum(entry.name.endswith(".pending") for entry in entries) == 72

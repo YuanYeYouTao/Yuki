@@ -16,6 +16,15 @@ def _artifact_store_writable(path: Path) -> bool:
     )
 
 
+def _artifact_lock_writable(path: Path) -> bool:
+    try:
+        descriptor = os.open(path / ".artifact.lock", os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return False
+    os.close(descriptor)
+    return True
+
+
 async def check_environment(
     socket: Path, artifact_store: Path, *, expected_uid: int = 10001
 ) -> dict[str, Any]:
@@ -27,6 +36,8 @@ async def check_environment(
         return {"ok": False, "error": "bot_uid_required", "expected_uid": expected_uid}
     if not await asyncio.to_thread(_artifact_store_writable, artifact_store):
         return {"ok": False, "error": "artifact_store_not_writable"}
+    if not await asyncio.to_thread(_artifact_lock_writable, artifact_store):
+        return {"ok": False, "error": "artifact_lock_not_writable"}
     try:
         async with asyncio.timeout(7):
             reader, writer = await asyncio.open_unix_connection(str(socket), limit=262144)

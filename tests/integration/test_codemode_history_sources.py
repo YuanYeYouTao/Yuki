@@ -50,7 +50,7 @@ async def source_environment(database, tmp_path, native):
         row = await seed_scoped_event(
             social.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id=name,
+            origin_key=name,
             sender_user_id="10001",
             direction="inbound",
             content=name,

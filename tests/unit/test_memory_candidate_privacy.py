@@ -131,7 +131,7 @@ async def test_qq_forget_keeps_same_number_telegram_candidate_and_source(databas
                 "telegram-bot", "1001", platform="telegram", presence_id=tg_presence
             ),
             sender_user_id="1001",
-            platform_message_id="tg-private",
+            origin_key="tg-private",
             direction="inbound",
             content="TG同号不同人物的原资料",
         )
@@ -157,7 +157,7 @@ async def test_forget_cleans_candidate_of_other_authors_actually_redacted_mentio
     mention, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="actual-private-mention",
+        origin_key="actual-private-mention",
         scope_type=ScopeType.GROUP,
         group_id="2001",
         sender_user_id="1002",

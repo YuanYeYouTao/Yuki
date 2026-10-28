@@ -84,7 +84,7 @@ class NativeGroupRecovery:
                 connection_id=connection.snapshot.connection_id,
                 audit=ControlAuditRef(
                     user_id=message.sender.user_id,
-                    trigger_message_id=message.message_id,
+                    trigger_message_id=message.native_message_id or "",
                     conversation_key=ConversationScope.group(
                         connection.snapshot.external_account_id,
                         message.group_id or "",

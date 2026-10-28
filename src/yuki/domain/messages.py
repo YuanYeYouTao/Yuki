@@ -237,7 +237,8 @@ def mention_snapshots(segments: tuple[dict[str, Any], ...]) -> tuple[dict[str, A
 class InboundMessage:
     """Normalized inbound message consumed by policies and chat services."""
 
-    message_id: str
+    ingress_key: str | None
+    native_message_id: str | None
     event_type: str
     scope_type: ScopeType
     sender: SenderIdentity
@@ -371,10 +372,6 @@ class LocalDeliveryReceipt:
     """An original Social operation already committed this local ledger event."""
 
     event_id: int
-
-    @property
-    def platform_message_id(self) -> None:
-        return None
 
 
 @dataclass(frozen=True, slots=True)

@@ -111,7 +111,8 @@ async def test_runner_does_not_reuse_a_different_read_call(database, tmp_path, s
         frozen = contract.revision
         result = await harness.processor.handle(
             InboundMessage(
-                message_id="read-original",
+                ingress_key="read-original",
+                native_message_id="read-original",
                 event_type="message:test",
                 scope_type=ScopeType.GROUP,
                 sender=SenderIdentity("1001"),

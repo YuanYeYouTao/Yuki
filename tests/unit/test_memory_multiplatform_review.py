@@ -62,7 +62,7 @@ async def test_qq_forget_preserves_same_number_telegram_rebuild_proposal(databas
                 "telegram-bot", "1001", platform="telegram", presence_id=tg_presence
             ),
             sender_user_id="1001",
-            platform_message_id="tg-source",
+            origin_key="tg-source",
             direction="inbound",
             content="我住在杭州",
         )
@@ -115,7 +115,7 @@ async def test_forget_removes_third_party_proposal_by_its_original_person(
     source, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="third-party",
+        origin_key="third-party",
         scope_type=ScopeType.GROUP,
         group_id="2001",
         sender_user_id="1002",

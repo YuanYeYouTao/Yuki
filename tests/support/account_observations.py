@@ -26,7 +26,8 @@ def profile_message(
     platform: str = "qq",
 ) -> InboundMessage:
     return InboundMessage(
-        message_id="accepted-profile-fixture",
+        ingress_key="accepted-profile-fixture",
+        native_message_id="accepted-profile-fixture",
         event_type="message:test",
         scope_type=ScopeType.GROUP if group_id is not None else ScopeType.PRIVATE,
         platform=platform,

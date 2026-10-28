@@ -183,7 +183,7 @@ async def test_admission_returns_before_model_finishes(feishu_env, database, mon
     assert env.gateway._turns
     async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
-        assert event is not None and event.platform_message_id == "om_1"
+        assert event is not None and event.origin_key == "om_1"
     # Losing an ACK while this Main is still running doesn't buy another request.
     await asyncio.wait_for(env.gateway.receive(update()), 2)
     assert len(attempts) == 1 and len(env.gateway._turns) == 1
@@ -363,7 +363,7 @@ async def test_gateway_shutdown_joins_admitted_turn_before_database_close(
     assert len(turns) == 1
     async with database.read_session() as reader:
         source = await reader.scalar(
-            select(ChatEventModel).where(ChatEventModel.platform_message_id == "om_shutdown")
+            select(ChatEventModel).where(ChatEventModel.origin_key == "om_shutdown")
         )
         assert source is not None
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import ConfigDict, model_validator
+from pydantic import model_validator
 
 from yuki.automation.models import StrictModel
 from yuki_plugin_sdk.models import PermissionLevel as SdkPermissionLevel
@@ -19,8 +19,6 @@ class PermissionLevel(StrEnum):
 class AutomationScene(StrictModel):
     creator_user_id: str
     bot_user_id: str
-    created_from_message_id: str
-    model_config = ConfigDict(extra="ignore", frozen=True)
     current_group_id: str | None = None
     principal_kind: str = "person"
     canonical_creator_person_id: str | None = None
@@ -34,7 +32,6 @@ class AutomationScene(StrictModel):
         if self.principal_kind == "self":
             if (
                 self.creator_user_id
-                or self.created_from_message_id
                 or not self.current_group_id
                 or not self.canonical_conversation_id
                 or self.conversation_generation is None
@@ -54,3 +51,8 @@ def _permission_level_allowed(
         return True
     # trusted/moderator are reserved and cannot currently be assigned.
     return level == PermissionLevel.SUPERUSER and actor_is_superuser
+
+
+def project_authority_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
+    """Read an immutable older version without its retired transport-only field."""
+    return {key: value for key, value in snapshot.items() if key != "created_from_message_id"}

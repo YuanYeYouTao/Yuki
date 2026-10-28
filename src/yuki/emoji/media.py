@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
+import re
 import struct
 import warnings
 import zlib
@@ -44,8 +46,14 @@ def _ebml_format(stream: BinaryIO) -> str | None:
     return None
 
 
+_STRUCTURE = re.compile(rb'["{}\[\],:]')
+_NONSPACE = re.compile(rb"\S")
+_NUMBER_PART = re.compile(rb"[-+0-9.eE]+")
+_JSON_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
+
+
 class _TgsSniff:
-    """Top-level v/layers/w/h only. It does not validate the rest of the JSON or the gzip CRC."""
+    """Read root facts; skip unrelated strings and scalar values in C-sized spans."""
 
     def __init__(self) -> None:
         self.depth = 0
@@ -56,6 +64,7 @@ class _TgsSniff:
         self.unicode_left = 0
         self._unicode = ""
         self.expect_key = False
+        self.key_string = False
         self.collecting_key = False
         self.key = ""
         self.after_colon = False
@@ -63,66 +72,96 @@ class _TgsSniff:
         self.reading_number = False
         self.saw_v = False
         self.saw_layers = False
-        self.width: int | None = None
-        self.height: int | None = None
+        self.width: int | float | None = None
+        self.height: int | float | None = None
+
+    def _key_part(self, value: str) -> None:
+        if self.collecting_key:
+            if len(self.key) + len(value) <= 6:
+                self.key += value
+            else:
+                self.key = ""
+                self.collecting_key = False
 
     def feed(self, data: bytes) -> bool:
-        for raw in data:
-            if (
-                self.width is not None
-                and self.height is not None
-                and self.saw_v
-                and self.saw_layers
-            ):
-                return True
-            if self.ended:
+        index, size = 0, len(data)
+        quote_index = None
+        while index < size:
+            if self.complete or self.ended:
                 return self.ready
-            char = chr(raw)
-            if self.unicode_left:
-                self.unicode_left -= 1
-                if self.collecting_key:
-                    self._unicode += char
-                    if self.unicode_left == 0:
-                        try:
-                            self.key += chr(int(self._unicode, 16))
-                        except ValueError:
-                            pass
-                        self._unicode = ""
+            if self.reading_number:
+                found = _NUMBER_PART.match(data, index)
+                if found:
+                    self.number += found[0].decode("ascii")
+                    index = found.end()
+                    if index == size:
+                        break
+                self._finish_number()
                 continue
             if self.in_string:
+                if self.unicode_left:
+                    length = min(self.unicode_left, size - index)
+                    if self.collecting_key:
+                        self._unicode += data[index : index + length].decode("latin1")
+                    self.unicode_left -= length
+                    index += length
+                    if not self.unicode_left and self.collecting_key:
+                        try:
+                            self._key_part(chr(int(self._unicode, 16)))
+                        except ValueError:
+                            self.collecting_key = False
+                            self.key = ""
+                        self._unicode = ""
+                    continue
                 if self.escape:
+                    char = chr(data[index])
+                    index += 1
                     self.escape = False
                     if char == "u":
                         self.unicode_left = 4
                         self._unicode = ""
-                        continue
-                    if self.collecting_key and len(self.key) < 16:
-                        self.key += {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}.get(
-                            char, char
+                    else:
+                        self._key_part(
+                            {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}.get(char, char)
                         )
                     continue
-                if char == "\\":
+                if quote_index is None or (quote_index >= 0 and quote_index < index):
+                    quote_index = data.find(b'"', index)
+                quote_end = quote_index if quote_index >= 0 else size
+                escape_index = data.find(b"\\", index, quote_end)
+                end = escape_index if escape_index >= 0 else quote_end
+                if self.collecting_key:
+                    # No unrelated key or value is accumulated across chunks.
+                    length = end - index
+                    if len(self.key) + length <= 6:
+                        self._key_part(data[index:end].decode("latin1"))
+                    else:
+                        self.collecting_key = False
+                        self.key = ""
+                index = end
+                if end == size:
+                    break
+                index += 1
+                if escape_index >= 0:
                     self.escape = True
-                    continue
-                if char == '"':
+                else:
                     self.in_string = False
-                    if self.collecting_key:
+                    quote_index = None
+                    if self.key_string:
+                        self.key_string = False
                         self.collecting_key = False
                         self.expect_key = False
                     elif self.depth == 1 and self.after_colon:
                         self._note_scalar()
-                    continue
-                if self.collecting_key:
-                    if len(self.key) < 8:
-                        self.key += char
-                    else:
-                        self.collecting_key = False
-                        self.key = ""
                 continue
-            if char in " \t\r\n":
-                if self.reading_number:
-                    self._finish_number()
-                continue
+            if not self.started or (self.depth == 1 and self.after_colon):
+                token = _NONSPACE.search(data, index)
+            else:
+                token = _STRUCTURE.search(data, index)
+            if token is None:
+                break
+            index = token.start() + 1
+            char = chr(data[token.start()])
             if not self.started:
                 if char != "{":
                     self.ended = True
@@ -131,40 +170,28 @@ class _TgsSniff:
                 self.depth = 1
                 self.expect_key = True
                 continue
-            if self.reading_number and char not in "-0123456789.eE+":
-                self._finish_number()
             if char == '"':
                 self.in_string = True
-                if self.depth == 1 and self.expect_key:
-                    self.collecting_key = True
+                self.key_string = self.depth == 1 and self.expect_key
+                self.collecting_key = self.key_string
+                if self.key_string:
                     self.key = ""
                 continue
             if char == ":" and self.depth == 1:
                 self.after_colon = True
                 self.expect_key = False
                 continue
-            if char == "{":
+            if char in "{[":
                 if self.depth == 1 and self.after_colon:
-                    self._note_container()
+                    self._note_scalar()
                 self.depth += 1
                 self.after_colon = False
                 continue
-            if char == "[":
-                if self.depth == 1 and self.after_colon:
-                    self._note_container()
-                self.depth += 1
-                self.after_colon = False
-                continue
-            if char == "}":
+            if char in "}]":
                 self.depth -= 1
                 if self.depth == 0:
                     self.ended = True
                     return self.ready
-                if self.depth == 1:
-                    self.expect_key = True
-                continue
-            if char == "]":
-                self.depth -= 1
                 if self.depth == 1:
                     self.expect_key = True
                 continue
@@ -173,15 +200,15 @@ class _TgsSniff:
                     self.expect_key = True
                     self.after_colon = False
                 continue
-            if self.depth == 1 and self.after_colon and char in "-0123456789":
-                self.reading_number = True
-                self.number += char
-                continue
-            if self.depth == 1 and self.after_colon and char in "tfn":
-                self._note_scalar()
+            if self.depth == 1 and self.after_colon:
+                if self.key in {"w", "h"} and char in "-0123456789":
+                    self.reading_number = True
+                    self.number = char
+                else:
+                    self._note_scalar()
         return self.ready
 
-    def _note_container(self) -> None:
+    def _note_scalar(self) -> None:
         if self.key == "v":
             self.saw_v = True
         elif self.key == "layers":
@@ -189,28 +216,24 @@ class _TgsSniff:
         self.key = ""
         self.after_colon = False
 
-    def _note_scalar(self) -> None:
-        if self.key in {"v", "layers"}:
-            if self.key == "v":
-                self.saw_v = True
-            else:
-                self.saw_layers = True
-        self.key = ""
-        self.after_colon = False
-
     def _finish_number(self) -> None:
+        value = None
+        if _JSON_NUMBER.fullmatch(self.number):
+            value = json.loads(self.number)
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
         if self.key == "w":
-            self.width = _plain_int(self.number)
-        elif self.key == "h":
-            self.height = _plain_int(self.number)
-        elif self.key == "v":
-            self.saw_v = True
-        elif self.key == "layers":
-            self.saw_layers = True
+            self.width = value
+        else:
+            self.height = value
         self.number = ""
         self.reading_number = False
         self.key = ""
         self.after_colon = False
+
+    @property
+    def complete(self) -> bool:
+        return self.saw_v and self.saw_layers and self.width is not None and self.height is not None
 
     @property
     def ready(self) -> bool:
@@ -221,44 +244,49 @@ class _TgsSniff:
         )
 
 
-def _plain_int(value: str) -> int | None:
-    try:
-        return int(value)
-    except ValueError:
-        return None
+def _gzip_payload(stream: BinaryIO) -> bool:
+    """Position at raw deflate, leaving optional header fields and CRC behind."""
+    stream.seek(0)
+    header = stream.read(10)
+    if len(header) != 10 or header[:3] != b"\x1f\x8b\x08":
+        return False
+    flags = header[3]
+    if flags & 4:
+        length = stream.read(2)
+        if len(length) != 2:
+            return False
+        stream.seek(int.from_bytes(length, "little"), 1)
+    for flag in (8, 16):
+        if flags & flag:
+            while True:
+                part = stream.read(4096)
+                if not part:
+                    return False
+                end = part.find(b"\0")
+                if end >= 0:
+                    stream.seek(end + 1 - len(part), 1)
+                    break
+    if flags & 2:
+        stream.seek(2, 1)
+    return True
 
 
 def _tgs_header(stream: BinaryIO) -> dict[str, Any] | None:
-    stream.seek(0)
-    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    if not _gzip_payload(stream):
+        return None
+    decoder = zlib.decompressobj(-zlib.MAX_WBITS)
     sniff = _TgsSniff()
     try:
-        pending = b""
-        complete = False
-        while not complete:
-            complete = (
-                sniff.saw_v
-                and sniff.saw_layers
-                and sniff.width is not None
-                and sniff.height is not None
-            )
-            if complete:
-                break
+        while not (sniff.complete or sniff.ended or decoder.eof):
+            pending = stream.read(4096)
             if not pending:
-                pending = stream.read(4096)
-                if not pending:
-                    sniff.feed(decoder.flush())
-                    break
-            produced = decoder.decompress(pending, 256)
-            pending = decoder.unconsumed_tail
-            if produced:
-                sniff.feed(produced)
-                continue
-            more = stream.read(4096)
-            if not more:
-                sniff.feed(decoder.flush())
                 break
-            pending += more
+            full = False
+            while (pending or full) and not (sniff.complete or sniff.ended):
+                produced = decoder.decompress(pending, 65536)
+                sniff.feed(produced)
+                pending = decoder.unconsumed_tail
+                full = len(produced) == 65536
     except zlib.error:
         if not (sniff.saw_v and sniff.saw_layers):
             return None

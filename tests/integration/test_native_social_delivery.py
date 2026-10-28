@@ -223,7 +223,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
         original = (
             event.content,
             event.segments_json,
-            event.platform_message_id,
+            event.origin_key,
             event.canonical_conversation_id,
             event.author_presence_id,
             event.reply_to_event_id,
@@ -267,7 +267,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
     assert (
         kept.content,
         kept.segments_json,
-        kept.platform_message_id,
+        kept.origin_key,
         kept.canonical_conversation_id,
         kept.author_presence_id,
         kept.reply_to_event_id,
@@ -1059,7 +1059,7 @@ async def test_two_original_executors_cannot_mix_changed_tail_layouts(native_env
 
 
 @pytest.mark.parametrize("caption", ["", "文件附言"])
-async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
+async def test_qq_file_keeps_internal_reply_on_first_part_without_fake_native_reference(
     database, tmp_path, caption
 ):
     env = await social_env(database, tmp_path)
@@ -1087,13 +1087,14 @@ async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
                 .order_by(ChatEventModel.id)
             )
         )
-    assert events[0].reply_to_event_id is None and events[0].reply_to_message_id is None
+    assert events[0].reply_to_event_id == source.id
+    assert events[0].reply_to_message_id is None
     assert len(events) == (2 if caption else 1)
     if caption:
-        assert events[1].reply_to_event_id == source.id
+        assert events[1].reply_to_event_id is None
         assert env.bot.calls[-1][1]["message"][0] == {
             "type": "reply",
-            "data": {"id": source.platform_message_id},
+            "data": {"id": source.origin_key},
         }
     original_effects = list(env.bot.calls)
     assert (

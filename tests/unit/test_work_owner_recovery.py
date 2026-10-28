@@ -420,7 +420,10 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
     paused = []
     for number in range(33):
         incoming = replace(
-            message, message_id=f"capacity-input-{number}", text=f"distinct input {number}"
+            message,
+            ingress_key=f"capacity-input-{number}",
+            native_message_id=f"capacity-input-{number}",
+            text=f"distinct input {number}",
         )
         await harness.processor.handle(incoming, MemorySender())
         async with database.read_session() as reader:
@@ -456,7 +459,8 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
     assert await env.router.cas_takeover_person(env.person) == "taken"
     private = replace(
         message,
-        message_id="idle-private-work",
+        ingress_key="idle-private-work",
+        native_message_id="idle-private-work",
         scope_type=ScopeType.PRIVATE,
         group_id=None,
         space_id=None,
@@ -735,7 +739,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
             await seed_event(
                 case.chat._ledger,
                 bot_user_id="80001",
-                platform_message_id="derived-automation-observation",
+                origin_key="derived-automation-observation",
                 scope_type=ScopeType.GROUP,
                 sender_user_id="10001",
                 group_id="20001",

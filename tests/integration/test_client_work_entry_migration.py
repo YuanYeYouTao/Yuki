@@ -62,7 +62,7 @@ async def test_work_card_keeps_original_space_binding_after_telegram_group_migra
                 presence_id=telegram_env.gateway.presence_id,
                 conversation_id=conversation.conversation_id,
             ),
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             sender_user_id="42",
             direction="inbound",
             content="Original accepted Work source",

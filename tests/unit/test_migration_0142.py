@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from tests.support.migration_columns import preserved_projection
 from tests.unit.test_migration_0119 import _seed_0118
 
 from yuki.persistence.schema_guard import require_canonical_schema
@@ -48,7 +49,8 @@ def original(original_template, tmp_path, monkeypatch):
 
 
 def _rows(connection, table, columns):
-    return connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY rowid').fetchall()
+    projection = preserved_projection(connection, table, columns)
+    return connection.execute(f'SELECT {projection} FROM "{table}" ORDER BY rowid').fetchall()
 
 
 def _name(connection, account, stage, scope, name, first, last, *, kind="nickname"):
@@ -124,9 +126,7 @@ def test_upgrade_merges_only_identical_name_owners_and_preserves_original_facts(
         # Compare every original field through head; newly added receipt source
         # columns are separate facts rather than mutations of the old payload.
         original_columns = {
-            table: ",".join(
-                f'"{row[1]}"' for row in connection.execute(f'PRAGMA table_info("{table}")')
-            )
+            table: [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]
             for table in PROTECTED
         }
         before = {table: _rows(connection, table, original_columns[table]) for table in PROTECTED}

@@ -28,7 +28,8 @@ from yuki.runtime.work_schema_v1 import inputs
 def message(**changes):
     return replace(
         InboundMessage(
-            message_id="empty-input",
+            ingress_key="empty-input",
+            native_message_id="empty-input",
             event_type="message:test",
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity("1001"),
@@ -114,7 +115,8 @@ async def test_absent_qq_input_does_not_enqueue_or_interrupt_original_work(
         ):
             result = await processor.handle(
                 message(
-                    message_id="blank-during-work",
+                    ingress_key="blank-during-work",
+                    native_message_id="blank-during-work",
                     reply_to_message_id="unknown-original" if unresolved_reply else None,
                 ),
                 sender,
@@ -211,7 +213,9 @@ async def test_mention_only_greeting_and_explicit_command_keep_their_routes(data
     assert len(provider.requests) == 1
     assert "只 @ 了你" in str(provider.requests[0].messages)
     sender = MemorySender()
-    result = await harness.processor.handle(message(message_id="help", text="/ai help"), sender)
+    result = await harness.processor.handle(
+        message(ingress_key="help", native_message_id="help", text="/ai help"), sender
+    )
     assert result.reason == "command_help" and sender.calls == 1
     assert len(provider.requests) == 1
 
@@ -225,7 +229,8 @@ async def test_reference_without_body_reaches_canonical_resolution(database, int
     async with database.read_session() as reader:
         original = (await reader.scalars(select(ChatEventModel))).one()
     incoming = message(
-        message_id="reference-only",
+        ingress_key="reference-only",
+        native_message_id="reference-only",
         **(
             {"reply_to_event_id": original.id}
             if internal
@@ -253,17 +258,26 @@ async def test_reference_without_resolvable_content_stays_silent(database, known
     if known_empty_source:
         # An unresolved native reference is recorded even when it has no body.
         original_result = await processor.handle(
-            message(message_id="empty-source", reply_to_message_id="not-observed"), MemorySender()
+            message(
+                ingress_key="empty-source",
+                native_message_id="empty-source",
+                reply_to_message_id="not-observed",
+            ),
+            MemorySender(),
         )
         assert original_result.reason == "empty"
         async with database.read_session() as reader:
             original = (await reader.scalars(select(ChatEventModel))).one()
         original_id = original.id
-        reference_id = original.platform_message_id
+        reference_id = original.origin_key
     committed = Mock()
     sender = MemorySender()
     result = await processor.handle(
-        message(message_id="reference-only", reply_to_message_id=reference_id),
+        message(
+            ingress_key="reference-only",
+            native_message_id="reference-only",
+            reply_to_message_id=reference_id,
+        ),
         sender,
         on_committed=committed,
     )

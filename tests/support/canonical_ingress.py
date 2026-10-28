@@ -72,7 +72,7 @@ async def append_user_event(
     row, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id=message_id,
+        origin_key=message_id,
         scope_type=ScopeType.PRIVATE,
         sender_user_id=user_id,
         direction="inbound",

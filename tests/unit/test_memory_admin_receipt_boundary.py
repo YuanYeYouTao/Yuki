@@ -39,7 +39,7 @@ async def test_memory_and_preference_mutations_keep_their_original_receipts(data
     actor = AdminActor(
         user_id="1001",
         is_superuser=False,
-        trigger_message_id=event.platform_message_id,
+        trigger_message_id=event.origin_key,
         trigger_event_id=event.id,
         conversation_key="private:1001",
         bot_user_id=event.bot_user_id,
@@ -48,7 +48,7 @@ async def test_memory_and_preference_mutations_keep_their_original_receipts(data
     event = await _event(
         ledger, message_id="admin-correct", sender_user_id="1001", content="correct"
     )
-    actor = replace(actor, trigger_event_id=event.id, trigger_message_id=event.platform_message_id)
+    actor = replace(actor, trigger_event_id=event.id, trigger_message_id=event.origin_key)
     assert await admin.update_memory(actor, "1001", row.id, "我喜欢物理")
     async with database.read_session() as reader:
         receipts = list(
@@ -59,7 +59,7 @@ async def test_memory_and_preference_mutations_keep_their_original_receipts(data
     updated_id = receipts[-1].new_fact_id
     assert updated_id is not None
     event = await _event(ledger, message_id="admin-delete", sender_user_id="1001", content="delete")
-    actor = replace(actor, trigger_event_id=event.id, trigger_message_id=event.platform_message_id)
+    actor = replace(actor, trigger_event_id=event.id, trigger_message_id=event.origin_key)
     assert await admin.delete_memory(actor, "1001", updated_id)
 
     person = PersonId.parse(event.author_person_id)
@@ -79,7 +79,7 @@ async def test_memory_and_preference_mutations_keep_their_original_receipts(data
     event = await _event(ledger, message_id="preference-set", sender_user_id="1001", content="set")
     correlation = ControlAuditRef(
         user_id="1001",
-        trigger_message_id=event.platform_message_id,
+        trigger_message_id=event.origin_key,
         trigger_event_id=event.id,
         conversation_key="private:1001",
         bot_user_id=event.bot_user_id,
@@ -91,7 +91,7 @@ async def test_memory_and_preference_mutations_keep_their_original_receipts(data
         ledger, message_id="preference-delete", sender_user_id="1001", content="delete"
     )
     correlation = replace(
-        correlation, trigger_event_id=event.id, trigger_message_id=event.platform_message_id
+        correlation, trigger_event_id=event.id, trigger_message_id=event.origin_key
     )
     assert await preferences.delete_preference(context, "format", audit=correlation)
     duplicate_audit.assert_not_awaited()

@@ -45,6 +45,12 @@ class _Bot:
 
 
 class _LagrangeProvider:
+    @property
+    def social(self):
+        from yuki.adapters.onebot.social import OneBotSocialOperations
+
+        return OneBotSocialOperations()
+
     def media(self, handle: object) -> None:
         return None
 
@@ -81,7 +87,8 @@ def _message(
     is_bot: bool = False,
 ) -> InboundMessage:
     return InboundMessage(
-        message_id=message_id,
+        ingress_key=message_id,
+        native_message_id=message_id,
         event_type="message:test",
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
         sender=SenderIdentity(user_id=user_id, is_bot=is_bot),
@@ -660,7 +667,7 @@ async def _insert_keeper(
     database: Database,
     *,
     conversation_id: str,
-    platform_message_id: str,
+    origin_key: str,
     author_kind: str,
     bot_user_id: str = "8000",
     sender_user_id: str = "8000",
@@ -674,10 +681,13 @@ async def _insert_keeper(
             if author_kind == AuthorKind.YUKI.value
             else None
         )
+        receiving_presence_id = await ensure_v2_presence(session, "8000")
         session.add(
             ChatEventModel(
                 bot_user_id=bot_user_id,
-                platform_message_id=platform_message_id,
+                origin_key=origin_key,
+                native_message_id=origin_key,
+                ingress_presence_id=receiving_presence_id,
                 scope_type="private",
                 private_peer_user_id="1001",
                 sender_user_id=sender_user_id,
@@ -720,20 +730,20 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
     await _insert_keeper(
         database,
         conversation_id=first.conversation_id,
-        platform_message_id="yuki-out",
+        origin_key="yuki-out",
         author_kind=AuthorKind.YUKI.value,
     )
     await _insert_keeper(
         database,
         conversation_id=other.conversation_id,
-        platform_message_id="foreign-yuki",
+        origin_key="foreign-yuki",
         author_kind=AuthorKind.YUKI.value,
         sender_user_id="1002",
     )
     await _insert_keeper(
         database,
         conversation_id=first.conversation_id,
-        platform_message_id="ext-out",
+        origin_key="ext-out",
         author_kind=AuthorKind.EXTERNAL_BOT.value,
         sender_user_id="7777",
     )
@@ -781,7 +791,7 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
     async with database.read_session() as session:
         persisted = await session.get(ChatEventModel, appended.event.id)
         anchor = await session.get(ChatEventModel, persisted.reply_to_event_id)
-        assert anchor.platform_message_id == "yuki-out"
+        assert anchor.origin_key == "yuki-out"
         assert anchor.canonical_conversation_id == first.conversation_id
     # A duplicate ingress replay keeps the committed internal reference unchanged.
     repeated = await uow.append_inbound(yuki.message, yuki)
@@ -813,14 +823,14 @@ async def test_canonical_reply_ambiguous_or_duplicate_only(
     await _insert_keeper(
         database,
         conversation_id=first.conversation_id,
-        platform_message_id="amb-id",
+        origin_key="amb-id",
         author_kind=AuthorKind.YUKI.value,
         canonical_event_id=str(uuid4()),
     )
     await _insert_keeper(
         database,
         conversation_id=first.conversation_id,
-        platform_message_id="amb-id",
+        origin_key="amb-id",
         author_kind=AuthorKind.YUKI.value,
         bot_user_id="8001",
         canonical_event_id=str(uuid4()),
@@ -828,7 +838,7 @@ async def test_canonical_reply_ambiguous_or_duplicate_only(
     await _insert_keeper(
         database,
         conversation_id=first.conversation_id,
-        platform_message_id="sup-only",
+        origin_key="sup-only",
         author_kind=AuthorKind.YUKI.value,
         suppression_status="duplicate",
         canonical_event_id=str(uuid4()),
@@ -998,7 +1008,7 @@ async def test_internal_reply_reference_rejects_a_foreign_conversation(database:
     async with database.read_session() as session:
         assert (
             await session.scalar(
-                select(ChatEventModel).where(ChatEventModel.platform_message_id == "foreign-ref")
+                select(ChatEventModel).where(ChatEventModel.origin_key == "foreign-ref")
             )
             is None
         )

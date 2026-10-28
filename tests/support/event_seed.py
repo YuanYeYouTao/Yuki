@@ -61,7 +61,8 @@ async def seed_scoped_event(
     writer,
     *,
     scope: ConversationScope,
-    platform_message_id: str,
+    origin_key: str | None,
+    native_message_id: str | None = None,
     sender_user_id: str,
     direction: str,
     content: str,
@@ -105,7 +106,8 @@ async def seed_scoped_event(
         return await writer.append(
             prepared=prepared,
             scope=scope,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
+            native_message_id=native_message_id or origin_key,
             sender_user_id=sender_user_id,
             direction=direction,
             content=content,
@@ -155,7 +157,7 @@ async def seed_scoped_event(
                 CanonicalEventReceiptModel.ingress_account_id == presence.account_id,
                 CanonicalEventReceiptModel.transport_namespace == transport_namespace(scope),
                 CanonicalEventReceiptModel.event_type == "message",
-                CanonicalEventReceiptModel.platform_message_id == platform_message_id,
+                CanonicalEventReceiptModel.ingress_key == origin_key,
             )
         )
         if receipt is not None:
@@ -200,7 +202,8 @@ async def seed_scoped_event(
         now = datetime.now(UTC)
         row = ChatEventModel(
             bot_user_id=scope.bot_user_id,
-            platform_message_id=platform_message_id,
+            origin_key=origin_key,
+            native_message_id=native_message_id or origin_key,
             scope_type=scope.scope_type.value,
             group_id=scope.group_id,
             private_peer_user_id=scope.private_peer_user_id,
@@ -229,7 +232,7 @@ async def seed_scoped_event(
                     ingress_account_id=presence.account_id,
                     transport_namespace=transport_namespace(scope),
                     event_type="message",
-                    platform_message_id=platform_message_id,
+                    ingress_key=origin_key,
                     canonical_event_id=row.canonical_event_id,
                     created_at=now,
                     observed_at=now,

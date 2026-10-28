@@ -28,6 +28,7 @@ from yuki.plugin_host.notification_delivery import (
 from yuki.plugin_host.notification_repository import PluginNotificationRepository
 from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.services.effect_gate import ConversationEffectGate
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk import PLUGIN_API_VERSION
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
@@ -114,6 +115,7 @@ async def test_two_topics_keep_independent_grant_receipt_and_native_delivery(
     retried = await repository.publish(plugin_id="native-notification", request=requests[1])
     assert retried.deduplicated and retried.notification_id == receipts[1].notification_id
     worker = PluginNotificationOutboxWorker(
+        workspace_store=WorkspaceStore(tmp_path / "workspace"),
         repository=repository,
         artifacts=PluginMediaArtifactStore(database, tmp_path / "artifacts"),
         ledger=env.harness.ledger,
@@ -254,6 +256,7 @@ async def test_notification_media_keeps_handle_mime_and_original_delivery_fact(
 
     monkeypatch.setattr(env.gateway.client._client, "_transport", httpx.MockTransport(respond))
     worker = PluginNotificationOutboxWorker(
+        workspace_store=WorkspaceStore(tmp_path / "workspace"),
         repository=repository,
         artifacts=store,
         ledger=env.harness.ledger,

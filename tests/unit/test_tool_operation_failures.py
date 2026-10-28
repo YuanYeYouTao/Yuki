@@ -53,6 +53,7 @@ async def test_database_tool_failure_keeps_actual_commit_and_original_phase(
     runtime = ToolRuntime(
         inbound=InboundMessage(
             "original-trigger",
+            "original-trigger",
             "message:private:normal",
             ScopeType.PRIVATE,
             SenderIdentity("1001"),
@@ -113,6 +114,7 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
     tools.sandbox_client = backend
     runtime = ToolRuntime(
         inbound=InboundMessage(
+            "trigger",
             "trigger",
             "message:private:normal",
             ScopeType.PRIVATE,
@@ -216,6 +218,7 @@ async def test_non_sqlalchemy_commit_failure_keeps_real_certainty(
     runtime = ToolRuntime(
         inbound=InboundMessage(
             "original-trigger",
+            "original-trigger",
             "message:private:normal",
             ScopeType.PRIVATE,
             SenderIdentity("1001"),
@@ -253,6 +256,7 @@ async def test_rolled_back_business_value_error_remains_business_error(database)
         "{}",
         ToolRuntime(
             inbound=InboundMessage(
+                "trigger",
                 "trigger",
                 "message:private:normal",
                 ScopeType.PRIVATE,

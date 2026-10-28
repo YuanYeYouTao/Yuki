@@ -26,7 +26,7 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     event, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id="original-memory-source",
+        origin_key="original-memory-source",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
         private_peer_user_id="1001",
@@ -58,6 +58,7 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     )
     runtime = ToolRuntime(
         inbound=InboundMessage(
+            "current-query",
             "current-query",
             "message:private:normal",
             ScopeType.PRIVATE,

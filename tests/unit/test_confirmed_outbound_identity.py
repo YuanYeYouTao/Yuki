@@ -38,6 +38,7 @@ from yuki.plugin_host.notification_delivery import (
 from yuki.plugin_host.notification_repository import OutboxRecord, PluginNotificationRepository
 from yuki.services.effect_gate import ConversationEffectGate
 from yuki.social.db_models import SocialOperationModel
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -90,7 +91,7 @@ async def _repeat_original(database, env, sent):
                 presence_id=env.presence,
                 conversation_id=row.canonical_conversation_id,
             ),
-            platform_message_id=row.platform_message_id,
+            origin_key=row.origin_key,
             sender_user_id=row.sender_user_id,
             direction="outbound",
             content=row.content,
@@ -295,7 +296,7 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
     )
     external = await env.service.writer.append_external(
         scope=scope,
-        platform_message_id="original-external",
+        origin_key="original-external",
         source_plugin_id="test.confirmed-notification",
         external_source="test",
         external_event_key="original-key",
@@ -334,6 +335,7 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
     )
     transport = AsyncMock()
     worker = PluginNotificationOutboxWorker(
+        workspace_store=WorkspaceStore(tmp_path / "workspace"),
         repository=PluginNotificationRepository(database),
         artifacts=PluginMediaArtifactStore(database, tmp_path / "plugin-media"),
         ledger=EventLedgerRepository(database),
@@ -388,7 +390,7 @@ async def test_notification_record_reuses_existing_author_fact_without_recheckin
     await worker._record_outbound(item, receipt)
     async with database.immediate_session() as writer:
         original = await writer.scalar(
-            select(ChatEventModel).where(ChatEventModel.platform_message_id == receipt.message_id)
+            select(ChatEventModel).where(ChatEventModel.origin_key == receipt.message_id)
         )
         original.author_kind, original.author_presence_id = "external_bot", None
         event_id = original.id
@@ -435,7 +437,7 @@ async def test_original_outbound_receipt_still_rejects_a_different_explicit_time
                 presence_id=env.presence,
                 conversation_id=original.canonical_conversation_id,
             ),
-            platform_message_id=original.platform_message_id,
+            origin_key=original.origin_key,
             sender_user_id=original.sender_user_id,
             direction="outbound",
             content=original.content,

@@ -95,7 +95,7 @@ async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(
             await seed_scoped_event(
                 env.service.writer,
                 scope=message.scope(),
-                platform_message_id=f"raw-{number}",
+                origin_key=f"raw-{number}",
                 sender_user_id="10001",
                 direction="inbound",
                 content=f"历史正文{number}",
@@ -163,7 +163,12 @@ async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(
             processed.clear()
             loaded.clear()
             result = await harness.processor.handle(
-                replace(message, message_id=f"trigger-{number}", text=f"当前要求{number}"),
+                replace(
+                    message,
+                    ingress_key=f"trigger-{number}",
+                    native_message_id=f"trigger-{number}",
+                    text=f"当前要求{number}",
+                ),
                 MemorySender(),
             )
             assert result.reason == "chat"
@@ -195,7 +200,7 @@ async def test_legacy_summary_rebuild_reads_raw_bodies_from_real_assembler(datab
     await seed_scoped_event(
         env.service.writer,
         scope=message.scope(),
-        platform_message_id="legacy-old",
+        origin_key="legacy-old",
         sender_user_id="10001",
         direction="inbound",
         content="必须重建的原始正文",
@@ -225,7 +230,10 @@ async def test_legacy_summary_rebuild_reads_raw_bodies_from_real_assembler(datab
     chat.runtime.main_turns.compose = capture
     assert (
         await harness.processor.handle(
-            replace(message, message_id="legacy-next", text="继续"), MemorySender()
+            replace(
+                message, ingress_key="legacy-next", native_message_id="legacy-next", text="继续"
+            ),
+            MemorySender(),
         )
     ).reason == "chat"
     assert "必须重建的原始正文" in "\n".join(
@@ -250,7 +258,7 @@ async def test_concurrent_admission_cannot_remove_an_older_candidates_captured_h
         await seed_scoped_event(
             env.service.writer,
             scope=message.scope(),
-            platform_message_id=f"hole-{number}",
+            origin_key=f"hole-{number}",
             sender_user_id="10001",
             direction="inbound",
             content=f"未接纳洞{number}",

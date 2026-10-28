@@ -31,7 +31,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
     await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=str(uuid.uuid4()),
+        origin_key=str(uuid.uuid4()),
         scope_type=ScopeType.PRIVATE,
         sender_user_id="3003",
         private_peer_user_id="3003",
@@ -41,7 +41,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
     mentioned, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=str(uuid.uuid4()),
+        origin_key=str(uuid.uuid4()),
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
@@ -52,7 +52,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
     ordinary, _ = await seed_event(
         ledger,
         bot_user_id="8000",
-        platform_message_id=str(uuid.uuid4()),
+        origin_key=str(uuid.uuid4()),
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",

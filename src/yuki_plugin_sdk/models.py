@@ -126,7 +126,7 @@ class CurrentMessage(CanonicalIdentityProjection):
     platform: str = ""
     author_kind: str | None = None
     author_account_id: str | None = None
-    message_id: str = Field(min_length=1, max_length=128)
+    native_message_id: str | None = None
     sender_user_id: str = Field(min_length=1, max_length=64)
     scope_type: str = Field(pattern=r"^(private|group)$")
     group_id: str | None = Field(default=None, max_length=64)

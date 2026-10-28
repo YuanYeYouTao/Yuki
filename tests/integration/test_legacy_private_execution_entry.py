@@ -30,6 +30,7 @@ from yuki.runtime.work_repository import WorkRepository
 from yuki.services.execution_sources import recover_source
 from yuki.services.turn_transcript import TurnTranscript
 from yuki.social.service import SocialContext
+from yuki.workspace.store import WorkspaceStore
 
 
 class Bot:
@@ -373,6 +374,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                 )
             assert len(provider.requests) == before_job
             delivery = PluginNotificationOutboxWorker(
+                workspace_store=WorkspaceStore(tmp_path / "workspace"),
                 repository=notifications,
                 ledger=harness.ledger,
                 artifacts=PluginMediaArtifactStore(database, tmp_path / "media"),
@@ -401,7 +403,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
             fresh = await seed_scoped_event(
                 ScopedEventLedgerUnitOfWork(database),
                 scope=ConversationScope.private("testB", "0"),
-                platform_message_id="new-b",
+                origin_key="new-b",
                 sender_user_id="0",
                 direction="inbound",
                 content="new B request",

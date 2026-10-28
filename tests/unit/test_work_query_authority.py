@@ -25,7 +25,8 @@ async def query_environment(database):
     chat.set_automation_tools(AutomationToolService(SimpleNamespace(enabled=True)))
     config = await chat._runtime_config.snapshot()
     inbound = InboundMessage(
-        message_id="platform-id",
+        ingress_key="platform-id",
+        native_message_id="platform-id",
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity("1001"),

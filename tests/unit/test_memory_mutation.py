@@ -254,7 +254,7 @@ async def _event(
     event, _ = await seed_event(
         ledger,
         bot_user_id=bot_user_id,
-        platform_message_id=message_id,
+        origin_key=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
         sender_user_id=sender_user_id,
         direction=direction,
@@ -783,7 +783,8 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
         **tool_dependencies(database, make_settings(database.url)),
     )
     inbound = InboundMessage(
-        message_id=event.platform_message_id,
+        ingress_key=event.origin_key,
+        native_message_id=event.origin_key,
         event_type="message",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id=event.sender_user_id),
@@ -796,7 +797,6 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
     runtime = ToolRuntime(
         inbound=inbound,
         conversation_key="private:1001",
-        trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id if has_event_id else None,
         origin=TurnOrigin.USER_MESSAGE,
     )
@@ -1543,7 +1543,8 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
 
     people_ids, space_ids = await _owners(database)
     inbound = InboundMessage(
-        message_id="member-read",
+        ingress_key="member-read",
+        native_message_id="member-read",
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="1001"),

@@ -327,7 +327,7 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
                 platform="telegram",
                 presence_id=presence.id,
             ),
-            platform_message_id=str(uuid4()),
+            origin_key=str(uuid4()),
             sender_user_id="telegram-test-account",
             direction="inbound",
             content="Historical confirmation, execute now",

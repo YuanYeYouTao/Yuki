@@ -156,7 +156,8 @@ async def onebot_call(database, tmp_path):
         (await session.get(CanonicalPersonModel, event.author_person_id)).is_superuser = True
     gateway = SimpleNamespace(call_api=AsyncMock(return_value={"status": "ok", "changed": True}))
     inbound = InboundMessage(
-        message_id=event.platform_message_id,
+        ingress_key=event.origin_key,
+        native_message_id=event.origin_key,
         event_type="message",
         scope_type=event.scope_type,
         sender=SenderIdentity(event.sender_user_id),

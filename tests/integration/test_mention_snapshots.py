@@ -137,7 +137,7 @@ async def test_retired_presence_is_member_and_quote_keeps_accepted_names(databas
         )
     )
     current = replace(
-        current, reply_to_message_id=original.message_id, reply_text="伪造引用@今日名字"
+        current, reply_to_message_id=original.native_message_id, reply_text="伪造引用@今日名字"
     )
     reply = await resolver.pre_admit(bot, current)
     assert reply.message.mentions_bot

@@ -1127,7 +1127,7 @@ async def test_original_raw_target_publication_returns_same_receipt_after_canoni
     async with database.immediate_session() as session:
         stored = await session.get(ChatEventModel, receipt.source_event_id)
         stored.external_target_id = "1001"
-        stored.platform_message_id = "external-" + original_id
+        stored.origin_key = "external-" + original_id
         import json
 
         segments = json.loads(stored.segments_json)

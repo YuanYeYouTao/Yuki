@@ -91,7 +91,7 @@ class ClientRequests:
             presence_id=presence.id,
             scope=scope,
             event_type=f"message:{principal.platform}",
-            platform_message_id=principal.message_key(request_id),
+            ingress_key=principal.message_key(request_id),
         )
         if receipt is None:
             return None

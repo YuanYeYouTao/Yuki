@@ -26,7 +26,13 @@ async def test_projection_turn_composes_only_the_selected_context_and_refreshes_
     state.update({"slot": 1, "text": "fresh-next-activation"})
     assert (
         await harness.processor.handle(
-            replace(message, message_id="next-activation", text="继续处理"), MemorySender()
+            replace(
+                message,
+                ingress_key="next-activation",
+                native_message_id="next-activation",
+                text="继续处理",
+            ),
+            MemorySender(),
         )
     ).reason == "chat"
     assert len(contexts) == len(provider.requests) == 2

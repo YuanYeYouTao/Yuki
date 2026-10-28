@@ -99,7 +99,7 @@ class ClientLinkCommands:
                                 platform=snapshot.platform,
                                 account=message.sender.user_id,
                                 display_name=message.sender.nickname,
-                                message_id=message.message_id,
+                                message_id=message.native_message_id or "",
                                 session=writer,
                                 prepared=prepared_claim,
                             )
@@ -107,7 +107,7 @@ class ClientLinkCommands:
                             result = await self.identities.issue_for_account(
                                 platform=snapshot.platform,
                                 account=message.sender.user_id,
-                                message_id=message.message_id,
+                                message_id=message.native_message_id or "",
                                 session=writer,
                             )
                 except CanonicalIdentityError as exc:

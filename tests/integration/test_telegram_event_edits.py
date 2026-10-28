@@ -41,7 +41,7 @@ async def _source(database, message_id="42:1"):
     async with database.read_session() as reader:
         row = await reader.scalar(
             select(ChatEventModel).where(
-                ChatEventModel.platform_message_id == message_id,
+                ChatEventModel.origin_key == message_id,
                 ChatEventModel.direction == "inbound",
             )
         )

@@ -661,14 +661,14 @@ async def test_database_discovery_failure_does_not_kill_pending_delivery(
     original = delivery.intents.pending
     attempts = 0
 
-    async def pending(after=None):
+    async def pending(after=None, **kwargs):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise OperationalError(
                 "select pending", (), sqlite3.OperationalError("database is locked")
             )
-        return await original(after)
+        return await original(after, **kwargs)
 
     monkeypatch.setattr(delivery.intents, "pending", pending)
     await delivery.start()

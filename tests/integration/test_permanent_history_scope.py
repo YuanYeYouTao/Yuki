@@ -37,7 +37,7 @@ async def permanent_entries(database, tmp_path):
         added = await seed_scoped_event(
             env.service.writer,
             scope=scope,
-            platform_message_id=thread,
+            origin_key=thread,
             sender_user_id="10001",
             direction="inbound",
             content=f"雷达站 {thread}",
@@ -46,7 +46,7 @@ async def permanent_entries(database, tmp_path):
     duplicate = await seed_scoped_event(
         env.service.writer,
         scope=entries[-1].scope,
-        platform_message_id="duplicate-message",
+        origin_key="duplicate-message",
         sender_user_id="10001",
         direction="inbound",
         content="雷达站 duplicate",
@@ -54,7 +54,7 @@ async def permanent_entries(database, tmp_path):
     forgotten = await seed_scoped_event(
         env.service.writer,
         scope=entries[-1].scope,
-        platform_message_id="forgotten-message",
+        origin_key="forgotten-message",
         sender_user_id="10001",
         direction="inbound",
         content="雷达站 forgotten",

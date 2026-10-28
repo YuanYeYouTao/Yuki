@@ -54,7 +54,7 @@ async def test_snapshot_and_keysets_read_only_own_private_entries(app_env, datab
                 await seed_scoped_event(
                     env.harness.scoped_events,
                     scope=ConversationScope.private("8000", "1001"),
-                    platform_message_id=str(uuid4()),
+                    origin_key=str(uuid4()),
                     sender_user_id="1001",
                     direction="inbound",
                     content=f"entry {index}",

@@ -144,7 +144,7 @@ async def test_group_new_rechecks_role_after_wait_before_generation_write(databa
                     select(func.count())
                     .select_from(ChatEventModel)
                     .where(
-                        ChatEventModel.platform_message_id == "revoke-new",
+                        ChatEventModel.origin_key == "revoke-new",
                         ChatEventModel.direction == "inbound",
                     )
                 )

@@ -886,7 +886,6 @@ class ChatService:
                 runtime = ToolRuntime(
                     inbound=inbound,
                     conversation_key=conversation_key,
-                    trigger_message_id=inbound.message_id,
                     actor_is_superuser=await self._person_is_superuser(inbound.person_id),
                     runtime_config=runtime_config,
                     origin=turn_origin,
@@ -1508,7 +1507,6 @@ class ChatService:
             tool_runtime = ToolRuntime(
                 inbound=None,
                 conversation_key=conversation_key,
-                trigger_message_id=event.platform_message_id,
                 actor_is_superuser=False,
                 runtime_config=runtime,
                 origin=TurnOrigin.PLUGIN_BACKGROUND,
@@ -1610,7 +1608,8 @@ class ChatService:
         try:
             await self._ledger._writer.append(
                 scope=inbound.scope(),
-                platform_message_id=platform_message_id,
+                origin_key=platform_message_id,
+                native_message_id=platform_message_id,
                 sender_user_id=inbound.bot_user_id,
                 direction="outbound",
                 content=content,
@@ -1640,8 +1639,8 @@ class ChatService:
             self._event_publisher,
             EventName.REPLY_SENT,
             {
-                "trigger_message_id": inbound.message_id,
-                "platform_message_id": platform_message_id,
+                "trigger_event_id": inbound.source_event_id,
+                "native_message_id": platform_message_id,
                 "scope_type": inbound.scope_type.value,
                 "character_count": len(content),
                 "delivered": True,

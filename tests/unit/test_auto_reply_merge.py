@@ -56,7 +56,8 @@ class _Runtime:
 
 def _message(event_id: int, *, group: str = "20001") -> InboundMessage:
     return InboundMessage(
-        message_id=f"m{event_id}",
+        ingress_key=f"m{event_id}",
+        native_message_id=f"m{event_id}",
         event_type="message:test",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001"),
@@ -176,7 +177,8 @@ async def _open_group_scene(database, tmp_path, provider, *, debounce: float, **
 
     def message(index: int, text: str, *, mention: bool = False) -> InboundMessage:
         return InboundMessage(
-            message_id=f"open-{index}",
+            ingress_key=f"open-{index}",
+            native_message_id=f"open-{index}",
             event_type="message:test",
             scope_type=ScopeType.GROUP,
             sender=SenderIdentity("10001"),

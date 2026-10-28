@@ -29,7 +29,7 @@ async def test_group_compact_revocation_after_context_preparation_buys_no_reques
     await seed_scoped_event(
         harness.scoped_events,
         scope=ConversationScope.group("80001", "20001"),
-        platform_message_id="prior-public",
+        origin_key="prior-public",
         sender_user_id="10001",
         direction="inbound",
         content="Earlier public decision.",

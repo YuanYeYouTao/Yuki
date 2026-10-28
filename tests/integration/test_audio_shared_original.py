@@ -62,7 +62,7 @@ async def test_audio_original_cache_and_real_asr_transcode_share_one_download(
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="audio-shared",
+            origin_key="audio-shared",
             sender_user_id="10001",
             direction="inbound",
             content="",
@@ -82,6 +82,7 @@ async def test_audio_original_cache_and_real_asr_transcode_share_one_download(
             resolver=resolver,
         )
         incoming = InboundMessage(
+            "audio-shared",
             "audio-shared",
             "message",
             ScopeType.GROUP,

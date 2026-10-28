@@ -55,7 +55,7 @@ def _message(
     return EventRecord(
         id=event_id,
         bot_user_id="8000",
-        platform_message_id=f"msg-{event_id}",
+        origin_key=f"msg-{event_id}",
         scope_type=ScopeType.PRIVATE,
         sender_user_id=sender,
         direction=direction,
@@ -79,7 +79,7 @@ def _external(
     return EventRecord(
         id=event_id,
         bot_user_id="8000",
-        platform_message_id=f"ext-{event_id}",
+        origin_key=f"ext-{event_id}",
         platform="qq",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="8000",
@@ -459,7 +459,8 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     ordinary_context = await ordinary.assemble(
         inbound=InboundMessage(
-            message_id=ordinary_event.platform_message_id,
+            ingress_key=ordinary_event.origin_key,
+            native_message_id=ordinary_event.origin_key,
             event_type="message",
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity(user_id="1001"),
@@ -547,7 +548,8 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program(code_enabled) -
     )
     ordinary = composer.compose(
         inbound=InboundMessage(
-            message_id="ordinary",
+            ingress_key="ordinary",
+            native_message_id="ordinary",
             event_type="message",
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity(user_id="1001"),
@@ -630,7 +632,8 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         ChatMessage(role="assistant", content="old assistant marker"),
     )
     ordinary_inbound = InboundMessage(
-        message_id="ordinary-current",
+        ingress_key="ordinary-current",
+        native_message_id="ordinary-current",
         event_type="message",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id="1001"),
@@ -656,14 +659,12 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     }
     ordinary_runtime = ToolRuntime(
         inbound=ordinary_inbound,
-        trigger_message_id="ordinary-current",
         trigger_event_id=1,
         origin=TurnOrigin.USER_MESSAGE,
         **shared,
     )
     wakeup_runtime = ToolRuntime(
         inbound=None,
-        trigger_message_id="external-current",
         trigger_event_id=2,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         **shared,
@@ -707,7 +708,6 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
     runtime = ToolRuntime(
         inbound=None,
         conversation_key="canonical:conv-stable:generation:1",
-        trigger_message_id="external-current",
         trigger_event_id=2,
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
@@ -751,7 +751,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         await seed_scoped_event(
             env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
-            platform_message_id="history-attachment",
+            origin_key="history-attachment",
             sender_user_id="10001",
             direction="inbound",
             content="release clip",

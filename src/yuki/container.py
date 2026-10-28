@@ -427,6 +427,7 @@ class ApplicationContainer:
         self.plugin_notification_outbox = PluginNotificationOutboxWorker(
             repository=self.plugin_notification_repository,
             artifacts=self.plugin_media_artifacts,
+            workspace_store=store,
             ledger=self.ledger,
             transport=PlatformNotificationTransport(
                 database=self.database,

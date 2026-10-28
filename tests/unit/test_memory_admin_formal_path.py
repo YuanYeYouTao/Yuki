@@ -24,7 +24,7 @@ def trigger(source, operation_id):
         user_id=source.sender_user_id,
         person_id=source.author_person_id,
         bot_user_id=source.bot_user_id,
-        trigger_message_id=source.platform_message_id,
+        trigger_message_id=source.origin_key,
         trigger_event_id=source.id,
         conversation_key="private:1001",
         decision_actor_type="plugin",

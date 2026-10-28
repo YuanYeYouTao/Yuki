@@ -224,7 +224,7 @@ async def test_semantic_snapshot_is_not_duplicated_and_failure_details_remain(da
     event, _ = await seed_event(
         EventLedgerRepository(database),
         bot_user_id="8000",
-        platform_message_id="semantic-original",
+        origin_key="semantic-original",
         scope_type=ScopeType.GROUP,
         group_id="2001",
         sender_user_id="1001",

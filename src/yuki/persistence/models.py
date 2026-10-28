@@ -144,6 +144,12 @@ class ChatEventModel(Base):
         ),
         Index("ix_chat_events_canonical_event_id", "canonical_event_id"),
         Index(
+            "ix_chat_events_native_reference",
+            "canonical_conversation_id",
+            "native_message_id",
+            sqlite_where=text("native_message_id IS NOT NULL AND suppression_status = 'keeper'"),
+        ),
+        Index(
             "ix_chat_events_social_source_author",
             "author_person_id",
             "id",
@@ -211,7 +217,8 @@ class ChatEventModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    platform_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    origin_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    native_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
     group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     private_peer_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -49,9 +49,14 @@ from yuki.identity.person_identity import (
 )
 from yuki.identity.routing import PresenceRouter, ResolvedSend
 from yuki.llm.base import LLMEmptyResponseError
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 from yuki.persistence.models import ChatEventModel
-from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.repository_helpers import _event_record
+from yuki.persistence.scoped_event_uow import (
+    ScopedAppendResult,
+    ScopedEventLedgerUnitOfWork,
+    ScopedEventPreparation,
+)
 from yuki.persistence.unit_of_work import optional_session
 from yuki.services.message_splitter import OutboundMessageSplitter
 from yuki.services.renderer import sanitize_model_output
@@ -691,7 +696,7 @@ class SocialService:
 
     async def reply_reference(
         self, event_id: int, target: SocialTarget, route: ResolvedSend, context: SocialContext
-    ) -> str:
+    ) -> str | None:
         async with self.database.read_session() as session:
             event = await session.get(ChatEventModel, event_id)
         if (
@@ -707,9 +712,35 @@ class SocialService:
             raise SocialError("reply_event_unavailable")
         async with self.database.read_session() as session:
             presence = await session.get(PresenceModel, event.ingress_presence_id)
-        if presence is None or presence.platform != route.platform:
-            raise SocialError("reply_event_unavailable")
-        return event.platform_message_id
+            sender = await session.get(PresenceModel, route.presence_id)
+        if event.native_message_id is None or presence is None or sender is None:
+            return None
+        codec = self.router.operations(route).native_reference_namespace
+        destination = (
+            ConversationScope.private(
+                route.sender_account_id,
+                route.external_target_id,
+                platform=route.platform,
+                presence_id=route.presence_id,
+                conversation_id=route.conversation_id,
+            )
+            if target.kind == "person"
+            else ConversationScope.group(
+                route.sender_account_id,
+                route.external_target_id,
+                platform=route.platform,
+                presence_id=route.presence_id,
+                conversation_id=route.conversation_id,
+                thread_id=route.thread_id,
+            )
+        )
+        namespace = codec(
+            account_id=presence.account_id,
+            scope=replace(_event_record(event).scope, platform=presence.platform),
+        )
+        if namespace is None or namespace != codec(account_id=sender.account_id, scope=destination):
+            return None
+        return event.native_message_id
 
     async def _send_message_sequence(
         self,
@@ -741,6 +772,17 @@ class SocialService:
                 layout = OutboundMessageSplitter.render_message(message, runtime=snapshot)
             operations = self.router.operations(route)
             planned = tuple(part for item in layout for part in operations.plan_send(item))
+        # Re-project the native reference from the trusted internal relation even
+        # when the original PREPARED plan encoded an old synthetic reference.
+        planned = tuple(
+            replace(
+                part,
+                reply_reference=message.reply_reference
+                if part.reply_reference is not None
+                else None,
+            )
+            for part in planned
+        )
         illustration: dict[str, Any] | None = None
 
         def arguments(part: TransportMessage, index: int) -> dict[str, Any]:
@@ -755,7 +797,7 @@ class SocialService:
                     "emoji",
                 ):
                     value.pop(field, None)
-            if part.reply_reference is None:
+            if index != 0:
                 value.pop("reply_to_event_id", None)
             return value
 
@@ -828,6 +870,7 @@ class SocialService:
             prior is not None
             and prior.action == "send_message"
             and prior.status is not OperationStatus.PREPARED
+            and not self._resumable_local(prior)
         ):
             # An original direct receipt cannot acquire a different physical plan.
             return await self._receipt_result(prior, context)
@@ -1230,12 +1273,22 @@ class SocialService:
                 else None,
             )
         if action == "send" and receipt.prepared is not None:
+            projected = prepared_transport(
+                _prepared_parts(receipt.prepared)[0], params["message"].media
+            )
             params = {
-                "message": prepared_transport(
-                    _prepared_parts(receipt.prepared)[0], params["message"].media
-                )
+                "message": replace(projected, reply_reference=params["message"].reply_reference)
             }
-        if receipt.status is not OperationStatus.PREPARED:
+        local = action == "send" and "local_ledger" in route.connection.snapshot.capabilities
+        original_route = (receipt.prepared or {}).get("route")
+        if original_route is not None and (
+            original_route.get("provider_id") != route.connection.snapshot.provider
+            or original_route.get("local_ledger") != local
+            or original_route.get("presence_id") != route.presence_id
+        ):
+            raise SocialError("prepared_route_changed")
+        resume_local = local and self._resumable_local(receipt)
+        if receipt.status is not OperationStatus.PREPARED and not resume_local:
             await self._record_work_delivery(receipt)
             return await self._receipt_result(receipt, context)
         if target.kind == "person" and known_event_id is None:
@@ -1259,130 +1312,213 @@ class SocialService:
             prepared_emoji = self.emoji_delivery.prepare_admission(
                 emoji_arguments, emoji_context, target, source
             )
+        prepared_append = None
+        if local:
+            from yuki.persistence.scoped_event_uow import prepare_append
+
+            prepared_append = await prepare_append(content or "", segments=ledger_segments or ())
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
-        with model_detail("social_claim"):
-            async with self.database.immediate_session() as session:
-                await self._validate_person_context(context, session=session)
-                if context.deferred_emoji_id is not None:
-                    await self.emoji_delivery.validate_claim(
-                        session, context.deferred_emoji_id, target, route
-                    )
-                if context.origin == "plugin_background" and context.caused_by_event_id is not None:
-                    from yuki.plugin_host.notification_repository import (
-                        background_authority_live,
-                    )
-
-                    segments = func.json_each(ChatEventModel.segments_json).table_valued(
-                        "key", "value"
-                    )
-                    source_person = (
-                        select(func.json_extract(segments.c.value, "$.data.source_person_id"))
-                        .where(
-                            func.json_extract(segments.c.value, "$.type") == "yuki_context",
-                            func.json_type(segments.c.value, "$.data.publication").is_not(None),
+        claimed = False
+        try:
+            with model_detail("social_claim"):
+                async with self.database.immediate_session() as session:
+                    await self._validate_person_context(context, session=session)
+                    if context.deferred_emoji_id is not None:
+                        await self.emoji_delivery.validate_claim(
+                            session, context.deferred_emoji_id, target, route
                         )
-                        .order_by(segments.c.key)
-                        .limit(1)
-                        .correlate(ChatEventModel)
-                        .scalar_subquery()
-                    )
-                    original = (
-                        await session.execute(
-                            select(
-                                ChatEventModel.source_plugin_id,
-                                source_person.label("source_person_id"),
-                                CanonicalConversationModel.person_id,
-                                CanonicalConversationModel.space_id,
-                            )
-                            .join(
-                                CanonicalConversationModel,
-                                CanonicalConversationModel.id
-                                == ChatEventModel.canonical_conversation_id,
-                            )
-                            .where(
-                                ChatEventModel.id == context.caused_by_event_id,
-                                CanonicalConversationModel.id == context.conversation_id,
-                            )
-                        )
-                    ).first()
                     if (
-                        original is None
-                        or not original.source_plugin_id
-                        or not await background_authority_live(
-                            session,
-                            plugin_id=original.source_plugin_id,
-                            source_person_id=(
-                                str(original.source_person_id)
-                                if original.source_person_id is not None
-                                else None
-                            ),
-                            conversation_id=context.conversation_id,
-                            person_id=original.person_id,
-                            space_id=original.space_id,
-                        )
+                        context.origin == "plugin_background"
+                        and context.caused_by_event_id is not None
                     ):
-                        raise SocialError("permission_denied")
-                if capture is not None:
-                    from yuki.runtime.work_repository import TERMINAL, WorkConflict
-                    from yuki.runtime.work_schema_v1 import work
-
-                    if work_control is not None and reservation is None:
-                        await work_control.repository._assert_lease(session, work_control.lease)
-                    active = await session.scalar(
-                        select(work.c.id).where(
-                            work.c.id == capture.work_id,
-                            work.c.conversation_id == context.conversation_id,
-                            work.c.state.not_in(TERMINAL),
-                            work.c.generation
-                            == select(CanonicalConversationModel.generation)
-                            .where(CanonicalConversationModel.id == context.conversation_id)
-                            .scalar_subquery(),
+                        from yuki.plugin_host.notification_repository import (
+                            background_authority_live,
                         )
-                    )
-                    if active is None:
-                        raise WorkConflict("social_work_dispatch_obsolete")
-                await self._validate_self_context(context, session=session)
-                await self.check_target(
-                    target,
-                    session=session,
-                    known_event_id=known_event_id,
-                )
-                await self.router.validate_prepared_send(
-                    session,
-                    route,
-                    target_kind=target.kind,
-                    target_id=str(target.id),
-                )
-                await self._validate_reply_route(session, context, target, route)
-                if prepared_emoji is not None:
-                    illustration = await self.emoji_delivery.admit(
-                        prepared=prepared_emoji, session=session
-                    )
-                if reservation is not None and work_control is not None:
-                    await reserve(
-                        work_control,
-                        receipt.operation_id,
-                        "artifact" if params["message"].media is not None else "message",
-                        reservation,
+
+                        segments = func.json_each(ChatEventModel.segments_json).table_valued(
+                            "key", "value"
+                        )
+                        source_person = (
+                            select(func.json_extract(segments.c.value, "$.data.source_person_id"))
+                            .where(
+                                func.json_extract(segments.c.value, "$.type") == "yuki_context",
+                                func.json_type(segments.c.value, "$.data.publication").is_not(None),
+                            )
+                            .order_by(segments.c.key)
+                            .limit(1)
+                            .correlate(ChatEventModel)
+                            .scalar_subquery()
+                        )
+                        original = (
+                            await session.execute(
+                                select(
+                                    ChatEventModel.source_plugin_id,
+                                    source_person.label("source_person_id"),
+                                    CanonicalConversationModel.person_id,
+                                    CanonicalConversationModel.space_id,
+                                )
+                                .join(
+                                    CanonicalConversationModel,
+                                    CanonicalConversationModel.id
+                                    == ChatEventModel.canonical_conversation_id,
+                                )
+                                .where(
+                                    ChatEventModel.id == context.caused_by_event_id,
+                                    CanonicalConversationModel.id == context.conversation_id,
+                                )
+                            )
+                        ).first()
+                        if (
+                            original is None
+                            or not original.source_plugin_id
+                            or not await background_authority_live(
+                                session,
+                                plugin_id=original.source_plugin_id,
+                                source_person_id=(
+                                    str(original.source_person_id)
+                                    if original.source_person_id is not None
+                                    else None
+                                ),
+                                conversation_id=context.conversation_id,
+                                person_id=original.person_id,
+                                space_id=original.space_id,
+                            )
+                        ):
+                            raise SocialError("permission_denied")
+                    if capture is not None:
+                        from yuki.runtime.work_repository import TERMINAL, WorkConflict
+                        from yuki.runtime.work_schema_v1 import work
+
+                        if work_control is not None and reservation is None:
+                            await work_control.repository._assert_lease(session, work_control.lease)
+                        active = await session.scalar(
+                            select(work.c.id).where(
+                                work.c.id == capture.work_id,
+                                work.c.conversation_id == context.conversation_id,
+                                work.c.state.not_in(TERMINAL),
+                                work.c.generation
+                                == select(CanonicalConversationModel.generation)
+                                .where(CanonicalConversationModel.id == context.conversation_id)
+                                .scalar_subquery(),
+                            )
+                        )
+                        if active is None:
+                            raise WorkConflict("social_work_dispatch_obsolete")
+                    await self._validate_self_context(context, session=session)
+                    await self.check_target(
+                        target,
                         session=session,
+                        known_event_id=known_event_id,
                     )
-                claimed = await self.receipts.claim(
-                    receipt.operation_id,
-                    presence_id=route.presence_id,
-                    session=session,
-                    expected_payload_hash=receipt.payload_hash,
-                    parent_operation_id=context.parent_operation_id,
-                    sequence_part_index=context.sequence_part_index,
-                )
-                if claimed:
-                    self.router.validate_prepared_connection(route)
-        if illustration is not None:
-            self.emoji_delivery.wake()
+                    await self.router.validate_prepared_send(
+                        session,
+                        route,
+                        target_kind=target.kind,
+                        target_id=str(target.id),
+                    )
+                    await self._validate_reply_route(session, context, target, route)
+                    if prepared_emoji is not None:
+                        illustration = await self.emoji_delivery.admit(
+                            prepared=prepared_emoji, session=session
+                        )
+                    if reservation is not None and work_control is not None:
+                        await reserve(
+                            work_control,
+                            receipt.operation_id,
+                            "artifact" if params["message"].media is not None else "message",
+                            reservation,
+                            session=session,
+                        )
+                    claimed = await self.receipts.claim(
+                        receipt.operation_id,
+                        presence_id=route.presence_id,
+                        session=session,
+                        expected_payload_hash=receipt.payload_hash,
+                        parent_operation_id=context.parent_operation_id,
+                        sequence_part_index=context.sequence_part_index,
+                        resume_local=resume_local,
+                    )
+                    if claimed:
+                        self.router.validate_prepared_connection(route)
+                        if local:
+                            from yuki.social.confirmed_content import content_sources_retained
+
+                            kept = await content_sources_retained(
+                                session,
+                                conversation_id=context.conversation_id,
+                                target=target,
+                                event_ids=(
+                                    context.trigger_event_id,
+                                    context.caused_by_event_id,
+                                    args.get("reply_to_event_id"),
+                                ),
+                                person_id=getattr(context.actor, "person_id", None),
+                            )
+                            if not kept:
+                                raise SocialError("content_not_retained")
+                            appended = await self._append_delivery(
+                                session,
+                                route,
+                                target,
+                                context,
+                                params,
+                                content=content or "",
+                                segments=ledger_segments or (),
+                                reference=None,
+                                reply_to_event_id=args.get("reply_to_event_id"),
+                                prepared=prepared_append,
+                            )
+                            settlement = await self.receipts.finish(
+                                receipt.operation_id,
+                                status=OperationStatus.SUCCEEDED,
+                                event_id=appended.event.id,
+                                session=session,
+                            )
+                            await self._record_work_delivery(settlement.receipt, session=session)
+        except BaseException as exc:
+            if local and isinstance(exc, Exception):
+                try:
+                    current = await self.receipts.get(receipt.operation_id)
+                except Exception as probe:
+                    exc.add_note(f"local publication lookup failed: {type(probe).__name__}")
+                else:
+                    if current.status is OperationStatus.SUCCEEDED:
+                        result = await self._receipt_result(current, context)
+                        if illustration is not None:
+                            result["emoji"] = illustration
+                        return result
+            # The native call has not been entered. A committed remote claim is
+            # definitely unattempted; local success is already atomic with its event.
+            if not local and claimed and write_failure_committed(exc) is True:
+                try:
+                    current = await self.receipts.get(receipt.operation_id)
+                    if current.status is OperationStatus.EXECUTING:
+                        async with self.database.immediate_session() as session:
+                            settled = await self.receipts.finish(
+                                receipt.operation_id,
+                                status=OperationStatus.FAILED,
+                                error_category="dispatch_not_entered",
+                                session=session,
+                            )
+                            await self._record_work_delivery(settled.receipt, session=session)
+                except Exception as cleanup:
+                    exc.add_note(
+                        f"unattempted social settlement deferred: {type(cleanup).__name__}"
+                    )
+            raise
+        finally:
+            if prepared_emoji is not None:
+                self.emoji_delivery.wake()
         if not claimed:
             current = await self.receipts.get(receipt.operation_id)
             await self._record_work_delivery(current)
             return await self._receipt_result(current, context)
+        if local:
+            result = await self._receipt_result(settlement.result(), context)
+            if illustration is not None:
+                result["emoji"] = illustration
+            return result
         try:
             completed = await self._dispatch_claimed(
                 receipt.operation_id,
@@ -1393,9 +1529,7 @@ class SocialService:
                 context=context,
                 content=content,
                 ledger_segments=ledger_segments,
-                reply_to_event_id=args.get("reply_to_event_id")
-                if action == "send" and params["message"].reply_reference is not None
-                else None,
+                reply_to_event_id=args.get("reply_to_event_id") if action == "send" else None,
                 destination_kind=target.kind,
             )
         finally:
@@ -1405,6 +1539,73 @@ class SocialService:
         if illustration is not None:
             result["emoji"] = illustration
         return result
+
+    @staticmethod
+    def _resumable_local(receipt: SocialReceipt) -> bool:
+        """An original local prepared effect cannot have issued a native call."""
+        route = (receipt.prepared or {}).get("route", {})
+        return (
+            receipt.status is OperationStatus.EXECUTING
+            and route.get("local_ledger") is True
+            and bool(route.get("provider_id"))
+            and bool(route.get("binding_id"))
+            and route.get("presence_id") == receipt.presence_id
+            and receipt.event_id is None
+            and receipt.original_event_id is None
+            and receipt.platform_reference is None
+            and bool((receipt.prepared or {}).get("parts"))
+        )
+
+    async def _append_delivery(
+        self,
+        session: AsyncSession,
+        route: ResolvedSend,
+        target: SocialTarget,
+        context: SocialContext,
+        params: dict[str, Any],
+        *,
+        content: str,
+        segments: tuple[dict[str, Any], ...],
+        reference: str | None,
+        reply_to_event_id: int | None,
+        prepared: ScopedEventPreparation | None,
+    ) -> ScopedAppendResult:
+        scope = (
+            ConversationScope.private(
+                route.sender_account_id,
+                route.external_target_id,
+                platform=route.platform,
+                presence_id=route.presence_id,
+                conversation_id=route.conversation_id,
+            )
+            if target.kind == "person"
+            else ConversationScope.group(
+                route.sender_account_id,
+                route.external_target_id,
+                platform=route.platform,
+                presence_id=route.presence_id,
+                conversation_id=route.conversation_id,
+                thread_id=route.thread_id,
+            )
+        )
+        return await self.writer.append(
+            scope=scope,
+            origin_key=reference,
+            native_message_id=reference,
+            sender_user_id=route.sender_account_id,
+            direction="outbound",
+            content=content,
+            prepared=prepared,
+            segments=segments,
+            origin=context.origin,
+            caused_by_event_id=context.caused_by_event_id,
+            source_event_id=context.trigger_event_id or context.caused_by_event_id,
+            reply_to_message_id=params["message"].reply_reference,
+            reply_to_event_id=reply_to_event_id,
+            session=session,
+            identity_binding_id=route.binding_id if target.kind == "person" else None,
+            space_binding_id=route.binding_id if target.kind == "space" else None,
+        )
 
     async def _dispatch_claimed(
         self,
@@ -1435,18 +1636,14 @@ class SocialService:
             destination = TransportTarget(
                 destination_kind, route.external_target_id, route.thread_id
             )
-            remote_confirmed = True
             with model_detail("social_transport"):
                 if action == "send":
                     transport_receipt = await operations.send(
                         route.connection.bot, destination, params["message"]
                     )
                     reference = transport_receipt.reference
-                    remote_confirmed = transport_receipt.remote_confirmed
                 elif action == "recall":
-                    await operations.recall(
-                        route.connection.bot, destination, params["reference"]
-                    )
+                    await operations.recall(route.connection.bot, destination, params["reference"])
                 else:
                     raise SocialError("unknown_transport_effect")
             confirmed = True
@@ -1471,66 +1668,27 @@ class SocialService:
                         ),
                         person_id=getattr(context.actor, "person_id", None),
                     )
-                    if content is not None and not sources_kept and not remote_confirmed:
-                        settlement = await self.receipts.finish(
-                            operation_id,
-                            status=OperationStatus.FAILED,
-                            error_category="content_not_retained",
-                            session=session,
-                        )
-                        await self._record_work_delivery(settlement.receipt, session=session)
-                        continue_settlement = False
-                    else:
-                        continue_settlement = True
                     if content is not None and sources_kept:
-                        scope = (
-                            ConversationScope.private(
-                                route.sender_account_id,
-                                route.external_target_id,
-                                platform=route.platform,
-                                presence_id=route.presence_id,
-                                conversation_id=route.conversation_id,
-                            )
-                            if target.kind == "person"
-                            else ConversationScope.group(
-                                route.sender_account_id,
-                                route.external_target_id,
-                                platform=route.platform,
-                                presence_id=route.presence_id,
-                                conversation_id=route.conversation_id,
-                                thread_id=route.thread_id,
-                            )
-                        )
-                        appended = await self.writer.append(
-                            scope=scope,
-                            platform_message_id=reference or f"social-operation:{operation_id}",
-                            sender_user_id=route.sender_account_id,
-                            direction="outbound",
+                        appended = await self._append_delivery(
+                            session,
+                            route,
+                            target,
+                            context,
+                            params,
                             content=content,
-                            prepared=prepared_append,
-                            segments=ledger_segments if ledger_segments is not None else (),
-                            origin=context.origin,
-                            caused_by_event_id=context.caused_by_event_id,
-                            source_event_id=context.trigger_event_id or context.caused_by_event_id,
-                            reply_to_message_id=(
-                                params["message"].reply_reference if action == "send" else None
-                            ),
+                            segments=ledger_segments or (),
+                            reference=reference,
                             reply_to_event_id=reply_to_event_id,
-                            session=session,
-                            identity_binding_id=route.binding_id
-                            if target.kind == "person"
-                            else None,
-                            space_binding_id=route.binding_id if target.kind == "space" else None,
+                            prepared=prepared_append,
                         )
-                    if continue_settlement:
-                        settlement = await self.receipts.finish(
-                            operation_id,
-                            status=OperationStatus.SUCCEEDED,
-                            platform_reference=reference,
-                            event_id=appended.event.id if appended is not None else None,
-                            session=session,
-                        )
-                        await self._record_work_delivery(settlement.receipt, session=session)
+                    settlement = await self.receipts.finish(
+                        operation_id,
+                        status=OperationStatus.SUCCEEDED,
+                        platform_reference=reference,
+                        event_id=appended.event.id if appended is not None else None,
+                        session=session,
+                    )
+                    await self._record_work_delivery(settlement.receipt, session=session)
         except BaseException as exc:
             try:
                 persisted = await self.receipts.get(operation_id)
@@ -1604,7 +1762,11 @@ class SocialService:
             if dispatched is not None or prior.status is not OperationStatus.PREPARED:
                 return await self._sequence_result(prior, context)
             return None
-        if prior is None or prior.status is OperationStatus.PREPARED:
+        if (
+            prior is None
+            or prior.status is OperationStatus.PREPARED
+            or self._resumable_local(prior)
+        ):
             return None
         await self.receipts.prepare(
             source_turn_id=context.turn_id,
@@ -1739,7 +1901,7 @@ class SocialService:
                 or not event.author_presence_id
             ):
                 raise SocialError("not_own_message")
-            if event.platform_message_id.startswith(("social-operation:", "file:")):
+            if event.native_message_id is None:
                 raise SocialError("message_recall_unavailable")
             conversation = await session.get(
                 CanonicalConversationModel, event.canonical_conversation_id
@@ -1768,5 +1930,5 @@ class SocialService:
             target,
             route,
             "recall",
-            {"reference": event.platform_message_id},
+            {"reference": event.native_message_id},
         )
