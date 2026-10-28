@@ -752,7 +752,7 @@ wheels = [
 
 [[package]]
 name = "yuki-agent-connector"
-version = "0.3.5"
+version = "0.3.6"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },

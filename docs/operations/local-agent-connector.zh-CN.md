@@ -2,13 +2,15 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.5`，原生协议仍为 `3`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.6`，原生协议仍为 `3`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 从桌面连接
 
-配套 Yuki Desktop 的「本机 Agent」页统一管理 Codex 和 Claude Code：确认当前 Yuki 与服务器地址，明确允许这位 Yuki 使用本机 Agent，再连接电脑。桌面准备随附运行时，以当前已登录的 Person 申请 `purpose=connector` 授权并完成配对，随后发现所选 Agent；多个候选时才需要选择。项目目录可省略，也可以沿已有原生会话继续。用户不需要安装 wheel、Python、修改 PATH 或另外抄配对码。
+配套 Yuki Desktop 的「本机 Agent」页统一管理 Codex、Claude Code 和通用 ACP Agent：确认当前 Yuki 与服务器地址，明确允许这位 Yuki 使用本机 Agent，再连接电脑。桌面准备随附运行时，以当前已登录的 Person 申请 `purpose=connector` 授权并完成配对，随后发现所选 Agent；多个候选时才需要选择。通用 ACP 选择实际程序并逐项填写其启动参数，不拆分 shell 命令。项目目录可省略，也可以沿已有原生会话继续。用户不需要安装 wheel、Python、修改 PATH 或另外抄配对码。
 
 若本机默认目录已有独立连接器，桌面只读发现原配置及 OS 服务的实际 Python 来源，先展示已有连接。明确点击「使用已有连接」后只关联原运行时和数据目录，保留原 device、instance、journal 和服务。点击普通连接时也先沿用该原安装，不因尚未选中它就创建第二台设备。关联不重新配对或停止服务；迁入随附运行时属于另一个明确的更新操作。发现原配对配置而无法确认原服务运行时，会报告实际缺口，不覆盖配置或猜另一个执行来源。独立 SSH 隧道仍按其原方式管理，桌面不执行额外隧道脚本。
+
+桌面版本与 Connector 版本分别显示。明确更新为随附版本时，沿原数据目录更新服务程序，保留原设备、实例、配对和 journal；原服务停止时更新后仍停止，原服务运行时才恢复运行。更新程序不会启动或重启用户的 Codex daemon。
 
 桌面源码、五平台 CI 安装产物和正式 Release 是不同状态；实际可下载版本以桌面仓库对应产物为准。原生 Codex 仍需用户自行安装、登录并处理它自己的权限。服务已启动、服务器已连接和原生握手成功分别展示，不能代替实际模型任务的执行结果。现有独立安装及手动入口继续保留。
 
@@ -21,7 +23,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.3.5-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.3.6-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -56,6 +58,10 @@ yuki-agent-connector pair --url https://yuki.example.com --label "家里的电�
 ## 选择原生实例
 
 实例指定电脑上真实安装的程序和 profile，默认任务目录可省略。程序路径、环境和 owner endpoint 留在电脑配置中，不作为模型工具参数传输。每个实例使用自己的稳定本地 ID，同一安装可登记多个 profile。目录用于任务上下文，可由单次任务覆盖；它不是 Yuki 的文件访问白名单。
+
+Codex 发现覆盖 Windows 注册应用、PATH 原生程序、当前活动 npm 包，以及已安装 daemon 包的 `current/codex-package.json`。登记时保留安装来源，正常升级后重新解析该来源的程序；不枚举旧 release 或 npm 升级残留。手动路径仍按原路径处理；修复写死旧版本的实例时，在原实例中明确选择发现的安装，不换 device、instance 或原生 owner。
+
+启动参数按字符串数组保留，空格与空参数不作为 shell 语法拆分。编辑未提供 `args` 时保留原参数，显式空数组才清空。本机状态投影供桌面编辑这些设置，不把参数加入云端 Agent 目录或诊断导出。
 
 ```sh
 yuki-agent-connector instance add --label "Codex 日常账号" --driver codex --command /path/to/codex

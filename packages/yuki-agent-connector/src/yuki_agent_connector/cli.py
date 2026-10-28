@@ -198,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                         "driver": item.driver,
                         "command": item.command,
                         "cwd": item.cwd,
+                        "args": item.args,
                     }
                     for item in config.instances
                 ]
@@ -276,11 +277,17 @@ def main(argv: list[str] | None = None) -> int:
                         if not directory.is_absolute() or not directory.is_dir():
                             raise ValueError("Choose an existing task directory")
                         cwd = str(directory)
+                    arguments = value.get("args", original.args)
+                    if not isinstance(arguments, list) or not all(
+                        isinstance(argument, str) for argument in arguments
+                    ):
+                        raise ValueError("Native arguments must be a list of strings")
                     spec = replace(
                         original,
                         label=value["label"],
                         command=command,
                         cwd=cwd,
+                        args=arguments,
                         installation=(
                             candidate["source"]
                             if candidate
