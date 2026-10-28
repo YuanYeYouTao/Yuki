@@ -78,3 +78,9 @@ python -m pytest tests/unit/test_workspace_artifact_lock.py \
 ```
 
 实际双 UID 用例需在隔离 Linux root 环境运行；普通用户运行会明确跳过该一项。
+
+## 10-29 合并前复审
+
+复现了通知准备与本地发表之间的三个竞争：Presence 停用、Binding 结束、Registry 连接更替。原实现三项均仍会发表；现在将原 `ResolvedSend` 传至最终 writer，在原 attempt/lease CAS 成功后复用 `validate_prepared_send`，校验当前路由后再 append。只使用当前 session 和内存连接快照，不在 writer 中访问文件、网络或另开 reader。校验失败时 sent CAS 与事件一同回滚，恢复仍认原 outbox。远端已确认的效果不受这项本地新发表校验影响。
+
+Windows 两个相关通知模块 19 项通过，新增竞争用例在修复前均失败；Ruff、格式、定向 mypy 和 diff 检查通过。完整 CI、合并、镜像与生产升级分别核对，本次本地回归不代表生产已升级。

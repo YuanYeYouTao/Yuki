@@ -20,6 +20,7 @@ from tests.unit.test_personal_entry_contract import admin as admin
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.gateway.providers.app.social import AppSocialOperations
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.persistence.models import ChatEventArtifactRefModel, ChatEventModel
 from yuki.plugin_host.db_models import PluginNotificationOutboxModel
 from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
@@ -252,8 +253,9 @@ async def test_historical_processing_without_local_proof_is_not_replayed(
 
 
 @pytest.mark.parametrize("reference", [None, "native-late-confirmed"])
+@pytest.mark.parametrize("disable_presence", [False, True])
 async def test_remote_late_confirmation_ignores_local_preparation_lease(
-    database, tmp_path, monkeypatch, reference
+    database, tmp_path, monkeypatch, reference, disable_presence
 ):
     env, repository, worker, _ = await prepare_fixture(database, tmp_path)
     await worker._prepare_pending()
@@ -265,6 +267,10 @@ async def test_remote_late_confirmation_ignores_local_preparation_lease(
         async with database.immediate_session() as session:
             row = await session.get(PluginNotificationOutboxModel, item.id)
             row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+            if disable_presence:
+                presence = await session.get(PresenceModel, item.canonical_presence_id)
+                assert presence is not None
+                presence.enabled = False
         # A second claimant has already recorded the expired native attempt unknown.
         assert await repository.claim_outbox() is None
         return replace(receipt, message_id=reference)
@@ -335,6 +341,57 @@ async def test_grant_revoked_after_media_preparation_rolls_back_local_effect(
     async with database.read_session() as session:
         row = await session.get(PluginNotificationOutboxModel, item.id)
         assert row.event_id is None and row.status == "cancelled"
+        assert (
+            await session.scalar(
+                select(func.count(ChatEventModel.id)).where(ChatEventModel.direction == "outbound")
+            )
+            == 0
+        )
+
+
+@pytest.mark.parametrize("change", ["presence_disabled", "binding_ended", "connection_replaced"])
+async def test_local_route_change_after_media_preparation_never_publishes(
+    app_env, database, tmp_path, monkeypatch, change
+):
+    worker, _, item, *_ = await prepared(app_env, database, tmp_path, media=True)
+    record = worker._record_outbound
+    original_route = item.prepared["route"]
+    changed = False
+
+    async def change_route(*args, **kwargs):
+        nonlocal changed
+        if change == "connection_replaced":
+            registry = app_env.gateway.registry
+            registry.disconnect(app_env.gateway.handle)
+            registry.connect(
+                app_env.gateway.handle,
+                provider_id=original_route["provider_id"],
+                presence_id=original_route["presence_id"],
+            )
+        else:
+            async with database.immediate_session() as session:
+                if change == "presence_disabled":
+                    presence = await session.get(PresenceModel, original_route["presence_id"])
+                    assert presence is not None
+                    presence.enabled = False
+                else:
+                    binding = await session.get(IdentityBindingModel, original_route["binding_id"])
+                    assert binding is not None
+                    binding.status = "ended"
+        changed = True
+        return await record(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(worker, "_record_outbound", change_route)
+        await worker._deliver(item)
+
+    assert changed
+    async with database.read_session() as session:
+        row = await session.get(PluginNotificationOutboxModel, item.id)
+        assert row.status == "pending" and row.event_id is None
+        assert row.source_event_id == item.source_event_id and row.attempts == item.attempts
+        assert row.platform_message_id is None
+        assert json.loads(row.prepared_json) == item.prepared
         assert (
             await session.scalar(
                 select(func.count(ChatEventModel.id)).where(ChatEventModel.direction == "outbound")

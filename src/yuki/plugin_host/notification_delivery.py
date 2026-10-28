@@ -10,6 +10,8 @@ from tempfile import TemporaryFile
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from yuki.automation.gateway import ProactiveGatewayError
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.gateway.social import (
@@ -58,6 +60,10 @@ class NotificationDeliveryReceipt:
 
 class NotificationTransport(Protocol):
     async def resolve(self, item: OutboxRecord) -> ResolvedSend: ...
+
+    async def validate_local(
+        self, item: OutboxRecord, route: ResolvedSend, *, session: AsyncSession
+    ) -> None: ...
 
     async def prepare(
         self, item: OutboxRecord, message: TransportMessage
@@ -166,6 +172,19 @@ class PlatformNotificationTransport:
         assert item.prepared is not None
         self._validate_route(item.prepared["route"], resolved)
         return resolved
+
+    async def validate_local(
+        self, item: OutboxRecord, route: ResolvedSend, *, session: AsyncSession
+    ) -> None:
+        assert self._router is not None
+        target_id = item.canonical_target_person_id or item.canonical_target_space_id
+        assert target_id is not None
+        await self._router.validate_prepared_send(
+            session,
+            route,
+            target_kind="person" if item.target_type == "private" else "space",
+            target_id=target_id,
+        )
 
     @staticmethod
     def _validate_route(original: dict[str, Any], resolved: ResolvedSend) -> None:
@@ -557,7 +576,9 @@ class PluginNotificationOutboxWorker:
             )
             return
         try:
-            completed = await self._record_outbound(item, receipt, stable_media=stable_media)
+            completed = await self._record_outbound(
+                item, receipt, stable_media=stable_media, local_route=resolved
+            )
             if not completed:
                 if local:
                     await self._repository.recover_local_outbox(item)
@@ -644,6 +665,7 @@ class PluginNotificationOutboxWorker:
         receipt: NotificationDeliveryReceipt,
         *,
         stable_media: dict[str, Any] | None = None,
+        local_route: ResolvedSend | None = None,
     ) -> bool:
         scope = ScopeType(item.target_type)
         source = await self._ledger.get_event(item.source_event_id)
@@ -723,6 +745,9 @@ class PluginNotificationOutboxWorker:
             )
             if not completed:
                 return False
+            if local:
+                assert local_route is not None
+                await self._transport.validate_local(item, local_route, session=session)
             appended = await ScopedEventLedgerUnitOfWork(self._ledger._database).append(
                 scope=identity,
                 origin_key=native_id,
