@@ -88,10 +88,13 @@ def upgrade() -> None:
                 f"0155 conflicting complete ingress key on receipt {receipt_id}"
             ) from exc
 
+    # Rebuilt indexes have no planner statistics. Resolve each original event,
+    # rather than scanning all receipts for its receiving account.
     connection.exec_driver_sql("""
         UPDATE chat_events AS e SET native_message_id=e.origin_key
         WHERE e.event_kind='message' AND e.direction='inbound' AND EXISTS (
             SELECT 1 FROM canonical_event_receipts r
+                INDEXED BY ix_canonical_event_receipts_canonical_event_id
             JOIN account_assignments p ON p.id=e.ingress_presence_id
             JOIN accounts a ON a.id=p.account_id
             WHERE r.canonical_event_id=e.canonical_event_id

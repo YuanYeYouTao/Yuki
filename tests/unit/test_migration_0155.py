@@ -7,7 +7,8 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
 from tests.unit.test_canonical_ingress import _admit_private
 
 from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
@@ -24,6 +25,7 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
     uow, admitted = await _admit_private(database, "142301", text="original source 字节")
     first = await uow.append_inbound(admitted.message, admitted)
     complete_key = "142301" + "0" * 124
+    historical_keys = [f"200{index:08d}" for index in range(384)]
     async with database.immediate_session() as session:
         source = await session.get(ChatEventModel, first.event.id)
         values = {
@@ -53,6 +55,20 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
                 canonical_event_id=extended.canonical_event_id,
             )
         )
+        for key in historical_keys:
+            canonical_id = str(uuid4())
+            session.add(ChatEventModel(**values, origin_key=key, canonical_event_id=canonical_id))
+            session.add(
+                CanonicalEventReceiptModel(
+                    **{
+                        column.name: getattr(receipt, column.name)
+                        for column in CanonicalEventReceiptModel.__table__.columns
+                        if column.name not in {"id", "ingress_key", "canonical_event_id"}
+                    },
+                    ingress_key=key,
+                    canonical_event_id=canonical_id,
+                )
+            )
     async with database.read_session() as session:
         originals = {
             row.id: source_event_fingerprint(_event_record(row))
@@ -107,7 +123,38 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone()
         }
-    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+    backfill_steps = 0
+
+    def count_backfill_steps():
+        nonlocal backfill_steps
+        backfill_steps += 100
+        return 0
+
+    def is_inbound_backfill(statement):
+        return statement.lstrip().startswith("UPDATE chat_events AS e SET native_message_id") and (
+            "e.direction='inbound'" in statement
+        )
+
+    def before_backfill(connection, _cursor, statement, _parameters, _context, _many):
+        if is_inbound_backfill(statement):
+            connection.connection.run_async(
+                lambda driver: driver.set_progress_handler(count_backfill_steps, 100)
+            )
+
+    def after_backfill(connection, _cursor, statement, _parameters, _context, _many):
+        if is_inbound_backfill(statement):
+            connection.connection.run_async(lambda driver: driver.set_progress_handler(None, 0))
+
+    event.listen(Engine, "before_cursor_execute", before_backfill)
+    event.listen(Engine, "after_cursor_execute", after_backfill)
+    try:
+        await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+    finally:
+        event.remove(Engine, "before_cursor_execute", before_backfill)
+        event.remove(Engine, "after_cursor_execute", after_backfill)
+    # Each event resolves its own receipt. Scanning every receipt for the same
+    # account would make this migration quadratic after the indexes are rebuilt.
+    assert 0 < backfill_steps < 300 * len(historical_keys)
     await require_canonical_schema(f"sqlite+aiosqlite:///{old.as_posix()}")
     with sqlite3.connect(old) as connection:
         connection.row_factory = sqlite3.Row
@@ -118,12 +165,14 @@ async def test_0154_upgrade_retains_original_sources_and_complete_receipts(
         assert rows[0]["native_message_id"] == "142301"
         assert all(row["native_message_id"] is None for row in rows[1:4])
         assert rows[4]["native_message_id"] == complete_key
+        assert [row["native_message_id"] for row in rows[5:]] == historical_keys
         assert [row["origin_key"] for row in rows] == [
             "142301",
             "app-request-original",
             "social-operation:original",
             "file:resource",
             complete_key,
+            *historical_keys,
         ]
         assert (
             connection.execute(
