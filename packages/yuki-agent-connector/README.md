@@ -6,7 +6,7 @@ mirror native transcripts or send chat messages itself.
 
 For ordinary Desktop users, use the bundled setup UI; no Python or terminal installation is required.
 For an independently managed CLI installation, install the wheel with Python 3.12, for example
-`uv tool install path/to/yuki_agent_connector-0.3.5-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.3.6-py3-none-any.whl`.
 The connector uses its own lock file and does not install the Bot project. The pinned
 Claude SDK currently includes its own large CLI payload; the driver nevertheless
 requires the explicitly selected native executable and never silently runs that payload.
@@ -35,6 +35,20 @@ native `CLAUDE_CONFIG_DIR`; repeat `--env` for explicit local settings. `--agent
 passes configured ACP or Codex executable arguments. They are installation settings,
 not model-controlled command strings. `instance remove ID` changes configuration;
 restart the service to apply profile changes.
+
+Desktop also configures ACP executables and their argument arrays. Arguments are
+separate values, not a shell command: spaces and empty arguments are preserved.
+Omitting `args` when editing keeps the original arguments; an explicit empty
+array clears them. `status --json` exposes these local settings for the editor;
+they are not part of the server's agent catalog and should not be included in
+diagnostic exports.
+
+Codex discovery includes registered Windows Store apps, native programs on PATH,
+active npm packages, and the installed daemon package's `current/codex-package.json`.
+Registered instances retain the installation source so a normal program upgrade
+can resolve the new executable without changing the instance or native owner.
+Manual executable paths remain manual; choose a discovered installation explicitly
+to repair an old version-specific path.
 
 - Codex defaults to the official `app-server proxy`, which finds the current user's
   already-running daemon. `--socket` or `--endpoint` selects an explicit existing
