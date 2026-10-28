@@ -151,7 +151,10 @@ class WorkspaceStore:
                 safe = False
             if not safe:
                 invalid.append((row["id"], row["blob"], row["revision"]))
-        candidates = list(self.root.glob("*.blob"))
+        with os.scandir(self.root) as entries:
+            candidates = [
+                self.root / entry.name for entry in entries if entry.name.endswith(".blob")
+            ]
         with self._transaction() as db:
             db.executemany("DELETE FROM artifacts WHERE id=? AND blob=? AND revision=?", invalid)
             db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
@@ -165,7 +168,11 @@ class WorkspaceStore:
         except ArtifactLockBusy:
             return
         try:
-            self._unlink(islice(self.root.glob("*.pending"), 128))
+            with os.scandir(self.root) as entries:
+                pending = (
+                    self.root / entry.name for entry in entries if entry.name.endswith(".pending")
+                )
+                self._unlink(islice(pending, 128))
         finally:
             self._files.release(held)
 

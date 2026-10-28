@@ -24,7 +24,9 @@
 
 后端原生与App、真实0154旧库升级、原来源hash、长接入键修复、取消/确认丢失、并发CAS、真实批准通知的Client文件链和远端晚确认均已定向验证。Ruff与Linux平台MyPy全689个源码文件通过。旧迁移原行、预算、外键与原件比较的六文件回归19项通过；原Linux root双UID锁与GC实际执行，没有用普通用户skip冒充通过。
 
-最终生产源码提交 `797b2f37` 的[GitHub Actions](https://github.com/YuanYeYouTao/Yuki/actions/runs/40726426340)已通过完整 **3811项unit、926项integration**；unit有5项平台跳过，integration按原开关跳过1项、另94项native_worker由专门job运行。Native CodeMode、真实有头环境、Linux/Windows Vec1原生包与连接器也通过。两个macOS任务未取得托管runner，未执行代码；GitHub注释明确为macOS arm64容量不足，已单独重跑失败任务。后续收尾仅更新文档，实际最新CI状态见PR。
+基线代码提交 `797b2f37` 的[GitHub Actions](https://github.com/YuanYeYouTao/Yuki/actions/runs/40726426340)已通过完整 **3811项unit、926项integration**；unit有5项平台跳过，integration按原开关跳过1项、另94项native_worker由专门job运行。Native CodeMode、真实有头环境、Linux/Windows/macOS Vec1原生包与连接器均通过。两个macOS任务最初因托管runner容量不足未执行，单独重跑后已通过。
+
+最后一轮T10补修将artifact目录扫描直接改为`os.scandir`：Python 3.12的`Path.glob`会先把所有目录项放进list，外套`islice`仍会让大量遗留pending同时驻留。blob候选仍在原writer之前完整冻结，只保存匹配blob的路径；pending在原独占文件锁内流式处理128个匹配项，不改变忙时跳过、原发布顺序或引用核验。Windows锁与清理两模块9项通过、1项Linux双UID跳过；Linux root四模块20项全部通过，含实际双UID、并行publisher与kill回收。测试观察真实目录项的驻留及真实OS锁，分别恢复旧blob或pending扫描时，均在第129个驻留项暴露原问题。Ruff和diff检查通过；该补修后最新全量CI状态见PR。
 
 为避免跨Windows文件系统反复扫描迁移脚本，正式整套验证使用原生Linux目录和独立环境，固定源码归档 `60787e8`；CLI、Vec1和Git index均指向该快照。完整integration为 **926 passed、1 skipped、94 deselected**，跳过的是按显式开关运行的付费Codex测试，native_worker由独立CI job验证。
 
@@ -51,6 +53,8 @@ TGS同一8MiB输入、预热一次并测七次：旧逐字节实现中位392.61m
 第二轮按取消、提交异常与并发检查本地发表。发现确认丢失被返回为工具错误会引起模型重复调用，修为读原operation成功回执；原生claim取消只在能证明本次物理提交成功且尚未调用API时结算为未尝试，避免抢结算另一并发owner。
 
 第三轮由独立实现者复审核心Social、冻结迁移、SDK/插件和桌面生命周期。删除了远端真实确认仍受255字符限制的遗留，并为native精确查找加索引；旧模型来源编码与付费回执保持不变。桌面补齐了隐藏session资源释放、共享SHA的独立来源资格、Mermaid根级htmlLabels与主题对比。缩略图疑似缺字经原尺寸像素反证为误判，未留下盲目重试、强制repaint或替代渲染机制。另查出并删除了上述未选intent的重复SQL。
+
+收尾继续复核T10，两名独立复审者确认了`Path.glob`内部全量物化及blob候选时序。补修后再次核对真实锁、目录迭代生命周期和原发布顺序，并用旧写法反证新测试有效；没有另建清理状态、队列或重试机制。
 
 各专题的三轮细项与命令见[SDK复审](message-identity-sdk-review-20261028.md)和[通知/媒体复审](message-identity-backend-media-review-20261028.md)。
 

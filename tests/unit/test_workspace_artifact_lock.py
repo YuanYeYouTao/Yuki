@@ -8,11 +8,13 @@ import subprocess
 import sys
 import textwrap
 import threading
+import weakref
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from yuki.workspace.artifact_lock import ArtifactRootLock
+from yuki.workspace.artifact_lock import ArtifactLockBusy, ArtifactRootLock
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
@@ -250,8 +252,6 @@ lock.release(held)
             after = path.stat()
             assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
             assert after.st_uid == 10001 and after.st_gid == 10001
-            from yuki.workspace.artifact_lock import ArtifactLockBusy
-
             with pytest.raises(ArtifactLockBusy):
                 ArtifactRootLock(root).acquire(exclusive=True, wait=False)
         finally:
@@ -265,18 +265,48 @@ def test_cleanup_only_consumes_the_pending_batch(tmp_path, monkeypatch):
     store = WorkspaceStore(tmp_path / "artifacts")
     for number in range(200):
         (store.root / f"{number}.pending").touch()
-    original = Path.glob
+    original = os.scandir
     count = 0
+    resident = weakref.WeakSet()
 
-    def bounded(self, pattern):
-        nonlocal count
-        for path in original(self, pattern):
-            if self == store.root and pattern == "*.pending":
-                count += 1
-                assert count <= 128
-            yield path
+    class ObservedEntry:
+        def __init__(self, entry):
+            self.entry = entry
+            resident.add(self)
 
-    monkeypatch.setattr(Path, "glob", bounded)
+        def __getattr__(self, name):
+            return getattr(self.entry, name)
+
+    @contextmanager
+    def observed(path):
+        # Only the pending phase holds the exclusive file lock. The earlier
+        # blob discovery keeps its original pre-transaction snapshot ordering.
+        observer = ArtifactRootLock(store.root)
+        try:
+            held = observer.acquire(exclusive=False, wait=False)
+        except ArtifactLockBusy:
+            exclusive = True
+        else:
+            observer.release(held)
+            exclusive = False
+        with original(path) as entries:
+
+            def scan():
+                nonlocal count
+                for entry in entries:
+                    entry = ObservedEntry(entry)
+                    # Neither phase may retain the entire set of unrelated
+                    # entries, including pathlib's hidden list(scandir_it).
+                    assert len(resident) <= 128
+                    if exclusive and entry.name.endswith(".pending"):
+                        count += 1
+                        assert count <= 128
+                    yield entry
+
+            yield scan()
+
+    monkeypatch.setattr(os, "scandir", observed)
     store.cleanup()
     assert count == 128
-    assert len(list(original(store.root, "*.pending"))) == 72
+    with original(store.root) as entries:
+        assert sum(entry.name.endswith(".pending") for entry in entries) == 72
