@@ -52,8 +52,8 @@ Monitor 本身没有使用退休 CurrentMessage 字段或旧自动化 API。已�
 
 主仓候选代码已提交并推送为 `8720d929057cb91290c911d09b282bcd8fa7e394`。Monitor 的 `pyproject.toml`、`uv.lock` 和 README 已统一固定到这个公开 SDK 9 源码归档；`uv lock --refresh-package yuki` 完成。另建空环境 `D:/Code/ValidationEnvs/yuki-github-monitor-api9-20261028`，由 `uv sync --locked --group dev` 安装真实归档，SDK 导入路径确认为该环境的 `site-packages`，不依赖本机 Host checkout 或验证 `.pth`。
 
-空环境复验：**25 passed**；Ruff check、全部 23 个 Python 文件 format check 和 `doctor.py --help` 均通过。Windows 构建 Vec1 时仅给验证进程设置本机现有 GCC 编译器，没有复制 DLL 或修改包的构建逻辑。新增契约验证 Host 产品版本满足最低要求、但仅提供 SDK 8 时仍拒绝 manifest 9。独立插件改动尚未提交/推送，由配套 PR 交付；没有伪造 approved manifest hash，也未修改现有 grants、KV 或 outbox。
+空环境复验：**25 passed**；Ruff check、全部 23 个 Python 文件 format check 和 `doctor.py --help` 均通过。Windows 构建 Vec1 时仅给验证进程设置本机现有 GCC 编译器，没有复制 DLL 或修改包的构建逻辑。新增契约验证 Host 产品版本满足最低要求、但仅提供 SDK 8 时仍拒绝 manifest 9。独立插件已提交推送为 `37d2f254`，由[配套PR #4](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/4)交付，CI已通过；没有伪造 approved manifest hash，也未修改现有 grants、KV 或 outbox。
 
 ## 交付与验收边界
 
-本专题运行时代码已随主仓候选 `8720d929` 提交、推送；独立插件配套 PR、合并、发布和上线另行记录。没有向真实 QQ/TG/飞书发送测试消息。SDK major 升级后的现网插件重新发现/批准、现网账号换任/跨 app 引用、真实平台 upload ack 以及完整两仓端到端验收仍须在发布流程按真实状态记录。原本机 Vec1 扩展仅用在验证进程的路径补丁，没有复制 DLL、改产品 fallback 或改生产数据库。
+本专题运行时代码已随主仓候选 `8720d929` 提交、推送，后续整合见[主实施记录](message-identity-delivery-implementation-20261028.md)。两仓隔离环境与真实Electron验收由配套报告记录；未向真实QQ/TG/飞书发送测试消息。现网重新发现/批准插件和实际平台流量留待后续部署。本专题原本机Vec1扩展仅用于验证，没有修改产品fallback或生产数据库。
