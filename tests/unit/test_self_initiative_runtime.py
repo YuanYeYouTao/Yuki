@@ -98,7 +98,6 @@ def actor():
         {"user_id": "1001"},
         {"person_id": "person"},
         {"event_id": 1},
-        {"platform_message_id": "qq-message"},
         {"origin": TurnOrigin.USER_MESSAGE},
         {"initiative_run_id": None},
         {"principal_kind": "person"},

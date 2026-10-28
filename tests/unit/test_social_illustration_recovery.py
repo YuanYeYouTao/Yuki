@@ -724,8 +724,8 @@ async def test_admission_commit_acknowledgement_loss_wakes_an_already_sleeping_o
     discovered = asyncio.Event()
     pending = delivery.intents.pending
 
-    async def discover(after=None):
-        result = await pending(after)
+    async def discover(after=None, **kwargs):
+        result = await pending(after, **kwargs)
         if not result:
             discovered.set()
         return result
@@ -760,8 +760,8 @@ async def test_original_request_replay_wakes_its_persisted_pending_intent(
     discovered = asyncio.Event()
     pending = delivery.intents.pending
 
-    async def discover(after=None):
-        result = await pending(after)
+    async def discover(after=None, **kwargs):
+        result = await pending(after, **kwargs)
         if not result:
             discovered.set()
         return result

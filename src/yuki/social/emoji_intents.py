@@ -349,7 +349,7 @@ class EmojiIntentRepository:
                         )
                     finished = finished_parents[parent]
                     source_live = True
-                    if not finished:
+                    if not finished and intent.selected is not None:
                         try:
                             await validate_source(session, intent.source)
                         except SocialError:

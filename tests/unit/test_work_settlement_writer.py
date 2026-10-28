@@ -1225,7 +1225,8 @@ async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_r
             **{
                 **values,
                 "canonical_event_id": str(uuid4()),
-                "platform_message_id": "late-human",
+                "origin_key": "late-human",
+                "native_message_id": "late-human",
                 "content": "late human body",
             }
         )
@@ -1236,7 +1237,8 @@ async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_r
             **{
                 **values,
                 "canonical_event_id": str(uuid4()),
-                "platform_message_id": "early-plugin",
+                "origin_key": None,
+                "native_message_id": None,
                 "content": "early plugin body",
                 "event_kind": "external_event",
                 "direction": "external",
