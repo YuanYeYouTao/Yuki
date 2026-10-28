@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-本页跟随 Yuki **4.0.0 后续开发**：Alembic head 为 `0153`，Plugin API 为 `8.0`。
+本页跟随 Yuki **4.0.0 后续开发**：Alembic head 为 `0155`，Plugin API 为 `9.0`。
 人物、账号、空间与会话的关系见[当前架构](architecture/canonical-runtime.md)，
 版本迁移见 [4.0 升级指南](upgrade-4.0.0.md)。
 
@@ -102,9 +102,9 @@ QQ 管理仍使用 `/ai`。当前范围见[管理 API](architecture/admin-api.md
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 7.0
+## Plugin API 9.0
 
-当前 Host 只接受精确声明 Plugin API `7.0` 的插件。插件使用内部 Person、Space、Conversation ID，人物提及保留原位快照；插件配置仍使用 `plugin.config.read/write`，主 Agent 任务使用 `agent.run`。独立模型会话为 `plugin.agent_session.v2`，保留连续历史和真实模型请求预算。插件的实际权限由管理员批准和当前调用来源决定。
+当前 Host 为 Plugin API `9.0`，加载同major且所需minor不高于自身的插件。插件使用内部Person、Space、Conversation和event ID，真实原生引用读取可空 `native_message_id`；旧 `CurrentMessage.message_id`已删除。人物提及保留原位快照，插件配置使用 `plugin.config.read/write`，主Agent任务使用 `agent.run`。独立模型会话为 `plugin.agent_session.v2`，保留连续历史和真实模型请求预算。实际权限按原manifest批准和当前调用来源核验。
 
 插件发布的主动事件继续以独立 `external_event` 落账，不伪装成真人聊天。插件若请求 Yuki
 点评，只会创建可靠 WakeupRequest；Worker 加载该 canonical Conversation 与普通聊天完全相同的
@@ -118,7 +118,9 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [迁移到 Plugin API 7.0](plugin-development/api-7.0-migration.md)
+- [Plugin API 9.0 消息身份迁移](plugin-development/api-9.0-migration.md)
+- [Plugin API 8.0 自动化历史迁移](plugin-development/api-8.0-migration.md)
+- [更早的 Plugin API 7.0 迁移](plugin-development/api-7.0-migration.md)
 
 ## Emoji 与 Vision
 

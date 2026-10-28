@@ -17,20 +17,24 @@
 | T09 | claim物理提交后finally唤醒、活跃intent先过滤、实际阶段计时 |
 | T10 | 索引missing-open竞态、原artifact锁双owner读写、GC迭代 |
 | T11 | TGS流式C级跳块、正确JSON数字、真实8MiB文件成本与完整保存链 |
-| T12 | 当前合同、升级指南、SDK配套及三仓独立交付 |
+| T12 | 当前合同、升级指南、SDK配套及四仓独立交付 |
 | T13 | 桌面受控app流与Range、统一预览、Bot图片内联、音视频/PDF、公式/Mermaid/内部图 |
 
 ## 验证
 
 后端原生与App、真实0154旧库升级、原来源hash、长接入键修复、取消/确认丢失、并发CAS、真实批准通知的Client文件链和远端晚确认均已定向验证。Ruff与Linux平台MyPy全689个源码文件通过。旧迁移原行、预算、外键与原件比较的六文件回归19项通过；原Linux root双UID锁与GC实际执行，没有用普通用户skip冒充通过。
 
+最终生产源码提交 `797b2f37` 的[GitHub Actions](https://github.com/YuanYeYouTao/Yuki/actions/runs/40726426340)已通过完整 **3811项unit、926项integration**；unit有5项平台跳过，integration按原开关跳过1项、另94项native_worker由专门job运行。Native CodeMode、真实有头环境、Linux/Windows Vec1原生包与连接器也通过。两个macOS任务未取得托管runner，未执行代码；GitHub注释明确为macOS arm64容量不足，已单独重跑失败任务。后续收尾仅更新文档，实际最新CI状态见PR。
+
 为避免跨Windows文件系统反复扫描迁移脚本，正式整套验证使用原生Linux目录和独立环境，固定源码归档 `60787e8`；CLI、Vec1和Git index均指向该快照。完整integration为 **926 passed、1 skipped、94 deselected**，跳过的是按显式开关运行的付费Codex测试，native_worker由独立CI job验证。
 
-该快照的unit原始结果为 **3785 passed、7 failed、25 skipped**。7项为已退役参数的旧测试、三个pending观察器未转发active、旧late-event字典字段，以及新增native列的来源分类和outbox观察器字段。保留原日志，不将它改写为全绿。对应当前补丁的五整模块新进程 **166 passed**，最后两整模块 **22 passed**，七项均已覆盖修正；未为通过而恢复旧字段、放宽异常或延长并发期限。最终提交的整套CI以[后端PR](https://github.com/YuanYeYouTao/Yuki/pull/531) Actions为准。
+该快照的unit原始结果为 **3785 passed、7 failed、25 skipped**。7项为已退役参数的旧测试、三个pending观察器未转发active、旧late-event字典字段，以及新增native列的来源分类和outbox观察器字段。保留原日志，不将它改写为全绿。对应当前补丁的五整模块新进程 **166 passed**，最后两整模块 **22 passed**，七项均已覆盖修正，并在上述最终源码CI完整通过；未为通过而恢复旧字段、放宽异常或延长并发期限。
 
-桌面合同固定公开后端 `8720d929` 的实际OpenAPI，内容hash保持原值，Client API仍为7。build、lint、typecheck和合同检查通过，单元318项通过、3项跳过；四套真实Electron媒体E2E及连续六次主题切换的实际文字像素验证通过。播放、seek、PDF、原件到期、双角色、冷重开、128MiB视频和500条历史的详细证据见[桌面报告](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/blob/codex/desktop-rich-media-20261028/docs/reports/2026-10-28-rich-media/README.md)。
+桌面合同固定公开后端 `8720d929` 的实际OpenAPI，内容hash保持原值，Client API仍为7。build、lint、typecheck和合同检查通过，单元318项通过、3项跳过；四套真实Electron媒体E2E及连续六次主题切换的实际文字像素验证通过。再补两项聚焦E2E：MP3/OGG两种来源均实际播放、seek和续播；批准SDK9插件经真实通知worker、Client history/files、Electron显示与保存，1362B原件和保存内容逐字节一致。播放、PDF、原件到期、双角色、冷重开、128MiB视频和500条历史的详细证据见[桌面报告](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/blob/codex/desktop-rich-media-20261028/docs/reports/2026-10-28-rich-media/README.md)。
 
 独立GitHub Monitor以公开SDK9归档在新环境安装，25项测试、lint、格式和doctor入口通过，其PR的CI已通过。
+
+组织五仓按当前main补查，仅Monitor与Kun有独立plugin.toml且声明SDK8，两者均需本轮配套。Kun基于 `4605d39` 升为1.1.3/API9，真实公开SDK9归档与lock一致，新空环境完整105项测试、lint、格式通过，三轮复审覆盖无号/长native、App私聊、原Person/Space存档和重启。游戏实现无退休字段读者，玩法、权限、ID、入口与存档结构均未改动；其PR的CI已通过。细项见[Kun配套复审](kun-api9-review-20261029.md)。
 
 ## 局部成本
 
@@ -52,6 +56,6 @@ TGS同一8MiB输入、预热一次并测七次：旧逐字节实现中位392.61m
 
 ## 交付
 
-三份PR分别为[后端 #531](https://github.com/YuanYeYouTao/Yuki/pull/531)、[桌面 #13](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/13)、[GitHub Monitor #4](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/4)。本轮只提交PR，未合并、发布Release或上线，生产镜像和其他服务未操作，也未发送真实平台测试消息。
+四份PR分别为[后端 #531](https://github.com/YuanYeYouTao/Yuki/pull/531)、[桌面 #13](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/13)、[GitHub Monitor #4](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/4)、[Kun #6](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game/pull/6)。本轮只提交PR，未合并、发布Release或上线，生产镜像和其他服务未操作，也未发送真实平台测试消息。
 
 桌面生成的临时源码归档清理被自动批准审查以 `blocked by policy` 拒绝，删除数量为0；这些目录保留并排除提交。产品文档、必要截图、性能样本和真实媒体fixture均已单独纳入PR。

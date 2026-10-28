@@ -210,6 +210,8 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 上传与原聊天媒体共用 24 小时原件缓存，不设单文件、会话或全局经验容量配额；真实磁盘与平台传输失败照实返回。维护清理会在删除前核实际回执引用。
 `GET /conversations/{conversation_id}/events/{event_id}/attachments/{attachment_index}` 在原个人事件可见范围内下载原件，返回强 ETag；读取后重新核当前本人／入口／原事件授权及字节摘要。缺失或已经清理的过期原件返回 not_found，不通过重新下载来重置期限。事件 attachment_index 是媒体序号，segment_index 是原消息段序号；ASR 的 segment_index 只与后者关联。普通事件投影不为可用性提示扫描或 hash 原文件；客户端实际下载以该 GET 回执为准。
 
+临时附件下载可返回 `X-Yuki-Expires-At`，值为原件实际回收时间的UTC ISO字符串。它供客户端到点重新查证来源；已接纳原件仍存在且获准读取时可继续打开，不将该时间变成新的授权截止线。稳定artifact没有这个临时TTL。桌面播放器沿已校验的精确缓存版本作本地Range读取，seek不重复下载或hash整件文件；新的打开继续核原来源资格。Client API revision保持7。
+
 已接纳消息的原件通过只读目录映射在共享沙箱 `/inputs/media-cache`，各会话的 Agent 均可按需读取或复制收藏。Main 首次输入仅有附件索引和资料，图片、视频、贴纸及普通文件均不自动展开；语音沿原 ASR 配置独立处理。
 账本仅保存 media_id 和元数据，沙箱路径仅在当前运行资料提供；媒体字节及 Base64 不进入公开事件。设备上传、绑定与下载 API 的身份仍沿原合同，不因共享 Agent 环境改为匿名上传或公开下载。
 
