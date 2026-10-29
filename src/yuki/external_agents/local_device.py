@@ -22,6 +22,7 @@ from yuki.client_api.errors import ClientError
 from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import same_person_id
 from yuki.sandbox.db_models import SandboxTaskRunModel
+from yuki.sandbox.task_repository import canonical_json
 from yuki.workspace.store import WorkspaceError
 
 if TYPE_CHECKING:
@@ -92,11 +93,15 @@ class LocalDeviceService:
     async def _record(self, row: SandboxTaskRunModel, result: dict[str, Any]) -> None:
         completion = result.get("completion")
         if isinstance(completion, dict):
+            if row.completion_json == canonical_json(completion, limit=240000):
+                return
             await self.tasks.receive(
                 {"request_id": row.request_id, "run_id": row.run_id, "result": completion}
             )
             return
         encoded = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        if row.status == "completed" or row.progress_json == encoded:
+            return
         async with self.database.immediate_session() as writer:
             await writer.execute(
                 update(SandboxTaskRunModel)
@@ -248,7 +253,9 @@ class LocalDeviceService:
                 }
         if result.get("status") == "unknown":
             result = {**result, "pending": True, "uncertain": True}
-        if name != "terminal_control" or isinstance(result.get("completion"), dict):
+        if name in {"terminal_exec", "get_code_run_by_request"} or isinstance(
+            result.get("completion"), dict
+        ):
             await self._record(row, result)
         return {
             "device_id": target["device_id"],
