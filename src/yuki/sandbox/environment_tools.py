@@ -51,12 +51,15 @@ def environment_tools() -> tuple[ChatTool, ...]:
     return (
         tool(
             "terminal_exec",
-            "以管理员身份操作自己的持久 Linux 环境，HOME=/home/yuki，"
+            "默认以管理员身份操作自己的持久 Linux 环境，HOME=/home/yuki，"
             "文件在 /workspace；可直接使用 Bash、Python、Node、apt、pip/npm 和公网。"
             "默认持续运行，约5秒返回原 run_id；pending 后用 terminal_read 查询，勿重提命令。"
-            "tty=true 支持交互，terminal_control(action=input) 发送输入。",
+            "tty=true 支持交互，terminal_control(action=input) 发送输入。"
+            "指定 device_id 则操作该已授权本机的实际系统 Shell；使用其操作系统路径，"
+            "原生管道交互支持 stdin，不承诺完整 PTY。可调用该电脑上的 OpenCLI 或其他工具。",
             {
                 "command": text,
+                "device_id": text,
                 "cwd": text,
                 "tty": {"type": "boolean"},
                 "timeout_seconds": {"type": "integer", "minimum": 0},
@@ -86,8 +89,9 @@ def environment_tools() -> tuple[ChatTool, ...]:
         ),
         tool(
             "environment_status",
-            "查看持久环境、实际容量、任务、终端与已登记服务。",
-            {},
+            "默认查看自己的持久环境、容量和服务；"
+            "指定 device_id 查看本机实际授权、系统和 Shell。",
+            {"device_id": text},
             read=True,
         ),
         tool(

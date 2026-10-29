@@ -100,7 +100,7 @@ async def connect(env, connection, *, profiles=("profile",)):
         env.device["device_id"],
         connection,
         {
-            "protocol_version": 3,
+            "protocol_version": 4,
             "instances": [
                 {"id": local_id, "driver": "codex", "capabilities": ["get", "steer"]}
                 for local_id in profiles
@@ -390,7 +390,7 @@ async def test_connector_cannot_mix_another_credential_with_its_original_device_
         await native.service.connect(
             native.device["device_id"],
             connection,
-            {"protocol_version": 3, "device_id": str(uuid4()), "instances": []},
+            {"protocol_version": 4, "device_id": str(uuid4()), "instances": []},
         )
     assert not native.service.connections.online(native.device["device_id"])
 

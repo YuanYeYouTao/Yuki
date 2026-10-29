@@ -48,6 +48,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             result_cacheable=False,
             description=(
                 "管理持久工作。get 用原 work_id 查看状态、完整 goal 和等待条件；"
+                "原私有来源获准时附最近执行与真实结果，limit/cursor 翻更早页。"
+                "按 history_order 和发生时间读进展；状态和查询时间不代表刚完成了目标。"
                 "list 默认 active，终态用 status=terminal，全部用 all。"
                 "持续目标（含定期复查、持续跟进）用 accept(goal) 登记，写清目标与反馈约定；"
                 "普通聊天无需登记，发言用 send。"
@@ -111,7 +113,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                     },
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                     "status": {"type": "string", "enum": ["active", "terminal", "all"]},
-                    "cursor": {"type": "string", "maxLength": 256},
+                    "cursor": {"type": "string"},
                     "result": {
                         "type": ["string", "null"],
                         "description": "complete 的内部结果；按实际工作需要填写。",
@@ -690,7 +692,14 @@ class WorkControl:
                 identity = args.get("work_id")
                 if not isinstance(identity, str) or not identity.strip() or len(identity) > 36:
                     raise ValueError("work_id_required")
-                row = await queries.get(self.lease, self.source, identity)
+                row = await queries.get(
+                    self.lease,
+                    self.source,
+                    identity,
+                    include_progress=True,
+                    limit=args.get("limit", 8),
+                    cursor=args.get("cursor"),
+                )
                 if row is None:
                     raise ValueError("work_not_found_or_not_authorized")
                 return {"work": row}
@@ -701,9 +710,7 @@ class WorkControl:
             if not isinstance(status, str) or status not in {"active", "terminal", "all"}:
                 raise ValueError("work_list_status_invalid")
             cursor = args.get("cursor")
-            if cursor is not None and (
-                not isinstance(cursor, str) or not cursor or len(cursor) > 256
-            ):
+            if cursor is not None and (not isinstance(cursor, str) or not cursor):
                 raise ValueError("work_list_cursor_invalid")
             return await queries.list(
                 self.lease,

@@ -315,6 +315,35 @@ class AgentRepository:
             await self._execution(session, session_id, native_id)
         return identity
 
+    async def remember_executions(
+        self, session_id: str, native_ids: list[str], actor: str
+    ) -> dict[str, str]:
+        """Publish a queried page's real native turn identities in one short writer."""
+        mapping = {value: execution_key(session_id, value) for value in native_ids}
+        if not mapping:
+            return mapping
+        async with self.database.read_session() as reader:
+            resource = await reader.get(AgentSessionModel, session_id)
+            if resource is None:
+                raise ValueError("external_agent_not_found")
+            await self.authorize(reader, resource.instance_id, actor)
+            instance_id = resource.instance_id
+            known = set(
+                await reader.scalars(
+                    select(AgentExecutionModel.native_id).where(
+                        AgentExecutionModel.session_id == session_id,
+                        AgentExecutionModel.native_id.in_(mapping),
+                    )
+                )
+            )
+        missing = set(mapping) - known
+        if missing:
+            async with self.database.immediate_session() as writer:
+                await self.authorize(writer, instance_id, actor)
+                for native_id in missing:
+                    await self._execution(writer, session_id, native_id)
+        return mapping
+
     @staticmethod
     async def _execution(session: AsyncSession, session_id: str, native_id: str) -> str:
         identity = execution_key(session_id, native_id)
@@ -584,6 +613,7 @@ class AgentRepository:
                     "kind": "external_agent_event",
                     "operation_id": event.get("operation_id"),
                     "event": event["kind"],
+                    "sequence": event.get("sequence"),
                     "payload": payload,
                     "native_reference": {
                         "session_id": event.get("session_id"),
@@ -654,6 +684,7 @@ class AgentRepository:
                         raise ValueError("external_agent_operation_unknown")
                     if operation is not None and operation.instance_id != instance.id:
                         raise ValueError("external_agent_event_mismatch")
+                    received_at = datetime.now(UTC)
                     added = await session.scalar(
                         insert(AgentEventModel)
                         .values(
@@ -662,7 +693,7 @@ class AgentRepository:
                             operation_id=operation.id if operation is not None else None,
                             kind=event["kind"],
                             payload_json=payload_json,
-                            created_at=datetime.now(UTC),
+                            created_at=received_at,
                         )
                         .on_conflict_do_nothing(index_elements=["device_id", "event_id"])
                         .returning(AgentEventModel.id)
@@ -717,6 +748,8 @@ class AgentRepository:
                             event["event_id"],
                             func.json_set(
                                 input_json,
+                                "$.received_at",
+                                received_at.isoformat(),
                                 "$.session_id",
                                 operation.session_id,
                                 "$.execution_id",
@@ -872,6 +905,7 @@ class AgentRepository:
                 {
                     **self._event_view(json.loads(row.payload_json), instance_id),
                     "cursor": row.id,
+                    "received_at": row.created_at.replace(tzinfo=UTC).isoformat(),
                     **(
                         {"permission_id": str(row.id)}
                         if row.kind in {"permission", "question"}

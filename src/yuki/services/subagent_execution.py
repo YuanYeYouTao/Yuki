@@ -95,7 +95,7 @@ class SubagentExecution:
         async with self.repository.database.read_session() as session:
             ids = list(
                 await session.scalars(
-                    select(SandboxTaskRunModel.run_id)
+                    select(SandboxTaskRunModel)
                     .join(
                         work,
                         work.c.id
@@ -108,11 +108,13 @@ class SubagentExecution:
                     )
                 )
             )
-        for run_id in ids:
+        for row in ids:
+            run_id = row.run_id
             await self.services.sandbox_client.execute(
                 "terminal_control",
                 {"run_id": run_id, "action": "cancel"},
                 request_id=f"worker-cancel:{run_id}",
+                source=json.loads(row.source_json),
             )
 
     async def run(self, identity: str) -> str | None:

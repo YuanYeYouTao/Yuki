@@ -706,15 +706,38 @@ class WorkRepository:
                 )
                 if exit_reason is not None:
                     exit_reason = "waiting_external"
+        if values["state"] == "waiting_external" and not business_arrived and goal is None:
+            matched_signal = await session.scalar(
+                select(inputs.c.id)
+                .join(waits, inputs.c.source_key == "wait:" + waits.c.id)
+                .join(work, work.c.id == waits.c.work_id)
+                .where(
+                    work.c.id == identity,
+                    waits.c.id
+                    == func.json_extract(work.c.checkpoint_json, "$.accepted_control.wait_id"),
+                    func.json_extract(work.c.checkpoint_json, "$.accepted_control.action")
+                    == "wait",
+                    waits.c.status.in_(("delivered", "expired")),
+                    inputs.c.work_id == identity,
+                    inputs.c.state.in_(("pending", "staged")),
+                    inputs.c.ready.is_(True),
+                )
+            )
+            if matched_signal is not None:
+                # Delivery can race the activation's earlier read. The original
+                # one-shot signal, not every auxiliary notice, owns this wakeup.
+                values.update(state="queued", reason="work_wait_delivered")
+                if exit_reason is not None:
+                    exit_reason = "waiting_input"
         if (
             values["state"] != "running"
             and not draining
             and values["reason"] != "work_input_preparing"
             and not (values["state"] == "queued" and exit_reason == "segment_budget")
         ):
-            # Settlement consumes the accepted control; its durable payload moves
-            # to the existing result/reason slots only when the state it proposed
-            # is the state actually committed.
+            # A wait remains the accepted decision while its original binding is
+            # active. Settlement of this activation must not erase that decision
+            # and let an unrelated activation finish the continuing goal.
             accepted = "$.accepted_control"
             checkpoint: Any = func.json_remove(work.c.checkpoint_json, accepted)
             if values["state"] == "completed":
@@ -738,6 +761,24 @@ class WorkRepository:
                             "$.reason",
                             func.json_extract(work.c.checkpoint_json, f"{accepted}.reason"),
                         ),
+                    ),
+                    else_=checkpoint,
+                )
+            if values["state"] == "waiting_external" and not business_arrived and goal is None:
+                checkpoint = case(
+                    (
+                        select(waits.c.id)
+                        .where(
+                            waits.c.id
+                            == func.json_extract(work.c.checkpoint_json, f"{accepted}.wait_id"),
+                            waits.c.work_id == work.c.id,
+                            waits.c.status == "active",
+                            func.json_extract(work.c.checkpoint_json, f"{accepted}.action")
+                            == "wait",
+                        )
+                        .correlate(work)
+                        .exists(),
+                        work.c.checkpoint_json,
                     ),
                     else_=checkpoint,
                 )

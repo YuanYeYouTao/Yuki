@@ -297,10 +297,14 @@ class WorkWaitRepository:
                 if existing["status"] != "active":
                     raise WorkConflict("wait_already_resolved")
                 return dict(existing)
-            if await session.scalar(
-                select(waits.c.id).where(waits.c.work_id == work_id, waits.c.status == "active")
-            ):
-                raise WorkConflict("work_already_waiting_signal")
+            # A new explicit wait revises the current decision. The old binding
+            # remains cancelled evidence; retrying its original call key above
+            # never extends the old deadline or revives a resolved wait.
+            await session.execute(
+                update(waits)
+                .where(waits.c.work_id == work_id, waits.c.status == "active")
+                .values(status="cancelled", updated=now)
+            )
             watermark = int(
                 await session.scalar(
                     select(func.max(ChatEventModel.id)).where(

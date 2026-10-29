@@ -1,19 +1,19 @@
 # Yuki Agent Connector
 
-Independent Python 3.12 connector for an existing local Codex daemon, the official Claude
-Agent SDK and generic ACP agents. It does not install the Yuki Bot, own business tasks,
-mirror native transcripts or send chat messages itself.
+Connector **0.4.0 / wire protocol 4** connects an existing computer to Yuki through
+one outbound WSS connection. It provides native Codex, Claude SDK and ACP
+connections, and optional local Shell/file capabilities. It does not
+install the Bot, create another business task system or mirror native histories.
 
-For ordinary Desktop users, use the bundled setup UI; no Python or terminal installation is required.
-For an independently managed CLI installation, install the wheel with Python 3.12, for example
-`uv tool install path/to/yuki_agent_connector-0.3.6-py3-none-any.whl`.
-The connector uses its own lock file and does not install the Bot project. The pinned
-Claude SDK currently includes its own large CLI payload; the driver nevertheless
-requires the explicitly selected native executable and never silently runs that payload.
+Desktop includes this locked Python runtime for the Connector. No user Python
+installation is required. Independent CLI installations use Python 3.12:
+`uv tool install path/to/yuki_agent_connector-0.4.0-py3-none-any.whl`.
+
+## Installation and ownership
 
 ```text
 yuki-agent-connector pair --url https://your-yuki.example --label "My computer"
-yuki-agent-connector instance add --driver codex --label Codex --command /absolute/path/to/codex --cwd /your/project
+yuki-agent-connector instance add --driver codex --label Codex --command /absolute/path/to/codex
 yuki-agent-connector doctor
 yuki-agent-connector service install
 yuki-agent-connector service start
@@ -21,82 +21,163 @@ yuki-agent-connector status --json
 yuki-agent-connector logs
 ```
 
-Pairing reads an explicitly issued one-time **connector** code with hidden input,
-exchanges it at `/agents/v1/pair`, and stores the independent device credential in
-the user's private installation. `--code-stdin` is the same entry for Desktop and
-other headless callers; `YUKI_CONNECTOR_CODE` also supports unattended pairing.
-The server URL, internal device ID and pending journal keep one installation identity.
-Use a separate `--data-dir` to pair another device identity. Native credentials are
-never sent to Yuki, and `status --json`/`instance list` omit credentials, environment
-and owner endpoints.
+Pairing reads an explicitly issued one-time connector code with hidden input.
+Desktop uses the same CLI's `--code-stdin`; its renderer does not receive the
+code. Server URL, internal device ID and journal retain one installation
+identity. Use another `--data-dir` for another identity. Native credentials stay
+local. Status omits device tokens, instance environments and native owner endpoints.
 
-Profiles use `instance add --id STABLE_ID --env CODEX_HOME=/your/profile` or the
-native `CLAUDE_CONFIG_DIR`; repeat `--env` for explicit local settings. `--agent-arg`
-passes configured ACP or Codex executable arguments. They are installation settings,
-not model-controlled command strings. `instance remove ID` changes configuration;
-restart the service to apply profile changes.
+Instances are explicit native installations/profiles. `instance configure`
+accepts UTF-8 JSON stdin to update an original ID. Omitted arguments/environment
+are retained; an empty argument array clears arguments. `CODEX_HOME` and
+`CLAUDE_CONFIG_DIR` select native profiles. Cwd is working context, not a Yuki
+file-access boundary: new instances default to home, existing ones retain their
+configured directory, tasks can override it. Profile edits apply on service restart.
 
-Desktop also configures ACP executables and their argument arrays. Arguments are
-separate values, not a shell command: spaces and empty arguments are preserved.
-Omitting `args` when editing keeps the original arguments; an explicit empty
-array clears them. `status --json` exposes these local settings for the editor;
-they are not part of the server's agent catalog and should not be included in
-diagnostic exports.
+Discovery reads registered installations, PATH/native/npm locations and the
+installed Codex daemon's current package metadata. It does not search projects
+or login files. Registered installation sources are resolved again at startup
+so upgrades retain the original profile/daemon. `discover --instance ID --json`
+resolves that original source without starting it. `diagnose --instance ID`
+performs an explicit handshake/account read without creating a model task.
+An explicitly changed manual executable clears its previous installation source.
 
-Codex discovery includes registered Windows Store apps, native programs on PATH,
-active npm packages, and the installed daemon package's `current/codex-package.json`.
-Registered instances retain the installation source so a normal program upgrade
-can resolve the new executable without changing the instance or native owner.
-Manual executable paths remain manual; choose a discovered installation explicitly
-to repair an old version-specific path.
+Services run as the current OS user: Windows Task Scheduler uses InteractiveToken
+and LeastPrivilege, Linux uses systemd --user, macOS uses LaunchAgent. Closing
+Desktop leaves the service running. Stop/uninstall preserves config, journal
+and native stores. WSS loss does not restart native owners. Revoked server
+authentication stops remote access while owners remain alive until local stop.
+Codex shutdown closes only this Connector's proxy; Connector-owned SDK/ACP and
+ordinary Shell executions stop on service shutdown. Relative native profile and
+socket paths remain anchored to their configured directory; the Codex proxy
+itself launches from home without changing the native task directory.
 
-- Codex defaults to the official `app-server proxy`, which finds the current user's
-  already-running daemon. `--socket` or `--endpoint` selects an explicit existing
-  owner. The maintained `websockets` library handles a private socketpair to the
-  official byte proxy; no local TCP listener or hand-written WebSocket framing is
-  exposed. Native owner connections bypass HTTP proxies; the outbound Yuki WSS and
-  pairing HTTP honor standard proxy/CA environment settings.
-- Claude uses official `claude-agent-sdk==0.2.172`, explicit `cli_path`, the native
-  `claude_code` system/tool presets and `user/project/local` configuration. Choose a
-  real executable on Windows rather than `.cmd`/`.bat`. Stored sessions can be
-  listed/read; an independent active TUI is not live-attached. Explicit resume creates
-  an SDK-managed continuation. Precise steer/queue is not advertised by this driver.
-- ACP uses `agent-client-protocol==0.12.1` and negotiates optional list/load/resume.
-  Files and terminal callbacks execute in the selected computer/session's actual
-  working directory. ACP request IDs are qualified by their real protocol owner;
-  ACP does not expose a persistent native turn ID. No server `/workspace` is assumed.
+## Full access
 
-The fixed wire actions are `list/get/watch/prompt/steer/queue/respond/cancel/detach`.
-Drivers advertise only their supported actions. A watch covers one original
-execution (or the first actual execution when idle), then ends at its native
-terminal receipt. It never closes the session or daemon. Permission replies use the
-original `permission_id` and formal native `response` object (ACP can also select
-an original `option_id`). `response_submitted` / `cancel_submitted` confirms only
-delivery into that formal native interface. It does not claim the original prompt
-continued, stopped or completed; that execution has its own receipts. Interrupted or
-unconfirmed submissions stay unknown, and no fallback interrupts, forks or resubmits
-an original operation.
+Full access lets Yuki use this user's actual Shell and files, including programs
+that the user has installed. It is independent of Codex sandbox flags. Old configs/new installs default to false:
 
-Only original dispatch facts, observation bindings and unacknowledged important
-events enter the private journal. Duplicate original commands do not dispatch twice;
-an acceptance/crash window stays unknown until original-resource reconciliation.
-Native histories, reasoning, signatures and token streams are not mirrored. Important
-events persist before transmission and are removed from the outbox only after server
-ACK. Terminal facts remain queryable after ACK.
+```text
+yuki-agent-connector full-access --enabled true --json
+yuki-agent-connector full-access --enabled false --json
+```
 
-Network loss does not exit SDK/ACP owners. Revoked server authentication stops remote
-connections without killing local owners or repeatedly retrying rejected credentials.
-Local `service stop`/process exit is different: Codex closes only this connector's
-client/proxy; SDK/ACP subprocesses owned by the connector stop with it. Reconciliation
-does not silently resume a new paid execution after a process crash.
+The running Connector reads its original local config before new device
+operations. No permission poll, extra service or native-owner restart is needed.
+Turning access off rejects new general Shell/file operations and further
+stdin. Old Agent-only grants remain; original receipts/output and original
+interrupt/cancel/close remain available. Turning off does not undo effects or
+implicitly cancel running scripts.
 
-Services are per OS user: Windows Task Scheduler uses `InteractiveToken` and
-`LeastPrivilege` after login; Linux uses `systemd --user`; macOS uses a user
-LaunchAgent. `service stop` and `service uninstall` preserve configuration, journal
-and native stores. Closing Desktop does not stop this service. Desktop invokes the
-same CLI with the explicitly selected original data directory, without another driver or credential copy.
+Local status exposes full_access and readonly computer facts. The authenticated
+device-status RPC includes the actual platform, Shell, home, pipe/TTY support
+and interrupt capability. Hello/catalog omit the private home path.
 
-Development and artifact checks:
+## Terminal and files
+
+The existing command uses `resource: terminal`; Agent commands retain their
+original shape. Actions: exec/read/input/interrupt/cancel/close/status/get.
+Cloud allocates run_id from the original Host exec request; subsequent commands
+retain that run. Each control has its original Host ID. Duplicate IDs query
+receipts instead of executing again.
+
+Exec accepts command, optional cwd, tty and timeout_seconds. Windows uses an
+installed PowerShell; POSIX uses the user's Shell. This version supports real
+pipes (`tty: false`); true TTY requests explicitly fail. Input sends original
+UTF-8 bytes. Read accepts cursor/wait_seconds and returns bounded output plus a
+byte cursor. Incomplete UTF-8 waits for the next read. Cancellation targets the
+original Windows Job Object/POSIX process group, including descendants retaining
+the output pipe after the parent exits, while preserving unrelated processes.
+Windows pipe mode has no console Ctrl-Break and reports interrupt_unsupported;
+interrupt_supported is false there. Use explicit cancel for its original tree.
+
+Each run retains at most two 4 MiB log segments (8 MiB of recent output).
+Rotation does not stop the process or change its completion. Cursors retain
+their original absolute byte offsets across segments and reader restarts;
+output_lost reports when an older requested range has been rotated out. Existing
+unsegmented `<run_id>.log` files remain readable. Historical output is not
+promised to remain in full, while original execution and completion receipts
+remain in the journal.
+
+Completion is one stable result shared by terminal_event.result and the
+receipt's completion. Output cursors do not rewrite it. A restarted service
+without the original process owner reports unknown and retains the original
+journal instead of starting another process. Ordinary commands need no Work.
+
+Files use `resource: file` over the same connection. Stat selects an open file
+and returns transfer_id/version/size/SHA-256. Read uses that original handle and
+64 KiB chunks. In-place changes fail; where the OS permits path replacement, the
+retained original file is used. Inode metadata changes trigger a hash check.
+Windows may disallow replacing an open selected file. Release closes the handle.
+Internal WSS base64 chunks never become tool text or terminal stdout.
+
+Write accepts original chunk IDs and transfer_id/path/offset/data_base64/final/
+size/SHA-256. Each transfer stages its own bytes and verifies size/hash before
+final replacement. The same journal retains chunk and whole-transfer receipts
+without base64. File/get accepts transfer_id and the original requested path,
+including relative/home paths. A lost final response can be recovered without
+rereading expired cloud attachments or overwriting later user edits. Interrupted
+staging files retain the original transfer for reconciliation; final replacement
+removes its staging file. No transfer database or extra daemon is introduced.
+
+## Existing command-line tools
+
+Yuki can run programs already installed for this OS user through the same local
+Shell, including OpenCLI and other browser/agent tools. This package does not
+bundle, install or adapt OpenCLI, browser extensions, Node or browsers. Setup,
+browser authorization, profiles and native sessions belong to the chosen tool.
+Its exit code and original stdout remain ordinary terminal evidence, and a lost
+response is queried through the original terminal run/request. Do not repeat
+an effect merely because the CLI response is unknown. Upload/download files
+use the same local file bridge; paths retain their actual computer identity.
+
+## Native agents and progress queries
+
+Codex uses the official app-server proxy to the current user's existing daemon;
+socket/endpoint can select an explicit owner. Its maintained WebSocket transport
+uses a private socketpair, not another local TCP listener. Native connections
+bypass HTTP proxies; outbound WSS/pairing honor proxy and CA settings. Claude
+uses the pinned official SDK, an explicit native executable and native settings;
+stored sessions are readable, but an independent active Claude TUI is not
+claimed attached. ACP negotiates native capabilities; its callbacks use the
+actual local session directory.
+
+Agent actions remain list/get/watch/prompt/steer/queue/respond/cancel/detach,
+advertised only where supported. Session watches follow actual turns;
+execution-scoped watches retain the original turn. Detach ends observation,
+not a native session. Formal permission/response IDs retain their native owner.
+response_submitted/cancel_submitted confirms submission, not task completion.
+
+Operation receipts, native progress and Work settlement remain distinct. Codex
+get returns the latest summary turn by default. include_history returns one
+native cursor page, history_order desc, next_cursor toward older material. A
+specified execution queries that turn and a page of its items. Native idle is
+not a claim that Work completed.
+
+Claude parses the real SDK JSONL chain then selects a recent window. Window
+order is ascending; next_cursor is the older offset. tool_use inputs and
+tool_result outputs remain, thinking is omitted. Disk work is not O(k). ACP
+without native history reports history_available=false without load/resume.
+A specified old execution is never replaced by a session watch's newer turn.
+
+The private journal retains original dispatch evidence, observation bindings,
+process logs and unacknowledged important events. Native
+transcripts/reasoning/token streams are not mirrored. Events use one original
+sequence and ACK; terminal facts remain after ACK. Unknown outcomes never cause
+blind redispatch.
+
+## Distribution and validation
+
+Desktop ships a platform-specific relocatable CPython runtime with this exact
+locked wheel and dependencies. Its content digest distinguishes same-version
+builds. Upgrades retain the selected config/data/IDs/journal. Another installation
+and external-runtime adoption require their explicit UI actions. Bot and
+Connector must both use protocol 4. Builds use pinned Python archive/dependency
+hashes, then move to a Unicode/spaces path for module/driver/SQLite/TLS/status
+checks. Notices/licenses travel with the runtime. Managed launches preserve
+isolated mode, so project modules cannot replace the bundled Connector. Package
+assembly runs on its target OS/architecture; signing/notarization is a separate
+release check. An unsigned local build is not a release.
 
 ```text
 uv sync --frozen --python 3.12
@@ -105,112 +186,11 @@ uv run --no-sync mypy src
 uv run --no-sync pytest -q
 uv build --out-dir dist
 uv run --no-sync python scripts/verify_wheel.py
-```
-
-The independent CI job runs on Linux, Windows and macOS and uploads the built wheel.
-`scripts/service_smoke.py` can test an actual disposable user service against a local
-fake server with zero native instances; it does not touch existing tasks or paid models.
-Real provider tests, OS service tests and source-level fake protocol tests remain
-distinct acceptance evidence.
-
-
-### Connector 0.3.0 / wire protocol 3
-
-Update Bot and Connector together. Keep the original journal and device identity. The hello uses
-`protocol_version: 3`. Existing watches retain their original execution scope; a new watch with only
-a session ID follows that session across turns. Supplying an execution ID watches that turn alone.
-Detaching stops observation, not the native session.
-
-The local journal reduces native facts into one receipt projection. Events carry `sequence` and
-`operation_state`; query and command responses return the same projection with `state_sequence`.
-A lost stream becomes unknown without erasing confirmed admission. Late progress cannot reopen a
-terminal observation. Unknown dispatches are reconciled using the original IDs, never resubmitted.
-
-Codex reconnects to the selected owner and restores observations from the journal. Native questions
-belong to the connection that issued them. Claude SDK and ACP report loss of their owned execution
-streams without pretending they can recover an inaccessible process. Native readiness is separate
-from the device WebSocket connection.
-
-Events stream from the original journal by sequence, using WebSocket backpressure. Commit ACKs prune
-originals without imposing a round trip before every send. Failure of the event sender, catalog sender
-or reader ends that connection. An acknowledged old-protocol event whose ACK was lost remains the same
-fact after upgrade; replay does not duplicate its Work input. Complete diffs are no longer pushed as
-progress; file paths, command results, plans, questions and native tool milestones remain available.
-
-### Desktop-managed distribution (0.3.1; wire protocol remains 3)
-
-Desktop ships a platform-specific, relocatable CPython directory with this exact
-locked Connector wheel and dependencies. The user does not need Python, uv, pip,
-or a terminal. The build machine assembles it with `scripts/build_runtime.py`,
-using pinned python-build-standalone archive digests and `uv.lock` hashes. A build
-moves the complete directory to a path containing spaces/Unicode before checking
-the real module entry point, SQLite/TLS, all three drivers and local status.
-Python's distribution notices, dependency dist-info licenses, the Yuki license,
-and the dependency lock travel with the runtime. This is not a relocated venv.
-
-Desktop copies the bundle to a stable per-user runtime directory before installing
-a service. The selected data directory remains unchanged across runtime upgrades:
-config, device/profile IDs and journal are not copied or recreated. The runtime
-content digest distinguishes builds with the same package version. A separate
-installation is created only through the explicit UI action. Desktop discovers
-the default independent installation through readonly status and its registered
-service's actual Python target. Explicitly using it selects the original runtime
-and data directory without pairing, stopping the service or recreating receipts.
-An external-runtime upgrade remains a separate explicit adoption action.
-
-Managed launches use `-I -B -m yuki_agent_connector`; the installed user service
-and Claude inspection subprocess preserve isolated mode. Thus project/CWD Python
-files and user site-packages cannot replace the bundled module. The module and
-service model are the same as the independent CLI. Package assembly must run on
-the target OS/architecture, and official installers still require the corresponding
-platform signing/notarization checks; an unsigned local build is not a release.
-
-`discover --json` reads registered Codex installation locations and explicit
-absolute executable locations. It never searches the current directory or reads
-login files. `instance configure` reads UTF-8 JSON bytes from stdin independently
-of the console encoding, including isolated Windows runtimes. It updates a
-specified original instance ID; it retains environment, native owner endpoint and
-journal. Version 0.3.2 permits omitting `cwd`: existing instances retain their
-directory and new instances use the original home-directory default. It returns
-`{"instance_id":"..."}` only after saving; continue with that original identity
-if a later service operation fails. Registering an installation does not create
-a native thread. A registered installation source is re-resolved when the Codex client
-starts so an app update need not create another profile. `diagnose --instance ID`
-is an explicit no-model native handshake and account/read check; an installed
-binary, a running Connector service, device admission, and native login readiness
-are separate observations. Status contains actual registered service executable
-information, not merely the Python used by the status command.
-
-Version 0.3.4 adds `discover --instance ID --json` to resolve the original
-instance's current executable as `{"instance_id":"...","command":"..."}`.
-It uses the same registered installation source as startup, without starting
-Codex or changing configuration or the journal. Editing that instance's label
-or project also re-resolves its source before validating the executable. An
-explicitly changed manual path clears the registered source; a missing original
-installation fails rather than selecting another candidate.
-
-Version 0.3.5 adds `discover --driver claude --json` for installed native Claude
-Code executables, and `driver` in candidate metadata. New configuration accepts
-the chosen driver; editing an original instance retains its driver, arguments,
-environment, socket and endpoint. Claude readiness invokes only `auth status`
-with that original profile and omits the native account output. It does not
-create a model task or claim live attachment to an arbitrary running Claude TUI.
-`status --json` includes the safe `data_directory` used for Desktop association.
-`instance add --cwd` is optional as well: a new instance defaults to the user's
-home, an existing one retains its configured task directory, and a task may
-override it. A directory is working context, not a Yuki file access boundary.
-Codex's transport proxy launches from home independently of the default task
-directory. Relative `CODEX_HOME` and socket paths are anchored to their original
-directory for this subprocess only, preserving the selected native profile/owner;
-the original configuration and native session cwd remain unchanged.
-
-Example build-machine command (choose a new output directory):
-
-```text
 uv run --frozen python scripts/build_runtime.py --output /staging/agent-connector --cache /build-cache/python
 ```
 
-Desktop authorizes through the current chat Person to issue a connector-purpose
-code, then passes it to this CLI on stdin. The renderer never receives that code.
-Task and permission UI forwards the original server IDs through Main/Work;
-submission acknowledgement does not assert native execution success.
+CI runs on Linux/Windows/macOS. Real Shell tests check bytes, duplicate requests,
+process-tree cancellation, unrelated processes and restored original receipts.
+Protocol fixtures, actual provider/OS-service acceptance, local builds and deployed
+user acceptance remain separate evidence. Browser behavior is owned by the user's
+selected CLI; this package does not claim its installation or browser acceptance.

@@ -330,6 +330,38 @@ class NativeDevice(PublicProjection):
     id: str
     label: str
     online: bool
+    device_capabilities: dict[str, JsonValue] | None = None
+
+
+class TerminalRun(PublicProjection):
+    request_id: str
+    run_id: str
+    device_id: str
+    command: str | None = None
+    cwd: str | None = None
+    status: str
+    pending: bool
+    uncertain: bool | None = None
+    exit_code: int | None = None
+    output: str | None = None
+    next_cursor: int | None = None
+    output_lost: bool | None = None
+    output_unavailable: bool | None = None
+    observation_error: str | None = None
+    completion: dict[str, JsonValue] | None = None
+
+
+class TerminalRuns(PublicProjection):
+    items: list[TerminalRun]
+    next_cursor: str | None
+
+
+class TerminalControl(PublicProjection):
+    request_id: str
+    run_id: str
+    status: str | None = None
+    pending: bool | None = None
+    uncertain: bool | None = None
 
 
 class NativeInstance(PublicProjection):

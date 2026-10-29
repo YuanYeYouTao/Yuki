@@ -172,7 +172,7 @@ async def test_ready_instance_connects_and_later_ready_catalog_does_not_wait_for
 
     async def peer(socket):
         hello = json.loads(await socket.recv())
-        assert hello["protocol_version"] == 3
+        assert hello["protocol_version"] == 4
         initial = {item["id"]: item["status"] for item in hello["instances"]}
         assert initial == {"fast": "available", "later": "unavailable", "recovering": "available"}
         await socket.send(

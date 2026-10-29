@@ -55,6 +55,11 @@ Main 恢复同样登记活动。SELF 自省沿原 best-effort 后台名额退让
 续接目标或等待内容不清楚时先用 `get` 读取完整 goal 与 wait，活动 Work 原目标不截断。
 目录中的 revision、owner/Conversation/generation、来源与审计时间等详情不常驻 Prompt，
 需要核实再调用既有 `task_control(action=get/list)`；get 同时提供存在的完整等待登记。
+get 的全局安全元数据不授予私有步骤读取。原 actor、Conversation、generation 和执行树范围
+获准时，直接读取原 effects 的最近一页、真实结果及原 context_note；`limit/cursor` 续读更早
+记录，`history_order=desc`，不聚合完整 journal，也不另存进度摘要。范围不符时明确
+`progress_available=false`，不把缺失步骤当作没有行动。`observed_at` 是查询时间，步骤的
+created_at/updated_at 是原回执时间，生命周期和计数本身不能证明业务已做完。
 后端身份、权限和恢复事实仍保持完整。
 自动注入按原 actor、Conversation、generation 及执行来源核验可见范围，
 不因为查询工具能读全局目录就自动注入其他会话的工作。
@@ -235,6 +240,11 @@ target/binding，省略 target 仍是当前源会话；明确指定其他人的�
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
 绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason 和 context_note 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
+原 wait 绑定仍 active 时，普通结算保留其 accepted_control；无新业务或匹配信号的辅助
+激活沿原等待收拢，不重购模型或改原截止时间。原 wait 在结算前兑现时，writer 认同一
+wait ID 的 delivered/expired 及尚待处理的原 signal，将 Work 续回 queued，避免用旧等待
+覆盖已经到达的信号。合法新输入仍可退休原决定；显式新 wait 在同一事务中取消原 active
+绑定并登记新绑定，保旧取消事实，同 call key 不续期，已兑现的旧 wait 不复活。
 主任务的 `need_input.reason` 是内部等待资料，不会自动变成平台提问；需要用户补充时，先用 `send` 交付问题，再登记等待。
 子任务直接 `need_input(reason=问题)`，Host 会通过父子通信发送问题并按原回执决定是否等待，无需再单独提问；底层等价方式是 `subagent_control(action=message, ask=true)`。
 恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。

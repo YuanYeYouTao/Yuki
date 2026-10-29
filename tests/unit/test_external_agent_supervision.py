@@ -209,7 +209,7 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
             env.device["device_id"],
             connection,
             {
-                "protocol_version": 3,
+                "protocol_version": 4,
                 "instances": [
                     {
                         "id": "profile",

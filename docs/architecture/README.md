@@ -4,7 +4,7 @@
 
 代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
 
-本入口跟随 **4.0.0 后续开发**；当前源码迁移 head 为 `0155`、Plugin API 为 `9.0`、Main 固定工具合同为 `33`、个人 Client API revision 为 `7`、Code API 为 `yuki.codemode.api.v2`。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 后续开发**；当前源码迁移 head 为 `0155`、Plugin API 为 `9.0`、Main 固定工具合同为 `34`、个人 Client API revision 为 `7`、Code API 为 `yuki.codemode.api.v2`。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 
@@ -41,6 +41,8 @@
 | [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
 
 ## 设计报告与后续计划
+
+- [10-29 桌面端本机完整操作统一接入任务书](Yuki-桌面端本机完整操作统一接入任务书-2026-10-29.md)：本期交付本机通用Shell、统一文件桥与可选Codex/Claude委托；OpenCLI等程序直接从Shell使用，不自研或捆绑浏览器CLI。同批完成T13/#514和T14/进度查询。实施、复审与交付状态见[实施记录](../operations/local-device-full-access-implementation-20261029.md)。
 
 - [10-28 消息身份与投递链路收敛任务书](Yuki-消息身份与投递链路收敛任务书-2026-10-28.md)：接续三轮ID与表情执行复审，分开原信封、真实native引用及内部回执；以本地原子发表删除空发送和平台列恢复，保旧已付来源hash，覆盖SDK、迁移及表情遗留。新增T13跨两仓补齐桌面富媒体读取、气泡显示、音视频/PDF和富文本，现共13项。已获授权在独立分支实施；源码、验证与两仓交付见[实施记录](../operations/message-identity-delivery-implementation-20261028.md)，历史证据见[续审记录](../operations/message-identity-delivery-audit-20261028.md)及[桌面审查](../operations/desktop-rich-media-audit-20261028.md)。
 
@@ -124,3 +126,5 @@
 - [Pi/Code 移植来源](pi-port-provenance.md)：设计参考、实现来源与第三方许可；Code Mode 已合入主线，不是待移植实验入口。
 
 真实 Provider 测量、日期部署和自然 QQ 验收按各自证据读取。版本/迁移以实际源码或镜像为准，正式发行范围见[3.9.0 发布说明](../releases/v3.9.0.md)与[升级指南](../upgrade-3.9.0.md)；不改写旧 Release 或历史部署的基线。
+
+本机完整操作接入的T01–T14进度、#514受控复现和配套交付见[实施记录](../operations/local-device-full-access-implementation-20261029.md)。

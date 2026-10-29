@@ -223,6 +223,7 @@ class ApplicationContainer:
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
         self.database.sandbox_client = self.sandbox_client
         self.external_agents = ExternalAgentService(self.database, self.sandbox_tasks)
+        self.sandbox_client.local_devices = self.external_agents.local_devices
         self.database.external_agents = self.external_agents
         self.client_identity = ClientIdentityService(self.database, self.presence_router)
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)

@@ -32,7 +32,7 @@ from yuki.runtime.work_schema_v1 import work
 from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
 
-CONNECTOR_PROTOCOL = 3
+CONNECTOR_PROTOCOL = 4
 
 
 class ExternalAgentService:
@@ -42,6 +42,9 @@ class ExternalAgentService:
         self.repository = AgentRepository(database)
         self.identity = ConnectorIdentityService(database)
         self.connections = DeviceConnections()
+        from yuki.external_agents.local_device import LocalDeviceService
+
+        self.local_devices = LocalDeviceService(self)
         self._retiring: dict[str, asyncio.Task[None]] = {}
 
     async def close(self) -> None:
@@ -79,7 +82,9 @@ class ExternalAgentService:
             raise ValueError("unsupported_connector_protocol")
         if hello.get("device_id", device_id) != device_id:
             raise ValueError("external_agent_device_mismatch")
-        await self.update_catalog(device_id, connection, hello["instances"])
+        await self.update_catalog(
+            device_id, connection, hello["instances"], hello.get("device_capabilities", {})
+        )
         await self.connections.attach(connection)
         self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
@@ -90,12 +95,18 @@ class ExternalAgentService:
             await self.repository.connection_event(connection.device_id, connection.id, False)
 
     async def update_catalog(
-        self, device_id: str, connection: DeviceConnection, instances: list[dict[str, Any]]
+        self,
+        device_id: str,
+        connection: DeviceConnection,
+        instances: list[dict[str, Any]],
+        device_capabilities: dict[str, Any] | None = None,
     ) -> None:
         await self.repository.register(device_id, instances)
         connection.instances = {
             item["id"] for item in instances if item.get("status") != "unavailable"
         }
+        if device_capabilities is not None:
+            connection.device_capabilities = device_capabilities
 
     async def _connection(
         self, instance: AgentInstanceModel, *, action: str | None = None
@@ -127,6 +138,10 @@ class ExternalAgentService:
                 "label": device.label,
                 "online": self.connections.online(device.id),
             }
+            if self.connections.online(device.id):
+                devices[device.id]["device_capabilities"] = self.connections.get(
+                    device.id
+                ).device_capabilities
             if instance is None:
                 continue
             available = (
@@ -217,6 +232,18 @@ class ExternalAgentService:
                     and operation.native_execution_id != bound_execution.native_id
                 ):
                     raise ValueError("external_agent_target_mismatch")
+                # An explicit turn selects that turn, not the latest turn of a
+                # session-wide watch whose receipt happens to be supplied too.
+                selected = await self._get(
+                    {
+                        key: value
+                        for key, value in args.items()
+                        if key not in {"operation_id", "run_id", "request_id", "cursor"}
+                    },
+                    request_id,
+                    actor,
+                )
+                return {**selected, "related_operation_id": operation.id}
             view = await self._view(operation)
             if view["pending"]:
                 instance = await self.repository.instance(operation.instance_id, actor)
@@ -254,6 +281,11 @@ class ExternalAgentService:
                 **view,
                 "events": events,
                 "next_cursor": events[-1]["cursor"] if events else args.get("cursor", 0),
+                "query_scope": "operation_receipt",
+                "status_scope": "operation",
+                "cursor_parameter": "cursor",
+                "history_order": "asc",
+                "observed_at": datetime.now(UTC).isoformat(),
             }
         session_id = args.get("session_id")
         execution = (
@@ -292,9 +324,37 @@ class ExternalAgentService:
         native_execution = result.get("execution_id")
         if execution is not None and native_execution not in (None, execution.native_id):
             raise ValueError("external_agent_response_execution_mismatch")
+        if execution is not None and native_execution is None:
+            result = {
+                **result,
+                "status": "unknown",
+                "pending": True,
+                "query_scope": "execution",
+                "status_scope": "execution",
+                "reason": "execution_not_confirmed",
+            }
+        views = [
+            value
+            for key in ("latest_turn", "selected_turn")
+            if isinstance(value := result.get(key), dict)
+        ]
+        native = result.get("native")
+        if isinstance(native, dict) and isinstance(native.get("turns"), list):
+            views.extend(native["turns"])
+        mapping = await self.repository.remember_executions(
+            session_id,
+            ([native_execution] if isinstance(native_execution, str) else [])
+            + [value["id"] for value in views if isinstance(value.get("id"), str)],
+            actor,
+        )
+        for value in views:
+            if isinstance(value.get("id"), str):
+                value["execution_id"] = mapping[value["id"]]
         execution_id = (
-            await self.repository.remember_execution(session_id, native_execution)
+            mapping.get(native_execution)
             if isinstance(native_execution, str)
+            else execution.id
+            if execution is not None
             else None
         )
         return {

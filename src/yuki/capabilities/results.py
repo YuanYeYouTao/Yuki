@@ -155,7 +155,17 @@ class ToolResultBudgeter:
                     self._artifacts = control.repository.database.work_result_store
         media_handle = None
         archive_images = getattr(self._artifacts, "write_media_artifact", None)
-        if result.ok and result.images and result.provider_id not in {"core", "artifacts"}:
+        local_media = (
+            result.provider_id == "core"
+            and result.tool_name == "workspace_inspect"
+            and isinstance(result.data, dict)
+            and bool(result.data.get("device_id"))
+        )
+        if (
+            result.ok
+            and result.images
+            and (result.provider_id not in {"core", "artifacts"} or local_media)
+        ):
             try:
                 if not callable(archive_images):
                     raise ValueError("media_artifact_unavailable")
@@ -396,8 +406,9 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
     from yuki.workspace.tools import WORKSPACE_TOOLS
 
     if (
-        result.provider_id != "core"
-        or result.tool_name not in SANDBOX_TOOLS | WORKSPACE_TOOLS | {"external_agent"}
+        result.provider_id not in {"core", "work_control"}
+        or result.tool_name
+        not in SANDBOX_TOOLS | WORKSPACE_TOOLS | {"external_agent", "task_control"}
         or not isinstance(result.data, dict)
     ):
         return {}
@@ -433,6 +444,18 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
             "artifact_id",
             "error",
             "retryable",
+            "query_scope",
+            "status_scope",
+            "observed_at",
+            "history_order",
+            "history_items_view",
+            "history_scope",
+            "cursor_parameter",
+            "history_available",
+            "history_reason",
+            "content_omitted",
+            "cursor_direction",
+            "source_scope",
         )
         if key in data
         and (value := data[key]) is not None
@@ -440,6 +463,65 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
         and (not isinstance(value, str) or len(value) <= 512)
     }
     output = data.get("output", data.get("text"))
+    for key in ("latest_turn", "selected_turn", "latest_message"):
+        if isinstance(data.get(key), dict):
+            progress[key] = {
+                name: value[:1000] if isinstance(value, str) else value
+                for name, value in data[key].items()
+                if isinstance(value, (str, int, float, bool))
+            }
+            content = {
+                name: value for name, value in data[key].items() if isinstance(value, (dict, list))
+            }
+            if isinstance(content.get("items"), list):
+                actions = [
+                    item
+                    for item in content["items"]
+                    if isinstance(item, dict)
+                    and item.get("type") not in {"userMessage", "reasoning"}
+                ]
+                if data[key].get("items_order") == "asc":
+                    actions.reverse()
+                    progress[key]["content_order"] = "desc"
+                else:
+                    progress[key]["content_order"] = data[key].get("items_order", "native")
+                # Keep the actual latest action visible ahead of its potentially
+                # long arguments/output. Full original details remain archived.
+                headers = ("id", "type", "status", "exitCode", "success", "command", "tool")
+                content["items"] = [
+                    {**{field: item[field] for field in headers if field in item}, **item}
+                    for item in actions
+                ]
+            if content:
+                preview = json.dumps(content, ensure_ascii=False, default=str)
+                progress[key].update(
+                    content_preview=preview[:1000], preview_truncated=len(preview) > 1000
+                )
+    if isinstance(data.get("work"), dict):
+        work = data["work"]
+        progress["work"] = {
+            key: work[key]
+            for key in (
+                "work_id",
+                "state",
+                "progress_available",
+                "progress_reason",
+                "query_scope",
+                "status_scope",
+                "observed_at",
+                "next_cursor",
+                "history_order",
+                "history_scope",
+                "cursor_parameter",
+            )
+            if key in work
+        }
+        details = {key: work[key] for key in ("steps", "context_note") if key in work}
+        if details:
+            preview = json.dumps(details, ensure_ascii=False, default=str)
+            progress["work"].update(
+                content_preview=preview[:1200], preview_truncated=len(preview) > 1200
+            )
     if isinstance(output, str):
         progress["output_preview"] = output[:1000]
         progress["preview_truncated"] = len(output) > 1000

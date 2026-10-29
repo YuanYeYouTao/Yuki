@@ -7,6 +7,7 @@ import contextlib
 import json
 import socket
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import uuid4
@@ -200,9 +201,7 @@ class CodexRPC:
 def native_status(thread: dict[str, Any]) -> str:
     state = thread.get("status", {})
     kind = state.get("type") if isinstance(state, dict) else state
-    return {"active": "running", "idle": "completed", "systemError": "failed"}.get(
-        str(kind), "unknown"
-    )
+    return {"active": "running", "idle": "idle", "systemError": "failed"}.get(str(kind), "unknown")
 
 
 def turn_status(turn: dict[str, Any]) -> str:
@@ -214,7 +213,7 @@ def turn_status(turn: dict[str, Any]) -> str:
     }.get(turn.get("status", ""), "unknown")
 
 
-def item_view(item: dict[str, Any]) -> dict[str, Any] | None:
+def item_view(item: dict[str, Any], *, details: bool = False) -> dict[str, Any] | None:
     kind = item.get("type")
     fields = {
         "agentMessage": ("id", "type", "text", "phase"),
@@ -235,26 +234,55 @@ def item_view(item: dict[str, Any]) -> dict[str, Any] | None:
         "webSearch": ("id", "type", "query", "status"),
         "plan": ("id", "type", "text"),
     }.get(str(kind))
-    if fields is None:
+    if kind == "reasoning":
         return None
+    if fields is None:
+        return {
+            **{key: item[key] for key in ("id", "type", "status") if key in item},
+            "content_omitted": True,
+        }
     result = {key: item[key] for key in fields if key in item}
+    if details:
+        result.update(
+            {
+                key: item[key]
+                for key in (
+                    "arguments",
+                    "input",
+                    "result",
+                    "error",
+                    "aggregatedOutput",
+                    "contentItems",
+                )
+                if key in item
+            }
+        )
     if kind == "fileChange":
         result["changes"] = [
             {key: change[key] for key in ("path", "kind") if key in change}
             for change in item.get("changes", [])
         ]
+    if any(key not in result for key in item) or (
+        kind == "fileChange" and any("diff" in change for change in item.get("changes", []))
+    ):
+        result["content_omitted"] = True
     return result
 
 
-def turn_view(turn: dict[str, Any]) -> dict[str, Any]:
+def turn_view(turn: dict[str, Any], *, details: bool = False) -> dict[str, Any]:
     result = {
         key: turn[key]
-        for key in ("id", "status", "error", "startedAt", "completedAt")
+        for key in ("id", "status", "error", "startedAt", "completedAt", "itemsView")
         if key in turn
     }
     result["items"] = [
-        view for item in turn.get("items", []) if (view := item_view(item)) is not None
+        view
+        for item in turn.get("items", [])
+        if (view := item_view(item, details=details)) is not None
     ]
+    result["content_projection"] = "public_actions"
+    result["items_order"] = "desc" if turn.get("itemsView") == "full_page" else "asc"
+    result["items_omitted"] = len(result["items"]) != len(turn.get("items", []))
     return result
 
 
@@ -355,6 +383,20 @@ class CodexDriver:
             cursor = page.get("nextCursor")
             if not cursor:
                 return
+
+    async def _turn_page(
+        self, session: str, *, cursor: str | None = None, limit: int = 30
+    ) -> dict[str, Any]:
+        return await self.rpc.call(
+            "thread/turns/list",
+            {
+                "threadId": session,
+                "cursor": cursor,
+                "limit": limit,
+                "itemsView": "summary",
+                "sortDirection": "desc",
+            },
+        )
 
     async def _find_turn(
         self, session: str, execution: str | None = None, *, client_id: str | None = None
@@ -627,6 +669,11 @@ class CodexDriver:
                     if item.get("type") == "agentMessage"
                 ),
                 error=original.get("error"),
+                **{
+                    name: original[name]
+                    for name in ("startedAt", "completedAt")
+                    if name in original
+                },
             )
         elif method == "item/started" and item.get("type") == "userMessage":
             payload.update(
@@ -646,6 +693,7 @@ class CodexDriver:
             original = params["turn"]
             payload.update(
                 status="running",
+                **({"startedAt": original["startedAt"]} if "startedAt" in original else {}),
                 native={
                     "threadId": session,
                     "turn": {
@@ -703,6 +751,8 @@ class CodexDriver:
                 {
                     "cursor": arguments.get("cursor"),
                     "limit": arguments.get("limit", 30),
+                    "sortKey": "updated_at",
+                    "sortDirection": "desc",
                     "useStateDbOnly": True,
                 },
             )
@@ -713,10 +763,26 @@ class CodexDriver:
                         "label": item.get("name") or item.get("preview"),
                         "status": native_status(item),
                         "cwd": item.get("cwd"),
+                        **{
+                            key: item[key]
+                            for key in (
+                                "createdAt",
+                                "updatedAt",
+                                "recencyAt",
+                                "source",
+                                "forkedFromId",
+                                "parentThreadId",
+                            )
+                            if key in item
+                        },
+                        "native_status": item.get("status"),
                     }
                     for item in result.get("data", [])
                 ],
                 "next_cursor": result.get("nextCursor"),
+                "cursor_parameter": "native_cursor",
+                "history_order": "updated_at_desc",
+                "source_scope": "native_default_interactive_sources",
             }
         if action == "detach":
             detached = arguments["operation_id"]
@@ -745,27 +811,78 @@ class CodexDriver:
             original = (
                 await self.rpc.call("thread/read", {"threadId": session, "includeTurns": False})
             )["thread"]
-            selected = (
-                await self._find_turn(session, execution)
-                if execution or native_status(original) == "running"
-                else None
-            )
+            page = None
+            if execution:
+                selected = await self._find_turn(session, execution)
+            else:
+                page = await self._turn_page(
+                    session,
+                    cursor=arguments.get("cursor") if arguments.get("include_history") else None,
+                    limit=arguments.get("limit", 30) if arguments.get("include_history") else 1,
+                )
+                current_page = (
+                    await self._turn_page(session, limit=1) if arguments.get("cursor") else page
+                )
+                selected = next(iter(current_page.get("data", [])), None)
             state = (
                 turn_status(selected)
                 if selected
                 else ("unknown" if execution else native_status(original))
             )
-            if arguments.get("include_history"):
-                original["turns"] = [
-                    turn_view(turn) async for turn in self._turns(session, items="full")
-                ]
             result = {
                 "session_id": session,
                 "execution_id": selected["id"] if selected else execution,
                 "status": state,
                 "native": original,
                 "pending": state in {"running", "unknown"},
+                "query_scope": "execution" if execution else "session",
+                "status_scope": "turn" if execution else "session",
+                "observed_at": datetime.now(UTC).isoformat(),
+                "native_status": original.get("status"),
             }
+            if selected is not None:
+                result["selected_turn" if execution else "latest_turn"] = turn_view(
+                    selected, details=True
+                )
+            if not execution:
+                result["status"] = native_status(original)
+                result["pending"] = result["status"] in {"running", "unknown"}
+            if (execution and selected is not None) or (
+                arguments.get("include_history") and not execution
+            ):
+                if execution:
+                    assert selected is not None
+                    item_page = await self.rpc.call(
+                        "thread/items/list",
+                        {
+                            "threadId": session,
+                            "turnId": execution,
+                            "cursor": arguments.get("cursor"),
+                            "limit": arguments.get("limit", 30),
+                            "sortDirection": "desc",
+                        },
+                    )
+                    selected = {
+                        **selected,
+                        "items": [row["item"] for row in item_page.get("data", [])],
+                        "itemsView": "full_page",
+                    }
+                    result["selected_turn"] = turn_view(selected, details=True)
+                    page = item_page
+                    result["history_items_view"] = "full_item_page"
+                else:
+                    assert page is not None
+                    original["turns"] = [
+                        turn_view(turn, details=True) for turn in page.get("data", [])
+                    ]
+                    result["history_items_view"] = "summary"
+                result.update(
+                    history_order="desc",
+                    cursor_parameter="native_cursor",
+                    next_cursor=page.get("nextCursor"),
+                    backwards_cursor=page.get("backwardsCursor"),
+                    history_scope="execution_items" if execution else "session_turns",
+                )
             if execution and selected is None:
                 result["reason"] = "execution_not_found"
             return result

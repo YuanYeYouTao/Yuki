@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from yuki_agent_connector import __version__, cli, config, service
+from yuki_agent_connector.computer import computer_status
 from yuki_agent_connector.config import Config, Instance
 
 
@@ -41,7 +42,9 @@ def test_pair_exchanges_explicit_code_and_status_never_exposes_secrets(
     assert cli.main([*args, "status", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "version": __version__,
-        "protocol": 3,
+        "protocol": 4,
+        "full_access": False,
+        "computer": computer_status(),
         "runtime": sys.executable,
         "data_directory": str((tmp_path / "device").resolve()),
         "paired": False,
@@ -145,7 +148,9 @@ def test_machine_status_preserves_unicode_through_a_non_utf8_cli_pipe(
     status = json.loads(result.stdout.decode("utf-8"))
     assert status == {
         "version": __version__,
-        "protocol": 3,
+        "protocol": 4,
+        "full_access": False,
+        "computer": computer_status(),
         "runtime": sys.executable,
         "data_directory": str(directory.resolve()),
         "server": "https://example.invalid",

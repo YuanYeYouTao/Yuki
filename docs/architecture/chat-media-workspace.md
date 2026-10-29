@@ -156,3 +156,10 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platfo
 Genie 出站 record 构造已退出；历史 record、真实转写和已接受回执继续按原来源读取。
 
 自动化 TaskSpec 到期激活共同 Main，发送仍用 `send` 和原 canonical Social 路由。模型需要表情时使用同一工具的结构化参数。选图和原件快照可以在第一段正文提交后开始，图片发送仍等正文派发结束。App 本地成功是同一事务里的事件和回执；飞书资源上传失败且尚未调用消息接口记为未发，进入消息接口后的超时仍是未知。语音合成与出站录音已退役，入站 ASR 和历史 record 继续读取。历史终态脚本和回执只读保留，不猜测或重发外部效果。自动化主 Agent 的 OneBot 辅助网关禁止直接 `send_*` 和 `upload_*`。插件通知仍走插件自身的持久 outbox 和授权传输；本地账本不要求外部消息号，已发送的 outbox 记下真实 event。
+
+
+## 本机设备文件
+
+`workspace_inspect`、`send(path)` 与 `save_conversation_attachment_to_workspace` 的可选 `device_id` 选择原文件所属电脑；不传继续使用 Yuki 自己的环境。本机读取保所选原文件句柄/版本、内容 hash 和内部传输 ID，64KiB 分片只穿过同一 WSS，不写入模型文本。媒体读取沿原尺寸预算，发送成果不借此限定普通文件大小。
+
+本机 inspect 的真实像素进入原私有媒体 tool_handle，已付输入与 Work journal 保原来源，不为每次截图建立长期公开快照。send 沿原确定 artifact ID/source_key 冻结一次文件；恢复先认已保存原件，后续修改或删除本机路径不改变原发送。附件保存先核原 event/index，再查同传输原回执；只有无原完成回执才需要读取附件缓存。两条路径共享设备传输，原身份、未知和不可变发送仍由原领域处理。

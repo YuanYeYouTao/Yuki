@@ -1101,6 +1101,96 @@ async def test_fulfilled_wait_before_first_settlement_retires_original_decision(
     assert len(messages) == 1 and wait["wait_id"] in messages[0].content
 
 
+async def test_unsatisfied_wait_survives_settlement_and_auxiliary_activation(database, tmp_path):
+    """An unchanged wait is the decision on both sides of a stray activation."""
+    from sqlalchemy import update
+
+    repository, _lease, control = await _running_work(database, tmp_path)
+    assert json.loads(
+        await control.execute(
+            "task_control",
+            {
+                "action": "wait",
+                "conditions": [{"kind": "time_due", "after_seconds": 1800}],
+            },
+            "original-wait",
+        )
+    )["ok"]
+    identity = control.current["id"]
+    original = await WorkWaitRepository(repository).describe(identity)
+    await control.settle(pending_inputs=False)
+    assert control.accepted["wait_id"] == original["wait_id"]
+    # Controlled equivalent of an auxiliary activation, not a claim that the
+    # historical incident had this sole cause. No business input matched it.
+    async with database.immediate_session() as writer:
+        await writer.execute(update(work).where(work.c.id == identity).values(state="running"))
+    control.current = await repository.get(identity)
+    control.settled = False
+    control.ending = None
+    await control.settle(pending_inputs=False)
+    assert control.current["state"] == "waiting_external"
+    assert control.accepted["wait_id"] == original["wait_id"]
+    unchanged = await WorkWaitRepository(repository).describe(identity)
+    for key in ("wait_id", "conditions", "status", "mode", "deadline_at"):
+        assert unchanged.get(key) == original.get(key)
+    assert control.current["id"] == identity
+    assert control.current["model_requests"] == 0
+    assert control.current["tool_calls"] == 0
+
+
+async def test_new_explicit_wait_replaces_binding_after_business_revision(database, tmp_path):
+    from yuki.runtime.work_wait_schema import waits
+
+    repository, lease, control = await _running_work(database, tmp_path)
+    args = {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 1800}]}
+    assert json.loads(await control.execute("task_control", args, "first-wait"))["ok"]
+    original = await WorkWaitRepository(repository).describe(control.current["id"])
+    await control.settle(pending_inputs=False)
+    await _late_input(repository, lease, control.current["id"], ready=True)
+    control.current = await repository.get(control.current["id"])
+    assert len(await control.take_inputs("legitimate-new-question")) == 1
+    assert control.accepted is None
+    args["conditions"] = [{"kind": "time_due", "after_seconds": 600}]
+    revised = json.loads(await control.execute("task_control", args, "revised-wait"))
+    assert revised["ok"]
+    current = await WorkWaitRepository(repository).describe(control.current["id"])
+    assert current["wait_id"] != original["wait_id"]
+    replay = json.loads(await control.execute("task_control", args, "revised-wait"))
+    assert replay["wait_id"] == current["wait_id"]
+    async with database.read_session() as reader:
+        assert (
+            await reader.scalar(select(waits.c.status).where(waits.c.id == original["wait_id"]))
+            == "cancelled"
+        )
+
+
+async def test_wait_delivered_between_decision_read_and_writer_stays_queued(
+    database, tmp_path, monkeypatch
+):
+    repository, _lease, control = await _running_work(database, tmp_path)
+    assert json.loads(
+        await control.execute(
+            "task_control",
+            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 1800}]},
+            "wait",
+        )
+    )["ok"]
+    binding = await WorkWaitRepository(repository).describe(control.current["id"])
+    transition = repository.transition
+
+    async def deliver_before_writer(*args, **kwargs):
+        assert (
+            await WorkWaitRepository(repository).deliver_due(now=binding["conditions"][0]["due"])
+            == 1
+        )
+        return await transition(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "transition", deliver_before_writer)
+    await control.settle(pending_inputs=False)
+    assert control.current["state"] == "queued" and control.accepted is None
+    assert binding["wait_id"] in (await control.take_inputs("matched-signal"))[0].content
+
+
 async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(database, tmp_path):
     from sqlalchemy import update
 
