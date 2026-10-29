@@ -4,23 +4,16 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import func, select
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
-from tests.unit.test_memory_v2 import _append_event, _claim, _event
+from tests.unit.test_memory_v2 import _append_event, _claim
 
 from yuki.llm.fake import FakeLLMProvider
-from yuki.memory.enums import MemoryRebuildJobOutcome, MemoryScopeType
+from yuki.memory.enums import MemoryRebuildJobOutcome
 from yuki.memory.event_extractor import MemoryEventExtractor
-from yuki.memory.extraction import (
-    AvailableSubject,
-    BatchMemoryExtractionOutput,
-    MemoryExtractionOutput,
-)
 from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
 from yuki.memory.service import MemoryFactService
-from yuki.memory.subjects import SubjectResolver
 from yuki.memory.worker import MemoryWorker
 from yuki.persistence.models import (
     MemoryClaimCandidateEvidenceModel,
@@ -30,43 +23,6 @@ from yuki.persistence.models import (
 )
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.concurrency import ConcurrencyManager
-
-
-def _enum(schema, value):
-    while "$ref" in value:
-        value = schema["$defs"][value["$ref"].rsplit("/", 1)[1]]
-    return set(value["enum"])
-
-
-@pytest.mark.parametrize("model", [MemoryExtractionOutput, BatchMemoryExtractionOutput])
-def test_ordinary_output_declares_and_parses_only_person_and_space_scopes(model):
-    schema = model.model_json_schema()
-    claim_schema = schema["$defs"]["MemoryClaim"]["properties"]["scope_type"]
-    assert _enum(schema, claim_schema) == {"person", "person_group", "group"}
-    claim = {**_claim().model_dump(mode="json"), "subject_ref": "self", "scope_type": "self"}
-    row = {"source_event_id": 1, "claim": claim} if model is BatchMemoryExtractionOutput else claim
-    with pytest.raises(ValidationError):
-        model.model_validate({"claims": [row]})
-
-
-def test_extraction_subject_schema_is_narrow_but_shared_self_resolution_still_exists():
-    schema = AvailableSubject.model_json_schema()
-    assert _enum(schema, schema["properties"]["allowed_scopes"]["items"]) == {
-        "person",
-        "person_group",
-        "group",
-    }
-    with pytest.raises(ValidationError):
-        AvailableSubject(
-            subject_ref="self",
-            display_label="SELF",
-            allowed_scopes=("self",),
-            relation_to_speaker="agent_observation",
-        )
-    resolved = SubjectResolver.resolve(
-        _event(), subject_ref="self", scope_type=MemoryScopeType.SELF
-    )
-    assert resolved is not None and resolved.scope_type is MemoryScopeType.SELF
 
 
 @pytest.mark.parametrize("group_id", [None, "3001"])

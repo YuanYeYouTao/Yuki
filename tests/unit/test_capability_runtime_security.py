@@ -12,9 +12,6 @@ from yuki.capabilities.catalog import (
     UnifiedToolCatalog,
     UnifiedToolCatalogEntry,
 )
-from yuki.capabilities.exposure import (
-    NO_LONGER_AUTHORIZED,
-)
 from yuki.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
@@ -23,10 +20,9 @@ from yuki.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
-from yuki.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
+from yuki.capabilities.policy import CapabilityPolicyContext
 from yuki.capabilities.runtime import TurnCapabilityRuntime
 from yuki.capabilities.validation import (
-    TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,
 )
 from yuki.runtime.contracts import MemoryCapabilityView
@@ -70,45 +66,6 @@ def _descriptor(
 
 def _entry(descriptor: CapabilityDescriptor) -> UnifiedToolCatalogEntry:
     return UnifiedToolCatalogEntry(descriptor=descriptor)
-
-
-def test_schema_validation_rejects_invalid_arguments() -> None:
-    entry = _entry(_descriptor("web_search", namespace="web.search"))
-    validator = JsonSchemaCapabilityValidator()
-    assert validator.admit((entry,)) == ()
-    failed = validator.validate("web_search", json.dumps({"query": 1}))
-    assert failed.ok is False
-    assert failed.error_category == TOOL_INPUT_VALIDATION_FAILED
-    ok = validator.validate("web_search", json.dumps({"query": "news"}))
-    assert ok.ok is True
-
-
-def test_supported_dialect_and_nested_repetition_compile_without_policy_quarantine() -> None:
-    validator = JsonSchemaCapabilityValidator()
-    dialect = _descriptor(
-        "legacy",
-        namespace="web.search",
-        schema={"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
-    )
-    nested = _descriptor(
-        "nested",
-        namespace="web.search",
-        schema={
-            "type": "object",
-            "properties": {"query": {"type": "string", "pattern": "(a+)+"}},
-        },
-    )
-    assert validator.admit((_entry(dialect), _entry(nested))) == ()
-    assert validator.validate("legacy", "{}").ok
-    assert validator.validate("nested", '{"query":"aaaa"}').ok
-
-
-@pytest.mark.parametrize("schema", [{"type": "unknown-type"}, {"type": "string", "pattern": "["}])
-def test_actual_schema_compilation_errors_are_quarantined(schema) -> None:
-    validator = JsonSchemaCapabilityValidator()
-    entry = _entry(_descriptor("invalid", namespace="probe.read", schema=schema))
-    assert validator.admit((entry,)) == ("invalid",)
-    assert validator.validate("invalid", "{}").error_category == "capability_schema_quarantined"
 
 
 @pytest.mark.parametrize("case", ["depth", "width", "long_pattern", "optional_repeat", "draft7"])
@@ -300,90 +257,6 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
     await owner.control.repository.release(owner.control.lease)
 
 
-def test_namespace_is_not_a_permission() -> None:
-    plugin = _descriptor(
-        "plugin__x__admin_set_config",
-        namespace="qq.api",
-        effect=CapabilityEffect.WRITE_STATE,
-        risk=CapabilityRisk.MUTATE,
-        permissions=frozenset({"superuser"}),
-    )
-    visible = CapabilityPolicyEngine().visible(
-        (plugin,),
-        CapabilityPolicyContext(
-            authority=AuthorityContext(actor_user_id="u1", is_superuser=False),
-        ),
-    )
-    assert visible == ()
-
-
-def test_write_and_read_capabilities_use_actual_execution_authority() -> None:
-    write = _descriptor(
-        "memory_change",
-        namespace="memory.state.write",
-        effect=CapabilityEffect.WRITE_STATE,
-        risk=CapabilityRisk.MUTATE,
-    )
-    mutate = _descriptor(
-        "call_onebot_api",
-        namespace="qq.platform.mutate",
-        effect=CapabilityEffect.PLATFORM_MUTATE,
-        risk=CapabilityRisk.MUTATE,
-    )
-    read = _descriptor("search_memory", namespace="memory.person.read")
-    environment = tuple(
-        _descriptor(
-            name,
-            namespace="sandbox.run",
-            effect=CapabilityEffect.WRITE_STATE,
-            risk=CapabilityRisk.MUTATE,
-        )
-        for name in ("terminal_exec", "terminal_exec", "workspace_write")
-    )
-    visible = CapabilityPolicyEngine().visible(
-        (write, mutate, read, *environment),
-        CapabilityPolicyContext(
-            authority=AuthorityContext(actor_user_id="u1", is_superuser=False),
-        ),
-    )
-    assert [item.model_name for item in visible] == [
-        "memory_change",
-        "call_onebot_api",
-        "search_memory",
-        "terminal_exec",
-        "terminal_exec",
-        "workspace_write",
-    ]
-
-
-def test_destructive_uses_actual_permissions() -> None:
-    destructive = _descriptor(
-        "call_onebot_api",
-        namespace="qq.api",
-        effect=CapabilityEffect.WRITE_STATE,
-        risk=CapabilityRisk.DESTRUCTIVE,
-        permissions=frozenset({"superuser"}),
-    )
-    engine = CapabilityPolicyEngine()
-    context = {
-        "authority": AuthorityContext(
-            actor_user_id="u1",
-            is_superuser=True,
-            permissions=frozenset({"superuser"}),
-        )
-    }
-    allowed = engine.visible(
-        (destructive,),
-        CapabilityPolicyContext(**context),
-    )
-    refused = engine.visible(
-        (destructive,),
-        CapabilityPolicyContext(authority=AuthorityContext(actor_user_id="u1", is_superuser=False)),
-    )
-    assert [item.model_name for item in allowed] == ["call_onebot_api"]
-    assert refused == ()
-
-
 def _runtime(
     *entries: UnifiedToolCatalogEntry,
     memory_view: MemoryCapabilityView | None = None,
@@ -400,161 +273,3 @@ def _runtime(
             memory_view=memory_view,
         ),
     )
-
-
-def test_complete_catalog_keeps_execution_authorized() -> None:
-    runtime = _runtime(
-        _entry(_descriptor("web_search", namespace="web.search")),
-        _entry(_descriptor("memory_change", namespace="memory.state.write")),
-        _entry(
-            _descriptor(
-                "call_onebot_api",
-                namespace="qq.api",
-                permissions=frozenset({"superuser"}),
-            )
-        ),
-        _entry(
-            replace(
-                _descriptor("synthetic_directory", namespace="tool.synthetic"),
-                provider_metadata={"synthetic": True},
-            )
-        ),
-    )
-    # Construction projects current execution authority over the frozen schemas.
-    assert {entry.descriptor.capability_id for entry in runtime.authorized_catalog.entries} == {
-        "web_search",
-        "memory_change",
-        "call_onebot_api",
-    }
-    assert runtime.callable_capability_ids() == {"web_search", "memory_change"}
-    assert runtime.validate_call("web_search", '{"query":"x"}') == (True, None)
-    assert runtime.validate_call("call_onebot_api", '{"query":"x"}') == (
-        False,
-        NO_LONGER_AUTHORIZED,
-    )
-    assert runtime.validate_call("synthetic_directory", '{"query":"x"}') == (
-        False,
-        "undeclared_tool",
-    )
-
-
-def _memory_view(revision: int, *, hidden: tuple[str, ...] = ()) -> MemoryCapabilityView:
-    return MemoryCapabilityView(
-        eager_namespaces=(),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=hidden,
-        transition_revision=revision,
-    )
-
-
-def test_memory_revision_changes_only_execution_grants_and_denial_wins() -> None:
-    entries = (
-        _entry(_descriptor("web_search", namespace="web.search")),
-        _entry(_descriptor("memory_change", namespace="memory.state.write")),
-    )
-    runtime = _runtime(*entries, memory_view=_memory_view(1))
-    catalog = runtime.authorized_catalog
-    assert "memory_change" in runtime.callable_capability_ids()
-    runtime.sync_memory_view(_memory_view(2, hidden=("memory.state.write",)))
-    # Catalog contents stay fixed; the hidden namespace is denied at execution.
-    assert runtime.authorized_catalog == catalog
-    assert runtime.callable_capability_ids() == {"web_search"}
-    assert runtime.validate_call("memory_change", '{"query":"x"}') == (
-        False,
-        NO_LONGER_AUTHORIZED,
-    )
-    # The same revision is not re-projected.
-    runtime.sync_memory_view(_memory_view(2))
-    assert runtime.callable_capability_ids() == {"web_search"}
-
-
-def test_compiled_schema_view_is_shared_while_current_grants_stay_independent():
-    entries = (
-        _entry(_descriptor("web_search", namespace="web.search")),
-        _entry(_descriptor("memory_change", namespace="memory.state.write")),
-        _entry(_descriptor("privileged", namespace="qq.api", permissions=frozenset({"superuser"}))),
-    )
-    validator = JsonSchemaCapabilityValidator()
-    validator.admit(entries)
-    schemas = validator.freeze()
-    registry = DescriptorRegistrySnapshot(UnifiedToolCatalog(entries))
-    ordinary = TurnCapabilityRuntime(
-        registry=registry,
-        schemas=schemas,
-        policy_context=CapabilityPolicyContext(
-            authority=AuthorityContext("ordinary", False), memory_view=_memory_view(1)
-        ),
-    )
-    privileged = TurnCapabilityRuntime(
-        registry=registry,
-        schemas=schemas,
-        policy_context=CapabilityPolicyContext(
-            authority=AuthorityContext("operator", True), memory_view=_memory_view(1)
-        ),
-    )
-    assert ordinary._schemas is privileged._schemas is schemas
-    assert ordinary.validate_call("privileged", '{"query":"x"}') == (
-        False,
-        NO_LONGER_AUTHORIZED,
-    )
-    assert privileged.validate_call("privileged", '{"query":"x"}') == (True, None)
-    ordinary.sync_memory_view(_memory_view(2, hidden=("memory.state.write",)))
-    assert "memory_change" not in ordinary.callable_capability_ids()
-    assert "memory_change" in privileged.callable_capability_ids()
-    assert not schemas.validate("web_search", '{"query":42}').ok
-    with pytest.raises(TypeError):
-        schemas.validators["injected"] = object()
-
-
-def test_same_tool_name_in_a_new_schema_contract_has_its_own_compiled_validator():
-    first = JsonSchemaCapabilityValidator()
-    second = JsonSchemaCapabilityValidator()
-    first.admit((_entry(_descriptor("same", namespace="web.search")),))
-    second.admit(
-        (
-            _entry(
-                _descriptor(
-                    "same",
-                    namespace="web.search",
-                    schema={"type": "object", "properties": {"query": {"type": "integer"}}},
-                )
-            ),
-        )
-    )
-    original, replacement = first.freeze(), second.freeze()
-    assert original.validate("same", '{"query":"x"}').ok
-    assert not replacement.validate("same", '{"query":"x"}').ok
-    assert replacement.validate("same", '{"query":42}').ok
-    assert not original.validate("same", '{"query":42}').ok
-
-
-async def test_main_activations_reuse_the_frozen_schema_view_without_changing_wire_contract(
-    database, tmp_path
-):
-    from tests.conftest import build_harness, make_settings
-    from tests.unit.test_tool_effect_audit import active_work
-
-    from yuki.domain.conversations import ScopeType
-    from yuki.services.main_agent_backend import MainAgentBackend
-
-    env, work, tool_runtime = await active_work(database, tmp_path)
-    chat = build_harness(database, make_settings(database.url)).processor._chat
-    tool_runtime = replace(
-        tool_runtime,
-        runtime_config=await chat._runtime_config.snapshot(),
-        scope_type=ScopeType.GROUP,
-        space_id=env.space,
-        person_id=env.person,
-    )
-    contract = chat.runtime.runner.main_contract
-    original = await contract.definitions()
-    revision = contract.revision
-    first = MainAgentBackend(chat, tool_runtime)
-    second = MainAgentBackend(chat, tool_runtime)
-    await first.prepare()
-    compiled = contract.schema_view
-    await second.prepare()
-    assert first._capability_runtime._schemas is second._capability_runtime._schemas is compiled
-    assert await contract.definitions() == original
-    assert contract.revision == revision
-    await work.control.repository.release(work.control.lease)

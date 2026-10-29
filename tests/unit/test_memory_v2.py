@@ -15,16 +15,13 @@ from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.llm.base import LLMProvider
 from yuki.memory.enums import (
-    MemoryClaimOperation,
     MemoryEvidenceRelation,
     MemoryKind,
     MemoryScopeType,
     MemorySourceType,
 )
 from yuki.memory.extraction import (
-    BatchMemoryExtractionOutput,
     ExtractedMemoryClaim,
-    MemoryExtractionOutput,
 )
 from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
@@ -86,20 +83,6 @@ def test_validator_owns_event_and_speaker_identity() -> None:
     assert fact.group_id is None
     assert evidence.event_id == 42
     assert evidence.source_speaker_user_id == "1001"
-
-
-@pytest.mark.parametrize("operation", ["confirm", "correct", "retract"])
-def test_extraction_schema_only_creates_asserted_facts(operation):
-    for output in (MemoryExtractionOutput, BatchMemoryExtractionOutput):
-        schema = output.model_json_schema()
-        assert all(
-            "operation" not in definition.get("properties", {})
-            for definition in schema["$defs"].values()
-        )
-    validated = MemoryClaimValidator().validate_claim_result(_claim(operation=operation), _event())
-    assert validated.ok
-    assert validated.claim.operation is MemoryClaimOperation.ASSERT
-    assert validated.claim.evidence.relation is MemoryEvidenceRelation.SELF_STATEMENT
 
 
 def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:

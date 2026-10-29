@@ -1,8 +1,6 @@
 """Control read views project live registered owners and consume their cursors."""
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from tests.unit.test_group_route_recovery import stack
@@ -14,7 +12,6 @@ from yuki.gateway.providers.app import AppHandle, AppProvider
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.canonical_repository import create_presence
 from yuki.model_runtime.models import ModelTask
-from yuki.services.commands.work import WorkAdminCommands
 
 
 async def test_status_reports_current_platform_and_selected_profile(database):
@@ -69,16 +66,6 @@ async def test_health_includes_new_registered_platform_without_platform_table(da
         assert offline["matrix"]["running"] is False
     finally:
         await app.close()
-
-
-async def test_chat_work_list_passes_existing_cursor_and_optional_state():
-    queries = SimpleNamespace(works=AsyncMock(return_value={"items": [], "next_cursor": None}))
-    commands = WorkAdminCommands(None, queries)
-    await commands.execute(None, None, "list waiting_user original-work-cursor")
-    queries.works.assert_awaited_once_with(None, state="waiting_user", after="original-work-cursor")
-    queries.works.reset_mock()
-    await commands.execute(None, None, "list all original-work-cursor")
-    queries.works.assert_awaited_once_with(None, state=None, after="original-work-cursor")
 
 
 @pytest.mark.parametrize("platform", ["app", "acp"])

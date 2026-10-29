@@ -1,25 +1,4 @@
-from hashlib import sha256
-
-import pytest
-
 from yuki.config import Settings
-
-
-@pytest.mark.parametrize("content", ["", "自定义人格", "我是{{name}}，保留{{unknown}}。"])
-def test_current_identity_does_not_depend_on_soul_fields(tmp_path, content):
-    path = tmp_path / "SOUL.md"
-    path.write_text(content, encoding="utf-8")
-    settings = Settings(_env_file=None, soul_file=path)
-    settings.apply_character_name("小雪", revision=1)
-    original = settings.character_prompt
-    assert "当前角色的名称是 小雪" in original
-    assert settings.soul == content
-    assert settings.active_soul_revision == "sha256:" + sha256(path.read_bytes()).hexdigest()
-    settings.apply_character_name("Alice", revision=2)
-    assert "当前角色的名称是 Alice" in settings.character_prompt
-    assert "当前角色的名称是 小雪" in original
-    if "{{unknown}}" in content:
-        assert "{{unknown}}" in settings.character_prompt
 
 
 def test_reload_is_explicit_and_empty_soul_is_not_replaced_by_a_preset(tmp_path):

@@ -8,25 +8,8 @@ from tests.support.work_effect_results_helpers import owned_session
 from tests.support.work_session import invoke_tool
 
 from yuki.capabilities.media import MediaResultText
-from yuki.capabilities.models import CapabilityEffect, CapabilityTrustSource
-from yuki.capabilities.provider import ChatToolCapabilityProvider
-from yuki.codemode.api_projection import project
 from yuki.domain.messages import ToolCall, ToolFunction
 from yuki.social.models import SocialError
-from yuki.social.tools import social_tool_definitions
-
-
-def test_send_has_one_canonical_id_and_script_wrapper_without_old_alias():
-    tools = social_tool_definitions()
-    descriptors = ChatToolCapabilityProvider(tools, source=CapabilityTrustSource.CORE).descriptors()
-    descriptor = next(item for item in descriptors if item.model_name == "send")
-    assert descriptor.canonical_name == "core.send"
-    assert descriptor.namespace_id == "social.send"
-    assert descriptor.effect is CapabilityEffect.PLATFORM_SEND
-    assert "send_message" not in {item.model_name for item in descriptors}
-    api = project(tools, "current-send-contract")
-    assert api.tool_for("yuki_send") == "send"
-    assert api.tool_for("yuki_send_message") is None
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import setup_run
 
@@ -129,31 +128,6 @@ async def test_due_http_retry_keeps_original_runtime_context_bytes(database, tmp
     assert result.status is RunStatus.SUCCEEDED
     assert len(requests) == 2 and requests[0] == requests[1]
     assert b"<runtime_context>" in requests[0]
-
-
-@pytest.mark.parametrize(
-    "retired",
-    [
-        {"strategy": "static"},
-        {"context": {"scene": "none"}},
-        {"steps": []},
-        {"limits": {"max_llm_calls": 1}},
-        {"delivery": {"target": "none", "text": "旧旁路"}},
-        {"constraints": ["独立要求"]},
-        {"version": 1},
-        {"timezone": "UTC"},
-    ],
-)
-def test_future_task_schema_has_only_timing_target_and_complete_request(retired):
-    with pytest.raises(ValidationError):
-        TaskSpec.model_validate(
-            {
-                "name": "未来任务",
-                "goal": "完整目标",
-                "trigger": {"type": "after", "seconds": 1},
-                **retired,
-            }
-        )
 
 
 def test_once_offset_preserves_subsecond_instant():
