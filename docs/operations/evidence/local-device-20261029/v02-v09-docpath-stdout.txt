@@ -1,0 +1,10 @@
+V02_REAL_EVIDENCE=[{"run_id": "ada29413-876f-5d68-8701-2cc49a9057b9", "cwd": "C:\\Users\\bymay\\.codex\\worktrees\\local-full-access-taskbook-20261029\\Yuki-QQbot\\.cache\\v02-v09-docpath-20261029\\test_v02_two_independent_unico0\\甲 目录 '[]$", "exit_code": 0}, {"run_id": "807788e5-05c5-53cb-90b5-15886537e464", "cwd": "C:\\Users\\bymay\\.codex\\worktrees\\local-full-access-taskbook-20261029\\Yuki-QQbot\\.cache\\v02-v09-docpath-20261029\\test_v02_two_independent_unico0\\乙 目录 '#&$", "exit_code": 7}]
+.V09_REAL_EVIDENCE={"child_work_id": "544eed1a-f7c1-4c08-b39d-dbd0f00278b2", "parent_work_id": "21f51b10-d3e2-4850-bd2e-59aa8156935b", "run_id": "e90c7b1c-a1c5-5210-8427-47a6b7e4ba05", "request_id": "87c91a222f4272424355b65e5061c43298b134b73d8187d843365ff0dbbaa74b", "device_id": "942a1bd2-1f82-42c4-b516-b5f5fde32e18", "original_starts": 1, "before_usage": {"model_requests": 2, "tool_calls": 1, "sent_messages": 0}, "after_usage": {"model_requests": 4, "tool_calls": 2, "sent_messages": 0}, "model_calls_are_fake": true, "real_qq_calls": 0, "fixture_gateway_actions": ["get_group_member_info"]}
+.
+============================== warnings summary ===============================
+docs/operations/evidence/local-device-20261029/test_local_access_v02_v09.py::test_v02_two_independent_unicode_special_cwds_real_read_write_and_exit
+  C:\Users\bymay\.codex\worktrees\local-full-access-taskbook-20261029\Yuki-QQbot\src\yuki\persistence\database.py:287: SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "canonical_conversations, conversation_legacy_aliases", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+    for table in Base.metadata.sorted_tables
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 1 warning in 8.13s
