@@ -77,6 +77,7 @@ def npm_claude(package: Path) -> Path | None:
 
 def candidates(driver: str = "codex") -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
+    claude_packages: list[Path] = []
 
     def add(path: Path, source: str, label: str) -> None:
         if not installed_executable(path):
@@ -137,13 +138,11 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
         if directory and path.is_absolute():
             add(path / executable, f"path:{path / executable}", label)
             if driver == "claude":
-                packages = [path / "node_modules/@anthropic-ai/claude-code"]
+                claude_packages.append(path / "node_modules/@anthropic-ai/claude-code")
                 if sys.platform != "win32":
-                    packages.append(path.parent / "lib/node_modules/@anthropic-ai/claude-code")
-                for package in packages:
-                    command = npm_claude(package)
-                    if command is not None:
-                        add(command, f"claude-npm:{package}", "Claude Code (npm)")
+                    claude_packages.append(
+                        path.parent / "lib/node_modules/@anthropic-ai/claude-code"
+                    )
             if driver == "codex" and sys.platform == "win32":
                 package = path / "node_modules/@openai/codex"
                 for target in NPM_WINDOWS_TARGETS:
@@ -160,6 +159,10 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
             Path("/usr/local/bin") / driver,
         ):
             add(path, f"path:{path}", label)
+    for package in claude_packages:
+        command = npm_claude(package)
+        if command is not None:
+            add(command, f"claude-npm:{package}", "Claude Code (npm)")
     return list(found.values())
 
 

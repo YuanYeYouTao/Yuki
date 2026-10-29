@@ -139,3 +139,43 @@ def test_existing_posix_path_symlink_keeps_source_and_original_instance(
     assert found[0]["source"] == original.installation
     assert found[0]["command"] == str(command)
     assert discovery.refresh(original) == original
+
+
+def test_all_original_sources_precede_added_npm_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr(discovery.Path, "home", lambda: home)
+    filename = "claude.exe" if os.name == "nt" else "claude"
+    prefixes = [tmp_path / f"original npm prefix {index}" for index in range(2)]
+    commands = [
+        current_package(prefix / "node_modules/@anthropic-ai/claude-code", f"bin/{filename}", True)
+        for prefix in prefixes
+    ]
+    extra_prefix = tmp_path / "additional npm prefix"
+    extra_package = extra_prefix / "node_modules/@anthropic-ai/claude-code"
+    extra = current_package(extra_package, f"bin/{filename}", True)
+    path = [*(str(prefix) for prefix in prefixes), str(extra_prefix)]
+    path.extend(str(command.parent) for command in commands)
+    monkeypatch.setenv("PATH", os.pathsep.join(path))
+    originals = [
+        Instance(
+            str(index),
+            "claude",
+            "Original",
+            str(command),
+            env={"CLAUDE_CONFIG_DIR": f"original-profile-{index}"},
+            installation=f"path:{command}",
+        )
+        for index, command in enumerate(commands)
+    ]
+
+    found = discovery.candidates("claude")
+
+    assert len(found) == 3
+    for index, original in enumerate(originals):
+        assert found[index]["source"] == original.installation
+        assert found[index]["command"] == original.command
+        assert discovery.refresh(original) == original
+    assert found[2]["source"] == f"claude-npm:{extra_package}"
+    assert found[2]["command"] == str(extra)
