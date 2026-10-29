@@ -54,6 +54,18 @@
 
 ## 交付与验收
 
+### 2026-10-29 原位升级与首次生产复审
+
+后续 [PR #534](https://github.com/YuanYeYouTao/Yuki/pull/534) 已补齐验收映射和可复现证据；[PR #535](https://github.com/YuanYeYouTao/Yuki/pull/535) 修复当前 npm Claude 包声明的原生程序发现，11项CI通过后合并。实际源码冻结为 `4ed418f60fda14aac0a8defdf5c732422ceb11d5`，与其main合并提交完整tree相同。
+
+Desktop `2448266` 的正式Windows CI包已原位安装为beta.8，实际ASAR版本、5365个Connector资源文件及本地Bot镜像来源均已核验；原Agent-only安装沿既有 `AgentConnector.install(false)` 升至0.4/protocol4，原资料目录、配置字节、设备/唯一Codex实例及journal namespace保持。服务在原用户下运行，原生Codex握手/账户检查成功，没有执行模型任务；完整访问开关保持关闭。原journal基线为空，不把本次原位安装冒称非空历史回执现场续用。最终资源pin、五目标发行及Release仍认[Desktop PR #14](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/14)的交付实录。
+
+UTC14:33:13首次Bot-only切换至上述精确源码镜像，四个peer保持原容器ID，数据库仍0155，无新增迁移。切换前保留了完整一致备份并完成integrity/FK校验；停旧Bot后重新取证的两条旧wait，仅沿原Repository恢复原accepted_control，原ID、预算、条件和已付请求metadata前后保持。上线独立复核livez/healthz、OneBot、writer与实际direct28工具通过；固定工具合同版本为34，版本号不等于工具数量。
+
+首次复审窗口158秒没有自然消息/模型/发送样本，不能据健康宣称真实问答验收。复审另发现普通Shell取消维护重复处理一条已撤销设备的原生任务，持续触发ClientError；该原生operation真实存在，不能改投Manager，也不能伪称已停。本次后续修复只从普通Shell扫描中移除已有原生operation的任务，由既有 `ExternalAgentService.reconcile/cleanup_tasks` 处理原取消/解除观察；离线或撤销保原未知事实。对应回归、最终源码CI和再次上线以修复PR交付实录核验，不把首次健康记录覆盖此缺陷。
+
+健康后按新容器的有效Compose、全部容器mount/image、Manager检查点、服务/进程等引用重新核验，删除两份无引用旧部署目录、两个旧Bot镜像tag和本次一次性施工脚本/旧plan；保留本次完整备份、原行备份与修复结果。文件系统可用空间净观察增加5,952,647,168字节，包含并发活动，不将镜像逻辑大小相加作为回收量；当前沙箱检查点、业务资料和peer保持。
+
 截至源码冻结：后端[PR #533](https://github.com/YuanYeYouTao/Yuki/pull/533)最终源码29cfbc5的[11项CI全部通过](https://github.com/YuanYeYouTao/Yuki/actions/runs/40865931680)，已合并至main `29e8e680d61a720ff4dab1b218ec9d5073d02b53`，源码tree相同。配套[Desktop PR #14](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/14) HEAD31b04d3已精确pin该main，实际OpenAPI/hash/typegen与16个runtime模块核同；本地单元82、UI20及lint/build通过，五目标及Real local Bot CI当时排队。Release、安装与部署尚未完成，其后实际状态持续以两份PR及beta.8 Release的交付实录为准。
 
 V01–V32逐项证据和未覆盖范围见[独立复审与验收映射](local-device-full-access-acceptance-20261029.md)。V02两个特殊字符独立cwd的文件读写/退出码，以及V09原有子Agent经真实TLS本机Shell、原Work等待/接续、恢复读取真实输出的两项补证，均为Windows隔离真实执行、FakeLLM，无付费请求或真实QQ调用；[脚本、原stdout及说明](evidence/local-device-20261029/README.md)随仓库保存，原结果2 passed。OS睡眠/重启、外部工具安装与浏览器授权、五目标产物和线上自然流量不由隔离fixture代替。不得把静态代码、打包管线存在或单OS通过写成全部平台验收。

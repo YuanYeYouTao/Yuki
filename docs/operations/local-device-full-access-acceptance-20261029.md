@@ -50,13 +50,13 @@
 | V31 | 合法新business可消费旧wait并接续；同Work原预算与IDs不重建；service按真实native/received/observed事实返回，现有unknown查证恢复保留 | `test_new_input_withdraws_accepted_control`、`test_new_explicit_wait_replaces_binding_after_business_revision`、`test_wait_delivered_between_decision_read_and_writer_stays_queued`；`test_late_native_completion_keeps_native_received_and_main_observation_times`；Connector supervision recovery组 | 组合要素与核心race有具体回归；没有用一个合成fake回答宣称真实LLM追问全程永不失准。真实最新目标与回答措辞仍按自然样本，不要求跨源瞬时快照。 |
 | V32 | Work全局metadata不授私有note/effect；native transcript保原owner；显式历史按原cursor；无新增进度DB/摘要loop/固定查询完成门槛 | `test_work_progress_query.py::test_global_metadata_read_does_not_grant_original_private_effects`；`test_original_256_byte_effect_key_cursor_can_be_passed_back_through_tool_contract`；Connector一页/窗口及原私有历史测试；原合法空final反例 | 原权限与分页/缺失/原I/O成本按实情说明；不新增跨driver性能平台。send事实与Work生命周期分别核，不拿历史读取次数或汇报条数作完成条件。 |
 
-## 当前确实尚未完成的交付 / 现场证据
+## 交付与现场证据
 
-1. 后端PR #533已11绿合并至冻结main；镜像与实际部署仍由交付实录核验，合并不代表上线。
-2. Desktop已精确pin冻结main；配套合同/hash、五目标产物/Release、最终包安装与旧Agent-only安装原位升级仍认根/桌面代理交付实录；这是本期交付待项，不能因研发边界收缩删掉。
+1. 后端PR #533与后续#534/#535已合并；首次精确源码镜像已Bot-only上线，health/OneBot/writer/0155/四个peer通过。独立复审发现普通Shell重复处理已撤销设备的原生取消，后续修复与最终再上线须按[实施记录](local-device-full-access-implementation-20261029.md)和修复PR核验，不能把首次健康等同全部运行指标无异常。
+2. Desktop正式Windows CI包beta.8已原位安装；旧Agent-only安装沿原入口升级0.4/protocol4，原配置字节/设备/实例/namespace保持，实际Codex原生握手与账户检查通过、没有模型任务。原journal基线为空，不能冒称非空旧回执现场续用。最终精确资源pin、完整五目标发行与Release继续认Desktop PR #14的交付实录，不因收缩浏览器范围删掉。
 3. 用户电脑完整访问仍关闭。没有真实用户 Shell、第三方工具安装/浏览器许可、用户daemon付费任务或真人UI验收；这些缺样本，不是运行时新增审批或限制的理由。
 4. V02/V09原缺组合已补Windows隔离真实两项：`2 passed in 5.25s`，[脚本、原stdout及边界](evidence/local-device-20261029/README.md)随仓库保存，可从文档目录显式复现。这不替代跨平台产物、旧包安装或生产真人验收；没有为补证改产品源码。
-5. 旧Work一次修复只准按原plan重核、停Bot备份后走原Repository；事实变化或自然完成即skip，不把旧缺决定+activewait泛化成常驻恢复。最终备份/修复/部署与原预算/ID前后证据由根记录。
+5. 停旧Bot后重新冻结的两条已证wait，已沿原Repository恢复原决定；原ID、预算、等待条件、已付请求metadata前后保持，原行备份与修复结果保留。不把旧缺决定+activewait泛化成常驻恢复。完整备份、首次部署及健康后精确清理见实施记录；与新发现的取消维护缺陷分开核验。
 
 ## 自然流量与长期体验的边界
 

@@ -23,6 +23,7 @@ from yuki.domain.messages import (
     ChatMessage,
     ChatTool,
 )
+from yuki.external_agents.db_models import AgentOperationModel
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.origin import TurnOrigin
@@ -105,6 +106,9 @@ class SubagentExecution:
                         work.c.state.in_(("failed", "cancelled")),
                         SandboxTaskRunModel.status == "waiting",
                         SandboxTaskRunModel.run_id.is_not(None),
+                        ~select(AgentOperationModel.id)
+                        .where(AgentOperationModel.id == SandboxTaskRunModel.request_id)
+                        .exists(),
                     )
                 )
             )
