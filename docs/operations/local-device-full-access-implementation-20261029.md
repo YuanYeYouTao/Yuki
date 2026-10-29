@@ -62,10 +62,15 @@
 
 ### 源码冻结前终审
 
-Connector最终包验证133 passed/1 skipped（Windows打开文件不能rename的真实平台差异），Ruff/Mypy及干净环境wheel安装通过；最终wheel SHA256为7021011ba507bf241c79db69ec2ba069c6631569e92014033ac164c1a8dd9983，无browser模块或额外入口。终端输出保两段各4MiB，原byte游标/output_lost/旧日志回读有真实大输出证据；这不是进程完成门槛。
+Connector最终包验证133 passed/1 skipped（Windows打开文件不能rename的真实平台差异），Ruff/Mypy及干净环境wheel安装通过；wheel无browser模块或额外入口；CI平台边界修正后须按最终提交重建，旧候选包哈希不作发布标识。终端输出保两段各4MiB，原byte游标/output_lost/旧日志回读有真实大输出证据；这不是进程完成门槛。
 
 已补原startedAt/completedAt透传、真实work_control capture→私有Artifact回读、合法长原执行键的cursor续页、显式空device_id不改到服务器。预分配run ID与首次任务记录在同一writer提交，去掉prepare/bind分开导致目录暂时出现空run的窗口。实际本机PNG走core→私有media tool_handle后，源删除仍可读原像素；其他Person及换代后读拒绝，未建立长期Workspace快照。
 
 线上只读还发现两条旧waiting_external任务已有activewait但accepted决定缺失。仅凭这两个状态不能推断恢复：合法新输入也可能撤回旧决定。部署前须核原wait调用、最新paid响应和后续业务输入；只对原回执能证明的旧损坏作一次原事实修复，不加常驻猜测恢复或重置任务。此项及备份/升级后的实际结果另记。
 
 一次中断采样遗留的11MiB假日志目录清理被自动审批以blocked by policy拒绝，命令未执行，未重试或绕过；不影响最终两份正常收拢的闲置样本。
+
+
+### 首轮CI修正
+
+PR533首轮Ubuntu/macOS Connector在mypy阶段发现Windows专用API未隔离的9项类型错误；Windows本地未暴露，其他平台不能按Windows结果代验。修正将WindowsJob实现放入真实平台分支，以只有cancel/close的通用进程组接口跨层，subprocess flags沿平台正常分支装配；无额外执行限制、兜底或测试削减。同源码linux/darwin/win32类型目标均通过，真实Shell/子孙取消/旁路保留/日志/文件10 passed、1平台skip，随后按新HEAD重跑CI。

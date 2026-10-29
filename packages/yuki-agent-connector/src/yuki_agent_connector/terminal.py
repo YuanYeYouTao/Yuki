@@ -13,7 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .drivers import DriverError, Emit
 from .journal import Journal
@@ -43,48 +43,56 @@ def process_arguments(args: dict[str, Any]) -> tuple[list[str], str, Path]:
     return argv, shell, Path(args.get("cwd") or Path.home()).expanduser()
 
 
-class WindowsJob:
-    """The OS job owns only this execution's process tree."""
+class ProcessGroup(Protocol):
+    def cancel(self) -> None: ...
 
-    def __init__(self, pid: int) -> None:
-        import ctypes
-        from ctypes import wintypes
+    def close(self) -> None: ...
 
-        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-        self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
-        self.kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        self.kernel.OpenProcess.restype = wintypes.HANDLE
-        self.kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-        self.kernel.AssignProcessToJobObject.restype = wintypes.BOOL
-        self.kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-        self.kernel.TerminateJobObject.restype = wintypes.BOOL
-        self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        self.kernel.CloseHandle.restype = wintypes.BOOL
-        self.handle = self.kernel.CreateJobObjectW(None, None)
-        if not self.handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        process = self.kernel.OpenProcess(0x0100 | 0x0001, False, pid)
-        try:
-            if not process or not self.kernel.AssignProcessToJobObject(self.handle, process):
+
+if sys.platform == "win32":
+
+    class WindowsJob:
+        """The OS job owns only this execution's process tree."""
+
+        def __init__(self, pid: int) -> None:
+            import ctypes
+            from ctypes import wintypes
+
+            self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            self.kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+            self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
+            self.kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            self.kernel.OpenProcess.restype = wintypes.HANDLE
+            self.kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            self.kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+            self.kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            self.kernel.TerminateJobObject.restype = wintypes.BOOL
+            self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            self.kernel.CloseHandle.restype = wintypes.BOOL
+            self.handle = self.kernel.CreateJobObjectW(None, None)
+            if not self.handle:
                 raise ctypes.WinError(ctypes.get_last_error())
-        except BaseException:
-            self.close()
-            raise
-        finally:
-            if process:
-                self.kernel.CloseHandle(process)
+            process = self.kernel.OpenProcess(0x0100 | 0x0001, False, pid)
+            try:
+                if not process or not self.kernel.AssignProcessToJobObject(self.handle, process):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            except BaseException:
+                self.close()
+                raise
+            finally:
+                if process:
+                    self.kernel.CloseHandle(process)
 
-    def cancel(self) -> None:
-        import ctypes
+        def cancel(self) -> None:
+            import ctypes
 
-        if not self.kernel.TerminateJobObject(self.handle, 1):
-            raise ctypes.WinError(ctypes.get_last_error())
+            if not self.kernel.TerminateJobObject(self.handle, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
 
-    def close(self) -> None:
-        if self.handle:
-            self.kernel.CloseHandle(self.handle)
-            self.handle = None
+        def close(self) -> None:
+            if self.handle:
+                self.kernel.CloseHandle(self.handle)
+                self.handle = None
 
 
 @dataclass
@@ -94,7 +102,7 @@ class LocalRun:
     process: asyncio.subprocess.Process
     log: Path
     done: asyncio.Event
-    job: WindowsJob | None = None
+    job: ProcessGroup | None = None
     cancelled: bool = False
 
 
@@ -168,6 +176,13 @@ class LocalTerminal:
                 "tty_unsupported", "This device supports pipe terminals, not a true TTY"
             )
         argv, shell, directory = await asyncio.to_thread(process_arguments, args)
+        process_options: dict[str, Any]
+        if sys.platform == "win32":
+            process_options = {
+                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            }
+        else:
+            process_options = {"start_new_session": True}
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -180,14 +195,7 @@ class LocalTerminal:
                     "PYTHONIOENCODING": "utf-8",
                     "PYTHONUTF8": "1",
                 },
-                **(
-                    {
-                        "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
-                        | subprocess.CREATE_NO_WINDOW
-                    }
-                    if sys.platform == "win32"
-                    else {"start_new_session": True}
-                ),
+                **process_options,
             )
         except OSError as error:
             raise DriverError("shell_start_failed", str(error)) from error
