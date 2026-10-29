@@ -64,8 +64,20 @@ def codex_package(manifest: Path) -> Path | None:
     return manifest.parent / entrypoint
 
 
+def npm_claude(package: Path) -> Path | None:
+    """The current npm package declares its executable, including native bins."""
+    manifest = package / "package.json"
+    if not manifest.is_file():
+        return None
+    entrypoint = json.loads(manifest.read_text(encoding="utf-8")).get("bin")
+    if isinstance(entrypoint, dict):
+        entrypoint = entrypoint.get("claude")
+    return package / entrypoint if isinstance(entrypoint, str) else None
+
+
 def candidates(driver: str = "codex") -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
+    claude_packages: list[Path] = []
 
     def add(path: Path, source: str, label: str) -> None:
         if not installed_executable(path):
@@ -125,6 +137,12 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
         path = Path(directory)
         if directory and path.is_absolute():
             add(path / executable, f"path:{path / executable}", label)
+            if driver == "claude":
+                claude_packages.append(path / "node_modules/@anthropic-ai/claude-code")
+                if sys.platform != "win32":
+                    claude_packages.append(
+                        path.parent / "lib/node_modules/@anthropic-ai/claude-code"
+                    )
             if driver == "codex" and sys.platform == "win32":
                 package = path / "node_modules/@openai/codex"
                 for target in NPM_WINDOWS_TARGETS:
@@ -141,6 +159,10 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
             Path("/usr/local/bin") / driver,
         ):
             add(path, f"path:{path}", label)
+    for package in claude_packages:
+        command = npm_claude(package)
+        if command is not None:
+            add(command, f"claude-npm:{package}", "Claude Code (npm)")
     return list(found.values())
 
 
@@ -153,6 +175,8 @@ def refresh(spec: Instance) -> Instance:
     elif spec.driver == "codex" and spec.installation.startswith("npm:"):
         _, target, package = spec.installation.split(":", 2)
         command = npm_codex(Path(package), target)
+    elif spec.driver == "claude" and spec.installation.startswith("claude-npm:"):
+        command = npm_claude(Path(spec.installation.removeprefix("claude-npm:")))
     else:
         for candidate in candidates() if spec.driver == "codex" else candidates(spec.driver):
             if candidate["source"] == spec.installation:

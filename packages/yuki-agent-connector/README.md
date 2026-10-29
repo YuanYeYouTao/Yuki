@@ -41,6 +41,9 @@ so upgrades retain the original profile/daemon. `discover --instance ID --json`
 resolves that original source without starting it. `diagnose --instance ID`
 performs an explicit handshake/account read without creating a model task.
 An explicitly changed manual executable clears its previous installation source.
+Claude npm discovery reads the current package's declared `bin` entry, including
+Windows native executables behind npm shims. Its original npm package source is
+resolved again on upgrade; old version directories are not additional candidates.
 
 Services run as the current OS user: Windows Task Scheduler uses InteractiveToken
 and LeastPrivilege, Linux uses systemd --user, macOS uses LaunchAgent. Closing
