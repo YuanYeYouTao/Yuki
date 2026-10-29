@@ -74,3 +74,8 @@ Connector最终包验证133 passed/1 skipped（Windows打开文件不能rename�
 ### 首轮CI修正
 
 PR533首轮Ubuntu/macOS Connector在mypy阶段发现Windows专用API未隔离的9项类型错误；Windows本地未暴露，其他平台不能按Windows结果代验。修正将WindowsJob实现放入真实平台分支，以只有cancel/close的通用进程组接口跨层，subprocess flags沿平台正常分支装配；无额外执行限制、兜底或测试削减。同源码linux/darwin/win32类型目标均通过，真实Shell/子孙取消/旁路保留/日志/文件10 passed、1平台skip，随后按新HEAD重跑CI。
+
+
+第二轮CI三OS Connector、三平台原生库、后端类型、集成、headed环境与Native CodeMode均通过；完整单元测试3849 passed/5 skipped，仅原POSIX取消替身未接收source参数而TypeError。替身按已存原work/conversation/generation来源更新并核同一来源，产品取消链继续携带真实source，不回退实现；Windows本地12 passed/4 POSIX skips，实际POSIX结果继续认更新后CI。
+
+用户随后要求再收范围且“别收过头”。任务书经三名同级子代理复核，仅收外部工具维护、全电源矩阵、额外性能平台和语义监督/汇报门槛；保普通授权Shell安装配置、跨目录文件、既有Agent/头像/媒体/远端页/设置、原五目标交付及T13/T14已证修复。此项只改任务书，不追加运行时机制。

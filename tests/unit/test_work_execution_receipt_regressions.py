@@ -402,12 +402,17 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 await control.settle(pending_inputs=False)
                 assert control.current["state"] == "cancelled"
 
-                async def cancel(method, arguments, *, request_id):
+                async def cancel(method, arguments, *, request_id, source):
                     assert method == "terminal_control" and arguments == {
                         "run_id": OWNED,
                         "action": "cancel",
                     }
                     assert request_id == f"worker-cancel:{OWNED}"
+                    assert source == {
+                        "work_id": control.current["id"],
+                        "conversation_id": control.lease.conversation_id,
+                        "generation": control.lease.generation,
+                    }
                     return await manager.control(OWNED, "cancel")
 
                 execution = SubagentExecution(
