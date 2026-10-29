@@ -27,7 +27,7 @@
 | T07 | 通用Shell直接运行已有CLI，截图/下载/上传源文件共用文件管线；自研浏览器专项全部撤回 | 不内置OpenCLI/浏览器CLI，不为它另加daemon、RPC或网页状态 |
 | T08 | 这台电脑入口；无Agent连接；原终端状态/增量输出/停止；旧实例历史与结构化回执 | 实际用户界面验收与自动化UI测试分别记录 |
 | T09 | Codex/Claude/ACP原生查询/问题/恢复定向回归，原文件与Social回归 | 本轮无未授权付费模型或QQ测试消息 |
-| T10 | 协议/版本/合同/资源准备；精确pin和五目标构建沿原发布流程 | PR、CI、包、安装尚未记录为完成 |
+| T10 | 协议/版本/合同/资源准备；后端PR #533已11绿合并，Desktop PR #14精确pin冻结main | Desktop五目标CI、正式包、Release和安装仍认后续交付实录 |
 | T11 | 原模块合同、操作说明、README、工具schema与清退重复CDP动作 | 历史研究报告保当时基线 |
 | T12 | 三名同级子代理分工实现并交叉复审；实际复现问题随修复回归 | 最后复审与交付结果继续写本记录 |
 | T13 | 原active wait保决定；真实新wait替换；原兑现信号与结算同writer核事实 | 受控缺陷已复现，不宣称历史现场唯一根因 |
@@ -54,7 +54,9 @@
 
 ## 交付与验收
 
-截至本次源码记录：后端PR #533已提交并推送，e099c06的11项CI全部通过；最终读取写入删减另认新HEAD的CI。Desktop仍待固定后端合并提交，Release、安装与部署尚未完成。V01–V32按上述对应路径继续核对；OS睡眠/重启、外部工具自行安装与浏览器授权、五目标产物与线上自然流量不由隔离fixture代替。不得把静态代码、打包管线存在或单OS通过写成全部平台验收。
+截至源码冻结：后端[PR #533](https://github.com/YuanYeYouTao/Yuki/pull/533)最终源码29cfbc5的[11项CI全部通过](https://github.com/YuanYeYouTao/Yuki/actions/runs/40865931680)，已合并至main `29e8e680d61a720ff4dab1b218ec9d5073d02b53`，源码tree相同。配套[Desktop PR #14](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/14) HEAD31b04d3已精确pin该main，实际OpenAPI/hash/typegen与16个runtime模块核同；本地单元82、UI20及lint/build通过，五目标及Real local Bot CI当时排队。Release、安装与部署尚未完成，其后实际状态持续以两份PR及beta.8 Release的交付实录为准。
+
+V01–V32逐项证据和未覆盖范围见[独立复审与验收映射](local-device-full-access-acceptance-20261029.md)。V02两个特殊字符独立cwd的文件读写/退出码，以及V09原有子Agent经真实TLS本机Shell、原Work等待/接续、恢复读取真实输出的两项补证，均为Windows隔离真实执行、FakeLLM，无付费请求或真实QQ调用；[脚本、原stdout及说明](evidence/local-device-20261029/README.md)随仓库保存，原结果2 passed。OS睡眠/重启、外部工具安装与浏览器授权、五目标产物和线上自然流量不由隔离fixture代替。不得把静态代码、打包管线存在或单OS通过写成全部平台验收。
 
 
 本机闲置前后原样本见[采样记录](local-device-idle-2026-10-29.md)。实际数据仅覆盖所列机器、解释器、短暂闲置和应用payload，不代表线上负载或资源SLA。
@@ -81,3 +83,9 @@ PR533首轮Ubuntu/macOS Connector在mypy阶段发现Windows专用API未隔离的
 用户随后要求再收范围且“别收过头”。任务书经三名同级子代理复核，仅收外部工具维护、全电源矩阵、额外性能平台和语义监督/汇报门槛；保普通授权Shell安装配置、跨目录文件、既有Agent/头像/媒体/远端页/设置、原五目标交付及T13/T14已证修复。此项只改任务书，不追加运行时机制。
 
 最后核对V19时，发现本机terminal_read将每页输出/游标重复写主库progress_json，相同ack和已存completion也会进入空writer并发布提交提示。已删普通read/control视图写入；exec/get保存原接纳事实，任何路径首次发现completion仍沿原事务结算。相同原回执只读返回，冲突仍由原仓库拒绝，不新增状态或恢复机制。三个真实DB回归before全部失败、after通过，连同原桥与真实TLS WSS/HTTP共18项通过；未将不必要通知推断为已发生的死循环。
+
+### 部署准备实录：一致备份已验证，尚未切换
+
+部署目录为服务器 `/opt/yuki-qqbot/ops/local-device-full-access-20261029T113142Z`。在线一致备份的完整副本为3,240,951,808字节，SHA256 `b402d6523005f45cd463a23ea02833a68e51a50cce9a244959462058440f3c92`。独立验证使用匹配原Bot镜像的SQLite3.46.1及Vec1，连接cache为128MiB；全量integrity_check为ok、foreign_key_check为0、schema0155，UTC2026-10-29 11:54:43完成，耗时688.426秒。
+
+先前host默认reader仅在副本验证阶段终止，源和backup写连接此前已关闭；完整副本保留，没有重copy或降为quick_check。源Bot在该准备阶段始终运行，尚未停止、执行旧wait修复或切换新镜像。后续停服/修复/部署、原预算和执行事实核验及自然流量结果，继续以PR交付实录记录，不由“备份通过”推断上线。

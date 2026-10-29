@@ -1,0 +1,75 @@
+{
+  "window_start_utc": "2026-10-29T10:22:25.157188+00:00",
+  "window_end_utc": "2026-10-29T10:52:25.157188+00:00",
+  "duration_seconds": 1800.0,
+  "container_started_utc": "2026-10-28T21:19:17.21362373Z",
+  "database": {
+    "model_invocations": [
+      {
+        "task": "chat_agent",
+        "success": 1,
+        "error_category": null,
+        "count": 7
+      }
+    ],
+    "chat_events": [
+      {
+        "direction": "inbound",
+        "event_kind": "message",
+        "count": 4
+      },
+      {
+        "direction": "outbound",
+        "event_kind": "message",
+        "count": 5
+      }
+    ],
+    "social_receipts_created": [
+      {
+        "action": "send_message",
+        "status": "succeeded",
+        "error_category": null,
+        "count": 5
+      },
+      {
+        "action": "send_message_sequence",
+        "status": "prepared",
+        "error_category": null,
+        "count": 2
+      }
+    ],
+    "social_receipts_updated": [
+      {
+        "action": "send_message",
+        "status": "succeeded",
+        "error_category": null,
+        "count": 5
+      },
+      {
+        "action": "send_message_sequence",
+        "status": "prepared",
+        "error_category": null,
+        "count": 2
+      }
+    ],
+    "trace_error_kinds": [],
+    "sequence_plans_updated": {
+      "confirmed_all_planned_parts": 2
+    },
+    "coverage": "exact fixed database time window; raw receipt rows and sequence plans are separate units"
+  },
+  "logs": {
+    "allowlisted_error_events": {},
+    "categories": {},
+    "retained_lines": 509,
+    "coverage": "tail may truncate; no raw logs exported",
+    "tail_limit": 20000
+  },
+  "limits": [
+    "natural traffic only; no test messages or model requests generated",
+    "model errors, trace errors and logs may describe the same failure; do not sum them",
+    "raw delivery receipts include parts; sequence plans are counted separately, not added to raw rows",
+    "confirmed transport delivery does not prove response content correctness",
+    "an empty post-deploy window is missing acceptance evidence, not proof of healthy natural traffic"
+  ]
+}
