@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -22,8 +23,9 @@ class DeviceConnection:
         self.device_id = device_id
         self.id = str(uuid4())
         self.socket = socket
-        self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.pending: dict[str, tuple[dict[str, Any], asyncio.Future[dict[str, Any]]]] = {}
         self.instances: set[str] = set()
+        self.device_capabilities: dict[str, Any] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, value: dict[str, Any]) -> None:
@@ -34,21 +36,26 @@ class DeviceConnection:
         identity = command["id"]
         existing = self.pending.get(identity)
         if existing is not None:
-            return await asyncio.shield(existing)
+            original, original_future = existing
+            if original != command:
+                raise ValueError("connector_request_idempotency_conflict")
+            return await asyncio.shield(original_future)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        self.pending[identity] = future
+        self.pending[identity] = (deepcopy(command), future)
         try:
             await self.send(command)
             return await asyncio.shield(future)
         finally:
-            if self.pending.get(identity) is future:
+            entry = self.pending.get(identity)
+            if entry is not None and entry[1] is future:
                 self.pending.pop(identity, None)
             if not future.done():
                 future.cancel()
 
     def respond(self, message: dict[str, Any]) -> None:
-        future = self.pending.get(message.get("id", ""))
-        if future is not None and not future.done():
+        entry = self.pending.get(message.get("id", ""))
+        if entry is not None and not entry[1].done():
+            future = entry[1]
             result = message.get("result")
             if isinstance(result, dict):
                 future.set_result(result)
@@ -57,7 +64,7 @@ class DeviceConnection:
                 future.set_result({"error": error, "executed": False, "pending": False})
 
     def disconnected(self) -> None:
-        for future in self.pending.values():
+        for _, future in self.pending.values():
             if not future.done():
                 future.set_exception(DeviceOffline("device_disconnected"))
 

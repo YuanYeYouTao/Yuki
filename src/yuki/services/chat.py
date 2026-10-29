@@ -808,6 +808,7 @@ class ChatService:
                             "terminal_read",
                             {"run_id": run_id},
                             request_id=f"work-check:{run_id}",
+                            source=source,
                         )
 
                     work_scope = await memory_cleanup.enter_async_context(AsyncExitStack())

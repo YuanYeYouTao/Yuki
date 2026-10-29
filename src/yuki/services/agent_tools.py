@@ -18,7 +18,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
-from yuki.capabilities.executions import is_execution
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
@@ -874,7 +873,7 @@ class AgentToolService:
                             name,
                             arguments,
                             request_id=request_id,
-                            source=source if is_execution(name, arguments) else None,
+                            source=source,
                         )
                     if execution_result.get("error"):
                         return self._result(
@@ -902,6 +901,7 @@ class AgentToolService:
                             name,
                             arguments,
                             runtime=runtime,
+                            source={"actor_person_id": runtime.actor_person_id},
                             request_id=invocation.invocation_key
                             if invocation is not None
                             else None,

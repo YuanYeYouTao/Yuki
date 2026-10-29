@@ -39,6 +39,7 @@ class SocialMessage(BaseModel):
     text: str = Field(default="", repr=False)
     artifact_id: UUID | None = None
     path: str | None = None
+    device_id: str | None = None
     name: str | None = None
     expected_version: str | None = None
     attachment_kind: Literal["image", "file"] | None = None

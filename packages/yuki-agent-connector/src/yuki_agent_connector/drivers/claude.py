@@ -347,13 +347,25 @@ class ClaudeDriver:
         if action == "list":
             return await self._inspect("list", arguments)
         if action == "get":
-            result = await self._inspect("get", {**arguments, "session_id": identity})
+            expected = command.get("execution_id")
+            result = await self._inspect(
+                "get", {**arguments, "session_id": identity, "execution_id": expected}
+            )
             if session:
                 result.update(
                     status=session.status,
                     execution_id=session.execution,
                     live_attach=not session.stopped.is_set(),
                     pending=session.active or session.status == "unknown",
+                    status_scope="execution" if expected else "session",
+                )
+            if expected and (session is None or session.execution != expected):
+                result.update(
+                    execution_id=expected,
+                    status="unknown",
+                    pending=True,
+                    status_scope="execution",
+                    reason="execution_not_attached",
                 )
             return result
         if action == "prompt":

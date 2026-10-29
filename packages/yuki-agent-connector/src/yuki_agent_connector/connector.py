@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -16,17 +17,23 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from . import PROTOCOL_VERSION
+from .computer import computer_status
 from .config import Config
 from .drivers import Driver, DriverError, make_driver
+from .files import FileTransfers
 from .journal import Journal
+from .terminal import LocalTerminal
 
 logger = logging.getLogger(__name__)
-READ_ACTIONS = {"list", "get"}
+READ_ACTIONS = {"list", "get", "read", "status", "stat", "release"}
 
 
 class Connector:
-    def __init__(self, config: Config, journal: Journal) -> None:
+    def __init__(
+        self, config: Config, journal: Journal, *, config_path: Path | None = None
+    ) -> None:
         self.config, self.journal = config, journal
+        self.config_path = config_path
         self.drivers: dict[str, Driver] = {}
         self.errors: dict[str, str] = {}
         self.stream: ClientConnection | None = None
@@ -35,6 +42,52 @@ class Connector:
         self.stopped = asyncio.Event()
         self.catalog_changed = asyncio.Event()
         self._startup: list[asyncio.Task[None]] = []
+        self.files = FileTransfers(journal)
+        self.terminal = LocalTerminal(
+            journal.path.parent / "terminal", journal, self._terminal_event
+        )
+
+    async def _terminal_event(self, kind: str, value: dict[str, Any]) -> None:
+        self.journal.append({"event_id": str(uuid4()), "kind": kind, **value})
+        self.pending_events.set()
+
+    def refresh_access(self) -> None:
+        if self.config_path is None:
+            return
+        configured = Config.load(self.config_path)
+        if (configured.url, configured.device_id) != (self.config.url, self.config.device_id):
+            raise ValueError("The active service belongs to its original server and device")
+        if configured.full_access != self.config.full_access:
+            self.config = replace(self.config, full_access=configured.full_access)
+            self.catalog_changed.set()
+
+    def device_capabilities(self) -> dict[str, Any]:
+        computer = computer_status()
+        return {
+            "full_access": self.config.full_access is True,
+            "platform": computer["platform"],
+            "shell": computer["shell"],
+            "tty": False,
+            "interrupt_supported": computer["interrupt_supported"],
+        }
+
+    async def _device_command(self, command: dict[str, Any]) -> dict[str, Any]:
+        resource, action = command["resource"], command["action"]
+        args = command.get("arguments", {})
+        if resource == "terminal" and action == "status":
+            return {"full_access": self.config.full_access is True, **computer_status()}
+        if action == "get" and resource == "terminal":
+            return self.journal.operation(args["operation_id"])
+        allowed_closed = (
+            resource == "terminal" and action in {"read", "interrupt", "cancel", "close"}
+        ) or (resource == "file" and action in {"release", "get"})
+        if self.config.full_access is not True and not allowed_closed:
+            raise DriverError("full_access_disabled", "Enable full access on this computer first")
+        if resource == "terminal":
+            return await self.terminal.execute(command)
+        if resource == "file":
+            return await self.files.execute(command)
+        raise DriverError("invalid_resource", f"Unsupported device resource: {resource}")
 
     def _spawn(self, coroutine: Any) -> None:
         task = asyncio.create_task(coroutine)
@@ -111,6 +164,7 @@ class Connector:
             "type": "hello",
             "protocol_version": PROTOCOL_VERSION,
             "device_id": self.config.device_id,
+            "device_capabilities": self.device_capabilities(),
             "instances": [
                 {
                     "id": spec.id,
@@ -133,13 +187,17 @@ class Connector:
         mutation = command["action"] not in READ_ACTIONS
         recorded = False
         try:
+            if command.get("resource"):
+                self.refresh_access()
             if mutation:
                 previous = self.journal.begin(command)
                 if previous is not None:
                     return previous
                 recorded = True
             arguments = command.get("arguments", {})
-            if command["action"] == "get" and arguments.get("operation_id"):
+            if command.get("resource"):
+                result = await self._device_command(command)
+            elif command["action"] == "get" and arguments.get("operation_id"):
                 result = self.journal.operation(arguments["operation_id"])
                 if result.get("status") == "unknown":
                     observation = self.journal.observation(arguments["operation_id"])
@@ -262,7 +320,12 @@ class Connector:
             self.catalog_changed.clear()
             await websocket.send(
                 json.dumps(
-                    {"type": "catalog", "instances": self.hello()["instances"]}, ensure_ascii=False
+                    {
+                        "type": "catalog",
+                        "instances": self.hello()["instances"],
+                        "device_capabilities": self.device_capabilities(),
+                    },
+                    ensure_ascii=False,
                 )
             )
 
@@ -336,6 +399,8 @@ class Connector:
             original = sys.exception()
 
             async def close_owners() -> None:
+                await self.terminal.close()
+                await self.files.close()
                 owners = (*self._startup, *self.tasks)
                 for task in owners:
                     task.cancel()

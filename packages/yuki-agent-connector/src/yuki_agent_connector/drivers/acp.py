@@ -461,12 +461,25 @@ class ACPDriver:
             raise DriverError("missing_session", "This action requires the original session ID")
         session = self._session(identity)
         if action == "get":
-            return {
+            expected = command.get("execution_id")
+            result = {
                 "session_id": identity,
                 "execution_id": session.execution,
                 "status": session.status,
                 "pending": bool(session.task and not session.task.done()),
+                "query_scope": "execution" if expected else "session",
+                "status_scope": "execution" if expected else "session",
+                "history_available": False,
+                "history_reason": "native_history_not_supported",
             }
+            if expected and expected != session.execution:
+                result.update(
+                    execution_id=expected,
+                    status="unknown",
+                    pending=True,
+                    reason="execution_not_attached",
+                )
+            return result
         if action == "watch":
             active = bool(session.task and not session.task.done())
             expected = command.get("execution_id")

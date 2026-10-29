@@ -72,7 +72,7 @@ class NativeComputer:
             json.dumps(
                 {
                     "type": "hello",
-                    "protocol_version": 3,
+                    "protocol_version": 4,
                     "instances": [
                         {
                             "id": self.local_id,

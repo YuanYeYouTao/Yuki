@@ -83,6 +83,7 @@ class Config:
     device_id: str
     token: str
     instances: list[Instance] = field(default_factory=list)
+    full_access: bool = False
 
     @classmethod
     def load(cls, path: Path) -> Config:

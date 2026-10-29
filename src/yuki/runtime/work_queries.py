@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -18,7 +20,7 @@ from yuki.runtime.work_query_schema import (
     work_statuses,
 )
 from yuki.runtime.work_repository import WorkLease, WorkRepository
-from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_schema_v1 import effects, work
 from yuki.runtime.work_tree import ancestor_work_ids, budget_root_id, descendants
 from yuki.runtime.work_wait_schema import waits
 
@@ -104,7 +106,15 @@ class WorkQueries:
         return query
 
     async def get(
-        self, lease: WorkLease, source: dict[str, Any], work_id: str, *, local: bool = False
+        self,
+        lease: WorkLease,
+        source: dict[str, Any],
+        work_id: str,
+        *,
+        local: bool = False,
+        include_progress: bool = False,
+        limit: int = 8,
+        cursor: str | None = None,
     ) -> dict[str, Any] | None:
         async with self.repository.database.read_session() as session:
             row = (
@@ -122,6 +132,78 @@ class WorkQueries:
             if result is not None:
                 result["ancestor_work_ids"] = await ancestor_work_ids(session, work_id)
                 result["budget_root_id"] = await budget_root_id(session, work_id)
+                if include_progress:
+                    result.update(
+                        observed_at=datetime.now(UTC).isoformat(),
+                        status_scope="work",
+                        query_scope="work",
+                    )
+                    authorized = await session.scalar(
+                        self._query(lease, source, local=True, include_workers=True)
+                        .with_only_columns(work.c.id)
+                        .where(work.c.id == work_id)
+                    )
+                    if authorized is None:
+                        result.update(
+                            progress_available=False,
+                            progress_reason="original_private_source_not_authorized",
+                        )
+                    else:
+                        if type(limit) is not int or not 1 <= limit <= 50:
+                            raise ValueError("invalid_work_query_limit")
+                        query = select(effects).where(effects.c.work_id == work_id)
+                        if cursor is not None:
+                            try:
+                                stamp, key = json.loads(cursor)
+                                if not math.isfinite(float(stamp)) or not isinstance(key, str):
+                                    raise ValueError
+                            except (ValueError, TypeError) as exc:
+                                raise ValueError("invalid_work_progress_cursor") from exc
+                            query = query.where(
+                                tuple_(effects.c.updated, effects.c.effect_key) < (stamp, key)
+                            )
+                        page = (
+                            (
+                                await session.execute(
+                                    query.order_by(
+                                        effects.c.updated.desc(), effects.c.effect_key.desc()
+                                    ).limit(limit + 1)
+                                )
+                            )
+                            .mappings()
+                            .all()
+                        )
+                        from yuki.runtime.effect_outcomes import historical_evidence
+
+                        steps = []
+                        for step in page[:limit]:
+                            receipt = json.loads(step["receipt_json"])
+                            steps.append(
+                                {
+                                    **historical_evidence(
+                                        receipt, state=step["state"], kind=step["kind"]
+                                    ),
+                                    "effect_key": step["effect_key"],
+                                    "created_at": step["created"],
+                                    "updated_at": step["updated"],
+                                    "result": receipt.get("result"),
+                                }
+                            )
+                        note = await session.scalar(
+                            select(work.c.checkpoint_json).where(work.c.id == work_id)
+                        )
+                        last = page[limit - 1] if len(page) > limit else None
+                        result.update(
+                            progress_available=True,
+                            steps=steps,
+                            context_note=json.loads(note).get("context_note") if note else None,
+                            history_order="desc",
+                            history_scope="original_work_effects",
+                            cursor_parameter="cursor",
+                            next_cursor=json.dumps([last["updated"], last["effect_key"]])
+                            if last
+                            else None,
+                        )
         if result is not None:
             from yuki.runtime.work_wait import WorkWaitRepository
 

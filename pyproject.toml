@@ -35,6 +35,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "platformdirs>=4,<5",
     "mypy>=1.13,<2",
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.24,<1",
@@ -104,7 +105,7 @@ ignore_missing_imports = true
 addopts = "-ra"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-pythonpath = ["src"]
+pythonpath = ["src", "packages/yuki-agent-connector/src"]
 testpaths = ["tests"]
 markers = [
     "qwen_embedding_integration: opt-in test against the real DashScope embedding API",

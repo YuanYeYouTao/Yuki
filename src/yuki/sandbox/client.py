@@ -19,6 +19,7 @@ from yuki.sandbox.environment_tools import (
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 if TYPE_CHECKING:
+    from yuki.external_agents.local_device import LocalDeviceService
     from yuki.sandbox.task_repository import SandboxTaskRepository
 
 
@@ -30,6 +31,7 @@ class SandboxClient:
     def __init__(self, socket: Path, *, tasks: SandboxTaskRepository | None = None) -> None:
         self.socket = socket
         self.tasks = tasks
+        self.local_devices: LocalDeviceService | None = None
 
     @asynccontextmanager
     async def stream(
@@ -64,6 +66,47 @@ class SandboxClient:
         request_id: str,
         source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.local_devices is not None:
+            if name in {"terminal_exec", "environment_status"} and "device_id" in args:
+                return await self.local_devices.execute(
+                    name,
+                    args,
+                    request_id=request_id,
+                    source=source,
+                )
+            if name in {
+                "terminal_read",
+                "terminal_control",
+                "get_code_run",
+                "get_code_run_by_request",
+            }:
+                assert self.tasks is not None
+                row = (
+                    await self.tasks.get(str(args["request_id"]))
+                    if name == "get_code_run_by_request"
+                    else await self.tasks.by_run(str(args["run_id"]))
+                )
+                if row is None:
+                    return {
+                        **{key: args[key] for key in ("run_id", "request_id") if key in args},
+                        "status": "unknown",
+                        "pending": True,
+                        "uncertain": True,
+                        "error": "original_execution_target_not_confirmed",
+                        "retryable": False,
+                    }
+                from yuki.external_agents.local_device import terminal_target
+
+                if terminal_target(row) is not None:
+                    return await self.local_devices.execute(
+                        name,
+                        args,
+                        request_id=request_id,
+                        source=source,
+                    )
+                if json.loads(row.progress_json).get("kind") == "external_agent":
+                    return await self._native_terminal(name, args, request_id, source)
+                # Existing host-owned rows from before protocol 4 belong to the Manager.
         execution = is_execution(name, args)
         wire_args = args
         if name == "terminal_exec" and source is not None and source.get("work_id"):
@@ -173,6 +216,31 @@ class SandboxClient:
                     )
                 ),
             }
+
+    async def _native_terminal(
+        self,
+        name: str,
+        args: dict[str, Any],
+        request_id: str,
+        source: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        assert self.local_devices is not None
+        if name == "terminal_control":
+            if args["action"] not in {"cancel", "close"}:
+                return {"error": "native_agent_control_requires_external_agent", "retryable": False}
+            actor = self.local_devices.actor(source)
+            operation = await self.local_devices.agents.repository.operation(args["run_id"], actor)
+            action = "detach" if operation.action == "watch" else "cancel"
+        else:
+            action = "get"
+        return await self.local_devices.agents.execute(
+            {
+                "action": action,
+                **{key: args[key] for key in ("run_id", "request_id", "cursor") if key in args},
+            },
+            request_id=request_id,
+            source=source,
+        )
 
     async def _stage_result(self, name: str, request_id: str, result: dict[str, Any]) -> None:
         if (

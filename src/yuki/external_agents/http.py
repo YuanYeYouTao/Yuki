@@ -20,6 +20,9 @@ from yuki.client_api.responses import (
     NativeOperation,
     NativeOperations,
     NativeSessions,
+    TerminalControl,
+    TerminalRun,
+    TerminalRuns,
 )
 from yuki.external_agents.db_models import AgentInstanceModel, AgentOperationModel
 from yuki.external_agents.service import CONNECTOR_PROTOCOL, ExternalAgentService
@@ -32,6 +35,12 @@ class ConnectorPairBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: SecretStr
     device_label: str
+
+
+class TerminalControlBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str
+    action: str
 
 
 def bearer(authorization: str | None) -> str:
@@ -113,6 +122,7 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
     @router.get("/operations", response_model=NativeOperations, response_model_exclude_unset=True)
     async def operations(
         work_id: str | None = None,
+        device_id: str | None = None,
         cursor: str | None = None,
         limit: Annotated[int, Query(ge=1)] = 50,
         authorization: Annotated[str | None, Header()] = None,
@@ -136,6 +146,8 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
             )
             if work_id is not None:
                 statement = statement.where(AgentOperationModel.work_id == work_id)
+            if device_id is not None:
+                statement = statement.where(AgentInstanceModel.device_id == device_id)
             if previous is not None:
                 statement = statement.where(
                     or_(
@@ -158,6 +170,77 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
         ]
         return {"items": items, "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
 
+    @router.get("/devices/{device_id}")
+    async def device_status(
+        device_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        return await resolve().local_devices.status(device_id, principal.source_person_id)
+
+    @router.get("/terminals", response_model=TerminalRuns, response_model_exclude_unset=True)
+    async def terminals(
+        device_id: str | None = None,
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1)] = 50,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        return await resolve().local_devices.list_runs(
+            principal.source_person_id,
+            device_id=device_id,
+            cursor=cursor,
+            limit=limit,
+        )
+
+    @router.get(
+        "/terminals/{run_id}", response_model=TerminalRun, response_model_exclude_unset=True
+    )
+    async def terminal(
+        run_id: str,
+        cursor: int = 0,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        return await resolve().local_devices.read(principal.source_person_id, run_id, cursor)
+
+    @router.post(
+        "/terminals/{run_id}/control",
+        response_model=TerminalControl,
+        response_model_exclude_unset=True,
+    )
+    async def terminal_control(
+        run_id: str,
+        body: TerminalControlBody,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        if body.action != "cancel":
+            raise ClientError("invalid_request")
+        return await resolve().local_devices.control(
+            principal.source_person_id,
+            run_id,
+            body.request_id,
+            body.action,
+        )
+
+    @router.get(
+        "/terminals/{run_id}/controls/{request_id}",
+        response_model=TerminalControl,
+        response_model_exclude_unset=True,
+    )
+    async def terminal_control_receipt(
+        run_id: str,
+        request_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        principal = await person(authorization)
+        return await resolve().local_devices.control_receipt(
+            principal.source_person_id,
+            run_id,
+            request_id,
+        )
+
     @router.websocket("/connect")
     async def connect(socket: WebSocket) -> None:
         service = resolve()
@@ -179,13 +262,21 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                     instances = message.get("instances")
                     if not isinstance(instances, list):
                         raise ValueError("invalid_connector_catalog")
-                    await service.update_catalog(principal.device_id, connection, instances)
+                    await service.update_catalog(
+                        principal.device_id,
+                        connection,
+                        instances,
+                        message.get("device_capabilities", {}),
+                    )
                     await connection.send({"type": "catalog_ack"})
                 else:
                     # Acknowledge each original durable event
                     # only after its complete transaction. Explicit repository lists
                     # remain an atomic batch and are never divided here.
-                    await service.receive_events(principal.device_id, [message])
+                    if message["type"] == "terminal_event":
+                        await service.local_devices.receive(principal.device_id, message)
+                    else:
+                        await service.receive_events(principal.device_id, [message])
                     await connection.send({"type": "ack", "event_id": message["event_id"]})
 
         async def read() -> None:
@@ -203,7 +294,7 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                 kind = message.get("type")
                 if kind == "response":
                     connection.respond(message)
-                elif kind in {"event", "catalog"}:
+                elif kind in {"event", "catalog", "terminal_event"}:
                     queue.put_nowait(message)
                 elif kind == "ping":
                     await connection.send({"type": "pong"})

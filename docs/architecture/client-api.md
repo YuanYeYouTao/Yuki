@@ -11,6 +11,12 @@
 
 `GET /agents/v1/devices`、`/agents/v1/instances/{instance_id}/sessions?cursor=...`、`/agents/v1/operations?work_id=...&cursor=...&limit=...` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。设备目录包含尚无实例的本人 connector 设备，online 仅来自当前服务端连接；实例 `local_id` 仅用于本地配置匹配，控制仍使用服务端内部 `id`。会话目录 cursor 沿该实例原 native 分页，查询不启动任务。操作列表按原 created_at/id 分页，cursor 为上一页原 operation ID，默认每页 50 条，next_cursor 为 null 表示当前已读完；不另建持久游标。操作列表复用原持久回执和离线 unknown 投影，不把 accepted 当作已完成。新控制沿 Main 固定 `external_agent` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
 
+设备连接使用协议 `4`。完整访问的授权开关只保存在本机 Connector 配置，默认关闭；云端目录中的 `device_capabilities` 是当前连接的能力事实，不充当派发授权。`GET /agents/v1/devices/{device_id}` 主动刷新本机当前能力，包含本机实际系统与 Shell 信息；不宣称随附浏览器 CLI 或代替外部工具查浏览器状态。无 Agent instance 的电脑也可以运行 Shell。原 Agent-only 授权和整设备撤销仍各认原含义。
+
+`GET /agents/v1/terminals?device_id=...&cursor=...&limit=...` 返回本人原本机终端调用，按原 request ID 续页；`GET /agents/v1/terminals/{run_id}?cursor=...` 读取原设备的增量字节游标与稳定 completion。原生操作列表另支持 `device_id`，过滤原 instance 的设备，不以当前在线实例裁掉旧历史。`POST /agents/v1/terminals/{run_id}/control` 以原 `request_id` 提交 cancel；丢失返回时用 `GET /agents/v1/terminals/{run_id}/controls/{request_id}` 查同一控制回执，不重新取消。未知、原控制接纳和原进程退出分别呈现。关闭完整访问后，原查询和定向取消仍可使用；退出 App 不等于停止独立 Connector。
+
+服务端沿原 `SandboxTaskRunModel.source_json` 保存设备目标及真实来源，复用已有 completion/continuation；本批不新增主库迁移或另一套任务表。字节传输复用同一设备连接及原 Connector journal，内部帧不作为模型文本。配套安装、浏览器授权和完整访问语义见[本机连接器说明](../operations/local-agent-connector.zh-CN.md)。
+
 ## 个人管理、产物与工作步骤
 
 `GET /memory/facts?about=me|self` 和详情只返回本人及当前可见 SELF 事实，证据另核原 Conversation 的实际读取资格。本人可以用原 UUID、事实 revision 和明确正文纠正或撤回自己的事实；共享角色编辑不允许读取或修改其他人的私有记忆。SELF 页只读。

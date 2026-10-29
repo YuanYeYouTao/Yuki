@@ -2,7 +2,23 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.3.6`，原生协议仍为 `3`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.0`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+
+## 本机完整访问
+
+桌面端“这台电脑”管理同一个 Connector。没有 Codex、Claude 或项目目录，也可以连接电脑；完整访问默认关闭，原生 Agent-only 配置不受它开启与关闭影响。开关沿本机 CLI `full-access --enabled true|false --json` 原子保存，云端不能替用户开启。当前系统账号能执行的 Shell、文件和浏览器操作就是访问范围，不另加命令白名单、项目授权或管理员角色。
+
+`terminal_exec` 和 `environment_status` 可选 `device_id`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。后续 read/control 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
+
+退出桌面窗口、退出 App 与停止独立 Connector 服务分别处理；设备撤销仍使用原凭据机制。Connector 重启后的旧进程失联保原回执与 unknown，不重新执行原命令。Windows 按本次 Job Object、POSIX 按本次进程组取消，不按同名进程扫描，不结束用户 daemon 或整个浏览器。
+
+本机终端可以直接运行 OpenCLI 等已安装程序。Connector 不自研或捆绑浏览器 CLI，不管理第三方工具的扩展、调试会话、安装依赖或网页动作回执。OpenCLI 是示例，不是唯一允许的程序；工具缺失不阻止设备、Shell 和文件连接。第三方工具的实际许可、结果与后台进程沿原工具处理。
+
+截图和下载文件先落本机，再走下面同一文件管线。原 stdin 接纳、CLI 进程退出和网页业务完成分别认实际输出；未知不自动重派原命令。关闭完整访问拒绝新命令和后续 stdin，已运行脚本或外部后台程序需要停止时显式取消原 run；不宣称能追入任意程序逐网页动作撤权。
+
+`workspace_inspect(path,device_id)` 将所选本机字节准备为原私有媒体结果，回读沿原 tool_handle；`send(path,device_id)` 冻结一次原件后发送，沿原 artifact/source_key 恢复。附件保存仍按内部 event_id/attachment_index 核来源，再写入本机指定路径；未知写入查原传输回执。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
+
+实施证据与交付状态见[本次实施记录](local-device-full-access-implementation-20261029.md)。
 
 ## 从桌面连接
 
@@ -23,7 +39,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.3.6-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.4.0-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -173,9 +189,9 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 2026-10-23 在 Windows 上以 `codex-cli 0.163.0` 和连接器 `0.1.0` 完成一次真实模型全链路验收：原生审批经内部问题 ID 回答，隔离目录写入和读回各有一条成功命令回执，最终标记与文件内容一致，原执行终态进入原 Work 的 continuation；测试通过，耗时 34.98 秒。9 条重要事件中含 3 条工具回执，其中首次沙盒执行失败、随后精确授权后的写入与读回成功，失败事实仍保留。该次缓存字段未提供，记录为 unknown。测试只归档自己的新原生会话，未停止用户 daemon；这份记录不涵盖生产上线、真实 QQ 投递、Claude 付费执行或其他 OS 的实机服务验收。
 
 
-## 协议 3：原回执、持续监督与断流恢复
+## 协议 4：原回执、持续监督与断流恢复
 
-Bot 与 Connector 0.3.0 配套升级，WSS hello 使用 `protocol_version=3`。原 device、instance、
+Bot 与 Connector 0.4.0 配套升级，WSS hello 使用 `protocol_version=4`。原 device、instance、
 session、execution、operation ID 和 journal 保留。旧 watch 在升级时明确保留单轮范围；新 watch
 只给 session 时观察后续各轮，单轮结束只是一条进度。detach 或原 Work 结束时退出监督，不关闭
 用户的原生会话。指定 execution 的 watch 不追踪其他轮次。

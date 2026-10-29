@@ -17,6 +17,7 @@ from uuid import uuid4
 import httpx
 
 from . import PROTOCOL_VERSION, __version__
+from .computer import computer_status
 from .config import Config, Instance, data_path, private_path
 from .connector import Connector, installation_lock
 from .discovery import candidates, diagnose, refresh
@@ -57,6 +58,11 @@ def parser() -> argparse.ArgumentParser:
     doctor.add_argument("--instance")
     status = commands.add_parser("status", help="Local configuration and user service status")
     status.add_argument("--json", action="store_true", help="Print one machine-readable object")
+    access = commands.add_parser(
+        "full-access", help="Enable/disable local Shell and files"
+    )
+    access.add_argument("--enabled", choices=["true", "false"])
+    access.add_argument("--json", action="store_true")
     discover = commands.add_parser(
         "discover", help="Read installed native agent locations without starting them"
     )
@@ -190,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
                 "runtime": sys.executable,
                 "data_directory": str(directory),
                 "paired": config is not None,
+                "full_access": config.full_access is True if config else False,
+                "computer": computer_status(),
                 "service": service.state(),
                 "instances": [
                     {
@@ -215,7 +223,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(value, ensure_ascii=args.json, indent=None if args.json else 2))
         else:
             config = Config.load(path)
-            if args.action == "instance":
+            if args.action == "full-access":
+                if args.enabled is not None:
+                    config = replace(config, full_access=args.enabled == "true")
+                    config.save(path)
+                print(json.dumps({"full_access": config.full_access is True}))
+            elif args.action == "instance":
                 if args.operation == "list":
                     # Deliberately omit environment, tokens and owner endpoints.
                     print(
@@ -357,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
                         namespace=json.dumps([config.url, config.device_id]),
                     )
                     try:
-                        asyncio.run(Connector(config, journal).run())
+                        asyncio.run(Connector(config, journal, config_path=path).run())
                     finally:
                         journal.close()
         return 0

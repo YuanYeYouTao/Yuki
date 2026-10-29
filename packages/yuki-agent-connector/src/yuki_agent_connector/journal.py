@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -9,8 +10,8 @@ from typing import Any, cast
 
 from .config import private_path
 
-OBSERVED_ACTIONS = {"watch", "prompt", "queue"}
-TERMINAL = {"completed", "failed", "cancelled", "detached"}
+OBSERVED_ACTIONS = {"watch", "prompt", "queue", "exec"}
+TERMINAL = {"completed", "succeeded", "failed", "cancelled", "detached"}
 
 
 def encode(value: Any) -> str:
@@ -18,6 +19,17 @@ def encode(value: Any) -> str:
 
 
 def original_command(command: dict[str, Any]) -> dict[str, Any]:
+    if (
+        command.get("resource") == "file"
+        and command["action"] == "write"
+        and "data_base64" in command["arguments"]
+    ):
+        import base64
+
+        args = dict(command["arguments"])
+        data = base64.b64decode(args.pop("data_base64"), validate=True)
+        args["data_sha256"] = hashlib.sha256(data).hexdigest()
+        return {**command, "arguments": args}
     # A missing scope belongs to the old single-execution watch contract.
     return (
         {"observation_scope": "execution", **command} if command["action"] == "watch" else command
@@ -40,6 +52,7 @@ def fold_receipt(previous: dict[str, Any], facts: dict[str, Any], sequence: int)
 
 class Journal:
     def __init__(self, path: Path, *, namespace: str) -> None:
+        self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         private_path(path.parent, directory=True)
         self.db = sqlite3.connect(path)
@@ -80,7 +93,7 @@ class Journal:
         }
         if command["action"] in OBSERVED_ACTIONS:
             result["pending"] = True
-        for key in ("session_id", "execution_id"):
+        for key in ("session_id", "execution_id", "run_id"):
             if command.get(key) is not None:
                 result[key] = command[key]
         return result
@@ -93,7 +106,11 @@ class Journal:
 
     @staticmethod
     def _event_facts(event: dict[str, Any]) -> dict[str, Any]:
-        payload = event.get("payload", {})
+        payload = (
+            event.get("result", {})
+            if event.get("type") == "terminal_event"
+            else event.get("payload", {})
+        )
         facts = {
             key: payload[key]
             for key in ("status", "pending", "admitted", "reason", "error_type", "error")
@@ -105,6 +122,8 @@ class Journal:
         if event["kind"] == "completed":
             facts.update(payload)
             facts.update(pending=False, admitted=True)
+            if event.get("type") == "terminal_event":
+                facts["completion"] = dict(payload)
         return facts
 
     def _upgrade_receipts(self) -> None:
@@ -183,11 +202,12 @@ class Journal:
         )
 
     def complete(self, key: str, response: dict[str, Any]) -> None:
-        command = json.loads(
-            self.db.execute("SELECT command FROM operations WHERE id=?", (key,)).fetchone()[0]
-        )
-        state, result = self.operation(key), self._response_state(response)
         with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            command = json.loads(
+                self.db.execute("SELECT command FROM operations WHERE id=?", (key,)).fetchone()[0]
+            )
+            state, result = self.operation(key), self._response_state(response)
             # Reserve from the same durable order as events. Responses need an
             # order too, including admission arriving after an early milestone.
             sequence = self._next_sequence(key)
@@ -230,6 +250,21 @@ class Journal:
     def operation(self, key: str) -> dict[str, Any]:
         row = self.db.execute("SELECT receipt FROM operations WHERE id=?", (key,)).fetchone()
         return json.loads(row[0]) if row else {"status": "not_found"}
+
+    def annotate(self, key: str, facts: dict[str, Any]) -> dict[str, Any]:
+        """Attach execution evidence without changing its native lifecycle."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            state = self.operation(key)
+            if state.get("status") == "not_found":
+                raise ValueError("The original operation is not recorded")
+            state = {**state, **facts, "state_sequence": self._next_sequence(key)}
+            self.db.execute("UPDATE operations SET receipt=? WHERE id=?", (encode(state), key))
+            self.db.commit()
+            return state
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def observation(self, key: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
         row = self.db.execute(

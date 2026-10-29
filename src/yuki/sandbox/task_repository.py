@@ -28,7 +28,12 @@ class SandboxTaskRepository:
         self.database = database
 
     async def prepare(
-        self, request_id: str, arguments: dict[str, Any], source: dict[str, Any]
+        self,
+        request_id: str,
+        arguments: dict[str, Any],
+        source: dict[str, Any],
+        *,
+        run_id: str | None = None,
     ) -> SandboxTaskRunModel:
         """Called by the host before socket submission, with host-derived source data."""
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
@@ -75,6 +80,7 @@ class SandboxTaskRepository:
         now = datetime.now(UTC)
         row = SandboxTaskRunModel(
             request_id=request_id,
+            run_id=run_id,
             source_conversation_id=conversation_id,
             source_json=source_json,
             payload_hash=digest,
@@ -106,7 +112,11 @@ class SandboxTaskRepository:
             existing = await self.get(request_id)
             if existing is None:
                 raise
-            if existing.payload_hash != digest or existing.source_json != source_json:
+            if (
+                existing.payload_hash != digest
+                or existing.source_json != source_json
+                or (run_id is not None and existing.run_id != run_id)
+            ):
                 raise ValueError("sandbox_task_idempotency_conflict") from None
             return existing
         return row

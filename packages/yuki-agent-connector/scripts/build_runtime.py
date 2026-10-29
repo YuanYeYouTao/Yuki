@@ -160,7 +160,7 @@ def main() -> None:
             entries.append({"path": relative, "sha256": digest(path)})
     manifest = {
         "version": metadata["project"]["version"],
-        "protocol": 3,
+        "protocol": 4,
         "platform": target_os,
         "arch": arch,
         "executable": python.relative_to(output).as_posix(),

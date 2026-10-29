@@ -234,7 +234,8 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
     results = await asyncio.gather(
         *(driver.execute({"id": "query", "action": "list", "arguments": {}}) for driver in drivers)
     )
-    assert results == [{"sessions": [], "next_cursor": None}, {"sessions": [], "next_cursor": None}]
+    assert all(result["sessions"] == [] and result["next_cursor"] is None for result in results)
+    assert all(result["source_scope"] == "configured_profile" for result in results)
     assert all(not driver.sessions for driver in drivers)
 
 

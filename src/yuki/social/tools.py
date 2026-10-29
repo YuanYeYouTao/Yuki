@@ -10,9 +10,14 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         "path": {
             "type": "string",
             "description": (
-                "要发送的 /workspace 文件或 /inputs/media-cache 原件路径；"
+                "要发送的 /workspace 文件、/inputs/media-cache 原件，"
+                "或 device_id 指定本人电脑的路径；"
                 "程序冻结本次版本后发送。与 artifact_id 二选一。"
             ),
+        },
+        "device_id": {
+            "type": "string",
+            "description": "可选；path 所在的本人电脑设备 ID。省略时使用 Yuki 自己的持久环境。",
         },
         "artifact_id": {
             "type": "string",

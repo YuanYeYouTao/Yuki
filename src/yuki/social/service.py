@@ -327,6 +327,8 @@ class SocialService:
                 + payload_hash("send_message", target, args, context.conversation_id),
                 name=message.name,
                 expected_version=message.expected_version,
+                device_id=message.device_id,
+                actor_person_id=getattr(context.actor, "person_id", None),
             )
         except WorkspaceError as exc:
             raise SocialError(str(exc)) from exc

@@ -113,7 +113,8 @@ class MainAgentContract:
                         # 31: device-owned native sessions and the unified external Agent contract.
                         # 32: local-device file/system operations with original domain receipts.
                         # 33: retire local_device; native Agent connections use external_agent.
-                        "version": 33,
+                        # 34: original terminal/file tools explicitly select a personal computer.
+                        "version": 34,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),
