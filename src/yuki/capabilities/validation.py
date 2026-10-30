@@ -6,9 +6,10 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from jsonschema import Draft202012Validator
+from jsonschema._utils import find_additional_properties
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.validators import validator_for
 from referencing import Registry
@@ -140,19 +141,14 @@ def _validate(
 
 
 def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:
-    """Describe the frozen schema only, never the invalid instance or its keys."""
-    schema_path = tuple(error.absolute_schema_path)
-    path: list[str] = []
-    for index, segment in enumerate(schema_path):
-        if segment == "properties" and index + 1 < len(schema_path):
-            field_name = schema_path[index + 1]
-            if isinstance(field_name, str):
-                path.append(field_name[:64])
-        elif segment in {"items", "prefixItems"}:
-            path.append("[]")
-        elif segment in {"additionalProperties", "patternProperties"}:
-            path.append("*")
-    location = ".".join(path)[:256] or "$"
+    """Locate invalid fields without echoing argument values or raw exceptions."""
+    location = "$" + "".join(
+        f"[{json.dumps(segment[:64], ensure_ascii=False)}]"
+        if isinstance(segment, str)
+        else f"[{segment}]"
+        for segment in error.absolute_path
+    )
+    location = location[:256]
     category = str(error.validator)
     expected = error.validator_value
     if category == "required" and isinstance(expected, list):
@@ -176,7 +172,10 @@ def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:
     elif category in {"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"}:
         requirement = f"{category}: {expected}"
     elif category == "additionalProperties":
-        requirement = "undeclared fields are not allowed"
+        fields = list(
+            find_additional_properties(cast(Any, error.instance), cast(Any, error.schema))
+        )
+        requirement = "undeclared fields: " + json.dumps(fields, ensure_ascii=False)
     elif category in {"anyOf", "oneOf"} and depth < 2 and error.context:
         requirement = "declared alternatives: " + "; ".join(
             _validation_detail(child, depth=depth + 1) for child in error.context[:3]

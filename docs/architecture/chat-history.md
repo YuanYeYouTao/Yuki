@@ -21,12 +21,16 @@ source.platform 为真实平台标识，source.scope 可选 private/group；所�
 跨入口命中作为有来源的工具证据返回，不拼接各 Conversation 的自动上下文。
 人物筛选使用原作者 Person 的当前同人族；账号转移、改名、解绑或无账号不改写旧作者。
 
-`find_contacts(view=subjects|entries)` 默认查询主体；entries 平铺真实 Conversation，提供平台、
+`find_contacts` 以 kind=person/space 查询当前人物或群主体及其可联系入口，使用
+target_id、subject_ref 或 display_name 定位；current_speaker、mentioned_user 和
+replied_message_author 等原人物引用继续可用。`find_conversations` 平铺真实 Conversation，提供平台、
 scope、话题、原 Binding/Presence ID 及各自阶段状态。来源按原入口事实读取，legacy 缺失时保未知，
 不按今日主动发送路由猜测。历史入口不要求目标现在启用、Binding active 或曾有真人入站；
 当前 actor、实际委托与插件批准仍在读取处核验，发送沿自己的当前资格执行。
 目录以内部 ID 升序分页，limit 为缺省页大小而非总数上限，cursor 继续取 N+1 页；来源筛选先于分页。
-名称查询没有128字符帽，已知目标可直接使用内部 ID；entries 不要求先选择平台、群私聊和话题层级。
+两项查询均保留 source、display_name、limit 和 cursor；历史目录的 target 可用一个内部
+Person/Space/Conversation/Binding/operation ID。名称查询没有128字符帽，已知目标可直接使用内部 ID；
+不要求先查询主体或选择平台、群私聊和话题层级。两个工具没有 view 切换，不注册旧 entries 执行别名。
 
 `operation_id` 沿原发送回执定位。`SocialOperation.event_id` 是存活 FK，原事件和 Conversation 另存永久事实；
 原件删除后返回 missing 与原效果状态，不能用 recent 或后来消息代替。回执继续核原来源归属，
@@ -39,8 +43,11 @@ limit 为正整数，没有 50/100 条经验上限；before/after 配置只作�
 
 邻文沿各锚点原 Conversation、event_kind 和读取授权，按锚点 ID 分别有界读取。邻文不继承
 关键词、作者、日期和媒体筛选；与 matches 去重后标记 context，不扫描远隔锚点之间的整段。
-search 的邻文默认0；已核实命中不重查中心，两侧直接读取所需数量，不为侧页多探测N+1。
+recent/search 的 context_before/context_after 邻文默认0；已核实结果不重查中心，
+两侧直接读取所需数量，不为侧页多探测N+1。
 around 先定位实际中心，不使用搜索的关键词/作者/日期/附件筛选，中心仍与 target/source 取交集。
+around 只用 before/after 选择邻文数量，按事件 ID 升序呈现；不应用 cursor/limit/order，
+结果不回显未采用的日期条件，order 如实报告 oldest。recent/search 的筛选和原游标语义不变。
 Artifact 的 offset 只翻阅一次调用已经保存的载荷，聊天 cursor 才查询下一批原事件。
 
 ## 字面匹配与索引

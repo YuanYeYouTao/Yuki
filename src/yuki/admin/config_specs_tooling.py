@@ -34,7 +34,11 @@ def tooling_config_specs() -> tuple[ConfigSpec, ...]:
                 scopes=_G,
             )
             for name, display, description in (
-                ("result_token_budget", "工具结果 Token 预算", "为空时不额外限制统一工具结果。"),
+                (
+                    "result_token_budget",
+                    "工具结果 Token 预算",
+                    "非空时乘 4 覆盖工具结果字符预算；为空时使用字符配置。",
+                ),
                 ("result_item_limit", "工具结果条目预算", "为空时不额外限制结构化结果条目。"),
             )
         ),

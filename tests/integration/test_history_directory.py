@@ -29,26 +29,50 @@ from yuki.identity.db_models import (
 )
 from yuki.identity.person_identity import merge_persons, prepare_person_merge
 from yuki.services.agent_tools import ToolRuntime
-from yuki.services.contact_query import CONTACT_QUERY, contact_schema
+from yuki.services.contact_query import (
+    ConversationQuery,
+    SubjectContactsQuery,
+    contact_schema,
+    conversation_schema,
+)
 from yuki.social.agent_adapter import invoke_social
 from yuki.social.models import SocialError
 
 
-def test_contact_views_share_one_schema_without_name_cap_or_global_kind_requirement():
-    schema = contact_schema()
-    assert "discriminator" not in schema
-    validator = Draft202012Validator(schema)
-    validator.validate({"kind": "space", "display_name": "群" * 200})
-    validator.validate({"view": "entries", "source": {"platform": "telegram"}})
-    for value in (
-        {"view": "subjects"},
-        {"view": "entries", "kind": "space"},
-        {"view": "entries", "subject_ref": "current_speaker"},
-        {"view": "subjects", "kind": "space", "limit": 0},
-    ):
-        with pytest.raises(ValidationError):
-            CONTACT_QUERY.validate_python(value)
-        assert list(validator.iter_errors(value))
+def test_subject_and_conversation_schemas_keep_their_own_selectors():
+    cases = (
+        (
+            SubjectContactsQuery,
+            contact_schema(),
+            {"kind": "space", "display_name": "群" * 200},
+            (
+                {},
+                {"view": "subjects", "kind": "space"},
+                {"kind": "space", "target": {}},
+                {"kind": "space", "limit": 0},
+            ),
+        ),
+        (
+            ConversationQuery,
+            conversation_schema(),
+            {"source": {"platform": "telegram"}},
+            (
+                {"view": "entries"},
+                {"kind": "space"},
+                {"subject_ref": "current_speaker"},
+                {"limit": 0},
+            ),
+        ),
+    )
+    for model, schema, valid, invalid in cases:
+        assert "oneOf" not in schema and "view" not in schema["properties"]
+        validator = Draft202012Validator(schema)
+        validator.validate(valid)
+        model.model_validate(valid)
+        for value in invalid:
+            with pytest.raises(ValidationError):
+                model.model_validate(value)
+            assert list(validator.iter_errors(value))
 
 
 async def test_subject_source_filter_precedes_paging_and_all_pages_are_reachable(
@@ -151,9 +175,8 @@ async def test_entries_keep_ended_binding_and_original_disabled_presence(databas
         await replace_assignment(session, binding.account, binding.id, None, now=datetime.now(UTC))
     env.registry.disconnect(env.bot)
     result = await env.service.execute(
-        "find_contacts",
+        "find_conversations",
         {
-            "view": "entries",
             "target": {"binding_id": entry.binding_id},
             "source": {"platform": "telegram", "scope": "private"},
         },
@@ -193,9 +216,9 @@ async def test_entries_flatten_threads_and_keep_legacy_unknown_platform(database
             conversations.add(entry.conversation_id)
     seen = []
     deleted_cursor = None
-    arguments = {"view": "entries", "target": {"space_id": space}, "limit": 6}
+    arguments = {"target": {"space_id": space}, "limit": 6}
     while True:
-        page = await env.service.execute("find_contacts", arguments, env.context)
+        page = await env.service.execute("find_conversations", arguments, env.context)
         seen.extend(item["conversation_id"] for item in page["items"])
         for item in page["items"]:
             if item["conversation_id"] == legacy.conversation_id:
@@ -222,14 +245,16 @@ async def test_entries_flatten_threads_and_keep_legacy_unknown_platform(database
         arguments["cursor"] = page["next_cursor"]
     assert seen == sorted(conversations)
     named = await env.service.execute(
-        "find_contacts",
+        "find_conversations",
         {**arguments, "cursor": None, "display_name": "原群", "limit": 30},
         env.context,
     )
     assert len(named["items"]) == 23
     assert deleted_cursor not in {item["conversation_id"] for item in named["items"]}
     actual_platform = await env.service.execute(
-        "find_contacts", {**arguments, "cursor": None, "source": {"platform": "qq"}}, env.context
+        "find_conversations",
+        {**arguments, "cursor": None, "source": {"platform": "qq"}},
+        env.context,
     )
     assert actual_platform["items"] and all(
         item["conversation_id"] != legacy.conversation_id for item in actual_platform["items"]
@@ -250,13 +275,12 @@ async def test_entry_directory_keeps_real_read_delegation(database, tmp_path):
     )
     token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="directory-grant"))
     try:
-        page = await invoke_social(env.service, "find_contacts", {"view": "entries"}, runtime)
+        page = await invoke_social(env.service, "find_conversations", {}, runtime)
         assert page["items"] and all(item["space_id"] == env.space for item in page["items"])
         other = await invoke_social(
             env.service,
-            "find_contacts",
+            "find_conversations",
             {
-                "view": "entries",
                 "target": {"conversation_id": private.event.canonical_conversation_id},
             },
             runtime,
@@ -281,7 +305,7 @@ async def test_entry_discovery_retains_person_family_and_filters_original_platfo
         await merge_persons(session, env.person, root, prepared=prepared)
     for person_id in (env.person, root):
         result = await env.service.execute(
-            "find_contacts", {"view": "entries", "target": {"person_id": person_id}}, env.context
+            "find_conversations", {"target": {"person_id": person_id}}, env.context
         )
         assert {item["conversation_id"] for item in result["items"]} == {
             first.event.canonical_conversation_id,
@@ -289,9 +313,8 @@ async def test_entry_discovery_retains_person_family_and_filters_original_platfo
         }
         assert {item["person_id"] for item in result["items"]} == {env.person, root}
     filtered = await env.service.execute(
-        "find_contacts",
+        "find_conversations",
         {
-            "view": "entries",
             "target": {"person_id": root},
             "source": {"platform": "telegram"},
         },
@@ -307,17 +330,17 @@ async def test_entries_keep_original_operation_source_and_current_actor_revocati
 ):
     env = await social_env(database, tmp_path)
     receipt = await env.service.execute("send", {"text": "saved receipt"}, env.context)
-    request = {"view": "entries", "target": {"operation_id": receipt["operation_id"]}}
-    page = await env.service.execute("find_contacts", request, env.context)
+    request = {"target": {"operation_id": receipt["operation_id"]}}
+    page = await env.service.execute("find_conversations", request, env.context)
     assert [item["conversation_id"] for item in page["items"]] == [env.context.conversation_id]
     source_conflict = await env.service.execute(
-        "find_contacts", {**request, "source": {"platform": "telegram"}}, env.context
+        "find_conversations", {**request, "source": {"platform": "telegram"}}, env.context
     )
     assert source_conflict["items"] == []
     private = await stored_private_entry(env, "telegram")
     with pytest.raises(SocialError, match="history_receipt_unavailable"):
         await env.service.execute(
-            "find_contacts",
+            "find_conversations",
             request,
             replace(env.context, conversation_id=private.event.canonical_conversation_id),
         )
@@ -325,8 +348,8 @@ async def test_entries_keep_original_operation_source_and_current_actor_revocati
         (await session.get(CanonicalPersonModel, env.person)).enabled = False
     with pytest.raises(SocialError, match="permission_denied"):
         await env.service.execute(
-            "find_contacts",
-            {"view": "entries"},
+            "find_conversations",
+            {},
             replace(
                 env.context, actor=SimpleNamespace(person_id=env.person, principal_kind="person")
             ),

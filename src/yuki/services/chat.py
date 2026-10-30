@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Set
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from yuki.capabilities import (
     ToolExecutionResult,
     ToolProviderRegistry,
 )
+from yuki.capabilities.results import effective_result_character_budget
 from yuki.config import Settings
 from yuki.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
@@ -126,15 +127,6 @@ logger = logging.getLogger(__name__)
 _EffectResult = TypeVar("_EffectResult")
 
 _ARTIFACT_PROVIDER_ID = "artifacts"
-
-
-def _core_result_character_budget(runtime: RuntimeConfigSnapshot | None) -> int:
-    if runtime is None:
-        return 8000
-    tooling = runtime.tooling
-    if tooling is not None and tooling.result_token_budget is not None:
-        return tooling.result_token_budget * 4
-    return runtime.agent.tool_result_max_characters
 
 
 class OutboundSender(Protocol):
@@ -367,7 +359,7 @@ class ChatService:
                 if not isinstance(decoded, dict):
                     raise ValueError("artifact arguments must be an object")
                 handle = str(decoded.get("handle", ""))
-                operation = str(decoded.get("operation", "text"))
+                operation = str(decoded.get("operation", "get"))
                 raw_path = decoded.get("path", [])
                 if not isinstance(raw_path, list) or any(
                     isinstance(part, bool) or not isinstance(part, (str, int)) for part in raw_path
@@ -380,9 +372,10 @@ class ChatService:
                         tool_name=_ARTIFACT_READER_NAME,
                     )
                 offset = int(decoded.get("offset", 0))
-                limit = int(decoded.get("limit", 8000))
+                runtime = context.runtime_config or await self._runtime_config.snapshot()
+                max_characters = cast(int, effective_result_character_budget(runtime))
+                limit = int(decoded.get("limit", max_characters))
                 query = str(decoded.get("query", ""))
-                max_characters = _core_result_character_budget(context.runtime_config)
                 from yuki.tool_results.access import access_from_runtime
 
                 result = await artifacts.read(
@@ -394,10 +387,7 @@ class ChatService:
                     query=query,
                     max_characters=max_characters,
                     item_limit=(
-                        context.runtime_config.tooling.result_item_limit
-                        if context.runtime_config is not None
-                        and context.runtime_config.tooling is not None
-                        else None
+                        runtime.tooling.result_item_limit if runtime.tooling is not None else None
                     ),
                     access=access_from_runtime(
                         context,
@@ -456,10 +446,12 @@ class ChatService:
                         ChatTool(
                             name="read_tool_artifact",
                             description=(
-                                "读取工具产生的短期 Artifact。JSON 优先使用 inspect 查看结构、"
-                                "get 按路径读取、search 返回关键词命中的完整对象；旧文本使用 text。"
+                                "读取工具产生的短期 Artifact。默认 get 按路径读取 JSON，"
+                                "read_more 中的参数项可原样传入；"
+                                "可用 inspect 查看结构、search 返回关键词命中的完整对象；"
+                                "文本使用 text。"
                                 "get 字符串按字符分页，offset/next_offset 单位为 characters；"
-                                "limit 默认 8000、上限 32000，实际页受当前结果预算约束。"
+                                "limit 默认当前有效结果字符预算，实际页受该预算约束。"
                                 "图片 Artifact 使用 image 将原图交给当前主模型原生查看。"
                             ),
                             parameters={
@@ -470,8 +462,8 @@ class ChatService:
                                         "type": "string",
                                         "enum": ["inspect", "get", "search", "text", "image"],
                                         "description": (
-                                            "JSON 使用 inspect/get/search；"
-                                            "图片使用 image；省略或 text 保持旧文本读取"
+                                            "默认 get；JSON 使用 inspect/get/search，"
+                                            "文本使用 text，图片使用 image"
                                         ),
                                     },
                                     "path": {
@@ -495,7 +487,6 @@ class ChatService:
                                     "limit": {
                                         "type": "integer",
                                         "minimum": 1,
-                                        "maximum": 32000,
                                         "description": "JSON 条目数，或 text 最大字符数",
                                     },
                                     "query": {
@@ -506,6 +497,7 @@ class ChatService:
                                 "required": ["handle"],
                                 "additionalProperties": False,
                             },
+                            schema_version="2",
                         ),
                     ),
                     execute=artifact_execute,

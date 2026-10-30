@@ -67,13 +67,25 @@ async def test_stdout_truncated_flag_is_changed_after_original_prefix_selection(
     assert result["stop_reason"] == "compact"
 
 
-async def test_oversized_control_digest_points_to_the_original_value():
+async def test_oversized_control_keeps_the_original_wait_identity():
+    # Failure cases for this isolated display branch: no Artifact is available,
+    # the necessary control envelope alone exceeds B, or an unknown operation
+    # carries a long original ID. Display limits must not erase those facts.
     control = {"state": "waiting_external", "wait_id": "original-wait", "detail": "x" * 2000}
     original = {"operations": [], "control": control, "stop_reason": "control"}
     result = json.loads(await driver(200)._bounded_result(original, "p"))
-    assert "control" not in result
-    assert (
-        result["control_ref_sha256"]
-        == hashlib.sha256(json.dumps(control, ensure_ascii=False).encode()).hexdigest()
-    )
+    assert result["control"] == control
+    assert "control_ref_sha256" not in result
     assert result["stop_reason"] == "control"
+
+
+async def test_oversized_unknown_keeps_the_original_operation_id():
+    original_id = "original-operation-" * 40
+    original = {
+        "operations": [],
+        "uncertain_operation_id": original_id,
+        "stop_reason": "unknown_effect",
+    }
+    result = json.loads(await driver(200)._bounded_result(original, "p"))
+    assert result["uncertain_operation_id"] == original_id
+    assert "uncertain_operation_id_ref_sha256" not in result

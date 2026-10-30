@@ -79,7 +79,8 @@ HISTORY_TOOL_DESCRIPTION = (
     "可查重开上下文前的永久账本。target.person_id 选择私聊入口，顶层 person_id 筛选原作者。"
     "operation_id 沿原发送回执定位会话和原锚点。cursor 按 order 续查 ID 页；"
     "before/after 是 around 条数；around按锚点取邻文，不使用关键词、作者、日期、附件筛选。"
-    "search可用context_before/context_after附带各命中的邻文，默认不读。"
+    "recent/search可用context_before/context_after附带各结果的邻文，默认不读；"
+    "around只用before/after，按事件ID升序，不应用cursor/limit/order。"
     "日期未带时区按 UTC+8，起点包含、终点不含。"
     "不调用平台补查，不接受平台消息号。"
 )

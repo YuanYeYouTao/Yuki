@@ -269,8 +269,8 @@ async def test_empty_entry_name_keeps_real_subject_name_discoverable(database, t
             binding.display_name = ""
     target = {"conversation_id": conversation_id}
     directory = await env.service.execute(
-        "find_contacts",
-        {"view": "entries", "target": target, "display_name": "Known archive"},
+        "find_conversations",
+        {"target": target, "display_name": "Known archive"},
         env.context,
     )
     history = await env.service.execute("query_chat_history", {"target": target}, env.context)

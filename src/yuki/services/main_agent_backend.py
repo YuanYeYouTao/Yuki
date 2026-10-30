@@ -27,6 +27,7 @@ from yuki.capabilities import (
 from yuki.capabilities.catalog import DescriptorRegistrySnapshot
 from yuki.capabilities.exposure import NO_LONGER_AUTHORIZED
 from yuki.capabilities.invocation import Invocation
+from yuki.capabilities.results import effective_result_character_budget
 from yuki.capabilities.runtime import TurnCapabilityRuntime
 from yuki.capabilities.validation import UNDECLARED_TOOL
 from yuki.domain.conversations import ScopeType
@@ -489,12 +490,7 @@ class MainAgentBackend(AgentToolBackend):
                         and part["delivered_text"].strip()
                     )
             tooling = config.tooling
-            result_tokens = tooling.result_token_budget if tooling is not None else None
-            result_budget = (
-                result_tokens * 4
-                if result_tokens is not None
-                else config.agent.tool_result_max_characters
-            )
+            result_budget = effective_result_character_budget(config)
             item_limit = tooling.result_item_limit if tooling is not None else None
             artifact_store = (
                 self._service._tool_artifacts
@@ -535,6 +531,32 @@ class MainAgentBackend(AgentToolBackend):
                     # The same Host operation the effect row and audit fence use.
                     tool_call_id=receipt_call_id,
                 )
+            # Copied history/Memory is not public merely because it fits or its
+            # archive could not be written. Use the same original source fence
+            # after all presentation awaits, including calls without a Work.
+            from yuki.runtime.effect_outcomes import current_result_capture
+            from yuki.tool_results.access import result_source_is_current
+
+            capture = current_result_capture.get()
+            source_ids = (
+                capture.source_event_ids if capture is not None else outcome.source_event_ids
+            )
+            privacy = (
+                capture.source_privacy_generation
+                if capture is not None and source_ids
+                else outcome.source_privacy_generation
+            )
+            if source_ids:
+                snapshot = execution_runtime.turn_snapshot
+                async with self._service._ledger._database.read_session() as reader:
+                    if privacy is None or not await result_source_is_current(
+                        reader,
+                        conversation=(snapshot.conversation_id, snapshot.generation)
+                        if snapshot is not None
+                        else None,
+                        privacy=privacy,
+                    ):
+                        raise ValueError("tool_result_source_changed")
         return result
 
     async def _require_plugin_domain(

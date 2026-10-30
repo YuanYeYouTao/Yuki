@@ -244,13 +244,16 @@ async def read_history(
             conversation_id=single_id,
             events=[render(row) for row in records],
             returned_count=len(records),
-            order=request.order,
-            start_at=request.start_at.isoformat() if request.start_at else None,
-            end_at=request.end_at.isoformat() if request.end_at else None,
+            order="oldest" if request.view == "around" else request.order,
             matched_fields={str(key): list(value) for key, value in matched_fields.items()},
             context=[render(row) for row in neighbours],
             **payload,
         )
+        if request.view != "around":
+            result.update(
+                start_at=request.start_at.isoformat() if request.start_at else None,
+                end_at=request.end_at.isoformat() if request.end_at else None,
+            )
         if single_id is not None:
             selected_source = sources[single_id]
             result.update(

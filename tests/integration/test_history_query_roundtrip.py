@@ -112,9 +112,8 @@ async def test_qq_discovers_telegram_group_reads_all_authors_and_replies_to_orig
         )
         env.bot.calls.clear()
         directory = await env.service.execute(
-            "find_contacts",
+            "find_conversations",
             {
-                "view": "entries",
                 "source": {"platform": "telegram", "scope": "group"},
                 "display_name": "雷达讨论",
             },

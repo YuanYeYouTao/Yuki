@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import shutil
+import subprocess
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import count
@@ -54,6 +58,35 @@ def selected_test_soul():
     with pytest.MonkeyPatch.context() as environment:
         environment.setenv("SOUL_FILE", str(Path(__file__).resolve().parents[1] / "config/SOUL.md"))
         yield
+
+
+@pytest.fixture
+def tool_delivery_evidence(request):
+    """Keep this scenario's actual evidence even when its assertions fail."""
+    root = request.config.rootpath
+    parent = (
+        root
+        / "test-results"
+        / "tool-result-delivery"
+        / hashlib.sha256(request.node.nodeid.encode()).hexdigest()
+    )
+    parent.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix="attempt-", dir=parent))
+    evidence = {}
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    try:
+        yield directory, evidence
+    finally:
+        (directory / "evidence.json").write_text(
+            json.dumps(
+                {"nodeid": request.node.nodeid, "source_revision": revision, "evidence": evidence},
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
 
 class MemorySender:

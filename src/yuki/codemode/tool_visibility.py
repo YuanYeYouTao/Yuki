@@ -23,6 +23,7 @@ DIRECT_TOOL_NAMES = frozenset(
         "query_chat_history",
         "memory_change",
         "find_contacts",
+        "find_conversations",
         "get_group_members",
         "get_my_capabilities",
         "inspect_conversation_attachment",

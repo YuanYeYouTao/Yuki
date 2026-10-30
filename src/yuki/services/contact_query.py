@@ -1,16 +1,15 @@
-"""Contact subjects and original Conversation entries share one directory tool."""
+"""Separate selectors for current subjects and original Conversation discovery."""
 
-from typing import Annotated, Literal
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from yuki.services.history_query import HistorySource, HistoryTarget
 
 
 class SubjectContactsQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    view: Literal["subjects"] = "subjects"
     kind: Literal["person", "space"]
     target_id: UUID | None = Field(default=None, description="已知主体的内部 Person/Space ID")
     subject_ref: str | None = Field(
@@ -29,9 +28,8 @@ class SubjectContactsQuery(BaseModel):
         return self
 
 
-class EntryContactsQuery(BaseModel):
+class ConversationQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    view: Literal["entries"]
     target: HistoryTarget | None = None
     source: HistorySource | None = None
     display_name: str = ""
@@ -39,23 +37,9 @@ class EntryContactsQuery(BaseModel):
     cursor: UUID | None = None
 
 
-CONTACT_QUERY: TypeAdapter[SubjectContactsQuery | EntryContactsQuery] = TypeAdapter(
-    Annotated[SubjectContactsQuery | EntryContactsQuery, Field(discriminator="view")]
-)
-
-
 def contact_schema() -> dict[str, object]:
-    schema = CONTACT_QUERY.json_schema()
-    schema.pop("discriminator")
-    subjects = schema["$defs"]["SubjectContactsQuery"]["properties"]
-    entries = schema["$defs"]["EntryContactsQuery"]["properties"]
-    schema.update(
-        type="object",
-        properties={
-            **subjects,
-            **entries,
-            "view": {"type": "string", "enum": ["subjects", "entries"], "default": "subjects"},
-        },
-        additionalProperties=False,
-    )
-    return schema
+    return SubjectContactsQuery.model_json_schema()
+
+
+def conversation_schema() -> dict[str, object]:
+    return ConversationQuery.model_json_schema()

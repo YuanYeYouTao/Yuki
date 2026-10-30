@@ -950,7 +950,8 @@ class AgentToolService:
                                     or ("delivery_uncertain" if uncertain else "delivery_failed")
                                 ),
                                 detail=(
-                                    "从 bindings 选择明确的 binding_id 后再调用；未派发消息"
+                                    "用 conversation_id 或从 bindings 选择 binding_id "
+                                    "明确入口后再调用；未派发消息"
                                     if social_result.get("error") == "binding_required"
                                     else "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if social_result.get("error") == "presence_ambiguous"
@@ -1559,41 +1560,15 @@ class AgentToolService:
         return None
 
     def _memory_list_result(self, *, data: dict[str, Any]) -> ToolExecutionResult:
-        """Fit ranked whole facts into the existing response budget, never fake an empty search."""
-        remaining = list(data["memories"])
-        payload = {
-            **data,
-            "memories": remaining,
-            "returned_count": len(remaining),
-            "result_scope": data.get("result_scope", "bounded_query"),
-            "exhaustive": data.get("exhaustive", False),
-        }
-        limit = self._runtime().agent.tool_result_max_characters
-        while True:
-            wire = {"ok": True, "data": payload}
-            wire["evidence_state"] = evidence_state(wire, "memory_tool")
-            model_wire = ToolExecutionResult(
-                ok=True,
-                data=payload,
-                mutation_committed=False,
-                evidence_state=cast(dict[str, Any], wire["evidence_state"]),
-                provider_id="core",
-                tool_name=_MEMORY_READ_TOOL.get() or "search_memory",
-            ).model_payload()
-            if len(json.dumps(model_wire, ensure_ascii=False, default=str)) <= limit:
-                return self._result(data=payload)
-            if len(remaining) <= 1:
-                return self._result(
-                    error="result_too_large",
-                    detail="首条完整记忆超过本轮结果预算；不能把它裁成片段或报告为空",
-                )
-            remaining.pop()
-            payload["truncated"] = True
-            payload["exhaustive"] = False
-            payload["partial_failure"] = True
-            payload["partial_reason"] = "response_character_budget"
-            payload["returned_count"] = len(remaining)
-            payload["truncation_reason"] = "response_character_budget"
+        """Keep the selected facts intact for common result delivery and capture."""
+        return self._result(
+            data={
+                **data,
+                "returned_count": len(data["memories"]),
+                "result_scope": data.get("result_scope", "bounded_query"),
+                "exhaustive": data.get("exhaustive", False),
+            }
+        )
 
     @staticmethod
     def _memory_requested_limit(arguments: dict[str, Any]) -> int | None:
@@ -2042,10 +2017,6 @@ class AgentToolService:
         else:
             outcome = "unavailable"
         payload["evidence_state"] = evidence_state(payload, "memory_tool")
-        rendered = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        if len(rendered) > self._runtime().agent.tool_result_max_characters:
-            await self._record_memory_tool_outcome(runtime, "unavailable", result_count=0)
-            return self._result(error="result_too_large", detail="完整结果与证据元数据超过本轮预算")
         await self._record_memory_tool_outcome(runtime, outcome, result_count=len(unique_ids))
         return replace(
             result,

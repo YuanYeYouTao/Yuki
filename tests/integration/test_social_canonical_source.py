@@ -79,11 +79,22 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     assert sent.reply_to_event_id == original.id
 
 
-async def test_current_reply_rechecks_original_source_before_claim(database, tmp_path, monkeypatch):
+@pytest.mark.parametrize("stored_route", [False, True])
+async def test_current_reply_rechecks_original_source_before_claim(
+    database, tmp_path, monkeypatch, stored_route
+):
     env = await social_env(database, tmp_path)
     async with database.read_session() as session:
         event = await session.scalar(select(ChatEventModel))
     context = replace(env.context, trigger_event_id=event.id, presence_id=env.presence)
+    if stored_route:
+        original_send_route = env.service.send_route
+
+        async def restore_route(target, context, binding_id=None):
+            original = await original_send_route(target, context, binding_id)
+            return await env.service._stored_route(target, env.service._route_payload(original))
+
+        monkeypatch.setattr(env.service, "send_route", restore_route)
     prepare = env.service.receipts.prepare
 
     async def delete_after_route(*args, **kwargs):

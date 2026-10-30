@@ -23,6 +23,21 @@ def json_string_prefix(text: str, available: int) -> int:
     return len(text)
 
 
+def json_key_text(key: Any) -> str:
+    """Use the JSON encoder's object-key spelling for public paths."""
+    if isinstance(key, str):
+        return key
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if key is None:
+        return "null"
+    if isinstance(key, (int, float)):
+        return json.dumps(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
+
+
 def json_character_count(
     value: object,
     *,
@@ -37,19 +52,6 @@ def json_character_count(
     """
     separator = 1 if compact else 2
     active: set[int] = set()
-
-    def key_text(key: Any) -> str:
-        if isinstance(key, str):
-            return key
-        if key is True:
-            return "true"
-        if key is False:
-            return "false"
-        if key is None:
-            return "null"
-        if isinstance(key, (int, float)):
-            return json.dumps(key)
-        raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
 
     def count(item: object, remaining: int | None) -> int:
         if remaining is not None and remaining < 0:
@@ -96,7 +98,9 @@ def json_character_count(
                 if index:
                     size += separator
                 if isinstance(item, dict):
-                    size += count(key_text(key), None if remaining is None else remaining - size)
+                    size += count(
+                        json_key_text(key), None if remaining is None else remaining - size
+                    )
                     size += separator
                 size += count(child, None if remaining is None else remaining - size)
                 if remaining is not None and size > remaining:

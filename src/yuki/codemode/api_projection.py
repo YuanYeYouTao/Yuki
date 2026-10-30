@@ -106,9 +106,11 @@ class ToolReceiptView:
     pending: bool
     uncertain: bool
     complete: bool
+    preview: Any = None
+    read_more: list[dict[str, Any]] | None = None
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        value = {
             "status": self.status,
             "ok": self.ok,
             "data": self.data,
@@ -121,6 +123,11 @@ class ToolReceiptView:
             "uncertain": self.uncertain,
             "complete": self.complete,
         }
+        if self.preview is not None:
+            value["preview"] = self.preview
+        if self.read_more is not None:
+            value["read_more"] = self.read_more
+        return value
 
 
 def receipt_view(
@@ -170,6 +177,8 @@ def receipt_view(
         pending=pending,
         uncertain=uncertain,
         complete=not truncated,
+        preview=value.get("preview"),
+        read_more=value.get("read_more"),
     )
 
 

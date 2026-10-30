@@ -4,7 +4,29 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def result_source_is_current(
+    session: AsyncSession, *, conversation: tuple[str, int] | None, privacy: int
+) -> bool:
+    """Check the original result versions in its owner's existing snapshot."""
+    from sqlalchemy import select
+
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.observations import privacy_generation
+
+    if conversation is not None and not await session.scalar(
+        select(CanonicalConversationModel.id).where(
+            CanonicalConversationModel.id == conversation[0],
+            CanonicalConversationModel.generation == conversation[1],
+        )
+    ):
+        return False
+    return await privacy_generation(session) == privacy
 
 
 class ArtifactRead(dict[str, object]):

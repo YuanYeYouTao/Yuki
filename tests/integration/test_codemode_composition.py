@@ -102,8 +102,7 @@ async def test_returned_unknown_child_allows_independent_call_without_replaying_
     env.domain.replies["send"] = {"ok": False, "uncertain": True, "error": "timeout"}
     body, outer = await run_code(
         env,
-        "s = await yuki_send({'text': 'x'})\n"
-        "await yuki_send({'text': 'after-unknown'})\n",
+        "s = await yuki_send({'text': 'x'})\nawait yuki_send({'text': 'after-unknown'})\n",
     )
     assert body["status"] == "completed"
     assert [item["status"] for item in body["operations"]] == ["unknown", "unknown"]
@@ -242,5 +241,7 @@ async def test_oversized_program_result_is_a_bounded_view(database, tmp_path):
     env.host.archive = archive
     body, _ = await run_code(env, "['x' * 100] * 200")
     assert body["complete"] is False and body["result_ref"] == "artifact-1"
-    assert json.loads(archived[0]) == ["x" * 100] * 200  # The full value, once.
+    assert body["summary_ref"] == "artifact-1" and body["result_path"] == ["result"]
+    assert len(archived) == 1
+    assert json.loads(archived[0])["result"] == ["x" * 100] * 200
     assert len(body["result_preview"]) < len(archived[0])

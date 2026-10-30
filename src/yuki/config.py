@@ -261,10 +261,10 @@ class Settings(BaseSettings):
     memory_rebuild_source_excerpt_characters: int = 500
     agent_max_tool_calls: int = 32
     agent_max_model_requests: int = 24
-    agent_tool_result_max_characters: int = 24000
+    agent_tool_result_max_characters: int = Field(default=64000, gt=0)
 
     tooling_max_parallel_calls: int = 8
-    tooling_result_token_budget: int | None = None
+    tooling_result_token_budget: int | None = Field(default=None, gt=0)
     tooling_result_item_limit: int | None = None
     tooling_result_artifact_enabled: bool = True
     tooling_result_artifact_retention_seconds: int = 86400

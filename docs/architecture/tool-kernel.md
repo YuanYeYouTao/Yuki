@@ -218,7 +218,8 @@ Code Mode 恢复先读取原 accepted 控制及业务回执；普通生命周期
 执行沿同一 WorkControl 和 owned_run 查询；external run 不取得该 Work 所属身份。unknown 保留原调用事实，不全局禁止完成和其他新调用。
 累计 stdout 与截断标记通过同一 snapshot owner/privacy/引用发布和 GC 持久化；旧边界
 若仅有输出计数而无文本，标记缺失，不重新 print。父结果按
-`agent.tool_result_max_characters` 整理展示；保留真实执行身份的必要JSON不因仍超软目标而拒绝。
+当前有效结果字符预算整理展示：显式 token 预算按四倍换算覆盖 agent 字符预算；两种执行模式共用来源。
+保留真实执行身份的必要JSON不因仍超软目标而拒绝。
 大 operations 返回数量、截断标记与原 composition 引用，完整子回执不裁剪。
 空 stdout 不因 operations 截断而标记截断。
 
@@ -231,8 +232,8 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 
 ## 代码定位
 
-参数拒绝从本次冻结 schema 提供有界字段路径、校验类别和期望摘要，不回显参数值、
-未知字段名或原异常正文；保持原严格校验。确定派发前拒绝标记 `executed=false`、
+参数拒绝从本次冻结 schema 提供实际字段路径、校验类别和期望摘要，多余字段指出实际字段名，
+不回显参数值或原异常正文；保持原严格校验。确定派发前拒绝标记 `executed=false`、
 `mutation_committed=false`，实际执行次数与原 admission/已付尝试预算分别计量，不笼统退款。
 这些反馈在本次调用内生成，不为格式化结果重新查来源、取得 writer 或写错误账本。
 
@@ -281,8 +282,8 @@ WorkspaceStore 在 owner 打开时原子升级独立 manifest，永久保留不�
 跨平台 canonical 原账本。内部目标只选择真实查询范围，不猜主动路由；每条结果标明原 Conversation、平台和作者。
   recent 默认当前 Conversation，显式 source 时浏览该来源集合；search 未给 target 时检索所有当前获准的已入账 Conversation。
   source 的平台与 private/group 条件可选，与内部 target 取交集，无交集为空，不强制逐级发现。
-  find_contacts 的 entries 视图按真实 Conversation 平铺来源、话题和原阶段状态，沿同一读取范围分页，
-  不继承当前发送资格；subjects 保留人物/群主体定位。完整 schema 仍在部署时一次冻结。
+  find_contacts 定位人物／群主体；find_conversations 按真实 Conversation 平铺来源、话题和原阶段状态，
+  沿同一读取范围分页，不继承当前发送资格。两份完整 schema 仍在部署时一次冻结，旧 accepted 回执不改名重派。
 Person、Space 或 Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原会话。
 sources 提供可读会话名与目录，每条事件保 conversation_id、platform、scope、thread_id，不合并自动上下文。
 `event_id` 定位实际范围内原事件；`operation_id` 沿原发送回执定位真实出站会话及原锚点。
@@ -307,10 +308,12 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 generation、FrozenFragments 或 Main session；平台离线、旧路由与上下文重置不代替授权拒绝读取。
 分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
 
-send 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
+send 的 person target 可带 conversation_id 或 binding_id 明确入口，同时提供时 Conversation 优先。
+从 App/ACP 显式指定 person 目标缺少明确入口时返回原 binding_required 与可选绑定；
 省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
 在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
-SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。
+SocialOperation 的 source_conversation_id 仍是原主会话。明确发往另一 Conversation 不冒用本入口回复证明；
+本入口原回复及其冷恢复继续核原入站事件。文件说明沿同一绑定投递。
 
 ## 精简后的领域入口
 

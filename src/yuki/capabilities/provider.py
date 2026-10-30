@@ -46,6 +46,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         for name in WORKSPACE_TOOLS
     },
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "find_conversations": ("social.entry.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "send": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "recall_own_message": (

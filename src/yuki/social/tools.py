@@ -1,7 +1,7 @@
 """Deployment-stable social schemas; execution lives in the social service."""
 
 from yuki.domain.messages import ChatTool
-from yuki.services.contact_query import contact_schema
+from yuki.services.contact_query import contact_schema, conversation_schema
 
 
 def social_tool_definitions() -> tuple[ChatTool, ...]:
@@ -66,15 +66,29 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     return (
         ChatTool(
             name="find_contacts",
-            schema_version="2",
+            schema_version="3",
             description=(
-                "发现人物、群及历史入口。subjects（默认）以 kind=person/space 查可联系主体；"
-                "entries 按真实 Conversation 平铺历史入口，含旧账号阶段，不要求 kind。"
-                "source 可按平台和 private/group 交集筛选，display_name 按名称包含查询。"
-                "entries 的 target 使用一个内部 ID；结果提供原 Binding/Conversation ID 和话题资料。"
+                "以 kind=person/space 发现人物或群及其当前可联系入口。"
+                "已知主体用 target_id；当前人物引用用 subject_ref；按名称包含查询用 display_name。"
+                "source 可按平台和 private/group 交集筛选。"
                 "limit 为页大小，按内部 ID 升序，cursor 续查；同名返回候选，不猜目标。"
+                "查真实历史 Conversation 使用 find_conversations。"
             ),
             parameters=contact_schema(),
+        ),
+        ChatTool(
+            name="find_conversations",
+            schema_version="1",
+            description=(
+                "发现真实历史 Conversation，平铺平台、群私聊、话题与原 Binding/Presence 阶段，"
+                "含旧账号入口。"
+                "target 可用一个内部 Person/Space/Conversation/Binding/operation ID；"
+                "source 可按平台和 private/group 取交集，display_name 按会话名称包含查询。"
+                "不要求先查联系人或按平台分层；已知 ID 可直接用。"
+                "limit 为页大小，按内部 Conversation ID 升序，cursor 续查。"
+                "读取许可不代表旧入口仍能发送；当前人物或群主体资料使用 find_contacts。"
+            ),
+            parameters=conversation_schema(),
         ),
         tool(
             "send",
@@ -85,7 +99,8 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "确有需要时可多次调用，遵循发言节奏；发送后仍可继续工作。"
             "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
             "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
-            "App/ACP 主会话显式指定 person 目标时需带 binding_id；省略 target 只回复本入口。"
+            "App/ACP 主会话显式指定 person 目标时用 conversation_id 或 binding_id 明确入口；"
+            "两者同时提供时 conversation_id 优先。省略 target 只回复本入口。"
             "正文在原位置写 @名字即可真实提及；同名默认选择目标会话最近发言的账号。"
             "要指定账号时复制目录给出的 @{account:UUID}。",
             {
@@ -100,8 +115,9 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                             "type": "string",
                             "format": "uuid",
                             "description": (
-                                "person 的指定入口绑定；从 App/ACP 向其他入口发送必须明确指定，"
-                                "不能以主动路由猜测"
+                                "person 的指定入口绑定；App/ACP 显式 person 目标"
+                                "可用此字段或 conversation_id。"
+                                "同时提供时 conversation_id 优先。"
                             ),
                         },
                         "target_id": {
@@ -112,7 +128,9 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                         "conversation_id": {
                             "type": "string",
                             "format": "uuid",
-                            "description": "明确发送入口的内部 Conversation ID",
+                            "description": (
+                                "明确发送入口的内部 Conversation ID；与 binding_id 同时提供时优先。"
+                            ),
                         },
                     },
                     "required": ["kind", "target_id"],
