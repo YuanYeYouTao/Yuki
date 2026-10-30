@@ -17,6 +17,7 @@ from tests.unit.test_client_files import app_context
 from tests.unit.test_client_works import owner, seeded
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import PresenceModel
@@ -135,12 +136,23 @@ async def test_app_and_qq_sources_select_the_same_stored_binding_history(app_env
 
 
 @pytest.mark.parametrize("receipt", [{"message_id": "confirmed"}, {}])
-async def test_app_to_qq_uses_explicit_binding_original_source_and_receipt(
-    app_env, database, receipt
+@pytest.mark.parametrize("entry", ["binding", "conversation", "both"])
+async def test_app_to_qq_uses_explicit_entry_original_source_and_receipt(
+    app_env, database, receipt, entry, tool_delivery_evidence
 ):
+    """Either explicit entry works; Conversation wins and replay never sends again."""
+    _, evidence = tool_delivery_evidence
     env = app_env
     device, person = await owner(env, database)
     context = await app_context(env, device)
+    original = await seed_scoped_event(
+        env.social.writer,
+        scope=ConversationScope.private("8000", "1001"),
+        origin_key="explicit-send-entry",
+        sender_user_id="1001",
+        direction="inbound",
+        content="original QQ entry",
+    )
     async with database.read_session() as session:
         binding = await find_identity_binding(session, "1001")
         presence = await session.scalar(
@@ -150,11 +162,17 @@ async def test_app_to_qq_uses_explicit_binding_original_source_and_receipt(
         )
     bot = SimpleNamespace(self_id="8000", call_api=AsyncMock(return_value=receipt))
     env.gateway.registry.connect(bot, provider_id="snowluma", presence_id=presence.id)
+    target = {"kind": "person", "target_id": person}
+    if entry in {"binding", "both"}:
+        target["binding_id"] = binding.id if entry == "binding" else str(uuid4())
+    if entry in {"conversation", "both"}:
+        target["conversation_id"] = original.event.canonical_conversation_id
     args = {
-        "target": {"kind": "person", "target_id": person, "binding_id": binding.id},
+        "target": target,
         "text": "explicit other entry",
     }
     result = await env.social.execute("send", args, context)
+    evidence.update(entry=entry, arguments=args, original_event_id=original.event.id, result=result)
     assert result["status"] == ("succeeded" if receipt else "uncertain")
     calls = bot.call_api.await_count
     assert await env.social.execute("send", args, context) == result

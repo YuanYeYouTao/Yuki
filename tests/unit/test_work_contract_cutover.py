@@ -63,13 +63,17 @@ async def test_retired_checkpoint_resumes_original_work_without_old_protocol(
         assert now[key] == original[key]
 
 
-async def test_retired_long_call_uses_original_hashed_effect_key_without_replay(database, tmp_path):
+@pytest.mark.parametrize(
+    "name,arguments",
+    [("retired_tool", "not current arguments"), ("find_contacts", '{"view":"entries"}')],
+)
+async def test_retired_long_call_uses_original_hashed_effect_key_without_replay(
+    database, tmp_path, name, arguments
+):
     control = await _control(database, tmp_path, worker=True)
     before = WorkSession(control, "retired-contract")
     await before.restore(TurnTranscript((ChatMessage("user", "original task"),)))
-    call = ToolCall(
-        "provider-call-" + "a" * 400, ToolFunction("retired_tool", "not current arguments")
-    )
+    call = ToolCall("provider-call-" + "a" * 400, ToolFunction(name, arguments))
     before.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
     executions = 0
 

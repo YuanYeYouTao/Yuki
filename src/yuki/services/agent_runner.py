@@ -639,6 +639,7 @@ class AgentRunner:
         declared_names: frozenset[str],
         max_parallel_calls: int,
     ) -> Any:
+        from yuki.capabilities.results import effective_result_character_budget
         from yuki.codemode.driver import ChildClass, CodeHost
         from yuki.codemode.engine_monty import CodeEngineUnavailable, PinnedWorker
         from yuki.codemode.limits import CodeModeLimits
@@ -694,7 +695,6 @@ class AgentRunner:
                 call, tools, runtime, frozenset(api.schemas), key
             )
 
-        agent = runtime.runtime_config.agent
         assert runtime.max_tool_calls is not None
         return CodeHost(
             control=control,
@@ -707,7 +707,7 @@ class AgentRunner:
             max_parallel=max_parallel_calls,
             # Segment business allowance: the same counter direct calls use.
             tool_limit=runtime.max_tool_calls,
-            result_limit=agent.tool_result_max_characters or 12000,
+            result_limit=effective_result_character_budget(runtime.runtime_config) or 12000,
             archive=tools.archive_code_result if tools is not None else None,
             background=(
                 control.lease.work_id is not None

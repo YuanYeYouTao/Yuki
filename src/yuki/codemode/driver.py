@@ -845,7 +845,7 @@ class CodeModeDriver:
                 body["snapshot_reason"] = stop.detail
         elif outcome is not None and outcome.status == "completed":
             body.update(ok=True, status="completed", executed=executed)
-            body.update(await self._result_view(outcome.output))
+            body.update(result=outcome.output, complete=True, result_ref=None)
         else:
             failure = outcome.failure if outcome is not None else None
             body.update(
@@ -909,7 +909,13 @@ class CodeModeDriver:
             return encode()
         if self.host.archive is not None:
             result = encode()
-            reference = await self.host.archive(result)
+            try:
+                reference = await self.host.archive(result)
+            except (OSError, ValueError) as exc:
+                if isinstance(exc, ValueError) and str(exc) != "tool_artifact_capacity":
+                    raise
+                reference = None
+                body["artifact_error"] = "artifact_storage_failed"
             del result
             if reference is not None:
                 body["summary_ref"] = reference
@@ -926,7 +932,21 @@ class CodeModeDriver:
             body["operations"] = []
         if "result" in body and not fits():
             body["result_preview"] = json.dumps(body.pop("result"), ensure_ascii=False, default=str)
-            body.update(complete=False, truncated=True)
+            body.update(
+                complete=False, truncated=True, original_characters=len(body["result_preview"])
+            )
+            # This is a JSON excerpt, not a reader page. Reuse the complete
+            # parent Artifact and start at its actual program-value path.
+            if "summary_ref" in body:
+                body.update(result_ref=body["summary_ref"], result_path=["result"])
+                body["read_more"] = [
+                    {
+                        "handle": body["summary_ref"],
+                        "operation": "get",
+                        "path": ["result"],
+                        "offset": 0,
+                    }
+                ]
         # Shrink text only when it actually exists and is removed. JSON escaping
         # is included in every measurement; an empty stdout is not truncated.
         for key in ("result_preview", "stdout", "detail"):
@@ -943,14 +963,6 @@ class CodeModeDriver:
             body[key] = text[:low]
             if key == "stdout" and low < len(text):
                 body["stdout_truncated"] = True
-        # IDs in the paired original remain intact; oversized display facts use
-        # a digest that can be checked against that original, never a new ID.
-        for key in ("uncertain_operation_id", "snapshot_reason", "control"):
-            if fits():
-                break
-            if key in body:
-                value = json.dumps(body.pop(key), ensure_ascii=False, default=str)
-                body[key + "_ref_sha256"] = hashlib.sha256(value.encode()).hexdigest()
         # Fill the remaining budget with a prefix of the operation summaries.
         if operations:
             used = json_character_count(body, limit=self.host.result_limit, compact=True)
@@ -968,21 +980,6 @@ class CodeModeDriver:
                     used += added
         result = encode()
         return result
-
-    async def _result_view(self, output: Any) -> dict[str, Any]:
-        """Full program result once; the model gets a bounded view plus a reference."""
-        encoded = json.dumps(output, ensure_ascii=False)
-        budget = max(256, self.host.result_limit // 2)
-        if len(encoded) <= budget:
-            return {"result": output, "complete": True, "result_ref": None}
-        reference = await self.host.archive(encoded) if self.host.archive is not None else None
-        return {
-            "result_preview": encoded[:budget],
-            "complete": False,
-            "truncated": True,
-            "original_characters": len(encoded),
-            "result_ref": reference,
-        }
 
     # -- helpers -------------------------------------------------------------------
 
@@ -1033,6 +1030,8 @@ class CodeModeDriver:
         limit = self.host.limits.max_result_bytes
         if len(json.dumps(value, ensure_ascii=False).encode()) > limit:
             value = {**value, "data": None, "complete": False}
+            value.pop("preview", None)
+            value.pop("read_more", None)
         return value
 
     def _child_invocation(

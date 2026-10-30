@@ -265,22 +265,15 @@ class ToolArtifactRepository:
             async with self._database.immediate_session() as session:
                 now = datetime.now(UTC)
                 if access is not None or source_event_ids:
-                    if (
-                        access is not None
-                        and not await session.scalar(
-                            select(CanonicalConversationModel.id).where(
-                                CanonicalConversationModel.id == access.conversation_id,
-                                CanonicalConversationModel.generation == access.generation,
-                            )
-                        )
-                    ) or int(
-                        await session.scalar(
-                            select(ExecutionTraceStateModel.privacy_generation).where(
-                                ExecutionTraceStateModel.id == 1
-                            )
-                        )
-                        or 0
-                    ) != privacy:
+                    from yuki.tool_results.access import result_source_is_current
+
+                    if not await result_source_is_current(
+                        session,
+                        conversation=(access.conversation_id, access.generation)
+                        if access is not None
+                        else None,
+                        privacy=privacy,
+                    ):
                         raise ValueError("artifact_source_changed")
                 if work_id is not None:
                     from yuki.runtime.work_schema_v1 import work

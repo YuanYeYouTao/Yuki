@@ -236,7 +236,9 @@ async def test_archive_identity_rejection_keeps_original_typed_outcome_without_a
         current_result_capture.reset(token)
 
 
-async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(database, tmp_path):
+async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
+    database, tmp_path, tool_delivery_evidence
+):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
     from yuki.automation.models import RunStatus
@@ -245,6 +247,7 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(data
     from yuki.tool_results.artifacts import ToolArtifactRepository
 
     case = await setup_run(database, tmp_path, mode="silent", work_enabled=False)
+    _, evidence = tool_delivery_evidence
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
     case.chat._tool_artifacts = store
     original = "original person fact " + "长期资料" * 300 + "MEMORY_BODY_TAIL"
@@ -281,10 +284,16 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(data
     assert result.status is RunStatus.SUCCEEDED and result.tool_calls == 1
     reply = next(m for m in case.provider.requests[1].messages if m.role == "tool")
     rendered = json.loads(reply.content)
+    evidence.update(
+        {
+            "scenario": "scheduled-memory-inline",
+            "original": original,
+            "fact_id": fact.id,
+            "model_result": rendered,
+        }
+    )
     assert rendered["ok"], rendered
-    if "artifact_handle" in rendered:
-        page = await store.read(rendered["artifact_handle"], limit=1000000, max_characters=1000000)
-        rendered = json.loads(page["content"])
+    assert not rendered.get("truncated", False), rendered
     assert rendered["data"]["memory"]["content"] == original
     assert original not in "\n".join(m.content or "" for m in case.provider.requests[0].messages)
 

@@ -42,6 +42,8 @@
 
 ## 设计报告与后续计划
 
+- [10-31 工具结果交付与查询接口修复任务书](Yuki-工具结果交付与查询接口修复任务书-2026-10-31.md)：基于 main `34167dd4` 的 14 项实施工作，覆盖结果正文与续读、预算、读取参数、联系人／会话拆分及原回执等配套；T13／T14 明列测试、真实 E2E、CI 和产物。用户已授权实施、循环复审、PR／合并及 Bot-only 上线；本地、CI 与生产状态见[实施记录](../operations/tool-result-delivery-implementation-20261031.md)。禁止防御性编程、删除优先。
+
 - [10-29 桌面端本机完整操作统一接入任务书](Yuki-桌面端本机完整操作统一接入任务书-2026-10-29.md)：本期交付本机通用Shell、统一文件桥与可选Codex/Claude委托；OpenCLI等程序直接从Shell使用，不自研或捆绑浏览器CLI。同批完成T13/#514和T14/进度查询。实施、复审与交付状态见[实施记录](../operations/local-device-full-access-implementation-20261029.md)。
 
 - [10-28 消息身份与投递链路收敛任务书](Yuki-消息身份与投递链路收敛任务书-2026-10-28.md)：接续三轮ID与表情执行复审，分开原信封、真实native引用及内部回执；以本地原子发表删除空发送和平台列恢复，保旧已付来源hash，覆盖SDK、迁移及表情遗留。新增T13跨两仓补齐桌面富媒体读取、气泡显示、音视频/PDF和富文本，现共13项。已获授权在独立分支实施；源码、验证与两仓交付见[实施记录](../operations/message-identity-delivery-implementation-20261028.md)，历史证据见[续审记录](../operations/message-identity-delivery-audit-20261028.md)及[桌面审查](../operations/desktop-rich-media-audit-20261028.md)。

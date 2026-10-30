@@ -644,7 +644,12 @@ class SocialService:
         route: ResolvedSend,
     ) -> None:
         """Recheck the same internal inbound proof used during reply preparation."""
-        if route.kind != "conversation" or context.trigger_event_id is None or _self_scene(context):
+        if (
+            route.kind != "conversation"
+            or route.conversation_id != context.conversation_id
+            or context.trigger_event_id is None
+            or _self_scene(context)
+        ):
             return
         event = (
             await session.execute(
@@ -1003,9 +1008,7 @@ class SocialService:
                 if choice is not None:
                     return choice
         await self._validate_self_context(context)
-        if name not in {"send", "query_chat_history"} and not (
-            name == "find_contacts" and args.get("view") == "entries"
-        ):
+        if name not in {"send", "query_chat_history", "find_conversations"}:
             await self._validate_person_context(context)
         if name == "query_chat_history":
             from yuki.social.history import read_history
@@ -1015,6 +1018,10 @@ class SocialService:
             from yuki.social.contacts import read_contacts
 
             return await read_contacts(self, args, context)
+        if name == "find_conversations":
+            from yuki.social.contacts import read_conversations
+
+            return await read_conversations(self, args, context)
         if name == "recall_own_message":
             return await self._recall(args, context)
         if name == "send":

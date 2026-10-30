@@ -1,6 +1,7 @@
 """Returned search evidence remains complete until the existing result budgeter."""
 
 import asyncio
+import hashlib
 import json
 
 import httpx
@@ -188,7 +189,7 @@ async def test_gemini_keeps_original_grounding_and_full_summary(tmp_path):
 
 @pytest.mark.parametrize("work_enabled", [True, False])
 async def test_main_history_search_archives_original_requested_page(
-    database, tmp_path, work_enabled
+    database, tmp_path, work_enabled, tool_delivery_evidence
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
@@ -198,6 +199,7 @@ async def test_main_history_search_archives_original_requested_page(
     from yuki.tool_results.artifacts import ToolArtifactRepository
 
     case = await setup_run(database, tmp_path, mode="silent")
+    _, evidence = tool_delivery_evidence
     case.settings.runtime_work_enabled = work_enabled
     case.settings.context_compact_trigger_tokens = 500000
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
@@ -240,20 +242,33 @@ async def test_main_history_search_archives_original_requested_page(
         return "The original page is available from the artifact."
 
     case.provider._responder = respond
+    evidence.update(
+        {
+            "scenario": "main-history-original",
+            "work_enabled": work_enabled,
+            "input_shape": {"events": 101, "body": "原始资料 * 500 with unique tail"},
+        }
+    )
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED, result
-    assert len(case.provider.requests) == 2
     reply = next(
-        message for message in case.provider.requests[1].messages if message.role == "tool"
+        message
+        for request in case.provider.requests[1:]
+        for message in request.messages
+        if message.role == "tool" and message.tool_call_id == "original-history-read"
     )
     manifest = json.loads(reply.content)
+    evidence["model_result"] = manifest
     assert manifest["ok"] and manifest["original_characters"] > 200000
     page = await store.read(manifest["artifact_handle"], limit=1000000, max_characters=1000000)
     original = json.loads(page["content"])
     assert original["data"]["returned_count"] == 101
     assert original["data"]["has_more"] is False
     assert [row["content"] for row in original["data"]["events"]] == originals
+    evidence["original_characters"] = len(page["content"])
+    evidence["original_sha256"] = hashlib.sha256(page["content"].encode()).hexdigest()
+    evidence["verified_event_count"] = len(original["data"]["events"])
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
 
 

@@ -5,12 +5,27 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from yuki.capabilities.media import MediaResultText, result_images
 from yuki.capabilities.models import CapabilityDescriptor, CapabilityEffect
 from yuki.domain.messages import ChatImage
 from yuki.tool_results.access import ArtifactAccess
+
+if TYPE_CHECKING:
+    from yuki.admin.models import RuntimeConfigSnapshot
+
+_NO_PREVIEW = object()
+
+
+def effective_result_character_budget(snapshot: RuntimeConfigSnapshot | None) -> int | None:
+    """Resolve the existing token override and agent display budget in one place."""
+    if snapshot is None:
+        return None
+    tooling = snapshot.tooling
+    if tooling is not None and tooling.result_token_budget is not None:
+        return tooling.result_token_budget * 4
+    return snapshot.agent.tool_result_max_characters
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,12 +162,6 @@ class ToolResultBudgeter:
                     source_privacy_generation=capture.source_privacy_generation,
                 )
             capture.outcome = result
-            if self._artifacts is None:
-                from yuki.runtime.work_activation import current_work_control
-
-                control = current_work_control.get()
-                if control is not None:
-                    self._artifacts = control.repository.database.work_result_store
         media_handle = None
         archive_images = getattr(self._artifacts, "write_media_artifact", None)
         local_media = (
@@ -231,9 +240,6 @@ class ToolResultBudgeter:
                 text=MediaResultText(text, result.images if result.ok else ()),
                 artifact_id=media_handle,
             )
-        # The summary/artifact is not the original evidence payload. Never
-        # advertise references to content which the following request cannot see.
-        payload.pop("evidence_state", None)
         artifact_id: str | None = None
         recursive_artifact_read = (
             result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
@@ -256,66 +262,202 @@ class ToolResultBudgeter:
                     source_event_ids=result.source_event_ids,
                     source_privacy_generation=result.source_privacy_generation,
                 )
-            except OSError:
+            except (OSError, ValueError) as exc:
+                if isinstance(exc, ValueError) and str(exc) != "tool_artifact_capacity":
+                    raise
                 # Optional presentation storage cannot reverse the original effect.
-                payload["artifact_error"] = "artifact_unavailable"
-                payload["result_unavailable"] = True
+                payload["artifact_error"] = (
+                    "tool_artifact_capacity"
+                    if isinstance(exc, ValueError)
+                    else "artifact_unavailable"
+                )
             if capture is not None:
                 capture.artifact_handle = artifact_id
-        important: dict[str, object] = {}
-        if artifact_id:
-            summary = _artifact_manifest(
-                payload,
-                result=result,
-                artifact_id=artifact_id,
-                original_characters=len(text),
-            )
-        else:
-            summary = _bounded_payload(payload, item_limit=self._item_limit)
-            important = _important_fields(payload)
-            if important:
-                summary["important_fields"] = important
-            summary["truncated"] = True
-            summary["original_characters"] = len(text)
-            if payload.get("artifact_error"):
-                summary["artifact_error"] = payload["artifact_error"]
-                summary["result_unavailable"] = True
-        progress = _workspace_progress(result)
-        summary.update(_execution_envelope(result))
-        if media_handle:
-            summary["media_artifact_handle"] = media_handle
-        if progress:
-            summary["progress"] = progress
+        # Archiving research does not hide a result which already fits. Keep
+        # its original evidence_state and the separately persisted source.
+        if not item_overflow and not character_overflow:
+            rendered = json.dumps(payload, ensure_ascii=False, default=str)
+            if self._max_characters is None or len(rendered) <= self._max_characters:
+                return BudgetedToolResult(
+                    text=MediaResultText(rendered, result.images if result.ok else ()),
+                    artifact_id=artifact_id or media_handle,
+                )
+        summary = _preview_result(
+            payload,
+            result=result,
+            artifact_id=artifact_id,
+            max_characters=self._max_characters,
+            item_limit=self._item_limit,
+            original_characters=len(text),
+        )
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
-        if self._max_characters is not None and len(rendered) > self._max_characters:
-            minimal = {
-                "ok": result.ok,
-                "truncated": True,
-                "original_characters": len(text),
-                "artifact_handle": artifact_id,
-                "artifact_error": payload.get("artifact_error"),
-                "result_unavailable": payload.get("result_unavailable"),
-                "media_artifact_handle": media_handle,
-                "public_message": result.public_message[:1000] if result.public_message else None,
-                "retryable": result.retryable,
-                "mutation_committed": result.mutation_committed,
-                "finalize_after_commit": result.finalize_after_commit,
-                "mode": summary.get("mode"),
-                "root_type": summary.get("root_type"),
-                "available_operations": summary.get("available_operations"),
-                "important_fields": (important or None) if not artifact_id else None,
-                "progress": progress or None,
-                **_execution_envelope(result),
-            }
-            rendered = json.dumps(
-                {key: value for key, value in minimal.items() if value is not None},
-                ensure_ascii=False,
-            )
         return BudgetedToolResult(
             text=MediaResultText(rendered, result.images if result.ok else ()),
             artifact_id=artifact_id,
             truncated=True,
         )
+
+
+def _preview_result(
+    payload: dict[str, Any],
+    *,
+    result: ToolExecutionResult,
+    artifact_id: str | None,
+    max_characters: int | None,
+    item_limit: int | None,
+    original_characters: int,
+) -> dict[str, Any]:
+    from yuki.tool_results.json_length import (
+        json_character_count,
+        json_key_text,
+        json_string_prefix,
+    )
+
+    base = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"data", "content", "metadata", "evidence_state", "memory_grounding_policy"}
+    }
+    base.update(
+        _execution_envelope(result), truncated=True, original_characters=original_characters
+    )
+    if artifact_id is not None:
+        base["artifact_handle"] = artifact_id
+    progress = _workspace_progress(result)
+    if progress:
+        base["progress"] = progress
+    root = payload.get("data", payload)
+    base["logical_root"] = "data" if "data" in payload else "$"
+    # Necessary execution facts are a soft target, just as on the original
+    # minimal-result path. Spend only the remainder on optional prose/content.
+    message = base.pop("public_message", None)
+    budget = max_characters if max_characters is not None else original_characters
+    if message is not None:
+        fixed = json_character_count({**base, "public_message": ""})
+        available = max(0, budget - (fixed or 0))
+        base["public_message"] = message[: json_string_prefix(message, available)]
+    fixed = json_character_count({**base, "data": {}}) or 0
+    available = max(0, budget - fixed)
+    cache: dict[int, tuple[object, int, bool]] = {}
+    while True:
+        value, pending = _preview_json(root, available, item_limit=item_limit, cache=cache)
+        if value is _NO_PREVIEW:
+            summary = {**base, "preview_error": "artifact_value_too_large", "preview_path": []}
+        else:
+            summary = {**base, "data": value}
+        # An atomic array item may itself be larger than a page. Keep data's
+        # array prefix whole, and show that item's actual partial value at its
+        # explicit path instead of leaving only an empty list and a manifest.
+        for path, _offset in pending:
+            if not path or not isinstance(path[-1], int):
+                continue
+            focus: Any = root
+            for part in path:
+                focus = (
+                    {json_key_text(key): child for key, child in focus.items()}[str(part)]
+                    if isinstance(focus, dict)
+                    else focus[part]
+                )
+            overhead = json_character_count({"path": path, "value": ""}) or 0
+            remaining = available - (json_character_count(value) or 0) - overhead
+            if remaining <= 0:
+                break
+            fragment, focus_pending = _preview_json(
+                focus, remaining, item_limit=item_limit, cache=cache, path=tuple(path)
+            )
+            if fragment is not _NO_PREVIEW:
+                summary["preview"] = {"path": path, "value": fragment}
+            pending = [entry for entry in pending if entry[0] != path] + focus_pending
+            break
+        if artifact_id is not None and pending:
+            summary["read_more"] = [
+                {"handle": artifact_id, "operation": "get", "path": path, "offset": offset}
+                for path, offset in pending
+            ]
+        size = json_character_count(summary) or 0
+        if max_characters is None or size <= max_characters or available == 0:
+            return summary
+        # Metadata is measured with the actual page. This decreases the content
+        # budget strictly, with no retry cap or second persistent page state.
+        available = max(0, available - (size - max_characters))
+
+
+def _preview_json(
+    value: object,
+    budget: int,
+    *,
+    item_limit: int | None,
+    cache: dict[int, tuple[object, int, bool]],
+    path: tuple[str | int, ...] = (),
+) -> tuple[object, list[tuple[list[str | int], int]]]:
+    from yuki.tool_results.json_length import (
+        json_character_count,
+        json_key_text,
+        json_string_prefix,
+    )
+
+    size = json_character_count(value, limit=budget, cache=cache)
+    item_overflow = item_limit is not None and _largest_collection(value) > item_limit
+    if size is not None and size <= budget and not item_overflow:
+        return value, []
+    if isinstance(value, str):
+        count = json_string_prefix(value, max(0, budget - 2))
+        return value[:count], [(list(path), count)] if count < len(value) else []
+    if isinstance(value, (list, tuple)):
+        selected: list[object] = []
+        used = 2
+        for child in value:
+            if item_limit is not None and len(selected) >= item_limit:
+                break
+            remaining = budget - used - (2 if selected else 0)
+            child_size = json_character_count(child, limit=remaining, cache=cache)
+            child_item_overflow = item_limit is not None and _largest_collection(child) > item_limit
+            if child_size is None or child_size > remaining or child_item_overflow:
+                break
+            selected.append(child)
+            used += child_size + (2 if len(selected) > 1 else 0)
+        pending = [(list(path), len(selected))] if len(selected) < len(value) else []
+        if not selected and value and isinstance(value[0], (dict, list, tuple, str)):
+            pending.append(([*path, 0], 0))
+        return selected, pending
+    if isinstance(value, dict):
+        # A public JSON object has encoded string keys. Preserve the same last
+        # value as the archived JSON when two Python keys encode identically.
+        mapping = {json_key_text(key): child for key, child in value.items()}
+        selected_mapping: dict[str, object] = {}
+        pending = []
+        used = 2
+        # Partial dictionaries use the reader's casefold order; full fast paths
+        # above retain the original value and have no continuation position.
+        for text_key in sorted(mapping, key=str.casefold):
+            if item_limit is not None and len(selected_mapping) >= item_limit:
+                break
+            key_size = json_character_count(text_key) or 0
+            added = key_size + 2 + (2 if selected_mapping else 0)
+            remaining = budget - used - added
+            if remaining < 1:
+                break
+            child, child_pending = _preview_json(
+                mapping[text_key],
+                remaining,
+                item_limit=item_limit,
+                cache=cache,
+                path=(*path, text_key),
+            )
+            if child is _NO_PREVIEW:
+                break
+            child_size = json_character_count(child) or 0
+            if child_size > remaining:
+                break
+            selected_mapping[text_key] = child
+            used += added + child_size
+            pending.extend(child_pending)
+        if len(selected_mapping) < len(mapping):
+            pending.append((list(path), len(selected_mapping)))
+        return selected_mapping, pending
+    if not isinstance(value, (int, float, bool)) and value is not None:
+        return _preview_json(str(value), budget, item_limit=item_limit, cache=cache, path=path)
+    return _NO_PREVIEW, [(list(path), 0)]
 
 
 def artifact_page_size(value: object, limit: int | None = None) -> int | None:
@@ -543,13 +685,66 @@ def _execution_envelope(result: ToolExecutionResult) -> dict[str, Any]:
         ("error_code", result.error_code),
         ("mutation_committed", result.mutation_committed),
         ("finalize_after_commit", result.finalize_after_commit),
-        *((key, body.get(key)) for key in ("status", "run_id", "pending", "executed")),
+        *(
+            (key, body.get(key))
+            for key in (
+                "status",
+                "run_id",
+                "operation_id",
+                "execution_id",
+                "session_id",
+                "event_id",
+                "original_event_id",
+                "snapshot_id",
+                "artifact_id",
+                "pending",
+                "executed",
+            )
+        ),
     ):
         if value is not None:
             envelope[key] = value
     process = process_receipt(result)
     if process:
         envelope["process"] = process
+    if result.tool_name == "send" and isinstance(result.data, dict):
+        # These are the original Social receipts, not inferred from arguments
+        # or the survival of message text. Long delivered/prepared bodies stay
+        # in the immutable original while every part keeps its real identity.
+        def delivery(item: dict[str, Any]) -> dict[str, Any]:
+            facts = {
+                key: item[key]
+                for key in (
+                    "operation_id",
+                    "status",
+                    "target",
+                    "event_id",
+                    "original_event_id",
+                    "original_conversation_id",
+                    "error_category",
+                    "artifact_id",
+                    "snapshot_id",
+                    "uncertain",
+                    "pending",
+                    "text_planned",
+                    "planned_messages",
+                    "sent_messages",
+                )
+                if key in item
+            }
+            for field in ("file", "caption"):
+                if isinstance(item.get(field), dict):
+                    facts[field] = delivery(item[field])
+            if isinstance(item.get("parts"), list):
+                facts["parts"] = [delivery(part) for part in item["parts"]]
+            return facts
+
+        envelope["delivery"] = delivery(result.data)
+    media = result.metadata or {}
+    if "media_read" in media:
+        envelope["media_read"] = media["media_read"]
+    if "media_error" in media:
+        envelope["media_error"] = media["media_error"]
     return envelope
 
 
@@ -676,126 +871,3 @@ def _largest_collection(value: object) -> int:
     if isinstance(value, (list, tuple)):
         return max((len(value), *(_largest_collection(item) for item in value)))
     return 0
-
-
-def _bounded_payload(value: object, *, item_limit: int | None) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"summary": str(value)[:1000]}
-    limit = item_limit
-
-    def bounded(item: object) -> object:
-        if isinstance(item, list):
-            selected = item if limit is None else item[:limit]
-            return {
-                "total_items": len(item),
-                "items": [bounded(value) for value in selected],
-            }
-        if isinstance(item, tuple):
-            return bounded(list(item))
-        if isinstance(item, dict):
-            pairs = list(item.items())
-            selected_pairs = pairs if limit is None else pairs[:limit]
-            return {str(key): bounded(child) for key, child in selected_pairs}
-        if isinstance(item, str) and len(item) > 1000:
-            return f"{item[:1000]}…"
-        return item
-
-    return {str(key): bounded(item) for key, item in value.items()}
-
-
-def _artifact_manifest(
-    payload: dict[str, Any],
-    *,
-    result: ToolExecutionResult,
-    artifact_id: str,
-    original_characters: int,
-) -> dict[str, Any]:
-    logical_root = payload.get("data", payload)
-    root_type = _json_type(logical_root)
-    manifest: dict[str, Any] = {
-        "ok": result.ok,
-        "retryable": result.retryable,
-        "truncated": True,
-        "artifact_handle": artifact_id,
-        "mode": "text" if isinstance(logical_root, str) else "json",
-        "logical_root": "data" if "data" in payload else "$",
-        "root_type": root_type,
-        "original_characters": original_characters,
-    }
-    if result.mutation_committed is not None:
-        manifest["mutation_committed"] = result.mutation_committed
-    if result.finalize_after_commit is not None:
-        manifest["finalize_after_commit"] = result.finalize_after_commit
-    if result.public_message:
-        manifest["public_message"] = result.public_message
-    if isinstance(logical_root, dict):
-        keys = sorted((str(key) for key in logical_root), key=str.casefold)
-        selected = keys[:24]
-        manifest["total_children"] = len(keys)
-        manifest["children"] = {
-            key: _shape_label(logical_root[key]) for key in selected if key in logical_root
-        }
-        manifest["children_truncated"] = len(selected) < len(keys)
-        manifest["available_operations"] = ["inspect", "get", "search"]
-    elif isinstance(logical_root, list):
-        manifest["total_children"] = len(logical_root)
-        manifest["item_types"] = sorted({_json_type(item) for item in logical_root[:24]})
-        manifest["available_operations"] = ["inspect", "get", "search"]
-    else:
-        manifest["available_operations"] = ["text"]
-    return manifest
-
-
-def _json_type(value: object) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, dict):
-        return "object"
-    if isinstance(value, list):
-        return "array"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, (int, float)):
-        return "number"
-    return type(value).__name__
-
-
-def _shape_label(value: object) -> str:
-    kind = _json_type(value)
-    if isinstance(value, (dict, list, str)):
-        return f"{kind}[{len(value)}]"
-    return kind
-
-
-def _important_fields(value: object) -> dict[str, object]:
-    """Project identifiers, status, errors, and URLs before lossy truncation."""
-
-    important: dict[str, object] = {}
-
-    def visit(item: object, path: tuple[str, ...]) -> None:
-        if len(important) >= 64:
-            return
-        if isinstance(item, dict):
-            for raw_key, child in item.items():
-                key = str(raw_key)
-                visit(child, (*path, key))
-            return
-        if isinstance(item, (list, tuple)):
-            for index, child in enumerate(item[:20]):
-                visit(child, (*path, str(index)))
-            return
-        if not path:
-            return
-        key = path[-1].casefold()
-        is_important = (
-            "url" in key or key == "id" or key.endswith("id") or "status" in key or "error" in key
-        )
-        if not is_important:
-            return
-        field_path = ".".join(path)
-        important[field_path] = item[:2000] if isinstance(item, str) else item
-
-    visit(value, ())
-    return important

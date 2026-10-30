@@ -101,10 +101,10 @@ async def invoke_social(
             raise SocialError(exc.category) from exc
         except ValidationError as exc:
             raise SocialError("invalid_message_arguments") from exc
-    if getattr(runtime, "read_target_id", None) is not None and (
-        name == "query_chat_history"
-        or (name == "find_contacts" and arguments.get("view") == "entries")
-    ):
+    if getattr(runtime, "read_target_id", None) is not None and name in {
+        "query_chat_history",
+        "find_conversations",
+    }:
         actor = runtime.actor_context
         invocation = current_invocation.get()
         if invocation is None or runtime.tools_closed:

@@ -193,10 +193,13 @@ async def test_parallel_memory_reads_keep_local_runtime_scopes(database, tmp_pat
         await host.close_host_resources()
 
 
-async def test_memory_live_scope_does_not_change_original_result_artifact_proof(database, tmp_path):
+async def test_memory_live_scope_does_not_change_original_result_artifact_proof(
+    database, tmp_path, tool_delivery_evidence
+):
     from yuki.tool_results.artifacts import ToolArtifactRepository
 
     provider = FakeLLMProvider()
+    _, evidence = tool_delivery_evidence
     chat, source, host, person, _ = await memory_scene(
         database,
         tmp_path,
@@ -205,12 +208,21 @@ async def test_memory_live_scope_does_not_change_original_result_artifact_proof(
         personal_content="Original personal fact " * 2000,
     )
     chat._settings.tooling_result_token_budget = 256
-    chat._settings.agent_tool_result_max_characters = 100000
+    chat._settings.agent_tool_result_max_characters = 1000
     source = replace(source, runtime_config=await chat._runtime_config.snapshot())
     chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "results", retention_seconds=60
     )
     replies = []
+    evidence.update(
+        {
+            "scenario": "plugin-memory-original-artifact-proof",
+            "model_results": replies,
+            "agent_budget": 1000,
+            "token_budget": 256,
+            "fact_id": person.id,
+        }
+    )
 
     def respond(request):
         count = len(provider.requests)

@@ -225,25 +225,26 @@ async def test_artifact_publication_failure_preserves_typed_effect_without_repla
             raise asyncio.CancelledError("cancelled after confirmed effect")
         return (await budgeter.render(outcome)).text
 
-    if failure == "capacity":
+    if failure != "cancel":
         result = await invoke_tool(session, call, business)
-        assert json.loads(result)["result_unavailable"] is True
+        assert json.loads(result)["artifact_error"] == "tool_artifact_capacity"
         assert json.loads(result)["mutation_committed"] is True
+        assert json.loads(result).get("uncertain", False) is (failure == "uncertain")
+        # Optional storage loss now returns the actual bounded result. Reuse
+        # that original accepted response even when the effect is uncertain.
+        assert await invoke_tool(session, call, business) == result
+    if failure == "capacity":
         session.transcript.append_result(call.id, result)
         await session.save("paired")
         await control.complete_final("business effect completed", "completed-after-artifact-error")
         await control.settle(pending_inputs=False)
         assert control.current["state"] == "completed"
-    else:
-        with pytest.raises(asyncio.CancelledError if failure == "cancel" else ValueError):
+    elif failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
             await invoke_tool(session, call, business)
     assert executions == 1
-    if failure != "capacity":
-        replayed = (
-            await session.journal.effect_result(key)
-            if failure == "uncertain"
-            else await invoke_tool(session, call, business)
-        )
+    if failure == "cancel":
+        replayed = await invoke_tool(session, call, business)
         assert json.loads(replayed)["replay_forbidden"] is True
         assert executions == 1
     async with database.read_session() as reader:

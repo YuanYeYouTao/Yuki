@@ -59,7 +59,7 @@ async def source_environment(database, tmp_path, native):
     env.host.api = project(
         (
             *TOOLS,
-            next(tool for tool in social_tool_definitions() if tool.name == "find_contacts"),
+            next(tool for tool in social_tool_definitions() if tool.name == "find_conversations"),
             ChatTool("query_chat_history", "history", history_schema()),
         ),
         "manifest-test",
@@ -132,7 +132,6 @@ async def test_code_discovers_entries_and_queries_same_source_with_projected_sch
     social = env.test_case.env
     source = {"platform": "qq", "scope": "group"}
     directory_args = {
-        "view": "entries",
         "source": source,
         "target": {"space_id": social.space},
         "limit": 1,
@@ -154,10 +153,13 @@ async def test_code_discovers_entries_and_queries_same_source_with_projected_sch
 
     env.host.execute_business = observe
     if not native:
-        calls = [("yuki_find_contacts", directory_args), ("yuki_query_chat_history", history_args)]
+        calls = [
+            ("yuki_find_conversations", directory_args),
+            ("yuki_query_chat_history", history_args),
+        ]
         env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)
     code = f"""
-directory = await yuki_find_contacts({directory_args!r})
+directory = await yuki_find_conversations({directory_args!r})
 entry = directory['data']['items'][0]
 history = await yuki_query_chat_history({{
     'view': 'search', 'source': {source!r},
@@ -169,7 +171,7 @@ history = await yuki_query_chat_history({{
     outer = outer_call(env, code)
     result = json.loads(await CodeModeDriver(env.host, outer).run())
     assert result["status"] == "completed" and len(dispatched) == 2
-    assert [name for name, _ in observed] == ["find_contacts", "query_chat_history"]
+    assert [name for name, _ in observed] == ["find_conversations", "query_chat_history"]
     directory, history = (data for _, data in observed)
     assert len(directory["items"]) == 1
     entry = directory["items"][0]

@@ -27,6 +27,7 @@ logs/
 /sandbox-runtime/
 /webui-config/
 .cache/
+/test-results/
 .workbuddy/
 /character/
 # Historical operator files remain private; they are not runtime sources.

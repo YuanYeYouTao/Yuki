@@ -109,7 +109,9 @@ jobs:
         if: always()
         with:
           name: tests-${{ matrix.suite }}
-          path: test-results/*.xml
+          path: |
+            test-results/*.xml
+            test-results/tool-result-delivery/
           retention-days: 7
 
   desktop-headed:
