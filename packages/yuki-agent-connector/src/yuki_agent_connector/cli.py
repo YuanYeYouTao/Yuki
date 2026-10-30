@@ -18,7 +18,7 @@ import httpx
 
 from . import PROTOCOL_VERSION, __version__
 from .computer import computer_status
-from .config import Config, Instance, data_path, private_path
+from .config import Config, Instance, connector_url, data_path, private_path
 from .connector import Connector, installation_lock
 from .discovery import candidates, diagnose, refresh
 from .drivers import make_driver
@@ -36,6 +36,8 @@ def parser() -> argparse.ArgumentParser:
     pair.add_argument("--url", required=True, help="Existing Yuki https:// address")
     pair.add_argument("--label", required=True, help="Name of this computer")
     pair.add_argument("--code-stdin", action="store_true", help="Read one-time code from stdin")
+    server = commands.add_parser("server", help="Save this installation's server address")
+    server.add_argument("--url", required=True, help="Existing Yuki https:// address")
     profile = commands.add_parser("instance", help="Manage explicit native installs/profiles")
     profiles = profile.add_subparsers(dest="operation", required=True)
     profiles.add_parser("list")
@@ -149,13 +151,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "Already paired; use a separate --data-dir for another device identity"
                 )
-            from urllib.parse import urlsplit
-
-            parsed = urlsplit(args.url)
-            if parsed.scheme != "https" and not (
-                parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            ):
-                raise ValueError("Remote pairing requires your Yuki https:// address")
+            target = connector_url(args.url)
             code = (
                 sys.stdin.readline().strip()
                 if args.code_stdin
@@ -174,8 +170,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             response.raise_for_status()
             credential = response.json()
-            target = ("wss" if parsed.scheme == "https" else "ws") + "://" + parsed.netloc
-            target += parsed.path.rstrip("/") + "/agents/v1/connect"
             configured = Config(target, credential["device_id"], credential["token"])
             configured.save(path)
             print(f"Paired configuration saved: {path}")
@@ -223,7 +217,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(value, ensure_ascii=args.json, indent=None if args.json else 2))
         else:
             config = Config.load(path)
-            if args.action == "full-access":
+            if args.action == "server":
+                replace(config, url=connector_url(args.url)).save(path)
+                print("Server address saved; used on the next Connector start.")
+            elif args.action == "full-access":
                 if args.enabled is not None:
                     config = replace(config, full_access=args.enabled == "true")
                     config.save(path)
@@ -367,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
                 with installation_lock(directory / "connector.lock"):
                     journal = Journal(
                         directory / "journal.sqlite3",
-                        namespace=json.dumps([config.url, config.device_id]),
+                        namespace=config.device_id,
                     )
                     try:
                         asyncio.run(Connector(config, journal, config_path=path).run())

@@ -17,6 +17,16 @@ from urllib.parse import urlsplit
 from platformdirs import user_data_path
 
 
+def connector_url(server: str) -> str:
+    target = urlsplit(server)
+    if target.scheme != "https" and not (
+        target.scheme == "http" and target.hostname in {"localhost", "127.0.0.1", "::1"}
+    ):
+        raise ValueError("Remote server addresses require https://")
+    scheme = "wss" if target.scheme == "https" else "ws"
+    return f"{scheme}://{target.netloc}{target.path.rstrip('/')}/agents/v1/connect"
+
+
 def private_path(path: Path, *, directory: bool = False) -> None:
     """Private files on POSIX, an explicit current-user ACL on Windows."""
     if sys.platform == "win32":

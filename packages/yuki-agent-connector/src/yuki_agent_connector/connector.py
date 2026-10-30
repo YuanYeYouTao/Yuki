@@ -55,8 +55,8 @@ class Connector:
         if self.config_path is None:
             return
         configured = Config.load(self.config_path)
-        if (configured.url, configured.device_id) != (self.config.url, self.config.device_id):
-            raise ValueError("The active service belongs to its original server and device")
+        if configured.device_id != self.config.device_id:
+            raise ValueError("The active service belongs to its original device")
         if configured.full_access != self.config.full_access:
             self.config = replace(self.config, full_access=configured.full_access)
             self.catalog_changed.set()
