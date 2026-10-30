@@ -112,6 +112,7 @@ jobs:
           path: |
             test-results/*.xml
             test-results/tool-result-delivery/
+            test-results/connector-address/
           retention-days: 7
 
   desktop-headed:
