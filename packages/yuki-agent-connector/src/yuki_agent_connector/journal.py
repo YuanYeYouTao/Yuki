@@ -73,13 +73,19 @@ class Journal:
             );
         """)
         existing = self.db.execute("SELECT namespace FROM installation").fetchone()
-        if existing and existing[0] != namespace:
+        owner = existing[0] if existing else namespace
+        if existing and owner != namespace and owner.startswith("["):
+            legacy = json.loads(owner)
+            if isinstance(legacy, list) and len(legacy) == 2 and isinstance(legacy[0], str):
+                owner = legacy[1]
+        if owner != namespace:
             self.db.close()
-            raise ValueError(
-                "Journal belongs to another server/device; use a separate data directory"
-            )
+            raise ValueError("Journal belongs to another device; use a separate data directory")
         with self.db:
-            self.db.execute("INSERT OR IGNORE INTO installation VALUES (?)", (namespace,))
+            if existing and existing[0] != namespace:
+                self.db.execute("UPDATE installation SET namespace=?", (namespace,))
+            else:
+                self.db.execute("INSERT OR IGNORE INTO installation VALUES (?)", (namespace,))
             if self.db.execute("PRAGMA user_version").fetchone()[0] == 0:
                 self._upgrade_receipts()
                 self.db.execute("PRAGMA user_version=1")

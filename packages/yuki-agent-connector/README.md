@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.4.0 / wire protocol 4** connects an existing computer to Yuki through
+Connector **0.4.1 / wire protocol 4** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.4.0-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.4.1-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -23,9 +23,25 @@ yuki-agent-connector logs
 
 Pairing reads an explicitly issued one-time connector code with hidden input.
 Desktop uses the same CLI's `--code-stdin`; its renderer does not receive the
-code. Server URL, internal device ID and journal retain one installation
-identity. Use another `--data-dir` for another identity. Native credentials stay
+code. The internal device ID owns the installation's journal; its server URL is
+transport configuration. Use another `--data-dir` for another device identity. Native credentials stay
 local. Status omits device tokens, instance environments and native owner endpoints.
+
+Change the address of the same Yuki with the installation's existing credentials:
+
+```text
+yuki-agent-connector server --url https://your-yuki.example
+```
+
+This only saves the address, preserving the device, token, instances, full access
+and journal. It does not contact the server or start/stop the service. The new
+address applies on the next explicit Connector start; a running connection keeps
+its current address. An explicit service stop also stops Connector-owned Shell
+executions, so applying an address is not an uninterrupted Shell migration.
+Desktop's chat address is configured independently. Remote addresses require
+HTTPS/WSS; HTTP/WS is allowed only for localhost, 127.0.0.1 and ::1.
+Existing journals with URL/device metadata are opened under their original
+device ID; the URL change does not replay operations or rewrite their receipts.
 
 Instances are explicit native installations/profiles. `instance configure`
 accepts UTF-8 JSON stdin to update an original ID. Omitted arguments/environment

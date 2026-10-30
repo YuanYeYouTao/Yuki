@@ -39,7 +39,7 @@ def test_crash_window_remains_unknown_and_namespace_does_not_move(
     assert journal.begin(original)["result"]["status"] == "unknown"  # type: ignore[index]
     with pytest.raises(ValueError, match="parameters"):
         journal.begin({**original, "arguments": {"prompt": "changed"}})
-    with pytest.raises(ValueError, match="another server/device"):
+    with pytest.raises(ValueError, match="another device"):
         Journal(tmp_path / "private" / "journal.db", namespace="different owner")
 
 
