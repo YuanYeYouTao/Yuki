@@ -91,6 +91,7 @@ r = await yuki_query_chat_history({'view': 'search', 'keyword': 'CODE_CHILD_BODY
     child_view = None
     pages = []
     parts = []
+    observed = []
     pending = None
     seen = set()
 
@@ -100,6 +101,7 @@ r = await yuki_query_chat_history({'view': 'search', 'keyword': 'CODE_CHILD_BODY
             if message.role != "tool" or message.tool_call_id in seen:
                 continue
             seen.add(message.tool_call_id)
+            observed.append({"call_id": message.tool_call_id, "content": message.content})
             if message.tool_call_id == "native-preview":
                 body = json.loads(message.content)
                 child_view = body["result"]
@@ -142,10 +144,12 @@ r = await yuki_query_chat_history({'view': 'search', 'keyword': 'CODE_CHILD_BODY
         model_boundary="scripted ChatRequest; real native worker",
         pages=pages,
         overflow_vm_bytes=overflow_vm_bytes,
+        model_results=observed,
     )
     try:
         case.clock.advance(2)
         run = await case.dispatch()
+        evidence["run_status"] = run.status.value
         assert run.status is RunStatus.SUCCEEDED, run
         assert child_view["complete"] is False
         if overflow_vm_bytes:
