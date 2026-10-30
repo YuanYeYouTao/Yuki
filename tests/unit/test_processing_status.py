@@ -452,7 +452,7 @@ async def test_unknown_presence_uses_original_route_instead_of_guessing_capabili
 
 
 async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(
-    database, tmp_path, caplog
+    database, tmp_path, caplog, monkeypatch
 ):
     env = await social_env(database, tmp_path)
     second = Bot("80002")
@@ -469,15 +469,15 @@ async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(
     )
     original = event.event
     started = asyncio.Event()
-    native = second.call_api
+    native = Bot.call_api
 
-    async def call(action, **params):
-        result = await native(action, **params)
+    async def call(bot, action, **params):
+        result = await native(bot, action, **params)
         if action == "set_input_status" and params["event_type"] == 1:
             started.set()
         return result
 
-    second.call_api = call
+    monkeypatch.setattr(Bot, "call_api", call)
     env.bot.calls.clear()
     service = ProcessingStatusService(env.router, env.registry)
     try:
