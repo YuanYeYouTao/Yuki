@@ -1,4 +1,4 @@
-# Desktop 本机部署与公网入口
+# Desktop 本机部署与远程入口
 
 Desktop 的“在本机部署 Yuki”启动同一份 Bot 和个人 API，使用 Linux Docker 容器。
 它不安装 QQ/TG/飞书，不附带模型，也不安装服务器持久终端 Manager。
@@ -40,7 +40,20 @@ Desktop 使用从当前电脑可访问的 Yuki base URL，网络连接与 App �
 SSH 的目标端口取服务器实际发布的 Bot 端口或原反代入口，不把容器的 8080 当作宿主端口。
 隧道、VPN 恢复后，原地址不变时可使用「重新连接」接回；普通 SSE 断线也会自动重连。
 服务器不可达、登录失效、版本不匹配分别处理，不能仅因网络不可达就要求重新配对。
-今后的 Tailscale 等接入可以继续提供可达地址，不需要复制客户端、原生 Agent 或任务运行时。
+改用另一条可达线路时，Desktop 在原 Yuki 的「設定 → 連線」修改客户端地址，保留原登录和聊天入口。
+电脑 Connector 的地址在「設定 → 這台電腦」独立保存，两处不自动同步，也不要求地址相同。
+地址保存和实际连通分别报告；同一原设备换线不需要清配置、清 journal 或重新配对。
+
+## 可选的 Tailscale 私有接入
+
+服务器宿主机和使用者电脑分别安装官方 Tailscale，登录获准互通的同一 tailnet。
+在运行 Bot 的服务器上核对实际 `127.0.0.1` 发布端口及原 Serve 映射，再用 Serve 的根路径
+代理整个 Bot，供 Desktop 的 HTTP/SSE、Connector 的 WSS 和其他已有路径共用。
+现有 HTTPS、SSH loopback 和本机部署仍可继续使用，Tailscale 不成为配对或连接电脑的前置条件。
+
+逐步命令、HTTPS/MagicDNS 同意、现有服务保护和分项验证见
+[Tailscale 接入指南](tailscale-connection.zh-CN.md)；也可复制其中的[AI 配置说明](tailscale-connection.zh-CN.md#请-ai-协助配置)。
+Serve 在服务器执行，不在使用者电脑执行，不使用 Funnel，也不安装到 Bot 容器或 Yuki 安装包中。
 
 ## 服务器的 HTTPS/WSS
 

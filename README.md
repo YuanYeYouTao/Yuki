@@ -80,6 +80,8 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 | [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) | 独立养鲲游戏插件 |
 | [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) | 独立 GitHub 仓库监控插件 |
 
+远程 Desktop 和本机 Agent 连接器可通过可选的 [Tailscale 私有接入](docs/operations/tailscale-connection.zh-CN.md)访问原 Yuki。指南说明两端安装、服务器 Serve、原设备独立改址，并提供[可复制给 AI 的配置说明](docs/operations/tailscale-connection.zh-CN.md#请-ai-协助配置)。源码实现、安装产物、正式 Release 与实际网络验收分别记录。
+
 角色设定使用一份可自由编辑的 `character/SOUL.md`，角色名称在资料中独立修改。空人格也可运行；工具、权限和任务规则由程序维护。升级现有部署请先按[单 SOUL 升级说明](docs/operations/soul-deployment-20261022.md)显式整理原件并初始化角色名称。
 
 ## 安装与升级
