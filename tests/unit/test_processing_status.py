@@ -451,7 +451,9 @@ async def test_unknown_presence_uses_original_route_instead_of_guessing_capabili
     assert activity.starts == activity.stops == 1
 
 
-async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(database, tmp_path):
+async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(
+    database, tmp_path, caplog
+):
     env = await social_env(database, tmp_path)
     second = Bot("80002")
     async with database.immediate_session() as writer:
@@ -485,7 +487,16 @@ async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(
             source_event_id=original.id,
             group=False,
         ):
-            await asyncio.wait_for(started.wait(), 1)
+            processing = next(iter(service._tasks))
+            observing = asyncio.create_task(started.wait())
+            try:
+                await asyncio.wait((processing, observing), return_when=asyncio.FIRST_COMPLETED)
+                assert started.is_set(), (
+                    f"Second bot typing did not start: processing={processing!r}\n{caplog.text}"
+                )
+            finally:
+                observing.cancel()
+                await asyncio.gather(observing, return_exceptions=True)
         await service.close()
     finally:
         await service.close()
