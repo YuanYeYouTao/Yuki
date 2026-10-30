@@ -19,6 +19,8 @@ sudo tailscale up
 
 Windows 电脑从 [Tailscale 官方下载页](https://tailscale.com/download/windows)安装并登录；其他系统使用[官方下载入口](https://tailscale.com/download)。确认服务器和电脑出现在预期的 tailnet 中。登录凭据、配对 token 和原生 Agent 登录文件不发给 AI 或聊天窗口。
 
+Windows 默认使用者模式下，需要让官方 Tailscale 系统托盘应用保持运行。若 `tailscale status` 一直显示 `NoState`／“starting”，先确认已从开始菜单打开 Tailscale；仅 Windows 服务显示 Running，或一次 `tailscale up` 返回 Success，不代表当前使用者会话仍连接。无需因此反复登录、删除状态或重新配对 Yuki。需要在注销或重启后保持连接时，可按[官方无人值守模式说明](https://tailscale.com/docs/how-to/run-unattended)启用 Preferences → Run unattended；普通使用不要求启用该模式。
+
 ## 2. 在服务器确认 Bot 端口和现有映射
 
 以下检查及下一节 Serve 命令均在**运行 Yuki 的服务器**执行。不要在使用者电脑执行后，把电脑自己的 loopback 当成远程 Bot。
@@ -106,6 +108,14 @@ yuki-agent-connector service start
 | 原回执 | 查询已有原 request／operation／execution ID 及原状态 | 地址变化没有另造设备或重派执行；unknown 仍保留 unknown |
 
 原登录凭据继续通过既有授权流程传递，不放入 URL、截图或报告。验证可以读取原事件、目录和回执，不需要发 QQ 测试消息、发起新 Agent 任务或付费模型请求。失败按 DNS、TLS、访问规则、HTTP、SSE、WebSocket 和 Yuki 授权分别定位，不靠清配置或重新配对掩盖。
+
+### 云服务器原有内网服务使用 CGNAT 地址时
+
+部分云服务器的原有内网服务也使用 `100.64.0.0/10`。例如，阿里云 VPC 的[默认 DNS 地址](https://www.alibabacloud.com/help/en/vpc/dhcp-option-set-and-dns-hostname)为 `100.100.2.136`、`100.100.2.138`；实际软件源或其他云内服务也可能落在这一地址范围。Linux 上 Tailscale 的 `ts-input` 防伪造规则会丢弃从非 Tailscale 接口进入的 CGNAT 源地址流量，因此也可能挡住宿主机主动查询这些服务的回复。参阅官方 [CGNAT interoperability](https://tailscale.com/docs/reference/cgnat-interoperability) 与 [netfilter 模式](https://tailscale.com/docs/reference/netfilter-modes)说明；此规则问题不能套用于 Windows。
+
+若安装后原 DNS 或云内服务不可达，先核对实际服务器地址、底层物理／VPC 接口与路由，再查看连接跟踪及防火墙命中记录。确认回程被该规则阻断时，可按宿主机实际防火墙管理方式，在 CGNAT 丢弃规则之前保留**从实际底层接口进入、连接跟踪状态为 `ESTABLISHED,RELATED` 的已有连接回复**。这类例外不匹配 `NEW`，不等于无条件放行整个前缀；连接跟踪状态也不代表 Yuki 已鉴权。继续保留 Tailscale netfilter、其余宿主防火墙及 Yuki 原配对／设备授权。只为两个 DNS 地址恢复回程也未必覆盖原软件源等实际依赖，应按真实底层网络范围核对，不能通过关闭整个防火墙解决。
+
+接口名、源地址范围和持久化方式均以当前宿主事实为准，不将某台机器的 `eth0`、DNS 地址或 systemd 单元直接当成通用安装命令。持久规则需要核对实际求值顺序，并在宿主重启或 Tailscale 重建规则后复核对应服务及新连接边界；仅添加临时规则或看到持久化单元 active，不能代替这项验证。DNS、HTTP 与证书申请分别记录实际结果，不把一次 TLS 握手失败直接归结为证书或代理错误。
 
 ## 7. 调整或退出本次发布
 
