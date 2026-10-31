@@ -199,6 +199,14 @@ class WebModule:
         clients: ModelClientPool | None = None,
         invocations: ModelInvocationRepository | None = None,
     ) -> None:
+        if catalog is not None and catalog.search is not None:
+            settings = settings.model_copy(
+                update={
+                    "tavily_api_key": clients.api_key_for_alias(catalog.search.tavily_api_key_env)
+                    if clients
+                    else ""
+                }
+            )
         self._settings = settings
         self._lifecycle = lifecycle
         self._catalog = catalog

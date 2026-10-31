@@ -158,7 +158,7 @@ class QwenVisionProvider:
         max_output_tokens: int = 8192,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if not base_url or not api_key or not model:
+        if not base_url or not model:
             raise VisionConfigurationError("not_configured", "视觉服务配置不完整")
         if timeout_seconds <= 0 or global_concurrency <= 0 or max_output_tokens <= 0:
             raise ValueError("vision provider numeric settings must be positive")
@@ -274,7 +274,7 @@ class QwenVisionProvider:
             async with self._semaphore:
                 response = await self._client.post(
                     f"{self._base_url}chat/completions",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    headers={"Authorization": f"Bearer {self._api_key}"} if self._api_key else {},
                     json=payload,
                     timeout=self._timeout_seconds,
                 )

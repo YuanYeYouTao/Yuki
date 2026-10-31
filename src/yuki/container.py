@@ -195,10 +195,21 @@ class ApplicationContainer:
             analyses=self.media_analyses,
             lifecycle=self.lifecycle,
             provider=vision_provider,
+            connection=self.model_profiles.vision,
+            api_key=self.model_clients.api_key_for_alias(self.model_profiles.vision.api_key_env)
+            if self.model_profiles.vision
+            else "",
         ).build()
         from yuki.application.modules.asr import build_asr
 
-        self.asr = build_asr(settings, self.lifecycle)
+        self.asr = build_asr(
+            settings,
+            self.lifecycle,
+            connection=self.model_profiles.asr,
+            api_key=self.model_clients.api_key_for_alias(self.model_profiles.asr.api_key_env)
+            if self.model_profiles.asr
+            else "",
+        )
         self.media = media
         self.vision_provider = media.provider
         self.media_resolver = media.resolver
