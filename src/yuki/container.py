@@ -153,12 +153,6 @@ class ApplicationContainer:
         self.memory_jobs = persistence.memory_jobs
         self.memory_audit = persistence.memory_audit
         self.memory_metrics = persistence.memory_metrics
-        self.memory_embeddings = MemoryEmbeddingRuntime(
-            settings=settings,
-            database=self.database,
-            facts=self.memories,
-            retriever=self.memory_context.retriever,
-        )
         self.web_sources = persistence.web_sources
         self.media_analyses = persistence.media_analyses
         self.time_context = TimeContextService(
@@ -172,6 +166,17 @@ class ApplicationContainer:
         ).build()
         self.model_runtime = model_runtime
         self.model_profiles = model_runtime.profiles
+        embedding_connection = self.model_profiles.embedding
+        self.memory_embeddings = MemoryEmbeddingRuntime(
+            settings=settings,
+            database=self.database,
+            facts=self.memories,
+            retriever=self.memory_context.retriever,
+            connection=embedding_connection,
+            api_key=model_runtime.clients.api_key_for_alias(embedding_connection.api_key_env)
+            if embedding_connection
+            else "",
+        )
         self.model_clients = model_runtime.clients
         self.model_invocations = model_runtime.invocations
         self.models = model_runtime.executor

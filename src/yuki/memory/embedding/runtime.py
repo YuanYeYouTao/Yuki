@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from yuki.config import Settings
 from yuki.memory.embedding.health import MemoryEmbeddingHealthService
 from yuki.memory.embedding.jobs import MemoryEmbeddingJobRepository
 from yuki.memory.embedding.metrics import MemoryEmbeddingMetrics
 from yuki.memory.embedding.models import MemoryEmbeddingHealth
+from yuki.memory.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
 from yuki.memory.embedding.provider import EmbeddingProvider
 from yuki.memory.embedding.query_cache import QueryEmbeddingCache
 from yuki.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
@@ -16,6 +19,7 @@ from yuki.memory.embedding.text import EmbeddingDocumentBuilder, EmbeddingQueryB
 from yuki.memory.embedding.worker import MemoryEmbeddingWorker
 from yuki.memory.retrieval import MemoryRetriever
 from yuki.memory.service import MemoryFactService
+from yuki.model_runtime.connections import EmbeddingConnection
 from yuki.persistence.database import Database
 
 
@@ -30,19 +34,24 @@ class MemoryEmbeddingRuntime:
         facts: MemoryFactService,
         retriever: MemoryRetriever,
         provider: EmbeddingProvider | None = None,
+        connection: EmbeddingConnection | None = None,
+        api_key: str = "",
     ) -> None:
         self._settings = settings
+        self._connection = connection
         self._facts = facts
         self._retriever = retriever
         self.repository = MemoryEmbeddingRepository(database)
         self.documents = EmbeddingDocumentBuilder(
-            template_version=settings.memory_embedding_document_template_version,
+            template_version=connection.document_template_version
+            if connection
+            else settings.memory_embedding_document_template_version,
             max_characters=settings.memory_embedding_max_text_characters,
         )
         self.queries = EmbeddingQueryBuilder(
             max_characters=settings.memory_embedding_max_text_characters
         )
-        self.provider = provider or self._build_provider(settings)
+        self.provider = provider or self._build_provider(settings, connection, api_key)
         self.metrics = MemoryEmbeddingMetrics()
         self.query_cache = QueryEmbeddingCache(
             ttl_seconds=settings.memory_embedding_query_cache_ttl_seconds,
@@ -53,7 +62,28 @@ class MemoryEmbeddingRuntime:
         self._profile_id: int | None = None
 
     @staticmethod
-    def _build_provider(settings: Settings) -> EmbeddingProvider | None:
+    def _build_provider(
+        settings: Settings, connection: EmbeddingConnection | None = None, api_key: str = ""
+    ) -> EmbeddingProvider | None:
+        if connection is not None:
+            if not connection.enabled:
+                return None
+            common: dict[str, Any] = dict(
+                base_url=connection.base_url,
+                api_key=api_key,
+                model=connection.model,
+                dimensions=connection.dimensions,
+                document_template_version=connection.document_template_version,
+                timeout_seconds=settings.memory_embedding_request_timeout_seconds,
+                http_concurrency=settings.memory_embedding_http_concurrency,
+            )
+            if connection.provider == "openai_compatible":
+                return OpenAICompatibleEmbeddingProvider(**common)
+            return QwenDashScopeEmbeddingProvider(
+                **common,
+                output_type=connection.output_type,
+                query_instruct=connection.query_instruct,
+            )
         if not settings.memory_embedding_configured:
             return None
         return QwenDashScopeEmbeddingProvider(
@@ -70,7 +100,11 @@ class MemoryEmbeddingRuntime:
 
     @property
     def enabled(self) -> bool:
-        return self._settings.memory_embedding_enabled
+        return (
+            self._connection.enabled
+            if self._connection
+            else self._settings.memory_embedding_enabled
+        )
 
     @property
     def profile_id(self) -> int | None:
@@ -78,7 +112,11 @@ class MemoryEmbeddingRuntime:
 
     @property
     def dimensions(self) -> int:
-        return self._settings.memory_embedding_dimensions
+        return (
+            self._connection.dimensions
+            if self._connection
+            else self._settings.memory_embedding_dimensions
+        )
 
     async def start(self) -> None:
         if self.provider is None:
