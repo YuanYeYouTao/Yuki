@@ -24,6 +24,7 @@ from yuki.llm.openai_compatible import OpenAICompatibleProvider
 from yuki.llm.vendor_policy import ChatWireOptions
 from yuki.model_runtime.models import ModelProtocol, ModelTask
 from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import load_model_profile_catalog
 from yuki.model_runtime.secrets import model_secrets_path, read_model_secrets
 from yuki.persistence.models import RuntimeConfigOverrideModel
 
@@ -186,6 +187,131 @@ async def test_offline_migration_preserves_each_enabled_web_mode(
             "result": json.loads(result.stdout),
             "mode": saved["document"]["search"]["mode"],
             "upstream_requests": wire["requests"],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "source,stored,same_raw_thinking",
+    [
+        ("dotenv", "absent", False),
+        ("process", "absent", False),
+        ("dotenv", "global", False),
+        ("process", "global", False),
+        ("dotenv", "null", False),
+        ("process", "null", False),
+        ("defaults", "absent", False),
+        ("process", "absent", True),
+    ],
+)
+async def test_explicit_environment_migrates_by_original_source_precedence(
+    database, tmp_path, embedding_http, monkeypatch, source, stored, same_raw_thinking
+):
+    url, wire = embedding_http
+    directory = tmp_path / "deployment"
+    path, _, values = deployment(database, directory, url)
+    path.write_text(path.read_text().replace("[routes]", 'thinking_mode = "disabled"\n[routes]'))
+    if same_raw_thinking:
+        path.write_text(path.read_text().replace("[routes]", "thinking_enabled = true\n[routes]"))
+    environment = {
+        "LLM_TEMPERATURE": "0.37",
+        "LLM_MAX_OUTPUT_TOKENS": "411",
+        "LLM_THINKING_ENABLED": "true",
+    }
+    for name in environment:
+        monkeypatch.delenv(name, raising=False)
+    if source == "dotenv":
+        with (directory / ".env").open("a", encoding="utf-8") as stream:
+            stream.write("\n" + "\n".join(f"{key}={value}" for key, value in environment.items()))
+    elif source == "process":
+        for key, value in environment.items():
+            monkeypatch.setenv(key, value)
+    settings = Settings(_env_file=directory / ".env")
+    fields = {"llm_temperature", "llm_max_output_tokens", "llm_thinking_enabled"}
+    assert fields.intersection(settings.model_fields_set) == (
+        set() if source == "defaults" else fields
+    )
+    if stored != "absent":
+        for key, value in (
+            ("llm.temperature", 0.49),
+            ("llm.max_output_tokens", 771),
+            ("llm.thinking_enabled", False),
+        ):
+            await override(database, key, None if stored == "null" else value)
+    before = await ConfigFileService(settings).read()
+    result = await migrate(directory, values, before["revision"])
+    assert result.returncode == 0, result.stderr
+    saved = await ConfigFileService(settings).read()
+    document = saved["document"]
+    catalog = load_model_profile_catalog(path, web_mode=settings.web.mode)
+    profile = catalog.profiles[document["routes"]["chat_agent"]]
+    expected = (
+        (0.21, 301, False)
+        if source == "defaults"
+        else (0.49, 771, False)
+        if stored == "global"
+        else (0.37, 411, True)
+    )
+    assert (
+        profile.default_temperature,
+        profile.default_max_output_tokens,
+        profile.thinking_enabled,
+    ) == expected
+    assert document["routes"]["chat_agent"] == document["routes"]["plugin_agent_session"]
+    assert document["profiles"]["main"] == before["document"]["profiles"]["main"]
+    assert document["routes"]["memory_dream"] == "main"
+    if source == "defaults":
+        assert document["routes"]["chat_agent"] == "main"
+        assert len(document["profiles"]) == 1
+    else:
+        assert document["routes"]["chat_agent"] != "main"
+    payload = json.loads(result.stdout)
+    assert payload["consumed_env_fields"] == ([] if source == "defaults" else sorted(environment))
+    assert wire["requests"] == []
+    evidence(
+        f"explicit-{source}-{stored}",
+        {
+            "result": payload,
+            "source_fields": sorted(fields.intersection(settings.model_fields_set)),
+            "selected": profile.model_dump(mode="json"),
+            "upstream_requests": wire["requests"],
+        },
+    )
+
+
+async def test_retired_environment_sources_cannot_replay_over_later_profile_edit(
+    database, tmp_path, embedding_http, monkeypatch
+):
+    url, _ = embedding_http
+    directory = tmp_path / "deployment"
+    path, _, values = deployment(database, directory, url)
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "411")
+    await override(database, "llm.max_output_tokens", 771)
+    settings = Settings(_env_file=directory / ".env")
+    current = await ConfigFileService(settings).read()
+    first = await migrate(directory, values, current["revision"])
+    assert first.returncode == 0, first.stderr
+    saved = await ConfigFileService(settings).read()
+    selected = saved["document"]["routes"]["chat_agent"]
+    assert saved["document"]["profiles"][selected]["default_max_output_tokens"] == 771
+    assert json.loads(first.stdout)["consumed_env_fields"] == ["LLM_MAX_OUTPUT_TOKENS"]
+    monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS")
+    files = ConfigFileService(Settings(_env_file=directory / ".env"))
+    document = saved["document"]
+    document["profiles"][selected]["default_max_output_tokens"] = 888
+    revision = await files.save(saved["revision"], {"document": document})
+    written = path.read_bytes(), model_secrets_path(path).read_bytes()
+    repeated = await migrate(directory, values, revision)
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout)["consumed_env_fields"] == []
+    assert written == (path.read_bytes(), model_secrets_path(path).read_bytes())
+    evidence(
+        "explicit-sources-retired",
+        {
+            "first": json.loads(first.stdout),
+            "repeated": json.loads(repeated.stdout),
+            "later_profile_output_tokens": 888,
+            "bundle_unchanged_on_repeat": True,
         },
     )
 

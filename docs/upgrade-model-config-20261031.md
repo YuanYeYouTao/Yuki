@@ -23,9 +23,11 @@
 
    已知预期 revision 时可显式传 `--revision <revision>`；否则命令读取本次快照 revision，
    随后仍由原 writer 检查 CAS。版本冲突或无法确认结果时返回非零，不能当作迁移成功。
-4. 检查退出码、JSON `ok/revision/migrated/migrated_profiles`，以及保存后 bundle 的有效性、
+4. 检查退出码、JSON `ok/revision/migrated/migrated_profiles/consumed_env_fields`，以及保存后 bundle 的有效性、
    连接启停、地址、模型和已保存密钥状态。输出不包含密钥或旧配置值。
    非聊天连接如实需要重启，`apply_mode` 为 `restart`。
+   首次成功保存并清退数据库旧行后，从实际 `.env`、Compose 或进程环境来源中退休
+   `consumed_env_fields` 列出的旧聊天变量。命令只报告变量名，不自动编辑任意用户文件。
 5. 若使用挂载副本，确认原文件仍是备份时版本，再应用经过验证的配置与数据库结果，保留原
    权限及所有权。只启动 Bot，分别验证健康、实际配置加载和自然业务流量；离线迁移成功不证明
    真实供应商请求或账单已经验收。
@@ -37,13 +39,15 @@
 `disabled`，不会因为保存 Tavily Key 或搜索后端而意外开启联网。已有段缺少 `mode` 时保持
 旧模式来源；只有用户显式选择模式才解除这一间接来源。
 缺少原功能所需地址或凭据时保留实际关闭状态，不回写空密钥；原有别名不被不同密钥覆盖。
-迁移后的再次执行按已有段、别名和实际参数收敛，不无条件重写文件。
+已有段、别名和实际参数会保留。消费的旧聊天环境来源退休后，再次执行不会用旧来源覆盖用户
+后续的 Profile 编辑；仍保留这些旧变量时，不能宣称重跑无条件幂等。
 
 bundle 保存确认后，命令在一个短 SQLite writer 内按原行 ID、key、scope 和 version
 清退本次消费的旧聊天覆盖（包括已识别的 `NULL` 空覆盖）；原审计和控制回执全部保留。
 文件保存与旧行清退不是同一原子事务。若旧行并发变化或清退无法确认，返回非零、
 `partial=true` 和已保存的 bundle revision，不声称整体成功，也不在 writer 中等待文件 I/O。
-此时先核对该 bundle 和旧行，再显式重试；不重复创建 Profile 或用旧值盖回迁移后的用户编辑。
+此时先核对已保存 revision、该 bundle 和旧行，再决定如何处理实际环境来源及显式重试；
+不能把未知结果当作完全失败后盲目重跑。
 
 ## 旧聊天参数
 
@@ -51,11 +55,17 @@ Main 不再把构造时的 `LLM_TEMPERATURE/LLM_MAX_OUTPUT_TOKENS/LLM_THINKING_E
 作为每次调用的默认值注入。普通请求使用所选 Profile 的默认值，调用者明确传入的单次参数
 仍由原 `TaskModelExecutor` 处理。旧 `llm.*` 重复覆盖入口及无用的指纹字段退出。
 
-迁移只使用实际持久化的全局 `llm.temperature/llm.max_output_tokens/llm.thinking_enabled`
-覆盖，不把 Settings 的构造默认反盖 Profile 的显式配置。`NULL` 没有提交明确参数，保持原
-Profile；不生成“无限输出”或额外 Profile。真正改变参数的旧值迁入 `chat_agent` 与
+迁移通过原始 Settings 的 `model_fields_set` 识别 `.env` 或进程环境实际显式提供的
+`LLM_TEMPERATURE/LLM_MAX_OUTPUT_TOKENS/LLM_THINKING_ENABLED`，不把 Settings 构造默认值
+反盖 Profile。实际全局数据库覆盖按原优先级高于显式环境来源。
+旧三项 registry 不接受 `NULL`：此类旧行原本会被 resolver 忽略，继续使用环境或构造默认，
+不能将它误称为 executor 已收到 `None`。迁移忽略这类无效值，有显式环境来源时保留该值；
+没有显式来源时保留 Profile，不生成“无限输出”或额外 Profile。
+真正改变参数的旧值迁入 `chat_agent` 与
 `plugin_agent_session` 对应 Profile。如果该 Profile 同时服务其他用途或搜索，迁移仅克隆
-配置数据并重指这两条 Agent 路由，原 Profile 和其他用途保持原参数；没有运行时 fallback 链。
+配置数据并重指这两条 Agent 路由，原 Profile 和其他用途保持原参数。思考值按原解析后的
+Profile 比较；迁入的明确思考选择会解除该目标 Profile 的旧 `thinking_mode` 间接覆盖，
+未消费的 Profile 模式保持原样。没有运行时 fallback 链。
 
 人物／群覆盖不能无损折叠为本轮的全局模型路由。发现非空的 group/user 旧值时，命令在写入前
 返回 `scoped_model_overrides`，只列 key、scope、count，不输出值，也不改文件或数据库。

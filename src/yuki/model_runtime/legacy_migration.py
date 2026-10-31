@@ -25,15 +25,20 @@ from yuki.model_runtime.connections import (
     VisionConnection,
 )
 from yuki.model_runtime.models import ModelProfile
+from yuki.model_runtime.profiles import _resolve_profile_environment, model_profile_environment
 from yuki.model_runtime.secrets import read_model_secrets
 from yuki.persistence.database import Database
 from yuki.persistence.instance_lock import ApplicationAlreadyActiveError, SQLiteApplicationLock
 from yuki.persistence.models import RuntimeConfigOverrideModel
 
 _PARAMETERS = {
-    "llm.temperature": "default_temperature",
-    "llm.max_output_tokens": "default_max_output_tokens",
-    "llm.thinking_enabled": "thinking_enabled",
+    "llm.temperature": ("default_temperature", "llm_temperature", "LLM_TEMPERATURE"),
+    "llm.max_output_tokens": (
+        "default_max_output_tokens",
+        "llm_max_output_tokens",
+        "LLM_MAX_OUTPUT_TOKENS",
+    ),
+    "llm.thinking_enabled": ("thinking_enabled", "llm_thinking_enabled", "LLM_THINKING_ENABLED"),
 }
 _AGENT_ROUTES = ("chat_agent", "plugin_agent_session")
 
@@ -56,7 +61,15 @@ class _LegacyOverride:
 
 async def _legacy_inputs(
     settings: Settings, database: Database
-) -> tuple[Settings, list[_LegacyOverride], list[_LegacyOverride]]:
+) -> tuple[Settings, dict[str, Any], list[_LegacyOverride], list[str]]:
+    # Capture actual startup sources before rebuilding Settings from model_dump,
+    # which would mark every constructor default as explicitly supplied.
+    values = {
+        key: getattr(settings, field)
+        for key, (_, field, _) in _PARAMETERS.items()
+        if field in settings.model_fields_set and getattr(settings, field) is not None
+    }
+    consumed_env_fields = sorted(_PARAMETERS[key][2] for key in values)
     runtime = RuntimeConfigService(settings=settings, database=database)
     await runtime.initialize()
     startup = await runtime.startup_settings_updates()
@@ -75,7 +88,8 @@ async def _legacy_inputs(
             facts.append(
                 _LegacyOverride(row.id, row.version, row.config_key, row.scope_type, value)
             )
-    # NULL did not submit an explicit parameter; its retired current row can still be cleared.
+    # The original non-nullable registry ignored NULL records and used env/default.
+    # Their current rows can still be retired by their original version facts.
     overrides = [row for row in facts if row.value is not None]
     conflicts = Counter((row.key, row.scope) for row in overrides if row.scope != "global")
     if conflicts:
@@ -86,15 +100,21 @@ async def _legacy_inputs(
                 for (key, scope), count in sorted(conflicts.items())
             ],
         )
-    for override in overrides:
-        if override.key in _PARAMETERS:
-            field = ModelProfile.model_fields[_PARAMETERS[override.key]]
+    values.update((row.key, row.value) for row in overrides)
+    for key, value in values.items():
+        if key in _PARAMETERS:
+            field = ModelProfile.model_fields[_PARAMETERS[key][0]]
             TypeAdapter(field.rebuild_annotation(), config=ConfigDict(strict=True)).validate_python(
-                override.value
+                value
             )
         else:
-            startup["llm_model"] = override.value
-    return Settings(_env_file=None, **{**settings.model_dump(), **startup}), overrides, facts
+            startup["llm_model"] = value
+    return (
+        Settings(_env_file=None, **{**settings.model_dump(), **startup}),
+        values,
+        facts,
+        consumed_env_fields,
+    )
 
 
 async def _retire_overrides(database: Database, facts: list[_LegacyOverride]) -> None:
@@ -121,22 +141,29 @@ async def _retire_overrides(database: Database, facts: list[_LegacyOverride]) ->
             raise LegacyMigrationError("legacy_changed")
 
 
-def _migrate_parameters(document: dict[str, Any], overrides: list[_LegacyOverride]) -> list[str]:
+def _migrate_parameters(
+    document: dict[str, Any], values: dict[str, Any], *, environment: dict[str, str]
+) -> list[str]:
     profiles, routes = document["profiles"], document["routes"]
     changed = []
-    if any(row.key == "llm.model" for row in overrides):
+    if "llm.model" in values:
         for name, profile in profiles.items():
             if profile.get("model_env") == "LLM_MODEL":
-                profile["model"] = next(row.value for row in overrides if row.key == "llm.model")
+                profile["model"] = values["llm.model"]
                 del profile["model_env"]
                 changed.append(name)
-    parameters = {_PARAMETERS[row.key]: row.value for row in overrides if row.key in _PARAMETERS}
+    parameters = {_PARAMETERS[key][0]: value for key, value in values.items() if key in _PARAMETERS}
     by_profile: dict[str, list[str]] = defaultdict(list)
     for route in _AGENT_ROUTES:
         by_profile[routes[route]].append(route)
     for name, agent_routes in by_profile.items():
         original = profiles[name]
-        updates = {key: value for key, value in parameters.items() if original.get(key) != value}
+        effective = ModelProfile.model_validate(
+            {"id": name, **_resolve_profile_environment(original, environment=environment)}
+        )
+        updates = {
+            key: value for key, value in parameters.items() if getattr(effective, key) != value
+        }
         if not updates:
             continue
         shared = any(
@@ -158,6 +185,8 @@ def _migrate_parameters(document: dict[str, Any], overrides: list[_LegacyOverrid
             for route in agent_routes:
                 routes[route] = target
         profiles[target].update(updates)
+        if "thinking_enabled" in updates:
+            profiles[target].pop("thinking_mode", None)
         changed.append(target)
     return changed
 
@@ -169,7 +198,7 @@ async def migrate_legacy(
     database = Database(settings.database_url)
     try:
         lock.acquire()
-        active, overrides, facts = await _legacy_inputs(settings, database)
+        active, values, facts, consumed_env_fields = await _legacy_inputs(settings, database)
         files = ConfigFileService(active)
         current = await files.read()
         if expected_revision is None:
@@ -240,11 +269,12 @@ async def migrate_legacy(
             migrated.append("asr")
         if "search" not in document:
             document["search"] = SearchConnection(
-                mode=active.web.mode,
-                tavily_api_key_env=alias("search", active.tavily_api_key)
+                mode=active.web.mode, tavily_api_key_env=alias("search", active.tavily_api_key)
             ).model_dump(mode="json")
             migrated.append("search")
-        profiles = _migrate_parameters(document, overrides)
+        profiles = _migrate_parameters(
+            document, values, environment=model_profile_environment(active)
+        )
         revision = current["revision"]
         if migrated or profiles or facts:
             revision = await files.save(
@@ -256,6 +286,7 @@ async def migrate_legacy(
             "migrated": migrated,
             "migrated_profiles": profiles,
             "apply_mode": "restart",
+            "consumed_env_fields": consumed_env_fields,
         }
         if facts:
             try:
