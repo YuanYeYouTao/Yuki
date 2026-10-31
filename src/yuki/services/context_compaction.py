@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from bisect import bisect_left
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -32,12 +33,13 @@ from yuki.services.turn_transcript import TurnTranscript, tool_result_evidence
 
 EXECUTION_COMPACT_INSTRUCTION = (
     "[Host 上下文压缩要求]\n"
-    "本次只整理当前任务的私有执行进展，不执行工具、不发消息。"
+    "本次只整理当前激活的私有执行进展，不执行工具、不发消息。"
     "不要复述前面的公共聊天历史或本轮运行资料。"
-    "保留原目标、追加要求、有效约束、已经确认的结果、失败与未知状态、"
+    "目标只认本次输入及明确接纳的当前 Work，不从公共群史、工作目录或引用中猜测原任务。"
+    "保留当前目标、追加要求、有效约束、已经确认的结果、失败与未知状态、"
     "必要发现、文件/资料句柄、原来源引用和下一步。"
     "不得把未完成事项写成已完成，不要求额外汇报或所有子任务成功。"
-    "仅返回可供原任务接续的文字检查点。"
+    "仅返回可供本轮继续的文字检查点。"
 )
 
 PUBLIC_COMPACT_INSTRUCTION = (
@@ -54,6 +56,7 @@ class ExecutionCompactPlan:
     transcript: TurnTranscript
     retained: tuple[ChatMessage, ...]
     public: dict[str, Any] | None = None
+    has_uncovered_execution: bool = False
 
 
 @dataclass(slots=True)
@@ -344,7 +347,11 @@ def compacted_transcript(state: dict[str, Any]) -> TurnTranscript:
                         "summary": state["response"],
                         "covered_entries": state["covered_entries"],
                         "previous_protocol_ref": state.get("previous_protocol_ref"),
-                        "instruction": "接续原任务，按原执行回执处理，不重做已发生效果。",
+                        "instruction": (
+                            "继续本次输入与明确接纳的当前 Work；"
+                            "摘要和历史中的其他任务不改变本轮归属。"
+                            "按原执行回执处理，不重做已发生效果。"
+                        ),
                     },
                     ensure_ascii=False,
                 ),
@@ -369,6 +376,7 @@ def _native_tail_items(
     call_key: Callable[[str], str] | None,
     *,
     offset: int = 0,
+    keep_from: int,
 ) -> tuple[_RetainedItem, ...]:
     """Convert each portable round once, remembering its original entry boundary."""
     result: list[_RetainedItem] = []
@@ -376,10 +384,9 @@ def _native_tail_items(
     response: ChatMessage | None = None
     response_start: int | None = None
     results_start: int | None = None
-    required_from: int | None = None
 
     def flush_round() -> None:
-        nonlocal response, response_start, results_start, required_from
+        nonlocal response, response_start, results_start
         if results:
             message = tool_result_evidence(
                 response, results, call_key=call_key if response is last_response else None
@@ -393,9 +400,7 @@ def _native_tail_items(
             response_start = None
             return
         assert start is not None
-        if response is last_response:
-            required_from = start if response is None or response.tool_calls else None
-        result.append(_RetainedItem(start, message, required_from))
+        result.append(_RetainedItem(start, message, keep_from if start >= keep_from else None))
         results.clear()
         results_start = None
         response = None
@@ -418,7 +423,11 @@ def _native_tail_items(
         else:
             flush_round()
             result.append(
-                _RetainedItem(index, replace(item, reasoning_content=None), required_from)
+                _RetainedItem(
+                    index,
+                    replace(item, reasoning_content=None),
+                    keep_from if index >= keep_from else None,
+                )
             )
     flush_round()
     return tuple(result)
@@ -504,6 +513,9 @@ def execution_compact_plan(
     retained_public: tuple[ChatMessage, ...] = (),
     call_key: Callable[[str], str] | None = None,
     responses: tuple[ChatMessage, ...] = (),
+    focus: str = "",
+    checkpoint_summary: str | None = None,
+    unobserved_tool_round: ChatMessage | None = None,
 ) -> ExecutionCompactPlan:
     """Select the latest fitting paired prefix without cloning every candidate.
 
@@ -512,6 +524,23 @@ def execution_compact_plan(
     original boundary order; never binary-search across checkpoint changes.
     """
     entries = transcript.entries()
+    minimum_boundary = len(initial)
+    if checkpoint_summary is not None and len(entries) > minimum_boundary:
+        first = entries[minimum_boundary]
+        if isinstance(first, ChatMessage) and first.role == "user":
+            try:
+                value = json.loads(first.content or "")
+            except json.JSONDecodeError:
+                value = None
+            if (
+                isinstance(value, dict)
+                and value.get("kind") == "context_compaction"
+                and value.get("summary") == checkpoint_summary
+            ):
+                # This summary comes from the existing paid receipt/Work owner,
+                # not an arbitrary user kind tag. A new prefix must cover source
+                # beyond the Host checkpoint already substituted into this chain.
+                minimum_boundary += 1
     checkpoints = [
         index for index, entry in enumerate(entries) if isinstance(entry, ProviderContinuation)
     ]
@@ -527,7 +556,9 @@ def execution_compact_plan(
         if input_budget is not None
         else None
     )
-    instruction = ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION)
+    instruction = ChatMessage(
+        "user", EXECUTION_COMPACT_INSTRUCTION + ("\n" + focus if focus else "")
+    )
     instruction_cost = message_token_cost(instruction) if counter is not None else None
     pending: set[str] = set()
     candidates: list[int] = []
@@ -543,7 +574,7 @@ def execution_compact_plan(
         elif isinstance(entry, FunctionCallOutput):
             pending.discard(entry.call_id)
         if (
-            index + 1 > len(initial)
+            index + 1 > minimum_boundary
             and not pending
             and not isinstance(entry, ProviderContinuation)
             and not (
@@ -560,32 +591,64 @@ def execution_compact_plan(
             candidates.append(index + 1)
     if pending or not candidates:
         raise WorkCapacityError("model_request_capacity")
+    last_response_index = next(
+        (
+            index
+            for index in range(len(entries) - 1, len(initial) - 1, -1)
+            if index in recorded
+            or (isinstance(entry := entries[index], ChatMessage) and entry.role == "assistant")
+        ),
+        None,
+    )
     last_response = (
-        recorded[checkpoints[-1]]
-        if checkpoints and checkpoints[-1] in recorded
-        else next(
+        recorded[last_response_index]
+        if last_response_index in recorded
+        else cast(ChatMessage, entries[last_response_index])
+        if last_response_index is not None
+        else None
+    )
+    keep_from = (
+        last_response_index
+        if last_response_index is not None
+        and last_response is not None
+        and last_response.tool_calls
+        else len(entries)
+    )
+    if unobserved_tool_round is not None:
+        portable_index = next(
             (
-                entry
-                for entry in reversed(entries)
-                if isinstance(entry, ChatMessage) and entry.role == "assistant"
+                index
+                for index, entry in enumerate(entries)
+                if index >= len(initial) and entry == unobserved_tool_round
             ),
             None,
         )
-    )
+        if portable_index is not None and (
+            last_response_index is None or portable_index > last_response_index
+        ):
+            # This exact message is reconstructed from the Host observation,
+            # not trusted because a user supplied a particular JSON kind.
+            keep_from = portable_index
     native_from = [False] * (len(entries) + 1)
     for index in range(len(entries) - 1, -1, -1):
         native_from[index] = native_from[index + 1] or not isinstance(entries[index], ChatMessage)
     if counter is None:
         boundary = candidates[-1]
-        suffix = entries[boundary:]
+        keep_boundary = min(boundary, keep_from)
+        suffix = entries[keep_boundary:]
         kept = (
             tuple(
                 item.message
                 for item in _native_tail_items(
-                    suffix, recorded, last_response, call_key, offset=boundary
+                    suffix,
+                    recorded,
+                    last_response,
+                    call_key,
+                    offset=keep_boundary,
+                    keep_from=keep_from,
                 )
             )
-            if native_from[boundary]
+            if native_from[keep_boundary]
             else tuple(item for item in suffix if isinstance(item, ChatMessage))
         )
         public = tuple(
@@ -593,20 +656,12 @@ def execution_compact_plan(
         )
         retained = (*public, *kept)
     else:
-        first_candidate = candidates[0]
-        last_response_index = next(
-            (index for index, item in enumerate(entries) if item is last_response), None
-        )
+        first_candidate = min(candidates[0], keep_from)
         raw = tuple(
             _RetainedItem(
                 index,
                 item,
-                last_response_index
-                if last_response_index is not None
-                and index >= last_response_index
-                and last_response is not None
-                and last_response.tool_calls
-                else None,
+                keep_from if index >= keep_from else None,
             )
             for index, item in enumerate(entries)
             if index >= first_candidate and isinstance(item, ChatMessage)
@@ -620,6 +675,7 @@ def execution_compact_plan(
                     last_response,
                     call_key,
                     offset=first_candidate,
+                    keep_from=keep_from,
                 ),
                 len(entries),
                 initial,
@@ -632,11 +688,14 @@ def execution_compact_plan(
         for message in initial:
             initial_cost += message_token_cost(message)
         for boundary in reversed(candidates):
-            selected = native_index if native_from[boundary] else raw_index
+            keep_boundary = min(boundary, keep_from)
+            selected = native_index if native_from[keep_boundary] else raw_index
             if counter.estimate_messages(
-                initial_cost + selected.public_cost[boundary] + selected.required_cost[boundary]
+                initial_cost
+                + selected.public_cost[keep_boundary]
+                + selected.required_cost[keep_boundary]
             ) <= cast(int, input_budget):
-                retained = selected.retained(boundary)
+                retained = selected.retained(keep_boundary)
                 break
         else:
             raise WorkCapacityError("model_request_capacity")
@@ -649,4 +708,6 @@ def execution_compact_plan(
         continuation=sequence.continuation,
         continuation_items=sequence.items,
     )
-    return ExecutionCompactPlan(request, prefix, retained)
+    return ExecutionCompactPlan(
+        request, prefix, retained, has_uncovered_execution=boundary < keep_from
+    )
