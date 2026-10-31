@@ -165,11 +165,11 @@ def actual_browser(tmp_path, monkeypatch):
     )
     try:
         deadline = time.monotonic() + 15
-        while not (profile / "DevToolsActivePort").exists():
+        active_port = profile / "DevToolsActivePort"
+        while not (active_port.exists() and (port := active_port.read_text().partition("\n")[0])):
             assert process.poll() is None
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        port = (profile / "DevToolsActivePort").read_text().splitlines()[0]
         monkeypatch.setattr(yuki_computer, "CDP_ADDRESS", "http://127.0.0.1:" + port)
         monkeypatch.setenv("HOME", str(tmp_path))
         yield Browser()
