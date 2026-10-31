@@ -14,6 +14,7 @@ from tests.unit.test_computer_control import manager_at
 
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.computer import ClientComputer
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.computer_keys import release_key
 
@@ -39,6 +40,9 @@ async def test_real_revocation_returns_same_release_key_once_and_keeps_watch_ali
     app_env, database, tmp_path, revocation, observation, monkeypatch
 ):
     device, person = await owner(app_env, database)
+    async with database.immediate_session() as session:
+        original = await session.get(CanonicalPersonModel, person)
+        original.is_superuser = True
     principal = await app_env.identity.authenticate(device["token"])
     character = CharacterRepository(app_env.identity, app_env.harness.settings)
     await character.initialize("Computer authority test")

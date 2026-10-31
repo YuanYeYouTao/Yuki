@@ -53,7 +53,7 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 
 健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
 角色名称与单 SOUL 沿同一领域服务发布，保原 UUID、profile revision、文件 CAS 和实际生效结果；
-不会编辑工具或授权规则，也不重写已付请求。有效配对的个人客户端可编辑共享角色资料、头像和 SOUL；旧 character owner 授予入口已退出，历史授权行与回执保留。operator 的独立控制凭据及能力不因此改变。
+不会编辑工具或授权规则，也不重写已付请求。个人客户端的共享资料／头像写入与 SOUL 原文读取、修改和重载使用 Person 当前超管资格；旧 character owner 授予入口已退出，历史授权行与回执保留且不自动升级。operator 的独立控制凭据及能力不因此改变。
 平台项来自已登记 Provider 的平台声明、实际 Presence 与原生网关 owner，公共 `/health`
 的 `gateways` 与管理健康行复用同一事实投影。旧 `onebot_connected`、`telegram_gateway`
 字段保留原形状；未知健康证据保持 null。数据库分别报告 reader 可读与 writer 接受写入。

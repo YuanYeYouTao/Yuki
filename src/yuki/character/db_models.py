@@ -1,4 +1,4 @@
-"""One character per database; editing grants belong to canonical Persons."""
+"""One character per database; retired grants remain historical records."""
 
 from datetime import datetime
 

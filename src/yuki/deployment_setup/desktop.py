@@ -98,8 +98,6 @@ class DesktopPairing(BaseModel):
     display_name: str
     person_request_id: UUID
     pair_request_id: UUID
-    # Older Desktop setup inputs include this UUID; pairing no longer grants a role.
-    owner_request_id: UUID | None = None
     person_id: UUID | None = None
 
 

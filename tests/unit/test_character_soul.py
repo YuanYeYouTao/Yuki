@@ -15,6 +15,7 @@ from yuki.character.soul import CharacterSoul, document_revision
 from yuki.client_api.http import ClientApi, attach_client_api
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
+from yuki.identity.db_models import CanonicalPersonModel
 
 
 @pytest.fixture
@@ -23,6 +24,9 @@ async def character(database, tmp_path):
     path.write_bytes(b"Hello {{name}}\r\n")
     settings = make_settings(database.url, soul_file=path)
     identity, _person, issued = await code_for(database)
+    async with database.immediate_session() as session:
+        person = await session.get(CanonicalPersonModel, _person)
+        person.is_superuser = True
     paired = await identity.pair(issued["code"], "owner")
     principal = await identity.authenticate(paired["token"])
     repository = CharacterRepository(identity, settings)
@@ -51,7 +55,7 @@ async def test_empty_soul_survives_file_hot_activation_and_original_receipt(char
     assert cold.soul == "" and cold.active_soul_revision == settings.active_soul_revision
 
 
-async def test_shared_character_edit_ignores_and_preserves_retired_grants(character):
+async def test_retired_grants_do_not_authorize_shared_edits_and_remain_unchanged(character):
     from datetime import UTC, datetime
 
     from yuki.character.db_models import CharacterOwnerGrantModel
@@ -62,7 +66,7 @@ async def test_shared_character_edit_ignores_and_preserves_retired_grants(charac
     issuer = str(uuid4())
     async with repository.database.immediate_session() as session:
         person = await session.get(CanonicalPersonModel, principal.person_id)
-        assert not person.is_superuser
+        person.is_superuser = False
         session.add(
             CharacterOwnerGrantModel(
                 person_id=person.id,
@@ -72,8 +76,7 @@ async def test_shared_character_edit_ignores_and_preserves_retired_grants(charac
             )
         )
     original = (await client.get("/client/v1/character")).json()["data"]
-    assert original["viewer"]["is_owner"] is True
-    assert (await repository.get())["viewer"]["is_owner"] is False
+    assert "viewer" not in original and "viewer" not in await repository.get()
     changed = await client.patch(
         "/client/v1/character",
         json={
@@ -82,7 +85,8 @@ async def test_shared_character_edit_ignores_and_preserves_retired_grants(charac
             "display_name": "Shared role",
         },
     )
-    assert changed.status_code == 200, changed.text
+    assert changed.status_code == 403, changed.text
+    assert (await client.get("/client/v1/character")).json()["data"] == original
     async with repository.database.read_session() as session:
         historical = await session.get(CharacterOwnerGrantModel, principal.person_id)
         assert historical.granted_by_principal == issuer
@@ -101,7 +105,7 @@ async def test_character_hints_follow_commits_and_stop_after_device_revocation(
         return fields["event"], json.loads(fields["data"])
 
     kind, initial = decode(await anext(stream))
-    assert kind == "sync" and initial["character"]["is_owner"]
+    assert kind == "sync" and "is_owner" not in initial["character"]
     assert initial["character"]["soul"]["active_revision"] == settings.active_soul_revision
     assert "content" not in json.dumps(initial["character"])
     pending = asyncio.create_task(anext(stream))

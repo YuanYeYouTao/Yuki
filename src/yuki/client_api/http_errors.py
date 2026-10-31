@@ -29,6 +29,7 @@ async def client_error_response(_request: Any, exc: Any) -> JSONResponse:
     status = {
         "unauthenticated": 401,
         "owner_required": 403,
+        "forbidden": 403,
         "not_found": 404,
         "validation_error": 422,
         "unavailable": 503,

@@ -82,7 +82,7 @@ class CharacterSoul:
         self, session: Any, principal: ClientPrincipal | None, operator_id: str | None
     ) -> ClientPrincipal | None:
         if principal is not None:
-            return await self.identity.require_principal(session, principal)
+            return await self.identity.require_superuser(session, principal)
         assert operator_id is not None
         return None
 

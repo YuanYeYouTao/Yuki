@@ -79,7 +79,7 @@ async def test_desktop_reference_restarts_same_port_and_keeps_original_device_re
                 me = (await client.get("client/v1/me", headers=owner)).json()["data"]
                 profile = (await client.get("client/v1/character", headers=owner)).json()["data"]
                 soul = (root / "character" / "SOUL.md").read_bytes()
-                assert profile["viewer"]["is_owner"] is True
+                assert "viewer" not in profile and me["is_superuser"] is True
                 await stop(client)
 
             for revoked in (False, True):
@@ -96,7 +96,7 @@ async def test_desktop_reference_restarts_same_port_and_keeps_original_device_re
                     current = (await client.get("client/v1/character", headers=observer)).json()[
                         "data"
                     ]
-                    assert current["viewer"]["is_owner"] is True
+                    assert "viewer" not in current
                     assert current["id"] == profile["id"]
                     assert current["display_name"] == profile["display_name"]
                     assert (root / "character" / "SOUL.md").read_bytes() == soul
@@ -197,7 +197,7 @@ async def test_soul_reference_process_uses_paired_shared_access_files_and_person
                 assert renamed["display_name"] == "新名称" and renamed["id"] == profile["id"]
 
                 shared = await client.get("client/v1/character/soul", headers=nonowner)
-                assert shared.status_code == 200, shared.text
+                assert shared.status_code == 403, shared.text
                 document = (await client.get("client/v1/character/soul", headers=owner)).json()[
                     "data"
                 ]

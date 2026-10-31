@@ -1,7 +1,7 @@
 # 个人客户端 API
 
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
-聊天设备凭据解析当前 Person，保留原设备与 App 入口。有效配对的客户端均可使用共享角色资料、头像、SOUL、角色电脑和 SELF 安排目录，不再叠加管理员或 character owner 资格。Person 私有资料、安排创建者、Work、Native 设备与实际电脑租约仍认原归属；个人 token 不替代 operator 控制凭据。公开服务沿部署提供 HTTPS。
+聊天设备凭据解析当前 Person，保留原设备与 App 入口。角色资料与头像写入、SOUL 原文读写／重载、服务器电脑详细环境／画面／文件／控制和 SELF 安排目录要求该设备原 Person 当前为超管；公开名称／头像、本人安排和基础电脑可用性仍可读取。Person 私有资料、安排创建者、Work、Native 设备与实际电脑租约仍认原归属；个人 token 不替代 operator 控制凭据。公开服务沿部署提供 HTTPS。
 
 ## 本机 Agent 设备
 
@@ -41,9 +41,9 @@ Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_
 
 ## 角色资料与单 SOUL
 
-`GET /meta` 公开当前角色名称、API revision `7` 和实际能力声明，不推断未实现的客户端功能。
-有效设备读取 `GET /character` 并使用 `PATCH /character`，按原 UUID 和 profile revision 修改名称等资料。
-API7 的 `viewer.is_owner` 与 SSE `character.is_owner` 为旧客户端保留：有效 principal 投影为 true，未认证的公开资料投影为 false，不查询历史授权表，也不授予 Person 管理员资格。`character_owner_grants`、旧迁移及已保存回执只保留原历史；没有活授予或撤销入口。
+`GET /meta` 公开当前角色名称、API revision `8` 和实际能力声明，不推断未实现的客户端功能。
+有效设备读取 `GET /character`；当前 Person 超管使用 `PATCH /character` 按原 UUID 和 profile revision 修改名称等资料。
+revision 8 的 `GET /me.is_superuser` 来自共同 identity 的原设备、原 Person 与当前根 Person 资格，换账号不丢资格、账号转移不携带资格。删除活 `viewer.is_owner` 和 SSE `character.is_owner`；SOUL 管理变更提示仅向当前超管发送。新拒绝返回 `403 forbidden`。`character_owner_grants`、旧迁移及已保存回执只保留原历史；不查询它们授权，也不自动升级。历史回执中的旧 `owner_required` 仍按原事实返回。
 
 `GET /character/soul`、`PUT /character/soul` 和 `POST /character/soul/reload` 只处理同一份 `SOUL_FILE`。
 保存使用原 UUID、文件 hash CAS 和原子替换；写入与当前生效 hash 分别报告。
@@ -216,7 +216,7 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 上传与原聊天媒体共用 24 小时原件缓存，不设单文件、会话或全局经验容量配额；真实磁盘与平台传输失败照实返回。维护清理会在删除前核实际回执引用。
 `GET /conversations/{conversation_id}/events/{event_id}/attachments/{attachment_index}` 在原个人事件可见范围内下载原件，返回强 ETag；读取后重新核当前本人／入口／原事件授权及字节摘要。缺失或已经清理的过期原件返回 not_found，不通过重新下载来重置期限。事件 attachment_index 是媒体序号，segment_index 是原消息段序号；ASR 的 segment_index 只与后者关联。普通事件投影不为可用性提示扫描或 hash 原文件；客户端实际下载以该 GET 回执为准。
 
-临时附件下载可返回 `X-Yuki-Expires-At`，值为原件实际回收时间的UTC ISO字符串。它供客户端到点重新查证来源；已接纳原件仍存在且获准读取时可继续打开，不将该时间变成新的授权截止线。稳定artifact没有这个临时TTL。桌面播放器沿已校验的精确缓存版本作本地Range读取，seek不重复下载或hash整件文件；新的打开继续核原来源资格。Client API revision保持7。
+临时附件下载可返回 `X-Yuki-Expires-At`，值为原件实际回收时间的UTC ISO字符串。它供客户端到点重新查证来源；已接纳原件仍存在且获准读取时可继续打开，不将该时间变成新的授权截止线。稳定artifact没有这个临时TTL。桌面播放器沿已校验的精确缓存版本作本地Range读取，seek不重复下载或hash整件文件；新的打开继续核原来源资格。Client API revision 为 8；此媒体读取合同不变。
 
 已接纳消息的原件通过只读目录映射在共享沙箱 `/inputs/media-cache`，各会话的 Agent 均可按需读取或复制收藏。Main 首次输入仅有附件索引和资料，图片、视频、贴纸及普通文件均不自动展开；语音沿原 ASR 配置独立处理。
 账本仅保存 media_id 和元数据，沙箱路径仅在当前运行资料提供；媒体字节及 Base64 不进入公开事件。设备上传、绑定与下载 API 的身份仍沿原合同，不因共享 Agent 环境改为匿名上传或公开下载。

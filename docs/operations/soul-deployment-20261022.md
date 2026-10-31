@@ -46,8 +46,8 @@ docker compose up -d bot
 
 ## 编辑与文件权限
 
-有效配对的客户端或获准 operator 使用现有角色入口编辑单 SOUL，或直接修改文件后显式 reload。
-客户端不另核角色 owner 或管理员；设备和 Person 失效仍即时生效。operator 读取需显式声明
+Person 当前超管的有效聊天设备或获准 operator 使用现有角色入口读取、编辑和重载单 SOUL；具有文件权限的操作员也可直接修改原文件后显式 reload。
+客户端每次沿共同 identity 核原设备、原 Person 和当前根 Person 的有效性及当前超管资格；撤权即时生效。operator 读取需显式声明
 `control.character.read`，修改和重载需 `control.character.mutate`。既有 operator 不自动扩权，
 维护者在自己的 `CONTROL_OPERATORS_FILE` 中明确选择。历史 owner 授权行保留，活授予和撤销入口已退出。
 编辑版本和原请求回执用于报告真实写入与生效结果；空 SOUL 不会自动填回模板。

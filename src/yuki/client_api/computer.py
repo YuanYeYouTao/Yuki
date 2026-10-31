@@ -22,6 +22,7 @@ from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
 from yuki.client_api.rfb import RfbInputFilter, RfbProtocolError
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import current_person_id
 from yuki.runtime.work_schema_v1 import work
@@ -63,7 +64,7 @@ class ClientComputer:
 
     async def authenticate(self, principal: ClientPrincipal) -> ClientPrincipal:
         async with self.identity.database.read_session() as reader:
-            return await self.identity.require_principal(reader, principal)
+            return await self.identity.require_superuser(reader, principal)
 
     async def rpc(self, method: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.sandbox.execute(method, args or {}, request_id=str(uuid4()))
@@ -90,6 +91,7 @@ class ClientComputer:
         )
         async with self.identity.database.read_session() as reader:
             principal = await self.identity.require_principal(reader, principal)
+            privileged = await person_is_superuser(reader, principal.source_person_id)
         available = "error" not in status and type(status.get("ready")) is bool
         known_control = snapshot.get("control") if "error" not in snapshot else None
         return {
@@ -97,12 +99,12 @@ class ClientComputer:
             "display": display.get("display", "unavailable"),
             "generation": status.get("generation"),
             "control": self.control_view(known_control)
-            if isinstance(known_control, dict)
+            if privileged and isinstance(known_control, dict)
             else None,
             "help_requested": any(
                 item["kind"] == "help" for item in snapshot.get("help_requests", [])
             )
-            if "error" not in snapshot
+            if privileged and "error" not in snapshot
             else None,
         }
 
@@ -332,8 +334,10 @@ class ClientComputer:
             if control.get("holder") != "human":
                 return
             async with self.identity.database.read_session() as reader:
-                person = await reader.get(CanonicalPersonModel, control["person_id"])
                 device = await reader.get(ClientDeviceModel, control["device_id"])
+                person = await reader.get(
+                    CanonicalPersonModel, device.person_id if device else control["person_id"]
+                )
                 root = (
                     await reader.get(
                         CanonicalPersonModel, await current_person_id(reader, person.id)
@@ -348,6 +352,8 @@ class ClientComputer:
                     if not person.enabled or root is None or not root.enabled
                     else "device_revoked"
                     if device is None or device.revoked_at is not None
+                    else "superuser_revoked"
+                    if not await person_is_superuser(reader, person.id)
                     else None
                 )
             if reason:

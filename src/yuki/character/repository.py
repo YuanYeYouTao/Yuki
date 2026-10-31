@@ -41,7 +41,7 @@ def avatar_view(sha256: str | None) -> dict[str, Any] | None:
     }
 
 
-def profile_view(row: CharacterProfileModel, *, owner: bool) -> dict[str, Any]:
+def profile_view(row: CharacterProfileModel) -> dict[str, Any]:
     avatar = avatar_view(row.avatar_sha256)
     if avatar is not None:
         avatar.update(revision=row.avatar_revision, updated_at=utc_iso(row.updated_at))
@@ -55,7 +55,6 @@ def profile_view(row: CharacterProfileModel, *, owner: bool) -> dict[str, Any]:
         "avatar_revision": row.avatar_revision,
         "avatar": avatar,
         "default_avatar": avatar_view(row.default_avatar_sha256),
-        "viewer": {"is_owner": owner},
     }
 
 
@@ -135,7 +134,7 @@ class CharacterRepository:
         async with self.database.read_session() as session:
             if principal is not None:
                 await self.identity.require_principal(session, principal)
-            return profile_view(await self._profile(session), owner=principal is not None)
+            return profile_view(await self._profile(session))
 
     async def update(
         self,
@@ -148,7 +147,7 @@ class CharacterRepository:
     ) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
             current = (
-                await self.identity.require_principal(session, principal) if principal else None
+                await self.identity.require_superuser(session, principal) if principal else None
             )
             issuer = current.device_id if current else operator_id
             assert issuer is not None
@@ -165,7 +164,7 @@ class CharacterRepository:
                 if row.revision != expected_revision:
                     raise ClientError(
                         "version_conflict",
-                        details={"current": profile_view(row, owner=current is not None)},
+                        details={"current": profile_view(row)},
                     )
                 for key in ("display_name", "bio", "slug"):
                     if key in changes:
@@ -177,7 +176,7 @@ class CharacterRepository:
                     )
                 row.revision += 1
                 row.updated_at = datetime.now(UTC)
-                result = profile_view(row, owner=current is not None)
+                result = profile_view(row)
                 await self.identity.receipts.record_personal_command(
                     session,
                     principal_id=issuer,

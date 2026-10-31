@@ -73,7 +73,11 @@ async def serve(
             async with database.immediate_session() as session:
                 session.add_all(
                     CanonicalPersonModel(
-                        id=person_id, display_name=name, created_at=now, updated_at=now
+                        id=person_id,
+                        display_name=name,
+                        is_superuser=person_id == owner_id,
+                        created_at=now,
+                        updated_at=now,
                     )
                     for person_id, name in ((owner_id, "Owner"), (nonowner_id, "Visitor"))
                 )
@@ -347,6 +351,29 @@ async def serve(
             return await runtime.client_identity.revoke_for_operator(
                 body["device_id"], operator_id, str(uuid4())
             )
+
+        @api.post("/__test/superuser")
+        async def superuser(request: Request) -> dict:
+            body = await request.json()
+            async with database.immediate_session() as session:
+                person = await session.get(CanonicalPersonModel, body["person_id"])
+                assert person is not None
+                person.is_superuser = body["enabled"]
+            return {"is_superuser": person.is_superuser}
+
+        @api.post("/__test/retired-owner")
+        async def retired_owner() -> dict:
+            from yuki.character.db_models import CharacterOwnerGrantModel
+
+            async with database.immediate_session() as session:
+                session.add(
+                    CharacterOwnerGrantModel(
+                        person_id=nonowner_id,
+                        granted_by_principal=operator_id,
+                        granted_at=datetime.now(UTC),
+                    )
+                )
+            return {"person_id": nonowner_id}
 
         @api.post("/__test/shutdown")
         async def shutdown() -> dict:

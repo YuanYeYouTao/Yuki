@@ -35,11 +35,6 @@ class Meta(BaseModel):
     capabilities: list[str]
 
 
-class Viewer(BaseModel):
-    # API7 clients use this presentation bit; every valid paired client can edit.
-    is_owner: bool
-
-
 class Avatar(BaseModel):
     sha256: str
     sizes: dict[str, str]
@@ -60,7 +55,6 @@ class CharacterProfile(BaseModel):
     avatar_revision: int
     avatar: CurrentAvatar | None
     default_avatar: Avatar | None
-    viewer: Viewer
     replay: bool | None = None
 
 
