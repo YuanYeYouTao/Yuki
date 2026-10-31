@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
+from yuki.model_runtime.connections import EmbeddingConnection
 from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
@@ -53,6 +54,7 @@ class _ProfileDocument(BaseModel):
     routes: dict[str, str]
     search_backend: Literal["tavily", "model"] | None = None
     search_connection: str | None = None
+    embedding: EmbeddingConnection | None = None
 
 
 class ModelProfileCatalog(BaseModel):
@@ -64,6 +66,7 @@ class ModelProfileCatalog(BaseModel):
     routes: dict[ModelTask, ModelRoute]
     search_backend: Literal["tavily", "model"] | None = None
     search_connection: str | None = None
+    embedding: EmbeddingConnection | None = None
 
     @model_validator(mode="after")
     def _validate_routes(self) -> ModelProfileCatalog:
@@ -196,6 +199,7 @@ def parse_model_profile_catalog(
             routes=routes,
             search_backend=document.search_backend,
             search_connection=document.search_connection,
+            embedding=document.embedding,
         )
     except ModelRuntimeConfigurationError:
         raise

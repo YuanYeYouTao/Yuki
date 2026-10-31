@@ -101,8 +101,11 @@ class ModelClientPool:
         self._connection_pools: dict[tuple[str, str, str], httpx.AsyncClient] = {}
 
     def api_key_for(self, profile: ModelProfile) -> str:
-        secret = self._secret_overrides.get(profile.api_key_env)
-        return os.getenv(profile.api_key_env, "") if secret is None else secret
+        return self.api_key_for_alias(profile.api_key_env)
+
+    def api_key_for_alias(self, alias: str) -> str:
+        secret = self._secret_overrides.get(alias)
+        return os.getenv(alias, "") if secret is None else secret
 
     def configured(self, profile: ModelProfile) -> bool:
         """Project this pool's selected injection or credential without model I/O."""

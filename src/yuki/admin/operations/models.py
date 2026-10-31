@@ -38,10 +38,11 @@ class ModelOperations:
                 saved = await self.files.save(command.expected_revision, selected)
             except ConfigFileError as exc:
                 raise fail(ProblemCode(exc.category)) from None
+            apply_mode = (await self.files.read())["apply_mode"]
             return outcome(
                 "model_profiles",
                 saved,
-                "applied" if self.files.model_hot_reload_enabled else "saved_pending_restart",
+                "applied" if apply_mode == "hot_reload" else "saved_pending_restart",
                 operation,
             )
 

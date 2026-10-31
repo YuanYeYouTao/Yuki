@@ -16,6 +16,7 @@ import tomlkit
 from pydantic import TypeAdapter, ValidationError
 
 from yuki.config import Settings
+from yuki.model_runtime.connections import EmbeddingConnection
 from yuki.model_runtime.executor import TaskModelExecutor
 from yuki.model_runtime.models import ModelProfile, ModelTask
 from yuki.model_runtime.pool import ModelClientPool
@@ -121,6 +122,22 @@ class ConfigFileService:
         self._web_module = web_module
         self._semantic: Any = None
         self._lock = asyncio.Lock()
+        loaded_keys = (
+            read_model_secrets(settings.model_profiles_file)[1]
+            if catalog and catalog.embedding
+            else {}
+        )
+        self._loaded_connection_identity = self._connection_identity(catalog, loaded_keys)
+
+    @staticmethod
+    def _connection_identity(
+        catalog: ModelProfileCatalog | None, keys: Mapping[str, str]
+    ) -> tuple[Any, ...]:
+        connection = catalog.embedding if catalog else None
+        if connection is None:
+            return (None,)
+        key = keys.get(connection.api_key_env, os.getenv(connection.api_key_env, ""))
+        return (connection, hashlib.sha256(key.encode()).hexdigest())
 
     def set_semantic_runtime(self, runtime: Any) -> None:
         self._semantic = runtime
@@ -148,10 +165,6 @@ class ConfigFileService:
     @property
     def loaded_catalog(self) -> ModelProfileCatalog | None:
         return self._catalog
-
-    @property
-    def model_hot_reload_enabled(self) -> bool:
-        return self._model_executor is not None
 
     def _catalog_from(self, content: str) -> ModelProfileCatalog:
         settings = self._settings
@@ -260,8 +273,21 @@ class ConfigFileService:
                 for name, profile in raw_profiles.items()
                 if isinstance(profile, dict) and profile.get("api_key_env") in saved_keys
             ]
+            if "embedding" in raw:
+                result["document"]["embedding"] = EmbeddingConnection.model_validate(
+                    raw["embedding"]
+                ).model_dump(mode="json")
+            result["connection_schemas"] = {"embedding": EmbeddingConnection.model_json_schema()}
+            result["saved_connection_keys"] = (
+                ["embedding"]
+                if isinstance(raw.get("embedding"), dict)
+                and raw["embedding"].get("api_key_env") in saved_keys
+                else []
+            )
             if content is not None:
                 saved = self._catalog_from(text)
+                if self._connection_identity(saved, saved_keys) != self._loaded_connection_identity:
+                    result["apply_mode"] = "restart"
                 result["matches_loaded"] = saved == self._catalog if self._catalog else None
                 result["resolved_profiles"] = {
                     name: {
@@ -322,6 +348,9 @@ class ConfigFileService:
                 except SemanticConfigError as exc:
                     raise ValueError(exc.category) from exc
                 referenced_keys = semantic_key_envs(semantic_section)
+                embedding_section = document.get("embedding")
+                if isinstance(embedding_section, dict):
+                    referenced_keys.add(embedding_section.get("api_key_env", ""))
                 for name, value in updates.items():
                     if (
                         type(name) is not str
@@ -367,7 +396,11 @@ class ConfigFileService:
                 content = text.encode("utf-8")
                 if len(content) > MAX_CONFIG_BYTES:
                     raise ValueError("file too large")
-                if self._model_executor is not None:
+                if (
+                    self._model_executor is not None
+                    and self._connection_identity(pending_catalog, saved_keys)
+                    == self._loaded_connection_identity
+                ):
                     pending_pool = ModelClientPool(
                         secret_overrides={
                             "LLM_API_KEY": self._settings.llm_api_key,

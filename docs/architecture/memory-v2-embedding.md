@@ -22,9 +22,15 @@ Embedding 是事实库的可选派生索引；`memory_facts`、真实证据和 c
 的文档和查询，不修改事实正文。该投影上限与主检索 query 不截断是不同环节。
 日志、健康检查和指标只记录数量、耗时、错误类别、profile 指纹等无正文元数据。
 
-DashScope API Key 仅通过 `MEMORY_EMBEDDING_API_KEY` 读取，不进入 profile、数据库、日志、
-命令输出或健康响应。profile 指纹由 provider、端点身份、模型、维度、输出类型、模板版本和
-query instruct 等非密钥配置生成。
+模型 bundle 的 `[embedding]` 选择 `qwen_dashscope` 或 `openai_compatible`，配置端点、模型、
+维度、`api_key_env` 别名与 `enabled`。段存在时以段为准；`enabled=false` 明确关闭，不回退到
+旧设置。段尚不存在的部署暂沿 `MEMORY_EMBEDDING_*` 初始化，迁移退出条件见模型配置升级说明。
+密钥由同目录 `model_profiles.secrets.json` 或所引用的进程环境变量提供，不进入可读配置、profile、
+数据库、日志、命令输出或健康响应。profile 指纹保持现有 provider、端点、模型、维度和模板身份。
+
+非聊天连接变化及其密钥轮换如实报告 `apply_mode=restart`；已经启动的连接与原向量 profile
+保持原事实，重启后按新配置生成新的不可变 profile，旧向量不覆盖或自动删除。聊天连接的原热应用
+路径保留。OpenAI 兼容端点使用 `/embeddings`，真实协议错误只按类别报告，不尝试另一种协议或端点。
 
 ## 存储与任务
 
