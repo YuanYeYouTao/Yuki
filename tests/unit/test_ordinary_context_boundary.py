@@ -340,7 +340,15 @@ async def test_execution_compact_selects_only_candidates_with_retained_private_m
     request = ChatRequest(messages=execution.state.transcript.request().messages)
     fitting_prefix = (
         *request.messages[:-1],
-        ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION),
+        ChatMessage(
+            "user",
+            EXECUTION_COMPACT_INSTRUCTION
+            + "\n本轮程序持有的目标归属（null 表示没有当前业务 Work）："
+            + json.dumps(
+                {"current_work": None, "source_event_id": runtime.source_event_id},
+                ensure_ascii=False,
+            ),
+        ),
     )
     budget = estimate_request_tokens(
         runner._capacity_request(replace(request, messages=fitting_prefix))

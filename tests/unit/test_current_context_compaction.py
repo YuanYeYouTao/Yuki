@@ -1,8 +1,15 @@
 """Main maintenance reuses actual input and durable paid responses."""
 
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 
 import pytest
+from tests.support.compact_delivery_evidence import (
+    capture_compact_facts,
+)
+from tests.support.compact_delivery_evidence import (
+    compact_evidence as capture_compact_evidence,
+)
 from tests.support.event_seed import seed_scoped_event
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
@@ -26,19 +33,37 @@ from yuki.services.turn_execution import TurnExecution
 from yuki.services.turn_transcript import TurnTranscript
 
 
+@pytest.fixture
+def compact_evidence(request):
+    with capture_compact_evidence(request) as evidence:
+        yield evidence
+
+
 async def _public_context(database, control, initial):
     from yuki.conversation.frozen_fragments import FrozenFragments
     from yuki.conversation.projections import PromptProjectionRepository
     from yuki.domain.conversations import ConversationScope
     from yuki.persistence.event_repository import EventLedgerRepository
-    from yuki.services.context_compaction import PublicCompactContext
+    from yuki.services.context_compaction import PublicCompactContext, render_context_checkpoint
 
     version, events = await EventLedgerRepository(database).read_scope_context(
         ConversationScope.group("80001", "20001"),
         limit=100,
     )
+    repository = PromptProjectionRepository(database)
+    checkpoint = await repository.read_checkpoint(version.conversation_id)
+    coverage = checkpoint.selected_summary_coverage if checkpoint is not None else 0
+    prefix = (
+        (initial[0], render_context_checkpoint(checkpoint.selected_summary_text, coverage))
+        if checkpoint is not None and checkpoint.selected_summary_text
+        else (initial[0],)
+    )
     fragments = FrozenFragments.load([]).extend_history(
-        tuple(((event.id,), ChatMessage("user", event.content)) for event in events),
+        tuple(
+            ((event.id,), ChatMessage("user", event.content))
+            for event in events
+            if event.id > coverage
+        ),
         (),
     )
 
@@ -54,12 +79,12 @@ async def _public_context(database, control, initial):
         return (*context.messages, initial[-1])
 
     context = PublicCompactContext(
-        (initial[0], *fragments.messages()),
+        (*prefix, *fragments.messages()),
         1,
         fragments,
         version,
         "test-public",
-        PromptProjectionRepository(database),
+        repository,
         adopt,
     )
     return context
@@ -532,12 +557,20 @@ async def test_incomplete_ordinary_compact_restores_fresh_history_and_runtime_ma
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["paired", "response"])
 async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
-    database, tmp_path, monkeypatch, phase
+    database, tmp_path, monkeypatch, phase, compact_evidence
 ):
     control, _, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
     initial = (*context.messages, initial[-1])
-    provider = FakeLLMProvider(lambda request: "The paid private checkpoint.")
+    provider = FakeLLMProvider(
+        lambda request: (
+            "The paid public checkpoint."
+            if "Host 会话上下文压缩要求" in (request.messages[-1].content or "")
+            else "The paid private checkpoint."
+            if "Host 上下文压缩要求" in (request.messages[-1].content or "")
+            else "Original ordinary result observed."
+        )
+    )
     runner, runtime = await _runtime(database, control, initial, provider)
     runtime = replace(
         runtime,
@@ -546,11 +579,35 @@ async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
         execution_id="event:e-cold-review",
         auxiliary_requests=[0],
     )
+    # A real existing public checkpoint leaves no new public fragment. This
+    # remains the ordinary E path even when legal P is now preferred.
+    public_execution = TurnExecution(runner, initial, replace(runtime, compact_focus=""), None)
+    await public_execution.compact_current(
+        0, ChatRequest(messages=initial), ModelExecutionPriority.FOREGROUND, 10000
+    )
+    initial = public_execution.initial_messages
+    assert not context.fragments
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript.append(ChatMessage("user", "old activation material"))
     await execution._finalize_initial_layout()
     execution.state.transcript.append(ChatMessage("assistant", "old investigation " * 100))
+    call = ToolCall("ordinary-original-call", ToolFunction("read_probe", '{"path":"original"}'))
+    result = json.dumps(
+        {
+            "ok": True,
+            "data": {
+                "status": "succeeded",
+                "operation_id": "ordinary-original-operation",
+                "event_id": 123,
+                "proof": "ordinary-unobserved-result",
+            },
+        }
+    )
+    execution.state.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    execution.state.transcript.append_result(call.id, result)
     request = ChatRequest(messages=execution.state.transcript.request().messages)
+    directory, evidence = compact_evidence
+    evidence.update(phase=phase, original_call=asdict(call), original_result=result)
     if phase == "response":
         write = CompactReceipt.write
 
@@ -565,21 +622,30 @@ async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
         monkeypatch.setattr(CompactReceipt, "write", write)
     else:
         await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 10000)
-    await _append_public(database, "New public correction after private paid response.")
-    fresh = await _public_context(database, control, initial)
-    recovered = TurnExecution(
-        runner, (*fresh.messages, initial[-1]), replace(runtime, public_compaction=fresh), None
-    )
-    recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
-    await recovered.restore_compact_receipt()
-    text = "\n".join(
-        message.content or "" for message in recovered.state.transcript.request().messages
-    )
-    assert len(provider.requests) == 1
-    assert text.count("The paid private checkpoint.") == 1
-    assert "New public correction" in text
-    assert "fresh activation material" in text
-    assert "old activation material" not in text
+    try:
+        await _append_public(database, "New public correction after private paid response.")
+        fresh = await _public_context(database, control, initial)
+        recovered = TurnExecution(
+            runner, (*fresh.messages, initial[-1]), replace(runtime, public_compaction=fresh), None
+        )
+        recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
+        await recovered.restore_compact_receipt()
+        evidence["restored_transcript"] = asdict(recovered.state.transcript.request())
+        assert len(provider.requests) == 2
+        await recovered.request(0)
+        evidence["normal_request"] = asdict(provider.requests[-1])
+        text = "\n".join(message.content or "" for message in provider.requests[-1].messages)
+        assert text.count("The paid private checkpoint.") == 1
+        assert "New public correction" in text
+        assert "fresh activation material" in text
+        assert "old activation material" not in text
+        assert call.id in str(provider.requests[-1].messages)
+        assert "ordinary-original-operation" in text
+        assert "ordinary-unobserved-result" in text
+        assert len(provider.requests) == 3
+    finally:
+        evidence["requests"] = [asdict(item) for item in provider.requests]
+        await capture_compact_facts(database, directory, evidence)
 
 
 @pytest.mark.asyncio
@@ -622,3 +688,175 @@ async def test_work_p_response_keeps_fresh_extras(database, tmp_path, monkeypatc
     assert "New public correction" in text
     assert text.count("fresh activation material") == 1
     assert "context_compaction" not in restored.progress
+
+
+@pytest.mark.parametrize("phase", ["paired", "response"])
+async def test_ordinary_native_cold_preserves_host_tool_proof_for_another_compact(
+    database, tmp_path, monkeypatch, phase, compact_evidence
+):
+    import httpx
+    from tests.support.agent_backend import StubAgentBackend
+
+    from yuki.llm.gemini import GeminiProvider
+
+    control, _, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    directory, evidence = compact_evidence
+
+    def respond(request):
+        evidence["requests"].append(asdict(request))
+        if any(
+            "Host 会话上下文压缩要求" in (getattr(item, "content", "") or "")
+            for item in (*request.messages, *request.continuation_items)
+        ):
+            return "Existing public checkpoint."
+        if any(
+            "Host 上下文压缩要求" in (getattr(item, "content", "") or "")
+            for item in (*request.messages, *request.continuation_items)
+        ):
+            return "Private discoveries checkpoint."
+        return "The original tool result was received."
+
+    provider = FakeLLMProvider(respond)
+    runner, runtime = await _runtime(database, control, initial, provider)
+    tools = (ChatTool("read_probe", "Read existing evidence", {"type": "object"}),)
+    runtime = replace(
+        runtime,
+        work_control=None,
+        public_compaction=context,
+        execution_id="ordinary-native-cold-" + phase,
+        fixed_tools=tools,
+        max_model_requests=None,
+        auxiliary_requests=[0],
+    )
+    public = TurnExecution(runner, initial, replace(runtime, compact_focus=""), None)
+    public.state.fixed_definitions = tools
+    await public.compact_current(
+        0, ChatRequest(messages=initial, tools=tools), ModelExecutionPriority.FOREGROUND, 128000
+    )
+    initial = public.initial_messages
+    assert not context.fragments
+    invocations = []
+
+    async def execute(invocation):
+        invocations.append(invocation.identity.operation_id)
+        return json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "operation_id": invocation.identity.operation_id,
+                    "proof": "ordinary-native-original-result",
+                },
+            }
+        )
+
+    backend = StubAgentBackend(execute_call=execute, is_side_effecting=lambda *_: False)
+    execution = TurnExecution(runner, initial, runtime, backend)
+    execution.state.fixed_definitions = execution.state.definitions = tools
+    native_wire = []
+
+    def transport(request):
+        native_wire.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": "read_probe",
+                                        "args": {"query": "original cold proof"},
+                                    },
+                                    "thoughtSignature": "ordinary-original-native-signature",
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+        )
+
+    evidence.update(phase=phase, native_wire=native_wire, invocations=invocations)
+    try:
+        async with httpx.AsyncClient(
+            base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+        ) as client:
+            native = GeminiProvider(
+                base_url="https://wire.invalid/v1/",
+                api_key="synthetic",
+                timeout_seconds=1,
+                max_retries=0,
+                client=client,
+            )
+            response = await native.complete(
+                ChatRequest(messages=initial, tools=tools, model="gemini-test")
+            )
+        assert response.continuation is not None
+        await execution.observe_response(0, response, ())
+        outcome = await execution.execute_tools(0, response)
+        await execution.finish_tool_turn(0, response, outcome)
+        original_observation = json.loads(json.dumps(execution.state.response_observation))
+        evidence["original_host_observation"] = original_observation
+        sequence = execution.state.transcript.request()
+        request = ChatRequest(
+            messages=sequence.messages,
+            continuation=sequence.continuation,
+            continuation_items=sequence.items,
+            tools=tools,
+        )
+        write = CompactReceipt.write
+
+        async def fail_pairing(self, payload, **kwargs):
+            if payload["phase"] == "paired":
+                raise WorkConflict("native_pairing_failed")
+            await write(self, payload, **kwargs)
+
+        if phase == "response":
+            monkeypatch.setattr(CompactReceipt, "write", fail_pairing)
+            with pytest.raises(WorkConflict, match="native_pairing_failed"):
+                await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, None)
+            monkeypatch.setattr(CompactReceipt, "write", write)
+        else:
+            await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, None)
+        receipt = await CompactReceipt(context, runtime.execution_id, runtime.actor_user_id).read()
+        evidence["paid_receipt"] = receipt
+        assert receipt["phase"] == phase
+        assert "ordinary-native-original-result" in str(receipt["retained"])
+        await database.engine.dispose()
+        fresh = await _public_context(database, control, initial)
+        resumed = TurnExecution(
+            runner,
+            (*fresh.messages, initial[-1]),
+            replace(runtime, public_compaction=fresh),
+            backend,
+        )
+        resumed.state.fixed_definitions = resumed.state.definitions = tools
+        await resumed.restore_compact_receipt()
+        evidence["restored_host_observation"] = dict(resumed.state.response_observation)
+        evidence["before_second_compact"] = asdict(resumed.state.transcript.request())
+        before = len(provider.requests)
+        await resumed.compact_current(
+            0,
+            ChatRequest(messages=resumed.state.transcript.request().messages, tools=tools),
+            ModelExecutionPriority.FOREGROUND,
+            128000,
+        )
+        evidence["second_compact_requests"] = [asdict(item) for item in provider.requests[before:]]
+        await resumed.request(0)
+        normal = provider.requests[-1]
+        evidence["normal_request"] = asdict(normal)
+        body = json.dumps(asdict(normal), ensure_ascii=False)
+        assert response.tool_calls[0].id in body
+        assert "ordinary-native-original-result" in body
+        assert invocations[0] in body
+        assert "ordinary-original-native-signature" not in body
+        assert len(invocations) == 1
+        assert resumed.state.response_observation != original_observation
+    finally:
+        evidence["requests"] = [asdict(item) for item in provider.requests]
+        await capture_compact_facts(database, directory, evidence)
