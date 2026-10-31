@@ -74,7 +74,7 @@ def tool_result_evidence(
     assistant: ChatMessage | None,
     results: dict[str, str],
     *,
-    call_key: Callable[[str], str] | None = None,
+    call_key: Callable[[str], str | None] | None = None,
 ) -> ChatMessage:
     """Original results on a fresh chain, without transplanted native protocol."""
     return ChatMessage(
@@ -86,7 +86,11 @@ def tool_result_evidence(
                 "calls": [
                     {
                         "call_id": call.id,
-                        **({"effect_key": call_key(call.id)} if call_key else {}),
+                        **(
+                            {"effect_key": key}
+                            if call_key is not None and (key := call_key(call.id)) is not None
+                            else {}
+                        ),
                         "tool": call.function.name,
                         "arguments": call.function.arguments,
                         "result": results[call.id],

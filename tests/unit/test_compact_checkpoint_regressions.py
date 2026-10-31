@@ -2,6 +2,12 @@
 
 import pytest
 from tests.support.canonical_identity import ensure_space
+from tests.support.compact_delivery_evidence import (
+    capture_compact_facts,
+)
+from tests.support.compact_delivery_evidence import (
+    compact_evidence as capture_compact_evidence,
+)
 from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
@@ -11,6 +17,12 @@ from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+
+@pytest.fixture
+def compact_evidence(request):
+    with capture_compact_evidence(request) as evidence:
+        yield evidence
 
 
 @pytest.mark.parametrize(("maximum_views", "byte_budget"), [(1, None), (128, 4)])
@@ -74,8 +86,9 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
 
 
 @pytest.mark.parametrize("protocol", ["gemini", "openai_responses", "deepseek_responses"])
+@pytest.mark.parametrize("bounded", [True, False], ids=["finite", "unknown"])
 async def test_native_compact_preserves_fitting_unobserved_tool_tail(
-    protocol, database, tmp_path, monkeypatch
+    protocol, bounded, database, tmp_path, monkeypatch, compact_evidence
 ):
     import json
 
@@ -196,10 +209,16 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
 
         main = request_for(transcript)
         assert estimate_request_tokens(main) > budget
+        input_budget = budget if bounded else None
         chat_plan = execution_compact_plan(
-            chat, initial, request_for(chat), input_budget=budget, prepare=lambda request: request
+            chat,
+            initial,
+            request_for(chat),
+            input_budget=input_budget,
+            prepare=lambda request: request,
         )
-        assert any(message.content == fresh for message in chat_plan.retained)
+        if bounded:
+            assert any(message.content == fresh for message in chat_plan.retained)
         print(
             {
                 "input_budget": budget,
@@ -216,22 +235,24 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
             transcript,
             initial,
             main,
-            input_budget=budget,
+            input_budget=input_budget,
             prepare=lambda request: request,
             responses=tuple(responses),
         )
-        assert plan.retained
-        evidence = json.loads(plan.retained[-1].content)
-        assert evidence["calls"][0]["result"] == fresh
-        assert evidence["calls"][0]["call_id"] == response.tool_calls[0].id
+        if bounded:
+            assert plan.retained
+            evidence = json.loads(plan.retained[-1].content)
+            assert evidence["calls"][0]["result"] == fresh
+            assert evidence["calls"][0]["call_id"] == response.tool_calls[0].id
         assert plan.request.continuation is not None
         maintenance_wire = provider._build_payload(plan.request)
         assert "original-signature-1" in json.dumps(maintenance_wire)
-        assert "original-signature-2" not in json.dumps(maintenance_wire)
+        assert ("original-signature-2" in json.dumps(maintenance_wire)) is not bounded
         fresh_wire = provider._build_payload(
             ChatRequest(messages=(*initial, *plan.retained), tools=tools, model="gemini-test")
         )
-        assert fresh in json.dumps(fresh_wire)
+        if bounded:
+            assert fresh in json.dumps(fresh_wire)
         assert "thoughtSignature" not in json.dumps(fresh_wire)
         assert "original-signature-" not in json.dumps(fresh_wire)
         if protocol == "gemini":
@@ -252,7 +273,6 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
 
         from yuki.llm.fake import FakeLLMProvider
         from yuki.services.turn_execution import TurnExecution
-        from yuki.web.models import WebMode
 
         control, session, _ = await _session(database, tmp_path)
         session.transcript = transcript
@@ -266,11 +286,20 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
             for response in responses
         ]
         summarizer = FakeLLMProvider(
-            lambda request: "Earlier finding retained; continue original work."
+            lambda request: (
+                "Earlier finding retained; continue original work."
+                if any(
+                    "Host 上下文压缩要求" in (getattr(item, "content", "") or "")
+                    for item in (*request.messages, *request.continuation_items)
+                )
+                else "Original tool evidence received."
+            )
         )
         runner, runtime = await _runtime(database, control, initial, summarizer)
         monkeypatch.setattr(
-            runner._models, "capacity", lambda task: ModelCapacity(input_tokens=budget + 256)
+            runner._models,
+            "capacity",
+            lambda task: ModelCapacity(input_tokens=budget + 256) if bounded else ModelCapacity(),
         )
         runtime = replace(
             runtime,
@@ -279,15 +308,35 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
             runtime_config=replace(
                 runtime.runtime_config,
                 llm=replace(runtime.runtime_config.llm, max_output_tokens=256),
+                context=replace(runtime.runtime_config.context, compact_trigger_tokens=budget),
             ),
         )
         execution = TurnExecution(runner, initial, runtime, None)
         execution.state.transcript = transcript
-        prepared = await execution.prepare_request(0, (), WebMode.DISABLED)
-        assert prepared.request.continuation is None
-        assert fresh in "\n".join(message.content or "" for message in prepared.request.messages)
-        assert "original-signature-" not in str(prepared.request.messages)
-        assert original_effect_key in str(prepared.request.messages)
+        directory, artifact = compact_evidence
+        artifact.update(
+            protocol=protocol,
+            input_budget=input_budget,
+            original_effect_key=original_effect_key,
+            original_call_id=responses[-1].tool_calls[0].id,
+            original_result=fresh,
+            original_wire=wire,
+            maintenance_wire=maintenance_wire,
+        )
+        try:
+            await execution.request(0)
+            normal = summarizer.requests[-1]
+            artifact["normal_wire"] = provider._build_payload(normal)
+            assert normal.continuation is None
+            assert fresh in "\n".join(message.content or "" for message in normal.messages)
+            assert "original-signature-" not in str(normal.messages)
+            assert original_effect_key in str(normal.messages)
+            assert responses[-1].tool_calls[0].id in str(normal.messages)
+        finally:
+            artifact["main_requests"] = [asdict(item) for item in summarizer.requests]
+            artifact["retained"] = [asdict(item) for item in plan.retained]
+            await capture_compact_facts(database, directory, artifact)
+            await control.repository.release(control.lease)
 
 
 async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp_path, monkeypatch):

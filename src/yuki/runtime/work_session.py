@@ -487,7 +487,8 @@ class WorkSession:
         )
         # Protocol objects remain the evidence owner. Historical full
         # outputs are no longer a second copy of current working data.
-        self.progress.pop("model_observations", None)
+        if not unobserved_round:
+            self.progress.pop("model_observations", None)
         if append_material and control.current is not None:
             await self._append_business_material()
         return True
@@ -512,20 +513,82 @@ class WorkSession:
             )
         if assistant is None or not assistant.tool_calls:
             return ()
+        recorded_results = (
+            {result["call_id"]: result for result in observations[-1].get("results", [])}
+            if observations
+            else {}
+        )
         results: dict[str, str] = {}
+        keys: dict[str, str] = {}
+        chain_changed = any(
+            link["to"] == self.transcript.chain_id for link in self.progress.get("chain_links", [])
+        )
         for entry in entries:
             if isinstance(entry, FunctionCallOutput):
                 results[entry.call_id] = entry.output
             elif entry.role == "tool" and entry.tool_call_id:
                 results[entry.tool_call_id] = entry.content or ""
+        for call in assistant.tool_calls:
+            recorded_result = recorded_results.get(call.id)
+            if recorded_result is not None and "effect_key" in recorded_result:
+                keys[call.id] = recorded_result["effect_key"]
+            elif call.id in self.pending_readonly_keys:
+                keys[call.id] = self.pending_readonly_keys[call.id]
+            elif call.id in results and not chain_changed:
+                # Capture original protocol keys before the first chain change.
+                # An older compact may have kept the raw pair but discarded its
+                # original key; the new chain cannot reconstruct that identity.
+                keys[call.id] = self.call_key(call.id)
+            if call.id not in results and recorded_result is not None:
+                results[call.id] = recorded_result["output"]
         if any(call.id not in results for call in assistant.tool_calls):
             raise WorkConflict("work_unobserved_result_missing")
+        observation = (
+            dict(observations[-1])
+            if observations
+            else {
+                "sequence": self.sequence,
+                "content": assistant.content,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": call.type,
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in assistant.tool_calls
+                ],
+            }
+        )
+        observation["results"] = [
+            {
+                **recorded_results.get(call.id, {}),
+                "call_id": call.id,
+                "name": call.function.name,
+                "arguments": call.function.arguments,
+                "output": results[call.id],
+                **({"effect_key": keys[call.id]} if call.id in keys else {}),
+            }
+            for call in assistant.tool_calls
+        ]
+        # The original Host observation is already an immutable journal object.
+        # Keep only this unseen round across repeated rebases, not a text tag or
+        # a second seen-state. The next normal response becomes the new boundary.
+        self.progress["model_observations"] = [observation]
         # This is evidence on a fresh business chain, not a transplant of the
         # old Provider protocol. Native Responses requires its own opaque call
         # items; chat tool messages cannot stand in for those items. Present the
         # same portable evidence on every dialect without reasoning/signatures.
         # Original effects, budgets and IDs remain with the immutable journal.
-        return (tool_result_evidence(assistant, results, call_key=self.call_key),)
+        return (
+            tool_result_evidence(
+                assistant,
+                results,
+                call_key=keys.get,
+            ),
+        )
 
     async def _append_business_material(self) -> None:
         """Private requirements and receipts; runtime_context supplies the current goal."""
@@ -747,6 +810,9 @@ class WorkSession:
                 },
             }
         )
+        # Preserve the last original call keys before adopting a new chain.
+        if not self._unobserved_tool_round():
+            self.progress.pop("model_observations", None)
         self.progress["context_compaction"] = {
             "previous_protocol_ref": await self.journal.objects.put(original),
             "prefix": encode_transcript(TurnTranscript(initial)),
@@ -796,7 +862,6 @@ class WorkSession:
                     "reason": "compact",
                 }
             )
-            self.progress.pop("model_observations", None)
             self.progress.pop("context_compaction", None)
         else:
             manifest = await self.journal.objects.get(state["previous_protocol_ref"])
