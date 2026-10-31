@@ -59,16 +59,6 @@ def protected_config_specs() -> tuple[ConfigSpec, ...]:
     )
     secret = (
         _spec(
-            "llm.api_key",
-            "LLM API Key",
-            "只能确认是否已配置，不能读取或修改。",
-            value_type="string",
-            mode=ConfigApplyMode.SECRET,
-            getter=_configured("llm_api_key"),
-            category="secret",
-            sensitive=True,
-        ),
-        _spec(
             "web.tavily_api_key",
             "Tavily API Key",
             "只能确认是否已配置，不能读取或修改。",

@@ -144,16 +144,14 @@ async def test_hard_capacity_preserves_paid_checkpoint_and_only_compacts_uncover
         return response
 
     provider = FakeLLMProvider(respond)
-    runner, runtime = await _runtime(database, control, initial, provider)
+    runner, runtime = await _runtime(
+        database, control, initial, provider, profile_output_tokens=4096
+    )
     monkeypatch.setattr(runner._models, "capacity", lambda _: ModelCapacity(input_tokens=budget))
     runtime = replace(
         runtime,
         max_model_requests=None,
         auxiliary_requests=[0],
-        runtime_config=replace(
-            runtime.runtime_config,
-            llm=replace(runtime.runtime_config.llm, max_output_tokens=4096),
-        ),
     )
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript
@@ -261,7 +259,9 @@ async def test_native_execution_compact_can_hand_over_to_newly_legal_public_comp
         return ChatResponse("Original native receipt received by normal Main.", 0)
 
     provider = FakeLLMProvider(respond)
-    runner, runtime = await _runtime(database, control, initial, provider)
+    runner, runtime = await _runtime(
+        database, control, initial, provider, profile_output_tokens=4096
+    )
     runtime = replace(
         runtime,
         max_model_requests=None,
@@ -270,7 +270,6 @@ async def test_native_execution_compact_can_hand_over_to_newly_legal_public_comp
         fixed_tools=(ChatTool("read_probe", "Read original file", {"type": "object"}),),
         runtime_config=replace(
             runtime.runtime_config,
-            llm=replace(runtime.runtime_config.llm, max_output_tokens=4096),
             context=replace(runtime.runtime_config.context, compact_trigger_tokens=1000000),
         ),
     )

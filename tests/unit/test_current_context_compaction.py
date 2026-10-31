@@ -351,16 +351,18 @@ async def test_actual_overflow_compacts_paired_prefix_and_keeps_fitting_tail(
     for index in range(30):
         session.transcript.append(ChatMessage("assistant", f"finding {index}: " + "result " * 400))
     provider = FakeLLMProvider(lambda request: "Verified findings. Continue original goal.")
-    runner, runtime = await _runtime(database, control, initial, provider)
-    monkeypatch.setattr(runner._models, "capacity", lambda task: ModelCapacity(context_tokens=8192))
+    runner, runtime = await _runtime(
+        database, control, initial, provider, profile_output_tokens=512
+    )
+    monkeypatch.setattr(
+        runner._models,
+        "capacity",
+        lambda task: ModelCapacity(context_tokens=8192, output_tokens=512),
+    )
     runtime = replace(
         runtime,
         max_model_requests=20,
         auxiliary_requests=[0],
-        runtime_config=replace(
-            runtime.runtime_config,
-            llm=replace(runtime.runtime_config.llm, max_output_tokens=512),
-        ),
     )
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript

@@ -17,6 +17,10 @@ ASR 可明确选择 `chat_completions` 或 `audio_transcriptions`，Embedding �
 继续沿现行来源；客户端不另存配置或预设表。密钥同样只进 sidecar 或实际环境来源，不在可读文档
 或接口中回传。Settings 已读取的旧凭据别名在迁移期与进程环境、sidecar 沿同一解析链处理。
 
+一次性离线 `yuki admin model migrate-legacy`、旧聊天参数退役及下一版本的删除条件见
+[模型配置升级](../upgrade-model-config-20261031.md)。普通 Main 请求直接使用所选 Profile 的
+默认温度、输出额度与思考配置，调用者的显式单次参数仍保留；不再叠加旧 `llm.*` 运行覆盖。
+
 这些连接及其密钥变更需要重启，接口准确返回 `apply_mode=restart`、磁盘/已加载配置状态；
 重启前保留原运行资源与已开始的请求。未改变非聊天连接时，聊天模型原热应用路径继续使用。
 更换 Embedding 保留原不可变 profile 与旧向量，建立新 profile，不覆盖旧索引。

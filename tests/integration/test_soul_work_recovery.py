@@ -250,7 +250,13 @@ async def test_main_recovery_contract_retains_technical_rules_and_tool_model_set
     original = contract()
     activate(settings, path, name="Aurora", soul="新人格{{name}}", revision=2)
     assert contract() == original
-    assert contract(replace(runtime, llm=replace(runtime.llm, model="another-model"))) != original
+    assert contract(replace(runtime, llm=replace(runtime.llm, model="another-model"))) == original
+    profile_revision = probe.runner._models.profile_revision
+    monkeypatch.setattr(
+        probe.runner._models, "profile_revision", lambda _: "another-profile-revision"
+    )
+    assert contract() != original
+    monkeypatch.setattr(probe.runner._models, "profile_revision", profile_revision)
     assert contract(tools=definitions[:-1]) != original
     manifest.revision = "new-manifest"
     assert contract() != original

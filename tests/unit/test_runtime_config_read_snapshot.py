@@ -69,14 +69,19 @@ async def _override(
         )
 
 
-async def test_zero_person_temperature_and_group_context_keep_original_scopes(database):
+async def test_zero_person_weight_and_group_context_keep_original_scopes(database):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     person, _, space, _ = await _owners(database)
-    await _override(database, person, 0.0, key="llm.temperature", value_type="number")
-    await _override(database, space, 0.8, "group", key="llm.temperature", value_type="number")
+    await _override(database, person, 0.0, key="memory.hybrid_lexical_weight", value_type="number")
+    await _override(
+        database, space, 0.8, "group", key="memory.hybrid_lexical_weight", value_type="number"
+    )
     await _override(database, space, 80000, "group")
     snapshot = await runtime.snapshot(user_id=person, group_id=space)
-    assert snapshot.llm.temperature == 0.0 and snapshot.context.compact_trigger_tokens == 80000
+    assert (
+        snapshot.memory.hybrid_lexical_weight == 0.0
+        and snapshot.context.compact_trigger_tokens == 80000
+    )
 
 
 @pytest.mark.asyncio
@@ -113,7 +118,9 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
                 value_type=value_type,
             )
     for owner, temperature in ((person_a, 0.2), (person_b, 0.8)):
-        await _override(database, owner, temperature, key="llm.temperature", value_type="number")
+        await _override(
+            database, owner, temperature, key="memory.hybrid_lexical_weight", value_type="number"
+        )
     group_a = await runtime.snapshot(user_id=person_a, group_id=space)
     group_b = await runtime.snapshot(user_id=person_b, group_id=space)
     assert group_a.context == group_b.context
@@ -126,7 +133,9 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
     )
     for name, value in expected.items():
         assert getattr(group_a.context, name) == value
-    assert group_a.llm.temperature == 0.2 and group_b.llm.temperature == 0.8
+    assert (
+        group_a.memory.hybrid_lexical_weight == 0.2 and group_b.memory.hybrid_lexical_weight == 0.8
+    )
     canonical = await runtime.snapshot(memory_scope=MemoryConfigScope(person_b, space))
     assert canonical.context == group_a.context
     private_a = await runtime.snapshot(user_id=person_a)
@@ -293,7 +302,9 @@ async def test_participation_policy_matches_full_owner_resolution_after_override
     key = "conversation.auto_reply_enabled"
     await _override(database, None, False, "global", key=key, value_type="boolean")
     await _override(database, space, True, "group", key=key, value_type="boolean")
-    await _override(database, None, 0.7, "global", key="llm.temperature", value_type="number")
+    await _override(
+        database, None, 0.7, "global", key="memory.hybrid_lexical_weight", value_type="number"
+    )
     for expected in (True, False):
         narrow = await runtime.participation_policy(group_id=space)
         full = await runtime.snapshot(group_id=space)

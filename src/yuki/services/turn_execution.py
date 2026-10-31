@@ -933,9 +933,6 @@ class TurnExecution:
             request_chain_id=self.state.transcript.chain_id,
             continuation_items=sequence.items,
             model=self.runtime.runtime_config.llm.model or "fake",
-            temperature=self.runtime.runtime_config.llm.temperature,
-            max_output_tokens=self.runtime.runtime_config.llm.max_output_tokens,
-            thinking_enabled=self.runtime.runtime_config.llm.thinking_enabled,
             tools=self.state.definitions,
             # Recovery and compaction keep the submitted declaration/settings.
             # Their local response fences, not provider tool_choice support,
