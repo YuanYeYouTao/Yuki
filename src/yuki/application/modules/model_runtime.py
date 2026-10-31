@@ -17,7 +17,7 @@ from yuki.model_runtime import (
     load_model_profile_catalog,
 )
 from yuki.model_runtime.profiles import model_profile_environment
-from yuki.model_runtime.secrets import read_model_secrets
+from yuki.model_runtime.secrets import model_secret_environment, read_model_secrets
 from yuki.persistence.database import Database
 from yuki.persistence.diagnostic_writer import DiagnosticWriter
 from yuki.settings_domains import ModelRuntimeSettings, WebSettings
@@ -57,8 +57,7 @@ class ModelRuntimeModule:
         )
         clients = ModelClientPool(
             secret_overrides={
-                "LLM_API_KEY": settings.llm_api_key,
-                "LLM_FLASH_API_KEY": settings.llm_flash_api_key,
+                **model_secret_environment(settings),
                 **read_model_secrets(settings.model_profiles_file)[1],
             },
         )

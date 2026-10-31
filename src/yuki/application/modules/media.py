@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from yuki.application.lifecycle import LifecycleRegistry
+from yuki.model_runtime.connections import VisionConnection
 from yuki.persistence.repositories import MediaAnalysisRepository
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolver
@@ -34,15 +35,21 @@ class MediaModule:
         analyses: MediaAnalysisRepository,
         lifecycle: LifecycleRegistry,
         provider: VisionProvider | None = None,
+        connection: VisionConnection | None = None,
+        api_key: str = "",
     ) -> None:
         self._settings = settings
         self._analyses = analyses
         self._lifecycle = lifecycle
         self._provider = provider
+        self._connection = connection
+        self._api_key = api_key
 
     def build(self) -> MediaBundle:
         settings = self._settings
-        provider = self._provider or self._build_provider(settings)
+        provider = self._provider or self._build_provider(
+            settings, connection=self._connection, api_key=self._api_key
+        )
         resolver = MediaResolver(
             max_download_bytes=settings.vision_max_download_bytes,
             timeout_seconds=settings.vision_media_download_timeout_seconds,
@@ -77,7 +84,19 @@ class MediaModule:
         return MediaBundle(provider, resolver, preprocessor, vision)
 
     @staticmethod
-    def _build_provider(settings: VisionSettings) -> VisionProvider | None:
+    def _build_provider(
+        settings: VisionSettings, *, connection: VisionConnection | None = None, api_key: str = ""
+    ) -> VisionProvider | None:
+        if connection is not None:
+            settings = settings.model_copy(
+                update={
+                    "vision_enabled": connection.enabled,
+                    "vision_provider": "qwen",
+                    "vision_base_url": connection.base_url,
+                    "vision_api_key": api_key,
+                    "vision_model": connection.model,
+                }
+            )
         if not settings.vision_enabled:
             return None
         if settings.vision_provider.casefold() == "fake":

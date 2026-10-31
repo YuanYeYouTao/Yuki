@@ -16,7 +16,7 @@ import tomlkit
 from pydantic import TypeAdapter, ValidationError
 
 from yuki.config import Settings
-from yuki.model_runtime.connections import EmbeddingConnection
+from yuki.model_runtime.connections import CONNECTION_MODELS, SearchConnection
 from yuki.model_runtime.executor import TaskModelExecutor
 from yuki.model_runtime.models import ModelProfile, ModelTask
 from yuki.model_runtime.pool import ModelClientPool
@@ -31,6 +31,7 @@ from yuki.model_runtime.provider_presets import provider_presets, task_requireme
 from yuki.model_runtime.secrets import (
     KEY_ALIAS,
     encode_model_secrets,
+    model_secret_environment,
     model_secrets_path,
     read_model_secrets,
 )
@@ -124,20 +125,30 @@ class ConfigFileService:
         self._lock = asyncio.Lock()
         loaded_keys = (
             read_model_secrets(settings.model_profiles_file)[1]
-            if catalog and catalog.embedding
+            if catalog and any(getattr(catalog, name) is not None for name in CONNECTION_MODELS)
             else {}
         )
         self._loaded_connection_identity = self._connection_identity(catalog, loaded_keys)
 
-    @staticmethod
     def _connection_identity(
-        catalog: ModelProfileCatalog | None, keys: Mapping[str, str]
+        self, catalog: ModelProfileCatalog | None, keys: Mapping[str, str]
     ) -> tuple[Any, ...]:
-        connection = catalog.embedding if catalog else None
-        if connection is None:
-            return (None,)
-        key = keys.get(connection.api_key_env, os.getenv(connection.api_key_env, ""))
-        return (connection, hashlib.sha256(key.encode()).hexdigest())
+        identity: list[Any] = []
+        for name in CONNECTION_MODELS:
+            connection = getattr(catalog, name) if catalog else None
+            if connection is None:
+                identity.append(None)
+                continue
+            alias = (
+                connection.tavily_api_key_env
+                if isinstance(connection, SearchConnection)
+                else connection.api_key_env
+            )
+            key = keys.get(
+                alias, model_secret_environment(self._settings).get(alias, os.getenv(alias, ""))
+            )
+            identity.extend((connection, hashlib.sha256(key.encode()).hexdigest()))
+        return tuple(identity)
 
     def set_semantic_runtime(self, runtime: Any) -> None:
         self._semantic = runtime
@@ -273,17 +284,21 @@ class ConfigFileService:
                 for name, profile in raw_profiles.items()
                 if isinstance(profile, dict) and profile.get("api_key_env") in saved_keys
             ]
-            if "embedding" in raw:
-                result["document"]["embedding"] = EmbeddingConnection.model_validate(
-                    raw["embedding"]
-                ).model_dump(mode="json")
-            result["connection_schemas"] = {"embedding": EmbeddingConnection.model_json_schema()}
-            result["saved_connection_keys"] = (
-                ["embedding"]
-                if isinstance(raw.get("embedding"), dict)
-                and raw["embedding"].get("api_key_env") in saved_keys
-                else []
-            )
+            result["connection_schemas"] = {
+                name: model.model_json_schema() for name, model in CONNECTION_MODELS.items()
+            }
+            result["saved_connection_keys"] = []
+            for name, model in CONNECTION_MODELS.items():
+                if name in raw:
+                    connection = model.model_validate(raw[name])
+                    result["document"][name] = connection.model_dump(mode="json")
+                    alias = (
+                        connection.tavily_api_key_env
+                        if isinstance(connection, SearchConnection)
+                        else connection.api_key_env
+                    )
+                    if alias in saved_keys:
+                        result["saved_connection_keys"].append(name)
             if content is not None:
                 saved = self._catalog_from(text)
                 if self._connection_identity(saved, saved_keys) != self._loaded_connection_identity:
@@ -348,9 +363,14 @@ class ConfigFileService:
                 except SemanticConfigError as exc:
                     raise ValueError(exc.category) from exc
                 referenced_keys = semantic_key_envs(semantic_section)
-                embedding_section = document.get("embedding")
-                if isinstance(embedding_section, dict):
-                    referenced_keys.add(embedding_section.get("api_key_env", ""))
+                for name in CONNECTION_MODELS:
+                    section = document.get(name)
+                    if isinstance(section, dict):
+                        referenced_keys.add(
+                            section.get(
+                                "tavily_api_key_env" if name == "search" else "api_key_env", ""
+                            )
+                        )
                 for name, value in updates.items():
                     if (
                         type(name) is not str
@@ -403,8 +423,7 @@ class ConfigFileService:
                 ):
                     pending_pool = ModelClientPool(
                         secret_overrides={
-                            "LLM_API_KEY": self._settings.llm_api_key,
-                            "LLM_FLASH_API_KEY": self._settings.llm_flash_api_key,
+                            **model_secret_environment(self._settings),
                             **saved_keys,
                         }
                     )

@@ -1,5 +1,21 @@
 # 模型供应商与协议合同
 
+## 非聊天模型连接
+
+同一 v3 `model_profiles.toml` bundle 可包含 `[embedding]`、`[vision]`、`[asr]` 与 `[search]`。
+前三段显式保存 `enabled`、端点、模型和 `api_key_env`；视觉使用现有 Chat Completions 适配，
+ASR 可明确选择 `chat_completions` 或 `audio_transcriptions`，Embedding 使用 DashScope 原生
+或 OpenAI 兼容 `/embeddings`。`[search]` 只保存 `tavily_api_key_env`，搜索方式仍由已有路由选择。
+
+段存在时采用该段，不用旧设置补全；`enabled=false` 明确关闭，不退回另一套连接。
+段缺失的既有部署暂保留旧初始化来源，按升级命令迁移后退出。并发、超时、保留期限等原行为设置
+继续沿现行来源；客户端不另存配置或预设表。密钥同样只进 sidecar 或实际环境来源，不在可读文档
+或接口中回传。Settings 已读取的旧凭据别名在迁移期与进程环境、sidecar 沿同一解析链处理。
+
+这些连接及其密钥变更需要重启，接口准确返回 `apply_mode=restart`、磁盘/已加载配置状态；
+重启前保留原运行资源与已开始的请求。未改变非聊天连接时，聊天模型原热应用路径继续使用。
+更换 Embedding 保留原不可变 profile 与旧向量，建立新 profile，不覆盖旧索引。
+
 模型由 `ModelTask → ModelProfile → Provider` 显式绑定。Provider 是连接名称，协议由 Profile 显式选择；
 主 Agent、插件、自动化、记忆、媒体与 Work 共用原执行层，不按消息内容自动选择模型。
 部署向导可选择主模型供应商和协议；多个 Profile 可分别配置 endpoint、密钥环境变量和任务路由。

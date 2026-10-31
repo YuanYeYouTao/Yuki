@@ -7,9 +7,26 @@ import os
 import re
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from yuki.config import Settings
+    from yuki.settings_domains import ModelRuntimeSettings
 
 MAX_SECRET_FILE_BYTES = 256 * 1024
 KEY_ALIAS = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+
+
+def model_secret_environment(settings: Settings | ModelRuntimeSettings) -> dict[str, str]:
+    """Preserve startup Settings credentials while migrating them to bundle sidecars."""
+    return {
+        "LLM_API_KEY": settings.llm_api_key,
+        "LLM_FLASH_API_KEY": settings.llm_flash_api_key,
+        "MEMORY_EMBEDDING_API_KEY": settings.memory_embedding_api_key,
+        "VISION_API_KEY": settings.vision_api_key,
+        "ASR_API_KEY": settings.asr_api_key,
+        "TAVILY_API_KEY": settings.tavily_api_key,
+    }
 
 
 def model_secrets_path(profile_path: Path) -> Path:

@@ -83,7 +83,7 @@ class HTTPASRProvider:
                 "POST",
                 self._url,
                 **request,
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers={"Authorization": f"Bearer {self._api_key}"} if self._api_key else {},
                 timeout=self._timeout,
             ) as response:
                 if response.status_code in {401, 403}:
