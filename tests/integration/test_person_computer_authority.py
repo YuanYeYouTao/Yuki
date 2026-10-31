@@ -21,7 +21,6 @@ from tests.unit.test_computer_control import manager_at
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.computer import ClientComputer
 from yuki.client_api.http import ClientApi, attach_client_api
-from yuki.client_api.requests import ClientRequests
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.computer_keys import release_key
@@ -48,12 +47,7 @@ async def test_superuser_revocation_keeps_original_lease_receipts_and_closes_str
     server = await asyncio.start_unix_server(manager.serve, str(socket_path))
     computer = ClientComputer(app_env.identity, SandboxClient(socket_path))
     app = FastAPI()
-    attach_client_api(
-        app,
-        lambda: ClientApi(
-            app_env.identity, computer=computer, requests=ClientRequests(app_env.identity)
-        ),
-    )
+    attach_client_api(app, lambda: ClientApi(app_env.identity, computer=computer))
     frames = asyncio.Queue()
 
     async def send(frame):

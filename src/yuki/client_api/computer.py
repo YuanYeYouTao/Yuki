@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import select, text
 from starlette.websockets import WebSocketState
 
 from yuki.client_api.computer_commands import ComputerCommands, public_control, release_key
@@ -334,6 +334,7 @@ class ClientComputer:
             if control.get("holder") != "human":
                 return
             async with self.identity.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
                 device = await reader.get(ClientDeviceModel, control["device_id"])
                 person = await reader.get(
                     CanonicalPersonModel, device.person_id if device else control["person_id"]
