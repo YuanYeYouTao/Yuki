@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from yuki import __version__
@@ -97,6 +98,7 @@ class DesktopPairing(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     display_name: str
     person_request_id: UUID
+    superuser_request_id: UUID
     pair_request_id: UUID
     person_id: UUID | None = None
 
@@ -117,7 +119,21 @@ async def pair(body: DesktopPairing) -> dict[str, object]:
             person = created["resource_id"]
         else:
             person = str(body.person_id)
-            await read(client, f"persons/{person}")
+        current = await read(client, f"persons/{person}")
+        try:
+            previous = await read(client, f"operations/{body.superuser_request_id}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            revision = current["revision"]
+        else:
+            revision = previous["expected_revision"]
+        await mutate(
+            client,
+            f"persons/{person}/superuser/grant",
+            revision,
+            request_id=str(body.superuser_request_id),
+        )
         issued = await identity_mutation(
             client,
             f"persons/{person}/client-pair",

@@ -154,6 +154,7 @@ class AdminQueries:
                             **operation_view(control_operation(row)),
                             "result_resource_id": row.result_resource_id,
                             "result_revision": row.result_revision,
+                            "expected_revision": row.expected_revision,
                         }
                 else:
                     model = MemoryRebuildRunModel if parts[0] == "rebuild" else MemoryDreamRunModel

@@ -32,6 +32,8 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 
 状态命令使用 UUID4 `request_id` 与非负整数 `expected_revision`；下述身份关联类操作只使用原请求 UUID，不接受请求方自报主体。
 返回 `data`；命令含 `success`、资源 ID、revision、审计 ID 与公开结果，外部命令可含原 operation。
+`GET /operations/{id}` 对原 control 回执另投影其 `expected_revision`（旧非 CAS 请求可为 null），
+供可信调用方携原 UUID 和原 CAS 重放原命令；操作类型、目标及内容仍由原命令指纹校验，不根据当前 revision 猜测。
 
 | 方法 | CLI／消费者 | 权限 |
 | --- | --- | --- |

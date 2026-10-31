@@ -56,6 +56,7 @@ async def serve(
                 [
                     "control.config.file.content.read",
                     "control.config.file.mutate",
+                    "control.operation.read",
                     "identity.person.create",
                     "identity.person.read",
                     "identity.person.superuser",
