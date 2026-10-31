@@ -1,8 +1,15 @@
 """Main maintenance reuses actual input and durable paid responses."""
 
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 
 import pytest
+from tests.support.compact_delivery_evidence import (
+    capture_compact_facts,
+)
+from tests.support.compact_delivery_evidence import (
+    compact_evidence as capture_compact_evidence,
+)
 from tests.support.event_seed import seed_scoped_event
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
@@ -26,19 +33,37 @@ from yuki.services.turn_execution import TurnExecution
 from yuki.services.turn_transcript import TurnTranscript
 
 
+@pytest.fixture
+def compact_evidence(request):
+    with capture_compact_evidence(request) as evidence:
+        yield evidence
+
+
 async def _public_context(database, control, initial):
     from yuki.conversation.frozen_fragments import FrozenFragments
     from yuki.conversation.projections import PromptProjectionRepository
     from yuki.domain.conversations import ConversationScope
     from yuki.persistence.event_repository import EventLedgerRepository
-    from yuki.services.context_compaction import PublicCompactContext
+    from yuki.services.context_compaction import PublicCompactContext, render_context_checkpoint
 
     version, events = await EventLedgerRepository(database).read_scope_context(
         ConversationScope.group("80001", "20001"),
         limit=100,
     )
+    repository = PromptProjectionRepository(database)
+    checkpoint = await repository.read_checkpoint(version.conversation_id)
+    coverage = checkpoint.selected_summary_coverage if checkpoint is not None else 0
+    prefix = (
+        (initial[0], render_context_checkpoint(checkpoint.selected_summary_text, coverage))
+        if checkpoint is not None and checkpoint.selected_summary_text
+        else (initial[0],)
+    )
     fragments = FrozenFragments.load([]).extend_history(
-        tuple(((event.id,), ChatMessage("user", event.content)) for event in events),
+        tuple(
+            ((event.id,), ChatMessage("user", event.content))
+            for event in events
+            if event.id > coverage
+        ),
         (),
     )
 
@@ -54,12 +79,12 @@ async def _public_context(database, control, initial):
         return (*context.messages, initial[-1])
 
     context = PublicCompactContext(
-        (initial[0], *fragments.messages()),
+        (*prefix, *fragments.messages()),
         1,
         fragments,
         version,
         "test-public",
-        PromptProjectionRepository(database),
+        repository,
         adopt,
     )
     return context
@@ -532,12 +557,20 @@ async def test_incomplete_ordinary_compact_restores_fresh_history_and_runtime_ma
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["paired", "response"])
 async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
-    database, tmp_path, monkeypatch, phase
+    database, tmp_path, monkeypatch, phase, compact_evidence
 ):
     control, _, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
     initial = (*context.messages, initial[-1])
-    provider = FakeLLMProvider(lambda request: "The paid private checkpoint.")
+    provider = FakeLLMProvider(
+        lambda request: (
+            "The paid public checkpoint."
+            if "Host 会话上下文压缩要求" in (request.messages[-1].content or "")
+            else "The paid private checkpoint."
+            if "Host 上下文压缩要求" in (request.messages[-1].content or "")
+            else "Original ordinary result observed."
+        )
+    )
     runner, runtime = await _runtime(database, control, initial, provider)
     runtime = replace(
         runtime,
@@ -546,11 +579,35 @@ async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
         execution_id="event:e-cold-review",
         auxiliary_requests=[0],
     )
+    # A real existing public checkpoint leaves no new public fragment. This
+    # remains the ordinary E path even when legal P is now preferred.
+    public_execution = TurnExecution(runner, initial, replace(runtime, compact_focus=""), None)
+    await public_execution.compact_current(
+        0, ChatRequest(messages=initial), ModelExecutionPriority.FOREGROUND, 10000
+    )
+    initial = public_execution.initial_messages
+    assert not context.fragments
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript.append(ChatMessage("user", "old activation material"))
     await execution._finalize_initial_layout()
     execution.state.transcript.append(ChatMessage("assistant", "old investigation " * 100))
+    call = ToolCall("ordinary-original-call", ToolFunction("read_probe", '{"path":"original"}'))
+    result = json.dumps(
+        {
+            "ok": True,
+            "data": {
+                "status": "succeeded",
+                "operation_id": "ordinary-original-operation",
+                "event_id": 123,
+                "proof": "ordinary-unobserved-result",
+            },
+        }
+    )
+    execution.state.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    execution.state.transcript.append_result(call.id, result)
     request = ChatRequest(messages=execution.state.transcript.request().messages)
+    directory, evidence = compact_evidence
+    evidence.update(phase=phase, original_call=asdict(call), original_result=result)
     if phase == "response":
         write = CompactReceipt.write
 
@@ -565,21 +622,30 @@ async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
         monkeypatch.setattr(CompactReceipt, "write", write)
     else:
         await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 10000)
-    await _append_public(database, "New public correction after private paid response.")
-    fresh = await _public_context(database, control, initial)
-    recovered = TurnExecution(
-        runner, (*fresh.messages, initial[-1]), replace(runtime, public_compaction=fresh), None
-    )
-    recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
-    await recovered.restore_compact_receipt()
-    text = "\n".join(
-        message.content or "" for message in recovered.state.transcript.request().messages
-    )
-    assert len(provider.requests) == 1
-    assert text.count("The paid private checkpoint.") == 1
-    assert "New public correction" in text
-    assert "fresh activation material" in text
-    assert "old activation material" not in text
+    try:
+        await _append_public(database, "New public correction after private paid response.")
+        fresh = await _public_context(database, control, initial)
+        recovered = TurnExecution(
+            runner, (*fresh.messages, initial[-1]), replace(runtime, public_compaction=fresh), None
+        )
+        recovered.state.transcript.append(ChatMessage("user", "fresh activation material"))
+        await recovered.restore_compact_receipt()
+        evidence["restored_transcript"] = asdict(recovered.state.transcript.request())
+        assert len(provider.requests) == 2
+        await recovered.request(0)
+        evidence["normal_request"] = asdict(provider.requests[-1])
+        text = "\n".join(message.content or "" for message in provider.requests[-1].messages)
+        assert text.count("The paid private checkpoint.") == 1
+        assert "New public correction" in text
+        assert "fresh activation material" in text
+        assert "old activation material" not in text
+        assert call.id in str(provider.requests[-1].messages)
+        assert "ordinary-original-operation" in text
+        assert "ordinary-unobserved-result" in text
+        assert len(provider.requests) == 3
+    finally:
+        evidence["requests"] = [asdict(item) for item in provider.requests]
+        await capture_compact_facts(database, directory, evidence)
 
 
 @pytest.mark.asyncio

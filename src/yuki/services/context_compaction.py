@@ -32,12 +32,13 @@ from yuki.services.turn_transcript import TurnTranscript, tool_result_evidence
 
 EXECUTION_COMPACT_INSTRUCTION = (
     "[Host 上下文压缩要求]\n"
-    "本次只整理当前任务的私有执行进展，不执行工具、不发消息。"
+    "本次只整理当前激活的私有执行进展，不执行工具、不发消息。"
     "不要复述前面的公共聊天历史或本轮运行资料。"
-    "保留原目标、追加要求、有效约束、已经确认的结果、失败与未知状态、"
+    "目标只认本次输入及明确接纳的当前 Work，不从公共群史、工作目录或引用中猜测原任务。"
+    "保留当前目标、追加要求、有效约束、已经确认的结果、失败与未知状态、"
     "必要发现、文件/资料句柄、原来源引用和下一步。"
     "不得把未完成事项写成已完成，不要求额外汇报或所有子任务成功。"
-    "仅返回可供原任务接续的文字检查点。"
+    "仅返回可供本轮继续的文字检查点。"
 )
 
 PUBLIC_COMPACT_INSTRUCTION = (
@@ -344,7 +345,11 @@ def compacted_transcript(state: dict[str, Any]) -> TurnTranscript:
                         "summary": state["response"],
                         "covered_entries": state["covered_entries"],
                         "previous_protocol_ref": state.get("previous_protocol_ref"),
-                        "instruction": "接续原任务，按原执行回执处理，不重做已发生效果。",
+                        "instruction": (
+                            "继续本次输入与明确接纳的当前 Work；"
+                            "摘要和历史中的其他任务不改变本轮归属。"
+                            "按原执行回执处理，不重做已发生效果。"
+                        ),
                     },
                     ensure_ascii=False,
                 ),
@@ -504,6 +509,7 @@ def execution_compact_plan(
     retained_public: tuple[ChatMessage, ...] = (),
     call_key: Callable[[str], str] | None = None,
     responses: tuple[ChatMessage, ...] = (),
+    focus: str = "",
 ) -> ExecutionCompactPlan:
     """Select the latest fitting paired prefix without cloning every candidate.
 
@@ -527,7 +533,9 @@ def execution_compact_plan(
         if input_budget is not None
         else None
     )
-    instruction = ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION)
+    instruction = ChatMessage(
+        "user", EXECUTION_COMPACT_INSTRUCTION + ("\n" + focus if focus else "")
+    )
     instruction_cost = message_token_cost(instruction) if counter is not None else None
     pending: set[str] = set()
     candidates: list[int] = []
@@ -560,32 +568,41 @@ def execution_compact_plan(
             candidates.append(index + 1)
     if pending or not candidates:
         raise WorkCapacityError("model_request_capacity")
-    last_response = (
-        recorded[checkpoints[-1]]
-        if checkpoints and checkpoints[-1] in recorded
-        else next(
-            (
-                entry
-                for entry in reversed(entries)
-                if isinstance(entry, ChatMessage) and entry.role == "assistant"
-            ),
-            None,
-        )
+    last_response_index = next(
+        (
+            index
+            for index in range(len(entries) - 1, len(initial) - 1, -1)
+            if index in recorded
+            or (isinstance(entry := entries[index], ChatMessage) and entry.role == "assistant")
+        ),
+        None,
     )
+    if last_response_index is None:
+        # A fresh/rebased private tail has had no normal model response yet.
+        # It can include original portable receipts; user text is not a seen flag.
+        raise WorkCapacityError("model_request_capacity")
+    response_entry = entries[last_response_index]
+    last_response = (
+        recorded[last_response_index]
+        if last_response_index in recorded
+        else cast(ChatMessage, response_entry)
+    )
+    keep_from = last_response_index if last_response.tool_calls else len(entries)
     native_from = [False] * (len(entries) + 1)
     for index in range(len(entries) - 1, -1, -1):
         native_from[index] = native_from[index + 1] or not isinstance(entries[index], ChatMessage)
     if counter is None:
         boundary = candidates[-1]
-        suffix = entries[boundary:]
+        keep_boundary = min(boundary, keep_from)
+        suffix = entries[keep_boundary:]
         kept = (
             tuple(
                 item.message
                 for item in _native_tail_items(
-                    suffix, recorded, last_response, call_key, offset=boundary
+                    suffix, recorded, last_response, call_key, offset=keep_boundary
                 )
             )
-            if native_from[boundary]
+            if native_from[keep_boundary]
             else tuple(item for item in suffix if isinstance(item, ChatMessage))
         )
         public = tuple(
@@ -593,10 +610,7 @@ def execution_compact_plan(
         )
         retained = (*public, *kept)
     else:
-        first_candidate = candidates[0]
-        last_response_index = next(
-            (index for index, item in enumerate(entries) if item is last_response), None
-        )
+        first_candidate = min(candidates[0], keep_from)
         raw = tuple(
             _RetainedItem(
                 index,
@@ -632,11 +646,14 @@ def execution_compact_plan(
         for message in initial:
             initial_cost += message_token_cost(message)
         for boundary in reversed(candidates):
-            selected = native_index if native_from[boundary] else raw_index
+            keep_boundary = min(boundary, keep_from)
+            selected = native_index if native_from[keep_boundary] else raw_index
             if counter.estimate_messages(
-                initial_cost + selected.public_cost[boundary] + selected.required_cost[boundary]
+                initial_cost
+                + selected.public_cost[keep_boundary]
+                + selected.required_cost[keep_boundary]
             ) <= cast(int, input_budget):
-                retained = selected.retained(boundary)
+                retained = selected.retained(keep_boundary)
                 break
         else:
             raise WorkCapacityError("model_request_capacity")
