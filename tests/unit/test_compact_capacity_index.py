@@ -91,7 +91,7 @@ def test_latest_fitting_boundary_survives_a_decreasing_opaque_checkpoint():
     initial = (ChatMessage("system", "contract"), ChatMessage("user", "task"))
     transcript = TurnTranscript(initial)
     responses = []
-    for ordinal, size in enumerate((30000, 10)):
+    for ordinal, size in enumerate((30000, 3000)):
         call = ToolCall(f"read-{ordinal}", ToolFunction("read", "{}"))
         response = ChatMessage("assistant", "finding", tool_calls=(call,))
         responses.append(response)
@@ -101,7 +101,9 @@ def test_latest_fitting_boundary_survives_a_decreasing_opaque_checkpoint():
         transcript.append_result(call.id, "original result")
         transcript.append(ChatMessage("user", "continue"))
     boundary = len(transcript.entries())
-    late = ChatMessage("user", "late input " + "x" * 30000)
+    # The unseen original round and late input must fit the next Main too.
+    # Keep the latest opaque prefix larger than its portable retained evidence.
+    late = ChatMessage("user", "late input " + "x" * 1000)
     transcript.append(late)
     sequence = transcript.request()
     request = ChatRequest(
@@ -131,7 +133,9 @@ def test_latest_fitting_boundary_survives_a_decreasing_opaque_checkpoint():
     )
     assert plan.transcript.entries() == fitting.entries()
     assert plan.request.continuation == request.continuation
-    assert plan.retained == (late,)
+    assert plan.retained[-1] == late
+    assert '"call_id": "read-1"' in plan.retained[0].content
+    assert "original result" in plan.retained[0].content
     assert estimate_request_tokens(plan.request) == budget
 
 
