@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from bisect import bisect_left
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -55,6 +56,7 @@ class ExecutionCompactPlan:
     transcript: TurnTranscript
     retained: tuple[ChatMessage, ...]
     public: dict[str, Any] | None = None
+    has_uncovered_execution: bool = False
 
 
 @dataclass(slots=True)
@@ -510,6 +512,7 @@ def execution_compact_plan(
     call_key: Callable[[str], str] | None = None,
     responses: tuple[ChatMessage, ...] = (),
     focus: str = "",
+    checkpoint_summary: str | None = None,
 ) -> ExecutionCompactPlan:
     """Select the latest fitting paired prefix without cloning every candidate.
 
@@ -518,6 +521,23 @@ def execution_compact_plan(
     original boundary order; never binary-search across checkpoint changes.
     """
     entries = transcript.entries()
+    minimum_boundary = len(initial)
+    if checkpoint_summary is not None and len(entries) > minimum_boundary:
+        first = entries[minimum_boundary]
+        if isinstance(first, ChatMessage) and first.role == "user":
+            try:
+                value = json.loads(first.content or "")
+            except json.JSONDecodeError:
+                value = None
+            if (
+                isinstance(value, dict)
+                and value.get("kind") == "context_compaction"
+                and value.get("summary") == checkpoint_summary
+            ):
+                # This summary comes from the existing paid receipt/Work owner,
+                # not an arbitrary user kind tag. A new prefix must cover source
+                # beyond the Host checkpoint already substituted into this chain.
+                minimum_boundary += 1
     checkpoints = [
         index for index, entry in enumerate(entries) if isinstance(entry, ProviderContinuation)
     ]
@@ -551,7 +571,7 @@ def execution_compact_plan(
         elif isinstance(entry, FunctionCallOutput):
             pending.discard(entry.call_id)
         if (
-            index + 1 > len(initial)
+            index + 1 > minimum_boundary
             and not pending
             and not isinstance(entry, ProviderContinuation)
             and not (
@@ -666,4 +686,6 @@ def execution_compact_plan(
         continuation=sequence.continuation,
         continuation_items=sequence.items,
     )
-    return ExecutionCompactPlan(request, prefix, retained)
+    return ExecutionCompactPlan(
+        request, prefix, retained, has_uncovered_execution=boundary < keep_from
+    )

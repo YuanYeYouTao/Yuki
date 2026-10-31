@@ -244,6 +244,7 @@ class TurnExecution:
         self.initial_messages = initial_messages
         self._initial_layout_finalized = False
         self._initial_inputs: list[ChatMessage] = []
+        self._execution_checkpoint_summary: str | None = None
         self.runtime = runtime
         self.tools = tools
         self.state = TurnState(
@@ -323,6 +324,9 @@ class TurnExecution:
                     assert session.transcript is not None
                     self.state.transcript = session.transcript
             session = self.runtime.work_control.session
+            self._execution_checkpoint_summary = session.progress.get("task_material", {}).get(
+                "execution_checkpoint"
+            )
             if session.exact_recovery and session.source_guard is not None:
                 observed = set(session.source_guard.version.visible_event_ids) | set(
                     session.event_ids
@@ -442,6 +446,8 @@ class TurnExecution:
                 # history and activation material belong to this fresh run.
                 old_count = len(decode_transcript(saved["prefix"]).request().messages)
                 tail = candidate.request().messages[old_count:]
+                if saved["valid"]:
+                    self._execution_checkpoint_summary = saved["response"]
             await self._finalize_initial_layout()
             for message in tail:
                 self.state.transcript.append(message)
@@ -1063,12 +1069,16 @@ class TurnExecution:
             if self.state.response_observation
             else []
         )
-        public_eligible = (
-            public_context is not None
-            and bool(public_context.fragments)
-            and request.continuation is None
-            and request.messages[: len(public_context.messages)] == public_context.messages
-        )
+
+        def can_compact_public(candidate: ChatRequest) -> bool:
+            return (
+                public_context is not None
+                and bool(public_context.fragments)
+                and candidate.continuation is None
+                and candidate.messages[: len(public_context.messages)] == public_context.messages
+            )
+
+        public_eligible = can_compact_public(request)
         public_requested = self.runtime.compact_focus is not None
         try:
             plan = None
@@ -1123,6 +1133,7 @@ class TurnExecution:
                         else None
                     ),
                     focus="本轮程序持有的目标归属（null 表示没有当前业务 Work）：" + focus,
+                    checkpoint_summary=self._execution_checkpoint_summary,
                 )
         except WorkCapacityError:
             # A soft watermark is a maintenance policy, not an input-capacity
@@ -1316,6 +1327,8 @@ class TurnExecution:
             return request
         if plan.public is not None:
             await self.adopt_public_compact(plan.public, state["response"])
+        else:
+            self._execution_checkpoint_summary = state["response"]
         sequence = self.state.transcript.request()
         candidate = replace(
             request,
@@ -1325,10 +1338,13 @@ class TurnExecution:
             request_chain_id=self.state.transcript.chain_id,
         )
         if (
-            not plan.retained
+            not plan.has_uncovered_execution
             and plan.public is None
             and input_budget is not None
             and estimate_request_tokens(self.runner._capacity_request(candidate)) > input_budget
+            # Retiring a native chain can make the existing public path legal.
+            # A public plan already tried on this input must not reopen this loop.
+            and (public_eligible or not can_compact_public(candidate))
         ):
             raise WorkCapacityError("model_request_capacity")
         return candidate
