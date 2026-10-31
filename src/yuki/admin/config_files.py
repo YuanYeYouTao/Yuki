@@ -190,6 +190,28 @@ class ConfigFileService:
         async with self._lock:
             return await self._read_snapshot()
 
+    async def model_connection(
+        self, selected: ModelProfile | str
+    ) -> tuple[ModelProfile, dict[str, str]]:
+        """Read saved connection material for a one-shot check without changing the bundle."""
+        async with self._lock:
+            path = self._settings.model_profiles_file.absolute()
+            try:
+                _, secrets = await asyncio.to_thread(read_model_secrets, path)
+                if isinstance(selected, str):
+                    content = await asyncio.to_thread(_read, path)
+                    if content is None:
+                        raise ConfigFileError("validation_error")
+                    catalog = self._catalog_from(content.decode("utf-8"))
+                    profile = catalog.profiles.get(selected)
+                    if profile is None:
+                        raise ConfigFileError("validation_error")
+                else:
+                    profile = selected
+            except ValueError:
+                raise ConfigFileError("validation_error") from None
+            return profile, {**model_secret_environment(self._settings), **secrets}
+
     async def _read_snapshot(self) -> dict[str, Any]:
         path = self._settings.model_profiles_file.absolute()
         content = await asyncio.to_thread(_read, path)

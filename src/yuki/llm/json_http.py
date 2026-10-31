@@ -26,6 +26,8 @@ from yuki.llm.base import (
     LLMProvider,
     LLMTimeoutError,
     LLMUnavailableError,
+    LLMUnsupportedFeatureError,
+    ProviderModel,
     RetryableProviderError,
 )
 from yuki.llm.http_errors import check_provider_response
@@ -86,6 +88,43 @@ class JSONHTTPProvider(LLMProvider):
             **self._headers,
             **({"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}),
         }
+
+    def _parse_models(self, payload: Any) -> list[ProviderModel]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise LLMInvalidResponseError("provider returned an invalid model list")
+        result = []
+        for item in payload["data"]:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise LLMInvalidResponseError("provider returned an invalid model identifier")
+            name = item.get("display_name")
+            model: ProviderModel = {"id": item["id"]}
+            if isinstance(name, str):
+                model["display_name"] = name
+            result.append(model)
+        return result
+
+    async def list_models(self) -> list[ProviderModel]:
+        """Read one upstream page using this adapter's existing auth and base path."""
+        from yuki.model_runtime.dispatch_guard import check_model_dispatch
+
+        prepared = self._client.build_request(
+            "GET", "models", headers=self._request_headers(), timeout=self._timeout
+        )
+        await check_model_dispatch()
+        try:
+            response = await self._client.send(prepared)
+        except httpx.TimeoutException as exc:
+            raise LLMTimeoutError("model list request timed out") from exc
+        except httpx.TransportError as exc:
+            raise LLMUnavailableError("model list is unavailable") from exc
+        if response.status_code in {404, 405, 501}:
+            raise LLMUnsupportedFeatureError("provider does not expose a model list")
+        check_provider_response(response)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LLMInvalidResponseError("provider returned invalid JSON") from exc
+        return self._parse_models(payload)
 
     @staticmethod
     def _usage_diagnostics(payload: dict[str, Any]) -> dict[str, object]:

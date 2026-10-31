@@ -31,6 +31,7 @@ from yuki.llm.base import (
     LLMInvalidResponseError,
     LLMMalformedFunctionCallError,
     LLMUnsupportedFeatureError,
+    ProviderModel,
 )
 from yuki.llm.json_http import JSONHTTPProvider
 from yuki.llm.protocol_state import (
@@ -55,6 +56,20 @@ class GeminiProvider(JSONHTTPProvider):
 
     def _request_headers(self) -> dict[str, str]:
         return {**self._headers, **({"x-goog-api-key": self._api_key} if self._api_key else {})}
+
+    def _parse_models(self, payload: Any) -> list[ProviderModel]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+            raise LLMInvalidResponseError("provider returned an invalid model list")
+        result = []
+        for item in payload["models"]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                raise LLMInvalidResponseError("provider returned an invalid model identifier")
+            name = item.get("displayName")
+            model: ProviderModel = {"id": item["name"]}
+            if isinstance(name, str):
+                model["display_name"] = name
+            result.append(model)
+        return result
 
     @staticmethod
     def _usage_diagnostics(payload: dict[str, Any]) -> dict[str, object]:

@@ -113,7 +113,7 @@ async def prepare_full_core(
     repository: DreamRepository,
     embeddings: MemoryEmbeddingRuntime,
 ) -> PreparedDreamPlan:
-    if not settings.memory_embedding_enabled:
+    if not embeddings.enabled:
         raise RuntimeError("Memory Dream 需要启用 memory embedding")
     profile_id = embeddings.profile_id
     if profile_id is None:
@@ -530,7 +530,7 @@ class DreamService:
         return embedding_ids, operation_count
 
     async def _load(self) -> DreamCandidateLoad:
-        if not self._settings.memory_embedding_enabled:
+        if not self._embeddings.enabled:
             raise RuntimeError("Memory Dream 需要启用 memory embedding")
         profile_id = self._embeddings.profile_id
         if profile_id is None:
