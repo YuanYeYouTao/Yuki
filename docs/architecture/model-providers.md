@@ -10,12 +10,17 @@ DashScope 默认提供，不要求前端虚构连接。启用时仍需要真实�
 同一 v3 `model_profiles.toml` bundle 可包含 `[embedding]`、`[vision]`、`[asr]` 与 `[search]`。
 前三段显式保存 `enabled`、端点、模型和 `api_key_env`；视觉使用现有 Chat Completions 适配，
 ASR 可明确选择 `chat_completions` 或 `audio_transcriptions`，Embedding 使用 DashScope 原生
-或 OpenAI 兼容 `/embeddings`。`[search]` 只保存 `tavily_api_key_env`，搜索方式仍由已有路由选择。
+或 OpenAI 兼容 `/embeddings`。`[search]` 保存 `tavily_api_key_env` 与可选的 `mode`；
+`mode` 使用原有 `disabled/native/tavily/both`，与已有搜索路由共同确定运行方式。
 
 段存在时采用该段，不用旧设置补全；`enabled=false` 明确关闭，不退回另一套连接。
 段缺失的既有部署暂保留旧初始化来源，按升级命令迁移后退出。并发、超时、保留期限等原行为设置
 继续沿现行来源；客户端不另存配置或预设表。密钥同样只进 sidecar 或实际环境来源，不在可读文档
 或接口中回传。Settings 已读取的旧凭据别名在迁移期与进程环境、sidecar 沿同一解析链处理。
+
+一次性离线 `yuki admin model migrate-legacy`、旧聊天参数退役及下一版本的删除条件见
+[模型配置升级](../upgrade-model-config-20261031.md)。普通 Main 请求直接使用所选 Profile 的
+默认温度、输出额度与思考配置，调用者的显式单次参数仍保留；不再叠加旧 `llm.*` 运行覆盖。
 
 这些连接及其密钥变更需要重启，接口准确返回 `apply_mode=restart`、磁盘/已加载配置状态；
 重启前保留原运行资源与已开始的请求。未改变非聊天连接时，聊天模型原热应用路径继续使用。
@@ -77,9 +82,11 @@ Gemini 的 Google Search 与函数工具混用曾在 Cloud Code 代理上返回 
 
 顶层 `search_backend="model"` 与 `search_connection="连接ID"` 明确选择本地搜索的独立模型；
 `search_backend="tavily"` 则选择 Tavily 外部搜索。缺省后端为 `model`，不从 Tavily 密钥或
-旧隐式默认值选择外部搜索。全局 `WEB_MODE=disabled` 仍关闭联网工具；未设置开关与旧
-`WEB_ENABLED=true` 均使用 `native`，旧 `WEB_ENABLED=false` 继续关闭。
-显式 `WEB_MODE=tavily`、TOML 后端、主连接搜索模式与独立搜索连接保留原选择。
+旧隐式默认值选择外部搜索。`[search].mode` 明确设置时为运行模式来源，`disabled` 关闭
+联网工具；选择后端或填入密钥不会自动开启。模式、密钥和非聊天连接变更均需要重启。
+该字段缺失或为 `null` 的过渡文档继续使用原 `WEB_MODE`；原开关也未设置时，旧
+`WEB_ENABLED=true` 使用 `native`、`false` 关闭。文档标准化、Provider 构造、工具目录及
+每轮运行快照使用同一已选模式，TOML 后端、主连接搜索模式与独立搜索连接保留原选择。
 每个主连接的 `search_mode` 可选 `external`、`bridge`、`native` 或在协议允许时选 `both`：
 
 - `external` 使用本地搜索后端；主 Profile 的 `search_connection` 优先选择该独立模型，

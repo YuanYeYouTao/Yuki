@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from yuki.domain.audio import ASRProtocol
+from yuki.web.models import WebMode
 
 
 class _ModelConnection(BaseModel):
@@ -43,6 +44,7 @@ class ASRConnection(_ModelConnection):
 class SearchConnection(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    mode: WebMode | None = None
     tavily_api_key_env: str = ""
 
 

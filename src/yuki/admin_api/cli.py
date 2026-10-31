@@ -146,6 +146,8 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
             state.add_argument("state", choices=("on", "off"))
     model = commands.add_parser("model").add_subparsers(dest="model_action", required=True)
     model.add_parser("show")
+    migration = model.add_parser("migrate-legacy", help="离线迁移既有模型来源；不启动 Bot")
+    migration.add_argument("--revision", type=int)
     apply = model.add_parser("apply")
     apply.add_argument("file", type=Path)
     _mutation(apply)

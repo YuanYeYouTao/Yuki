@@ -511,18 +511,6 @@ class Settings(BaseSettings):
                 value = {**value, "web_search_backend": "tavily"}
         return value
 
-    @model_validator(mode="after")
-    def _validate_embedding_settings(self) -> Self:
-        if self.memory_embedding_provider != "qwen_dashscope":
-            raise ValueError("MEMORY_EMBEDDING_PROVIDER must be qwen_dashscope")
-        if self.memory_embedding_output_type != "dense":
-            raise ValueError("MEMORY_EMBEDDING_OUTPUT_TYPE must be dense")
-        if self.memory_embedding_dimensions != 1024:
-            raise ValueError("qwen_dashscope currently supports 1024 dimensions")
-        if self.memory_embedding_document_template_version != 1:
-            raise ValueError("unsupported MEMORY_EMBEDDING_DOCUMENT_TEMPLATE_VERSION")
-        return self
-
     @cached_property
     def app(self) -> AppSettings:
         return AppSettings.model_validate(self)

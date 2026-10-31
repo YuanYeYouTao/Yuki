@@ -215,11 +215,6 @@ class PluginRuntimeConfig:
 @dataclass(frozen=True, slots=True)
 class LLMRuntimeConfig:
     model: str
-    timeout_seconds: float
-    max_retries: int
-    temperature: float
-    max_output_tokens: int
-    thinking_enabled: bool | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -414,6 +414,14 @@ def main() -> None:
     if args.command == "gateway":
         print(json.dumps(provider_doctor_payload(str(args.provider)), ensure_ascii=False, indent=2))
         return
+    if (
+        args.command == "admin"
+        and args.admin_command == "model"
+        and args.model_action == "migrate-legacy"
+    ):
+        from yuki.model_runtime.legacy_migration import run_migration_command
+
+        raise SystemExit(asyncio.run(run_migration_command(args.revision)))
     load_http_environment()
     settings = Settings()
     if args.command == "init-db":

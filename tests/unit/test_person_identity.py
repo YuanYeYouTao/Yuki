@@ -137,11 +137,13 @@ async def test_configuration_target_wins_unique_moves_and_unset_never_falls_back
     a, b, _, _ = await _owners(database)
     await _override(database, a, 70000)
     await _override(database, b, 80000)
-    await _override(database, a, 0.3, key="llm.temperature", value_type="number")
+    await _override(database, a, 0.3, key="memory.hybrid_lexical_weight", value_type="number")
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     await merge(database, a, b)
     assert (await runtime.snapshot(user_id=a)).context.compact_trigger_tokens == 80000
-    assert (await runtime.snapshot(memory_scope=MemoryConfigScope(a))).llm.temperature == 0.3
+    assert (
+        await runtime.snapshot(memory_scope=MemoryConfigScope(a))
+    ).memory.hybrid_lexical_weight == 0.3
     inspected = await runtime.inspect_configs(
         ("context.compact_trigger_tokens",), scope=MemoryConfigScope(a)
     )

@@ -226,7 +226,6 @@ class AgentRunner:
                     if script_api is not None
                     else manifest_revision
                     or (self.main_contract.revision if self.main_contract is not None else ""),
-                    asdict(runtime.llm),
                     asdict(runtime.web),
                     self._models.profile_revision(self._task),
                     [(m.role, m.content) for m in system_messages if m.role == "system"],

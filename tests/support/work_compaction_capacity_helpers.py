@@ -1,6 +1,7 @@
 """Capacity replacement preserves original input and paired execution facts."""
 
 import json
+from dataclasses import replace
 
 from tests.conftest import build_harness, make_settings
 
@@ -76,9 +77,39 @@ def _grow(transcript):
         transcript.append(ChatMessage("assistant", "Recent completed check."))
 
 
-async def _runtime(database, control, initial, provider, *, contract_workspace=None, **settings):
+async def _runtime(
+    database,
+    control,
+    initial,
+    provider,
+    *,
+    contract_workspace=None,
+    profile_output_tokens=None,
+    **settings,
+):
     harness = build_harness(database, make_settings(database.url, **settings), provider)
     chat = harness.processor._chat
+    if profile_output_tokens is not None:
+        prepare = chat._models.capacity_request
+        execute = chat._models.execute
+
+        def profile_request(task, request):
+            selected = prepare(task, request)
+            return replace(
+                selected,
+                max_output_tokens=(
+                    profile_output_tokens
+                    if selected.max_output_tokens is None
+                    else selected.max_output_tokens
+                ),
+            )
+
+        chat._models.capacity_request = profile_request
+
+        async def profile_execute(task, request, **options):
+            return await execute(task, profile_request(task, request), **options)
+
+        chat._models.execute = profile_execute
     contract = None
     if contract_workspace is not None:
         contract = MainAgentContract(chat, ShortState(WorkspaceStore(contract_workspace)))

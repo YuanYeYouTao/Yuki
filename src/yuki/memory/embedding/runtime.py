@@ -65,37 +65,39 @@ class MemoryEmbeddingRuntime:
     def _build_provider(
         settings: Settings, connection: EmbeddingConnection | None = None, api_key: str = ""
     ) -> EmbeddingProvider | None:
-        if connection is not None:
-            if not connection.enabled:
+        if connection is None:
+            if not settings.memory_embedding_configured:
                 return None
-            common: dict[str, Any] = dict(
-                base_url=connection.base_url,
-                api_key=api_key,
-                model=connection.model,
-                dimensions=connection.dimensions,
-                document_template_version=connection.document_template_version,
-                timeout_seconds=settings.memory_embedding_request_timeout_seconds,
-                http_concurrency=settings.memory_embedding_http_concurrency,
+            template_version = settings.memory_embedding_document_template_version
+            connection = EmbeddingConnection.model_validate(
+                {
+                    "provider": settings.memory_embedding_provider,
+                    "base_url": settings.memory_embedding_base_url,
+                    "model": settings.memory_embedding_model,
+                    "dimensions": settings.memory_embedding_dimensions,
+                    "output_type": settings.memory_embedding_output_type,
+                    "document_template_version": template_version,
+                    "query_instruct": settings.memory_embedding_query_instruct,
+                }
             )
-            if connection.provider == "openai_compatible":
-                return OpenAICompatibleEmbeddingProvider(**common)
-            return QwenDashScopeEmbeddingProvider(
-                **common,
-                output_type=connection.output_type,
-                query_instruct=connection.query_instruct,
-            )
-        if not settings.memory_embedding_configured:
+            api_key = settings.memory_embedding_api_key
+        if not connection.enabled:
             return None
-        return QwenDashScopeEmbeddingProvider(
-            base_url=settings.memory_embedding_base_url,
-            api_key=settings.memory_embedding_api_key,
-            model=settings.memory_embedding_model,
-            dimensions=settings.memory_embedding_dimensions,
-            output_type=settings.memory_embedding_output_type,
-            document_template_version=settings.memory_embedding_document_template_version,
-            query_instruct=settings.memory_embedding_query_instruct,
+        common: dict[str, Any] = dict(
+            base_url=connection.base_url,
+            api_key=api_key,
+            model=connection.model,
+            dimensions=connection.dimensions,
+            document_template_version=connection.document_template_version,
             timeout_seconds=settings.memory_embedding_request_timeout_seconds,
             http_concurrency=settings.memory_embedding_http_concurrency,
+        )
+        if connection.provider == "openai_compatible":
+            return OpenAICompatibleEmbeddingProvider(**common)
+        return QwenDashScopeEmbeddingProvider(
+            **common,
+            output_type=connection.output_type,
+            query_instruct=connection.query_instruct,
         )
 
     @property

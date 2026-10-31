@@ -607,6 +607,10 @@ class RuntimeConfigService:
             tuple[str, ConfigScopeType, str], RuntimeConfigOverrideRecord
         ] = {}
 
+    def activate_settings(self, settings: Settings) -> None:
+        """Use the same startup settings projection as the constructed services."""
+        self._settings = settings
+
     async def initialize(self) -> None:
         """Activate persisted restart-required overrides for this process."""
 
@@ -1607,12 +1611,7 @@ class RuntimeConfigService:
                 hard_max_messages=int(cast(int, value("reply.hard_max_messages"))),
             ),
             llm=LLMRuntimeConfig(
-                model=str(value("llm.model") or ""),
-                timeout_seconds=float(cast(float | int, value("llm.timeout_seconds"))),
-                max_retries=int(cast(int, value("llm.max_retries"))),
-                temperature=float(cast(float | int, value("llm.temperature"))),
-                max_output_tokens=int(cast(int, value("llm.max_output_tokens"))),
-                thinking_enabled=cast(bool | None, value("llm.thinking_enabled")),
+                model=self._settings.llm_model,
             ),
             agent=AgentRuntimeConfig(
                 max_tool_calls=int(cast(int, value("agent.max_tool_calls"))),
