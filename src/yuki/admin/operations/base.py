@@ -25,6 +25,7 @@ from yuki.admin.control_resolution import USER_CAPABILITIES
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.domain.identity import RequestId
 from yuki.identity.authority import person_is_superuser
+from yuki.identity.credentials import DeviceCredentials
 from yuki.persistence.command_receipts import (
     CommandReceiptRepository,
     CommandSuccess,
@@ -51,17 +52,24 @@ async def authorize_current(
     session: AsyncSession | None = None,
 ) -> None:
     authorize(principal, capability)
-    if (
+    if principal.device_id is None and (
         principal.source not in {PrincipalSource.QQ, PrincipalSource.PLATFORM}
         or capability in USER_CAPABILITIES
     ):
         return
     if session is None:
         async with database.read_session() as reader:
-            allowed = await person_is_superuser(reader, principal.principal_id.text)
-    else:
-        allowed = await person_is_superuser(session, principal.principal_id.text)
-    if not allowed:
+            await authorize_current(database, principal, capability, session=reader)
+        return
+    if principal.device_id is not None:
+        device = await DeviceCredentials(database).require_device(
+            session, principal.device_id, purpose="chat"
+        )
+        if device.source_person_id != principal.principal_id.text:
+            raise fail(ProblemCode.UNAUTHENTICATED)
+    if capability not in USER_CAPABILITIES and not await person_is_superuser(
+        session, principal.principal_id.text
+    ):
         raise fail(ProblemCode.CAPABILITY_DENIED)
 
 

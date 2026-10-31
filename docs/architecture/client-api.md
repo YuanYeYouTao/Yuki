@@ -1,7 +1,7 @@
 # 个人客户端 API
 
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
-聊天设备凭据解析当前 Person，保留原设备与 App 入口。角色资料与头像写入、SOUL 原文读写／重载、服务器电脑详细环境／画面／文件／控制和 SELF 安排目录要求该设备原 Person 当前为超管；公开名称／头像、本人安排和基础电脑可用性仍可读取。Person 私有资料、安排创建者、Work、Native 设备与实际电脑租约仍认原归属；个人 token 不替代 operator 控制凭据。公开服务沿部署提供 HTTPS。
+聊天设备凭据解析当前 Person，保留原设备与 App 入口。角色资料与头像写入、SOUL 原文读写／重载、服务器电脑详细环境／画面／文件／控制和 SELF 安排目录要求该设备原 Person 当前为超管；公开名称／头像、本人安排和基础电脑可用性仍可读取。Person 私有资料、安排创建者、Work、Native 设备与实际电脑租约仍认原归属。超管的聊天设备 token 可访问原 `/admin/v1`，按 Person 当前能力授权；它不变成 operator 凭据，也不继承 operator 单独声明的能力。公开服务沿部署提供 HTTPS。
 
 ## 本机 Agent 设备
 

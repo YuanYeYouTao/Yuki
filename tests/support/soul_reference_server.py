@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -40,11 +41,43 @@ async def serve(
     database_path = root / "yuki.sqlite3"
     first_start = not database_path.exists()
     database = Database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    authority_fixture = os.environ.get("YUKI_AUTHORITY_FIXTURE") == "1"
+    authority_tokens = {}
+    operators_file = None
+    if authority_fixture:
+        operators_file = root / "operators.toml"
+        declarations = []
+        for kind in ("operator", "limited_operator", "disabled_operator"):
+            token = secrets.token_urlsafe(32)
+            authority_tokens[kind + "_token"] = token
+            variable = "YUKI_AUTHORITY_" + kind.upper()
+            os.environ[variable] = token
+            capabilities = (
+                [
+                    "control.config.file.content.read",
+                    "control.config.file.mutate",
+                    "identity.person.create",
+                    "identity.person.read",
+                    "identity.person.superuser",
+                    "identity.client.pair",
+                ]
+                if kind == "operator"
+                else []
+            )
+            declarations.append(
+                "[[operators]]\n"
+                f"principal_id = {json.dumps(str(uuid4()))}\n"
+                f"token_env = {json.dumps(variable)}\n"
+                f"enabled = {'false' if kind == 'disabled_operator' else 'true'}\n"
+                f"capabilities = {json.dumps(capabilities)}\n"
+            )
+        operators_file.write_text("\n".join(declarations), encoding="utf-8")
     runtime = ApplicationContainer(
         make_settings(
             database.url,
             soul_file=soul_file,
             model_profiles_file=write_fake_profiles(root / "models.toml"),
+            control_operators_file=operators_file,
             plugin_system_enabled=False,
             plugin_directory=root / "plugins",
             workspace_directory=root / "workspace",
@@ -249,6 +282,37 @@ async def serve(
                 }
         api = FastAPI(debug=desktop)
         attach_client_api(api, lambda: runtime.client_api)
+        if authority_fixture:
+            from yuki.admin_api.http import attach_admin_api
+
+            attach_admin_api(api, lambda: runtime.admin_api)
+            model_apply_gate, model_apply_started = asyncio.Event(), asyncio.Event()
+            model_apply_gate.set()
+            apply_models = runtime.admin_api.commands.model.apply_models
+
+            async def controlled_apply(*args, **kwargs):
+                model_apply_started.set()
+                await model_apply_gate.wait()
+                return await apply_models(*args, **kwargs)
+
+            runtime.admin_api.commands.model.apply_models = controlled_apply
+
+            @api.post("/__test/hold-model-apply")
+            async def hold_model_apply() -> dict:
+                model_apply_started.clear()
+                model_apply_gate.clear()
+                return {"held": True}
+
+            @api.get("/__test/model-apply-started")
+            async def wait_model_apply() -> dict:
+                await model_apply_started.wait()
+                return {"started": True}
+
+            @api.post("/__test/release-model-apply")
+            async def release_model_apply() -> dict:
+                model_apply_gate.set()
+                return {"held": False}
+
         if desktop and real_model_source is None:
             from tests.support.desktop_fault_fixture import DesktopFaultFixture
 
@@ -270,7 +334,7 @@ async def serve(
             from tests.support.desktop_character_fixture import attach_character_fixture
 
             await attach_character_fixture(api, runtime, owner_id)
-        if desktop:
+        if desktop or authority_fixture:
             from yuki.external_agents.http import attach_external_agent_api
 
             attach_external_agent_api(api, lambda: runtime.external_agents)
@@ -406,6 +470,7 @@ async def serve(
                     "nonowner_person_id": nonowner_id,
                     "owner_pairing_code": owner_code["code"],
                     "nonowner_pairing_code": nonowner_code["code"],
+                    **authority_tokens,
                     **artifact_state,
                 }
                 pending_state = state_file.with_name(state_file.name + ".pending")

@@ -1,7 +1,7 @@
 """Finite Bearer routes; caller-supplied principals never enter domain commands."""
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query
@@ -15,6 +15,7 @@ from yuki.admin.authority.operators import ControlOperatorAccess
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.authority.problems import ControlQueryError, ProblemCode
 from yuki.admin.config_files import ConfigFileError
+from yuki.admin.control_resolution import ControlAccess, ControlPrincipalLookupError
 from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
@@ -141,7 +142,23 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         scheme, _, credential = (authorization or "").partition(" ")
         if scheme.casefold() != "bearer" or not credential:
             raise fail(ProblemCode.UNAUTHENTICATED)
-        return await resolve().access.authenticate(credential, source=PrincipalSource.CLI)
+        api = resolve()
+        try:
+            return await api.access.authenticate(credential, source=PrincipalSource.CLI)
+        except ControlQueryError as exc:
+            if exc.problem.code != ProblemCode.UNAUTHENTICATED:
+                raise
+        async with api.identities.database.read_session() as session:
+            device = await api.identities.credentials.authenticate(
+                session, credential, purpose="chat"
+            )
+        try:
+            actor = await ControlAccess(api.identities.database).principal_for_person(
+                device.source_person_id
+            )
+        except ControlPrincipalLookupError:
+            raise fail(ProblemCode.UNAUTHENTICATED) from None
+        return replace(actor, device_id=device.device_id)
 
     Actor = Annotated[ControlPrincipal, Depends(principal)]
 
