@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import func, insert, literal, select
+from sqlalchemy import case, func, insert, literal, or_, select
 
 from yuki.conversation.correlation import stamp_conversation_correlation
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
@@ -14,9 +14,31 @@ from yuki.execution_trace.payload import PayloadCapacityError, freeze_payload
 from yuki.execution_trace.recorder import _trace_source_guards, current_trace
 from yuki.model_runtime.db_models import ModelInvocationModel
 from yuki.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
+from yuki.model_runtime.usage import (
+    ModelCacheRead,
+    ModelStatsView,
+    ModelUsageCoverage,
+    ModelUsageFilters,
+    ModelUsageGroup,
+    ModelUsageModel,
+    ModelUsageOptions,
+    ModelUsageQuery,
+    ModelUsageSource,
+    ModelUsageStats,
+)
 from yuki.persistence.database import Database
 from yuki.persistence.diagnostic_writer import DiagnosticWrite, DiagnosticWriter
 from yuki.runtime.observability import claim_runtime_turn_id
+
+_TOKEN_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_prompt_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_5m_input_tokens",
+    "cache_creation_1h_input_tokens",
+)
 
 
 def project_model_task(value: str) -> str:
@@ -147,21 +169,111 @@ class ModelInvocationRepository:
             row = (await session.execute(statement)).one()
         return self._stats(row)
 
-    async def stats_by_task(self) -> dict[str, ModelStats]:
-        statement = self._stats_statement(ModelInvocationModel.task).group_by(
-            ModelInvocationModel.task
+    async def usage(self, query: ModelUsageQuery) -> ModelStatsView:
+        window = query.window()
+        model = ModelInvocationModel
+        dimensions = (model.task, model.provider, model.model, model.profile_id)
+        paired = model.prompt_tokens.is_not(None) & model.cached_prompt_tokens.is_not(None)
+        statement = (
+            select(
+                *dimensions,
+                func.count(model.id).label("invocations"),
+                func.sum(func.cast(model.success, model.id.type)).label("successes"),
+                *(func.sum(getattr(model, name)).label(name) for name in _TOKEN_FIELDS),
+                func.sum(model.latency_seconds).label("latency_sum"),
+                func.sum(
+                    func.cast(
+                        or_(model.total_tokens.is_(None), model.unknown_usage_request_count > 0),
+                        model.id.type,
+                    )
+                ).label("unknown_usage"),
+                *(
+                    func.count(getattr(model, name)).label(f"reported_{name}")
+                    for name in _TOKEN_FIELDS
+                ),
+                func.sum(func.cast(paired, model.id.type)).label("paired_calls"),
+                func.sum(case((paired, model.prompt_tokens), else_=0)).label("paired_input"),
+                func.sum(case((paired, model.cached_prompt_tokens), else_=0)).label("paired_cache"),
+            )
+            .where(model.created_at < window.end)
+            .group_by(*dimensions)
         )
-        async with self._database.read_session() as session:
-            rows = (await session.execute(statement)).all()
-        return {project_model_task(str(row[0])): self._stats(row[1:]) for row in rows}
+        if window.start is not None:
+            statement = statement.where(model.created_at >= window.start)
+        async with self._database.read_session() as reader:
+            rows = [dict(row) for row in (await reader.execute(statement)).mappings()]
+        filters = ModelUsageFilters(
+            task=query.task, provider=query.provider, model=query.model, profile_id=query.profile_id
+        )
+        selected_filters = filters.model_dump(exclude_none=True)
+        selected = [
+            row for row in rows if all(row[key] == value for key, value in selected_filters.items())
+        ]
+        grouped: dict[tuple[str, ...], list[Mapping[str, Any]]] = {}
+        for row in selected:
+            key = (row["task"],) if query.group_by == "task" else (row["provider"], row["model"])
+            grouped.setdefault(key, []).append(row)
+        groups = [
+            ModelUsageGroup(
+                task=key[0] if query.group_by == "task" else None,
+                provider=key[0] if query.group_by == "model" else None,
+                model=key[1] if query.group_by == "model" else None,
+                stats=self._usage_stats(members),
+                sources=[
+                    ModelUsageSource(
+                        task=row["task"],
+                        provider=row["provider"],
+                        model=row["model"],
+                        profile_id=row["profile_id"],
+                        stats=self._usage_stats([row]),
+                    )
+                    for row in sorted(
+                        members, key=lambda row: tuple(row[column.key] for column in dimensions)
+                    )
+                ],
+            )
+            for key, members in sorted(grouped.items())
+        ]
+        groups.sort(key=lambda group: group.stats.total_tokens, reverse=True)
+        return ModelStatsView(
+            range=window,
+            group_by=query.group_by,
+            filters=filters,
+            options=ModelUsageOptions(
+                tasks=sorted({row["task"] for row in rows}),
+                models=[
+                    ModelUsageModel(provider=provider, model=name)
+                    for provider, name in sorted({(row["provider"], row["model"]) for row in rows})
+                ],
+            ),
+            summary=self._usage_stats(selected),
+            groups=groups,
+        )
 
-    async def stats_by_profile(self) -> dict[str, ModelStats]:
-        statement = self._stats_statement(ModelInvocationModel.profile_id).group_by(
-            ModelInvocationModel.profile_id
+    @staticmethod
+    def _usage_stats(rows: Sequence[Mapping[str, Any]]) -> ModelUsageStats:
+        def total(name: str) -> Any:
+            return sum(row[name] or 0 for row in rows)
+
+        calls, successes = total("invocations"), total("successes")
+        paired_input, paired_cache = total("paired_input"), total("paired_cache")
+        return ModelUsageStats(
+            invocations=calls,
+            successes=successes,
+            failures=calls - successes,
+            **{name: total(name) for name in _TOKEN_FIELDS},
+            unknown_usage=total("unknown_usage"),
+            average_latency_seconds=total("latency_sum") / calls if calls else 0,
+            coverage=ModelUsageCoverage(
+                **{name: total(f"reported_{name}") for name in _TOKEN_FIELDS}
+            ),
+            cache_read=ModelCacheRead(
+                reported_calls=total("paired_calls"),
+                prompt_tokens=paired_input,
+                cached_prompt_tokens=paired_cache,
+                ratio=paired_cache / paired_input if paired_input else None,
+            ),
         )
-        async with self._database.read_session() as session:
-            rows = (await session.execute(statement)).all()
-        return {str(row[0]): self._stats(row[1:]) for row in rows}
 
     async def stats_summary(
         self,

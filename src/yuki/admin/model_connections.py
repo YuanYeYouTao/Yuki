@@ -18,7 +18,7 @@ from yuki.llm.base import (
     LLMUnsupportedFeatureError,
     ProviderModel,
 )
-from yuki.model_runtime.models import ModelProfile, ModelProtocol, ModelStats
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
 from yuki.model_runtime.pool import ModelClientPool
 
 type ModelConnectionError = Literal[
@@ -82,11 +82,6 @@ class ModelTestResult(BaseModel):
 class ModelDiscoverResult(BaseModel):
     models: list[ProviderModel] = Field(default_factory=list)
     error_category: ModelConnectionError | None = None
-
-
-class ModelStatsView(BaseModel):
-    by_task: dict[str, ModelStats]
-    by_profile: dict[str, ModelStats]
 
 
 def error_category(error: LLMError) -> ModelConnectionError:

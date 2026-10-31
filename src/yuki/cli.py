@@ -30,6 +30,7 @@ from yuki.model_runtime import (
     ModelTask,
     load_model_profile_catalog,
 )
+from yuki.model_runtime.models import ModelStats
 from yuki.model_runtime.profiles import model_profile_environment
 from yuki.persistence.database import Database
 from yuki.plugin_host.manifest import load_manifest
@@ -207,11 +208,12 @@ async def _model_stats(settings: Settings) -> int:
     database = Database(settings.database_url)
     repository = ModelInvocationRepository(database)
     try:
+        summary, tasks, _profiles = await repository.stats_summary()
         rows = {
-            task.value: (await repository.stats(task=task)).model_dump(mode="json")
+            task.value: tasks.get(task.value, ModelStats()).model_dump(mode="json")
             for task in ModelTask
         }
-        rows["all"] = (await repository.stats()).model_dump(mode="json")
+        rows["all"] = summary.model_dump(mode="json")
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
     finally:
