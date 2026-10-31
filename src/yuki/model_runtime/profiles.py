@@ -155,6 +155,10 @@ def normalize_model_profile_document(
     document.pop("semantic_observation", None)
     validated = _ProfileDocument.model_validate(document)
     for profile_id, payload in validated.profiles.items():
+        # An unset editable document field is absent in TOML; runtime defaults
+        # remain owned by ModelProfile, not by another frontend configuration.
+        payload = {key: value for key, value in payload.items() if value is not None}
+        validated.profiles[profile_id] = payload
         ModelProfile.model_validate(
             {"id": profile_id, **_resolve_profile_environment(payload, environment=environment)}
         )
