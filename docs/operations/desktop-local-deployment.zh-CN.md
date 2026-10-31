@@ -14,8 +14,14 @@ Docker 中的同机模型需可从容器访问，Desktop 将用户明确输入�
 
 首次沿 `init-db --character-name` 初始化，再启动原 Compose 服务。数据目录已有数据库时沿正常迁移，
 不重命名角色。后端的 `desktop-pair` 命令只在所选容器内复用原 operator API，
-以原 request UUID 创建或读取 Person，再签 chat 码供 Desktop 正常配对。共享管理读取该 Person 当前超管资格；一般远程配对不授予超管，不创建 owner 授权，也不再接受旧 owner_request_id。
-operator 凭据不成为聊天 token，不要求先有平台账号。可信本机部署的显式超管授权步骤见后续 desktop-pair 合同。
+以原 `person_request_id` 创建或读取明确选择的 Person。新安装明确提供 `superuser_request_id`
+时才调用原超管 grant；未提供时只以原 `pair_request_id` 签 chat 码，不改变超管资格。
+旧安装重连不生成新的授权 UUID；新安装的授权 UUID 随安装信息持久化后沿用。
+已有 grant 回执沿原 CAS revision、UUID 和原命令指纹重放；不猜新 revision，不换请求重授。
+成功授予后即使后来撤权，重放旧请求也只返回原结果，不恢复超管；已有超管的显式 grant 不推进人物版本。
+这只适用于可信本机部署命令；一般远程配对、重连、改址或旧 owner 历史不自动授予超管。
+不创建 owner 授权，也不再接受旧 `owner_request_id`。
+operator 凭据不成为聊天 token，不要求先有平台账号。
 
 `docker-compose.local.yml` 与原 Compose 合用，只发布 `127.0.0.1:<所选端口>:8080`，
 不绑定公网，也不挂载尚未安装的 Manager。需支持 `!override` 的 Compose（2.24.4+）。
