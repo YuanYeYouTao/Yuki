@@ -244,6 +244,7 @@ class TurnExecution:
         self.initial_messages = initial_messages
         self._initial_layout_finalized = False
         self._initial_inputs: list[ChatMessage] = []
+        self._execution_checkpoint_summary: str | None = None
         self.runtime = runtime
         self.tools = tools
         self.state = TurnState(
@@ -323,6 +324,9 @@ class TurnExecution:
                     assert session.transcript is not None
                     self.state.transcript = session.transcript
             session = self.runtime.work_control.session
+            self._execution_checkpoint_summary = session.progress.get("task_material", {}).get(
+                "execution_checkpoint"
+            )
             if session.exact_recovery and session.source_guard is not None:
                 observed = set(session.source_guard.version.visible_event_ids) | set(
                     session.event_ids
@@ -442,12 +446,15 @@ class TurnExecution:
                 # history and activation material belong to this fresh run.
                 old_count = len(decode_transcript(saved["prefix"]).request().messages)
                 tail = candidate.request().messages[old_count:]
+                if saved["valid"]:
+                    self._execution_checkpoint_summary = saved["response"]
             await self._finalize_initial_layout()
             for message in tail:
                 self.state.transcript.append(message)
         else:
             self.state.transcript = candidate
             self.initial_messages = decode_transcript(saved["prefix"]).request().messages
+        self.state.response_observation = saved.get("response_observation", {})
         if self.runtime.auxiliary_requests is not None:
             self.runtime.auxiliary_requests[0] = saved["model_requests"]
         if saved["valid"] and saved.get("public") is not None:
@@ -1053,7 +1060,7 @@ class TurnExecution:
         )
 
         public_context = self.runtime.public_compaction
-        from yuki.services.turn_transcript import recorded_response
+        from yuki.services.turn_transcript import recorded_response, tool_result_evidence
 
         active_session = self.state.control.session if self.state.control is not None else None
         recorded = (
@@ -1063,66 +1070,22 @@ class TurnExecution:
             if self.state.response_observation
             else []
         )
-        public_eligible = (
-            public_context is not None
-            and bool(public_context.fragments)
-            and request.continuation is None
-            and request.messages[: len(public_context.messages)] == public_context.messages
-        )
-        initial_tokens = estimate_request_tokens(
-            self.runner._capacity_request(
-                replace(
-                    request,
-                    messages=self.initial_messages,
-                    continuation=None,
-                    continuation_items=(),
-                )
+
+        def can_compact_public(candidate: ChatRequest) -> bool:
+            return (
+                public_context is not None
+                and bool(public_context.fragments)
+                and candidate.continuation is None
+                and candidate.messages[: len(public_context.messages)] == public_context.messages
             )
-        )
+
+        public_eligible = can_compact_public(request)
         public_requested = self.runtime.compact_focus is not None
-        public_limit = trigger_tokens if trigger_tokens is not None else input_budget
         try:
-            if public_eligible and (
-                public_requested or (public_limit is not None and initial_tokens >= public_limit)
-            ):
+            plan = None
+            if public_eligible:
                 assert public_context is not None
-                plan = public_compact_plan(
-                    public_context,
-                    self.state.transcript,
-                    request,
-                    initial=self.initial_messages,
-                    input_budget=input_budget,
-                    prepare=self.runner._capacity_request,
-                    focus=self.runtime.compact_focus or "",
-                )
-            else:
-                tail = self.state.transcript.entries()[len(self.initial_messages) :]
-                if trigger_tokens is not None and not any(
-                    isinstance(entry, (FunctionCallOutput, ProviderContinuation))
-                    or (isinstance(entry, ChatMessage) and entry.role in {"assistant", "tool"})
-                    for entry in tail
-                ):
-                    return request
                 try:
-                    plan = execution_compact_plan(
-                        self.state.transcript,
-                        self.initial_messages,
-                        request,
-                        input_budget=input_budget,
-                        prepare=self.runner._capacity_request,
-                        retained_public=tuple(self.state.public_tail),
-                        responses=tuple(recorded_response(value) for value in recorded),
-                        call_key=(
-                            self.state.control.session.call_key
-                            if self.state.control is not None
-                            and self.state.control.session is not None
-                            else None
-                        ),
-                    )
-                except WorkCapacityError:
-                    if not public_eligible:
-                        raise
-                    assert public_context is not None
                     plan = public_compact_plan(
                         public_context,
                         self.state.transcript,
@@ -1130,7 +1093,58 @@ class TurnExecution:
                         initial=self.initial_messages,
                         input_budget=input_budget,
                         prepare=self.runner._capacity_request,
+                        focus=self.runtime.compact_focus or "",
                     )
+                except WorkCapacityError:
+                    if public_requested:
+                        raise
+            elif public_requested:
+                raise WorkCapacityError("model_request_capacity")
+            if plan is None:
+                tail = self.state.transcript.entries()[len(self.initial_messages) :]
+                if trigger_tokens is not None and not any(
+                    isinstance(entry, (FunctionCallOutput, ProviderContinuation))
+                    or (isinstance(entry, ChatMessage) and entry.role in {"assistant", "tool"})
+                    for entry in tail
+                ):
+                    return request
+                current = self.state.control.current if self.state.control is not None else None
+                focus = json.dumps(
+                    {
+                        "current_work": (
+                            {"id": current["id"], "goal": current["goal"]}
+                            if current is not None
+                            else None
+                        ),
+                        "source_event_id": self.runtime.source_event_id,
+                    },
+                    ensure_ascii=False,
+                )
+                unobserved_tool_round = None
+                if recorded and (results := recorded[-1].get("results")):
+                    result_facts = {result["call_id"]: result for result in results}
+                    unobserved_tool_round = tool_result_evidence(
+                        recorded_response(recorded[-1]),
+                        {identity: fact["output"] for identity, fact in result_facts.items()},
+                        call_key=lambda identity: result_facts[identity].get("effect_key"),
+                    )
+                plan = execution_compact_plan(
+                    self.state.transcript,
+                    self.initial_messages,
+                    request,
+                    input_budget=input_budget,
+                    prepare=self.runner._capacity_request,
+                    retained_public=tuple(self.state.public_tail),
+                    responses=tuple(recorded_response(value) for value in recorded),
+                    call_key=(
+                        self.state.control.session.call_key
+                        if self.state.control is not None and self.state.control.session is not None
+                        else None
+                    ),
+                    focus="本轮程序持有的目标归属（null 表示没有当前业务 Work）：" + focus,
+                    checkpoint_summary=self._execution_checkpoint_summary,
+                    unobserved_tool_round=unobserved_tool_round,
+                )
         except WorkCapacityError:
             # A soft watermark is a maintenance policy, not an input-capacity
             # error. Only planning failures are optional; paid/unknown outcomes,
@@ -1200,6 +1214,7 @@ class TurnExecution:
                 "retained": encode_transcript(TurnTranscript(plan.retained)),
                 "public": plan.public,
                 "original": encode_transcript(original),
+                "response_observation": self.state.response_observation,
                 "phase": "dispatched",
             }
             sequence = original.request()
@@ -1323,6 +1338,8 @@ class TurnExecution:
             return request
         if plan.public is not None:
             await self.adopt_public_compact(plan.public, state["response"])
+        else:
+            self._execution_checkpoint_summary = state["response"]
         sequence = self.state.transcript.request()
         candidate = replace(
             request,
@@ -1332,10 +1349,13 @@ class TurnExecution:
             request_chain_id=self.state.transcript.chain_id,
         )
         if (
-            not plan.retained
+            not plan.has_uncovered_execution
             and plan.public is None
             and input_budget is not None
             and estimate_request_tokens(self.runner._capacity_request(candidate)) > input_budget
+            # Retiring a native chain can make the existing public path legal.
+            # A public plan already tried on this input must not reopen this loop.
+            and (public_eligible or not can_compact_public(candidate))
         ):
             raise WorkCapacityError("model_request_capacity")
         return candidate
@@ -1587,6 +1607,11 @@ class TurnExecution:
                 "output": result,
                 "executed": was_executed,
             }
+            if self.state.control is not None and self.state.control.session is not None:
+                session = self.state.control.session
+                public_result["effect_key"] = session.pending_readonly_keys.get(
+                    call.id
+                ) or session.call_key(call.id)
             public_results.append(public_result)
         self.state.response_observation["results"] = public_results
         if self.runtime.work_control is not None and self.runtime.work_control.session is not None:
