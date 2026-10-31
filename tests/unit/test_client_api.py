@@ -1,4 +1,4 @@
-"""Personal and operator credentials have separate HTTP authority."""
+"""Personal devices use Person authority; operator credentials remain separate."""
 
 import asyncio
 from uuid import uuid4
@@ -59,7 +59,7 @@ async def pair(client, code, label="device"):
     return response.json()["data"]
 
 
-async def test_no_qq_needed_and_credentials_cannot_cross_http_authorities(personal):
+async def test_no_qq_needed_and_personal_credentials_use_current_person_authority(personal):
     client = personal
     person, code = await person_and_code(client)
     forbidden = await client.post(
@@ -68,7 +68,9 @@ async def test_no_qq_needed_and_credentials_cannot_cross_http_authorities(person
     assert forbidden.status_code == 401
     first = await pair(client, code, "computer")
     assert (await client.get("/client/v1/me", headers=bearer(TOKEN))).status_code == 401
-    assert (await client.get("/admin/v1/health", headers=bearer(first["token"]))).status_code == 401
+    denied = await client.get("/admin/v1/health", headers=bearer(first["token"]))
+    assert denied.status_code == 403
+    assert denied.json() == {"problem": {"code": "capability_denied"}}
     assert (await client.get("/client/v1/me")).status_code == 401
     me = await client.get("/client/v1/me", headers=bearer(first["token"]))
     assert me.json()["data"]["person_id"] == person
