@@ -21,6 +21,7 @@ from tests.unit.test_computer_control import manager_at
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.computer import ClientComputer
 from yuki.client_api.http import ClientApi, attach_client_api
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.sandbox.client import SandboxClient
 from yuki.workspace.store import WorkspaceError
 
@@ -32,6 +33,9 @@ async def test_http_file_etag_identifies_the_original_snapshot_after_source_chan
     app_env, database, tmp_path, monkeypatch
 ):
     device, _person = await owner(app_env, database)
+    async with database.immediate_session() as session:
+        person = await session.get(CanonicalPersonModel, _person)
+        person.is_superuser = True
     character = CharacterRepository(app_env.identity, app_env.harness.settings)
     await character.initialize("Computer snapshot test")
     manager = manager_at(tmp_path)

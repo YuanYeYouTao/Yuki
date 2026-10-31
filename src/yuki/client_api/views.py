@@ -21,6 +21,7 @@ from yuki.client_api.works import ClientWorks, root_work_query, work_access
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.recorder import TraceRecorder
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.persistence.event_view import event_view
@@ -361,9 +362,10 @@ class ClientViews:
                     "id": current.id,
                     "revision": current.revision,
                     "avatar_revision": current.avatar_revision,
-                    "is_owner": True,
                 }
-                if self.soul is not None:
+                if self.soul is not None and await person_is_superuser(
+                    session, principal.source_person_id
+                ):
                     hint["soul"] = {
                         "revision": self.soul.revision,
                         "active_revision": self.soul.settings.active_soul_revision,

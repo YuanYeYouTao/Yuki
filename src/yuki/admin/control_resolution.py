@@ -51,6 +51,8 @@ SUPERUSER_CAPABILITIES: frozenset[str] = USER_CAPABILITIES | frozenset(
         "control.plugin.config.mutate",
         "control.config.file.content.read",
         "control.config.file.mutate",
+        "control.character.read",
+        "control.character.mutate",
         "control.execution.metadata.read",
         "control.execution.content.read",
         "control.work.mutate",

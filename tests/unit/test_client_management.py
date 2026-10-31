@@ -536,7 +536,7 @@ async def test_automation_transitions_keep_current_definition_and_original_recei
     shared = await case.client.get(
         "/client/v1/automations?scope=self", headers=bearer(device["token"])
     )
-    assert shared.status_code == 200 and shared.json()["data"]["items"] == []
+    assert shared.status_code == 403
     async with database.read_session() as reader:
         presence = await reader.get(PresenceModel, principal.presence_id)
     actor = ToolActor(
@@ -592,7 +592,7 @@ async def test_automation_transitions_keep_current_definition_and_original_recei
 
 def test_management_openapi_comes_from_real_response_models():
     document = client_openapi()
-    assert document["info"]["x-yuki-api-revision"] == 7
+    assert document["info"]["x-yuki-api-revision"] == 8
     paths = document["paths"]
     for path in (
         "/client/v1/memory/facts",
@@ -958,6 +958,6 @@ async def test_capability_and_status_project_actual_manager_root_manifest(
         computer = ClientComputer(case.env.identity, transport)
         environment = await computer.environment(principal)
         assert environment["state"] == "running" and environment["display"] == "stopped"
-        assert environment["control"] == {"holder": "none"}
+        assert environment["control"] is None
     finally:
         await manager.close()

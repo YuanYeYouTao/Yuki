@@ -99,7 +99,7 @@ async def test_retired_history_requires_exact_original_identity(database, tmp_pa
 
 async def test_retired_routes_are_absent_and_native_and_remote_computer_remain():
     document = client_openapi()
-    assert document["info"]["x-yuki-api-revision"] == 7
+    assert document["info"]["x-yuki-api-revision"] == 8
     assert "/agents/v1/devices" in document["paths"]
     assert "/client/v1/computer/files" in document["paths"]
     assert not any(

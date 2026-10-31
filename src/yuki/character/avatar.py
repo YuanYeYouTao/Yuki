@@ -153,7 +153,7 @@ class CharacterAvatars:
     ) -> dict[str, Any]:
         operation = "client.character_avatar"
         async with self.identity.database.read_session() as session:
-            current = await self.identity.require_principal(session, principal)
+            current = await self.identity.require_superuser(session, principal)
             row = await self.repository._profile(session)
             bound = fingerprint(
                 operation,
@@ -175,7 +175,7 @@ class CharacterAvatars:
             assert chunks is not None and sha256 is not None and size is not None
             await self.store.store(chunks, sha256, size)
         async with self.identity.database.immediate_session() as session:
-            current = await self.identity.require_principal(session, principal)
+            current = await self.identity.require_superuser(session, principal)
             previous = await self.identity.replay(
                 session, issuer, request_id, bound, principal=current
             )
@@ -183,13 +183,11 @@ class CharacterAvatars:
                 return previous
             row = await self.repository._profile(session)
             if row.avatar_revision != expected_revision:
-                raise ClientError(
-                    "version_conflict", details={"current": profile_view(row, owner=True)}
-                )
+                raise ClientError("version_conflict", details={"current": profile_view(row)})
             row.avatar_sha256 = row.default_avatar_sha256 if action == "reset" else sha256
             row.avatar_revision += 1
             row.updated_at = datetime.now(UTC)
-            result = profile_view(row, owner=True)
+            result = profile_view(row)
             await self.identity.receipts.record_personal_command(
                 session,
                 principal_id=issuer,

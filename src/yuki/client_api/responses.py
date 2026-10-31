@@ -29,6 +29,7 @@ class Binding(PublicProjection):
 
 class Me(PublicProjection):
     person_id: str
+    is_superuser: bool
     source_person_id: str
     request_person_id: str
     request_conversation_id: str | None

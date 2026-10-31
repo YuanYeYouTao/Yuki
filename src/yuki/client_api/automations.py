@@ -80,6 +80,8 @@ class ClientAutomations:
         async with self.identity.database.read_session() as session:
             await session.execute(text("BEGIN"))
             current = await self.identity.require_principal(session, principal)
+            if scope == "self":
+                await self.identity.require_superuser(session, current)
             rows = await session.execute(
                 _definition_statement()
                 .where(

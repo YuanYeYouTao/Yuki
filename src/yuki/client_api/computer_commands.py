@@ -72,7 +72,7 @@ class ComputerCommands:
         key = manager_key(principal.request_scope, request_id)
         row_id: int
         async with self.identity.database.immediate_session() as writer:
-            current = await self.identity.require_principal(writer, principal)
+            current = await self.identity.require_superuser(writer, principal)
             previous = await personal_command(
                 writer,
                 current.request_person_id,
@@ -145,7 +145,10 @@ class ComputerCommands:
             )
             try:
                 async with self.identity.database.read_session() as reader:
-                    await self.identity.require_device(reader, original["actor"]["device_id"])
+                    original_actor = await self.identity.require_device(
+                        reader, original["actor"]["device_id"]
+                    )
+                    await self.identity.require_superuser(reader, original_actor)
                 if before_effect:
                     await before_effect()
             except ClientError as exc:
@@ -166,6 +169,7 @@ class ComputerCommands:
                 "control_held",
                 "precondition_failed",
                 "unauthenticated",
+                "forbidden",
                 "owner_required",  # Keep the original failure from retired operation receipts.
                 "not_found",
             }

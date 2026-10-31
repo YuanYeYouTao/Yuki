@@ -26,6 +26,7 @@ from yuki.conversation.canonical_db_models import (
     PersonActiveRouteModel,
 )
 from yuki.conversation.hydrate import conversation_for_binding, ensure_canonical_conversation
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.canonical_repository import (
     ensure_account,
     find_identity_binding,
@@ -212,6 +213,14 @@ class ClientIdentityService:
             binding_id=principal.binding_id,
             conversation_id=principal.request_conversation_id,
         )
+
+    async def require_superuser(
+        self, session: AsyncSession, principal: ClientPrincipal
+    ) -> ClientPrincipal:
+        current = await self.require_principal(session, principal)
+        if not await person_is_superuser(session, current.source_person_id):
+            raise ClientError("forbidden")
+        return current
 
     async def replay(
         self,
@@ -476,6 +485,7 @@ class ClientIdentityService:
             assert person is not None
             return {
                 "person_id": principal.person_id,
+                "is_superuser": await person_is_superuser(session, principal.source_person_id),
                 "source_person_id": principal.source_person_id,
                 "request_person_id": principal.request_person_id,
                 "request_conversation_id": principal.request_conversation_id,

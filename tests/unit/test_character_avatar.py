@@ -39,6 +39,11 @@ def png(color="blue", *, size=(1024, 1024), metadata=False):
 @pytest.fixture
 async def avatar_env(database, tmp_path):
     identity, person, issued = await code_for(database)
+    from yuki.identity.db_models import CanonicalPersonModel
+
+    async with database.immediate_session() as session:
+        row = await session.get(CanonicalPersonModel, person)
+        row.is_superuser = True
     first = await identity.pair(issued["code"], "owner")
     principal = await identity.authenticate(first["token"])
     following = await identity.issue_for_device(principal, str(uuid4()))
@@ -97,7 +102,7 @@ async def upload(env, content, revision, *, request_id=None, device=None, **over
     return response, params
 
 
-async def test_other_paired_person_can_change_shared_avatar_but_keeps_own_receipt(avatar_env):
+async def test_other_person_needs_superuser_and_keeps_own_avatar_receipt(avatar_env):
     from yuki.character.db_models import CharacterOwnerGrantModel
     from yuki.identity.db_models import CanonicalPersonModel
 
@@ -108,8 +113,14 @@ async def test_other_paired_person_can_change_shared_avatar_but_keeps_own_receip
         assert not person.is_superuser
         assert await session.scalar(select(func.count()).select_from(CharacterOwnerGrantModel)) == 0
     changed, request = await upload(env, png(), 0, device=env.other)
+    assert changed.status_code == 403, changed.text
+    assert (await profile(env))["avatar"] is None
+    async with env.repository.database.immediate_session() as session:
+        person = await session.get(CanonicalPersonModel, other.person_id)
+        person.is_superuser = True
+    changed, request = await upload(env, png(), 0, device=env.other)
     assert changed.status_code == 200, changed.text
-    assert changed.json()["data"]["viewer"]["is_owner"] is True
+    assert "viewer" not in changed.json()["data"]
     own = await env.client.get(
         "/client/v1/requests/" + request["request_id"], headers=bearer(env.other)
     )
@@ -144,7 +155,7 @@ async def test_set_replay_immutable_variants_and_original_request(avatar_env, da
         await env.client.get(current["avatar"]["sizes"]["64"], headers=bearer(env.other))
     ).status_code == 200
     meta = (await env.client.get("/client/v1/meta")).json()["data"]
-    assert meta["api_revision"] == 7 and "character_avatar" in meta["capabilities"]
+    assert meta["api_revision"] == 8 and "character_avatar" in meta["capabilities"]
     assert meta["character"]["avatar_url"] == current["avatar"]["sizes"]["128"]
     replay, _ = await upload(
         env, png(metadata=True), 0, request_id=request["request_id"], device=env.second
@@ -473,4 +484,4 @@ def test_actual_avatar_routes_export_binary_contract_and_original_ids():
         "size",
     }
     assert "/client/v1/character/avatar/{sha256}/{size}.png" in document["paths"]
-    assert document["info"]["x-yuki-api-revision"] == 7
+    assert document["info"]["x-yuki-api-revision"] == 8
