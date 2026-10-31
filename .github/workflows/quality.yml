@@ -113,6 +113,7 @@ jobs:
             test-results/*.xml
             test-results/tool-result-delivery/
             test-results/connector-address/
+            test-results/compact/
           retention-days: 7
 
   desktop-headed:
