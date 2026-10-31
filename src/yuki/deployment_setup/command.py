@@ -42,8 +42,9 @@ from yuki.deployment_setup.service import (
 )
 from yuki.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
 from yuki.http_environment import load_http_environment
-from yuki.llm.vendor_policy import CHAT_VENDORS, RESPONSES_VENDORS, supports_native_search
+from yuki.llm.vendor_policy import supports_native_search
 from yuki.model_runtime.profiles import normalize_model_profile_document
+from yuki.model_runtime.provider_presets import PROVIDER_PRESETS, provider_presets
 from yuki.plugin_host.discovery import PluginDiscovery
 from yuki.web.models import WebMode
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
@@ -104,6 +105,7 @@ def add_setup_parser(
             "environment-check",
             "desktop-configure",
             "desktop-pair",
+            "provider-presets",
         ),
         default="configure",
     )
@@ -111,9 +113,17 @@ def add_setup_parser(
     setup.add_argument("--no-color", action="store_true")
     setup.add_argument("--health-url", default="http://127.0.0.1:8080/healthz")
     setup.add_argument("--timeout", type=float, default=180.0)
+    setup.add_argument("--json", action="store_true", help="以 JSON 匯出 Provider 預設")
 
 
 def run_setup_command(args: argparse.Namespace) -> int:
+    if args.setup_action == "provider-presets":
+        if args.json:
+            print(json.dumps(provider_presets(), ensure_ascii=False))
+        else:
+            for preset in PROVIDER_PRESETS:
+                print(f"{preset.display_name}\t{preset.protocol}\t{preset.default_base_url}")
+        return 0
     paths = SetupPaths(Path(args.deployment_root).resolve())
     ui = TerminalUI(no_color=bool(args.no_color))
     try:
@@ -350,20 +360,27 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         "anthropic_messages": "anthropic",
         "gemini": "gemini",
     }[draft.protocol]
+    presets = {}
+    for preset in PROVIDER_PRESETS:
+        if preset.protocol == draft.protocol and preset.provider not in presets:
+            presets[preset.provider] = preset
+    existing = environment.get("LLM_PROVIDER", default_provider)
     if draft.protocol in {"responses", "chat_completions"}:
-        providers = RESPONSES_VENDORS if draft.protocol == "responses" else CHAT_VENDORS
-        existing = environment.get("LLM_PROVIDER", default_provider)
         environment["LLM_PROVIDER"] = ui.choose(
             "主模型供应商",
-            tuple((value, value) for value in sorted(providers)),
-            default=existing if existing in providers else default_provider,
+            tuple((value, presets[value].display_name) for value in sorted(presets)),
+            default=existing if existing in presets else default_provider,
         )
     else:
         environment["LLM_PROVIDER"] = default_provider
     ui.info("主模型需支持 Function Calling；原生搜索取决于供应商与模型能力。")
+    selected = presets[environment["LLM_PROVIDER"]]
+    base_url = _real_value(environment.get("LLM_BASE_URL", ""))
     environment["LLM_BASE_URL"] = ui.ask(
         "主模型 Base URL",
-        default=_real_value(environment.get("LLM_BASE_URL", "")),
+        default=(
+            base_url if base_url and existing == selected.provider else selected.default_base_url
+        ),
         required=True,
     )
     environment["LLM_API_KEY"] = _ask_required_secret(

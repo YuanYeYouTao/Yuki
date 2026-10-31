@@ -26,6 +26,7 @@ from yuki.model_runtime.profiles import (
     normalize_model_profile_document,
     parse_model_profile_catalog,
 )
+from yuki.model_runtime.provider_presets import provider_presets, task_requirements
 from yuki.model_runtime.secrets import (
     KEY_ALIAS,
     encode_model_secrets,
@@ -178,6 +179,8 @@ class ConfigFileService:
             "semantic_matches_loaded": None,
             "semantic_valid": True,
             "semantic_providers": provider_catalog(),
+            "provider_presets": provider_presets(),
+            "task_requirements": task_requirements(),
             "writable_directory": await asyncio.to_thread(os.access, path.parent, os.W_OK),
         }
         try:

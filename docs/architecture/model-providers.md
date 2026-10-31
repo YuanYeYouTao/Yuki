@@ -113,6 +113,20 @@ Tavily Extract，也不要求供应商返回 raw_content。`read_webpage` 明确
 
 `provider` 用于选择参数方言，不通过模型名称猜测，不在上游 400 后自动删参数重试。
 
+管理模型快照中的 `provider_presets` 与 `yuki setup provider-presets --json` 共用
+`model_runtime/provider_presets.py` 的只读预设；初次部署向导也从这里读取供应商与默认地址。
+每项包含显示名称、协议、默认地址、密钥环境变量建议、官方文档与模型清单支持情况。
+同一供应商可以提供多个协议或地址，`provider` 不是预设的唯一标识。
+这些字段不写入模型 TOML，已有连接继续保留实际地址和显式协议。
+自定义与 Azure 资源地址留空，由用户填写；本机 Ollama、LM Studio 使用各自默认端口。
+
+`embedding_provider` 与 `embedding_defaults` 给出已经接入的向量协议及其地址，
+`supports_embedding` 由是否有该配置派生。Qwen 聊天兼容地址为
+`https://dashscope.aliyuncs.com/compatible-mode/v1`，原生向量地址为
+`https://dashscope.aliyuncs.com/api/v1`，两者不互换。预设不证明任意模型支持向量或其他能力。
+快照的 `task_requirements` 直接沿用任务路由的能力要求，另列向量、独立图片理解、语音和搜索用途；
+模型 ID 仍由用户或上游清单提供，能力由实际配置声明。
+
 供应商名称和接口协议分别配置。AGM、OpenRouter 等中转连接及自定义名称使用显式
 `protocol` 的原适配器；没有 AGM 专用执行器或按品牌自动换协议的分支。修改连接名称时
 保留原 endpoint、model、密钥引用、协议和参数，预设只用于明确创建新连接。
