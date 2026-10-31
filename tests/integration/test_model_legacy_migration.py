@@ -143,6 +143,7 @@ async def test_offline_migration_preserves_effective_sources_and_is_repeatable(
     assert document["asr"]["base_url"] == url + "/activated"
     assert document["asr"]["model"] == "activated-asr-model"
     assert document["asr"]["protocol"] == "audio_transcriptions"
+    assert document["search"]["mode"] == "disabled"
     keys = read_model_secrets(path)[1]
     assert keys[document["embedding"]["api_key_env"]] == values["MEMORY_EMBEDDING_API_KEY"]
     assert keys[document["asr"]["api_key_env"]] == values["VISION_API_KEY"]
@@ -161,6 +162,30 @@ async def test_offline_migration_preserves_effective_sources_and_is_repeatable(
             "repeat": json.loads(repeated.stdout),
             "document": document,
             "upstream_requests": 0,
+        },
+    )
+
+
+@pytest.mark.parametrize("mode", ["native", "tavily", "both"])
+async def test_offline_migration_preserves_each_enabled_web_mode(
+    database, tmp_path, embedding_http, mode
+):
+    url, wire = embedding_http
+    directory = tmp_path / "deployment"
+    _, settings, values = deployment(database, directory, url)
+    values["WEB_MODE"] = mode
+    current = await ConfigFileService(settings).read()
+    result = await migrate(directory, values, current["revision"])
+    assert result.returncode == 0, result.stderr
+    saved = await ConfigFileService(settings).read()
+    assert saved["document"]["search"]["mode"] == mode
+    assert wire["requests"] == []
+    evidence(
+        f"search-mode-{mode}",
+        {
+            "result": json.loads(result.stdout),
+            "mode": saved["document"]["search"]["mode"],
+            "upstream_requests": wire["requests"],
         },
     )
 

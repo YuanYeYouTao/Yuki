@@ -165,7 +165,9 @@ def normalize_model_profile_document(
     return normalize_model_search_document(
         validated.model_dump(exclude_none=True),
         environment=environment,
-        web_mode=web_mode,
+        web_mode=validated.search.mode
+        if validated.search is not None and validated.search.mode is not None
+        else web_mode,
         search_backend=search_backend,
     )
 

@@ -607,6 +607,10 @@ class RuntimeConfigService:
             tuple[str, ConfigScopeType, str], RuntimeConfigOverrideRecord
         ] = {}
 
+    def activate_settings(self, settings: Settings) -> None:
+        """Use the same startup settings projection as the constructed services."""
+        self._settings = settings
+
     async def initialize(self) -> None:
         """Activate persisted restart-required overrides for this process."""
 

@@ -166,6 +166,14 @@ class ApplicationContainer:
         ).build()
         self.model_runtime = model_runtime
         self.model_profiles = model_runtime.profiles
+        search = self.model_profiles.search
+        if search is not None and search.mode is not None:
+            settings = Settings(
+                _env_file=None,
+                **{**settings.model_dump(), "web_mode": search.mode},
+            )
+            self.settings = settings
+            self.runtime_config.activate_settings(settings)
         embedding_connection = self.model_profiles.embedding
         self.memory_embeddings = MemoryEmbeddingRuntime(
             settings=settings,

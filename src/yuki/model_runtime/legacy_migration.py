@@ -240,6 +240,7 @@ async def migrate_legacy(
             migrated.append("asr")
         if "search" not in document:
             document["search"] = SearchConnection(
+                mode=active.web.mode,
                 tavily_api_key_env=alias("search", active.tavily_api_key)
             ).model_dump(mode="json")
             migrated.append("search")

@@ -202,6 +202,9 @@ class WebModule:
         if catalog is not None and catalog.search is not None:
             settings = settings.model_copy(
                 update={
+                    "web_mode": catalog.search.mode
+                    if catalog.search.mode is not None
+                    else settings.mode,
                     "tavily_api_key": clients.api_key_for_alias(catalog.search.tavily_api_key_env)
                     if clients
                     else ""
