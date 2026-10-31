@@ -6,6 +6,8 @@
 主 Yuki 用 `subagent_start` 登记并派出子任务，继续处理聊天；通过
 `subagent_control(action=message)` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
+原目标需要子结果时，将返回的 `child_id` 作为 `task_control.wait` 的 `run_id`；
+同时等会话输入的 `any` 组合和一次命中后的剩余依赖接续见[主 Agent 等待合同](main-agent-runtime.md#预算等待与异常)。
 
 工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
 原入口的 ScriptApi 和 `MainAgentBackend`。App 子任务保留 App 的工具合同，平台子任务保留平台入口的合同；不会把 App 请求换成 QQ 声明。`lookup_tools` 查询同一已提交目录，不维护独立工具
@@ -41,7 +43,8 @@ JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(r
 自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
 目标、能力批准和权限。固定 Main 合同不再声明 raw OneBot 管理入口；独立批准的插件 QQ 扩展只在真实 QQ 传输边界执行。
 主、子 Agent 在同一会话交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
-子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台；需要对外交付时仍显式调用 `send`。
+子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台。
+父任务按原目标整合成果与交付；需要对外交付时仍显式调用 `send`，已由子任务确认送达的结果不重复发送。
 
 后台执行沿原内部 Conversation、Person/Space、Presence、event/run 和 Work 租约核验。
 断开连接、同 Presence 重连或活动发送路由变化不终止纯内部执行；真正发送时才解析、核验
@@ -66,7 +69,8 @@ child 使用自己的 lease，在取得执行权后复用 root 的激活监督�
 
 0057 引入工作者资料、独立租约、根预算和媒体表。0105 将原关系迁入共同 Work.parent_work_id，工作者表不再混用 root_id。预算根按祖先关系读取，普通派生目标与工作者共用原树查询和管理。
 父子通信复用持久输入日志：消息 ID、关联问题、消费状态一起保存，重复通知不重复消费。
-工作者向仍可接续的父任务提问，原批次与程序收拢后进入 `waiting_parent`（存储状态为 `waiting_user`）；等待命令时进入 `waiting_external`，均释放执行名额。真实子问题属于父任务业务输入，可经原输入与 writer 接续尚未结算的结束决定或等待，既有 active wait 不遮住问题；普通进度和完成通知仍按辅助输入保存，不撤销完成或复活终态。父任务回答或命令回执到达后续接原历史。
+工作者向仍可接续的父任务提问，原批次与程序收拢后进入 `waiting_parent`（存储状态为 `waiting_user`）；等待命令时进入 `waiting_external`，均释放执行名额。真实子问题属于父任务业务输入，可经原输入与 writer 接续尚未结算的结束决定或等待，既有 active wait 不遮住问题。
+普通进度和完成通知仍按辅助输入保存；父任务在 `waiting_external` 且没有 active wait 时可由普通完成通知入队，已有等待则沿原条件和 `any` / `all` 语义处理。通知不撤销已接纳结束决定、不复活终态，也不解除独立的 `suspended` 原因。结果保存、入队、模型观察和用户送达分别核对，入队不承诺再次请求模型。父任务回答或命令回执到达后续接原历史。
 已接纳的提问等待复用原 `accepted_control` 和调用键持久保存，后来的真实提问按原控制顺序接续子任务，不因分段或崩溃丢掉等待决定、重发问题。终态父返回 `waiting_parent=false` 不撤销子任务原完成决定；父的独立 `suspended` 原因也不自动解除，问题保留供显式 resume 消费。
 暂停或等待父任务的子任务可直接 `resume` 原目标，无需新增 instruction 或伪造补充消息。
 完成后同一 ID 可追加真实新要求，此时 `resume` 携带 instruction。
@@ -87,7 +91,7 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 原子发布并清理已结束的 owner；纯通知不创建 execution lease，也不推进 fence 或取消代次。
 真正的执行收尾继续核其原 owner、fence、取消代次和 SQL 时刻期限。实际消费依赖变化时释放
 writer 后只重读当前仍合法的候选；其他页继续扫描，没有总通知数上限。忙碌或过时代际的节点只读退出。
-父输入仍用原 child/revision 唯一键，辅助结果不撤销父等待或复活终态；七天归档仍沿原 16 条页
+父输入仍用原 child/revision 唯一键；七天归档仍沿原 16 条页
 及真实资源引用收拢，不改变执行器容量与并发策略。
 
 默认全局两个工作者；子任务按现有调度器排队，不设固定入队或每根任务数量拒绝。

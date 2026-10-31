@@ -16,9 +16,12 @@ def subagent_tools() -> tuple[ChatTool, ...]:
     return (
         tool(
             "subagent_start",
-            "将复杂工作交给后台工作者，立即返回 ID；可以继续聊天。"
+            "将复杂工作交给后台工作者，立即返回 child_id；父任务可继续处理其他输入。"
             "需要当前 Work；尚未登记时先用 task_control accept 父任务。"
             "派出的子任务已经登记工作，直接执行；结果由最终正文或 complete.result 回传父任务。"
+            "仍需这个子任务的结果且当前无可独立推进的工作时，"
+            "用 task_control(action=wait, run_id=child_id) 等待。"
+            "父任务按原目标整合结果和处理交付；子任务结束不代表父目标已经完成。"
             "已有子任务用 subagent_control，勿重复派生。",
             {
                 "goal": {"type": "string"},
@@ -30,7 +33,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
         ),
         tool(
             "subagent_control",
-            "查询、取消或继续自己的持久子任务；完成后可继续原上下文，已归档会明确返回。"
+            "按原 child_id 查询、取消或恢复自己的持久子任务；已归档会明确返回。"
             "已有子任务直接按 ID 管理，无需先 accept 新任务；"
             "resume 用 instruction 继续；message 用 text 补充或提问，省略 child_id 联系父任务。"
             "向父 ask=true 保存问题并按回执等待；reply_to 回答原问题。",

@@ -14,6 +14,7 @@ from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.event_seed import seed_scoped_event
 from tests.support.model_profiles import write_fake_profiles
 from tests.support.projection import projection_record
+from tests.support.runtime_execution import make_child_executor
 from tests.support.social_identity_cases import social_env
 
 from yuki.automation.models import RunStatus
@@ -40,6 +41,7 @@ from yuki.persistence.models import ChatEventModel
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.trigger import SelfInitiativeTrigger
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_journal import WorkJournal, decode_transcript
@@ -233,8 +235,11 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
 
 @pytest.mark.parametrize("code_enabled", [False, True])
 async def test_current_deployment_three_entries_share_full_contract_and_fresh_material(
-    database, tmp_path, code_enabled
+    database, tmp_path, tool_delivery_evidence, code_enabled
 ):
+    # Both deployment modes must expose the completion/wait guidance on the
+    # actual Provider wire. NO_REPLY avoids executing a Code program here.
+    evidence_dir, evidence = tool_delivery_evidence
     wire = []
     sessions = []
 
@@ -269,7 +274,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             client=client,
         )
         app, env, message, sender = await _deployment(
-            database, tmp_path, provider, code_enabled=code_enabled
+            database, tmp_path, provider, code_enabled=code_enabled, subagents_enabled=True
         )
         try:
             state = app.main_agent_contract.state
@@ -367,9 +372,8 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             )
             assert len(due) == 1
             await app.automation_worker._process_guarded(due[0])
-            assert (await app.automation_repository.run_history(task.id))[
-                0
-            ].status is RunStatus.SUCCEEDED
+            scheduled_run = (await app.automation_repository.run_history(task.id))[0]
+            assert scheduled_run.status is RunStatus.SUCCEEDED
             assert len(wire) == 3 and "SCHEDULE_CURRENT_INSTRUCTION" in _text(wire[2])
             assert "SELF_CURRENT_STATE" not in _text(wire[2]) and "短记录" not in _text(wire[2])
             async with database.read_session() as reader:
@@ -384,6 +388,117 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert _fixed(wire[0]) == _fixed(wire[1]) == _fixed(wire[2])
             assert sessions == [f"yuki:{scope.id}:g{scope.generation}:main"] * 3
             assert wire[0]["generationConfig"]["maxOutputTokens"] == 4096
+
+            # Admit an independent parent from the actual inbound source and run
+            # its child through this application's executor and HTTP adapter.
+            # The child has its own Work and Provider session; no VM is invoked.
+            repository = WorkRepository(database)
+            lease = await repository.acquire(scope.id, scope.generation)
+            assert lease is not None
+            parent_source = {
+                "origin": TurnOrigin.USER_MESSAGE.value,
+                "conversation_id": scope.id,
+                "generation": scope.generation,
+                "trigger_event_id": current.id,
+                "actor_person_id": current.author_person_id,
+                "actor_user_id": current.sender_user_id,
+                "presence_id": current.ingress_presence_id,
+                "bot_user_id": current.bot_user_id,
+                "principal_kind": "person",
+            }
+            try:
+                parent = await repository.accept(
+                    lease,
+                    source_key=f"event:{scope.id}:{current.id}",
+                    source=parent_source,
+                    goal="核对当前部署的子任务提示合同",
+                )
+                child_id = await SubagentRepository(repository).start(
+                    lease,
+                    parent["id"],
+                    "current-contract-worker",
+                    {"goal": "WORKER_CURRENT_INSTRUCTION"},
+                )
+            finally:
+                await repository.release(lease)
+            before_child = await repository.get(child_id)
+            evidence["worker"] = {
+                "parent_work_id": parent["id"],
+                "child_work_id": child_id,
+                "original_source": json.loads(before_child["source_json"]),
+                "initial_state": before_child["state"],
+            }
+            executor = make_child_executor(
+                repository,
+                chat=app.chat,
+                config=app.runtime_config,
+                runner=app.chat.runtime.runner,
+                load_tools=app.main_agent_contract.definitions,
+            )
+            assert await executor.run(child_id) is None
+            final_child = await repository.get(child_id)
+            evidence["worker"]["final_state"] = final_child["state"]
+            assert final_child["state"] == "completed"
+            assert final_child["source_json"] == before_child["source_json"]
+            assert len(wire) == 4 and "WORKER_CURRENT_INSTRUCTION" in _text(wire[3])
+            assert sessions[3] == f"yuki:{scope.id}:g{scope.generation}:work:{child_id}"
+            assert wire[3]["tools"] == wire[0]["tools"]
+            guidance_checks = []
+            for body in wire:
+                declared = {
+                    item["name"]: item
+                    for group in body["tools"]
+                    for item in group.get("functionDeclarations", [])
+                }
+                properties = declared["task_control"]["parametersJsonSchema"]["properties"]
+                system_text = "\n".join(
+                    part.get("text", "") for part in body["systemInstruction"]["parts"]
+                )
+                guidance_checks.append(
+                    {
+                        "child_wait_guidance": all(
+                            text in declared["subagent_start"]["description"]
+                            for text in ("child_id", "wait")
+                        ),
+                        "child_run_id_guidance": "child_id"
+                        in properties["run_id"].get("description", ""),
+                        "wait_conditions_guidance": all(
+                            text in properties["conditions"].get("description", "")
+                            for text in ("owned_run", "conversation")
+                        ),
+                        "original_goal_and_delivery_guidance": all(
+                            text in system_text for text in ("原目标", "交付")
+                        ),
+                        "mode_declarations": (
+                            {"execute_code", "lookup_tools"} <= declared.keys()
+                            if code_enabled
+                            else not ({"execute_code", "lookup_tools"} & declared.keys())
+                        ),
+                    }
+                )
+            evidence.update(
+                mode="code" if code_enabled else "direct",
+                provider="GeminiProvider over MockTransport",
+                entries=["chat", "self", "schedule", "worker"],
+                entry_sources=[
+                    {"entry": "chat", "source_event_id": current.id},
+                    {"entry": "self", "initiative_run_id": actor.initiative_run_id},
+                    {
+                        "entry": "schedule",
+                        "automation_id": task.id,
+                        "automation_run_id": scheduled_run.id,
+                    },
+                    {
+                        "entry": "worker",
+                        "source_event_id": current.id,
+                        "parent_work_id": parent["id"],
+                        "child_work_id": child_id,
+                    },
+                ],
+                guidance_checks=guidance_checks,
+                code_program_executed=False,
+            )
+            assert all(all(checks.values()) for checks in guidance_checks), guidance_checks
             full = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
             assert SANDBOX_TOOLS | WORKSPACE_TOOLS <= full.keys()
             assert {
@@ -416,6 +531,12 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
                 action.startswith("send_") for action, _ in env.bot.calls
             )
         finally:
+            (evidence_dir / "wire.json").write_text(
+                json.dumps({"sessions": sessions, "requests": wire}, ensure_ascii=False, indent=2)
+                + "\n",
+                encoding="utf-8",
+            )
+            evidence["wire_requests"] = len(wire)
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 
 
