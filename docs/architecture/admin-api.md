@@ -14,8 +14,16 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 服务器通过 `CONTROL_OPERATORS_FILE` 读取 operator TOML，格式见
 [`config/control-operators.example.toml`](../../config/control-operators.example.toml)。
 实际 token 放在声明所指的服务器环境变量中。CLI 从 `YUKI_CONTROL_CREDENTIAL`
-取得同一凭据，以 `Authorization: Bearer …` 逐次认证。未配置 operator 时拒绝认证；
+取得同一凭据，以 `Authorization: Bearer …` 逐次认证。未配置 operator 时不产生 operator 身份；
 operator 角色只作描述，能力逐项声明；Person 超管映射到明确的有限管理能力，凭据轮换立即影响后续请求。operator 不能凭管理权限以某个 Person 发言。
+
+超管人物的个人聊天设备可用现有 `purpose=chat` token 调用同一管理 API，能力等于
+`SUPERUSER_CAPABILITIES`；普通人物仍按逐项能力返回 403，connector token 不接受。
+此身份沿 `ControlAccess.principal_for_person` 使用原 Person 和 `PrincipalSource.PLATFORM`，
+并携原设备 ID 供原执行处复核设备撤销、原 Person／当前根 Person 的有效性和当前超管资格。
+它不是 operator 凭据，不获得 operator 独有能力，也不要求重新配对或另领 token。
+认证先核 operator，只有 `UNAUTHENTICATED` 才尝试聊天设备；已识别 operator 的停用或能力不足
+保留原拒绝。设备 token 泄露会暴露其当前 Person 的管理能力，应按原设备入口撤销。
 
 旧浏览器管理入口、前端与旧控制面查询层已从源码退役。管理 API 使用同一个模型文件服务
 与原领域服务，不创建浏览器登录会话，也不需要 Cookie 或 CSRF token。

@@ -33,7 +33,11 @@ async def authority_http(tmp_path):
             str(state_file),
             "--port",
             "0",
-            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(sys.path),
+                "YUKI_AUTHORITY_FIXTURE": "1",
+            },
             stdout=log,
             stderr=asyncio.subprocess.STDOUT,
         )

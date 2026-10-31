@@ -71,6 +71,7 @@ class ControlPrincipal:
     granted_capabilities: frozenset[str]
     authenticated: bool
     active: bool
+    device_id: str | None
 
     def __init__(
         self,
@@ -82,6 +83,7 @@ class ControlPrincipal:
         granted_capabilities: Iterable[str] = (),
         authenticated: bool,
         active: bool,
+        device_id: str | None = None,
     ) -> None:
         if type(principal_id) is not PrincipalId:
             raise TypeError("principal_id must be PrincipalId")
@@ -104,6 +106,7 @@ class ControlPrincipal:
         )
         object.__setattr__(self, "authenticated", authenticated)
         object.__setattr__(self, "active", active)
+        object.__setattr__(self, "device_id", device_id)
 
     def allows(self, capability: object) -> bool:
         """Default-deny authorization check. Invalid tokens are denied."""
