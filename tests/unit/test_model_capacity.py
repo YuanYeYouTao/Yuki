@@ -1,5 +1,7 @@
 """Only explicit Profile limits bound input; unknown capacity stays unknown."""
 
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -20,9 +22,11 @@ from yuki.model_runtime.models import ModelProfile, ModelRoute, ModelTask
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.model_runtime.profiles import ModelProfileCatalog
 from yuki.model_runtime.routes import ModelRouter
+from yuki.runtime.work_journal import encode_transcript
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.context_compaction import (
     PublicCompactContext,
+    compacted_transcript,
     execution_compact_plan,
     public_compact_plan,
 )
@@ -145,7 +149,8 @@ def test_unknown_public_capacity_covers_all_events_without_private_material():
 def test_unknown_execution_capacity_keeps_complete_tool_pair_and_original_checkpoint(native):
     initial = (ChatMessage("system", "Original Main contract"), ChatMessage("user", "Task"))
     transcript = TurnTranscript(initial)
-    call = ToolCall("paid-read", ToolFunction("read_probe", "{}"))
+    arguments = {"path": "/workspace/original.txt", "offset": 17}
+    call = ToolCall("paid-read", ToolFunction("read_probe", json.dumps(arguments)))
     response = ChatMessage("assistant", "", tool_calls=(call,))
     if native:
         transcript.accept(
@@ -153,7 +158,16 @@ def test_unknown_execution_capacity_keeps_complete_tool_pair_and_original_checkp
         )
     else:
         transcript.append(response)
-    transcript.append_result(call.id, "original tool result " + "x" * 900000)
+    original_output = "original tool result " + "x" * 900000
+    original_output_hash = hashlib.sha256(original_output.encode()).hexdigest()
+    transcript.append_result(call.id, original_output)
+
+    def transcript_hash(current):
+        return hashlib.sha256(
+            json.dumps(encode_transcript(current), sort_keys=True).encode()
+        ).hexdigest()
+
+    original_checkpoint_hash = transcript_hash(transcript)
     sequence = transcript.request()
     request = ChatRequest(
         messages=sequence.messages,
@@ -169,10 +183,67 @@ def test_unknown_execution_capacity_keeps_complete_tool_pair_and_original_checkp
         prepare=lambda request: request,
         responses=(response,) if native else (),
     )
-    assert plan.transcript.entries()[:-1] == transcript.entries()
-    assert plan.retained == ()
+    original_entries = transcript.entries()
+    maintenance_entries = plan.transcript.entries()[:-1]
+    assert len(maintenance_entries) == len(original_entries)
+    prefix_unchanged = all(
+        left == right for left, right in zip(maintenance_entries, original_entries, strict=True)
+    )
+    assert prefix_unchanged, "Maintenance must preserve the original complete protocol prefix"
     assert plan.request.continuation == request.continuation
-    assert transcript.request() == sequence
+    assert transcript_hash(transcript) == original_checkpoint_hash
+
+    rebuilt = compacted_transcript(
+        {
+            "prefix": encode_transcript(TurnTranscript(initial)),
+            "retained": encode_transcript(TurnTranscript(plan.retained)),
+            "response": "Earlier work summarized; observe the original result next.",
+            "covered_entries": len(plan.transcript.entries()) - 1,
+        }
+    ).request()
+    assert rebuilt.continuation is None
+    assert rebuilt.messages[: len(initial)] == initial
+    if native:
+        portable = [
+            json.loads(message.content)
+            for message in rebuilt.messages
+            if (message.content or "").startswith("{")
+        ]
+        calls = [
+            item
+            for payload in portable
+            if payload.get("kind") == "work_unobserved_tool_round"
+            for item in payload["calls"]
+            if item["call_id"] == call.id
+        ]
+        call_count = len(calls)
+        assert call_count == 1
+        assert calls[0]["tool"] == call.function.name
+        assert json.loads(calls[0]["arguments"]) == arguments
+        actual_output = calls[0]["result"]
+        signature_transplanted = any(
+            "original-signature" in (message.content or "") for message in rebuilt.messages
+        )
+        assert not signature_transplanted
+    else:
+        raw_calls = [
+            item
+            for message in rebuilt.messages
+            for item in message.tool_calls
+            if item.id == call.id
+        ]
+        raw_call_count = len(raw_calls)
+        assert raw_call_count == 1
+        assert raw_calls[0].function.name == call.function.name
+        assert json.loads(raw_calls[0].function.arguments) == arguments
+        results = [message for message in rebuilt.messages if message.tool_call_id == call.id]
+        result_count = len(results)
+        assert result_count == 1
+        actual_output = results[0].content
+    actual_length, original_length = len(actual_output), len(original_output)
+    assert actual_length == original_length
+    actual_output_hash = hashlib.sha256(actual_output.encode()).hexdigest()
+    assert actual_output_hash == original_output_hash
 
 
 @pytest.mark.parametrize("budget", [None, 524288])
