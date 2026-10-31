@@ -2,6 +2,11 @@
 
 ## 非聊天模型连接
 
+可编辑文档的 Profile 可选字段以 JSON `null` 表示“未設定”：保存时省略对应 TOML 字段，
+解析继续使用 `ModelProfile` 的现有默认；明确的 `false`、推理 `none` 档位等值原样保留。
+关闭尚未配置的 Embedding 可只提交 `enabled=false`；其未填写的 provider/维度由后端现有
+DashScope 默认提供，不要求前端虚构连接。启用时仍需要真实的端点和模型。
+
 同一 v3 `model_profiles.toml` bundle 可包含 `[embedding]`、`[vision]`、`[asr]` 与 `[search]`。
 前三段显式保存 `enabled`、端点、模型和 `api_key_env`；视觉使用现有 Chat Completions 适配，
 ASR 可明确选择 `chat_completions` 或 `audio_transcriptions`，Embedding 使用 DashScope 原生

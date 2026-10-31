@@ -25,8 +25,8 @@ class _ModelConnection(BaseModel):
 
 
 class EmbeddingConnection(_ModelConnection):
-    provider: Literal["qwen_dashscope", "openai_compatible"]
-    dimensions: int = Field(gt=0)
+    provider: Literal["qwen_dashscope", "openai_compatible"] = "qwen_dashscope"
+    dimensions: int = Field(default=1024, gt=0)
     output_type: Literal["dense"] = "dense"
     document_template_version: int = Field(default=1, gt=0)
     query_instruct: str = "Retrieve personal memory facts relevant to the conversational query."
