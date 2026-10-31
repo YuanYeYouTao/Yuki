@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import NotRequired
+
+from typing_extensions import TypedDict
 
 from yuki.domain.messages import ChatRequest, ChatResponse
 
@@ -67,6 +70,13 @@ class RetryableProviderError(LLMUnavailableError):
     """Internal marker for an explicit HTTP 5xx response."""
 
 
+class ProviderModel(TypedDict):
+    """An upstream model identifier, without inferred capabilities."""
+
+    id: str
+    display_name: NotRequired[str]
+
+
 class LLMProvider(ABC):
     """Abstract chat-completion provider."""
 
@@ -83,3 +93,6 @@ class LLMProvider(ABC):
         """Release provider resources."""
 
         return None
+
+    async def list_models(self) -> list[ProviderModel]:
+        raise LLMUnsupportedFeatureError("provider does not expose a model list")

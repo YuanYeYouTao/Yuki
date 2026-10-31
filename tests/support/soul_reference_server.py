@@ -284,9 +284,12 @@ async def serve(
         api = FastAPI(debug=desktop)
         attach_client_api(api, lambda: runtime.client_api)
         if authority_fixture:
+            from tests.support.model_admin_fixture import attach_model_admin_fixture
+
             from yuki.admin_api.http import attach_admin_api
 
             attach_admin_api(api, lambda: runtime.admin_api)
+            attach_model_admin_fixture(api)
             model_apply_gate, model_apply_started = asyncio.Event(), asyncio.Event()
             model_apply_gate.set()
             apply_models = runtime.admin_api.commands.model.apply_models
@@ -474,6 +477,13 @@ async def serve(
                     **authority_tokens,
                     **artifact_state,
                 }
+                if authority_fixture:
+                    from tests.support.model_admin_fixture import MODEL_UPSTREAM_KEY
+
+                    state["model_upstream_url"] = (
+                        f"http://127.0.0.1:{actual_port}{base_path}/__test/models/v1"
+                    )
+                    state["model_upstream_key"] = MODEL_UPSTREAM_KEY
                 pending_state = state_file.with_name(state_file.name + ".pending")
                 await asyncio.to_thread(
                     pending_state.write_text, json.dumps(state), encoding="utf-8"

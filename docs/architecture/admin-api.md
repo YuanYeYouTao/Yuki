@@ -57,6 +57,8 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `GET /plugins/{id}/observe` | `plugin observe` | `control.plugin.config.content.read` |
 | `POST /plugin-outbox/{id}/retry` | `plugin retry-outbox` | `control.plugin.mutate` |
 | `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set`、`admin model semantic use` | `control.config.file.content.read\|mutate` |
+| `POST /models/test`；`POST /models/discover` | 保存前或已保存连接的显式探测 | `control.config.file.mutate` |
+| `GET /models/stats` | 按用途、Profile 查询原有调用统计 | `control.config.file.content.read` |
 | `GET /character`；`PATCH /character` | `admin character show\|update` | `control.character.read\|mutate` |
 | `GET /character/soul`；`PUT` 同路径；`POST /character/soul/reload` | `admin character soul show\|set\|reload` | `control.character.read\|mutate` |
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
@@ -129,6 +131,30 @@ Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用
 `matches_loaded` 只比较聊天目录。`semantic_matches_loaded` 只比较语义段；`semantic_providers` 是四个可选 provider 的目录，不写入 TOML。
 
 语义观察写在同一份 `model_profiles.toml` 的 `semantic_observation` 段，不进入聊天 Profile，保存时也不创建聊天客户端。`route` 选定一条已保存的连接。`jev` 和 `tencent_jev` 省略地址时分别补上各自的公开 System One 地址，写了地址就按所写的保存。`aliyun_decision` 和 `custom` 必须自己写地址。请求模型和响应修订都按提交原样保存；省略响应修订时与请求模型相同。程序不设默认模型版本。第五个 provider 名、缺少请求模型，或后两家缺少地址时，保存失败。
+
+模型快照包含只读 `provider_presets`、`task_requirements`、`profile_schema` 与
+`connection_schemas`；这些目录和 schema 不写回 TOML。`valid=true` 时 `document` 是可编辑的
+`ModelDocument`，`valid=false` 时只报告现有部分投影和解析状态，不能作为可保存文档。
+`admin_api.openapi.admin_openapi()` 可离线导出管理 OpenAPI，读取、保存及密钥更新返回真实
+Bundle／原控制回执类型；不会启动 Bot 或读取凭据。
+
+`POST /models/test` 接受 `{profile_id}` 或 `{draft_profile, api_key?}`；后者使用完整 Profile
+字段（含临时 `id`），不接受 `headers`。它复用原协议适配器，发送一次无工具、最多 16 输出
+token 的真实请求，关闭该次重试，不写模型调用账本或 Work 预算。结果为
+`{ok, latency_seconds, error_category}`。草稿密钥只在本次调用内存中使用；省略时按所选密钥
+引用读取原环境／sidecar，不保存草稿，不将密钥、上游错误正文写入结果或审计。
+
+`POST /models/discover` 接受 `{profile_id}` 或 `{draft_connection, api_key?}`。
+草稿连接字段为 `provider/protocol/base_url/api_key_env/timeout_seconds`。沿原认证与 Base URL
+调用一次上游 `models` GET，读取该响应页，不跟随分页或重试；Chat／Responses／Messages 读取
+`data[].id`，Gemini 保留 `models[].name` 原值。返回 `{models:[{id,display_name?}], error_category}`，
+不从名字推断能力。404、405、501 表示 `unsupported`，用户仍可手工填模型 ID。
+
+两类探测结果的错误类别为 `authentication/rate_limit/quota/timeout/protocol/unavailable/
+configuration/unsupported`，成功时为空。分类沿原 LLM 异常；仅上游明确报告
+`insufficient_quota` 时区分额度不足。每次发送前复核当前管理权限，撤销设备或人物资格不会因
+先前通过入站认证而继续发送。`GET /models/stats` 返回 `by_task/by_profile`，复用原
+`ModelInvocationRepository` 聚合；探测不增加调用数，未知用量仍保持原统计口径。
 
 没有这段时，新观察继续使用进程里的 `SEMANTIC_PARTICIPATION_API_KEY` 和 `SEMANTIC_PARTICIPATION_MODEL`，地址是 Jev 的预设地址，记录的 provider 是 `typesafe`。段一旦存在，环境变量里的模型不再补洞。空路由、未知连接或空密钥不产生新观察，也不改试另一条。普通 `model apply` 省略该段时保留磁盘上的原段；提交空段才删除并回到环境变量。已开始的请求保持进入时的连接。
 

@@ -16,9 +16,17 @@ from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.authority.problems import ControlQueryError, ProblemCode
 from yuki.admin.config_files import ConfigFileError
 from yuki.admin.control_resolution import ControlAccess, ControlPrincipalLookupError
+from yuki.admin.model_connections import (
+    ModelDiscoverInput,
+    ModelDiscoverResult,
+    ModelStatsView,
+    ModelTestInput,
+    ModelTestResult,
+)
 from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
+from yuki.admin_api.model_models import ModelBundle, ModelControlResult, ModelDocument
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
@@ -98,7 +106,7 @@ class ConfigBody(CommandBody):
 
 
 class ModelsBody(CommandBody):
-    document: dict[str, Any]
+    document: ModelDocument
     api_keys: dict[str, SecretStr] = Field(default_factory=dict)
 
 
@@ -565,15 +573,27 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             )
         }
 
-    @router.get("/models")
+    @router.get("/models", response_model=Envelope[ModelBundle], response_model_exclude_unset=True)
     async def models(actor: Actor) -> Any:
         authorize(actor, "control.config.file.content.read")
         return {"data": await resolve().commands.model.files.read()}
 
-    @router.post("/models/apply")
+    @router.post("/models/test", response_model=Envelope[ModelTestResult])
+    async def test_model(body: ModelTestInput, actor: Actor) -> Any:
+        return {"data": await resolve().commands.model.test(actor, body)}
+
+    @router.post("/models/discover", response_model=Envelope[ModelDiscoverResult])
+    async def discover_models(body: ModelDiscoverInput, actor: Actor) -> Any:
+        return {"data": await resolve().commands.model.discover(actor, body)}
+
+    @router.get("/models/stats", response_model=Envelope[ModelStatsView])
+    async def model_stats(actor: Actor) -> Any:
+        return {"data": await resolve().commands.model.stats(actor)}
+
+    @router.post("/models/apply", response_model=Envelope[ModelControlResult])
     async def apply_models(body: ModelsBody, actor: Actor) -> Any:
         spec = {
-            "document": body.document,
+            "document": body.document.model_dump(mode="json", exclude_unset=True),
             "api_keys": {key: value.get_secret_value() for key, value in body.api_keys.items()},
         }
         return {
@@ -586,7 +606,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             )
         }
 
-    @router.post("/models/secrets")
+    @router.post("/models/secrets", response_model=Envelope[ModelControlResult])
     async def secret(body: SecretBody, actor: Actor) -> Any:
         authorize(actor, "control.config.file.mutate")
         spec = {"api_keys": {body.name: body.value.get_secret_value()}}

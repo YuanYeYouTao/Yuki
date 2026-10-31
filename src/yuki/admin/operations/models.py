@@ -11,7 +11,18 @@ from yuki.admin.authority.commands import ControlCommand, ControlResult
 from yuki.admin.authority.principal import ControlPrincipal
 from yuki.admin.authority.problems import ProblemCode
 from yuki.admin.config_files import ConfigFileError, ConfigFileService
-from yuki.admin.operations.base import CommandExecutor, fail, outcome
+from yuki.admin.model_connections import (
+    ModelDiscoverInput,
+    ModelDiscoverResult,
+    ModelStatsView,
+    ModelTestInput,
+    ModelTestResult,
+    discover_models,
+    test_connection,
+)
+from yuki.admin.operations.base import CommandExecutor, authorize_current, fail, outcome
+from yuki.model_runtime.dispatch_guard import model_dispatch_guard
+from yuki.model_runtime.repository import ModelInvocationRepository
 from yuki.persistence.command_receipts import (
     CommandSuccess,
 )
@@ -23,6 +34,31 @@ class ModelOperations:
         self.database = executor.database
         self.receipts = executor.receipts
         self.files = files
+
+    async def test(self, principal: ControlPrincipal, source: ModelTestInput) -> ModelTestResult:
+        async def check() -> None:
+            await authorize_current(self.database, principal, "control.config.file.mutate")
+
+        await check()
+        with model_dispatch_guard(check):
+            return await test_connection(self.files, source)
+
+    async def discover(
+        self, principal: ControlPrincipal, source: ModelDiscoverInput
+    ) -> ModelDiscoverResult:
+        async def check() -> None:
+            await authorize_current(self.database, principal, "control.config.file.mutate")
+
+        await check()
+        with model_dispatch_guard(check):
+            return await discover_models(self.files, source)
+
+    async def stats(self, principal: ControlPrincipal) -> ModelStatsView:
+        await authorize_current(self.database, principal, "control.config.file.content.read")
+        repository = ModelInvocationRepository(self.database)
+        return ModelStatsView(
+            by_task=await repository.stats_by_task(), by_profile=await repository.stats_by_profile()
+        )
 
     async def apply_models(
         self, principal: ControlPrincipal, command: ControlCommand, spec: dict[str, Any]

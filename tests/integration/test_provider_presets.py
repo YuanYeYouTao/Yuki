@@ -34,6 +34,7 @@ async def test_provider_metadata_matches_cli_without_mutating_configuration(admi
             while not server.started:
                 if serving.done():
                     await serving
+                    raise AssertionError("isolated HTTP server exited before startup")
                 await asyncio.sleep(0.01)
             async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.get(
