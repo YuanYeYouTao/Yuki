@@ -98,7 +98,7 @@ class DesktopPairing(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     display_name: str
     person_request_id: UUID
-    superuser_request_id: UUID
+    superuser_request_id: UUID | None = None
     pair_request_id: UUID
     person_id: UUID | None = None
 
@@ -120,20 +120,21 @@ async def pair(body: DesktopPairing) -> dict[str, object]:
         else:
             person = str(body.person_id)
         current = await read(client, f"persons/{person}")
-        try:
-            previous = await read(client, f"operations/{body.superuser_request_id}")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 404:
-                raise
-            revision = current["revision"]
-        else:
-            revision = previous["expected_revision"]
-        await mutate(
-            client,
-            f"persons/{person}/superuser/grant",
-            revision,
-            request_id=str(body.superuser_request_id),
-        )
+        if body.superuser_request_id is not None:
+            try:
+                previous = await read(client, f"operations/{body.superuser_request_id}")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                revision = current["revision"]
+            else:
+                revision = previous["expected_revision"]
+            await mutate(
+                client,
+                f"persons/{person}/superuser/grant",
+                revision,
+                request_id=str(body.superuser_request_id),
+            )
         issued = await identity_mutation(
             client,
             f"persons/{person}/client-pair",
