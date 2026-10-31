@@ -4,9 +4,9 @@
 
 ## 基线与范围
 
-- 实施基线：`59ad21816d079236a6ecf037db984b95cfc1c978`，已重新 fetch，当前分支与 origin/main 无差异。
+- 实施基线：`59ad21816d079236a6ecf037db984b95cfc1c978`，创建实施分支前已重新 fetch main。
 - 分支：`codex/compact-taskbook-20261031`。
-- 直接复用现有公共／执行 planner、投影和恢复。修改限于自动分流、未观察回执保留、执行目标说明及直接配套测试、CI、文档；不新增压缩协调器、状态表、持久格式或经验门槛。
+- 直接复用现有公共／执行 planner、投影和恢复。修改限于自动分流、未观察回执保留、执行目标说明及直接配套测试、CI、文档；不新增压缩协调器、状态表、独立持久格式或经验门槛。
 - 本地脱敏测试产物保存于 `test-results/compact/`；生产取证 `.cache/fanout-20261031/` 不提交。
 - 上线前只读快照：Bot 为 `desktop-8ab2d12106a8099c1ae628dd35bf8c74411078bf`，健康；SnowLuma、environment、Mihomo 与 sandbox-egress 的身份已取得。该快照不代替部署前的实时核对。
 
@@ -58,5 +58,13 @@ PR #544 首次 head `b268293e` 的完整 CI 等待期间，继续复审发现硬
 补修后定向合跑 `86 passed`（`test-results/compact-final-86.xml`）；Ruff、受影响文件格式及 Mypy `690 source files` 再次通过。新两处 runtime 差异与五个硬容量场景已独立复审，无新增已知缺口。
 
 旧版本若早已丢掉 Host 观察元数据，本轮不宣称补造过去缺失事实；部署准备的只读快照没有非终态 Work。该快照不形成等待所有任务终态的上线条件，部署前仍重新取得实际状态。
+
+随后确切 head `f5079f04` 的 unit 可见进度暴露三处失败，均已独立复现。两处 `test_model_capacity.py` 旧断言仍要求丢掉 900,000 字符的最新原结果，现保留原尺寸并改验新窗口的调用、参数、输出长度／哈希和原协议未变。另一处 ordinary 归属测试有效：没有 assistant 就拒绝 E 的判断过宽，已删除该一刀限制，只从最近 Host 观察精确重建并保留 portable；原 C 不接纳、原 D 才能按完整私有材料接纳的断言保留，预算夹具计入真实目标说明成本。
+
+这也发现普通 native E 冷恢复后的二次整理缺口：原 compact JSON 回执只带 portable 原条，未接回最近正常 Main 的 Host 观察。新增 paired／response 两分支先在实际下一 Main 丢原调用与结果处失败，再沿原回执保存最后一个 `response_observation`，恢复到既有运行状态后通过。没有新表、seen 状态或协议解析器；原来源、隐私、付费、unknown 和原生签名合同继续有效。
+
+最终本地合跑 `136 passed, 0 skipped`（`test-results/compact-final-136.xml`），含 7 个真实 Main E2E、9 个硬容量／来源边界场景，以及 ordinary admission、原生／热冷恢复和旧容量回归。新增正确装配的 plain user／伪 kind、原 Host 回执独自超硬容量、双冷后新普通材料四例均通过；先前把材料误折入 initial 的夹具失败没有算作产品缺口，不据此新增尾部重写。全仓 Ruff、12 个受影响 Python 文件格式检查、Mypy Linux 目标 `690 source files` 均通过；交叉复审未发现剩余必要修改。
+
+已核实用户在另一会话要求较慢方把双方 PR 全部合并后统一上线，部署交由「查找Yuki桌面版最新任务书」会话负责。本分支完成复审与确切 head CI 后交付可合并状态，不单独 merge 或重启生产；状态保存在工作树 `.cache/compact-delivery-status.json`。此前只有生产只读核对，未发送 QQ 测试或付费探测。
 
 本记录对应提交前本地阶段。PR／确切 head CI、合并、精确镜像、健康、自然流量和实际清理结果在交付时分别记录；尚未修改生产。既有 `desktop-image.yml` 在 main 合并后构建精确 SHA 镜像，不为本修复新增发布工作流或正式版本标签。

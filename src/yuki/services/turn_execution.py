@@ -454,6 +454,7 @@ class TurnExecution:
         else:
             self.state.transcript = candidate
             self.initial_messages = decode_transcript(saved["prefix"]).request().messages
+        self.state.response_observation = saved.get("response_observation", {})
         if self.runtime.auxiliary_requests is not None:
             self.runtime.auxiliary_requests[0] = saved["model_requests"]
         if saved["valid"] and saved.get("public") is not None:
@@ -1059,7 +1060,7 @@ class TurnExecution:
         )
 
         public_context = self.runtime.public_compaction
-        from yuki.services.turn_transcript import recorded_response
+        from yuki.services.turn_transcript import recorded_response, tool_result_evidence
 
         active_session = self.state.control.session if self.state.control is not None else None
         recorded = (
@@ -1119,6 +1120,14 @@ class TurnExecution:
                     },
                     ensure_ascii=False,
                 )
+                unobserved_tool_round = None
+                if recorded and (results := recorded[-1].get("results")):
+                    result_facts = {result["call_id"]: result for result in results}
+                    unobserved_tool_round = tool_result_evidence(
+                        recorded_response(recorded[-1]),
+                        {identity: fact["output"] for identity, fact in result_facts.items()},
+                        call_key=lambda identity: result_facts[identity].get("effect_key"),
+                    )
                 plan = execution_compact_plan(
                     self.state.transcript,
                     self.initial_messages,
@@ -1134,6 +1143,7 @@ class TurnExecution:
                     ),
                     focus="本轮程序持有的目标归属（null 表示没有当前业务 Work）：" + focus,
                     checkpoint_summary=self._execution_checkpoint_summary,
+                    unobserved_tool_round=unobserved_tool_round,
                 )
         except WorkCapacityError:
             # A soft watermark is a maintenance policy, not an input-capacity
@@ -1204,6 +1214,7 @@ class TurnExecution:
                 "retained": encode_transcript(TurnTranscript(plan.retained)),
                 "public": plan.public,
                 "original": encode_transcript(original),
+                "response_observation": self.state.response_observation,
                 "phase": "dispatched",
             }
             sequence = original.request()

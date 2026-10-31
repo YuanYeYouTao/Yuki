@@ -376,6 +376,7 @@ def _native_tail_items(
     call_key: Callable[[str], str] | None,
     *,
     offset: int = 0,
+    keep_from: int,
 ) -> tuple[_RetainedItem, ...]:
     """Convert each portable round once, remembering its original entry boundary."""
     result: list[_RetainedItem] = []
@@ -383,10 +384,9 @@ def _native_tail_items(
     response: ChatMessage | None = None
     response_start: int | None = None
     results_start: int | None = None
-    required_from: int | None = None
 
     def flush_round() -> None:
-        nonlocal response, response_start, results_start, required_from
+        nonlocal response, response_start, results_start
         if results:
             message = tool_result_evidence(
                 response, results, call_key=call_key if response is last_response else None
@@ -400,9 +400,7 @@ def _native_tail_items(
             response_start = None
             return
         assert start is not None
-        if response is last_response:
-            required_from = start if response is None or response.tool_calls else None
-        result.append(_RetainedItem(start, message, required_from))
+        result.append(_RetainedItem(start, message, keep_from if start >= keep_from else None))
         results.clear()
         results_start = None
         response = None
@@ -425,7 +423,11 @@ def _native_tail_items(
         else:
             flush_round()
             result.append(
-                _RetainedItem(index, replace(item, reasoning_content=None), required_from)
+                _RetainedItem(
+                    index,
+                    replace(item, reasoning_content=None),
+                    keep_from if index >= keep_from else None,
+                )
             )
     flush_round()
     return tuple(result)
@@ -513,6 +515,7 @@ def execution_compact_plan(
     responses: tuple[ChatMessage, ...] = (),
     focus: str = "",
     checkpoint_summary: str | None = None,
+    unobserved_tool_round: ChatMessage | None = None,
 ) -> ExecutionCompactPlan:
     """Select the latest fitting paired prefix without cloning every candidate.
 
@@ -597,17 +600,35 @@ def execution_compact_plan(
         ),
         None,
     )
-    if last_response_index is None:
-        # A fresh/rebased private tail has had no normal model response yet.
-        # It can include original portable receipts; user text is not a seen flag.
-        raise WorkCapacityError("model_request_capacity")
-    response_entry = entries[last_response_index]
     last_response = (
         recorded[last_response_index]
         if last_response_index in recorded
-        else cast(ChatMessage, response_entry)
+        else cast(ChatMessage, entries[last_response_index])
+        if last_response_index is not None
+        else None
     )
-    keep_from = last_response_index if last_response.tool_calls else len(entries)
+    keep_from = (
+        last_response_index
+        if last_response_index is not None
+        and last_response is not None
+        and last_response.tool_calls
+        else len(entries)
+    )
+    if unobserved_tool_round is not None:
+        portable_index = next(
+            (
+                index
+                for index, entry in enumerate(entries)
+                if index >= len(initial) and entry == unobserved_tool_round
+            ),
+            None,
+        )
+        if portable_index is not None and (
+            last_response_index is None or portable_index > last_response_index
+        ):
+            # This exact message is reconstructed from the Host observation,
+            # not trusted because a user supplied a particular JSON kind.
+            keep_from = portable_index
     native_from = [False] * (len(entries) + 1)
     for index in range(len(entries) - 1, -1, -1):
         native_from[index] = native_from[index + 1] or not isinstance(entries[index], ChatMessage)
@@ -619,7 +640,12 @@ def execution_compact_plan(
             tuple(
                 item.message
                 for item in _native_tail_items(
-                    suffix, recorded, last_response, call_key, offset=keep_boundary
+                    suffix,
+                    recorded,
+                    last_response,
+                    call_key,
+                    offset=keep_boundary,
+                    keep_from=keep_from,
                 )
             )
             if native_from[keep_boundary]
@@ -635,12 +661,7 @@ def execution_compact_plan(
             _RetainedItem(
                 index,
                 item,
-                last_response_index
-                if last_response_index is not None
-                and index >= last_response_index
-                and last_response is not None
-                and last_response.tool_calls
-                else None,
+                keep_from if index >= keep_from else None,
             )
             for index, item in enumerate(entries)
             if index >= first_candidate and isinstance(item, ChatMessage)
@@ -654,6 +675,7 @@ def execution_compact_plan(
                     last_response,
                     call_key,
                     offset=first_candidate,
+                    keep_from=keep_from,
                 ),
                 len(entries),
                 initial,

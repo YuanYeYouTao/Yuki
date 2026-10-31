@@ -688,3 +688,175 @@ async def test_work_p_response_keeps_fresh_extras(database, tmp_path, monkeypatc
     assert "New public correction" in text
     assert text.count("fresh activation material") == 1
     assert "context_compaction" not in restored.progress
+
+
+@pytest.mark.parametrize("phase", ["paired", "response"])
+async def test_ordinary_native_cold_preserves_host_tool_proof_for_another_compact(
+    database, tmp_path, monkeypatch, phase, compact_evidence
+):
+    import httpx
+    from tests.support.agent_backend import StubAgentBackend
+
+    from yuki.llm.gemini import GeminiProvider
+
+    control, _, initial = await _session(database, tmp_path)
+    context = await _public_context(database, control, initial)
+    initial = (*context.messages, initial[-1])
+    directory, evidence = compact_evidence
+
+    def respond(request):
+        evidence["requests"].append(asdict(request))
+        if any(
+            "Host 会话上下文压缩要求" in (getattr(item, "content", "") or "")
+            for item in (*request.messages, *request.continuation_items)
+        ):
+            return "Existing public checkpoint."
+        if any(
+            "Host 上下文压缩要求" in (getattr(item, "content", "") or "")
+            for item in (*request.messages, *request.continuation_items)
+        ):
+            return "Private discoveries checkpoint."
+        return "The original tool result was received."
+
+    provider = FakeLLMProvider(respond)
+    runner, runtime = await _runtime(database, control, initial, provider)
+    tools = (ChatTool("read_probe", "Read existing evidence", {"type": "object"}),)
+    runtime = replace(
+        runtime,
+        work_control=None,
+        public_compaction=context,
+        execution_id="ordinary-native-cold-" + phase,
+        fixed_tools=tools,
+        max_model_requests=None,
+        auxiliary_requests=[0],
+    )
+    public = TurnExecution(runner, initial, replace(runtime, compact_focus=""), None)
+    public.state.fixed_definitions = tools
+    await public.compact_current(
+        0, ChatRequest(messages=initial, tools=tools), ModelExecutionPriority.FOREGROUND, 128000
+    )
+    initial = public.initial_messages
+    assert not context.fragments
+    invocations = []
+
+    async def execute(invocation):
+        invocations.append(invocation.identity.operation_id)
+        return json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "operation_id": invocation.identity.operation_id,
+                    "proof": "ordinary-native-original-result",
+                },
+            }
+        )
+
+    backend = StubAgentBackend(execute_call=execute, is_side_effecting=lambda *_: False)
+    execution = TurnExecution(runner, initial, runtime, backend)
+    execution.state.fixed_definitions = execution.state.definitions = tools
+    native_wire = []
+
+    def transport(request):
+        native_wire.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": "read_probe",
+                                        "args": {"query": "original cold proof"},
+                                    },
+                                    "thoughtSignature": "ordinary-original-native-signature",
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+        )
+
+    evidence.update(phase=phase, native_wire=native_wire, invocations=invocations)
+    try:
+        async with httpx.AsyncClient(
+            base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+        ) as client:
+            native = GeminiProvider(
+                base_url="https://wire.invalid/v1/",
+                api_key="synthetic",
+                timeout_seconds=1,
+                max_retries=0,
+                client=client,
+            )
+            response = await native.complete(
+                ChatRequest(messages=initial, tools=tools, model="gemini-test")
+            )
+        assert response.continuation is not None
+        await execution.observe_response(0, response, ())
+        outcome = await execution.execute_tools(0, response)
+        await execution.finish_tool_turn(0, response, outcome)
+        original_observation = json.loads(json.dumps(execution.state.response_observation))
+        evidence["original_host_observation"] = original_observation
+        sequence = execution.state.transcript.request()
+        request = ChatRequest(
+            messages=sequence.messages,
+            continuation=sequence.continuation,
+            continuation_items=sequence.items,
+            tools=tools,
+        )
+        write = CompactReceipt.write
+
+        async def fail_pairing(self, payload, **kwargs):
+            if payload["phase"] == "paired":
+                raise WorkConflict("native_pairing_failed")
+            await write(self, payload, **kwargs)
+
+        if phase == "response":
+            monkeypatch.setattr(CompactReceipt, "write", fail_pairing)
+            with pytest.raises(WorkConflict, match="native_pairing_failed"):
+                await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, None)
+            monkeypatch.setattr(CompactReceipt, "write", write)
+        else:
+            await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, None)
+        receipt = await CompactReceipt(context, runtime.execution_id, runtime.actor_user_id).read()
+        evidence["paid_receipt"] = receipt
+        assert receipt["phase"] == phase
+        assert "ordinary-native-original-result" in str(receipt["retained"])
+        await database.engine.dispose()
+        fresh = await _public_context(database, control, initial)
+        resumed = TurnExecution(
+            runner,
+            (*fresh.messages, initial[-1]),
+            replace(runtime, public_compaction=fresh),
+            backend,
+        )
+        resumed.state.fixed_definitions = resumed.state.definitions = tools
+        await resumed.restore_compact_receipt()
+        evidence["restored_host_observation"] = dict(resumed.state.response_observation)
+        evidence["before_second_compact"] = asdict(resumed.state.transcript.request())
+        before = len(provider.requests)
+        await resumed.compact_current(
+            0,
+            ChatRequest(messages=resumed.state.transcript.request().messages, tools=tools),
+            ModelExecutionPriority.FOREGROUND,
+            128000,
+        )
+        evidence["second_compact_requests"] = [asdict(item) for item in provider.requests[before:]]
+        await resumed.request(0)
+        normal = provider.requests[-1]
+        evidence["normal_request"] = asdict(normal)
+        body = json.dumps(asdict(normal), ensure_ascii=False)
+        assert response.tool_calls[0].id in body
+        assert "ordinary-native-original-result" in body
+        assert invocations[0] in body
+        assert "ordinary-original-native-signature" not in body
+        assert len(invocations) == 1
+        assert resumed.state.response_observation != original_observation
+    finally:
+        evidence["requests"] = [asdict(item) for item in provider.requests]
+        await capture_compact_facts(database, directory, evidence)

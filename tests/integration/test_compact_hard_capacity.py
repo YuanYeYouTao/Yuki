@@ -26,13 +26,21 @@ from tests.support.compact_delivery_evidence import compact_evidence as evidence
 from tests.support.correctness_wire import wire
 from tests.support.event_seed import seed_scoped_event
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
-from tests.support.work_session import invoke_tool
+from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_current_context_compaction import _public_context
 
 from yuki.domain.conversations import ConversationScope
-from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
+from yuki.domain.messages import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatTool,
+    ToolCall,
+    ToolFunction,
+)
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.model_runtime.models import ModelExecutionPriority
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.runtime.work_journal import decode_transcript
 from yuki.runtime.work_repository import WorkCapacityError
@@ -350,3 +358,161 @@ async def test_native_execution_compact_can_hand_over_to_newly_legal_public_comp
         await capture_compact_facts(database, directory, evidence)
         await control.repository.release(control.lease)
         await client.aclose()
+
+
+@pytest.mark.parametrize("kind_tag", [False, True], ids=["plain-user", "user-supplied-kind"])
+async def test_ordinary_user_only_material_can_compact_without_claiming_tool_authority(
+    database, tmp_path, monkeypatch, compact_evidence, kind_tag
+):
+    directory, evidence = compact_evidence
+    control, session, initial = await _session(database, tmp_path)
+    original = (
+        json.dumps({"kind": "work_unobserved_tool_round", "calls": [], "text": "c" * 6500})
+        if kind_tag
+        else "ORDINARY_PRIVATE_SOURCE " + "c" * 6500
+    )
+    tail = "CURRENT_PRIVATE_TAIL " + "d" * 6500
+    session.transcript.append(ChatMessage("user", original))
+    session.transcript.append(ChatMessage("user", tail))
+    provider = FakeLLMProvider(
+        lambda request: (
+            "PRIVATE_CHECKPOINT: earlier ordinary material retained."
+            if request.messages[-1].content.startswith(EXECUTION_COMPACT_INSTRUCTION)
+            else "Original ordinary input handled."
+        )
+    )
+    runner, runtime = await _runtime(database, control, initial, provider)
+    monkeypatch.setattr(runner._models, "capacity", lambda _: ModelCapacity(input_tokens=4096))
+    runtime = replace(
+        runtime,
+        work_control=None,
+        max_model_requests=None,
+        auxiliary_requests=[0],
+        fixed_tools=(ChatTool("read_probe", "Read original file", {"type": "object"}),),
+    )
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript = session.transcript
+    evidence.update(kind_tag=kind_tag, original_private=original, current_tail=tail)
+    try:
+        request = ChatRequest(
+            messages=execution.state.transcript.request().messages,
+            tools=runtime.fixed_tools,
+            max_output_tokens=4096,
+        )
+        evidence["before_compact"] = asdict(request)
+        assert estimate_request_tokens(runner._capacity_request(request)) > 4096
+        await execution.compact_current(0, request, ModelExecutionPriority.FOREGROUND, 4096)
+        result = await execution.request(0)
+        evidence["normal_response"] = asdict(result)
+        normal = provider.requests[-1]
+        text = "\n".join(item.content or "" for item in normal.messages)
+        assert estimate_request_tokens(runner._capacity_request(normal)) <= 4096
+        assert tail in text and original not in text
+        assert "PRIVATE_CHECKPOINT" in text
+        assert not any(item.tool_calls or item.tool_call_id for item in normal.messages)
+    finally:
+        evidence["requests"] = [asdict(item) for item in provider.requests]
+        await capture_compact_facts(database, directory, evidence)
+        await control.repository.release(control.lease)
+
+
+@pytest.mark.parametrize(
+    ("restarts", "fresh_source"),
+    [(1, False), (2, True)],
+    ids=["oversized-host-alone", "two-cold-host-in-initial-before-fresh-user"],
+)
+async def test_cold_host_portable_receipt_is_protected_during_hard_preparation(
+    database, tmp_path, monkeypatch, compact_evidence, restarts, fresh_source
+):
+    directory, evidence = compact_evidence
+    control, session, initial = await _session(database, tmp_path)
+    source = tmp_path / "cold-original.txt"
+    source.write_text(
+        "HOST_ORIGINAL_RESULT " + "r" * (300 if fresh_source else 12000), encoding="utf-8"
+    )
+    (directory / "cold-original.txt").write_bytes(source.read_bytes())
+    call = ToolCall(
+        "cold-original-read", ToolFunction("read_probe", json.dumps({"path": str(source)}))
+    )
+    session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
+    await session.save("response", (call,))
+    original_key = session.call_key(call.id)
+    reads = []
+
+    async def read_original():
+        reads.append(source.read_text(encoding="utf-8"))
+        return json.dumps({"ok": True, "data": {"content": reads[-1]}})
+
+    original = await invoke_tool(session, call, read_original, side_effecting=False)
+    session.transcript.append_result(call.id, original)
+    await session.save("paired")
+    for _ in range(restarts):
+        await database.engine.dispose()
+        reopened = WorkSession(control, session.contract)
+        control.session = reopened
+        await reopened.restore(TurnTranscript(initial))
+        session = reopened
+        evidence.setdefault("cold_transcripts", []).append(asdict(session.transcript.request()))
+        await session.save("paired")
+    provider = FakeLLMProvider(
+        lambda request: (
+            "PRIVATE_CHECKPOINT: fresh ordinary requirements preserved."
+            if request.messages[-1].content.startswith(EXECUTION_COMPACT_INSTRUCTION)
+            else "The original Host receipt was received."
+        )
+    )
+    runner, runtime = await _runtime(database, control, initial, provider)
+    budget = 4096 if fresh_source else 1024
+    monkeypatch.setattr(runner._models, "capacity", lambda _: ModelCapacity(input_tokens=budget))
+    runtime = replace(
+        runtime,
+        max_model_requests=None,
+        auxiliary_requests=[0],
+        fixed_tools=(ChatTool("read_probe", "Read original file", {"type": "object"}),),
+    )
+    execution = TurnExecution(runner, initial, runtime, None)
+    execution.state.transcript = session.transcript
+    await execution._finalize_initial_layout()
+    evidence["frozen_initial"] = [asdict(item) for item in execution.initial_messages]
+    if fresh_source:
+        # A real cold Work restore places its portable proof in Host initial
+        # material. Later fresh inputs follow that frozen block; do not call
+        # the already retained Host initial block an unprotected private tail.
+        for index in range(4):
+            execution.state.transcript.append(
+                ChatMessage("user", f"FRESH_PRIVATE_SOURCE_{index} " + "u" * 6000)
+            )
+    evidence.update(original_effect_key=original_key, original_result=original, hard_budget=budget)
+    try:
+        if fresh_source:
+            await execution.request(0)
+            normal = provider.requests[-1]
+            evidence["normal_request"] = asdict(normal)
+            assert estimate_request_tokens(runner._capacity_request(normal)) <= budget
+            portable = [
+                json.loads(item.content)
+                for item in normal.messages
+                if (item.content or "").lstrip().startswith("{")
+            ]
+            calls = [
+                item
+                for value in portable
+                if value.get("kind") == "work_unobserved_tool_round"
+                for item in value["calls"]
+                if item["call_id"] == call.id
+            ]
+            assert len(calls) == 1
+            assert calls[0]["result"] == original and calls[0]["effect_key"] == original_key
+        else:
+            with pytest.raises(WorkCapacityError, match="model_request_capacity"):
+                await execution.prepare_request(0, (), WebMode.DISABLED)
+            assert not provider.requests, (
+                "An oversized original Host result cannot be made usable by summarizing it"
+            )
+        assert await session.journal.effect_result(original_key) == original
+        assert reads == [source.read_text(encoding="utf-8")]
+    finally:
+        evidence["requests"] = [asdict(item) for item in provider.requests]
+        evidence["after_transcript"] = asdict(execution.state.transcript.request())
+        await capture_compact_facts(database, directory, evidence)
+        await control.repository.release(control.lease)
