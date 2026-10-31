@@ -1,5 +1,6 @@
-"""B-2 failures: trusted desktop-pair explicitly grants the selected Person,
-reuses original request receipts, and cannot revive a grant after revocation.
+"""B-2 failures: only an explicit grant request grants the selected Person;
+old installations without one stay ordinary, and revoked grants never revive.
+Creation and reconnect preserve original Person, pairing and grant receipts.
 The real CLI and real HTTP operator API run only against this temporary Bot.
 """
 
@@ -83,6 +84,14 @@ async def test_trusted_local_pair_grants_person_once_and_preserves_original_rece
     assert (await client.get("client/v1/me", headers=headers)).json()["data"][
         "is_superuser"
     ] is False
+    reconnect = await local_pair({**body, "pair_request_id": str(uuid4())})
+    reconnected, reconnected_device = await pair(client, reconnect["code"])
+    reconnected_me = (await client.get("client/v1/me", headers=reconnected)).json()["data"]
+    assert reconnected_me["person_id"] == me["person_id"]
+    assert reconnected_me["is_superuser"] is False
+    assert reconnected_device != device_id
+    assert (await client.get(receipt_path, headers=operator)).json()["data"] == original_receipt
+    assert (await client.get(person_path, headers=operator)).json()["data"] == revoked_person
     await local_pair({**body, "person_id": state["owner_person_id"]}, success=False)
     await local_pair({**body, "superuser_request_id": body["person_request_id"]}, success=False)
     assert (await client.get(person_path, headers=operator)).json()["data"] == revoked_person
@@ -98,6 +107,19 @@ async def test_trusted_local_pair_grants_person_once_and_preserves_original_rece
         "superuser_request_id": str(uuid4()),
         "pair_request_id": str(uuid4()),
     }
+    ordinary_path = "admin/v1/persons/" + existing["person_id"]
+    ordinary_person = (await client.get(ordinary_path, headers=operator)).json()["data"]
+    missing = {key: value for key, value in existing.items() if key != "superuser_request_id"}
+    old_installation = await local_pair(missing)
+    old_headers, old_device = await pair(client, old_installation["code"])
+    old_me = (await client.get("client/v1/me", headers=old_headers)).json()["data"]
+    assert old_me["person_id"] == existing["person_id"]
+    assert old_me["is_superuser"] is False
+    assert (await client.get(ordinary_path, headers=operator)).json()["data"] == ordinary_person
+    old_replay = await local_pair(missing)
+    assert old_replay["code_id"] == old_installation["code_id"] and old_replay["code"] is None
+    assert (await client.get(ordinary_path, headers=operator)).json()["data"] == ordinary_person
+    existing["pair_request_id"] = str(uuid4())
     existing_pair = await local_pair(existing)
     existing_headers, _ = await pair(client, existing_pair["code"])
     assert (await client.get("client/v1/me", headers=existing_headers)).json()["data"][
@@ -116,8 +138,17 @@ async def test_trusted_local_pair_grants_person_once_and_preserves_original_rece
     assert (
         await client.get("admin/v1/persons/" + state["owner_person_id"], headers=operator)
     ).json()["data"] == current_owner
-    missing = {key: value for key, value in existing.items() if key != "superuser_request_id"}
-    await local_pair(missing, success=False)
+    ordinary_creation = await local_pair(
+        {
+            "display_name": "Local chat without an administrator grant",
+            "person_request_id": str(uuid4()),
+            "pair_request_id": str(uuid4()),
+        }
+    )
+    created_headers, created_device = await pair(client, ordinary_creation["code"])
+    created_me = (await client.get("client/v1/me", headers=created_headers)).json()["data"]
+    assert created_me["person_id"] == ordinary_creation["person_id"]
+    assert created_me["is_superuser"] is False
     (root / "local-superuser-evidence.json").write_text(
         json.dumps(
             {
@@ -130,6 +161,17 @@ async def test_trusted_local_pair_grants_person_once_and_preserves_original_rece
                 "revoked_replay_is_superuser": revoked_person["is_superuser"],
                 "existing_person_id": existing["person_id"],
                 "ordinary_remote_pair_is_superuser": False,
+                "revoked_reconnect_device_id": reconnected_device,
+                "revoked_reconnect_is_superuser": reconnected_me["is_superuser"],
+                "old_installation_person_id": old_me["person_id"],
+                "old_installation_device_id": old_device,
+                "old_installation_pair_request_id": missing["pair_request_id"],
+                "old_installation_code_id": old_installation["code_id"],
+                "old_installation_person_unchanged": True,
+                "old_installation_is_superuser": old_me["is_superuser"],
+                "ordinary_creation_person_id": created_me["person_id"],
+                "ordinary_creation_device_id": created_device,
+                "ordinary_creation_is_superuser": created_me["is_superuser"],
             },
             indent=2,
         ),
