@@ -55,10 +55,12 @@ async def test_superuser_device_discovers_tests_and_saves_original_bundle(author
     )
     assert tested.status_code == 200 and tested.json()["data"]["ok"] is True
     assert (await client.get("admin/v1/models", headers=admin)).json()["data"] == before
-    assert (await client.get("admin/v1/models/stats", headers=admin)).json()["data"] == {
-        "by_task": {},
-        "by_profile": {},
-    }
+    stats = (
+        await client.get(
+            "admin/v1/models/stats", headers=admin, params={"range": "all", "timezone": "UTC"}
+        )
+    ).json()["data"]
+    assert stats["summary"]["invocations"] == 0 and stats["groups"] == []
     denied = await client.post(
         "admin/v1/models/test",
         headers=visitor,

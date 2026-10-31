@@ -58,7 +58,7 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `POST /plugin-outbox/{id}/retry` | `plugin retry-outbox` | `control.plugin.mutate` |
 | `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set`、`admin model semantic use` | `control.config.file.content.read\|mutate` |
 | `POST /models/test`；`POST /models/discover` | 保存前或已保存连接的显式探测 | `control.config.file.mutate` |
-| `GET /models/stats` | 按用途、Profile 查询原有调用统计 | `control.config.file.content.read` |
+| `GET /models/stats` | 按明确时间范围、原用途与真实供应商/模型读取调用统计 | `control.config.file.content.read` |
 | `GET /character`；`PATCH /character` | `admin character show\|update` | `control.character.read\|mutate` |
 | `GET /character/soul`；`PUT` 同路径；`POST /character/soul/reload` | `admin character soul show\|set\|reload` | `control.character.read\|mutate` |
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
@@ -153,8 +153,41 @@ token 的真实请求，关闭该次重试，不写模型调用账本或 Work �
 两类探测结果的错误类别为 `authentication/rate_limit/quota/timeout/protocol/unavailable/
 configuration/unsupported`，成功时为空。分类沿原 LLM 异常；仅上游明确报告
 `insufficient_quota` 时区分额度不足。每次发送前复核当前管理权限，撤销设备或人物资格不会因
-先前通过入站认证而继续发送。`GET /models/stats` 返回 `by_task/by_profile`，复用原
-`ModelInvocationRepository` 聚合；探测不增加调用数，未知用量仍保持原统计口径。
+先前通过入站认证而继续发送。探测不增加业务调用数。
+
+### 用量读取
+
+`GET /models/stats` 必填 `range=today|24h|7d|all` 与 IANA `timezone`，例如
+`?range=today&timezone=Asia%2FTaipei`。可选 `end` 是带时区偏移的 ISO 时间，省略时使用
+本次请求的 UTC 时间；调用方可复用响应中的 end，固定切换维度时的同一个窗口。
+今日从该时区零点开始，24h/7d 为滚动 24/168 小时。返回的范围为 `[start,end)`，
+`all` 的 start 为 null，表示全部仍留存的记录，不代表完整生命周期或供应商账单。
+
+`group_by=model|task` 缺省为 model。`task/provider/model/profile_id` 为可选精确筛选，
+任务与来源保留记录中的原字符串，不从当前配置补名或恢复退休枚举。
+返回 `range/group_by/filters/options/summary/groups`；每个 group 含 `stats/sources`，
+模型组使用真实 `(provider,model)`，用途组使用原 task；另一个维度字段返回 null。
+每个 source 保留原 `task/provider/model/profile_id/stats`。options 来自同一窗口的未筛选
+四维组合，包含 tasks 和 `{provider,model}` 列表，筛选后不丢失其他可选项。
+
+一次只读 SQL 从现有 `model_invocations` 按四维聚合；筛选、摘要、分组与来源都由这个
+结果生成，不另查当前 routes/Profile，不建第二账本或聚合缓存。原 created_at 索引服务范围读取。
+stats 保留调用数、成功/失败、已报告 Token 小计和平均调用延迟，并增加：
+
+- `coverage`：七个 Token 字段各有多少调用报告了该字段；0 小计与 coverage=0 不证明零用量。
+- `cache_read`：只对输入和缓存读取都已报告的同一批调用返回 reported_calls、prompt_tokens、
+  cached_prompt_tokens 与 ratio；分母为零时 ratio=null。不能用全部输入配部分缓存，不平均行比例。
+- `unknown_usage`：总量为 null，或原 unknown_usage_request_count 大于零的逻辑调用数。
+  已报告部分总量仍保留；coverage.total_tokens 只说明有小计，不能证明每个物理请求都有报告。
+
+缓存读取属于规范化输入，不额外加到 total_tokens；缓存写入各字段沿原报告单独求和。
+Person 超管设备及 operator 沿原 `control.config.file.content.read` 授权，普通设备返回 403，
+撤销设备返回 401；响应不含提示词、用户、工具正文、端点或密钥。
+
+本次替换旧 `by_task/by_profile` 响应，公共 API revision 为 9，Desktop 最低修订同步升到 9。
+旧客户端无参数请求沿正常输入校验返回 422；不保留旧响应或平行端点，不新增版本门禁。
+Backend 与 Desktop 协调发布，旧版用量页需更新后使用。`yuki model stats` 和聊天模型统计仍有
+原输出消费者，保留其格式；CLI 已改用原单快照汇总，不再逐个用途查询。
 
 没有这段时，新观察继续使用进程里的 `SEMANTIC_PARTICIPATION_API_KEY` 和 `SEMANTIC_PARTICIPATION_MODEL`，地址是 Jev 的预设地址，记录的 provider 是 `typesafe`。段一旦存在，环境变量里的模型不再补洞。空路由、未知连接或空密钥不产生新观察，也不改试另一条。普通 `model apply` 省略该段时保留磁盘上的原段；提交空段才删除并回到环境变量。已开始的请求保持进入时的连接。
 

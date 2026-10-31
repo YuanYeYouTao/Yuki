@@ -19,7 +19,6 @@ from yuki.admin.control_resolution import ControlAccess, ControlPrincipalLookupE
 from yuki.admin.model_connections import (
     ModelDiscoverInput,
     ModelDiscoverResult,
-    ModelStatsView,
     ModelTestInput,
     ModelTestResult,
 )
@@ -44,6 +43,7 @@ from yuki.client_api.models import (
 )
 from yuki.domain.identity import RequestId
 from yuki.identity.credentials import CredentialPurpose
+from yuki.model_runtime.usage import ModelStatsView, ModelUsageQuery
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
 from yuki_plugin_sdk.observation import PluginObservationRequest
@@ -587,8 +587,8 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return {"data": await resolve().commands.model.discover(actor, body)}
 
     @router.get("/models/stats", response_model=Envelope[ModelStatsView])
-    async def model_stats(actor: Actor) -> Any:
-        return {"data": await resolve().commands.model.stats(actor)}
+    async def model_stats(actor: Actor, query: Annotated[ModelUsageQuery, Query()]) -> Any:
+        return {"data": await resolve().commands.model.stats(actor, query)}
 
     @router.post("/models/apply", response_model=Envelope[ModelControlResult])
     async def apply_models(body: ModelsBody, actor: Actor) -> Any:

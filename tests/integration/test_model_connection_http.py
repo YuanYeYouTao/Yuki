@@ -216,8 +216,11 @@ async def test_draft_probe_and_discovery_use_real_protocol_without_save(
     assert rig.profiles.read_bytes() == before
     assert not model_secrets_path(rig.profiles).exists()
     assert SECRET not in json.dumps(rig.state) and SECRET not in caplog.text
-    stats = await rig.client.get("/admin/v1/models/stats")
-    assert stats.json()["data"] == {"by_task": {}, "by_profile": {}}
+    stats = await rig.client.get(
+        "/admin/v1/models/stats", params={"range": "all", "timezone": "UTC"}
+    )
+    assert stats.json()["data"]["summary"]["invocations"] == 0
+    assert stats.json()["data"]["groups"] == []
 
 
 @pytest.mark.parametrize(
@@ -276,7 +279,9 @@ async def test_unsupported_discovery_and_denied_requests_do_not_probe_or_persist
         )
         assert denied.status_code == 403 and SECRET not in denied.text
     denied = await rig.client.get(
-        "/admin/v1/models/stats", headers={"Authorization": f"Bearer {READER}"}
+        "/admin/v1/models/stats",
+        headers={"Authorization": f"Bearer {READER}"},
+        params={"range": "all", "timezone": "UTC"},
     )
     assert denied.status_code == 403
     malformed = await rig.client.post(
@@ -339,10 +344,14 @@ async def test_saved_profile_uses_sidecar_and_stats_keep_original_invocations(mo
         )
         rig.state["responses"].append(response.json())
         assert response.status_code == 200 and response.json()["data"]["error_category"] is None
-    stats = (await rig.client.get("/admin/v1/models/stats")).json()["data"]
+    stats = (
+        await rig.client.get("/admin/v1/models/stats", params={"range": "all", "timezone": "UTC"})
+    ).json()["data"]
     rig.state["responses"].append(stats)
-    assert stats["by_task"]["memory_dream"] == stats["by_profile"]["original-profile"]
-    facts = stats["by_task"]["memory_dream"]
+    assert stats["summary"] == stats["groups"][0]["stats"]
+    assert stats["groups"][0]["sources"][0]["profile_id"] == "original-profile"
+    assert stats["groups"][0]["sources"][0]["task"] == "memory_dream"
+    facts = stats["summary"]
     assert (facts["invocations"], facts["successes"], facts["failures"]) == (2, 1, 1)
     assert (
         facts["prompt_tokens"],

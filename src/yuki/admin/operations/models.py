@@ -14,7 +14,6 @@ from yuki.admin.config_files import ConfigFileError, ConfigFileService
 from yuki.admin.model_connections import (
     ModelDiscoverInput,
     ModelDiscoverResult,
-    ModelStatsView,
     ModelTestInput,
     ModelTestResult,
     discover_models,
@@ -23,6 +22,7 @@ from yuki.admin.model_connections import (
 from yuki.admin.operations.base import CommandExecutor, authorize_current, fail, outcome
 from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.repository import ModelInvocationRepository
+from yuki.model_runtime.usage import ModelStatsView, ModelUsageQuery
 from yuki.persistence.command_receipts import (
     CommandSuccess,
 )
@@ -53,12 +53,10 @@ class ModelOperations:
         with model_dispatch_guard(check):
             return await discover_models(self.files, source)
 
-    async def stats(self, principal: ControlPrincipal) -> ModelStatsView:
+    async def stats(self, principal: ControlPrincipal, query: ModelUsageQuery) -> ModelStatsView:
         await authorize_current(self.database, principal, "control.config.file.content.read")
         repository = ModelInvocationRepository(self.database)
-        return ModelStatsView(
-            by_task=await repository.stats_by_task(), by_profile=await repository.stats_by_profile()
-        )
+        return await repository.usage(query)
 
     async def apply_models(
         self, principal: ControlPrincipal, command: ControlCommand, spec: dict[str, Any]
