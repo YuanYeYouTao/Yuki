@@ -10,6 +10,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -60,9 +61,7 @@ def parser() -> argparse.ArgumentParser:
     doctor.add_argument("--instance")
     status = commands.add_parser("status", help="Local configuration and user service status")
     status.add_argument("--json", action="store_true", help="Print one machine-readable object")
-    access = commands.add_parser(
-        "full-access", help="Enable/disable local Shell and files"
-    )
+    access = commands.add_parser("full-access", help="Enable/disable local Shell and files")
     access.add_argument("--enabled", choices=["true", "false"])
     access.add_argument("--json", action="store_true")
     discover = commands.add_parser(
@@ -73,12 +72,48 @@ def parser() -> argparse.ArgumentParser:
     discover.add_argument("--driver", choices=["codex", "claude"], default="codex")
     diagnostic = commands.add_parser("diagnose", help="Explicit native handshake; no model task")
     diagnostic.add_argument("--instance", required=True)
-    commands.add_parser("run", help="Run independently of any Desktop UI")
+    run = commands.add_parser("run", help="Run the Connector")
+    run.add_argument(
+        "--desktop-stdin", action="store_true", help="Stop when the owning Desktop closes stdin"
+    )
     logs = commands.add_parser("logs")
     logs.add_argument("--lines", type=int, default=60)
     service = commands.add_parser("service")
     service.add_argument("operation", choices=["install", "start", "stop", "status", "uninstall"])
     return result
+
+
+async def run_for_desktop(connector: Connector) -> None:
+    if sys.stdin is None:
+        raise ValueError("Desktop-owned Connector requires its stdin pipe")
+    descriptor = sys.stdin.fileno()
+    loop = asyncio.get_running_loop()
+    running = asyncio.create_task(connector.run())
+    closed = threading.Event()
+    callback_lock = threading.Lock()
+    active = True
+
+    def read_owner() -> None:
+        try:
+            while os.read(descriptor, 4096):
+                pass
+        finally:
+            with callback_lock:
+                if active:
+                    closed.set()
+                    loop.call_soon_threadsafe(running.cancel)
+
+    # Windows stdin is a synchronous inherited pipe. A daemon reader avoids
+    # waiting for a blocked default-executor thread if the Connector fails first.
+    threading.Thread(target=read_owner, daemon=True).start()
+    try:
+        await running
+    except asyncio.CancelledError:
+        if not closed.is_set():
+            raise
+    finally:
+        with callback_lock:
+            active = False
 
 
 async def doctor(config: Config, identity: str | None) -> list[dict[str, object]]:
@@ -367,7 +402,10 @@ def main(argv: list[str] | None = None) -> int:
                         namespace=config.device_id,
                     )
                     try:
-                        asyncio.run(Connector(config, journal, config_path=path).run())
+                        connector = Connector(config, journal, config_path=path)
+                        asyncio.run(
+                            run_for_desktop(connector) if args.desktop_stdin else connector.run()
+                        )
                     finally:
                         journal.close()
         return 0

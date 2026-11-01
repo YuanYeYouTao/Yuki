@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.4.1 / wire protocol 4** connects an existing computer to Yuki through
+Connector **0.4.2 / wire protocol 4** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.4.1-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.4.2-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -61,9 +61,14 @@ Claude npm discovery reads the current package's declared `bin` entry, including
 Windows native executables behind npm shims. Its original npm package source is
 resolved again on upgrade; old version directories are not additional candidates.
 
-Services run as the current OS user: Windows Task Scheduler uses InteractiveToken
-and LeastPrivilege, Linux uses systemd --user, macOS uses LaunchAgent. Closing
-Desktop leaves the service running. Stop/uninstall preserves config, journal
+Desktop starts its Connector with `run --desktop-stdin` and owns the open stdin
+pipe. Desktop exit or loss of that pipe stops this Connector through its normal
+cleanup. Hiding the Desktop window in the tray does not exit the app. This flag
+is for Desktop ownership; ordinary `run` does not observe stdin.
+
+Explicitly installed standalone services run as the current OS user: Windows Task
+Scheduler uses InteractiveToken and LeastPrivilege, Linux uses systemd --user,
+macOS uses LaunchAgent. They remain independent of Desktop. Stop/uninstall preserves config, journal
 and native stores. WSS loss does not restart native owners. Revoked server
 authentication stops remote access while owners remain alive until local stop.
 Codex shutdown closes only this Connector's proxy; Connector-owned SDK/ACP and

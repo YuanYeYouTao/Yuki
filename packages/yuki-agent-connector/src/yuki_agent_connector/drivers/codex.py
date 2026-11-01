@@ -17,6 +17,7 @@ from websockets.exceptions import ConnectionClosed
 
 from .. import __version__
 from ..config import Instance
+from ..discovery import creation_flags
 from . import DriverError, Emit
 
 
@@ -73,6 +74,7 @@ class CodexRPC:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=creation_flags,
                 )
                 incoming, self.pipe = await asyncio.open_connection(sock=relay)
                 assert self.proxy.stdin is not None and self.proxy.stdout is not None
