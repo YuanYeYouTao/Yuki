@@ -86,7 +86,7 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 
 ## 安装与升级
 
-使用现成部署包，可从 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) 下载，按 [3.9.0 安装与升级指南](docs/upgrade-3.9.0.md)配置。它的镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`，提供 Linux amd64 和 arm64。
+新安装使用 [Yuki 单文件 Docker 部署指南](docs/operations/single-file-deployment.zh-CN.md)：从当前模板配置，以 `ghcr.io/yuanyeyoutao/yuki` 的明确镜像版本启动。默认项目为 `yuki`，数据库为 `data/yuki.db`。4.0 仍是开发基线，尚无正式 4.0 部署包；源码部署使用已构建的 `desktop-<完整提交>` 镜像，已发布版本的原始安装资料保留在各自 Release 中。
 
 开发 4.0 源码需要 Python 3.12、uv 和 C 编译器。Python 的 SQLite 须支持扩展加载，以下使用 uv 管理的 Python。Linux 使用 GCC/Clang，macOS 使用 Xcode Command Line Tools，Windows 在 MSVC 开发者终端执行，或用 `CC` 指定 MinGW GCC。Vec1 随包构建；安装已发布的平台 wheel 或使用镜像时无需编译器。
 

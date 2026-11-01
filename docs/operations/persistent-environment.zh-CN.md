@@ -71,7 +71,7 @@ Docker 自定义 bridge 的 `127.0.0.11` loopback DNS 无法由 gVisor 访问，
 python scripts/retire_media_snapshots.py \
   --workspace /copy/bot/workspace \
   --home-workspace /copy/sandbox/home/workspace \
-  --database /copy/bot/data/qq_ai_bot.db \
+  --database /copy/bot/data/yuki.db \
   --manager-database /copy/sandbox/jobs.sqlite3 \
   --protocol-root /copy/bot/data/work-protocol \
   --tool-artifacts /copy/bot/data/tool_artifacts > media-snapshot-audit.json
