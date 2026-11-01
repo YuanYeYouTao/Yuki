@@ -66,7 +66,13 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "wait conditions 每项用 kind：time_due(after_seconds 或含时区 at)、conversation、"
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
-                "conversation 等当前会话下一条输入，没有人物、主题筛选；定期查证用 time_due。"
+                "conversation 只等当前会话下一条输入，没有人物、主题筛选；"
+                "只登记它不会因普通子任务完成通知而唤醒。"
+                "既要接收会话输入又要处理子结果时，用 any 组合 conversation 与 "
+                "owned_run(run_id=child_id)；all 等全部条件满足。"
+                "任一信号唤醒后，处理当前输入并继续可执行工作；"
+                "仍依赖未完成子任务且当前无可执行步骤时，按原 ID 等待剩余结果，不重新派生。"
+                "定期查证用 time_due。"
                 "wait_status 查询，cancel_wait 撤销。主任务需要用户补充时，"
                 "先用 send 提出问题，"
                 "再用 need_input(reason) 登记等待；子任务的 need_input 会直接向父任务提问，"
@@ -119,10 +125,20 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         "description": "complete 的内部结果；按实际工作需要填写。",
                     },
                     "reason": {"type": "string"},
-                    "run_id": {"type": "string"},
+                    "run_id": {
+                        "type": "string",
+                        "description": (
+                            "wait 的简写参数：所属执行的原 run_id 或子 Work 的 child_id；"
+                            "与 conditions 二选一。"
+                        ),
+                    },
                     "wait_mode": {"type": "string", "enum": ["any", "all"]},
                     "conditions": {
                         "type": "array",
+                        "description": (
+                            "一次性等待条件。等子任务时 kind 填 owned_run、run_id 填原 child_id；"
+                            "同时等会话输入时追加 kind=conversation，并用 wait_mode=any。"
+                        ),
                         "minItems": 1,
                         "items": {"type": "object", "additionalProperties": True},
                     },

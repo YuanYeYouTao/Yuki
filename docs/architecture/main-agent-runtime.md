@@ -541,20 +541,23 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
 任务的沟通要求沿原 goal、用户追加输入与 context_note 保留，不另外保存汇报模式。
-用户要求安静、SELF 自主工作和后台维护按原指令安静处理，新追问照常响应。
+用户要求安静、SELF 自主工作和后台维护按原指令安静处理，新追问照常响应；用户委托的工作在后台运行仍按原反馈约定处理。
 
 沟通由 Agent 在原循环决定，send 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
 同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送或脚本停止。
 `task_control.derive` 沿已有 Work 派生普通业务子目标；get/list 可查父子与祖先，指定 work_id 的 cancel/fail/resume 使用原管理 writer。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
 
-`task_control.wait(run_id)` 是已有 owned_run conditions 的简写，已结束或未知的执行也可提供真实完成信号。也可登记一次性 `conditions`：
+`task_control.wait(run_id)` 是已有 `owned_run` conditions 的简写。等待子任务时，`run_id` 使用原 `subagent_start` 回执返回的 `child_id`；已结束或未知的执行也可提供真实完成信号。也可登记一次性 `conditions`：
 `time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
-集合支持 `any` / `all` 和可选 `deadline_at`；没有隐式 90 秒有效期。绑定持久化在
+同时接收会话输入与子结果时，用 `any` 组合 `conversation` 和 `owned_run`，后者的 `run_id` 仍填原 `child_id`；只等子任务可直接使用上述简写。
+等待是一次性的。`any` 任一命中后，处理当前输入并继续可执行工作；仍依赖未完成子任务且当前没有可执行步骤时，按原 ID 等待剩余结果，不重新派生。
+`all` 等全部条件满足，局部命中留在原绑定中。集合可选 `deadline_at`，没有隐式 90 秒有效期。绑定持久化在
 `runtime_work_waits`，带 Work ID、generation、主体、事件水位和唯一调用键。消息入口、
 插件发布事务与 WorkScheduler 的时钟分别交付信号；命中时同事务登记原 Work 输入并入队，
-不创建第二项 Agent 工作。局部满足的 `all` 条件留在绑定中；超时向原 Work 交付明确结果，
+不创建第二项 Agent 工作。超时向原 Work 交付明确结果，
 不视作同意。插件必须显式设置 SDK 的 `resume_waiting_work`，否则维持原通知和新轮行为；
 命中原 Work 的事件不会同时启动独立的插件 Agent 轮。等待命中与输入只保存事件引用和匹配元数据；构造请求时按当前 canonical Conversation、generation 和可见性读取原账本正文，历史 matched.text 不再采用。
+只登记 `conversation` 不会因普通子任务完成通知而唤醒。完成结果持久化、父 Work 入队、模型实际观察和用户交付是分别发生的事实；普通完成通知不撤销已接纳结束决定，恢复仍可按原 complete 直接收尾。用户交付以显式 `send` 的真实回执为准，完成通知不提供新授权。
 AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果。实际 Work 的等待
 和信号由 WorkWaitRepository 与 WorkScheduler 沿原 Work ID 处理，不唤醒第二个步骤机，
 也不因停放或迟到信号创建另一份 run。
