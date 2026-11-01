@@ -429,7 +429,7 @@ class Connector:
 def installation_lock(path: Path) -> Any:
     """One owner per connector installation; not an execution/session scheduler."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as stream:
+    with path.open("a+b", buffering=0) as stream:
         stream.seek(0)
         if not stream.read(1):
             stream.write(b"\0")
