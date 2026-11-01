@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.1`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.2`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -10,7 +10,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 `terminal_exec` 和 `environment_status` 可选 `device_id`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。后续 read/control 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
 
-退出桌面窗口、退出 App 与停止独立 Connector 服务分别处理；设备撤销仍使用原凭据机制。Connector 重启后的旧进程失联保原回执与 unknown，不重新执行原命令。Windows 按本次 Job Object、POSIX 按本次进程组取消，不按同名进程扫描，不结束用户 daemon 或整个浏览器。
+桌面管理的 Connector 由桌面进程以 `run --desktop-stdin` 启动，桌面持有其 stdin pipe；退出桌面进程或父进程意外结束时，EOF 沿原 Connector 关闭流程停止连接与自己持有的执行。窗口隐藏到托盘仍是 App 在运行。手动 CLI `run` 和用户明确安装的独立服务保留各自生命周期。设备撤销仍使用原凭据机制，Connector 重启后的旧进程失联保原回执与 unknown，不重新执行原命令。Windows 按本次 Job Object、POSIX 按本次进程组取消，不按同名进程扫描，不结束用户 daemon 或整个浏览器。
 
 本机终端可以直接运行 OpenCLI 等已安装程序。Connector 不自研或捆绑浏览器 CLI，不管理第三方工具的扩展、调试会话、安装依赖或网页动作回执。OpenCLI 是示例，不是唯一允许的程序；工具缺失不阻止设备、Shell 和文件连接。第三方工具的实际许可、结果与后台进程沿原工具处理。
 
@@ -26,7 +26,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 若本机默认目录已有独立连接器，桌面只读发现原配置及 OS 服务的实际 Python 来源，先展示已有连接。明确点击「使用已有连接」后只关联原运行时和数据目录，保留原 device、instance、journal 和服务。点击普通连接时也先沿用该原安装，不因尚未选中它就创建第二台设备。关联不重新配对或停止服务；迁入随附运行时属于另一个明确的更新操作。发现原配对配置而无法确认原服务运行时，会报告实际缺口，不覆盖配置或猜另一个执行来源。独立 SSH 隧道仍按其原方式管理，桌面不执行额外隧道脚本。
 
-桌面版本与 Connector 版本分别显示。明确更新为随附版本时，沿原数据目录更新服务程序，保留原设备、实例、配对和 journal；原服务停止时更新后仍停止，原服务运行时才恢复运行。更新程序不会启动或重启用户的 Codex daemon。
+桌面版本与 Connector 版本分别显示。明确更新为随附版本时，沿原数据目录准备运行时并卸载该目录的旧用户服务注册，保留原设备、实例、配对和 journal；原连接停止时更新后仍停止，原连接运行时才恢复为桌面进程持有的 Connector。之后启动桌面会恢复所选已配对的桌面管理连接器，退出桌面进程会停止它；仅关联外置独立安装不会接管其启停。更新程序不会启动或重启用户的 Codex daemon。
 
 桌面源码、五平台 CI 安装产物和正式 Release 是不同状态；实际可下载版本以桌面仓库对应产物为准。原生 Codex 仍需用户自行安装、登录并处理它自己的权限。服务已启动、服务器已连接和原生握手成功分别展示，不能代替实际模型任务的执行结果。现有独立安装及手动入口继续保留。
 
