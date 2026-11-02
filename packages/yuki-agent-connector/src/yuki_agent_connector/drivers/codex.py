@@ -13,17 +13,18 @@ from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from .. import __version__
 from ..config import Instance
-from ..discovery import creation_flags
+from ..discovery import creation_flags, profile_environment
 from . import DriverError, Emit
 
 
 class CodexRPC:
-    def __init__(self, spec: Instance, notify: Any) -> None:
+    def __init__(self, spec: Instance, notify: Any, *, prepare_daemon: bool = True) -> None:
         self.spec, self.notify = spec, notify
+        self.prepare_daemon = prepare_daemon
         self.ws: ClientConnection | None = None
         self.proxy: asyncio.subprocess.Process | None = None
         self.reader: asyncio.Task[None] | None = None
@@ -40,8 +41,54 @@ class CodexRPC:
 
             self.spec = refresh(self.spec)
         if self.spec.endpoint:
-            self.ws = await connect(self.spec.endpoint, max_size=None, proxy=None)
+            try:
+                self.ws = await connect(self.spec.endpoint, max_size=None, proxy=None)
+            except (InvalidHandshake, OSError) as exc:
+                raise DriverError(
+                    "native_owner_unavailable", "Cannot connect to the selected owner"
+                ) from exc
         else:
+            environment = profile_environment(self.spec, "CODEX_HOME")
+            start_failure: DriverError | None = None
+            if self.prepare_daemon and not self.spec.socket:
+                try:
+                    launch = await asyncio.create_subprocess_exec(
+                        self.spec.command,
+                        *self.spec.args,
+                        "app-server",
+                        "daemon",
+                        "start",
+                        env=environment,
+                        cwd=str(Path.home()),
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        creationflags=creation_flags,
+                    )
+                except FileNotFoundError as exc:
+                    raise DriverError(
+                        "native_not_installed", "Selected Codex program is missing"
+                    ) from exc
+                except OSError as exc:
+                    raise DriverError(
+                        "native_daemon_start_failed", "Could not start the selected Codex service"
+                    ) from exc
+                try:
+                    status = await launch.wait()
+                except BaseException:
+                    if launch.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            launch.terminate()
+                    await launch.wait()
+                    raise
+                if status:
+                    start_failure = DriverError(
+                        "native_daemon_start_failed",
+                        "Could not start the selected Codex service",
+                        {"exit_code": status},
+                    )
+            # An unavailable lifecycle command need not prevent connecting an
+            # already-running owner through this same profile's existing proxy.
             # socketpair is private to this process. No listening TCP endpoint is
             # exposed. websockets owns the handshake, masking, control frames,
             # fragmentation and close; official proxy alone owns daemon transport.
@@ -50,16 +97,8 @@ class CodexRPC:
             relay.setblocking(False)
             try:
                 proxy_args = ["app-server", "proxy"]
-                environment = self.spec.environment()
                 # Preserve the selected native profile/owner when its original
                 # configuration used paths relative to the default task directory.
-                if (
-                    environment.get("CODEX_HOME")
-                    and not Path(environment["CODEX_HOME"]).is_absolute()
-                ):
-                    environment["CODEX_HOME"] = str(
-                        (Path(self.spec.cwd) / environment["CODEX_HOME"]).resolve()
-                    )
                 if self.spec.socket:
                     owner_socket = Path(self.spec.socket)
                     if not owner_socket.is_absolute():
@@ -83,6 +122,20 @@ class CodexRPC:
                     asyncio.create_task(self._copy(self.proxy.stdout, self.pipe)),
                 ]
                 self.ws = await connect("ws://localhost/", sock=client, max_size=None, proxy=None)
+            except FileNotFoundError as exc:
+                client.close()
+                relay.close()
+                raise DriverError(
+                    "native_not_installed", "Selected Codex program is missing"
+                ) from exc
+            except (InvalidHandshake, OSError) as exc:
+                client.close()
+                relay.close()
+                if start_failure is not None:
+                    raise start_failure from exc
+                raise DriverError(
+                    "native_owner_unavailable", "Cannot connect to the selected owner"
+                ) from exc
             except BaseException:
                 client.close()
                 relay.close()
@@ -325,6 +378,7 @@ class CodexDriver:
     async def _serve(self) -> None:
         assert self.ready is not None
         while True:
+            failure: Exception | None = None
             try:
                 await self.rpc.start()
                 if not self.ready.done():
@@ -336,13 +390,26 @@ class CodexDriver:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await self.emit(
-                    "connection", {"status": "unavailable", "error_type": type(exc).__name__}
-                )
+                if not self.ready.done():
+                    failure = exc
+                else:
+                    await self.emit(
+                        "connection",
+                        {
+                            "status": "unavailable",
+                            "reason": exc.code
+                            if isinstance(exc, DriverError)
+                            else type(exc).__name__,
+                        },
+                    )
             finally:
                 await self.rpc.stop()
+            if failure is not None:
+                if not self.ready.done():
+                    self.ready.set_exception(failure)
+                return
             await asyncio.sleep(1)
-            self.rpc = CodexRPC(self.spec, self._notification)
+            self.rpc = CodexRPC(self.spec, self._notification, prepare_daemon=False)
 
     async def stop(self) -> None:
         self.rpc.stopping = True

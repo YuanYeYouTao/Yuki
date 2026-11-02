@@ -11,6 +11,7 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from .config import private_path
 
@@ -26,13 +27,10 @@ else:
         raise OSError("POSIX user service requested on Windows")
 
 
-def windows_process_handle(path: Path) -> object | None:
-    """Wait handle for the process owning this installation's existing lock."""
+def windows_lock_owner(path: Path) -> int | None:
     if sys.platform != "win32" or not path.exists():
         return None
-    import ctypes
     import msvcrt
-    from ctypes import wintypes
 
     with path.open("r+b") as stream:
         try:
@@ -43,13 +41,73 @@ def windows_process_handle(path: Path) -> object | None:
         else:
             msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             return None
-    if not pid:
-        return None
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    return int(pid) if pid else None
+
+
+def windows_open_process(pid: int) -> object:
+    import ctypes
+    from ctypes import wintypes
+
+    # Non-Windows typeshed omits the API used by this Windows-only helper.
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
-    handle = kernel.OpenProcess(0x00100000, False, int(pid))
-    return handle or None
+    handle = kernel.OpenProcess(0x00100000, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined, unused-ignore]
+    return handle
+
+
+def windows_close_process(handle: object) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    if not kernel.CloseHandle(handle):
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined, unused-ignore]
+
+
+def windows_parent_process(pid: int) -> int | None:
+    result = run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference='Stop'; "
+            f"$p=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {pid}'; "
+            "if ($null -ne $p) { [Console]::Write([uint32]$p.ParentProcessId) }",
+        ]
+    )
+    parent = result.stdout.strip()
+    return int(parent) if parent else None
+
+
+def windows_process_handle(path: Path, task_pids: list[int]) -> object | None:
+    """Wait only for the lock owner of this task, including its venv child."""
+    if not task_pids:
+        return None
+    owner = windows_lock_owner(path)
+    if owner is None:
+        return None
+    # Hold the process identity while walking its parent chain.
+    handle = windows_open_process(owner)
+    matched = False
+    try:
+        current: int | None = owner
+        visited = set()
+        while current and current not in visited:
+            if current in task_pids:
+                matched = True
+                return handle
+            visited.add(current)
+            current = windows_parent_process(current)
+        return None
+    finally:
+        if not matched:
+            windows_close_process(handle)
 
 
 def wait_windows_process(handle: object | None) -> None:
@@ -61,13 +119,11 @@ def wait_windows_process(handle: object | None) -> None:
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel.WaitForSingleObject.restype = wintypes.DWORD
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
     try:
         if kernel.WaitForSingleObject(handle, 0xFFFFFFFF) == 0xFFFFFFFF:
             raise ctypes.WinError(ctypes.get_last_error())
     finally:
-        kernel.CloseHandle(handle)
+        windows_close_process(handle)
 
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -235,9 +291,19 @@ class UserService:
 
     def stop(self) -> str:
         if self.platform == "win32":
-            handle = windows_process_handle(self.data / "connector.lock")
-            result = run(["schtasks", "/End", "/TN", self.name], check=False)
-            wait_windows_process(handle)
+            actual = self._windows_state()
+            if not actual["installed"] or not actual["running"]:
+                return ""
+            pids = cast(list[int], actual.get("pids", []))
+            handle = windows_process_handle(self.data / "connector.lock", pids)
+            try:
+                result = run(["schtasks", "/End", "/TN", self.name])
+            except BaseException:
+                if handle is not None:
+                    windows_close_process(handle)
+                raise
+            if handle is not None:
+                wait_windows_process(handle)
             return result.stdout
         if self.platform == "darwin":
             return run(["launchctl", "bootout", f"gui/{user_id()}/{self.name}"], check=False).stdout
@@ -250,30 +316,39 @@ class UserService:
             return run(["launchctl", "print", f"gui/{user_id()}/{self.name}"], check=False).stdout
         return run(["systemctl", "--user", "status", self.name, "--no-pager"], check=False).stdout
 
+    def _windows_state(self) -> dict[str, object]:
+        result = run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+                "$ErrorActionPreference='Stop'; "
+                "$s=New-Object -ComObject Schedule.Service; $s.Connect(); "
+                "$t=@($s.GetFolder('\\').GetTasks(1) "
+                f"| Where-Object {{$_.Name -eq '{self.name}'}}); "
+                "$state=if ($t.Count -eq 0) { [PSCustomObject]@{installed=$false;running=$false} } "
+                "else { "
+                f"$g=Get-ScheduledTask -TaskPath '\\' -TaskName '{self.name}' -ErrorAction Stop; "
+                "$p=@($t[0].GetInstances(0) | ForEach-Object {[int]$_.EnginePID}); "
+                "[PSCustomObject]@{installed=$true;running=($g.State -eq 'Running');"
+                "executable=$g.Actions[0].Execute;argumentLine=$g.Actions[0].Arguments;pids=$p} "
+                "}; $state | ConvertTo-Json -Compress",
+            ]
+        )
+        return cast(dict[str, object], json.loads(result.stdout))
+
     def state(self) -> dict[str, object]:
+        if self.platform == "win32":
+            task_state = self._windows_state()
+            task_state.pop("pids", None)
+            return task_state
         installed = self.artifact.exists()
         if not installed:
             return {"installed": False, "running": False}
-        if self.platform == "win32":
-            result = run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
-                    f"$t=Get-ScheduledTask -TaskName '{self.name}' -ErrorAction Stop; "
-                    "[PSCustomObject]@{running=($t.State -eq 'Running');"
-                    "executable=$t.Actions[0].Execute;argumentLine=$t.Actions[0].Arguments}"
-                    " | ConvertTo-Json -Compress",
-                ],
-                check=False,
-            )
-            if result.returncode == 0:
-                actual = json.loads(result.stdout)
-                return {"installed": True, **actual}
-            running = None
-        elif self.platform == "darwin":
+        running: bool | None
+        if self.platform == "darwin":
             result = run(["launchctl", "print", f"gui/{user_id()}/{self.name}"], check=False)
             running = "state = running" in result.stdout if result.returncode == 0 else False
             actual = re.search(r"^\s*program = (.+)$", result.stdout, re.MULTILINE)
@@ -299,10 +374,14 @@ class UserService:
         return {"installed": True, "running": running}
 
     def uninstall(self) -> None:
-        self.stop()
         if self.platform == "win32":
-            run(["schtasks", "/Delete", "/TN", self.name, "/F"])
-        elif self.platform != "darwin":
+            if self._windows_state()["installed"]:
+                self.stop()
+                run(["schtasks", "/Delete", "/TN", self.name, "/F"])
+        elif self.platform == "darwin":
+            self.stop()
+        else:
+            self.stop()
             run(["systemctl", "--user", "disable", self.name])
         self.artifact.unlink(missing_ok=True)
         if self.platform not in {"darwin", "win32"}:

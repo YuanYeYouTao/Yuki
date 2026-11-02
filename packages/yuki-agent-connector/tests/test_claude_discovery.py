@@ -179,3 +179,6 @@ def test_all_original_sources_precede_added_npm_candidates(
         assert discovery.refresh(original) == original
     assert found[2]["source"] == f"claude-npm:{extra_package}"
     assert found[2]["command"] == str(extra)
+    # The selected path is still the source even when the caller's PATH changes.
+    monkeypatch.setenv("PATH", str(extra_prefix))
+    assert [discovery.refresh(original) for original in originals] == originals

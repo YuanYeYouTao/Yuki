@@ -21,6 +21,7 @@ from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
     AgentRepository,
+    CatalogSuperseded,
     encode,
     session_observation,
 )
@@ -82,10 +83,17 @@ class ExternalAgentService:
             raise ValueError("unsupported_connector_protocol")
         if hello.get("device_id", device_id) != device_id:
             raise ValueError("external_agent_device_mismatch")
-        await self.update_catalog(
-            device_id, connection, hello["instances"], hello.get("device_capabilities", {})
-        )
+        async with self.database.read_session() as session:
+            await self.identity.require_device(session, device_id)
         await self.connections.attach(connection)
+        if not await self.update_catalog(
+            device_id,
+            connection,
+            hello["instances"],
+            hello.get("device_capabilities", {}),
+            synchronize=True,
+        ):
+            return
         self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
 
@@ -100,22 +108,37 @@ class ExternalAgentService:
         connection: DeviceConnection,
         instances: list[dict[str, Any]],
         device_capabilities: dict[str, Any] | None = None,
-    ) -> None:
-        await self.repository.register(device_id, instances)
+        *,
+        synchronize: bool = False,
+    ) -> bool:
+        if not self.connections.current(connection):
+            return False
+        try:
+            await self.repository.register(
+                device_id,
+                instances,
+                current=lambda: self.connections.current(connection),
+                synchronize=synchronize,
+            )
+        except CatalogSuperseded:
+            return False
+        if not self.connections.current(connection):
+            return False
         connection.instances = {
             item["id"] for item in instances if item.get("status") != "unavailable"
         }
         if device_capabilities is not None:
             connection.device_capabilities = device_capabilities
+        return True
 
     async def _connection(
-        self, instance: AgentInstanceModel, *, action: str | None = None
+        self, instance: AgentInstanceModel, *, original: bool = False
     ) -> DeviceConnection:
         # Recheck the real grant for every native access, including an already-open WSS.
         async with self.database.read_session() as session:
             await self.identity.require_device(session, instance.device_id)
         connection = self.connections.get(instance.device_id)
-        if action != "detach" and instance.local_id not in connection.instances:
+        if not original and instance.local_id not in connection.instances:
             raise DeviceOffline("instance_unavailable")
         return connection
 
@@ -167,8 +190,15 @@ class ExternalAgentService:
                 if view.get("pending")
                 else None
             )
-        if instance is not None and not self.connections.online(instance.device_id):
-            return self._unavailable_view(view, "device_offline")
+            if instance is not None:
+                try:
+                    await self.identity.require_device(reader, instance.device_id)
+                except ClientError as error:
+                    return self._unavailable_view(view, str(error))
+                if not self.connections.online(instance.device_id):
+                    return self._unavailable_view(view, "device_offline")
+                if instance.local_id not in self.connections.get(instance.device_id).instances:
+                    return self._unavailable_view(view, "instance_unavailable", device_online=True)
         return view
 
     @staticmethod
@@ -248,7 +278,7 @@ class ExternalAgentService:
             if view["pending"]:
                 instance = await self.repository.instance(operation.instance_id, actor)
                 try:
-                    connection = await self._connection(instance)
+                    connection = await self._connection(instance, original=True)
                 except (DeviceOffline, ClientError) as error:
                     view = self._unavailable_view(view, str(error))
                 else:
@@ -481,10 +511,22 @@ class ExternalAgentService:
                 "operation_id_required",
                 "respond/detach 需要原 operation_id 或 run_id；execution_id 不能替代。",
             )
+        original_control = owned is not None and action in {"detach", "cancel", "steer", "respond"}
         try:
-            connection = await self._connection(instance, action=action)
+            connection = await self._connection(instance, original=original_control)
         except DeviceOffline:
             return {"error": "device_offline", "executed": False, "pending": False}
+        target = owned
+        if target is None and execution is not None and action in {"cancel", "steer"}:
+            matches = await self.repository.execution_operations(
+                instance.id, execution.session_id, execution.native_id, actor
+            )
+            if len(matches) > 1:
+                raise ExternalAgentArgumentError(
+                    "external_agent_execution_ambiguous",
+                    "该 execution_id 对应多个原操作，请提供 operation_id 或 run_id。",
+                )
+            target = matches[0] if matches else None
         arguments = {
             key: value
             for key, value in args.items()
@@ -510,8 +552,8 @@ class ExternalAgentService:
         )
         if execution is not None:
             native_execution = execution.native_id
-        if owned is not None:
-            arguments["operation_id"] = owned.id
+        if target is not None:
+            arguments["operation_id"] = target.id
         if action == "steer":
             arguments["expected_execution_id"] = native_execution
         if action == "respond":
@@ -543,8 +585,8 @@ class ExternalAgentService:
             arguments["permission_id"] = native_question
             arguments["native_request_id"] = native_question
             arguments["connection_id"] = event_data["payload"].get("connection_id")
-        if action == "cancel" and owned is not None:
-            queued = json.loads(owned.result_json or "{}").get("queued_submission_id")
+        if action == "cancel" and target is not None:
+            queued = json.loads(target.result_json or "{}").get("queued_submission_id")
             if queued is not None:
                 arguments["queued_submission_id"] = queued
         command = {
@@ -594,7 +636,7 @@ class ExternalAgentService:
                     raise
             try:
                 # A queued writer may outlive the authenticated socket snapshot.
-                connection = await self._connection(instance, action=action)
+                connection = await self._connection(instance, original=original_control)
             except (DeviceOffline, ClientError):
                 operation = await self.repository.response(
                     operation.id,
@@ -611,8 +653,8 @@ class ExternalAgentService:
             except (DeviceOffline, OSError):
                 return {**await self._view(operation), "uncertain": True}
             operation = await self.repository.response(operation.id, result)
-            if owned is not None:
-                await self._control_result(owned, action, result)
+            if target is not None:
+                await self._control_result(target, action, result)
         return await self._view(operation)
 
     async def _control_result(
@@ -726,7 +768,7 @@ class ExternalAgentService:
                 action = "cancel"
             try:
                 instance = await self.repository.instance(row.instance_id, row.actor_person_id)
-                connection = await self._connection(instance, action=action)
+                connection = await self._connection(instance, original=True)
             except (DeviceOffline, ClientError):
                 results.append({"operation_id": row.id, "status": "unknown", "pending": True})
                 continue

@@ -5,6 +5,8 @@ import json
 import shlex
 import sys
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from tests.integration.test_external_agent_bridge import bridge as bridge
 from websockets.asyncio.client import connect
@@ -13,6 +15,7 @@ from yuki_agent_connector.config import Config
 from yuki_agent_connector.connector import Connector
 from yuki_agent_connector.journal import Journal
 
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.sandbox.client import SandboxClient
 
 
@@ -176,6 +179,72 @@ async def test_real_connector_terminal_http_incremental_completion_and_cancel(
                 "SELECT COUNT(*) FROM operations WHERE json_extract(command,'$.action')='cancel'"
             ).fetchone()[0]
             == 1
+        )
+        async with asyncio.timeout(8):
+            while connector.journal.next_event() is not None:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+
+        # Revocation removes dispatch authority, not the original server-held
+        # terminal history. Output only on the computer is not reconstructed.
+        principal = await bridge.chat.authenticate(bridge.chat_device["token"])
+        revoke_id = str(uuid4())
+        await bridge.chat.revoke(principal, device_id, revoke_id)
+        history = await bridge.http.get("/agents/v1/terminals", headers=bridge.headers)
+        assert history.status_code == 200, history.text
+        assert {item["run_id"] for item in history.json()["items"]} == {run_id, active["run_id"]}
+        selected_history = await bridge.http.get(
+            "/agents/v1/terminals", params={"device_id": device_id}, headers=bridge.headers
+        )
+        assert selected_history.status_code == 200, selected_history.text
+        assert {item["run_id"] for item in selected_history.json()["items"]} == {
+            run_id,
+            active["run_id"],
+        }
+        original = await bridge.http.get(f"/agents/v1/terminals/{run_id}", headers=bridge.headers)
+        assert original.status_code == 200, original.text
+        assert original.json()["request_id"] == "real-local-shell"
+        assert original.json()["run_id"] == run_id
+        assert original.json()["status"] == "succeeded" and original.json()["exit_code"] == 0
+        assert original.json()["output_unavailable"] is True
+        assert not original.json().get("output")
+        blocked = await bridge.http.post(
+            f"/agents/v1/terminals/{run_id}/control",
+            json={"request_id": "revoked-control", "action": "cancel"},
+            headers=bridge.headers,
+        )
+        assert blocked.status_code == 401
+
+        other_person = str(uuid4())
+        now = datetime.now(UTC)
+        async with bridge.database.immediate_session() as writer:
+            writer.add(
+                CanonicalPersonModel(
+                    id=other_person, display_name="Other", created_at=now, updated_at=now
+                )
+            )
+        code = await bridge.chat.issue_for_operator(other_person, str(uuid4()), str(uuid4()))
+        other_chat = await bridge.chat.pair(code["code"], "Other person's chat")
+        other = await bridge.http.get(
+            f"/agents/v1/terminals/{run_id}",
+            headers={"Authorization": f"Bearer {other_chat['token']}"},
+        )
+        assert other.status_code == 404
+        (tmp_path / "terminal-history.json").write_text(
+            json.dumps(
+                {
+                    "device_id": device_id,
+                    "person_id": bridge.env.person,
+                    "request_id": "real-local-shell",
+                    "run_id": run_id,
+                    "revoke_request_id": revoke_id,
+                    "history": original.json(),
+                    "other_person_status": other.status_code,
+                    "revoked_control_status": blocked.status_code,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
         )
 
 

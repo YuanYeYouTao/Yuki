@@ -83,6 +83,8 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         return ClaudeSDKClient(options=options, transport=transport)
 
     monkeypatch.setattr(module, "ClaudeSDKClient", factory)
+    monkeypatch.setenv("CLAUDECODE", "inherited-parent")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "inherited-entrypoint")
     events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
 
     async def emit(kind: str, payload: dict[str, Any]) -> None:
@@ -95,7 +97,7 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
             "Claude",
             sys.executable,
             cwd=str(tmp_path),
-            env={"CLAUDE_CONFIG_DIR": str(tmp_path / "native-profile")},
+            env={"CLAUDE_CONFIG_DIR": "native-profile"},
         ),
         emit,
     )
@@ -131,6 +133,9 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         assert options.setting_sources == ["user", "project", "local"]
         assert options.cli_path == sys.executable
         assert options.cwd == str(tmp_path / "selected-project")
+        assert options.env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "native-profile")
+        assert "CLAUDECODE" not in options.env
+        assert "CLAUDE_CODE_ENTRYPOINT" not in options.env
         assert options.fork_session is False and options.max_turns is None
         built = SubprocessCLITransport(prompt="", options=options)._build_command()
         assert built[0] == sys.executable
@@ -193,6 +198,42 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         kind, completed = await asyncio.wait_for(events.get(), 3)
         assert kind == "completed" and completed["execution_id"] == execution_id
         assert completed["payload"]["usage"]["cache_read_input_tokens"] == 8
+        kind, finished = await asyncio.wait_for(events.get(), 3)
+        assert kind == "work_finished" and finished["operation_id"] == "original"
+        second = await asyncio.wait_for(
+            driver.execute(
+                {
+                    "id": "detached-work",
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "continue"},
+                }
+            ),
+            3,
+        )
+        await driver.execute(
+            {
+                "id": "detach-work",
+                "action": "detach",
+                "session_id": session_id,
+                "execution_id": second["execution_id"],
+                "arguments": {"operation_id": "detached-work"},
+            }
+        )
+        await transport.incoming.put(
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": session_id,
+                "result": "done",
+            }
+        )
+        kind, finished = await asyncio.wait_for(events.get(), 3)
+        assert kind == "work_finished" and finished["operation_id"] == "detached-work"
         await driver.execute(
             {"id": "watch", "action": "watch", "session_id": session_id, "arguments": {}}
         )
@@ -217,6 +258,15 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
     async def emit(kind: str, payload: dict[str, Any]) -> None:
         pass
 
+    identities = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]
+    for index, identity in enumerate(identities):
+        projects = tmp_path / f"profile-{index}" / "projects" / "fixture-project"
+        projects.mkdir(parents=True)
+        (projects / f"{identity}.jsonl").write_text(
+            json.dumps({"customTitle": f"profile-{index}", "cwd": str(tmp_path)}) + "\n",
+            encoding="utf-8",
+        )
+
     drivers = [
         module.ClaudeDriver(
             Instance(
@@ -225,7 +275,7 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
                 "Claude",
                 sys.executable,
                 cwd=str(tmp_path),
-                env={"CLAUDE_CONFIG_DIR": str(tmp_path / f"profile-{index}")},
+                env={"CLAUDE_CONFIG_DIR": f"profile-{index}"},
             ),
             emit,
         )
@@ -234,7 +284,10 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
     results = await asyncio.gather(
         *(driver.execute({"id": "query", "action": "list", "arguments": {}}) for driver in drivers)
     )
-    assert all(result["sessions"] == [] and result["next_cursor"] is None for result in results)
+    assert [[item["id"] for item in result["sessions"]] for result in results] == [
+        [identity] for identity in identities
+    ]
+    assert all(result["next_cursor"] is None for result in results)
     assert all(result["source_scope"] == "configured_profile" for result in results)
     assert all(not driver.sessions for driver in drivers)
 

@@ -27,6 +27,7 @@ from claude_agent_sdk import (
 )
 
 from ..config import Instance
+from ..discovery import profile_environment, refresh
 from . import DriverError, Emit
 
 
@@ -38,6 +39,7 @@ class ManagedSession:
     stopped: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
     operation: str | None = None
+    active_operation: str | None = None
     execution: str | None = None
     active: bool = False
     status: str = "unknown"
@@ -65,6 +67,8 @@ class ClaudeDriver:
         ] = {}
 
     async def start(self) -> None:
+        if self.spec.installation:
+            self.spec = refresh(self.spec)
         executable = shutil.which(self.spec.command) or self.spec.command
         if not await asyncio.to_thread(Path(executable).is_file):
             raise DriverError("cli_not_found", "Configure the installed Claude executable")
@@ -195,10 +199,14 @@ class ClaudeDriver:
         ) -> PermissionResultAllow | PermissionResultDeny:
             return await self._permission(session_id, tool, arguments, context)
 
+        environment = dict(self.spec.env)
+        profile = profile_environment(self.spec, "CLAUDE_CONFIG_DIR").get("CLAUDE_CONFIG_DIR")
+        if profile is not None:
+            environment["CLAUDE_CONFIG_DIR"] = profile
         options = ClaudeAgentOptions(
             cli_path=self.spec.command,
             cwd=cwd,
-            env=self.spec.env,
+            env=environment,
             system_prompt={"type": "preset", "preset": "claude_code"},
             tools={"type": "preset", "preset": "claude_code"},
             setting_sources=["user", "project", "local"],
@@ -283,6 +291,8 @@ class ClaudeDriver:
                 if session.admitted and not session.admitted.done():
                     session.admitted.set_result(True)
             if isinstance(message, ResultMessage):
+                completed_operation = session.active_operation
+                session.active_operation = None
                 session.active = False
                 session.status = "failed" if message.is_error else "completed"
                 await self._publish(
@@ -298,10 +308,13 @@ class ClaudeDriver:
                         "total_cost_usd": message.total_cost_usd,
                     },
                 )
-                session.operation = None
+                if session.operation == completed_operation:
+                    session.operation = None
                 session.watches = {
                     key: value for key, value in session.watches.items() if value is None
                 }
+                if completed_operation is not None:
+                    await self.emit("work_finished", {"operation_id": completed_operation})
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
                     # Only completed assistant/tool blocks, never thinking/deltas.
@@ -322,7 +335,7 @@ class ClaudeDriver:
             *(["-I", "-B"] if sys.flags.isolated else []),
             "-m",
             "yuki_agent_connector.claude_inspect",
-            env=self.spec.environment(),
+            env=profile_environment(self.spec, "CLAUDE_CONFIG_DIR"),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -385,6 +398,7 @@ class ClaudeDriver:
             if session.active:
                 raise DriverError("conflict", "Original Claude execution is already active")
             session.operation = command["id"]
+            session.active_operation = command["id"]
             session.execution = str(uuid4())
             session.active, session.status = True, "running"
             session.admitted = asyncio.get_running_loop().create_future()

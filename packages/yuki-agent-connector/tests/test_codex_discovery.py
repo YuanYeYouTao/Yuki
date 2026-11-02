@@ -207,4 +207,9 @@ def test_appx_npm_and_daemon_are_distinct_available_sources(
         f"npm:x86_64-pc-windows-msvc:{package}",
         f"codex-package:{manifest}",
     }
+    assert {item["label"] for item in found} == {
+        "Codex（桌面應用）",
+        "Codex（背景服務安裝包）",
+        "Codex（npm）",
+    }
     assert len({item["id"] for item in found}) == 3

@@ -262,13 +262,14 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                     instances = message.get("instances")
                     if not isinstance(instances, list):
                         raise ValueError("invalid_connector_catalog")
-                    await service.update_catalog(
+                    current = await service.update_catalog(
                         principal.device_id,
                         connection,
                         instances,
                         message.get("device_capabilities", {}),
                     )
-                    await connection.send({"type": "catalog_ack"})
+                    if current:
+                        await connection.send({"type": "catalog_ack"})
                 else:
                     # Acknowledge each original durable event
                     # only after its complete transaction. Explicit repository lists

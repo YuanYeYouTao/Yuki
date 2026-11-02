@@ -11,9 +11,13 @@
 
 `GET /agents/v1/devices`、`/agents/v1/instances/{instance_id}/sessions?cursor=...`、`/agents/v1/operations?work_id=...&cursor=...&limit=...` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。设备目录包含尚无实例的本人 connector 设备，online 仅来自当前服务端连接；实例 `local_id` 仅用于本地配置匹配，控制仍使用服务端内部 `id`。会话目录 cursor 沿该实例原 native 分页，查询不启动任务。操作列表按原 created_at/id 分页，cursor 为上一页原 operation ID，默认每页 50 条，next_cursor 为 null 表示当前已读完；不另建持久游标。操作列表复用原持久回执和离线 unknown 投影，不把 accepted 当作已完成。新控制沿 Main 固定 `external_agent` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
 
+Connector 的 hello 与 catalog 都是当前完整实例清单：缺席的实例退出当前目录，暂时不可用的实例仍在目录，断线不等于删除；保留原实例 ID、操作和事件，旧连接不能覆盖当前连接的清单。设备撤销后退出当前目录，但本人仍可读取服务器已存的原操作和终端历史；新的远程效果仍要求有效设备授权。
+
 设备连接使用协议 `4`。完整访问的授权开关只保存在本机 Connector 配置，默认关闭；云端目录中的 `device_capabilities` 是当前连接的能力事实，不充当派发授权。`GET /agents/v1/devices/{device_id}` 主动刷新本机当前能力，包含本机实际系统与 Shell 信息；不宣称随附浏览器 CLI 或代替外部工具查浏览器状态。无 Agent instance 的电脑也可以运行 Shell。原 Agent-only 授权和整设备撤销仍各认原含义。
 
 `GET /agents/v1/terminals?device_id=...&cursor=...&limit=...` 返回本人原本机终端调用，按原 request ID 续页；`GET /agents/v1/terminals/{run_id}?cursor=...` 读取原设备的增量字节游标与稳定 completion。原生操作列表另支持 `device_id`，过滤原 instance 的设备，不以当前在线实例裁掉旧历史。`POST /agents/v1/terminals/{run_id}/control` 以原 `request_id` 提交 cancel；丢失返回时用 `GET /agents/v1/terminals/{run_id}/controls/{request_id}` 查同一控制回执，不重新取消。未知、原控制接纳和原进程退出分别呈现。关闭完整访问后，原查询和定向取消仍可使用；退出 App 不等于停止独立 Connector。
+
+撤销设备授权后无法再读取该设备上的实时字节或下发控制；已保存在服务端的完成回执仍可按原 run 查询，未确认结果保持 unknown。
 
 服务端沿原 `SandboxTaskRunModel.source_json` 保存设备目标及真实来源，复用已有 completion/continuation；本批不新增主库迁移或另一套任务表。字节传输复用同一设备连接及原 Connector journal，内部帧不作为模型文本。配套安装、浏览器授权和完整访问语义见[本机连接器说明](../operations/local-agent-connector.zh-CN.md)。
 
@@ -35,7 +39,7 @@
 
 Bot 启动仍恢复电脑观察，以便没有桌面客户端时也能按当前撤权归还旧 human 租约。协议明确不支持或宿主没有 Unix transport 时停止无用重连，实际电脑访问可重新启动；暂时网络失败保原恢复路径。观察任务的启动与关闭共用同一实例生命周期锁。授权提示过载丢失时，先关画面输入，再读一次当前授权并沿原 release key 归还，不依赖下一条通知，也不重放原控制命令。
 
-桌面只管理现有 NativeConnector 连接，云端通过固定 `external_agent` 操作本人明确授权的 Codex、Claude 实例。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
+桌面只管理现有 NativeConnector 连接，云端通过固定 `external_agent` 操作本人明确授权的 Codex、Claude Code 或 ACP 实例。配置编辑或删除沿原实例更新当前目录，不重启无关 Agent、Shell 或文件传输；原操作与执行回执保留。当前设备仍获授权时，显式原操作的查证和控制沿原 owner；新任务仍核当前目录，撤销设备后不再产生远程效果。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
 
 Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_device` 活执行功能。迁移 0152 的原三张表、原操作 UUID、调用键和历史字节继续保留；旧 Work 只按原 Work、调用键和 `local_device:<op UUID>` 读取原回执，不创建 Native 操作、不重发或重做。已确认效果保持原事实，pending/unknown 不转成成功，也不恢复派发资格。
 
@@ -269,9 +273,9 @@ watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人
 重传前检查本地原件，下载核对收到字节的原版本摘要。
 
 本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
-个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。ACP 方向 A 的接入见下节；
-方向 B 已有通过 `external_agent` 访问服务器持久环境内 Agent 的实现，见[主 Agent](main-agent-runtime.md#预算等待与异常)。
-服务器访问用户本机原生 Agent 的设备通道、授权与生命周期解耦尚未实施，见[本机 Agent 任务书](Yuki-本机Agent接入与ACP统一重构任务书-2026-10-23.md)。
+ACP 方向 A 的接入见下节；服务器使用 `external_agent` 访问用户本机原生 Agent 时，
+沿现有个人设备授权与 `/agents/v1/connect`，保留原实例、执行和操作回执。
+部署与生命周期见[本机连接器](../operations/local-agent-connector.zh-CN.md)。
 
 App/ACP 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
 其他入口的等待不会因此被匹配，跨入口接续仍使用明确的 Work inputs 接口。

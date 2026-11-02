@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +58,10 @@ def session_observation(operation: AgentOperationModel) -> bool:
     )
 
 
+class CatalogSuperseded(Exception):
+    """The connection owning a prepared catalog was replaced before publication."""
+
+
 class AgentRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -89,7 +94,15 @@ class AgentRepository:
                     select(AgentInstanceModel, ClientDeviceModel)
                     .select_from(ClientDeviceModel)
                     .outerjoin(
-                        AgentInstanceModel, AgentInstanceModel.device_id == ClientDeviceModel.id
+                        AgentInstanceModel,
+                        and_(
+                            AgentInstanceModel.device_id == ClientDeviceModel.id,
+                            func.coalesce(
+                                func.json_extract(AgentInstanceModel.catalog_json, "$._configured"),
+                                1,
+                            )
+                            == 1,
+                        ),
                     )
                     .where(
                         person_family_condition(ClientDeviceModel.person_id, root),
@@ -100,7 +113,14 @@ class AgentRepository:
                 )
             ]
 
-    async def register(self, device_id: str, catalog: list[dict[str, Any]]) -> None:
+    async def register(
+        self,
+        device_id: str,
+        catalog: list[dict[str, Any]],
+        *,
+        current: Callable[[], bool] | None = None,
+        synchronize: bool = False,
+    ) -> None:
         # Only catalog changes write; connection activity and heartbeat remain in memory.
         prepared = {
             str(item["id"]): encode(
@@ -120,12 +140,17 @@ class AgentRepository:
                     select(AgentInstanceModel).where(AgentInstanceModel.device_id == device_id)
                 )
             }
-        changes = {key: value for key, value in prepared.items() if existing.get(key) != value}
-        if not changes:
+        changes = any(existing.get(key) != value for key, value in prepared.items()) or any(
+            key not in prepared and json.loads(value).get("_configured", True)
+            for key, value in existing.items()
+        )
+        if not changes and not synchronize:
             return
         async with self.database.immediate_session() as session:
             await self.identity.require_device(session, device_id)
-            for local_id, value in changes.items():
+            if current is not None and not current():
+                raise CatalogSuperseded
+            for local_id, value in prepared.items():
                 statement = insert(AgentInstanceModel).values(
                     id=instance_key(device_id, local_id),
                     device_id=device_id,
@@ -134,9 +159,30 @@ class AgentRepository:
                 )
                 await session.execute(
                     statement.on_conflict_do_update(
-                        index_elements=[AgentInstanceModel.id], set_={"catalog_json": value}
+                        index_elements=[AgentInstanceModel.id],
+                        set_={"catalog_json": value},
+                        where=AgentInstanceModel.catalog_json != value,
                     )
                 )
+            selected = func.json_each(encode(list(prepared))).table_valued("value")
+            await session.execute(
+                update(AgentInstanceModel)
+                .where(
+                    AgentInstanceModel.device_id == device_id,
+                    AgentInstanceModel.local_id.not_in(select(selected.c.value)),
+                    func.coalesce(
+                        func.json_extract(AgentInstanceModel.catalog_json, "$._configured"), 1
+                    )
+                    == 1,
+                )
+                .values(
+                    catalog_json=func.json_set(
+                        AgentInstanceModel.catalog_json, "$._configured", func.json("false")
+                    )
+                )
+            )
+            if current is not None and not current():
+                raise CatalogSuperseded
 
     async def native_session(self, identity: str, actor: str) -> AgentSessionModel:
         async with self.database.read_session() as session:
@@ -185,6 +231,33 @@ class AgentRepository:
                 raise ValueError("external_agent_not_found")
             await self.authorize(session, row.instance_id, actor)
             return row
+
+    async def execution_operations(
+        self, instance_id: str, session_id: str, native_id: str, actor: str
+    ) -> list[AgentOperationModel]:
+        async with self.database.read_session() as session:
+            await self.authorize(session, instance_id, actor)
+            return list(
+                await session.scalars(
+                    select(AgentOperationModel)
+                    .where(
+                        AgentOperationModel.instance_id == instance_id,
+                        AgentOperationModel.session_id == session_id,
+                        AgentOperationModel.native_execution_id == native_id,
+                        AgentOperationModel.action.in_(("prompt", "queue")),
+                        person_family_condition(AgentOperationModel.actor_person_id, actor),
+                        func.coalesce(
+                            func.json_extract(AgentOperationModel.result_json, "$.executed"), 1
+                        )
+                        != 0,
+                        func.coalesce(
+                            func.json_extract(AgentOperationModel.result_json, "$.admitted"), 1
+                        )
+                        != 0,
+                    )
+                    .limit(2)
+                )
+            )
 
     async def work_operation(
         self,

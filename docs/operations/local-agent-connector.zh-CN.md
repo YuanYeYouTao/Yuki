@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.2`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.3`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -46,7 +46,7 @@ yuki-agent-connector server --url https://yuki.example.ts.net
 
 保存保留原 device、token、instance、args、env、原生 owner、完整访问开关和服务来源，只供下次 Connector 启动使用，不启停服务。CLI 不连接目标或验证远端身份，需填写同一原 Yuki 的实际新地址；保存成功不证明新地址已连通。Desktop 的「設定 → 這台電腦」提供同一原连接器地址操作；「設定 → 連線」里的客户端地址独立保存，任一处改址都不自动修改另一处，也不要求两处使用相同 URL。
 
-需要立即应用新地址时，可明确关闭再开启「背景連接」，或沿下文用户服务命令停止再启动原服务。停止 Connector 可能取消它持有的本机 Shell，不能当作无影响的热迁移；Codex daemon 和其他原生 owner 仍按各自生命周期处理。保存时原服务停止就继续停止，原连接在线也不代表已经走新地址。
+需要立即应用新地址时，可在桌面明确停止后再启动电脑连接，或沿下文用户服务命令停止再启动原服务。停止 Connector 可能取消它持有的本机 Shell，不能当作无影响的热迁移；Codex daemon 和其他原生 owner 仍按各自生命周期处理。保存时原服务停止就继续停止，原连接在线也不代表已经走新地址。
 
 journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于同一设备的旧 `[url, device_id]` namespace，仅转换旧归属表示，原操作、事件、执行 ID 和回执继续使用；不同设备不能认领另一设备的 journal。改址不要求清 journal、清配置、重新配对或先完成所有任务。未知结果仍按原请求查证，不重新提交。另一台 Yuki 或独立设备仍使用各自安装及配对凭据；换线路不用于搬运不同服务器的授权或任务。
 
@@ -55,7 +55,7 @@ journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.4.1-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.4.3-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -101,7 +101,9 @@ yuki-agent-connector instance list
 yuki-agent-connector doctor
 ```
 
-Windows 的 `--command` 使用实际原生 `.exe` 路径；只有需要默认任务目录时才提供 `--cwd`。默认 Codex 通过官方 `app-server proxy` 连接当前 OS 用户／`CODEX_HOME` 对应的原 daemon；不自动更新或重启 daemon。proxy 从用户主目录启动，不依赖项目目录仍存在。旧配置中的相对 `CODEX_HOME` 和 `--socket` 按原实例目录解析，仅在本次子进程中派生绝对路径，原配置和原 owner 保留。已有会话按原 ID 恢复，沿其原生目录。明确选择其他 owner 时可配置 `--socket` 或 `--endpoint`，明确选择 profile 时使用 `--env CODEX_HOME=...`。
+Windows 的 `--command` 使用实际原生 `.exe` 路径；只有需要默认任务目录时才提供 `--cwd`。0.4.3 的默认 Codex 连接先调用所选安装支持的官方 daemon start，再经 `app-server proxy` 连接原 OS 用户／`CODEX_HOME` 的目标；已有原目标可用时复用，不把启动命令的退出码当成否定真实连接的门槛。后续断线恢复不重复启动准备，Yuki 不主动更新或重启 daemon。显式 `--socket` 或 `--endpoint` 只连接指定目标，不另起默认 daemon。proxy 从用户主目录启动，不依赖项目仍存在；相对 profile/socket 只在本次子进程中按原实例目录解析，原配置不改。已有会话按原 ID 与可确认的原来源恢复，不把另一 profile 的结果认作旧回执。
+
+桌面显示的 Codex 桌面应用、后台服务安装包、npm 是程序来源，不是三种连接模式或运行状态；来源相同也不能单凭名称证明当前账号/会话。Claude Code 的 npm 安装由连接器随附的 SDK 调用所选 CLI，不要求用户另装 SDK或预先打开窗口。三类 Agent 保各自原生协议，电脑在线、找到程序、原生认证和实际任务成功分别核对。
 
 Claude 使用已安装的真实 CLI：
 
@@ -116,16 +118,18 @@ yuki-agent-connector instance add --label "Claude" --driver claude --command /pa
 通用 ACP 使用明确安装的程序及参数：
 
 ```sh
-yuki-agent-connector instance add --label "ACP Agent" --driver acp --command /path/to/acp-agent --cwd /path/to/project --agent-arg=--stdio
+yuki-agent-connector instance add --label "ACP Agent" --driver acp --command /path/to/acp-agent --cwd /path/to/project
 ```
 
-文件与终端回调在这台电脑执行。各 Agent 的 list／load／resume／steer 等能力以实际协商为准，不支持时不暗中改成取消重启或新建会话。
+按该程序说明逐项添加`--agent-arg=...`，不统一补`--stdio`；桌面每行一个参数，空行也会传入，不需要时移除。文件与终端回调在这台电脑执行。各 Agent 的 list／load／resume／steer 等能力以实际协商为准，不支持时不暗中改成取消重启或新建会话。
 
-`doctor` 查询实际程序与原生目录，不发模型任务；ACP 检查可启动所选协议程序完成握手。它不证明模型额度、真实代码修改、审批或端到端委托已经验收。配置变更后重启连接器应用新实例清单。
+`doctor` 沿各驱动检查原生目标，不发模型任务；默认 Codex 会先准备其官方 daemon，ACP 可启动所选协议程序握手，Claude 用原CLI核认证状态。它不证明模型额度、实际执行或端到端委托已验收。Desktop 保存/删除后沿原设备状态通道刷新，0.4.3 按实例套用变化，不重启其他 Agent、Shell 或文件传输。独立 CLI 的文件变更在后续状态请求或重连时读取；旧运行版本由其原服务重新加载，桌面只报告尚未同步，不接管或自动重启它。
+
+`instance configure`通过JSON的`create:true`与原调用方分配的ID一次新增，编辑仅提交实际变化字段；未传值不重写原配置。`instance remove ID`移除本机条目及加载后的当前候选，不删除原设备、原生数据、任务回执或停止其他工作。设备安全页的“移除”复用原撤销授权并隐藏已撤销电脑，历史仍归原Person；设备撤销后不再发远程控制。
 
 Desktop 可以先登记原生安装并选择已有会话，不要求先选新项目。`instance configure` 的 JSON 和 `instance add` 都可省略 `cwd`：已有实例沿用原目录，新实例使用 `Instance` 原本的用户主目录默认值；只有显式选择目录才修改默认值。Claude／ACP 的会话目录仍按各自原生语义处理。登记和读取目录都不创建原生 thread。`status --json` 只读输出实际 `data_directory` 和安全元数据，不输出 token、env、owner endpoint 或 journal 正文。
 
-由发现候选登记的 Codex 按原安装来源跟随正常程序升级。0.3.4 的 `discover --instance ID --json` 只读解析该原实例当前的程序路径，返回 `{"instance_id":"原ID","command":"当前路径"}`，不启动原生程序、不改配置或 journal。编辑同一实例的名称或项目时也先解析原来源，再保存；原实例、环境、owner 与回执保留。用户明确换成手工绝对路径时按该路径配置；原来源消失时明确报错，不自动选择另一个 Codex。
+由发现候选登记的 Codex 按原安装来源跟随正常程序升级。`discover --instance ID --json`只读解析该原实例当前路径，不启动原生程序或改配置。只改名称不顺便换程序、profile或原请求来源；明确选择候选或手工路径时才更新该字段，原来源消失则报告事实，不自动选另一安装。
 
 `status --json` 的 `protocol` 是本机 Connector 协议，`GET /agents/v1/devices` 的 `connector_protocol` 是服务器接受的协议。版本不同时更新较旧的一端；服务端的 `unsupported_connector_protocol` 拒绝与撤权分别诊断，不改写原操作、原会话或登录。原生实例的 `status`／`error_type` 与 OS 服务是否运行、服务器设备是否在线是不同事实，不能互相代替。
 
