@@ -211,7 +211,7 @@ def test_user_service_install_lifecycle_keeps_native_and_journal(
         calls.append(command)
         output = '"user","S-1-5-21-1"' if command[0] == "whoami" else ""
         if command[0] == "powershell":
-            output = json.dumps({"running": True, "executable": sys.executable})
+            output = json.dumps({"installed": True, "running": True, "executable": sys.executable})
         elif "ActiveState" in command:
             output = f"ActiveState=active\nExecStart={{ path={sys.executable} ; }}"
         elif command[:2] == ["launchctl", "print"]:
@@ -258,3 +258,29 @@ def test_user_service_install_lifecycle_keeps_native_and_journal(
     assert (data / "journal.sqlite3").read_text() == "original local receipts"
     assert Config.load(data / "config.json").instances[0].id == "original"
     assert all(call[0] not in {"taskkill", "kill", "codex", "claude"} for call in calls)
+
+
+def test_windows_service_uses_task_state_and_does_not_wait_for_manual_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = service.UserService(tmp_path / "config.json", tmp_path, "win32")
+    configured.artifact.write_text("stale artifact")
+    calls: list[list[str]] = []
+
+    def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[0] == "powershell":
+            return subprocess.CompletedProcess(
+                command, 0, '{"installed":false,"running":false}', ""
+            )
+        return subprocess.CompletedProcess(command, 1, "", "not running")
+
+    monkeypatch.setattr(service, "run", run)
+    monkeypatch.setattr(
+        service, "windows_process_handle", lambda *args: pytest.fail("manual owner")
+    )
+    assert configured.state() == {"installed": False, "running": False}
+    configured.uninstall()
+    assert not configured.artifact.exists()
+    assert not any(call[:2] == ["schtasks", "/End"] for call in calls)
+    assert not any(call[:2] == ["schtasks", "/Delete"] for call in calls)

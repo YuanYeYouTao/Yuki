@@ -11,6 +11,7 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from .config import private_path
 
@@ -26,8 +27,8 @@ else:
         raise OSError("POSIX user service requested on Windows")
 
 
-def windows_process_handle(path: Path) -> object | None:
-    """Wait handle for the process owning this installation's existing lock."""
+def windows_process_handle(path: Path, task_pids: list[int]) -> object | None:
+    """Wait only when the installation lock matches a running task instance."""
     if sys.platform != "win32" or not path.exists():
         return None
     import ctypes
@@ -43,7 +44,7 @@ def windows_process_handle(path: Path) -> object | None:
         else:
             msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             return None
-    if not pid:
+    if not pid or int(pid) not in task_pids:
         return None
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -235,9 +236,14 @@ class UserService:
 
     def stop(self) -> str:
         if self.platform == "win32":
-            handle = windows_process_handle(self.data / "connector.lock")
-            result = run(["schtasks", "/End", "/TN", self.name], check=False)
-            wait_windows_process(handle)
+            actual = self._windows_state()
+            if not actual["installed"] or not actual["running"]:
+                return ""
+            result = run(["schtasks", "/End", "/TN", self.name])
+            pids = cast(list[int], actual.get("pids", []))
+            if pids:
+                handle = windows_process_handle(self.data / "connector.lock", pids)
+                wait_windows_process(handle)
             return result.stdout
         if self.platform == "darwin":
             return run(["launchctl", "bootout", f"gui/{user_id()}/{self.name}"], check=False).stdout
@@ -250,30 +256,39 @@ class UserService:
             return run(["launchctl", "print", f"gui/{user_id()}/{self.name}"], check=False).stdout
         return run(["systemctl", "--user", "status", self.name, "--no-pager"], check=False).stdout
 
+    def _windows_state(self) -> dict[str, object]:
+        result = run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+                "$ErrorActionPreference='Stop'; "
+                "$s=New-Object -ComObject Schedule.Service; $s.Connect(); "
+                "$t=@($s.GetFolder('\\').GetTasks(1) "
+                f"| Where-Object {{$_.Name -eq '{self.name}'}}); "
+                "$state=if ($t.Count -eq 0) { [PSCustomObject]@{installed=$false;running=$false} } "
+                "else { "
+                f"$g=Get-ScheduledTask -TaskPath '\\' -TaskName '{self.name}' -ErrorAction Stop; "
+                "$p=@($t[0].GetInstances(0) | ForEach-Object {[int]$_.EnginePID}); "
+                "[PSCustomObject]@{installed=$true;running=($g.State -eq 'Running');"
+                "executable=$g.Actions[0].Execute;argumentLine=$g.Actions[0].Arguments;pids=$p} "
+                "}; $state | ConvertTo-Json -Compress",
+            ]
+        )
+        return cast(dict[str, object], json.loads(result.stdout))
+
     def state(self) -> dict[str, object]:
+        if self.platform == "win32":
+            task_state = self._windows_state()
+            task_state.pop("pids", None)
+            return task_state
         installed = self.artifact.exists()
         if not installed:
             return {"installed": False, "running": False}
-        if self.platform == "win32":
-            result = run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
-                    f"$t=Get-ScheduledTask -TaskName '{self.name}' -ErrorAction Stop; "
-                    "[PSCustomObject]@{running=($t.State -eq 'Running');"
-                    "executable=$t.Actions[0].Execute;argumentLine=$t.Actions[0].Arguments}"
-                    " | ConvertTo-Json -Compress",
-                ],
-                check=False,
-            )
-            if result.returncode == 0:
-                actual = json.loads(result.stdout)
-                return {"installed": True, **actual}
-            running = None
-        elif self.platform == "darwin":
+        running: bool | None
+        if self.platform == "darwin":
             result = run(["launchctl", "print", f"gui/{user_id()}/{self.name}"], check=False)
             running = "state = running" in result.stdout if result.returncode == 0 else False
             actual = re.search(r"^\s*program = (.+)$", result.stdout, re.MULTILINE)
@@ -299,10 +314,14 @@ class UserService:
         return {"installed": True, "running": running}
 
     def uninstall(self) -> None:
-        self.stop()
         if self.platform == "win32":
-            run(["schtasks", "/Delete", "/TN", self.name, "/F"])
-        elif self.platform != "darwin":
+            if self._windows_state()["installed"]:
+                self.stop()
+                run(["schtasks", "/Delete", "/TN", self.name, "/F"])
+        elif self.platform == "darwin":
+            self.stop()
+        else:
+            self.stop()
             run(["systemctl", "--user", "disable", self.name])
         self.artifact.unlink(missing_ok=True)
         if self.platform not in {"darwin", "win32"}:

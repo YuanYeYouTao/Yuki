@@ -18,7 +18,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from . import PROTOCOL_VERSION
 from .computer import computer_status
-from .config import Config
+from .config import Config, Instance
 from .drivers import Driver, DriverError, make_driver
 from .files import FileTransfers
 from .journal import Journal
@@ -35,13 +35,17 @@ class Connector:
         self.config, self.journal = config, journal
         self.config_path = config_path
         self.drivers: dict[str, Driver] = {}
+        self.operations: dict[str, Driver] = {}
+        self.dispatching: set[str] = set()
+        self.detached_work: set[str] = set()
+        self.starting: set[int] = set()
         self.errors: dict[str, str] = {}
         self.stream: ClientConnection | None = None
         self.pending_events = asyncio.Event()
         self.tasks: set[asyncio.Task[None]] = set()
         self.stopped = asyncio.Event()
         self.catalog_changed = asyncio.Event()
-        self._startup: list[asyncio.Task[None]] = []
+        self._startup: set[asyncio.Task[None]] = set()
         self.files = FileTransfers(journal)
         self.terminal = LocalTerminal(
             journal.path.parent / "terminal", journal, self._terminal_event
@@ -51,15 +55,56 @@ class Connector:
         self.journal.append({"event_id": str(uuid4()), "kind": kind, **value})
         self.pending_events.set()
 
-    def refresh_access(self) -> None:
+    def refresh_config(self) -> None:
         if self.config_path is None:
             return
         configured = Config.load(self.config_path)
         if configured.device_id != self.config.device_id:
             raise ValueError("The active service belongs to its original device")
-        if configured.full_access != self.config.full_access:
-            self.config = replace(self.config, full_access=configured.full_access)
+        previous_access = self.config.full_access
+        previous = {item.id: item for item in self.config.instances}
+        current = {item.id: item for item in configured.instances}
+        changed = {
+            identity
+            for identity, spec in previous.items()
+            if identity not in current
+            or replace(spec, label=current[identity].label) != current[identity]
+        }
+        self.config = replace(
+            self.config, instances=configured.instances, full_access=configured.full_access
+        )
+        for identity in changed:
+            driver = self.drivers.pop(identity, None)
+            self.errors.pop(identity, None)
+            if driver is not None:
+                self._stop_if_unused(driver)
+        for identity, spec in current.items():
+            if identity not in previous or identity in changed:
+                self._start(spec)
+        if (
+            configured.instances != list(previous.values())
+            or configured.full_access != previous_access
+        ):
             self.catalog_changed.set()
+
+    def _stop_if_unused(self, driver: Driver) -> None:
+        if (
+            id(driver) not in self.starting
+            and not any(value is driver for value in self.drivers.values())
+            and not any(value is driver for value in self.operations.values())
+        ):
+            self._spawn(driver.stop())
+
+    def _release_operation(self, identity: str) -> None:
+        if (
+            identity in self.dispatching
+            or identity in self.detached_work
+            or self.journal.observation(identity) is not None
+        ):
+            return
+        driver = self.operations.pop(identity, None)
+        if driver is not None:
+            self._stop_if_unused(driver)
 
     def device_capabilities(self) -> dict[str, Any]:
         computer = computer_status()
@@ -100,20 +145,31 @@ class Connector:
 
         task.add_done_callback(finished)
 
-    async def _recover(self, instance_id: str) -> None:
-        driver = self.drivers[instance_id]
-        for command, _ in self.journal.observations(instance_id):
+    async def _recover(self, instance_id: str, driver: Driver) -> None:
+        observations = self.journal.observations(instance_id)
+        for command, _ in observations:
+            self.operations.setdefault(command["id"], driver)
+        for command, _ in observations:
+            owner = self.operations.get(command["id"])
+            if owner is not None and owner is not driver:
+                continue
             current = self.journal.observation(command["id"])
             if current is not None:
+                self.operations[command["id"]] = driver
                 await driver.recover(*current)
 
-    async def start_drivers(self) -> None:
-        async def start(spec: Any) -> None:
+    def _start(self, spec: Instance) -> None:
+        async def start() -> None:
+            if not any(replace(item, label=spec.label) == spec for item in self.config.instances):
+                return
+
             async def emit(kind: str, value: dict[str, Any]) -> None:
                 if kind == "connection":
+                    if driver is None or self.drivers.get(spec.id) is not driver:
+                        return
                     if value["status"] == "available":
                         self.errors.pop(spec.id, None)
-                        self._spawn(self._recover(spec.id))
+                        self._spawn(self._recover(spec.id, driver))
                     else:
                         self.errors[spec.id] = value.get(
                             "reason", value.get("error_type", "native_disconnected")
@@ -129,33 +185,55 @@ class Connector:
                 }
                 self.journal.append(event)
                 self.pending_events.set()
+                if value.get("operation_id"):
+                    if kind == "completed":
+                        self.detached_work.discard(value["operation_id"])
+                    self._release_operation(value["operation_id"])
 
             driver: Driver | None = None
             try:
                 driver = make_driver(spec, emit)
                 self.drivers[spec.id] = driver
                 self.errors[spec.id] = "starting"
+                self.starting.add(id(driver))
                 await driver.start()
+                self.starting.discard(id(driver))
+                if self.drivers.get(spec.id) is not driver:
+                    self._stop_if_unused(driver)
+                    return
                 self.errors.pop(spec.id, None)
                 self.catalog_changed.set()
-                await self._recover(spec.id)
+                await self._recover(spec.id, driver)
             except asyncio.CancelledError:
                 if driver:
+                    self.starting.discard(id(driver))
                     await driver.stop()
-                    self.drivers.pop(spec.id, None)
+                    if self.drivers.get(spec.id) is driver:
+                        self.drivers.pop(spec.id, None)
                 raise
             except Exception as exc:
-                self.errors[spec.id] = type(exc).__name__
-                self.catalog_changed.set()
+                if self.drivers.get(spec.id) is driver:
+                    self.errors[spec.id] = (
+                        exc.code
+                        if isinstance(exc, DriverError)
+                        else "native_not_installed"
+                        if isinstance(exc, FileNotFoundError)
+                        else type(exc).__name__
+                    )
+                    self.catalog_changed.set()
+                    self.drivers.pop(spec.id, None)
                 logger.error("Native instance unavailable: %s (%s)", spec.id, type(exc).__name__)
                 if driver:
-                    await driver.stop()
-                    self.drivers.pop(spec.id, None)
+                    self.starting.discard(id(driver))
+                    self._stop_if_unused(driver)
 
-        self._startup.extend(
-            asyncio.create_task(start(spec), name=f"native-start-{spec.id}")
-            for spec in self.config.instances
-        )
+        task = asyncio.create_task(start(), name=f"native-start-{spec.id}")
+        self._startup.add(task)
+        task.add_done_callback(self._startup.discard)
+
+    async def start_drivers(self) -> None:
+        for spec in self.config.instances:
+            self._start(spec)
         # Each native owner starts/reconnects independently of its siblings.
         await asyncio.sleep(0)
 
@@ -184,30 +262,43 @@ class Connector:
 
     async def dispatch(self, command: dict[str, Any]) -> dict[str, Any]:
         key = command["id"]
+        arguments = command.get("arguments", {})
         mutation = command["action"] not in READ_ACTIONS
         recorded = False
+        detached_observation = None
         try:
             if command.get("resource"):
-                self.refresh_access()
+                self.refresh_config()
             if mutation:
                 previous = self.journal.begin(command)
                 if previous is not None:
                     return previous
                 recorded = True
-            arguments = command.get("arguments", {})
             if command.get("resource"):
                 result = await self._device_command(command)
             elif command["action"] == "get" and arguments.get("operation_id"):
                 result = self.journal.operation(arguments["operation_id"])
                 if result.get("status") == "unknown":
                     observation = self.journal.observation(arguments["operation_id"])
-                    driver = self.drivers.get(command["instance_id"])
-                    if observation and driver and command["instance_id"] not in self.errors:
+                    driver = self.operations.get(arguments["operation_id"]) or self.drivers.get(
+                        command["instance_id"]
+                    )
+                    if (
+                        observation
+                        and driver
+                        and (
+                            self.operations.get(arguments["operation_id"]) is driver
+                            or command["instance_id"] not in self.errors
+                        )
+                    ):
                         original, receipt = observation
                         await driver.recover(original, receipt)
                         result = self.journal.operation(arguments["operation_id"])
             elif command["action"] == "detach":
-                driver = self.drivers.get(command["instance_id"])
+                detached_observation = self.journal.observation(arguments["operation_id"])
+                driver = self.operations.get(arguments.get("operation_id")) or self.drivers.get(
+                    command["instance_id"]
+                )
                 result = (
                     await driver.execute(command)
                     if driver is not None
@@ -224,6 +315,8 @@ class Connector:
                     raise DriverError(
                         "instance_unavailable", "The configured native instance is unavailable"
                     )
+                self.operations[key] = driver
+                self.dispatching.add(key)
                 result = await driver.execute(command)
             response = {"type": "response", "id": key, "result": result}
         except DriverError as exc:
@@ -284,6 +377,21 @@ class Connector:
         if recorded:
             self.journal.complete(key, response)
             response = {"type": "response", "id": key, "result": self.journal.operation(key)}
+        self.dispatching.discard(key)
+        self._release_operation(key)
+        if command["action"] == "detach" and arguments.get("operation_id"):
+            original_id = arguments["operation_id"]
+            if (
+                detached_observation is not None
+                and detached_observation[0]["action"] in {"prompt", "queue"}
+                and response.get("result", {}).get("detached") is True
+                and original_id in self.operations
+            ):
+                # Detaching observation does not prove that paid work ended.
+                # No completion signal remains, so keep its original owner.
+                self.detached_work.add(original_id)
+            else:
+                self._release_operation(original_id)
         return response
 
     async def _command(self, command: dict[str, Any], websocket: ClientConnection) -> None:
@@ -341,6 +449,7 @@ class Connector:
 
     async def connection(self, websocket: ClientConnection) -> None:
         self.stream = websocket
+        self.refresh_config()
         await websocket.send(json.dumps(self.hello(), ensure_ascii=False))
         owners = [
             asyncio.create_task(owner(websocket))
@@ -405,7 +514,11 @@ class Connector:
                 for task in owners:
                     task.cancel()
                 await asyncio.gather(*owners, return_exceptions=True)
-                await asyncio.gather(*(driver.stop() for driver in self.drivers.values()))
+                drivers = {
+                    id(driver): driver
+                    for driver in (*self.drivers.values(), *self.operations.values())
+                }
+                await asyncio.gather(*(driver.stop() for driver in drivers.values()))
 
             joined = asyncio.create_task(close_owners())
             cancelled: asyncio.CancelledError | None = None

@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,62 @@ class Config:
 
     def save(self, path: Path) -> None:
         atomic_private_json(path, asdict(self))
+
+    @classmethod
+    def update(cls, path: Path, change: Callable[[Config], Config]) -> Config:
+        """Serialize only the local read/modify/write, never discovery or network work."""
+        lock = path.with_name(path.name + ".lock")
+        with lock.open("a+b") as stream:
+            if sys.platform == "win32":
+                import ctypes
+                import msvcrt
+                from ctypes import wintypes
+
+                class Overlapped(ctypes.Structure):
+                    _fields_ = [
+                        ("Internal", ctypes.c_size_t),
+                        ("InternalHigh", ctypes.c_size_t),
+                        ("Offset", wintypes.DWORD),
+                        ("OffsetHigh", wintypes.DWORD),
+                        ("hEvent", wintypes.HANDLE),
+                    ]
+
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                handle = msvcrt.get_osfhandle(stream.fileno())
+                kernel.LockFileEx.argtypes = [
+                    wintypes.HANDLE,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    ctypes.POINTER(Overlapped),
+                ]
+                kernel.LockFileEx.restype = wintypes.BOOL
+                kernel.UnlockFileEx.argtypes = [
+                    wintypes.HANDLE,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    ctypes.POINTER(Overlapped),
+                ]
+                kernel.UnlockFileEx.restype = wintypes.BOOL
+                overlapped = Overlapped()
+                if not kernel.LockFileEx(handle, 2, 0, 1, 0, ctypes.byref(overlapped)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                result = change(cls.load(path))
+                result.save(path)
+                return result
+            finally:
+                if sys.platform == "win32":
+                    if not kernel.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(overlapped)):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def data_path() -> Path:

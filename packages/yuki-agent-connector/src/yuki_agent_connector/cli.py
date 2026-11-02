@@ -22,7 +22,7 @@ from .computer import computer_status
 from .config import Config, Instance, connector_url, data_path, private_path
 from .connector import Connector, installation_lock
 from .discovery import candidates, diagnose, refresh
-from .drivers import make_driver
+from .drivers import DriverError, make_driver
 from .journal import Journal
 from .service import UserService
 
@@ -57,7 +57,9 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     remove = profiles.add_parser("remove")
     remove.add_argument("id")
-    doctor = commands.add_parser("doctor", help="Readonly local native discovery, no model request")
+    doctor = commands.add_parser(
+        "doctor", help="Prepare and inspect native connection, no model task"
+    )
     doctor.add_argument("--instance")
     status = commands.add_parser("status", help="Local configuration and user service status")
     status.add_argument("--json", action="store_true", help="Print one machine-readable object")
@@ -153,8 +155,13 @@ async def doctor(config: Config, identity: str | None) -> list[dict[str, object]
                 {
                     "id": spec.id,
                     "available": False,
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
+                    "error_type": (
+                        exc.code
+                        if isinstance(exc, DriverError)
+                        else "native_not_installed"
+                        if isinstance(exc, FileNotFoundError)
+                        else type(exc).__name__
+                    ),
                 }
             )
         finally:
@@ -253,12 +260,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             config = Config.load(path)
             if args.action == "server":
-                replace(config, url=connector_url(args.url)).save(path)
+                target = connector_url(args.url)
+                Config.update(path, lambda current: replace(current, url=target))
                 print("Server address saved; used on the next Connector start.")
             elif args.action == "full-access":
                 if args.enabled is not None:
-                    config = replace(config, full_access=args.enabled == "true")
-                    config.save(path)
+                    config = Config.update(
+                        path, lambda current: replace(current, full_access=args.enabled == "true")
+                    )
                 print(json.dumps({"full_access": config.full_access is True}))
             elif args.action == "instance":
                 if args.operation == "list":
@@ -278,7 +287,14 @@ def main(argv: list[str] | None = None) -> int:
                     value = json.load(sys.stdin.buffer)
                     identity = value.get("id") or str(uuid4())
                     previous = next((i for i in config.instances if i.id == identity), None)
-                    if value.get("id") and previous is None:
+                    create = value.get("create")
+                    if create is not None and not isinstance(create, bool):
+                        raise ValueError("Create must be true or false")
+                    if create is True and (not value.get("id") or previous is not None):
+                        raise ValueError("Choose a new original instance ID")
+                    if (
+                        create is False or (create is None and value.get("id"))
+                    ) and previous is None:
                         raise ValueError("The original instance does not exist")
                     candidate_id = value.get("candidateId")
                     driver = previous.driver if previous else value.get("driver", "codex")
@@ -298,22 +314,32 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if candidate_id and candidate is None:
                         raise ValueError("The selected installation is no longer available")
-                    command = candidate["command"] if candidate else value.get("command")
+                    command = (
+                        candidate["command"]
+                        if candidate
+                        else value.get("command", previous.command if previous else None)
+                    )
+                    command_selected = candidate_id or "command" in value or previous is None
                     if (
                         previous is not None
                         and previous.installation
                         and candidate is None
+                        and command_selected
                         and command == previous.command
                     ):
                         previous = refresh(previous)
                         command = previous.command
-                    if (
+                    if command_selected and (
                         not command
                         or not Path(command).is_absolute()
                         or not Path(command).is_file()
                     ):
                         raise ValueError("Choose an installed native executable")
-                    if sys.platform == "win32" and Path(command).suffix.lower() != ".exe":
+                    if (
+                        command_selected
+                        and sys.platform == "win32"
+                        and Path(command).suffix.lower() != ".exe"
+                    ):
                         raise ValueError("Choose the native executable, not a shell script")
                     original = previous or Instance(identity, driver, "", command)
                     cwd = original.cwd
@@ -329,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError("Native arguments must be a list of strings")
                     spec = replace(
                         original,
-                        label=value["label"],
+                        label=value.get("label", original.label),
                         command=command,
                         cwd=cwd,
                         args=arguments,
@@ -341,18 +367,46 @@ def main(argv: list[str] | None = None) -> int:
                             else None
                         ),
                     )
-                    config = replace(
-                        config,
-                        instances=[spec if i.id == identity else i for i in config.instances]
-                        + ([] if previous else [spec]),
-                    )
+
+                    def configure(current: Config) -> Config:
+                        existing = next((i for i in current.instances if i.id == identity), None)
+                        if previous is None and existing is not None:
+                            raise ValueError("Instance already exists")
+                        if previous is not None and existing is None:
+                            raise ValueError("The original instance does not exist")
+                        updated = spec
+                        if existing is not None:
+                            updated = replace(
+                                spec,
+                                env=existing.env,
+                                socket=existing.socket,
+                                endpoint=existing.endpoint,
+                                cwd=spec.cwd if "cwd" in value else existing.cwd,
+                                args=spec.args if "args" in value else existing.args,
+                                label=spec.label if "label" in value else existing.label,
+                                command=(
+                                    spec.command
+                                    if candidate_id or "command" in value
+                                    else existing.command
+                                ),
+                                installation=(
+                                    spec.installation
+                                    if candidate_id or "command" in value
+                                    else existing.installation
+                                ),
+                            )
+                        return replace(
+                            current,
+                            instances=[
+                                updated if i.id == identity else i for i in current.instances
+                            ]
+                            + ([] if existing else [updated]),
+                        )
+
+                    config = Config.update(path, configure)
                 elif args.operation == "add":
                     environment = dict(item.split("=", 1) for item in args.env)
                     identity = args.id or str(uuid4())
-                    if any(item.id == identity for item in config.instances):
-                        raise ValueError(
-                            "Instance already exists; remove explicitly before replacing it"
-                        )
                     spec = Instance(
                         identity,
                         args.driver,
@@ -364,16 +418,26 @@ def main(argv: list[str] | None = None) -> int:
                         args.socket,
                         args.endpoint,
                     )
-                    config = replace(config, instances=[*config.instances, spec])
+
+                    def add(current: Config) -> Config:
+                        if any(item.id == identity for item in current.instances):
+                            raise ValueError(
+                                "Instance already exists; remove explicitly before replacing it"
+                            )
+                        return replace(current, instances=[*current.instances, spec])
+
+                    config = Config.update(path, add)
                 else:
-                    config = replace(
-                        config, instances=[i for i in config.instances if i.id != args.id]
+                    config = Config.update(
+                        path,
+                        lambda current: replace(
+                            current, instances=[i for i in current.instances if i.id != args.id]
+                        ),
                     )
-                config.save(path)
                 if args.operation == "configure":
                     print(json.dumps({"instance_id": identity}))
                 else:
-                    print("Configuration updated; restart the connector service to apply it")
+                    print("Configuration saved")
             elif args.action == "doctor":
                 print(
                     json.dumps(

@@ -9,6 +9,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
+from yuki_agent_connector import connector as connector_module
 from yuki_agent_connector.config import Config, Instance
 from yuki_agent_connector.connector import Connector
 from yuki_agent_connector.journal import Journal
@@ -100,6 +101,65 @@ class FakeDriver:
 
     async def recover(self, value: dict[str, Any], result: dict[str, Any]) -> None:
         pass
+
+
+@pytest.mark.asyncio
+async def test_live_instance_edit_and_delete_preserve_original_work(
+    journal: Journal, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = Instance("local", "fake", "Old", "original")
+    sibling = Instance("sibling", "fake", "Sibling", "sibling")
+    path = tmp_path / "config.json"
+    configured = Config("ws://localhost/", "device", "token", [original, sibling])
+    configured.save(path)
+    drivers: list[Any] = []
+
+    class Owner(FakeDriver):
+        def __init__(self, spec: Instance, emit: Any) -> None:
+            super().__init__()
+            self.spec, self.emit = spec, emit
+            self.stopped = False
+            drivers.append(self)
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    monkeypatch.setattr(connector_module, "make_driver", Owner)
+    connector = Connector(configured, journal, config_path=path)
+    await connector.start_drivers()
+    await asyncio.sleep(0)
+    old, other = drivers
+    work = asyncio.create_task(connector.dispatch(command()))
+    await old.started.wait()
+
+    edited = Instance("local", "fake", "New", "replacement")
+    Config("ws://localhost/", "device", "token", [edited, sibling]).save(path)
+    status = {"type": "command", "id": "status", "resource": "terminal", "action": "status"}
+    await connector.dispatch(status)
+    await asyncio.sleep(0)
+    assert connector.hello()["instances"][0]["label"] == "New"
+    assert connector.drivers["sibling"] is other and not other.stopped
+    assert connector.drivers["local"] is not old and not old.stopped
+    Config("ws://localhost/", "device", "token", [sibling]).save(path)
+    await connector.dispatch({**status, "id": "status-after-delete"})
+    assert [item["id"] for item in connector.hello()["instances"]] == ["sibling"]
+    assert (await connector.dispatch(command("new")))["result"]["error"][
+        "code"
+    ] == "instance_unavailable"
+    assert not old.stopped and connector.drivers["sibling"] is other
+
+    old.finish.set()
+    assert (await work)["result"]["execution_id"] == "native-turn"
+    await old.emit(
+        "completed",
+        {"operation_id": "original", "payload": {"status": "completed"}},
+    )
+    await asyncio.sleep(0)
+    assert journal.operation("original")["status"] == "completed"
+    assert old.stopped and not other.stopped
+    for task in connector._startup:
+        task.cancel()
+    await asyncio.gather(*connector._startup, *connector.tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
