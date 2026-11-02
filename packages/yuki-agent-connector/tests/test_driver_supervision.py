@@ -422,6 +422,7 @@ async def test_claude_normal_eof_marks_original_unknown_without_fabricating_reco
     assert session.status == expected and not session.active and session.stopped.is_set()
     assert events[0][1]["payload"]["reason"] == "native_sdk_connection_lost"
     assert events[0][1]["operation_id"] == "original"
+    assert not any(kind == "work_finished" for kind, _ in events)
 
 
 @pytest.mark.asyncio
@@ -486,6 +487,7 @@ async def test_acp_process_exit_updates_native_status_and_clears_old_questions(m
     assert question.cancelled() and not driver.permission_refs
     assert events[0][0] == "connection" and events[0][1]["status"] == "unavailable"
     assert events[1][1]["operation_id"] == "original"
+    assert not any(kind == "work_finished" for kind, _ in events)
 
 
 @pytest.mark.asyncio

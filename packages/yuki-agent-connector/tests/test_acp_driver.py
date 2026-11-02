@@ -82,9 +82,49 @@ async def test_real_acp_stdio_permissions_local_files_terminal_and_negotiation(
         )
         kind, completed = await asyncio.wait_for(events.get(), 5)
         assert kind == "completed" and completed["payload"]["text"] == "LOCAL_RESULT"
+        kind, finished = await asyncio.wait_for(events.get(), 5)
+        assert kind == "work_finished" and finished["operation_id"] == "original-op"
+        await driver.sessions[prompt["session_id"]].task
         assert (tmp_path / "written-by-actual-client.txt").read_text() == "LOCAL_FILESYSTEM"
         assert not driver.terminals
         assert not driver.requests
+        second = await asyncio.wait_for(
+            driver.execute(
+                {
+                    "id": "detached-op",
+                    "action": "prompt",
+                    "session_id": prompt["session_id"],
+                    "arguments": {"prompt": "continue"},
+                }
+            ),
+            5,
+        )
+        assert (await asyncio.wait_for(events.get(), 3))[0] == "progress"
+        kind, permission = await asyncio.wait_for(events.get(), 3)
+        assert kind == "permission" and permission["operation_id"] == "detached-op"
+        await driver.execute(
+            {
+                "id": "detach-work",
+                "action": "detach",
+                "session_id": second["session_id"],
+                "arguments": {"operation_id": "detached-op"},
+            }
+        )
+        await driver.execute(
+            {
+                "id": "answer-detached",
+                "action": "respond",
+                "session_id": second["session_id"],
+                "execution_id": second["execution_id"],
+                "arguments": {
+                    "connection_id": driver.owner,
+                    "permission_id": permission["payload"]["native_request_id"],
+                    "option_id": "allow-original",
+                },
+            }
+        )
+        kind, finished = await asyncio.wait_for(events.get(), 5)
+        assert kind == "work_finished" and finished["operation_id"] == "detached-op"
         with pytest.raises(DriverError, match="precise steer/queue"):
             await driver.execute({"id": "queue", "action": "queue", "arguments": {}})
         await driver.execute(

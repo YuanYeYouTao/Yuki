@@ -22,8 +22,9 @@ from . import DriverError, Emit
 
 
 class CodexRPC:
-    def __init__(self, spec: Instance, notify: Any) -> None:
+    def __init__(self, spec: Instance, notify: Any, *, prepare_daemon: bool = True) -> None:
         self.spec, self.notify = spec, notify
+        self.prepare_daemon = prepare_daemon
         self.ws: ClientConnection | None = None
         self.proxy: asyncio.subprocess.Process | None = None
         self.reader: asyncio.Task[None] | None = None
@@ -49,7 +50,7 @@ class CodexRPC:
         else:
             environment = profile_environment(self.spec, "CODEX_HOME")
             start_failure: DriverError | None = None
-            if not self.spec.socket:
+            if self.prepare_daemon and not self.spec.socket:
                 try:
                     launch = await asyncio.create_subprocess_exec(
                         self.spec.command,
@@ -408,7 +409,7 @@ class CodexDriver:
                     self.ready.set_exception(failure)
                 return
             await asyncio.sleep(1)
-            self.rpc = CodexRPC(self.spec, self._notification)
+            self.rpc = CodexRPC(self.spec, self._notification, prepare_daemon=False)
 
     async def stop(self) -> None:
         self.rpc.stopping = True

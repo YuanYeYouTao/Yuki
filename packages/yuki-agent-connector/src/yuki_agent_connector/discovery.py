@@ -180,7 +180,9 @@ def refresh(spec: Instance) -> Instance:
     if not spec.installation:
         return spec
     command = None
-    if spec.driver == "codex" and spec.installation.startswith("codex-package:"):
+    if spec.installation.startswith("path:"):
+        command = Path(spec.installation.removeprefix("path:"))
+    elif spec.driver == "codex" and spec.installation.startswith("codex-package:"):
         command = codex_package(Path(spec.installation.removeprefix("codex-package:")))
     elif spec.driver == "codex" and spec.installation.startswith("npm:"):
         _, target, package = spec.installation.split(":", 2)

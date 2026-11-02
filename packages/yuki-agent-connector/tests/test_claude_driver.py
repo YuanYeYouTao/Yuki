@@ -83,6 +83,8 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         return ClaudeSDKClient(options=options, transport=transport)
 
     monkeypatch.setattr(module, "ClaudeSDKClient", factory)
+    monkeypatch.setenv("CLAUDECODE", "inherited-parent")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "inherited-entrypoint")
     events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
 
     async def emit(kind: str, payload: dict[str, Any]) -> None:
@@ -132,6 +134,8 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         assert options.cli_path == sys.executable
         assert options.cwd == str(tmp_path / "selected-project")
         assert options.env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "native-profile")
+        assert "CLAUDECODE" not in options.env
+        assert "CLAUDE_CODE_ENTRYPOINT" not in options.env
         assert options.fork_session is False and options.max_turns is None
         built = SubprocessCLITransport(prompt="", options=options)._build_command()
         assert built[0] == sys.executable
@@ -194,6 +198,42 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         kind, completed = await asyncio.wait_for(events.get(), 3)
         assert kind == "completed" and completed["execution_id"] == execution_id
         assert completed["payload"]["usage"]["cache_read_input_tokens"] == 8
+        kind, finished = await asyncio.wait_for(events.get(), 3)
+        assert kind == "work_finished" and finished["operation_id"] == "original"
+        second = await asyncio.wait_for(
+            driver.execute(
+                {
+                    "id": "detached-work",
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "continue"},
+                }
+            ),
+            3,
+        )
+        await driver.execute(
+            {
+                "id": "detach-work",
+                "action": "detach",
+                "session_id": session_id,
+                "execution_id": second["execution_id"],
+                "arguments": {"operation_id": "detached-work"},
+            }
+        )
+        await transport.incoming.put(
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": session_id,
+                "result": "done",
+            }
+        )
+        kind, finished = await asyncio.wait_for(events.get(), 3)
+        assert kind == "work_finished" and finished["operation_id"] == "detached-work"
         await driver.execute(
             {"id": "watch", "action": "watch", "session_id": session_id, "arguments": {}}
         )

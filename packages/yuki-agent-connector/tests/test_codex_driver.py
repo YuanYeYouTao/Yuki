@@ -137,9 +137,11 @@ async def test_selected_cli_prepares_default_owner_then_uses_only_its_proxy(
 ) -> None:
     owner = Owner()
     trace = tmp_path / "codex-start.jsonl"
+    reconnected = asyncio.Event()
 
     async def emit(kind: str, value: dict[str, Any]) -> None:
-        pass
+        if kind == "connection" and value["status"] == "available":
+            reconnected.set()
 
     async with serve(owner.handler, "127.0.0.1", 0) as listener:
         spec = Instance(
@@ -156,17 +158,25 @@ async def test_selected_cli_prepares_default_owner_then_uses_only_its_proxy(
                 "FAKE_CODEX_START_FAIL": "1" if start_failed else "",
             },
         )
-        for _ in range(2):
+        for index in range(2):
             driver = CodexDriver(spec, emit)
             try:
                 await asyncio.wait_for(driver.start(), 5)
                 listed = await driver.execute({"id": "list", "action": "list", "arguments": {}})
                 assert listed["sessions"][0]["id"] == "thread"
+                if index == 0:
+                    await owner.socket.close()
+                    await asyncio.wait_for(reconnected.wait(), 5)
+                    listed = await driver.execute(
+                        {"id": "after-reconnect", "action": "list", "arguments": {}}
+                    )
+                    assert listed["sessions"][0]["id"] == "thread"
             finally:
                 await asyncio.wait_for(driver.stop(), 5)
     calls = [json.loads(line) for line in trace.read_text().splitlines()]
     assert [call["args"] for call in calls] == [
         ["--original", "app-server", "daemon", "start"],
+        ["--original", "app-server", "proxy"],
         ["--original", "app-server", "proxy"],
         ["--original", "app-server", "daemon", "start"],
         ["--original", "app-server", "proxy"],

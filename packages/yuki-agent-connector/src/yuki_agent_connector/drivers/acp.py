@@ -329,7 +329,8 @@ class ACPDriver:
         finally:
             self.requests.pop(identity, None)
 
-    async def _prompt(self, session: Session, prompt: str) -> None:
+    async def _prompt(self, session: Session, prompt: str, operation_id: str) -> None:
+        finished = False
         try:
             result = await self.connection.prompt(
                 session_id=session.id,
@@ -350,6 +351,7 @@ class ACPDriver:
             session.watches = {
                 key: value for key, value in session.watches.items() if value is None
             }
+            finished = True
         except Exception as exc:
             session.status = "unknown"
             await self._publish(
@@ -367,8 +369,11 @@ class ACPDriver:
                     DriverError("unknown", "Native admission was not confirmed", uncertain=True)
                 )
             session.text.clear()
-            session.operation = None
+            if session.operation == operation_id:
+                session.operation = None
             session.dispatched.set()
+        if finished:
+            await self.emit("work_finished", {"operation_id": operation_id})
 
     async def _native_request(self, request: Awaitable[Any]) -> Any:
         try:
@@ -468,7 +473,9 @@ class ACPDriver:
             session.operation, session.status = command["id"], "running"
             session.admitted = asyncio.get_running_loop().create_future()
             session.dispatched.clear()
-            session.task = asyncio.create_task(self._prompt(session, arguments["prompt"]))
+            session.task = asyncio.create_task(
+                self._prompt(session, arguments["prompt"], command["id"])
+            )
             await session.dispatched.wait()
             admitted = await session.admitted
             return {
