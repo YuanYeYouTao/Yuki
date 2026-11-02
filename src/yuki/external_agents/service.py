@@ -21,6 +21,7 @@ from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
     AgentRepository,
+    CatalogSuperseded,
     encode,
     session_observation,
 )
@@ -82,10 +83,17 @@ class ExternalAgentService:
             raise ValueError("unsupported_connector_protocol")
         if hello.get("device_id", device_id) != device_id:
             raise ValueError("external_agent_device_mismatch")
-        await self.update_catalog(
-            device_id, connection, hello["instances"], hello.get("device_capabilities", {})
-        )
+        async with self.database.read_session() as session:
+            await self.identity.require_device(session, device_id)
         await self.connections.attach(connection)
+        if not await self.update_catalog(
+            device_id,
+            connection,
+            hello["instances"],
+            hello.get("device_capabilities", {}),
+            synchronize=True,
+        ):
+            return
         self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
 
@@ -100,13 +108,28 @@ class ExternalAgentService:
         connection: DeviceConnection,
         instances: list[dict[str, Any]],
         device_capabilities: dict[str, Any] | None = None,
-    ) -> None:
-        await self.repository.register(device_id, instances)
+        *,
+        synchronize: bool = False,
+    ) -> bool:
+        if not self.connections.current(connection):
+            return False
+        try:
+            await self.repository.register(
+                device_id,
+                instances,
+                current=lambda: self.connections.current(connection),
+                synchronize=synchronize,
+            )
+        except CatalogSuperseded:
+            return False
+        if not self.connections.current(connection):
+            return False
         connection.instances = {
             item["id"] for item in instances if item.get("status") != "unavailable"
         }
         if device_capabilities is not None:
             connection.device_capabilities = device_capabilities
+        return True
 
     async def _connection(
         self, instance: AgentInstanceModel, *, action: str | None = None
@@ -115,7 +138,7 @@ class ExternalAgentService:
         async with self.database.read_session() as session:
             await self.identity.require_device(session, instance.device_id)
         connection = self.connections.get(instance.device_id)
-        if action != "detach" and instance.local_id not in connection.instances:
+        if action not in {"detach", "get"} and instance.local_id not in connection.instances:
             raise DeviceOffline("instance_unavailable")
         return connection
 
@@ -167,8 +190,15 @@ class ExternalAgentService:
                 if view.get("pending")
                 else None
             )
-        if instance is not None and not self.connections.online(instance.device_id):
-            return self._unavailable_view(view, "device_offline")
+            if instance is not None:
+                try:
+                    await self.identity.require_device(reader, instance.device_id)
+                except ClientError as error:
+                    return self._unavailable_view(view, str(error))
+                if not self.connections.online(instance.device_id):
+                    return self._unavailable_view(view, "device_offline")
+                if instance.local_id not in self.connections.get(instance.device_id).instances:
+                    return self._unavailable_view(view, "instance_unavailable", device_online=True)
         return view
 
     @staticmethod
@@ -248,7 +278,7 @@ class ExternalAgentService:
             if view["pending"]:
                 instance = await self.repository.instance(operation.instance_id, actor)
                 try:
-                    connection = await self._connection(instance)
+                    connection = await self._connection(instance, action="get")
                 except (DeviceOffline, ClientError) as error:
                     view = self._unavailable_view(view, str(error))
                 else:

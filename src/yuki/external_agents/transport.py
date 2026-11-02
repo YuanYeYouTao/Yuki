@@ -82,6 +82,9 @@ class DeviceConnections:
     def online(self, device_id: str) -> bool:
         return device_id in self._devices
 
+    def current(self, connection: DeviceConnection) -> bool:
+        return self._devices.get(connection.device_id) is connection
+
     async def attach(self, connection: DeviceConnection) -> None:
         previous = self._devices.get(connection.device_id)
         self._devices[connection.device_id] = connection

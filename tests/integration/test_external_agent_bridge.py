@@ -334,8 +334,11 @@ async def directory(bridge):
     return instance, result["sessions"][0]["id"]
 
 
-async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_connection(bridge):
+async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_connection(
+    bridge, monkeypatch, tmp_path
+):
     computer = await NativeComputer(bridge).start()
+    replacement = None
     try:
         instance, session_id = await directory(bridge)
         assert instance != computer.local_id and session_id != computer.native_session
@@ -354,6 +357,27 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             assert await reader.scalar(select(func.count()).select_from(SandboxTaskRunModel)) == 0
         assert [item["action"] for item in computer.commands] == ["list", "get"]
         connection = bridge.service.connections.get(bridge.device["device_id"])
+        async with accepted_work(bridge):
+            operation_id = str(uuid4())
+            operation = await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Keep the original receipt",
+                },
+                operation_id,
+                bridge.source,
+            )
+            event = await computer.event(
+                operation_id, "completed", {"status": "completed", "text": "Original result"}
+            )
+            pending_id = str(uuid4())
+            await bridge.service.execute(
+                {"action": "watch", "instance_id": instance, "session_id": session_id},
+                pending_id,
+                bridge.source,
+            )
         rows = [
             {
                 "id": computer.local_id,
@@ -389,8 +413,132 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                 )
                 assert listed["sessions"]
                 assert computer.commands[-1]["instance_id"] == "later-instance"
+
+        # A complete snapshot removes only the absent profile. Unavailable B
+        # is still configured and the original operation remains readable.
+        remaining = {**rows[1], "capabilities": [], "status": "unavailable"}
+        computer.catalog_ready.clear()
+        await computer.socket.send(json.dumps({"type": "catalog", "instances": [remaining]}))
+        await asyncio.wait_for(computer.catalog_ready.wait(), 5)
+        catalog = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
+        assert [item["id"] for item in catalog["instances"]] == [identity]
+        assert not catalog["instances"][0]["online"]
+        assert catalog["devices"][0]["id"] == bridge.device["device_id"]
+        receipt = await bridge.http.get(
+            f"/agents/v1/operations/{operation_id}", headers=bridge.headers
+        )
+        assert receipt.status_code == 200
+        assert receipt.json()["instance_id"] == instance
+        assert receipt.json()["status"] == "succeeded"
+        operations = (await bridge.http.get("/agents/v1/operations", headers=bridge.headers)).json()
+        pending = next(item for item in operations["items"] if item["operation_id"] == pending_id)
+        assert pending["status"] == "unknown" and pending["uncertain"]
+        assert pending["last_confirmed"]["status"] == "running"
+        pending_read = await bridge.http.get(
+            f"/agents/v1/operations/{pending_id}", headers=bridge.headers
+        )
+        assert pending_read.status_code == 200
+        assert pending_read.json()["status"] == "unknown"
+        assert computer.commands[-1]["action"] == "get"
+        assert computer.commands[-1]["arguments"]["operation_id"] == pending_id
+        late = await computer.event(pending_id, "completed", {"status": "completed"})
+        completed = await bridge.http.get(
+            f"/agents/v1/operations/{pending_id}", headers=bridge.headers
+        )
+        assert completed.json()["status"] == "succeeded"
+        assert any(item["event_id"] == late["event_id"] for item in completed.json()["events"])
+
+        # The old connection has already received a catalog when a new one
+        # takes ownership. Its delayed catalog must not restore the old entry.
+        entered, release = asyncio.Event(), asyncio.Event()
+        register = bridge.service.repository.register
+
+        async def delayed_register(device_id, catalog, **kwargs):
+            if catalog and catalog[0].get("label") == "Stale catalog":
+                entered.set()
+                await release.wait()
+            return await register(device_id, catalog, **kwargs)
+
+        monkeypatch.setattr(bridge.service.repository, "register", delayed_register)
+        stale = asyncio.create_task(
+            bridge.service.update_catalog(
+                bridge.device["device_id"], connection, [{**rows[0], "label": "Stale catalog"}]
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            replacement = NativeComputer(bridge)
+            replacement.local_id = "later-instance"
+            await replacement.start()
+        finally:
+            release.set()
+            await stale
+        current = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
+        assert [item["id"] for item in current["instances"]] == [identity]
+
+        # An empty snapshot still exposes the computer; restoring the same
+        # configured profile keeps its original server and session identity.
+        replacement.catalog_ready.clear()
+        await replacement.socket.send(json.dumps({"type": "catalog", "instances": []}))
+        await asyncio.wait_for(replacement.catalog_ready.wait(), 5)
+        empty = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
+        assert empty["instances"] == [] and empty["devices"][0]["online"]
+        replacement.catalog_ready.clear()
+        await replacement.socket.send(json.dumps({"type": "catalog", "instances": [rows[0]]}))
+        await asyncio.wait_for(replacement.catalog_ready.wait(), 5)
+        restored = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
+        assert restored["instances"][0]["id"] == instance
+
+        principal = await bridge.chat.authenticate(bridge.chat_device["token"])
+        revoke_id = str(uuid4())
+        revoked = await bridge.chat.revoke(principal, bridge.device["device_id"], revoke_id)
+        assert revoked["device_id"] == bridge.device["device_id"] and revoked["revoked"]
+        assert (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()[
+            "devices"
+        ] == []
+        with pytest.raises(ClientError, match="unauthenticated"):
+            await bridge.service.execute(
+                {"action": "list", "instance_id": instance}, str(uuid4()), bridge.source
+            )
+        receipt = await bridge.http.get(
+            f"/agents/v1/operations/{operation_id}", headers=bridge.headers
+        )
+        assert receipt.status_code == 200 and receipt.json()["status"] == "succeeded"
+        async with bridge.database.read_session() as reader:
+            stored = await reader.get(AgentOperationModel, operation_id)
+            assert stored.instance_id == instance and stored.run_id == operation["run_id"]
+            assert (
+                await reader.scalar(
+                    select(func.count())
+                    .select_from(AgentEventModel)
+                    .where(AgentEventModel.event_id == event["event_id"])
+                )
+                == 1
+            )
+        (tmp_path / "catalog-history.json").write_text(
+            json.dumps(
+                {
+                    "device_id": bridge.device["device_id"],
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "operation_id": operation_id,
+                    "pending_operation_id": pending_id,
+                    "run_id": operation["run_id"],
+                    "event_id": event["event_id"],
+                    "late_event_id": late["event_id"],
+                    "revoke_request_id": revoke_id,
+                    "receipt": receipt.json(),
+                    "late_receipt": completed.json(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     finally:
         await computer.close()
+        if replacement is not None:
+            await replacement.close()
 
 
 @pytest.mark.parametrize("action", ["prompt", "queue", "watch"])

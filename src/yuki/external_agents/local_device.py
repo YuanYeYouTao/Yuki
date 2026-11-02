@@ -18,6 +18,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import func, select, update
 
+from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import same_person_id
@@ -85,9 +86,15 @@ class LocalDeviceService:
 
     async def authorize_run(self, row: SandboxTaskRunModel, actor: str) -> None:
         source = json.loads(row.source_json)
-        await self.authorize(source["terminal_target"]["device_id"], actor)
         async with self.database.read_session() as reader:
-            if not await same_person_id(reader, source["actor_person_id"], actor):
+            await require_person(reader, actor)
+            device = await reader.get(ClientDeviceModel, source["terminal_target"]["device_id"])
+            if (
+                device is None
+                or device.purpose != "connector"
+                or not await same_person_id(reader, device.person_id, actor)
+                or not await same_person_id(reader, source["actor_person_id"], actor)
+            ):
                 raise ClientError("not_found")
 
     async def _record(self, row: SandboxTaskRunModel, result: dict[str, Any]) -> None:
@@ -124,6 +131,20 @@ class LocalDeviceService:
             "error": reason,
             "retryable": False,
         }
+
+    @classmethod
+    def unavailable(cls, row: SandboxTaskRunModel, reason: str) -> dict[str, Any]:
+        if row.status == "completed":
+            target = terminal_target(row)
+            assert target is not None
+            return {
+                **json.loads(row.completion_json or "{}"),
+                "request_id": row.request_id,
+                "device_id": target["device_id"],
+                "output_unavailable": True,
+                "observation_error": reason,
+            }
+        return cls.unknown(row, reason)
 
     async def execute(
         self,
@@ -184,6 +205,13 @@ class LocalDeviceService:
             row = candidate
             target = original_target
             await self.authorize_run(row, actor)
+            try:
+                await self.authorize(target["device_id"], actor)
+            except ClientError as authorization_error:
+                if name == "terminal_control" or authorization_error.code != "unauthenticated":
+                    raise
+                await self.authorize_run(row, actor)
+                return self.unavailable(row, "device_authorization_ended")
             if name == "terminal_control":
                 command = {
                     "type": "command",
@@ -217,14 +245,8 @@ class LocalDeviceService:
             connection = self.agents.connections.get(target["device_id"])
             result = await connection.request(command)
         except (DeviceOffline, OSError) as exc:
-            if name != "terminal_control" and row.status == "completed":
-                return {
-                    **json.loads(row.completion_json or "{}"),
-                    "request_id": row.request_id,
-                    "device_id": target["device_id"],
-                    "output_unavailable": True,
-                    "observation_error": str(exc),
-                }
+            if name != "terminal_control":
+                return self.unavailable(row, str(exc))
             return self.unknown(row, str(exc))
         if result.get("status") == "not_found":
             return self.unknown(row, "original_terminal_not_confirmed")
@@ -298,24 +320,34 @@ class LocalDeviceService:
         cursor: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        devices = {device.id for _, device in await self.agents.repository.catalog(actor)}
-        if device_id is not None:
-            await self.authorize(device_id, actor)
-            devices = {device_id}
         from yuki.identity.person_identity import person_family_condition
 
         target = func.json_extract(SandboxTaskRunModel.source_json, "$.terminal_target.device_id")
         async with self.database.read_session() as reader:
             person = await require_person(reader, actor)
-        statement = select(SandboxTaskRunModel).where(
-            target.in_(devices),
-            person_family_condition(
-                func.json_extract(SandboxTaskRunModel.source_json, "$.actor_person_id"), person
-            ),
-        )
-        if cursor is not None:
-            statement = statement.where(SandboxTaskRunModel.request_id > cursor)
-        async with self.database.read_session() as reader:
+            if device_id is not None:
+                device = await reader.get(ClientDeviceModel, device_id)
+                if (
+                    device is None
+                    or device.purpose != "connector"
+                    or not await same_person_id(reader, device.person_id, actor)
+                ):
+                    raise ClientError("not_found")
+                target_condition = target == device_id
+            else:
+                devices = select(ClientDeviceModel.id).where(
+                    ClientDeviceModel.purpose == "connector",
+                    person_family_condition(ClientDeviceModel.person_id, person),
+                )
+                target_condition = target.in_(devices)
+            statement = select(SandboxTaskRunModel).where(
+                target_condition,
+                person_family_condition(
+                    func.json_extract(SandboxTaskRunModel.source_json, "$.actor_person_id"), person
+                ),
+            )
+            if cursor is not None:
+                statement = statement.where(SandboxTaskRunModel.request_id > cursor)
             rows = list(
                 await reader.scalars(
                     statement.order_by(SandboxTaskRunModel.request_id).limit(limit + 1)
@@ -386,6 +418,16 @@ class LocalDeviceService:
                 "pending": True,
                 "uncertain": True,
                 "error": "device_offline",
+            }
+        except ClientError as error:
+            if error.code != "unauthenticated":
+                raise
+            await self.authorize_run(row, actor)
+            result = {
+                "status": "unknown",
+                "pending": True,
+                "uncertain": True,
+                "error": "device_authorization_ended",
             }
         if result.get("status") == "not_found":
             result = {
