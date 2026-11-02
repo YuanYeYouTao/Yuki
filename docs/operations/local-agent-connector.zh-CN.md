@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.2`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.3`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -46,7 +46,7 @@ yuki-agent-connector server --url https://yuki.example.ts.net
 
 保存保留原 device、token、instance、args、env、原生 owner、完整访问开关和服务来源，只供下次 Connector 启动使用，不启停服务。CLI 不连接目标或验证远端身份，需填写同一原 Yuki 的实际新地址；保存成功不证明新地址已连通。Desktop 的「設定 → 這台電腦」提供同一原连接器地址操作；「設定 → 連線」里的客户端地址独立保存，任一处改址都不自动修改另一处，也不要求两处使用相同 URL。
 
-需要立即应用新地址时，可明确关闭再开启「背景連接」，或沿下文用户服务命令停止再启动原服务。停止 Connector 可能取消它持有的本机 Shell，不能当作无影响的热迁移；Codex daemon 和其他原生 owner 仍按各自生命周期处理。保存时原服务停止就继续停止，原连接在线也不代表已经走新地址。
+需要立即应用新地址时，可在桌面明确停止后再启动电脑连接，或沿下文用户服务命令停止再启动原服务。停止 Connector 可能取消它持有的本机 Shell，不能当作无影响的热迁移；Codex daemon 和其他原生 owner 仍按各自生命周期处理。保存时原服务停止就继续停止，原连接在线也不代表已经走新地址。
 
 journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于同一设备的旧 `[url, device_id]` namespace，仅转换旧归属表示，原操作、事件、执行 ID 和回执继续使用；不同设备不能认领另一设备的 journal。改址不要求清 journal、清配置、重新配对或先完成所有任务。未知结果仍按原请求查证，不重新提交。另一台 Yuki 或独立设备仍使用各自安装及配对凭据；换线路不用于搬运不同服务器的授权或任务。
 
@@ -55,7 +55,7 @@ journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.4.1-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.4.3-py3-none-any.whl
 yuki-agent-connector --version
 ```
 

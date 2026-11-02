@@ -39,7 +39,7 @@ Connector 的 hello 与 catalog 都是当前完整实例清单：缺席的实例
 
 Bot 启动仍恢复电脑观察，以便没有桌面客户端时也能按当前撤权归还旧 human 租约。协议明确不支持或宿主没有 Unix transport 时停止无用重连，实际电脑访问可重新启动；暂时网络失败保原恢复路径。观察任务的启动与关闭共用同一实例生命周期锁。授权提示过载丢失时，先关画面输入，再读一次当前授权并沿原 release key 归还，不依赖下一条通知，也不重放原控制命令。
 
-桌面只管理现有 NativeConnector 连接，云端通过固定 `external_agent` 操作本人明确授权的 Codex、Claude 实例。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
+桌面只管理现有 NativeConnector 连接，云端通过固定 `external_agent` 操作本人明确授权的 Codex、Claude Code 或 ACP 实例。配置编辑或删除沿原实例更新当前目录，不重启无关 Agent、Shell 或文件传输；原操作与执行回执保留。当前设备仍获授权时，显式原操作的查证和控制沿原 owner；新任务仍核当前目录，撤销设备后不再产生远程效果。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
 
 Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_device` 活执行功能。迁移 0152 的原三张表、原操作 UUID、调用键和历史字节继续保留；旧 Work 只按原 Work、调用键和 `local_device:<op UUID>` 读取原回执，不创建 Native 操作、不重发或重做。已确认效果保持原事实，pending/unknown 不转成成功，也不恢复派发资格。
 
