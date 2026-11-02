@@ -538,8 +538,8 @@ class Connector:
                 and original_id in self.operations
                 and self.operations[original_id].spec.driver != "codex"
             ):
-                # Detaching observation does not prove that paid work ended.
-                # No completion signal remains, so keep its original owner.
+                # Detach ends observation; the SDK owner still holds the work
+                # until its native completion signal arrives.
                 self.detached_work.add(original_id)
             else:
                 self._release_operation(original_id)
