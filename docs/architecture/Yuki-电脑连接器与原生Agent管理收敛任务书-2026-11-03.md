@@ -4,7 +4,7 @@
 
 状态：**调查与任务书，产品尚未实施。** 用户本轮要求汇总已遇到的问题、补查删除入口并写任务书。只修改本文和架构索引；实现、测试、PR、合并、打包、生产及真人验收另行记录，不能把本文当成已完成修复。
 
-涉及：Yuki 主仓库及同仓 `yuki-agent-connector`、Yuki Desktop。三名 `gpt-6.1-terra` 子代理使用 `max` 并行审查原生配置删除、电脑记录移除、生命周期与冗余逻辑，主线程整合并复审。
+涉及：Yuki 主仓库及同仓 `yuki-agent-connector`、Yuki Desktop，覆盖Codex、Claude Code及通用ACP三类原生入口。三名 `gpt-6.1-terra` 子代理使用 `max` 并行审查原生配置删除、电脑记录移除、生命周期与冗余逻辑，主线程整合并复审；本轮又分别核对了三类驱动的实际接入差异。
 
 本轮复审按用户要求收敛：风险清单不等于逐项新增测试；优先删除旧限制和重复代码，复用现有入口、状态及E2E。原32组强制验收已撤下，不另存为必须完成的隐藏清单。
 
@@ -27,13 +27,13 @@
 | F03 | 服务端 `external_agents/repository.py:103–139` 只upsert出现项，缺席项仍由目录返回；Desktop任务选择器继续列出 | 当前登记和历史事实分开，消除幽灵选项 |
 | F04 | 设备安全页只给撤销，已撤销项持续显示；`client_api/identity.py:475–517` 返回全部设备 | 移除入口复用撤销，从当前电脑列表过滤已撤销项；不新增移除状态 |
 | F05 | 直接删除device/instance会通过FK CASCADE删除原session/execution/operation/event；部分终端历史又依赖当前有效设备；`LocalComputer.tsx:38–70` 在未配对时遮住活动入口 | 不物理级联；原历史有明确可达路径 |
-| F06 | 原包只启动 `app-server proxy`，不启动所选daemon。现场服务未运行、残留socket拒绝10061→proxy退出1/空HTTP响应→InvalidMessage；用户自行打开所选Codex后同实例恢复available | 接上所选原生服务的准备与复用，不另造会话 |
-| F07 | `codex.py:76,340` 丢弃proxy stderr、只上报异常类型；`discovery.py:248` 漏接InvalidMessage包装；CLI doctor和UI diagnose分两套 | 统一诊断事实，保真实阶段/原因及可中止性 |
+| F06 | Codex当前只启动 `app-server proxy`，不启动所选daemon。现场服务未运行、残留socket拒绝10061→proxy退出1/空HTTP响应→InvalidMessage；用户自行打开所选Codex后同实例恢复available | 按各驱动准备必要进程；这次Codex故障不推断成Claude/ACP也需daemon |
+| F07 | `codex.py:76,340` 丢弃proxy stderr、只上报异常类型；`discovery.py:248` 漏接InvalidMessage包装。各驱动的检查含义也不同：Claude单独查auth status，ACP无该UI诊断入口 | 沿各驱动现有通路收口真实错误，复用公共事实，不强推相同握手/登录流程 |
 | F08 | Desktop对已配对、managed且页面状态为运行中的安装，编辑保存会stop/start整个Connector；`connector.py:401–408`关闭Shell、文件与全部drivers；ACP退出可能终止它持有的Agent进程 | 原生配置不能取消无关Shell、传输或其他Agent |
 | F09 | 新实例先add再configure，两次落盘、多次发现/路径校验；现有测试已覆盖部分失败后原ID重试，并非ID已丢失 | 一次明确创建/修改，保原ID和部分结果事实 |
 | F10 | 静态：CLI各自读整份Config再原子替换，没有覆盖读到写的同一更新序列；并发保存实例可能把已关闭的full_access旧值写回 | 改动公共保存路径时保无关字段，必要时用一次定向并发验证 |
 | F11 | `service.py:253–299` Windows以service.xml存在判installed；XML丢失/残留均可能误判真实任务。stop不论/End结果都等待当前锁owner，可能等待无关进程 | 用真实OS登记和停止结果处理，不误杀/误等 |
-| F12 | Desktop start只等spawn，随后可能宣称连接已建立；子进程非零退出原因没回到当前页面 | 区分进程创建、WSS接纳、原生就绪 |
+| F12 | Desktop start只等spawn；Claude driver.start仅检查程序文件，ACP的initialize也不保证认证/任务可用；子进程错误不应只剩笼统结果 | 区分电脑连接与各原生入口实际确认的可用性，不虚报执行通过 |
 | F13 | 澄清：本机stop停当前进程；restore在App启动时恢复已配对managed安装，现行文档如此约定 | 保当前随App生命周期；不据此增加跨重启的启用状态 |
 | F14 | 两个E2E仍找“背景連接”；README介绍已无入口的“只保存”；导出ConnectorRunner类型无消费者；目录缺席还可能误报另一Person | 清理旧文案、测试、类型与不实状态判断 |
 | F15 | 静态：旧连接catalog可能与替换连接的新快照交错；仅删除配置并发送一次状态还不覆盖离线重连 | 当前连接对当前目录负责，合法迟到回执仍保存 |
@@ -45,7 +45,7 @@
 | 用户动作 | 必须产生的效果 | 不隐含的效果 |
 | --- | --- | --- |
 | 开启本机连接 | 启动/恢复这一份Desktop管理的Connector，接回原Yuki | 不代表所有原生Agent就绪，不注册OS登录自启 |
-| 启用已配置Codex | 复用或启动所选安装/profile对应的原生服务，再连原proxy并握手 | 不更新/重装Codex、不换账号、不新建thread/turn |
+| 启用所选原生Agent | 按该驱动实际方式准备、启动或复用原安装，并沿对应检查报告结果 | 不统一套daemon，不换账号，不为诊断创建任务/会话，不接管任意已开窗口 |
 | 删除原生Agent配置 | 移除本机该条配置和当前任务候选，运行态与云端同步如实反馈 | 不停止整台电脑，不删除用户daemon、原生会话或文件 |
 | 移除电脑连接器 | 复用原撤销操作使凭据失效，当前列表不再显示；已撤销项直接退出当前列表 | 不物理级联原历史，不清远端电脑的配置/文件，不承诺任务已终止 |
 | 关闭本机连接 | 沿现有开关结束Desktop自有Connector进程 | 原安装选择及配置保留，不冒充服务器已撤权，不擅停独立服务；不另加解除关联按钮 |
@@ -113,25 +113,39 @@ Desktop设置页以所选安装的本机配置为准，尚未上报、离线或�
 
 原在飞响应、事件和终态按原ID、归属、顺序及授权边界继续归并；目录删除不能让同一次已经发生的效果变成另一实例的请求。迟到终态不能被较旧的未知投影覆盖。
 
-## 7. Codex启动、状态与错误收口
+## 7. 三类原生Agent的准备、状态与错误
 
-### 7.1 只准备用户已选的服务
+### 7.1 共用用户要求，保留真实接入差异
 
-原生安装不等于服务已运行。本期把用户已配置的默认Codex服务准备接到新增配置保存后及重新开启Connector时的现有启动流程：复用当前运行owner，必要时调用该安装所支持的官方daemon start，再完成原proxy/initialize。保持原CODEX_HOME、安装来源、socket/endpoint、账号及会话。显式socket/endpoint优先，只连接用户指定目标，不启动默认daemon冒充成功。
+Codex和Claude Code是具体工具，通用ACP是协议入口，可连接实现该协议的其他程序。三者共用电脑Connector，但不用同一种原生协议，也不承诺相同的历史、恢复或接管能力。
 
-以本机实际能力为准，不写死旧版本目录、品牌推断或仅凭文件存在宣布就绪。缺完整安装包、不能启动或目标不支持时，说明实际原因，Shell/文件和其他实例继续可用；不额外下载安装器、替换已有选定包、运行bootstrap/restart/update、启用远程控制、替用户登录或改原生权限。允许所选完整CLI的官方start按其合同准备该profile缺失的本地daemon包，不增加“daemon包必须预先存在”的门槛；准备失败如实报告，不自动换另一安装或owner。
+用户启用所选Agent时，沿原安装、环境、profile和工作目录，在该驱动实际需要的时机准备或启动进程；已有原生服务则按其合同复用。程序已找到、电脑已连上、原生登录和实际任务成功各认事实。只检查就绪不创建会话、发送prompt或付费请求，不把“用户必须先打开窗口”作为通用前置。
 
-参考[与现场匹配的官方0.166合同](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server-daemon/README.md)：start幂等复用原profile选定包，缺包可从所选完整CLI准备本地包；官方流程可能有配置、恢复文件或updater附带效果，不能描述为完全只读。针对本次实际启动路径做一次隔离验证即可，不铺版本/profile/平台矩阵，不重测整个上游daemon；Yuki不额外修改原文件或偏好来假装启动成功。
+| 入口 | 当前真实方式与边界 | 本期处理 |
+| --- | --- | --- |
+| Codex | `drivers/codex.py:37–99` 显式endpoint直连指定app-server；否则所选程序经`app-server proxy`连指定或默认控制socket。默认目标可由原daemon提供，显式目标不一定由daemon管理；当前不负责启动daemon | 对默认目标补该安装实际支持的服务启动/复用；显式socket/endpoint仍只连指定目标，不启动其他默认owner冒充成功 |
+| Claude（Claude Code CLI） | `drivers/claude.py:67–74` 只核程序；诊断单独执行原CLI的`auth status`。提交新任务或显式resume时，`:178–225` 经官方SDK启动所选CLI子进程并用stdio通信；无需预开Claude桌面/TUI | 保按需SDK连接，不套Codex daemon。诊断、历史和实际执行沿所选同一profile/原cwd；文件、认证检查与实际SDK连接分别报告，不把找到程序写成任务已可用 |
+| 通用ACP | `drivers/acp.py:83–113` 直接启动所选程序，使用分开的args、cwd和env，经stdio做ACP v1 initialize；能力由对端声明。普通交互CLI不自动等于ACP | 根据该程序文档配置真正的ACP入口及参数，沿现有握手报告结果，不硬编码某品牌旗标。列表/恢复仅用对端支持能力；initialize成功不证明认证或模型调用成功 |
 
-关闭Yuki只结束自己持有的Connector及Codex proxy，不顺手停止用户Codex daemon、其他会话或原生更新器。启动服务不创建模型任务，验证不发turn/start或付费请求。
+上述方式与[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/python)、[ACP stdio传输](https://agentclientprotocol.com/protocol/v1/transports)及[初始化合同](https://agentclientprotocol.com/protocol/v1/initialization)核对；本轮只读调查，未把SDK/规范核查称作用户三类真实账户的运行验收。
 
-### 7.2 状态从真实阶段得出
+Codex仅在其专属分支使用[现场版本0.166的daemon合同](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server-daemon/README.md)：官方start可复用原profile选定包，或从所选完整CLI准备缺失本地包。官方自身可能有配置、恢复文件或updater附带效果；Yuki不额外下载安装器、换profile/owner、改更新偏好或主动执行update/restart。不能把0.166机制外推所有Codex版本，更不能推广到Claude/ACP。
 
-页面只显示用户需要的保存、电脑连接、Agent就绪及错误结果；内部按实际进程、连接和握手事实判断，不另造六个协议状态灯或持久状态。spawn不能代表网络已连接，原生不可用不把整台电脑说成离线；实际退出应纠正成功提示。
+Claude的原历史可沿原profile查询，显式resume不等于接管另一个手动终端正在执行的任务。ACP的历史/恢复取决于实际声明及当前适配支持，不为统一界面伪造能力。Windows当前ACP入口要求实际可执行文件，不能将一整串shell命令或任意cmd/bat当作已支持；参数分别传入，不经shell拼接。
 
-合并doctor/diagnose的公共诊断事实和错误处理，保留必要的“仅就绪”与“目录查询”用途差别，不再维护两份启动/异常语义。InvalidMessage不是固定的“daemon未运行”同义词：只有原proxy/socket证据支持时这样报告，其他握手失败保阶段与可公开的实际原因。原生完整输出、密钥和账户资料仍留在原私有边界，不能把原stderr原样回传UI。
+### 7.2 按驱动诊断，不另造统一服务平台
 
-复用现有取消/退出路径；本次若新增前台等待，让它随调用方结束并清理自有proxy/pending，不停用户daemon或操作会话。官方start取消前可能已有启动效果，按原目标重查，不推断未启动或执行restart/stop。不为假设中的每个静默阶段建立跨IPC取消状态机，不新增重试、扩大timeout或固定sleep判就绪。
+复用各驱动现有检查和必要的公共错误处理：Claude的auth status只证明原命令报告的认证状态；ACP当前无专用UI检查按钮，可复用既有doctor握手事实，不假称已有通用登录能力。不为诊断新建会话或发prompt，缺安装、登录、依赖、启动参数或协议问题按真实原因反馈，不因此让Shell/其他Agent不可用。
+
+本轮源码还发现静态线索：Claude相对CLAUDE_CONFIG_DIR在诊断、历史与执行处可能按不同cwd解析；ACP当前未消费authMethods，也未核对返回的协议版本，session/new明确auth_required且尚未发prompt时也可能被普通异常压成unknown。这些未做真人账户复现；涉及对应分支时保同一profile、相容协议和原生明确错误，不把认证方式列表非空猜成未登录。拒绝按其发生阶段报告，已派发效果无法确认时仍保unknown，不推断此前无效果。不扩成登录平台、会话恢复重构或独立测试矩阵。
+
+页面只显示用户需要的保存、电脑连接、Agent状态及可处理的错误；不另造协议状态灯或持久状态。原生完整输出、密钥、账户资料留在原私有边界，只提取必要原因。InvalidMessage不是固定的daemon缺失同义词，也不作为Claude/ACP的通用失败原因。
+
+### 7.3 生命周期按实际持有对象处理
+
+Codex关闭Yuki所持proxy不会主动停止用户daemon；Claude退出SDK会关闭它持有的CLI会话；ACP退出会关闭它启动的子进程和相关终端，可能影响本来由它们执行的任务。关闭任意Agent窗口、WSS断线、detach、删除配置和真正退出Connector不是同一动作，不统一套成“只关proxy”或“关闭所有原生程序”。
+
+编辑/删除仍按第4节保护原工作与无关实例，不用整Connector重启生效；不自动接管或停止独立用户终端。沿原owner和operation查证，失联保unknown而不重派。新增前台等待沿现有调用方取消/退出清理自有资源，不加跨IPC取消状态机；启动确认丢失查原目标，不推断无效果，也不加重试、扩大timeout或固定sleep。
 
 ## 8. 旧服务迁移与可删除逻辑
 
@@ -151,7 +165,7 @@ stop/uninstall只等待它实际成功停止且确属该服务的进程。/End�
 | T02 | 沿原保存路径去双写和重复准备，保原ID、无关字段与关闭权限；必要时定向验证并发 | F09/F10 |
 | T03 | 补Agent删除入口，按目标应用编辑/删除，当前目录收敛且不重启无关连接，原请求/历史不改 | F01/F02/F03/F05/F08/F15 |
 | T04 | 电脑移除复用原撤销及列表过滤，沿原本人授权、UUID和回执；保原历史可达，无新字段/接口/迁移 | F04/F05 |
-| T05 | 所选Codex服务启动/复用，去重复诊断，按真实错误和就绪事实反馈 | F06/F07/F12 |
+| T05 | 三类Agent按各自原生方式准备/启动/复用，收口真实诊断及错误；Codex服务准备只在其专属分支实现 | F06/F07/F12 |
 | T06 | 修正实际涉及的旧服务登记/停止归属，维持App生命周期，不加跨重启启用状态 | F11/F13 |
 | T07 | 清理旧命名、无消费者类型、过时文案和测试定位；按实际API变化更新类型，更新Connector随附资源及源码pin | F14及配套 |
 | T08 | 合并运行受影响的现有E2E和仓库要求的检查；仅新风险补场景，复审及交付状态按事实记录 | 全部 |
@@ -166,7 +180,7 @@ stop/uninstall只等待它实际成功停止且确属该服务的进程。/End�
 | --- | --- | --- |
 | E01 编辑与删除Agent | 隔离Desktop经真实IPC/CLI保存、编辑和删除A，当前目录退出A，重连不复活；原请求/回执保留，B或运行中的Shell不被重启。用能暴露进程被中止风险的受控原生owner验证活动操作，不为三个driver各复制一套 | Desktop `tests/e2e/connector-address.spec.ts` 的真实链路、`connector-lifecycle.spec.ts`；后端 `tests/integration/test_external_agent_bridge.py` 的真实WSS和原回执场景 |
 | E02 移除电脑 | 扩原设备安全流程，使用真实connector-purpose设备完成移除；列表退出、凭据失效、其他设备不变，原request_id/回执和历史仍可查。丢响应、授权负例及重复处理复用既有覆盖，不另造一套 | Desktop `tests/e2e/device-security.spec.ts`；后端已有Connector身份、撤权及原回执覆盖 |
-| E03 Codex启动与复用 | 若本次新增启动链，在一个隔离场景覆盖所选服务未运行→启动/握手→再次连接复用，并观察一个已知失败；保原profile/owner，不创建turn或付费任务 | Connector现有Codex/管理场景及受控原生对端；现场InvalidMessage已有证据直接引用 |
+| E03 原生Agent准备与就绪 | 按实际改动的driver复用覆盖：Codex验证服务启动/复用，Claude核原profile的认证/SDK连接边界，ACP核所选命令的握手与真实错误；不强制三倍用例。诊断不创建会话/turn或付费任务 | 现有Codex/Claude/ACP及管理场景和受控原生对端；已知现场证据直接引用，不按品牌、版本或OS铺矩阵 |
 
 页面bridge fixture只能证明页面行为，不能冒充真实CLI/WSS已验收；受控ACP对端也不等于三个真实Agent账户均验收。仅当新增某driver独有分支而原覆盖不足时，扩充该driver原场景；不因此铺全量实机或付费矩阵。
 
