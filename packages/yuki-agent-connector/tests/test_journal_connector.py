@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -146,6 +147,15 @@ async def test_live_instance_edit_and_delete_preserve_original_work(
             {**command(f"control-{action}", action), "arguments": {"operation_id": "original"}}
         )
         assert old.calls[-1]["id"] == f"control-{action}"
+    await connector.dispatch(
+        {
+            **command("cancel-by-execution", "cancel"),
+            "session_id": "native-session",
+            "execution_id": "native-turn",
+            "arguments": {},
+        }
+    )
+    assert connector.drivers["local"].calls[-1]["id"] == "cancel-by-execution"
     Config("ws://localhost/", "device", "token", [sibling]).save(path)
     await connector.dispatch({**status, "id": "status-after-delete"})
     assert [item["id"] for item in connector.hello()["instances"]] == ["sibling"]
@@ -188,7 +198,7 @@ async def test_recovery_requires_the_original_connection_source(
 
         async def execute(self, value: dict[str, Any]) -> dict[str, Any]:
             return {
-                "status": "unknown",
+                "status": "running" if value["id"] == "sdk-original" else "unknown",
                 "pending": True,
                 "session_id": "original-session",
                 "execution_id": "original-turn",
@@ -236,29 +246,55 @@ async def test_recovery_requires_the_original_connection_source(
     assert result["result"] == original_receipt
     assert drivers[-1].recovered == []
 
+    sdk_spec = replace(spec, driver="claude", endpoint=None, installation=None)
+    sdk = await started(sdk_spec)
+    await sdk.dispatch(command("sdk-original"))
+    restarted = await started(sdk_spec)
+    assert drivers[-1].recovered == []  # A new SDK process is not the original owner.
+    lost = journal.operation("sdk-original")
+    assert lost["status"] == "unknown" and lost["pending"] is True
+    assert lost["session_id"] == "original-session" and lost["execution_id"] == "original-turn"
+    assert lost["last_confirmed"]["status"] == "running"
+    queried = await restarted.dispatch(
+        {**command("sdk-get", "get"), "arguments": {"operation_id": "sdk-original"}}
+    )
+    assert queried["result"] == lost
+    queued = journal.db.execute(
+        "SELECT event FROM events WHERE json_extract(event, '$.operation_id')='sdk-original' "
+        "AND json_extract(event, '$.payload.reason')='original_owner_not_attached'"
+    ).fetchone()
+    assert queued is not None and json.loads(queued[0])["operation_state"] == lost
+    result = await restarted.dispatch(
+        {**command("sdk-cancel", "cancel"), "arguments": {"operation_id": "sdk-original"}}
+    )
+    assert result["result"]["error"]["code"] == "instance_unavailable"
+
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "different-profile"))
     await started(spec)
     assert drivers[-1].recovered == ["original"]  # Explicit endpoint, not local profile.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "original-profile"))
-    default = replace(spec, endpoint=None)
+    default = replace(spec, endpoint=None, installation=None)
     default_owner = await started(default)
     await default_owner.dispatch(command("default-original"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "different-profile"))
     await started(default)
     assert drivers[-1].recovered == []
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "original-profile"))
-    await started(replace(default, label="New label", command="new-version"))
-    assert drivers[-1].recovered == ["default-original"]
-
-    sdk_spec = replace(spec, driver="claude", endpoint=None, installation=None)
-    sdk = await started(sdk_spec)
-    await sdk.dispatch(command("sdk-original"))
-    restarted = await started(sdk_spec)
-    assert drivers[-1].recovered == []  # A new SDK process is not the original owner.
-    result = await restarted.dispatch(
-        {**command("sdk-cancel", "cancel"), "arguments": {"operation_id": "sdk-original"}}
-    )
-    assert result["result"]["error"]["code"] == "instance_unavailable"
+    different_project = tmp_path / "different-project"
+    different_project.mkdir()
+    with monkeypatch.context() as different_home:
+        different_home.setenv("USERPROFILE" if sys.platform == "win32" else "HOME", str(tmp_path))
+        await started(
+            replace(
+                default,
+                label="New label",
+                command="new-version",
+                cwd=str(different_project),
+                args=["--changed"],
+                env={"TOKEN": "different", "HTTP_PROXY": "http://different"},
+            )
+        )
+        assert drivers[-1].recovered == ["default-original"]
 
 
 @pytest.mark.asyncio
@@ -302,6 +338,20 @@ async def test_detached_original_owner_is_released_only_after_real_work_finishes
     await asyncio.sleep(0)
     assert old.stopped and journal.operation("original") == detached
     assert journal.next_event() is None
+
+    codex = replace(original, driver="codex", endpoint="ws://original-owner")
+    replace(config, instances=[codex]).save(path)
+    await connector.dispatch({"id": "status-add", "resource": "terminal", "action": "status"})
+    await asyncio.sleep(0)
+    codex_owner = drivers[-1]
+    await connector.dispatch(command("codex-original"))
+    replace(config, instances=[]).save(path)
+    await connector.dispatch({"id": "status-delete", "resource": "terminal", "action": "status"})
+    await connector.dispatch(
+        {**command("detach-codex", "detach"), "arguments": {"operation_id": "codex-original"}}
+    )
+    await asyncio.sleep(0)
+    assert codex_owner.stopped and journal.operation("codex-original")["status"] == "detached"
 
 
 @pytest.mark.asyncio

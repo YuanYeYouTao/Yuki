@@ -47,6 +47,7 @@ def fold_receipt(previous: dict[str, Any], facts: dict[str, Any], sequence: int)
     if facts.get("status") and facts["status"] != "unknown":
         result.pop("reason", None)
         result.pop("error_type", None)
+        result.pop("last_confirmed", None)
     return result
 
 
@@ -124,7 +125,15 @@ class Journal:
         )
         facts = {
             key: payload[key]
-            for key in ("status", "pending", "admitted", "reason", "error_type", "error")
+            for key in (
+                "status",
+                "pending",
+                "admitted",
+                "reason",
+                "error_type",
+                "error",
+                "last_confirmed",
+            )
             if key in payload
         }
         for key in ("session_id", "execution_id"):

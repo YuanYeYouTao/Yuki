@@ -44,13 +44,21 @@ def journal(tmp_path):
 def test_loss_updates_projection_without_readmission_and_terminal_cannot_regress(journal):
     journal.begin(operation())
     journal.complete("watch", {"result": {"admitted": True, "status": "running", "pending": True}})
-    journal.append(event("loss", "unknown", reason="native_event_stream_lost"))
+    journal.append(
+        event(
+            "loss",
+            "unknown",
+            reason="native_event_stream_lost",
+            last_confirmed={"status": "running", "execution_id": "original-turn"},
+        )
+    )
     lost = journal.operation("watch")
     assert lost["status"] == "unknown" and lost["pending"] and lost["admitted"]
     wire = json.loads(journal.next_event()[2])
     assert wire["operation_state"] == lost and wire["sequence"] == lost["state_sequence"]
     journal.append(event("recovered", "running"))
     assert "reason" not in journal.operation("watch")
+    assert "last_confirmed" not in journal.operation("watch")
     journal.append(event("done", "completed", kind="completed"))
     journal.append(event("late", "running", admitted=True))
     assert journal.operation("watch")["status"] == "completed"

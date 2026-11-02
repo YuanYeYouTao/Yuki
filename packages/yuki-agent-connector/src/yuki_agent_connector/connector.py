@@ -32,15 +32,25 @@ ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond"}
 
 def instance_source(spec: Instance) -> str:
     """Hash the actual configured source and effective native profile, without secrets."""
-    if spec.driver == "codex" and (spec.endpoint or spec.socket):
+    if spec.driver == "codex":
         if spec.endpoint:
             target = {"endpoint": spec.endpoint}
-        else:
-            assert spec.socket is not None
+        elif spec.socket:
             explicit_socket = Path(spec.socket)
             if not explicit_socket.is_absolute():
                 explicit_socket = Path(spec.cwd) / explicit_socket
             target = {"socket": str(explicit_socket.resolve())}
+        else:
+            environment = spec.environment()
+            profile_value = environment.get("CODEX_HOME")
+            if profile_value:
+                profile = Path(profile_value)
+                if not profile.is_absolute():
+                    profile = Path(spec.cwd) / profile
+            else:
+                home_value = environment.get("USERPROFILE" if sys.platform == "win32" else "HOME")
+                profile = Path(home_value or Path.home()) / ".codex"
+            target = {"profile": str(profile.resolve())}
         encoded = json.dumps(
             {"driver": spec.driver, **target},
             sort_keys=True,
@@ -53,9 +63,7 @@ def instance_source(spec: Instance) -> str:
     )
     explicit = dict(spec.env)
     names = (
-        ("CODEX_HOME",)
-        if spec.driver == "codex"
-        else ("CLAUDE_CONFIG_DIR",)
+        ("CLAUDE_CONFIG_DIR",)
         if spec.driver == "claude"
         else ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
         if spec.driver == "acp"
@@ -68,10 +76,8 @@ def instance_source(spec: Instance) -> str:
         if profile_value:
             path = Path(profile_value)
             profiles[name] = str((path if path.is_absolute() else Path(spec.cwd) / path).resolve())
-        elif spec.driver in {"codex", "claude"}:
-            profiles[name] = str(
-                (home / (".codex" if name == "CODEX_HOME" else ".claude")).resolve()
-            )
+        elif spec.driver == "claude":
+            profiles[name] = str((home / ".claude").resolve())
     socket = Path(spec.socket) if spec.socket else None
     if socket is not None and not socket.is_absolute():
         socket = Path(spec.cwd) / socket
@@ -333,6 +339,40 @@ class Connector:
         task.add_done_callback(self._startup.discard)
 
     async def start_drivers(self) -> None:
+        for command, receipt in self.journal.observations():
+            if (
+                command.get("resource")
+                or not command.get("instance_id")
+                or command["id"] in self.operations
+                or receipt.get("status") == "unknown"
+            ):
+                continue
+            last_confirmed = {
+                key: value for key, value in receipt.items() if key != "last_confirmed"
+            }
+            self.journal.append(
+                {
+                    "type": "event",
+                    "event_id": str(uuid4()),
+                    "instance_id": command["instance_id"],
+                    "operation_id": command["id"],
+                    "kind": "progress",
+                    **{
+                        key: receipt.get(key) or command.get(key)
+                        for key in ("session_id", "execution_id")
+                        if receipt.get(key) or command.get(key)
+                    },
+                    "snapshot_sequence": receipt.get("state_sequence", 0),
+                    "payload": {
+                        "status": "unknown",
+                        "pending": True,
+                        "reason": "original_owner_not_attached",
+                        "stream_gap": True,
+                        "last_confirmed": last_confirmed,
+                    },
+                }
+            )
+            self.pending_events.set()
         for spec in self.config.instances:
             self._start(spec)
         # Each native owner starts/reconnects independently of its siblings.
@@ -496,6 +536,7 @@ class Connector:
                 and detached_observation[0]["action"] in {"prompt", "queue"}
                 and response.get("result", {}).get("detached") is True
                 and original_id in self.operations
+                and self.operations[original_id].spec.driver != "codex"
             ):
                 # Detaching observation does not prove that paid work ended.
                 # No completion signal remains, so keep its original owner.
