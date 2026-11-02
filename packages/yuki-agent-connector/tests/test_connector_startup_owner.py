@@ -53,7 +53,7 @@ async def test_missing_codex_executable_publishes_actual_start_error_in_catalog(
                     "driver": "codex",
                     "capabilities": [],
                     "status": "unavailable",
-                    "error_type": "FileNotFoundError",
+                    "error_type": "native_not_installed",
                 }
                 assert connector.config.instances[0].command == str(tmp_path / "missing-codex.exe")
                 assert journal.db.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
