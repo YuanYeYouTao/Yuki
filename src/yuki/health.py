@@ -29,7 +29,6 @@ class HealthPayload(TypedDict):
     gateways: dict[str, dict[str, object]]
     automation_enabled: bool
     automation_worker_running: bool
-    active_automation_count: int
     plugin_system_enabled: bool
     plugin_running_count: int
     plugin_background_turns: dict[str, object]
@@ -41,14 +40,8 @@ class HealthPayload(TypedDict):
     memory_embedding_enabled: bool
     memory_embedding_configured: bool
     memory_maintenance_running: bool
-    memory_contested_facts: int
-    memory_active_contested_facts: int
-    memory_consistency_healthy: bool
-    memory_expired_active_facts: int
     memory_maintenance_last_success_at: str | None
-    memory_rebuild: dict[str, object]
     memory_self_reflection: dict[str, object]
-    memory_dream: dict[str, object]
     conversation_generation_superseded_effects: int
     uptime_seconds: int
 
@@ -60,13 +53,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     plugin_manager = getattr(container, "plugin_manager", None)
     plugin_running_count = int(getattr(plugin_manager, "running_count", 0))
     background_health = await container.plugin_background_turns.health()
-    memory_health = await container.memory_audit.health()
-    rebuild_health = await container.persistence.memory_rebuilds.health(
-        enabled=container.settings.memory_rebuild_enabled,
-        active_in_flight_calls=container.memory_rebuild_service.active_in_flight_calls,
-    )
-    self_reflection_health = await container.memory_self_reflection_worker.health()
-    dream_health = await container.memory_dream_worker.health()
+    maintenance_last_success_at = container.memory_metrics.maintenance_last_success_at
     gateways = await platform_health(
         container.database,
         container.gateway_providers,
@@ -108,30 +95,24 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         gateways={platform: facts.summary() for platform, facts in gateways.items()},
         automation_enabled=container.settings.automation_enabled,
         automation_worker_running=container.automation_worker.running,
-        active_automation_count=await container.automation_repository.active_count(),
         plugin_system_enabled=container.settings.plugin_system_enabled,
         plugin_running_count=plugin_running_count,
         plugin_background_turns=background_health,
         sandbox_completions=await container.sandbox_completions.health(),
         sandbox_continuations=await container.sandbox_continuations.health(),
-        runtime_work=await container.work_scheduler.health(),
+        runtime_work=container.work_scheduler.runtime_status(),
         subagents=await container.subagent_scheduler.health(),
         main_agent_manifest=container.main_agent_contract.health(),
         memory_embedding_enabled=container.memory_embeddings.enabled,
         memory_embedding_configured=container.memory_embeddings.provider is not None,
         memory_maintenance_running=container.memory_maintenance_worker.running,
-        memory_contested_facts=memory_health.contested_fact_count,
-        memory_active_contested_facts=memory_health.active_contested_count,
-        memory_consistency_healthy=memory_health.healthy,
-        memory_expired_active_facts=memory_health.expired_active_count,
         memory_maintenance_last_success_at=(
-            memory_health.maintenance_last_success_at.isoformat()
-            if memory_health.maintenance_last_success_at
-            else None
+            maintenance_last_success_at.isoformat() if maintenance_last_success_at else None
         ),
-        memory_rebuild=rebuild_health.model_dump(mode="json"),
-        memory_self_reflection=self_reflection_health.model_dump(mode="json"),
-        memory_dream=dream_health.model_dump(mode="json"),
+        memory_self_reflection={
+            "enabled": container.settings.memory_self_reflection_enabled,
+            "running": container.memory_self_reflection_worker.running,
+        },
         conversation_generation_superseded_effects=(
             container.conversation_effect_gate.superseded_rejections
         ),

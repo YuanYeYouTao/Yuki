@@ -178,8 +178,6 @@ class SemanticParticipationService:
         self._lock = asyncio.Lock()
         self._session_lock = asyncio.Lock()
         self._save_lock = asyncio.Lock()
-        self._failures = 0
-        self._dirty_overflows = 0
         self._last_discovery_at = 0.0
         self._discovery_cursor = 0
         self._model_config_path = (
@@ -467,21 +465,10 @@ class SemanticParticipationService:
         return self._model_parameters
 
     async def health(self) -> dict[str, object]:
-        from yuki.services.participation_diagnostics import participation_diagnostics
-
         return {
             "running": self._task is not None and not self._task.done(),
-            "scopes": len(self._sessions),
-            "failures": self._failures,
-            "dirty_overflows": self._dirty_overflows,
             "configured": self._observation_ready(),
-            "model_profile": self._model_active_digest[:12],
             "model_config_error": self._model_config_error,
-            "diagnostics": await participation_diagnostics(
-                self.database,
-                tuple(item.controller.state for item in self._sessions.values()),
-                now=time.time(),
-            ),
         }
 
     def observe_context(self, message: InboundMessage, *, direct: bool) -> None:
@@ -489,13 +476,11 @@ class SemanticParticipationService:
             # Keep already queued scopes on overload. This is bounded observation work,
             # not the ordinary chat queue; a later real event can hydrate the ledger again.
             if message.conversation_id not in self._dirty and len(self._dirty) >= 128:
-                self._dirty_overflows += 1
                 return
             pending = self._dirty.setdefault(message.conversation_id, {})
             pending[message.source_event_id] = pending.get(message.source_event_id, False) or direct
             if len(pending) > 64:
                 pending.pop(next(iter(pending)))
-                self._dirty_overflows += 1
 
     async def _scene(self, conversation_id: str) -> Scene | None:
         async with self.database.read_session() as session:
@@ -1495,7 +1480,6 @@ class SemanticParticipationService:
         try:
             await reconcile_page(self, active)
         except Exception as exc:
-            self._failures += 1
             logger.warning("participation_reconcile_failed category=%s", type(exc).__name__)
 
     async def tick(self) -> None:
@@ -1555,7 +1539,6 @@ class SemanticParticipationService:
                 if isinstance(result, BaseException):
                     if isinstance(result, asyncio.CancelledError):
                         raise result
-                    self._failures += 1
                     logger.warning("participation_scope_failed category=%s", type(result).__name__)
             await self._reconcile_outbox()
         finally:
@@ -1694,6 +1677,5 @@ class SemanticParticipationService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._failures += 1
                 logger.warning("participation_tick_failed category=%s", type(exc).__name__)
             await asyncio.sleep(2)

@@ -61,7 +61,9 @@ def health_container(database, gateway):
             memory_rebuilds=SimpleNamespace(health=AsyncMock(return_value=json_health))
         ),
         memory_rebuild_service=SimpleNamespace(active_in_flight_calls=0),
-        memory_self_reflection_worker=SimpleNamespace(health=AsyncMock(return_value=json_health)),
+        memory_self_reflection_worker=SimpleNamespace(
+            running=False, health=AsyncMock(return_value=json_health)
+        ),
         memory_dream_worker=SimpleNamespace(health=AsyncMock(return_value=json_health)),
         asr=SimpleNamespace(health=lambda: {}),
         onebot_connected=lambda: False,
@@ -69,10 +71,13 @@ def health_container(database, gateway):
         automation_repository=SimpleNamespace(active_count=AsyncMock(return_value=0)),
         sandbox_completions=worker(),
         sandbox_continuations=worker(),
-        work_scheduler=worker(),
+        work_scheduler=SimpleNamespace(
+            health=AsyncMock(return_value={}), runtime_status=lambda: {}
+        ),
         subagent_scheduler=worker(),
         main_agent_contract=SimpleNamespace(health=lambda: {}),
         memory_maintenance_worker=SimpleNamespace(running=False),
+        memory_metrics=SimpleNamespace(maintenance_last_success_at=None),
         conversation_effect_gate=SimpleNamespace(superseded_rejections=0),
         started_at=time.monotonic(),
     )

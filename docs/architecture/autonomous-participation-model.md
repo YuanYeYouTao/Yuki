@@ -9,7 +9,7 @@
 SemanticParticipationService 每次约两秒的采样轮读取内容散列，校验成功才把完整配置
 应用到所有当前 scope。无需重新构建或重启 Bot。无文件时使用镜像内默认值；删除文件
 会恢复默认值。无效 JSON、未知字段或越界数值会记录错误类别并在健康状态中显示
-`model_config_error`，已生效的上一版参数继续使用；健康状态的 `model_profile`
+`model_config_error`，已生效的上一版参数继续使用；控制快照中的 `model_profile`
 是生效内容散列前缀。
 
 参数直接编辑上述热更新 JSON，使用独立库的 `AutonomyParameters` schema 校验。

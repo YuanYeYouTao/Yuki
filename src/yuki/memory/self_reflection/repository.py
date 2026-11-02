@@ -918,11 +918,7 @@ class SelfReflectionRepository:
             return "characters"
         return "max_wait"
 
-    async def health_snapshot(
-        self,
-        *,
-        local_date: str,
-    ) -> tuple[int, int, str | None, datetime | None]:
+    async def health_snapshot(self) -> tuple[int, str | None, datetime | None]:
         """Return content-free pending and execution statistics."""
 
         async with self._database.read_session() as session:
@@ -931,14 +927,6 @@ class SelfReflectionRepository:
                 self._xor_owner_state_clause(),
             )
             pending = int(await session.scalar(pending_query) or 0)
-            daily_calls = int(
-                await session.scalar(
-                    select(func.count(MemorySelfReflectionRunModel.id)).where(
-                        MemorySelfReflectionRunModel.scheduled_slot.like(f"{local_date}:%")
-                    )
-                )
-                or 0
-            )
             last_run = await session.scalar(
                 select(MemorySelfReflectionRunModel)
                 .order_by(MemorySelfReflectionRunModel.started_at.desc())
@@ -946,7 +934,6 @@ class SelfReflectionRepository:
             )
         return (
             pending,
-            daily_calls,
             last_run.status if last_run is not None else None,
             last_run.completed_at if last_run is not None else None,
         )

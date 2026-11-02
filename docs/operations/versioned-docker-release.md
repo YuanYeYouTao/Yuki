@@ -74,6 +74,13 @@ HTTP 提取，不需要 Tavily 密钥。缺省后端为 `model`；旧 `WEB_ENABL
 和投递回执不属于垃圾缓存。清理不停止或删除其他服务、现用镜像及持久卷，记录实际回收结果。
 
 Bot 的 Docker 探针请求 `/livez`，只检查 ASGI 事件循环能否及时响应；进程退出或
-主循环停顿仍使探针失败。详细依赖与 Worker 状态保留在 `/healthz`，运维监控须继续
-读取该端点的 `status`、`database` 等字段。`/healthz` 在 `status=degraded` 时仍返回
-HTTP 200，不能仅凭 HTTP 状态码将它判定为业务健康。
+主循环停顿仍使探针失败。依赖可用性与 Worker 的基本状态保留在 `/healthz`，运维监控
+须继续读取该端点的 `status`、`database` 等字段。Memory 一致性与自省积压沿原授权管理
+入口按需读取；Rebuild 和 Dream 的原授权列表与单次运行状态仍可读取，不等于原公开全局
+汇总。Work 与自动化的全局计数不作为公开健康字段，各自业务状态沿原入口读取。这些详细
+诊断不作为每次公开健康检查的历史扫描。`/healthz` 在 `status=degraded` 时仍返回 HTTP 200，
+不能仅凭 HTTP 状态码将它判定为业务健康。
+
+公开响应不再包含 `active_automation_count`、Memory 一致性诊断字段和 `memory_rebuild`／
+`memory_dream` 的全局汇总；`memory_self_reflection` 只保留 `enabled` 与 `running`，
+`runtime_work` 只保留运行态。依赖旧字段的外部监控须调整，不以零值或默认健康代替原统计。

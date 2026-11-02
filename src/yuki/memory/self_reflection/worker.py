@@ -54,6 +54,10 @@ class SelfReflectionWorker:
         self._process_lock = asyncio.Lock()
         self.social = social
 
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
     async def start(self) -> None:
         if not self._settings.memory_self_reflection_enabled or (
             self._task and not self._task.done()
@@ -187,12 +191,10 @@ class SelfReflectionWorker:
 
     async def health(self) -> SelfReflectionHealth:
         snap = await self.control.snapshot()
-        pending, _, status, completed_at = await self._repository.health_snapshot(
-            local_date=datetime.now(UTC).astimezone(self._timezone).date().isoformat()
-        )
+        pending, status, completed_at = await self._repository.health_snapshot()
         return SelfReflectionHealth(
             enabled=self._settings.memory_self_reflection_enabled,
-            running=self._task is not None and not self._task.done(),
+            running=self.running,
             schedule_hours=tuple(sorted(self._hours)),
             timezone=self._settings.memory_self_reflection_timezone,
             pending_conversations=pending,
