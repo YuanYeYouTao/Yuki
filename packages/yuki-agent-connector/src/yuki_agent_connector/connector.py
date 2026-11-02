@@ -27,7 +27,7 @@ from .terminal import LocalTerminal
 
 logger = logging.getLogger(__name__)
 READ_ACTIONS = {"list", "get", "read", "status", "stat", "release"}
-ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond"}
+ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond", "queue", "watch"}
 
 
 def instance_source(spec: Instance) -> str:
@@ -419,12 +419,27 @@ class Connector:
                         if original_id and command["action"] in ORIGINAL_CONTROLS
                         else self.drivers.get(command["instance_id"])
                     )
-                previous = self.journal.begin(
-                    command, owner_source=instance_source(driver.spec) if driver else None
-                )
+                source = instance_source(driver.spec) if driver else None
+                if source is None and original_id and command["action"] in {"queue", "watch"}:
+                    stored_origin = self.journal.original(original_id)
+                    if stored_origin is not None and stored_origin[0].get(
+                        "instance_id"
+                    ) == command.get("instance_id"):
+                        source = stored_origin[1]
+                previous = self.journal.begin(command, owner_source=source)
                 if previous is not None:
                     return previous
                 recorded = True
+                if (
+                    original_id
+                    and command["action"] in {"queue", "watch"}
+                    and not any(
+                        spec.id == command.get("instance_id") for spec in self.config.instances
+                    )
+                ):
+                    raise DriverError(
+                        "instance_unavailable", "The configured native instance is unavailable"
+                    )
             if command.get("resource"):
                 result = await self._device_command(command)
             elif command["action"] == "get" and arguments.get("operation_id"):

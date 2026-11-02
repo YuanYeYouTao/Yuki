@@ -142,8 +142,9 @@ async def test_live_instance_edit_and_delete_preserve_original_work(
     assert connector.hello()["instances"][0]["label"] == "New"
     assert connector.drivers["sibling"] is other and not other.stopped
     assert connector.drivers["local"] is not old and not old.stopped
-    for action in ("respond", "steer", "cancel"):
-        await connector.dispatch(
+    receipts = {}
+    for action in ("respond", "steer", "cancel", "queue", "watch"):
+        receipts[action] = await connector.dispatch(
             {**command(f"control-{action}", action), "arguments": {"operation_id": "original"}}
         )
         assert old.calls[-1]["id"] == f"control-{action}"
@@ -167,9 +168,29 @@ async def test_live_instance_edit_and_delete_preserve_original_work(
         {**command("cancel-after-delete", "cancel"), "arguments": {"operation_id": "original"}}
     )
     assert old.calls[-1]["id"] == "cancel-after-delete"
+    for action in ("queue", "watch"):
+        rejected = await connector.dispatch(
+            {
+                **command(f"new-{action}-after-delete", action),
+                "arguments": {"operation_id": "original"},
+            }
+        )
+        assert rejected["result"]["error"]["code"] == "instance_unavailable"
+        assert old.calls[-1]["id"] == "cancel-after-delete"
+    assert (
+        await connector.dispatch(
+            {**command("control-queue", "queue"), "arguments": {"operation_id": "original"}}
+        )
+        == receipts["queue"]
+    )
 
     old.finish.set()
     assert (await work)["result"]["execution_id"] == "native-turn"
+    for action in ("queue", "watch"):
+        await old.emit(
+            "completed",
+            {"operation_id": f"control-{action}", "payload": {"status": "completed"}},
+        )
     await old.emit(
         "completed",
         {"operation_id": "original", "payload": {"status": "completed"}},
@@ -245,6 +266,28 @@ async def test_recovery_requires_the_original_connection_source(
     )
     assert result["result"] == original_receipt
     assert drivers[-1].recovered == []
+
+    terminal = command("terminal-owner")
+    terminal_source = connector_module.instance_source(spec)
+    journal.begin(terminal, owner_source=terminal_source)
+    journal.complete("terminal-owner", {"result": {"status": "completed", "pending": False}})
+    same_source = await started(spec)
+    await same_source.dispatch(
+        {**command("queue-on-original", "queue"), "arguments": {"operation_id": "terminal-owner"}}
+    )
+    saved_source = journal.db.execute(
+        "SELECT owner_source FROM operations WHERE id='queue-on-original'"
+    ).fetchone()[0]
+    assert saved_source == terminal_source
+    journal.append(
+        {
+            "type": "event",
+            "event_id": "queue-finished",
+            "kind": "completed",
+            "operation_id": "queue-on-original",
+            "payload": {"status": "completed"},
+        }
+    )
 
     sdk_spec = replace(spec, driver="claude", endpoint=None, installation=None)
     sdk = await started(sdk_spec)
