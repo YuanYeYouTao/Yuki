@@ -132,13 +132,13 @@ class ExternalAgentService:
         return True
 
     async def _connection(
-        self, instance: AgentInstanceModel, *, action: str | None = None
+        self, instance: AgentInstanceModel, *, original: bool = False
     ) -> DeviceConnection:
         # Recheck the real grant for every native access, including an already-open WSS.
         async with self.database.read_session() as session:
             await self.identity.require_device(session, instance.device_id)
         connection = self.connections.get(instance.device_id)
-        if action not in {"detach", "get"} and instance.local_id not in connection.instances:
+        if not original and instance.local_id not in connection.instances:
             raise DeviceOffline("instance_unavailable")
         return connection
 
@@ -278,7 +278,7 @@ class ExternalAgentService:
             if view["pending"]:
                 instance = await self.repository.instance(operation.instance_id, actor)
                 try:
-                    connection = await self._connection(instance, action="get")
+                    connection = await self._connection(instance, original=True)
                 except (DeviceOffline, ClientError) as error:
                     view = self._unavailable_view(view, str(error))
                 else:
@@ -511,8 +511,9 @@ class ExternalAgentService:
                 "operation_id_required",
                 "respond/detach 需要原 operation_id 或 run_id；execution_id 不能替代。",
             )
+        original_control = owned is not None and action in {"detach", "cancel", "steer", "respond"}
         try:
-            connection = await self._connection(instance, action=action)
+            connection = await self._connection(instance, original=original_control)
         except DeviceOffline:
             return {"error": "device_offline", "executed": False, "pending": False}
         arguments = {
@@ -624,7 +625,7 @@ class ExternalAgentService:
                     raise
             try:
                 # A queued writer may outlive the authenticated socket snapshot.
-                connection = await self._connection(instance, action=action)
+                connection = await self._connection(instance, original=original_control)
             except (DeviceOffline, ClientError):
                 operation = await self.repository.response(
                     operation.id,
@@ -756,7 +757,7 @@ class ExternalAgentService:
                 action = "cancel"
             try:
                 instance = await self.repository.instance(row.instance_id, row.actor_person_id)
-                connection = await self._connection(instance, action=action)
+                connection = await self._connection(instance, original=True)
             except (DeviceOffline, ClientError):
                 results.append({"operation_id": row.id, "status": "unknown", "pending": True})
                 continue

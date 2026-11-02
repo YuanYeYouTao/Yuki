@@ -374,7 +374,12 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             )
             pending_id = str(uuid4())
             await bridge.service.execute(
-                {"action": "watch", "instance_id": instance, "session_id": session_id},
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Keep the pending original owner",
+                },
                 pending_id,
                 bridge.source,
             )
@@ -441,6 +446,25 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
         assert pending_read.json()["status"] == "unknown"
         assert computer.commands[-1]["action"] == "get"
         assert computer.commands[-1]["arguments"]["operation_id"] == pending_id
+
+        # Removing configuration does not revoke this computer. An explicit
+        # control still targets the original operation, but a new task cannot
+        # select the removed instance.
+        control_id = str(uuid4())
+        control = await bridge.service.execute(
+            {"action": "cancel", "operation_id": pending_id}, control_id, bridge.source
+        )
+        assert control["operation_id"] == control_id
+        assert computer.commands[-1]["action"] == "cancel"
+        assert computer.commands[-1]["arguments"]["operation_id"] == pending_id
+        before = len(computer.commands)
+        async with accepted_work(bridge):
+            blocked = await bridge.service.execute(
+                {"action": "prompt", "instance_id": instance, "prompt": "Do not dispatch"},
+                str(uuid4()),
+                bridge.source,
+            )
+        assert blocked["executed"] is False and len(computer.commands) == before
         late = await computer.event(pending_id, "completed", {"status": "completed"})
         completed = await bridge.http.get(
             f"/agents/v1/operations/{pending_id}", headers=bridge.headers
@@ -500,6 +524,10 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             await bridge.service.execute(
                 {"action": "list", "instance_id": instance}, str(uuid4()), bridge.source
             )
+        with pytest.raises(ClientError, match="unauthenticated"):
+            await bridge.service.execute(
+                {"action": "cancel", "operation_id": pending_id}, str(uuid4()), bridge.source
+            )
         receipt = await bridge.http.get(
             f"/agents/v1/operations/{operation_id}", headers=bridge.headers
         )
@@ -523,6 +551,7 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                     "session_id": session_id,
                     "operation_id": operation_id,
                     "pending_operation_id": pending_id,
+                    "control_operation_id": control_id,
                     "run_id": operation["run_id"],
                     "event_id": event["event_id"],
                     "late_event_id": late["event_id"],
