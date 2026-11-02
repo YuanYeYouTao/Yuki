@@ -273,9 +273,9 @@ watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人
 重传前检查本地原件，下载核对收到字节的原版本摘要。
 
 本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
-个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。ACP 方向 A 的接入见下节；
-方向 B 已有通过 `external_agent` 访问服务器持久环境内 Agent 的实现，见[主 Agent](main-agent-runtime.md#预算等待与异常)。
-服务器访问用户本机原生 Agent 的设备通道、授权与生命周期解耦尚未实施，见[本机 Agent 任务书](Yuki-本机Agent接入与ACP统一重构任务书-2026-10-23.md)。
+ACP 方向 A 的接入见下节；服务器使用 `external_agent` 访问用户本机原生 Agent 时，
+沿现有个人设备授权与 `/agents/v1/connect`，保留原实例、执行和操作回执。
+部署与生命周期见[本机连接器](../operations/local-agent-connector.zh-CN.md)。
 
 App/ACP 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
 其他入口的等待不会因此被匹配，跨入口接续仍使用明确的 Work inputs 接口。
