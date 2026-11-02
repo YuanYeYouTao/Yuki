@@ -273,16 +273,7 @@ def _continuation_basis(
 ) -> tuple[SourceRef, ...]:
     # A logical current unit may represent another original Person. A new input
     # still belongs to its own original actor's existing unit and source proof.
-    own = next(
-        (
-            unit.binding.basis
-            for unit in item.controller.participating_units(time.time())
-            if unit.unit.thread == matched.unit.thread
-            and unit.unit.target == event.author
-            and unit.binding.actor == event.author
-        ),
-        (),
-    )
+    own = item.controller.participation_own_basis(matched.unit.thread, event.author, time.time())
     return tuple(dict.fromkeys((*matched.binding.basis, *own, event.ref)))
 
 

@@ -291,9 +291,7 @@ async def sync_scope_effects(
     valid_runs = {run.id for run in valid_run_rows}
     semantic_runs = {run.id for run in valid_run_rows if run.owner == "semantic"}
     run_threads = {run.id: run.thread_key for run in valid_run_rows if run.thread_key}
-    outbound_threads = dict(
-        cast(dict[str, str], item.controller.state.host_checkpoint.get("outbound_threads", {}))
-    )
+    outbound_updates: dict[str, str] = {}
     by_id = {row.id: row for row in current}
     output_ids = tuple({row.event_id for row in current if row.event_id is not None})
     valid_outputs: set[int] = set()
@@ -339,7 +337,7 @@ async def sync_scope_effects(
             item.controller.observe_public_anchor(run_id, key, _timestamp(row.updated_at))
         if marker and run_id in run_threads:
             thread = run_threads[run_id]
-            outbound_threads[key] = thread
+            outbound_updates[key] = thread
             cached = item.controller.state.events.get(key)
             if cached is not None and cached.kind == "self" and cached.thread != thread:
                 item.controller.set_state_entry(
@@ -367,7 +365,7 @@ async def sync_scope_effects(
             if item.controller.observe_unit_expression(
                 binding, actual[0], actual[1], anchor=anchor
             ):
-                outbound_threads[key] = binding.unit.thread
+                outbound_updates[key] = binding.unit.thread
                 cached = item.controller.state.events.get(key)
                 if (
                     cached is not None
@@ -377,10 +375,8 @@ async def sync_scope_effects(
                     item.controller.set_state_entry(
                         "events", key, cached.model_copy(update={"thread": binding.unit.thread})
                     )
-    if len(outbound_threads) > 1024:
-        for key in tuple(outbound_threads)[:-1024]:
-            outbound_threads.pop(key)
-    item.controller.set_state_entry("host_checkpoint", "outbound_threads", outbound_threads)
+    for key, thread in outbound_updates.items():
+        item.controller.set_host_mapping_entry("outbound_threads", key, thread)
     for run_ref, effect in effects.values():
         if apply_committed and (run_ref.startswith("social-run:") or run_ref in valid_runs):
             item.controller.observe_committed_effect(run_ref, effect)
