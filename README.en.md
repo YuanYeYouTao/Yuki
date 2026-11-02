@@ -1,4 +1,4 @@
-<!-- release-baseline: version=4.0.0 schema=0143 -->
+<!-- release-baseline: version=4.0.0 schema=0155 -->
 
 [中文](README.md) · English
 
@@ -34,9 +34,10 @@ Yuki is an open-source, self-hosted social AI agent. She joins conversations thr
 - **A terminal for everyday work.** Files, projects and dependencies are handled directly in the persistent terminal, with interactive input, background execution, inspection and cancellation. Direct mode and optional Code Mode share tools and execution services.
 - **Tasks continue from their records.** Work retains goals, parent-child relationships, model requests, tool runs and delivery records. New messages can update ongoing work. Recovery reads the original execution, and Main Compact uses the current model to condense long conversations and task context.
 - **Media on demand and background sticker selection.** Incoming images, video, stickers and files first provide an index; the agent chooses what to inspect. A shared sticker directory holds files and search information. Text delivery and background image selection have their own execution records.
-- **Updated plugins and backend maintenance.** Plugin API moves to 7.0. The Kun game and GitHub monitor are maintained in separate repositories. Context preparation, person queries, diagnostics and SQLite hot queries receive a broad cleanup and fixes.
+- **Desktop model management and usage.** Providers, purposes and auxiliary connections share one configuration with private key storage. Usage queries recorded models and time windows. Shared profile, personality and model changes check current Person superusers, without a separate owner tier.
+- **Updated plugins and backend maintenance.** Plugin API moves to 9.0. The Kun game and GitHub monitor are maintained in separate repositories. Context preparation, person queries, diagnostics and SQLite hot queries receive a broad cleanup and fixes.
 
-The [release notes](docs/releases/v4.0.0.en.md) cover the changes and link all 37 merged PRs since the formal 3.9.0 tag, with contributor attribution.
+The [release notes](docs/releases/v4.0.0.en.md) directly list all **101 merged PRs** after the formal 3.9.0 tag through the fixed cutoff `81f10229` (#558), with contributor attribution. The [detailed ledger](docs/releases/v4.0.0-prs.md) distinguishes implementation, documentation, tests and superseded changes. Version 4.0.0 remains unreleased.
 
 ## Work beyond conversation
 
@@ -97,7 +98,7 @@ uv run yuki --help
 
 The CLI is `yuki` and the server entry point is `yuki-bot`. See the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) for migration from 3.9. QQ uses SnowLuma; Feishu, Lark, Telegram or personal-client-only setups need no QQ account.
 
-The 4.0.0 release baseline is schema **0143**, Plugin API **7.0**, and manifest **25**. Current development uses schema **0155**, Plugin API **9.0**, and manifest **33**. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
+The current unreleased 4.0.0 baseline has schema **0155**, Plugin API **9.0**, personal Client API revision **9**, and Connector **0.4.2 / protocol 4**. Tool declarations follow the current complete manifest. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
 
 Migration 0153 moves existing vectors into Vec1 tables in the same database without purchasing new embeddings. Stop old writers and back up both the main database and participation snapshots before upgrading with the new Vec1 build. See the [algorithm implementation record](docs/operations/algorithm-performance-implementation-20261026.md) for the migration procedure and local measurements.
 
