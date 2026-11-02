@@ -188,6 +188,7 @@ async def test_cli_start_upgrades_old_url_namespace_before_connecting(
     )
     if receipt_version == 0:
         journal.db.execute("UPDATE operations SET receipt=NULL")
+    journal.db.execute("ALTER TABLE operations DROP COLUMN owner_source")
     journal.db.execute(f"PRAGMA user_version={receipt_version}")
     journal.db.commit()
     journal.close()
@@ -219,13 +220,15 @@ async def test_cli_start_upgrades_old_url_namespace_before_connecting(
         assert json.loads(after["operations"][0][4])["status"] == "succeeded"
         assert json.loads(after["operations"][1][4])["status"] == "running"
         assert after["events"][0][1] == "original-unconfirmed-event"
+        assert all(row[-1] is None for row in after["operations"])
         if receipt_version == 1:
-            assert after["operations"] == before["operations"]
+            assert [row[:-1] for row in after["operations"]] == before["operations"]
             assert after["events"] == before["events"]
     finally:
         if process.returncode is None:
             process.terminate()
-        await process.communicate()
+        stdout, stderr = await process.communicate()
+        address_evidence.update(stdout=stdout.decode(), stderr=stderr.decode())
         handshake.cancel()
         await asyncio.gather(handshake, exited, return_exceptions=True)
         server.close()
