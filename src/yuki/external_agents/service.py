@@ -516,6 +516,17 @@ class ExternalAgentService:
             connection = await self._connection(instance, original=original_control)
         except DeviceOffline:
             return {"error": "device_offline", "executed": False, "pending": False}
+        target = owned
+        if target is None and execution is not None and action in {"cancel", "steer"}:
+            matches = await self.repository.execution_operations(
+                instance.id, execution.session_id, execution.native_id, actor
+            )
+            if len(matches) > 1:
+                raise ExternalAgentArgumentError(
+                    "external_agent_execution_ambiguous",
+                    "该 execution_id 对应多个原操作，请提供 operation_id 或 run_id。",
+                )
+            target = matches[0] if matches else None
         arguments = {
             key: value
             for key, value in args.items()
@@ -541,8 +552,8 @@ class ExternalAgentService:
         )
         if execution is not None:
             native_execution = execution.native_id
-        if owned is not None:
-            arguments["operation_id"] = owned.id
+        if target is not None:
+            arguments["operation_id"] = target.id
         if action == "steer":
             arguments["expected_execution_id"] = native_execution
         if action == "respond":
@@ -574,8 +585,8 @@ class ExternalAgentService:
             arguments["permission_id"] = native_question
             arguments["native_request_id"] = native_question
             arguments["connection_id"] = event_data["payload"].get("connection_id")
-        if action == "cancel" and owned is not None:
-            queued = json.loads(owned.result_json or "{}").get("queued_submission_id")
+        if action == "cancel" and target is not None:
+            queued = json.loads(target.result_json or "{}").get("queued_submission_id")
             if queued is not None:
                 arguments["queued_submission_id"] = queued
         command = {
@@ -642,8 +653,8 @@ class ExternalAgentService:
             except (DeviceOffline, OSError):
                 return {**await self._view(operation), "uncertain": True}
             operation = await self.repository.response(operation.id, result)
-            if owned is not None:
-                await self._control_result(owned, action, result)
+            if target is not None:
+                await self._control_result(target, action, result)
         return await self._view(operation)
 
     async def _control_result(

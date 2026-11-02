@@ -232,6 +232,33 @@ class AgentRepository:
             await self.authorize(session, row.instance_id, actor)
             return row
 
+    async def execution_operations(
+        self, instance_id: str, session_id: str, native_id: str, actor: str
+    ) -> list[AgentOperationModel]:
+        async with self.database.read_session() as session:
+            await self.authorize(session, instance_id, actor)
+            return list(
+                await session.scalars(
+                    select(AgentOperationModel)
+                    .where(
+                        AgentOperationModel.instance_id == instance_id,
+                        AgentOperationModel.session_id == session_id,
+                        AgentOperationModel.native_execution_id == native_id,
+                        AgentOperationModel.action.in_(("prompt", "queue")),
+                        person_family_condition(AgentOperationModel.actor_person_id, actor),
+                        func.coalesce(
+                            func.json_extract(AgentOperationModel.result_json, "$.executed"), 1
+                        )
+                        != 0,
+                        func.coalesce(
+                            func.json_extract(AgentOperationModel.result_json, "$.admitted"), 1
+                        )
+                        != 0,
+                    )
+                    .limit(2)
+                )
+            )
+
     async def work_operation(
         self,
         operation_id: str,

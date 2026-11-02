@@ -22,6 +22,7 @@ from websockets.exceptions import ConnectionClosed
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
+from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.http import attach_external_agent_api
 from yuki.external_agents.service import ExternalAgentService
 from yuki.persistence.models import ChatEventModel
@@ -356,6 +357,13 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             assert await reader.scalar(select(func.count()).select_from(AgentOperationModel)) == 0
             assert await reader.scalar(select(func.count()).select_from(SandboxTaskRunModel)) == 0
         assert [item["action"] for item in computer.commands] == ["list", "get"]
+        await bridge.service.execute(
+            {"action": "cancel", "execution_id": result["execution_id"]},
+            str(uuid4()),
+            bridge.source,
+        )
+        assert computer.commands[-1]["action"] == "cancel"
+        assert "operation_id" not in computer.commands[-1]["arguments"]
         connection = bridge.service.connections.get(bridge.device["device_id"])
         async with accepted_work(bridge):
             operation_id = str(uuid4())
@@ -372,8 +380,9 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             event = await computer.event(
                 operation_id, "completed", {"status": "completed", "text": "Original result"}
             )
+            computer.native_execution = "second-original-native-turn"
             pending_id = str(uuid4())
-            await bridge.service.execute(
+            pending_operation = await bridge.service.execute(
                 {
                     "action": "prompt",
                     "instance_id": instance,
@@ -383,6 +392,57 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                 pending_id,
                 bridge.source,
             )
+            await bridge.service.execute(
+                {
+                    "action": "watch",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "execution_id": pending_operation["execution_id"],
+                },
+                str(uuid4()),
+                bridge.source,
+            )
+            computer.reject_next = "prompt"
+            rejected = await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "execution_id": pending_operation["execution_id"],
+                    "prompt": "Rejected before dispatch",
+                },
+                str(uuid4()),
+                bridge.source,
+            )
+            assert rejected["executed"] is False
+        execution_id = pending_operation["execution_id"]
+        execution_control_id = str(uuid4())
+        await bridge.service.execute(
+            {"action": "cancel", "execution_id": execution_id}, execution_control_id, bridge.source
+        )
+        assert computer.commands[-1]["arguments"]["operation_id"] == pending_id
+        assert computer.commands[-1]["execution_id"] == computer.native_execution
+
+        # A second actual prompt/queue claim is ambiguous; a watch is not.
+        async with accepted_work(bridge):
+            await bridge.service.execute(
+                {
+                    "action": "queue",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Queued",
+                },
+                str(uuid4()),
+                bridge.source,
+            )
+        before = len(computer.commands)
+        with pytest.raises(ExternalAgentArgumentError, match="external_agent_execution_ambiguous"):
+            await bridge.service.execute(
+                {"action": "steer", "execution_id": execution_id, "prompt": "Do not dispatch"},
+                str(uuid4()),
+                bridge.source,
+            )
+        assert len(computer.commands) == before
         rows = [
             {
                 "id": computer.local_id,
@@ -551,6 +611,8 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                     "session_id": session_id,
                     "operation_id": operation_id,
                     "pending_operation_id": pending_id,
+                    "execution_id": execution_id,
+                    "execution_control_request_id": execution_control_id,
                     "control_operation_id": control_id,
                     "run_id": operation["run_id"],
                     "event_id": event["event_id"],
