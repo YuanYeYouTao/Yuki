@@ -27,6 +27,7 @@ from claude_agent_sdk import (
 )
 
 from ..config import Instance
+from ..discovery import profile_environment, refresh
 from . import DriverError, Emit
 
 
@@ -65,6 +66,8 @@ class ClaudeDriver:
         ] = {}
 
     async def start(self) -> None:
+        if self.spec.installation:
+            self.spec = refresh(self.spec)
         executable = shutil.which(self.spec.command) or self.spec.command
         if not await asyncio.to_thread(Path(executable).is_file):
             raise DriverError("cli_not_found", "Configure the installed Claude executable")
@@ -198,7 +201,7 @@ class ClaudeDriver:
         options = ClaudeAgentOptions(
             cli_path=self.spec.command,
             cwd=cwd,
-            env=self.spec.env,
+            env=profile_environment(self.spec, "CLAUDE_CONFIG_DIR"),
             system_prompt={"type": "preset", "preset": "claude_code"},
             tools={"type": "preset", "preset": "claude_code"},
             setting_sources=["user", "project", "local"],
@@ -322,7 +325,7 @@ class ClaudeDriver:
             *(["-I", "-B"] if sys.flags.isolated else []),
             "-m",
             "yuki_agent_connector.claude_inspect",
-            env=self.spec.environment(),
+            env=profile_environment(self.spec, "CLAUDE_CONFIG_DIR"),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,

@@ -12,6 +12,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from websockets.exceptions import InvalidHandshake
+
 from .config import Instance
 
 if sys.platform != "win32":
@@ -32,6 +34,14 @@ def installed_executable(path: Path) -> bool:
         and path.is_file()
         and (path.suffix.lower() == ".exe" if sys.platform == "win32" else os.access(path, os.X_OK))
     )
+
+
+def profile_environment(spec: Instance, variable: str) -> dict[str, str]:
+    environment = spec.environment()
+    value = environment.get(variable)
+    if value and not Path(value).is_absolute():
+        environment[variable] = str((Path(spec.cwd) / value).resolve())
+    return environment
 
 
 def npm_codex(package: Path, target: str) -> Path | None:
@@ -120,11 +130,11 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
         for package in packages:
             location = Path(package["InstallLocation"])
             for relative in ("app/resources/codex.exe", "resources/codex.exe"):
-                add(location / relative, f"appx:{package['Name']}:{relative}", package["Name"])
+                add(location / relative, f"appx:{package['Name']}:{relative}", "Codex（桌面應用）")
     elif driver == "codex" and sys.platform == "darwin":
         for applications in (Path("/Applications"), Path.home() / "Applications"):
             app = applications / "Codex.app"
-            add(app / "Contents/Resources/codex", f"app:{app}", "Codex App")
+            add(app / "Contents/Resources/codex", f"app:{app}", "Codex（桌面應用）")
     executable = driver + (".exe" if sys.platform == "win32" else "")
     label = "Claude Code" if driver == "claude" else "Codex CLI"
     if driver == "codex":
@@ -132,7 +142,7 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
         manifest = home / "packages/app-server-daemon/current/codex-package.json"
         command = codex_package(manifest)
         if command is not None:
-            add(command, f"codex-package:{manifest}", "Codex daemon")
+            add(command, f"codex-package:{manifest}", "Codex（背景服務安裝包）")
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         path = Path(directory)
         if directory and path.is_absolute():
@@ -148,7 +158,7 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
                 for target in NPM_WINDOWS_TARGETS:
                     command = npm_codex(package, target)
                     if command is not None:
-                        add(command, f"npm:{target}:{package}", "Codex CLI (npm)")
+                        add(command, f"npm:{target}:{package}", "Codex（npm）")
     if driver == "claude":
         path = Path.home() / ".local/bin" / executable
         add(path, f"path:{path}", label)
@@ -162,7 +172,7 @@ def candidates(driver: str = "codex") -> list[dict[str, Any]]:
     for package in claude_packages:
         command = npm_claude(package)
         if command is not None:
-            add(command, f"claude-npm:{package}", "Claude Code (npm)")
+            add(command, f"claude-npm:{package}", "Claude Code（npm）")
     return list(found.values())
 
 
@@ -196,14 +206,7 @@ async def diagnose(spec: Instance) -> dict[str, object]:
     if spec.driver == "claude":
         try:
             spec = refresh(spec)
-            environment = spec.environment()
-            if (
-                environment.get("CLAUDE_CONFIG_DIR")
-                and not Path(environment["CLAUDE_CONFIG_DIR"]).is_absolute()
-            ):
-                environment["CLAUDE_CONFIG_DIR"] = str(
-                    (Path(spec.cwd) / environment["CLAUDE_CONFIG_DIR"]).resolve()
-                )
+            environment = profile_environment(spec, "CLAUDE_CONFIG_DIR")
             process = await asyncio.create_subprocess_exec(
                 spec.command,
                 *spec.args,
@@ -245,7 +248,7 @@ async def diagnose(spec: Instance) -> dict[str, object]:
         }
     except FileNotFoundError:
         return {"id": spec.id, "available": False, "problem": "native_not_installed"}
-    except (ConnectionError, OSError):
+    except (ConnectionError, OSError, InvalidHandshake):
         return {"id": spec.id, "available": False, "problem": "native_owner_unavailable"}
     except DriverError as error:
         return {"id": spec.id, "available": False, "problem": error.code}

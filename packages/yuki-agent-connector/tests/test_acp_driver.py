@@ -129,3 +129,75 @@ async def test_optional_acp_session_directory_is_not_fabricated(tmp_path: Path) 
             await driver.execute({"id": "list", "action": "list", "arguments": {}})
     finally:
         await asyncio.wait_for(driver.stop(), 5)
+
+
+@pytest.mark.asyncio
+async def test_incompatible_acp_version_is_not_reported_as_ready(tmp_path: Path) -> None:
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        pass
+
+    driver = ACPDriver(
+        Instance(
+            "original",
+            "acp",
+            "ACP",
+            sys.executable,
+            args=[str(Path(__file__).parent / "fakes" / "acp_agent.py")],
+            cwd=str(tmp_path),
+            env={"FAKE_ACP_VERSION": "2"},
+        ),
+        emit,
+    )
+    try:
+        with pytest.raises(DriverError) as error:
+            await asyncio.wait_for(driver.start(), 5)
+        assert error.value.code == "native_protocol_unsupported"
+    finally:
+        await asyncio.wait_for(driver.stop(), 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True])
+async def test_acp_auth_refusal_before_prompt_is_not_an_unknown_execution(
+    tmp_path: Path, resume: bool
+) -> None:
+    trace = tmp_path / "acp-methods.txt"
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        pass
+
+    driver = ACPDriver(
+        Instance(
+            "original",
+            "acp",
+            "ACP",
+            sys.executable,
+            args=[str(Path(__file__).parent / "fakes" / "acp_agent.py")],
+            cwd=str(tmp_path),
+            env={
+                "FAKE_ACP_AUTH_REQUIRED": "1",
+                "FAKE_ACP_LIST_AUTH_REQUIRED": "1" if resume else "",
+                "FAKE_ACP_TRACE": str(trace),
+            },
+        ),
+        emit,
+    )
+    await asyncio.wait_for(driver.start(), 5)
+    try:
+        with pytest.raises(DriverError) as error:
+            await driver.execute(
+                {
+                    "id": "original",
+                    "action": "prompt",
+                    "session_id": "native-session" if resume else None,
+                    "arguments": {"prompt": "unused", "resume": resume},
+                }
+            )
+        assert error.value.code == "native_login_required" and not error.value.uncertain
+        assert "fixture-secret" not in str(error.value)
+    finally:
+        await asyncio.wait_for(driver.stop(), 5)
+    assert trace.read_text().splitlines() == [
+        "initialize",
+        "session/list" if resume else "session/new",
+    ]

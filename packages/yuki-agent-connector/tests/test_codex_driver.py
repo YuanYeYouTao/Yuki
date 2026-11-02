@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -127,6 +128,140 @@ class Owner:
                     }
                 }
             await socket.send(json.dumps({"id": value["id"], "result": result}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start_failed", [False, True])
+async def test_selected_cli_prepares_default_owner_then_uses_only_its_proxy(
+    tmp_path: Path, start_failed: bool
+) -> None:
+    owner = Owner()
+    trace = tmp_path / "codex-start.jsonl"
+
+    async def emit(kind: str, value: dict[str, Any]) -> None:
+        pass
+
+    async with serve(owner.handler, "127.0.0.1", 0) as listener:
+        spec = Instance(
+            "original",
+            "codex",
+            "Codex",
+            sys.executable,
+            args=[str(Path(__file__).parent / "fakes" / "codex_cli.py"), "--original"],
+            cwd=str(tmp_path),
+            env={
+                "CODEX_HOME": "original-profile",
+                "FAKE_CODEX_TRACE": str(trace),
+                "FAKE_CODEX_PORT": str(listener.sockets[0].getsockname()[1]),
+                "FAKE_CODEX_START_FAIL": "1" if start_failed else "",
+            },
+        )
+        for _ in range(2):
+            driver = CodexDriver(spec, emit)
+            try:
+                await asyncio.wait_for(driver.start(), 5)
+                listed = await driver.execute({"id": "list", "action": "list", "arguments": {}})
+                assert listed["sessions"][0]["id"] == "thread"
+            finally:
+                await asyncio.wait_for(driver.stop(), 5)
+    calls = [json.loads(line) for line in trace.read_text().splitlines()]
+    assert [call["args"] for call in calls] == [
+        ["--original", "app-server", "daemon", "start"],
+        ["--original", "app-server", "proxy"],
+        ["--original", "app-server", "daemon", "start"],
+        ["--original", "app-server", "proxy"],
+    ]
+    assert all(call["codex_home"] == str(tmp_path / "original-profile") for call in calls)
+    assert not any(call["args"][-1] in {"stop", "restart", "update"} for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_failed_daemon_preparation_and_owner_handshake_report_safe_error(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "codex-start-failed.jsonl"
+
+    async def emit(kind: str, value: dict[str, Any]) -> None:
+        pass
+
+    driver = CodexDriver(
+        Instance(
+            "original",
+            "codex",
+            "Codex",
+            sys.executable,
+            args=[str(Path(__file__).parent / "fakes" / "codex_cli.py")],
+            cwd=str(tmp_path),
+            env={
+                "CODEX_HOME": str(tmp_path / "profile"),
+                "FAKE_CODEX_TRACE": str(trace),
+                "FAKE_CODEX_START_FAIL": "1",
+            },
+        ),
+        emit,
+    )
+    try:
+        with pytest.raises(DriverError) as error:
+            await asyncio.wait_for(driver.start(), 5)
+        assert error.value.code == "native_daemon_start_failed"
+        assert error.value.details == {"exit_code": 17}
+        assert "fixture-secret" not in str(error.value)
+    finally:
+        await asyncio.wait_for(driver.stop(), 5)
+    calls = [json.loads(line) for line in trace.read_text().splitlines()]
+    assert [call["args"] for call in calls] == [
+        ["app-server", "daemon", "start"],
+        ["app-server", "proxy"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_daemon_preparation_reaps_only_its_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch = asyncio.create_subprocess_exec
+    started = asyncio.Event()
+    processes: list[asyncio.subprocess.Process] = []
+
+    async def capture(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        process = await launch(*args, **kwargs)
+        processes.append(process)
+        started.set()
+        return process
+
+    async def discard(_: Any) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    rpc = CodexRPC(
+        Instance(
+            "original",
+            "codex",
+            "Codex",
+            sys.executable,
+            args=[str(Path(__file__).parent / "fakes" / "codex_cli.py")],
+            cwd=str(tmp_path),
+            env={
+                "CODEX_HOME": str(tmp_path / "profile"),
+                "FAKE_CODEX_TRACE": str(tmp_path / "cancel.jsonl"),
+                "FAKE_CODEX_BLOCK_START": "1",
+            },
+        ),
+        discard,
+    )
+    task = asyncio.create_task(rpc.start())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert processes[0].returncode is not None
+    finally:
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        await rpc.stop()
 
 
 def command(

@@ -333,6 +333,34 @@ async def test_diagnose_reads_account_without_model_or_auth_files(
     assert "private" not in json.dumps(result)
 
 
+@pytest.mark.asyncio
+async def test_codex_diagnose_classifies_invalid_handshake_without_native_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from websockets.exceptions import InvalidMessage
+
+    from yuki_agent_connector.drivers import codex
+
+    class RPC:
+        def __init__(self, spec: Instance, emit: Any):
+            pass
+
+        async def start(self) -> None:
+            raise InvalidMessage("fixture-secret")
+
+        async def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(codex, "CodexRPC", RPC)
+    result = await discovery.diagnose(Instance("original", "codex", "Codex", "not-executed"))
+    assert result == {
+        "id": "original",
+        "available": False,
+        "problem": "native_owner_unavailable",
+    }
+    assert "fixture-secret" not in json.dumps(result)
+
+
 def test_discovery_never_searches_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "codex").write_text("not executed")

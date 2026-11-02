@@ -7,12 +7,14 @@ import contextlib
 import os
 import signal
 import sys
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
 from acp import Client
+from acp.exceptions import RequestError
 from acp.schema import (
     AllowedOutcome,
     ClientCapabilities,
@@ -107,6 +109,11 @@ class ACPDriver:
                     ),
                     client_info=Implementation(name="Yuki Agent Connector", version=__version__),
                 )
+                if initialized.protocol_version != 1:
+                    raise DriverError(
+                        "native_protocol_unsupported",
+                        "ACP agent did not negotiate protocol version 1",
+                    )
                 self.native_capabilities = dump(initialized.agent_capabilities)
                 if self.native_capabilities.get("sessionCapabilities", {}).get("list") is not None:
                     self.capabilities.insert(0, "list")
@@ -363,6 +370,18 @@ class ACPDriver:
             session.operation = None
             session.dispatched.set()
 
+    async def _native_request(self, request: Awaitable[Any]) -> Any:
+        try:
+            return await request
+        except RequestError as exc:
+            if exc.code == -32000:
+                raise DriverError(
+                    "native_login_required", "The ACP agent requires authentication"
+                ) from exc
+            raise DriverError(
+                "native_session_error", "The ACP agent rejected the request", {"code": exc.code}
+            ) from exc
+
     async def execute(self, command: dict[str, Any]) -> dict[str, Any]:
         action, arguments = command["action"], command.get("arguments", {})
         identity = command.get("session_id")
@@ -382,7 +401,9 @@ class ACPDriver:
         if action == "list":
             if action not in self.capabilities:
                 raise DriverError("unsupported_action", "Agent does not advertise session/list")
-            result = await self.connection.list_sessions(cursor=arguments.get("cursor"))
+            result = await self._native_request(
+                self.connection.list_sessions(cursor=arguments.get("cursor"))
+            )
             return {
                 "sessions": [
                     {
@@ -398,7 +419,9 @@ class ACPDriver:
         if action == "prompt":
             if not identity:
                 cwd = arguments.get("cwd") or self.spec.cwd
-                created = await self.connection.new_session(cwd=cwd, mcp_servers=[])
+                created = await self._native_request(
+                    self.connection.new_session(cwd=cwd, mcp_servers=[])
+                )
                 identity = created.session_id
                 self.sessions[identity] = Session(identity, cwd)
             elif identity not in self.sessions:
@@ -429,11 +452,13 @@ class ACPDriver:
                 cwd = original["cwd"]
                 capabilities = self.native_capabilities.get("sessionCapabilities", {})
                 if capabilities.get("resume") is not None:
-                    await self.connection.resume_session(
-                        session_id=identity, cwd=cwd, mcp_servers=[]
+                    await self._native_request(
+                        self.connection.resume_session(session_id=identity, cwd=cwd, mcp_servers=[])
                     )
                 elif self.native_capabilities.get("loadSession"):
-                    await self.connection.load_session(session_id=identity, cwd=cwd, mcp_servers=[])
+                    await self._native_request(
+                        self.connection.load_session(session_id=identity, cwd=cwd, mcp_servers=[])
+                    )
                 else:
                     raise DriverError("unsupported_action", "Agent does not advertise load/resume")
                 self.sessions[identity] = Session(identity, cwd)

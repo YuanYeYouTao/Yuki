@@ -95,7 +95,7 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
             "Claude",
             sys.executable,
             cwd=str(tmp_path),
-            env={"CLAUDE_CONFIG_DIR": str(tmp_path / "native-profile")},
+            env={"CLAUDE_CONFIG_DIR": "native-profile"},
         ),
         emit,
     )
@@ -131,6 +131,7 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         assert options.setting_sources == ["user", "project", "local"]
         assert options.cli_path == sys.executable
         assert options.cwd == str(tmp_path / "selected-project")
+        assert options.env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "native-profile")
         assert options.fork_session is False and options.max_turns is None
         built = SubprocessCLITransport(prompt="", options=options)._build_command()
         assert built[0] == sys.executable
@@ -217,6 +218,15 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
     async def emit(kind: str, payload: dict[str, Any]) -> None:
         pass
 
+    identities = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]
+    for index, identity in enumerate(identities):
+        projects = tmp_path / f"profile-{index}" / "projects" / "fixture-project"
+        projects.mkdir(parents=True)
+        (projects / f"{identity}.jsonl").write_text(
+            json.dumps({"customTitle": f"profile-{index}", "cwd": str(tmp_path)}) + "\n",
+            encoding="utf-8",
+        )
+
     drivers = [
         module.ClaudeDriver(
             Instance(
@@ -225,7 +235,7 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
                 "Claude",
                 sys.executable,
                 cwd=str(tmp_path),
-                env={"CLAUDE_CONFIG_DIR": str(tmp_path / f"profile-{index}")},
+                env={"CLAUDE_CONFIG_DIR": f"profile-{index}"},
             ),
             emit,
         )
@@ -234,7 +244,10 @@ async def test_profiles_readonly_discovery_are_process_isolated(tmp_path: Path) 
     results = await asyncio.gather(
         *(driver.execute({"id": "query", "action": "list", "arguments": {}}) for driver in drivers)
     )
-    assert all(result["sessions"] == [] and result["next_cursor"] is None for result in results)
+    assert [[item["id"] for item in result["sessions"]] for result in results] == [
+        [identity] for identity in identities
+    ]
+    assert all(result["next_cursor"] is None for result in results)
     assert all(result["source_scope"] == "configured_profile" for result in results)
     assert all(not driver.sessions for driver in drivers)
 

@@ -461,7 +461,8 @@ async def test_acp_process_exit_updates_native_status_and_clears_old_questions(m
     class Connection:
         async def initialize(self, **kwargs):
             return SimpleNamespace(
-                agent_capabilities=SimpleNamespace(model_dump=lambda **kwargs: {})
+                protocol_version=1,
+                agent_capabilities=SimpleNamespace(model_dump=lambda **kwargs: {}),
             )
 
     @asynccontextmanager
