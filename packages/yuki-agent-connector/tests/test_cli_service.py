@@ -276,6 +276,7 @@ def test_windows_service_uses_task_state_and_does_not_wait_for_manual_owner(
         return subprocess.CompletedProcess(command, 1, "", "not running")
 
     monkeypatch.setattr(service, "run", run)
+    original_process_handle = service.windows_process_handle
     monkeypatch.setattr(
         service, "windows_process_handle", lambda *args: pytest.fail("manual owner")
     )
@@ -284,3 +285,78 @@ def test_windows_service_uses_task_state_and_does_not_wait_for_manual_owner(
     assert not configured.artifact.exists()
     assert not any(call[:2] == ["schtasks", "/End"] for call in calls)
     assert not any(call[:2] == ["schtasks", "/Delete"] for call in calls)
+    monkeypatch.setattr(service, "windows_process_handle", original_process_handle)
+
+    # A Windows venv's task instance owns the launcher, while the child Python
+    # holds the Connector lock. Only that verified child may be waited for.
+    events: list[tuple[str, object]] = []
+    handle = object()
+    parents: dict[int, int | None] = {300: 200, 200: 100}
+    owner: int | None = 300
+    task_pids = [100]
+    fail_stop = False
+
+    def lock_owner(path: Path) -> int | None:
+        assert path == tmp_path / "connector.lock"
+        events.append(("lock", owner))
+        return owner
+
+    def open_process(pid: int) -> object:
+        events.append(("open", pid))
+        return handle
+
+    def parent_process(pid: int) -> int | None:
+        events.append(("parent", pid))
+        return parents[pid]
+
+    def close_process(value: object) -> None:
+        events.append(("close", value))
+
+    def wait_process(value: object) -> None:
+        events.append(("wait", value))
+
+    def stop_task(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        assert command[:2] == ["schtasks", "/End"] and check
+        events.append(("stop", command[2:]))
+        if fail_stop:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, "stopped", "")
+
+    monkeypatch.setattr(service, "windows_lock_owner", lock_owner, raising=False)
+    monkeypatch.setattr(service, "windows_open_process", open_process, raising=False)
+    monkeypatch.setattr(service, "windows_parent_process", parent_process, raising=False)
+    monkeypatch.setattr(service, "windows_close_process", close_process, raising=False)
+    monkeypatch.setattr(service, "wait_windows_process", wait_process)
+    monkeypatch.setattr(service, "run", stop_task)
+    monkeypatch.setattr(
+        service.UserService,
+        "_windows_state",
+        lambda self: {"installed": True, "running": True, "pids": task_pids},
+    )
+
+    assert configured.stop() == "stopped"
+    assert [item[0] for item in events] == ["lock", "open", "parent", "parent", "stop", "wait"]
+    assert events[-1] == ("wait", handle)
+
+    events.clear()
+    owner = 100
+    assert configured.stop() == "stopped"
+    assert [item[0] for item in events] == ["lock", "open", "stop", "wait"]
+
+    events.clear()
+    owner, parents = 300, {300: 201, 201: None}
+    assert configured.stop() == "stopped"
+    assert [item[0] for item in events] == ["lock", "open", "parent", "parent", "close", "stop"]
+    assert events[-2] == ("close", handle)
+
+    events.clear()
+    owner, parents, fail_stop = 300, {300: 100}, True
+    with pytest.raises(subprocess.CalledProcessError):
+        configured.stop()
+    assert [item[0] for item in events] == ["lock", "open", "parent", "stop", "close"]
+    assert events[-1] == ("close", handle)
+
+    events.clear()
+    fail_stop, task_pids = False, []
+    assert configured.stop() == "stopped"
+    assert [item[0] for item in events] == ["stop"]

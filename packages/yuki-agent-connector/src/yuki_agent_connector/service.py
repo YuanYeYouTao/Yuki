@@ -27,13 +27,10 @@ else:
         raise OSError("POSIX user service requested on Windows")
 
 
-def windows_process_handle(path: Path, task_pids: list[int]) -> object | None:
-    """Wait only when the installation lock matches a running task instance."""
+def windows_lock_owner(path: Path) -> int | None:
     if sys.platform != "win32" or not path.exists():
         return None
-    import ctypes
     import msvcrt
-    from ctypes import wintypes
 
     with path.open("r+b") as stream:
         try:
@@ -44,13 +41,72 @@ def windows_process_handle(path: Path, task_pids: list[int]) -> object | None:
         else:
             msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             return None
-    if not pid or int(pid) not in task_pids:
-        return None
+    return int(pid) if pid else None
+
+
+def windows_open_process(pid: int) -> object:
+    import ctypes
+    from ctypes import wintypes
+
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
-    handle = kernel.OpenProcess(0x00100000, False, int(pid))
-    return handle or None
+    handle = kernel.OpenProcess(0x00100000, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def windows_close_process(handle: object) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    if not kernel.CloseHandle(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def windows_parent_process(pid: int) -> int | None:
+    result = run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference='Stop'; "
+            f"$p=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {pid}'; "
+            "if ($null -ne $p) { [Console]::Write([uint32]$p.ParentProcessId) }",
+        ]
+    )
+    parent = result.stdout.strip()
+    return int(parent) if parent else None
+
+
+def windows_process_handle(path: Path, task_pids: list[int]) -> object | None:
+    """Wait only for the lock owner of this task, including its venv child."""
+    if not task_pids:
+        return None
+    owner = windows_lock_owner(path)
+    if owner is None:
+        return None
+    # Hold the process identity while walking its parent chain.
+    handle = windows_open_process(owner)
+    matched = False
+    try:
+        current: int | None = owner
+        visited = set()
+        while current and current not in visited:
+            if current in task_pids:
+                matched = True
+                return handle
+            visited.add(current)
+            current = windows_parent_process(current)
+        return None
+    finally:
+        if not matched:
+            windows_close_process(handle)
 
 
 def wait_windows_process(handle: object | None) -> None:
@@ -62,13 +118,11 @@ def wait_windows_process(handle: object | None) -> None:
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel.WaitForSingleObject.restype = wintypes.DWORD
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
     try:
         if kernel.WaitForSingleObject(handle, 0xFFFFFFFF) == 0xFFFFFFFF:
             raise ctypes.WinError(ctypes.get_last_error())
     finally:
-        kernel.CloseHandle(handle)
+        windows_close_process(handle)
 
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -239,10 +293,15 @@ class UserService:
             actual = self._windows_state()
             if not actual["installed"] or not actual["running"]:
                 return ""
-            result = run(["schtasks", "/End", "/TN", self.name])
             pids = cast(list[int], actual.get("pids", []))
-            if pids:
-                handle = windows_process_handle(self.data / "connector.lock", pids)
+            handle = windows_process_handle(self.data / "connector.lock", pids)
+            try:
+                result = run(["schtasks", "/End", "/TN", self.name])
+            except BaseException:
+                if handle is not None:
+                    windows_close_process(handle)
+                raise
+            if handle is not None:
                 wait_windows_process(handle)
             return result.stdout
         if self.platform == "darwin":
