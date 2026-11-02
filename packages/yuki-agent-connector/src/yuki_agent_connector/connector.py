@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,68 @@ from .terminal import LocalTerminal
 
 logger = logging.getLogger(__name__)
 READ_ACTIONS = {"list", "get", "read", "status", "stat", "release"}
+ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond"}
+
+
+def instance_source(spec: Instance) -> str:
+    """Hash the actual configured source and effective native profile, without secrets."""
+    if spec.driver == "codex" and (spec.endpoint or spec.socket):
+        if spec.endpoint:
+            target = {"endpoint": spec.endpoint}
+        else:
+            assert spec.socket is not None
+            explicit_socket = Path(spec.socket)
+            if not explicit_socket.is_absolute():
+                explicit_socket = Path(spec.cwd) / explicit_socket
+            target = {"socket": str(explicit_socket.resolve())}
+        encoded = json.dumps(
+            {"driver": spec.driver, **target},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    environment = spec.environment()
+    home = Path(
+        environment.get("USERPROFILE" if sys.platform == "win32" else "HOME") or Path.home()
+    )
+    explicit = dict(spec.env)
+    names = (
+        ("CODEX_HOME",)
+        if spec.driver == "codex"
+        else ("CLAUDE_CONFIG_DIR",)
+        if spec.driver == "claude"
+        else ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
+        if spec.driver == "acp"
+        else ()
+    )
+    profiles: dict[str, str] = {}
+    for name in names:
+        explicit.pop(name, None)
+        profile_value = environment.get(name)
+        if profile_value:
+            path = Path(profile_value)
+            profiles[name] = str((path if path.is_absolute() else Path(spec.cwd) / path).resolve())
+        elif spec.driver in {"codex", "claude"}:
+            profiles[name] = str(
+                (home / (".codex" if name == "CODEX_HOME" else ".claude")).resolve()
+            )
+    socket = Path(spec.socket) if spec.socket else None
+    if socket is not None and not socket.is_absolute():
+        socket = Path(spec.cwd) / socket
+    source = {
+        "driver": spec.driver,
+        "installation": spec.installation,
+        "command": None if spec.installation else spec.command,
+        "args": spec.args,
+        "cwd": str(Path(spec.cwd).resolve()),
+        "environment": explicit,
+        "profiles": profiles,
+        "home": str(home.resolve()),
+        "socket": str(socket.resolve()) if socket else None,
+        "endpoint": spec.endpoint,
+    }
+    encoded = json.dumps(source, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class Connector:
@@ -112,6 +175,24 @@ class Connector:
         if driver is not None:
             self._stop_if_unused(driver)
 
+    def _original_driver(self, instance_id: str, identity: str) -> Driver | None:
+        original = self.journal.original(identity)
+        if original is None or original[0].get("instance_id") != instance_id:
+            raise DriverError("original_operation_not_found", "Original operation is unavailable")
+        owner = self.operations.get(identity)
+        if owner is not None:
+            return owner
+        driver = self.drivers.get(instance_id)
+        if (
+            driver is not None
+            and instance_id not in self.errors
+            and driver.spec.driver not in {"claude", "acp"}
+            and original[1] is not None
+            and original[1] == instance_source(driver.spec)
+        ):
+            return driver
+        return None
+
     def device_capabilities(self) -> dict[str, Any]:
         computer = computer_status()
         return {
@@ -153,11 +234,18 @@ class Connector:
 
     async def _recover(self, instance_id: str, driver: Driver) -> None:
         observations = self.journal.observations(instance_id)
+        source = instance_source(driver.spec)
         for command, _ in observations:
-            self.operations.setdefault(command["id"], driver)
+            original = self.journal.original(command["id"])
+            if (
+                driver.spec.driver not in {"claude", "acp"}
+                and original is not None
+                and original[1] == source
+            ):
+                self.operations.setdefault(command["id"], driver)
         for command, _ in observations:
             owner = self.operations.get(command["id"])
-            if owner is not None and owner is not driver:
+            if owner is not driver:
                 continue
             current = self.journal.observation(command["id"])
             if current is not None:
@@ -181,6 +269,11 @@ class Connector:
                             "reason", value.get("error_type", "native_disconnected")
                         )
                     self.catalog_changed.set()
+                    return
+                if kind == "work_finished":
+                    identity = value["operation_id"]
+                    self.detached_work.discard(identity)
+                    self._release_operation(identity)
                     return
                 event = {
                     "type": "event",
@@ -278,7 +371,17 @@ class Connector:
             if command.get("resource"):
                 self.refresh_config()
             if mutation:
-                previous = self.journal.begin(command)
+                original_id = arguments.get("operation_id")
+                driver = None
+                if not command.get("resource"):
+                    driver = (
+                        self.operations.get(original_id)
+                        if original_id and command["action"] in ORIGINAL_CONTROLS
+                        else self.drivers.get(command["instance_id"])
+                    )
+                previous = self.journal.begin(
+                    command, owner_source=instance_source(driver.spec) if driver else None
+                )
                 if previous is not None:
                     return previous
                 recorded = True
@@ -288,25 +391,16 @@ class Connector:
                 result = self.journal.operation(arguments["operation_id"])
                 if result.get("status") == "unknown":
                     observation = self.journal.observation(arguments["operation_id"])
-                    driver = self.operations.get(arguments["operation_id"]) or self.drivers.get(
-                        command["instance_id"]
+                    driver = self._original_driver(
+                        command["instance_id"], arguments["operation_id"]
                     )
-                    if (
-                        observation
-                        and driver
-                        and (
-                            self.operations.get(arguments["operation_id"]) is driver
-                            or command["instance_id"] not in self.errors
-                        )
-                    ):
+                    if observation and driver:
                         original, receipt = observation
                         await driver.recover(original, receipt)
                         result = self.journal.operation(arguments["operation_id"])
             elif command["action"] == "detach":
                 detached_observation = self.journal.observation(arguments["operation_id"])
-                driver = self.operations.get(arguments.get("operation_id")) or self.drivers.get(
-                    command["instance_id"]
-                )
+                driver = self._original_driver(command["instance_id"], arguments["operation_id"])
                 result = (
                     await driver.execute(command)
                     if driver is not None
@@ -318,8 +412,16 @@ class Connector:
                     }
                 )
             else:
-                driver = self.drivers.get(command["instance_id"])
-                if driver is None or command["instance_id"] in self.errors:
+                original_id = arguments.get("operation_id")
+                targeting_original = bool(original_id and command["action"] in ORIGINAL_CONTROLS)
+                driver = (
+                    self._original_driver(command["instance_id"], original_id)
+                    if targeting_original
+                    else self.drivers.get(command["instance_id"])
+                )
+                if driver is None or (
+                    not targeting_original and command["instance_id"] in self.errors
+                ):
                     raise DriverError(
                         "instance_unavailable", "The configured native instance is unavailable"
                     )
@@ -399,6 +501,16 @@ class Connector:
                 # No completion signal remains, so keep its original owner.
                 self.detached_work.add(original_id)
             else:
+                self._release_operation(original_id)
+        elif command["action"] == "cancel" and arguments.get("operation_id"):
+            original_id = arguments["operation_id"]
+            result = response.get("result", {})
+            if result.get("pending") is False and result.get("status") in {
+                "completed",
+                "succeeded",
+                "cancelled",
+            }:
+                self.detached_work.discard(original_id)
                 self._release_operation(original_id)
         return response
 

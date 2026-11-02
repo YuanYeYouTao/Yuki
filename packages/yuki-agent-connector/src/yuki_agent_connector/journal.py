@@ -86,9 +86,14 @@ class Journal:
                 self.db.execute("UPDATE installation SET namespace=?", (namespace,))
             else:
                 self.db.execute("INSERT OR IGNORE INTO installation VALUES (?)", (namespace,))
-            if self.db.execute("PRAGMA user_version").fetchone()[0] == 0:
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
                 self._upgrade_receipts()
                 self.db.execute("PRAGMA user_version=1")
+                version = 1
+            if version == 1:
+                self.db.execute("ALTER TABLE operations ADD COLUMN owner_source TEXT")
+                self.db.execute("PRAGMA user_version=2")
 
     @staticmethod
     def _initial(command: dict[str, Any]) -> dict[str, Any]:
@@ -168,7 +173,9 @@ class Journal:
         ):
             self._detach(key, self._next_sequence(key))
 
-    def begin(self, command: dict[str, Any]) -> dict[str, Any] | None:
+    def begin(
+        self, command: dict[str, Any], *, owner_source: str | None = None
+    ) -> dict[str, Any] | None:
         command = original_command(command)
         key = command["id"]
         previous = self.db.execute("SELECT command FROM operations WHERE id=?", (key,)).fetchone()
@@ -178,15 +185,23 @@ class Journal:
             return {"type": "response", "id": key, "result": self.operation(key)}
         with self.db:
             self.db.execute(
-                "INSERT INTO operations(id, command, observing, receipt) VALUES (?, ?, ?, ?)",
+                "INSERT INTO operations(id, command, observing, receipt, owner_source) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     key,
                     encode(command),
                     command["action"] in OBSERVED_ACTIONS,
                     encode(self._initial(command)),
+                    owner_source,
                 ),
             )
         return None
+
+    def original(self, key: str) -> tuple[dict[str, Any], str | None] | None:
+        row = self.db.execute(
+            "SELECT command, owner_source FROM operations WHERE id=?", (key,)
+        ).fetchone()
+        return (json.loads(row[0]), row[1]) if row else None
 
     def _next_sequence(self, key: str) -> int:
         inserted = self.db.execute(

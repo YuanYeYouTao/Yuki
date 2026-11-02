@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from yuki_agent_connector.config import Config
+from yuki_agent_connector.config import Config, Instance
 from yuki_agent_connector.connector import Connector
 from yuki_agent_connector.journal import Journal
 
@@ -233,6 +233,8 @@ async def test_command_journal_failure_closes_transport_and_preserves_uncertain_
             closed.append(kwargs)
 
     class Driver:
+        spec = Instance("local", "fake", "Fake", "fake")
+
         async def execute(self, value):
             return {"admitted": True, "status": "running"}
 
@@ -257,6 +259,8 @@ async def test_native_unavailability_does_not_prevent_local_detach(journal, has_
     connector.errors["local"] = "native_disconnected"
 
     class Driver:
+        spec = Instance("local", "fake", "Fake", "fake")
+
         async def execute(self, command):
             assert command["action"] == "detach"
             return {"status": "detached", "admitted": True, "detached": True, "pending": False}
@@ -276,6 +280,8 @@ async def test_rejected_native_command_returns_same_ordered_receipt_as_get(journ
     from yuki_agent_connector.drivers import DriverError
 
     class Driver:
+        spec = Instance("local", "fake", "Fake", "fake")
+
         async def execute(self, command):
             raise DriverError("unsupported_action", "Native capability unavailable")
 
