@@ -38,7 +38,7 @@ class Connector:
         self.operations: dict[str, Driver] = {}
         self.dispatching: set[str] = set()
         self.detached_work: set[str] = set()
-        self.starting: set[int] = set()
+        self.starting: dict[int, asyncio.Task[Any]] = {}
         self.errors: dict[str, str] = {}
         self.stream: ClientConnection | None = None
         self.pending_events = asyncio.Event()
@@ -77,7 +77,13 @@ class Connector:
             driver = self.drivers.pop(identity, None)
             self.errors.pop(identity, None)
             if driver is not None:
-                self._stop_if_unused(driver)
+                start = self.starting.get(id(driver))
+                if start is not None and not any(
+                    owner is driver for owner in self.operations.values()
+                ):
+                    start.cancel()
+                else:
+                    self._stop_if_unused(driver)
         for identity, spec in current.items():
             if identity not in previous or identity in changed:
                 self._start(spec)
@@ -195,9 +201,11 @@ class Connector:
                 driver = make_driver(spec, emit)
                 self.drivers[spec.id] = driver
                 self.errors[spec.id] = "starting"
-                self.starting.add(id(driver))
+                task = asyncio.current_task()
+                assert task is not None
+                self.starting[id(driver)] = task
                 await driver.start()
-                self.starting.discard(id(driver))
+                self.starting.pop(id(driver), None)
                 if self.drivers.get(spec.id) is not driver:
                     self._stop_if_unused(driver)
                     return
@@ -206,7 +214,7 @@ class Connector:
                 await self._recover(spec.id, driver)
             except asyncio.CancelledError:
                 if driver:
-                    self.starting.discard(id(driver))
+                    self.starting.pop(id(driver), None)
                     await driver.stop()
                     if self.drivers.get(spec.id) is driver:
                         self.drivers.pop(spec.id, None)
@@ -224,7 +232,7 @@ class Connector:
                     self.drivers.pop(spec.id, None)
                 logger.error("Native instance unavailable: %s (%s)", spec.id, type(exc).__name__)
                 if driver:
-                    self.starting.discard(id(driver))
+                    self.starting.pop(id(driver), None)
                     self._stop_if_unused(driver)
 
         task = asyncio.create_task(start(), name=f"native-start-{spec.id}")
