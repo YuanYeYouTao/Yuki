@@ -340,7 +340,7 @@ Jev/Host 的诊断沿[执行过程查看合同](execution-trace.md)保存新增�
 独立 `control.execution.content.read`，元数据分页不加载正文；旧判定不猜测回填。
 当前控制器状态快照仍是有界即时状态，不充当全生命周期统计。
 
-控制器快照仍使用独立库的 revision CAS 和容量约束。Host 用一个专属线程创建、读写及
+控制器快照仍使用独立库的 revision CAS。Host 用一个专属线程创建、读写及
 关闭快照 SQLite 连接；事件循环只维护控制器，提交时冻结 JSON，不把可变状态交给线程。
 快照等待写锁不会阻塞普通聊天及健康接口；保存仍等待真实提交结果，不把快照当成可丢弃
 的诊断写入。保存期间取消时先对账实际 revision，再传播取消；缓存加载、淘汰及保存
@@ -351,8 +351,11 @@ Jev/Host 的诊断沿[执行过程查看合同](execution-trace.md)保存新增�
 新事件的讨论候选直接取有效历史，SELF 锚点优先，各自按原时间倒序保留；候选排序不计算全量参与状态。
 同一内部来源及 revision 已有投影时复用原 ScopedEvent，既有候选键和在途 Jev Snapshot 不重建。
 参与查询只返回来源、表达、意愿及纠偏进度，不附带无人读取的 belief 概率投影。
-自主机会评分及历史折叠仍使用真实 belief；同一次同步计算只解析一次参与检查点并按讨论/对象归集事实，
-这些局部数据不跨状态修改保留，不增加快照缓存、调用阈值或状态清空流程。
+自主机会评分及历史折叠仍使用真实 belief。已知 v1 参与检查点在 State 加载边界校验一次，
+运行时直接保留唯一 typed 对象，持久化保持原 v1 wire；未知 namespace 保留原件与原读写语义。
+真实原地修改明确标记冷 dirty，无变化读取不标记。原 owner 的 target/thread、effect、anchor、
+boundary 及续聊位置索引只保存派生键，随真实写入或整体替换更新；它们不保存资格结果。
+实时来源、当前 Person family 和实际相关事实仍在原选择/提交边界核验，不增加调用阈值或状态清空流程。
 
 
 ## 每两秒推进与窄快照
@@ -373,12 +376,13 @@ Host 的历史页以当前 generation/floor/source revision 及同一 SQLite 读
 
 同一参与数据库由原 Store owner 管理 `snapshot_head` 和 `snapshot_body`。head 保存原时间、
 抽样游标和数值进度；body 保存其余事实与原容器布局，两者只有一个 revision CAS。
-普通数值 tick 只写 head；真实事实、成员、布局或顺序变化原子写两表。逻辑容量仍按原完整
-State JSON 计量：full save 记录 `K=L-H`，热保存取 `K+len(typed_hot_bytes)`，保每 scope 1 MiB、
-总计 16 MiB，不将两份物理 JSON 长度当成原容量。
+普通数值 tick 只写 head；真实事实、成员、布局或顺序变化原子写两表。保存已删除每 scope
+1 MiB、总计 16 MiB 的容量门槛，以及完整 State 的第二次计量编码、长度列和全 generation SUM。
+原事实、身份、执行与回执不会因为超过旧容量而被静默删除。
 
 取得原保存锁后同步捕获 dirty、revision 和不可变 bytes，中间没有 await；worker 不再解析
 State 后重编码。等待期间新来的事实留在 Controller 的 dirty 中，成功只确认原 future 的实际
 revision，再传播取消；失败保留未保存变化，不自动重放。加载用一次 key-driven LEFT JOIN，
 两侧均无才表示不存在，缺一侧报真实格式错误。升级停旧 writer，事务外按固定旧 schema
-准备，单事务创建并填入两表、删除旧 snapshots；不调用 restore/prune、不另设逐 scope 迁移进度。
+准备，单事务创建并填入两表、删除旧 snapshots；旧带长度列的两表原子去掉长度列，保原 bytes、
+key 与 revision。单 scope 缺行仍按原规则在该 scope 读写时报错；不调用 restore/prune、不另设逐 scope 迁移进度。

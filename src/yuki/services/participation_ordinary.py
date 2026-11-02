@@ -3,32 +3,60 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from sqlalchemy import DateTime, and_, bindparam, func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yuki_participation.controller import original_actor
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
+from yuki_participation.controller import ContinuationFacts, original_actor
 from yuki_participation.models import CandidateKind, ScopedEvent, SourceRef
 from yuki_participation.participation import (
-    ParticipationCheckpoint,
     ParticipationUnit,
     UnitBinding,
     UnitParticipation,
 )
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.initiative_sources import (
+    EVENT_IDENTITY_REVISION_FIELDS,
+    EVENT_TEXT_REVISION_FIELDS,
+    MEMORY_REVISION_FIELDS,
+    MEMORY_TIME_REVISION_FIELDS,
+    event_mentions_expression,
+    memory_revision,
+    memory_revision_time_columns,
+    source_revision,
+)
 from yuki.conversation.ordinary_admission import (
     OrdinaryAdmission,
     OrdinaryAdmissionConflict,
     OrdinaryParticipationBinding,
 )
 from yuki.domain.messages import ChatResponse
-from yuki.identity.person_identity import current_person_ids
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.memory.repository import readable_evidence_predicate
+from yuki.memory.self_origin import (
+    self_execution_source_sql,
+    self_initiative_fact_condition,
+    self_initiative_fact_visibility,
+)
+from yuki.persistence.models import (
+    ChatEventModel,
+    MemoryEvidenceModel,
+    MemoryFactModel,
+    MemoryToolReceiptModel,
+)
+from yuki.persistence.repository_helpers import keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.participation_feedback import (
@@ -36,7 +64,7 @@ from yuki.services.participation_feedback import (
     admission_unit_binding,
     sync_scope_effects,
 )
-from yuki.services.participation_identity import actor_identity, actor_ids
+from yuki.services.participation_identity import actor_identity
 
 if TYPE_CHECKING:
     from yuki.admin.models import RuntimeConfigSnapshot
@@ -181,6 +209,7 @@ def invitation_unit(
     event: ScopedEvent,
     *,
     actor_identity: Callable[[str], str] = original_actor,
+    family: frozenset[str] | None = None,
 ) -> ParticipationUnit | None:
     candidate = item.controller.state.candidates.get(event.ref.event_id)
     observation = item.controller.state.observations.get(event.ref.event_id)
@@ -191,9 +220,13 @@ def invitation_unit(
         or candidate.event.ref != event.ref
         or candidate.support.kind != "observed"
         or candidate.support.strength(time.time()) <= 0
-        or not item.controller.participation_view(
-            event, time.time(), actor_identity=actor_identity
-        ).addressed
+        or not (
+            item.controller.invitation_current(event, time.time(), actor_identity=actor_identity)
+            if family is None
+            else item.controller.invitation_current_for_family(
+                event, time.time(), family=family, actor_identity=actor_identity
+            )
+        )
     ):
         return None
     interaction = observation.answers.get("interaction_mark")
@@ -289,13 +322,21 @@ async def binding_for_event(
 
 
 async def continuation_for_event(
-    service: SemanticParticipationService, event_id: int
+    service: SemanticParticipationService,
+    event_id: int,
+    *,
+    source_basis: tuple[SourceRef, ...] = (),
+    invalid_refs: tuple[SourceRef, ...] = (),
 ) -> tuple[OrdinaryParticipationBinding, ImplicitReason] | None:
     """Classify an implicit source: a verified invitation first, then a matched unit."""
     async with event_scope(service, event_id) as found:
         if found is None:
             return None
         row, item, event, identity = found
+        if invalid_refs:
+            await service._sources_current(item, invalid_refs)
+        if source_basis and not all((await service._sources_current(item, source_basis)).values()):
+            return None
         view = item.controller.participation_view(event, time.time(), actor_identity=identity)
         if not view.source_valid:
             return None
@@ -314,20 +355,401 @@ async def continuation_for_event(
 
 @dataclass(frozen=True)
 class PreparedContinuation:
-    actors: frozenset[str]
+    root: str | None
+    family: frozenset[str]
+    facts: ContinuationFacts | None
+    unit: UnitBinding | None
+    source_digests: tuple[tuple[SourceRef, str], ...]
+    space_id: str
+    event_checks: tuple[tuple[int, ColumnElement[bool]], ...]
+    memory_checks: tuple[tuple[int, ColumnElement[bool]], ...]
+    memory_windows: tuple[tuple[datetime | None, datetime | None], ...]
+    memory_condition: ColumnElement[bool] | None
+    automation_ids_json: str
+    evidence_ids_json: str
+    sources_valid: bool
+    invalid_refs: tuple[SourceRef, ...] = ()
+
+
+def _invalid_continuation(space_id: str) -> PreparedContinuation:
+    return PreparedContinuation(
+        None, frozenset(), None, None, (), space_id, (), (), (), None, "[]", "[]", False
+    )
+
+
+async def _current_family(session: AsyncSession, actor: str) -> tuple[str, frozenset[str]]:
+    original = aliased(CanonicalPersonModel)
+    root_value = func.coalesce(
+        select(func.coalesce(original.merged_into_person_id, original.id))
+        .where(original.id == actor)
+        .scalar_subquery(),
+        actor,
+    )
+    roots: dict[str, str] = dict(
+        (
+            await session.execute(
+                select(
+                    CanonicalPersonModel.id,
+                    func.coalesce(
+                        CanonicalPersonModel.merged_into_person_id, CanonicalPersonModel.id
+                    ),
+                ).where(
+                    or_(
+                        CanonicalPersonModel.id == root_value,
+                        CanonicalPersonModel.merged_into_person_id == root_value,
+                    )
+                )
+            )
+        )
+        .tuples()
+        .all()
+    )
+    root = roots.get(actor, actor)
+    members = set(roots)
+    members.update((actor, root))
+    return root, frozenset(members)
+
+
+def _automation_run_id(source: object) -> int | None:
+    if not isinstance(source, str) or not source.startswith("automation:"):
+        return None
+    value, separator, _ = source.removeprefix("automation:").partition(":")
+    if not separator:
+        return None
+    try:
+        identity = int(value)
+    except ValueError:
+        return None
+    if str(identity) != value or not -(2**63) <= identity < 2**63:
+        return None
+    return identity
+
+
+async def _automation_source_ids(session: AsyncSession, evidence_ids: tuple[int, ...]) -> str:
+    """Prepare original automation run keys from this batch's own evidence receipts."""
+    from yuki.runtime.work_schema_v1 import work
+
+    sources: set[str] = set()
+    source_expression: ColumnElement[str | None] = literal_column(
+        self_execution_source_sql("memory_tool_receipts.execution_id")
+    )
+    for start in range(0, len(evidence_ids), 32):
+        values = await session.scalars(
+            select(source_expression)
+            .select_from(MemoryEvidenceModel)
+            .join(
+                MemoryToolReceiptModel,
+                MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
+            )
+            .where(
+                MemoryEvidenceModel.id.in_(evidence_ids[start : start + 32]),
+                MemoryEvidenceModel.event_id.is_(None),
+                MemoryToolReceiptModel.trigger_event_id.is_(None),
+                MemoryToolReceiptModel.initiative_run_id.is_(None),
+            )
+        )
+        sources.update(value for value in values if isinstance(value, str))
+    parents: set[str] = set()
+    source_ids = tuple(sources)
+    for start in range(0, len(source_ids), 128):
+        values = await session.scalars(
+            select(
+                func.coalesce(
+                    func.json_extract(work.c.source_json, "$.execution_source.parent_execution_id"),
+                    func.json_extract(work.c.source_json, "$.parent_execution_id"),
+                )
+            ).where(work.c.id.in_(source_ids[start : start + 128]))
+        )
+        parents.update(value for value in values if isinstance(value, str))
+    identities = {
+        identity
+        for source in (*sources, *parents)
+        if (identity := _automation_run_id(source)) is not None
+    }
+    return json.dumps(sorted(identities), separators=(",", ":"))
 
 
 async def prepare_continuation(
     service: SemanticParticipationService,
     binding: OrdinaryParticipationBinding,
 ) -> PreparedContinuation | None:
-    """Collect controller actors outside the writer."""
+    """Prepare this family's current facts and sources outside the writer."""
+    prepared, invalid = await _prepare_continuation(service, binding)
+    if prepared is None or not invalid:
+        return prepared
+    return replace(prepared, sources_valid=False, invalid_refs=invalid)
+
+
+async def _prepare_continuation(
+    service: SemanticParticipationService,
+    binding: OrdinaryParticipationBinding,
+) -> tuple[PreparedContinuation | None, tuple[SourceRef, ...]]:
     item = service._sessions.get((binding.conversation_id, binding.generation))
     if item is None:
-        return None
+        return None, ()
+    space_id = item.scene.space_id
+    event = item.controller.state.events.get(f"event:{binding.event_id}")
+    if event is None:
+        return _invalid_continuation(space_id), ()
+    try:
+        basis = tuple(SourceRef(event_id=key, revision=revision) for key, revision in binding.basis)
+        unit = UnitBinding(
+            scope=event.scope,
+            unit=ParticipationUnit(thread=binding.unit_key, target=binding.target_hint),
+            actor=event.author,
+            basis=basis,
+        )
+    except ValueError:
+        return _invalid_continuation(space_id), ()
+    basis_set = frozenset(basis)
+    event_checks: list[tuple[int, ColumnElement[bool]]] = []
+    memory_checks: list[tuple[int, ColumnElement[bool]]] = []
+    memory_windows: list[tuple[datetime | None, datetime | None]] = []
+    valid = True
+    invalid: set[SourceRef] = set()
+    async with service.database.read_session() as reader:
+        await reader.execute(text("BEGIN"))
+        conversation = await reader.get(CanonicalConversationModel, binding.conversation_id)
+        if (
+            conversation is None
+            or conversation.generation != binding.generation
+            or conversation.kind != "space"
+            or conversation.person_id is not None
+            or conversation.space_id != space_id
+        ):
+            return _invalid_continuation(space_id), ()
+        root, family = await _current_family(reader, event.author)
+        current = service._sessions.get((binding.conversation_id, binding.generation))
+        if current is None:
+            return None, ()
+        current_event = current.controller.state.events.get(event.ref.event_id)
+        if (
+            current.scene.space_id != space_id
+            or current_event is None
+            or current_event.ref != event.ref
+            or current_event.scope != event.scope
+            or current_event.author != event.author
+        ):
+            return _invalid_continuation(space_id), ()
+        item = current
+        moment = time.time()
+        facts = item.controller.continuation_family_facts(
+            event.ref, moment, family=family, binding=unit
+        )
+        refs = basis_set | frozenset(
+            ref for ref, _event_ref, _seen, _invalidated, usable in facts.sources if usable
+        )
+        sources: list[tuple[SourceRef, InitiativeSource]] = []
+        for ref in sorted(refs, key=lambda value: (value.event_id, value.revision)):
+            try:
+                sources.append((ref, service._source(item, ref)))
+            except ValueError:
+                if ref in basis_set:
+                    valid = False
+                else:
+                    invalid.add(ref)
+        event_ids = tuple(
+            int(source.source_id)
+            for _, source in sources
+            if source.kind is InitiativeSourceKind.EVENT
+        )
+        memory_ids = tuple(
+            int(source.source_id)
+            for _, source in sources
+            if source.kind is InitiativeSourceKind.MEMORY
+        )
+        memory_condition = (
+            self_initiative_fact_condition(
+                space_id,
+                bindparam("participation_basis_now", type_=DateTime(timezone=True)),
+                prepared_automation_ids=True,
+                prepared_evidence_ids=True,
+            )
+            if memory_ids
+            else None
+        )
+        events: dict[int, ChatEventModel] = {}
+        mentions: dict[int, str] = {}
+        mention_values = event_mentions_expression()
+        for start in range(0, len(event_ids), 128):
+            page = event_ids[start : start + 128]
+            rows = await reader.execute(
+                select(ChatEventModel, mention_values).where(
+                    ChatEventModel.id.in_(page),
+                    ChatEventModel.canonical_conversation_id == binding.conversation_id,
+                    ChatEventModel.id > conversation.starts_after_event_id,
+                    keeper_event_clause(),
+                )
+            )
+            for row, mention in rows:
+                events[row.id] = row
+                mentions[row.id] = mention
+        memories: dict[int, MemoryFactModel] = {}
+        evidence_ids: dict[int, int] = {}
+        memory_raw_windows: dict[int, tuple[str | None, str | None]] = {}
+        raw_valid_from, raw_valid_until = memory_revision_time_columns()
+        if memory_ids:
+            evidence = aliased(MemoryEvidenceModel, name="continuation_evidence")
+            witness = (
+                select(evidence.id)
+                .where(
+                    evidence.fact_id == MemoryFactModel.id,
+                    readable_evidence_predicate(
+                        evidence=evidence,
+                        evidence_table=evidence,
+                        evidence_alias="continuation_evidence",
+                    ),
+                )
+                .order_by(evidence.id)
+                .limit(1)
+                .correlate(MemoryFactModel)
+                .scalar_subquery()
+            )
+            for start in range(0, len(memory_ids), 32):
+                page = memory_ids[start : start + 32]
+                rows = await reader.execute(
+                    select(MemoryFactModel, MemoryEvidenceModel.id, raw_valid_from, raw_valid_until)
+                    .join(MemoryEvidenceModel, MemoryEvidenceModel.id == witness)
+                    .where(
+                        MemoryFactModel.id.in_(page),
+                        self_initiative_fact_visibility(
+                            space_id,
+                            bindparam("participation_basis_now", type_=DateTime(timezone=True)),
+                        ),
+                    ),
+                    {"participation_basis_now": datetime.now(UTC)},
+                )
+                for row, evidence_id, valid_from, valid_until in rows:
+                    memories[row.id] = row
+                    evidence_ids[row.id] = evidence_id
+                    memory_raw_windows[row.id] = (valid_from, valid_until)
+        automation_ids_json = await _automation_source_ids(reader, tuple(evidence_ids.values()))
+
+        def utc(value: datetime | None) -> datetime | None:
+            if value is None:
+                return None
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+        for ref, source in sources:
+            identity = int(source.source_id)
+            if source.kind is InitiativeSourceKind.EVENT:
+                row = events.get(identity)
+                if row is None or str(source_revision(row)) != source.revision:
+                    if ref in basis_set:
+                        valid = False
+                    else:
+                        invalid.add(ref)
+                    continue
+                event_checks.append(
+                    (
+                        identity,
+                        and_(
+                            ChatEventModel.id == identity,
+                            mention_values.is_(mentions[identity]),
+                            *(
+                                func.coalesce(getattr(ChatEventModel, name), "")
+                                == (getattr(row, name) or "")
+                                for name in EVENT_TEXT_REVISION_FIELDS
+                            ),
+                            *(
+                                getattr(ChatEventModel, name).is_(getattr(row, name))
+                                for name in EVENT_IDENTITY_REVISION_FIELDS
+                            ),
+                        ),
+                    )
+                )
+            else:
+                memory_row = memories.get(identity)
+                if memory_row is None or memory_revision(memory_row) != source.revision:
+                    if ref in basis_set:
+                        valid = False
+                    else:
+                        invalid.add(ref)
+                    continue
+                memory_windows.append((utc(memory_row.valid_from), utc(memory_row.valid_until)))
+                memory_checks.append(
+                    (
+                        identity,
+                        and_(
+                            MemoryFactModel.id == identity,
+                            *(
+                                getattr(MemoryFactModel, name).is_(getattr(memory_row, name))
+                                for name in MEMORY_REVISION_FIELDS
+                                if name not in MEMORY_TIME_REVISION_FIELDS
+                            ),
+                            raw_valid_from.is_(memory_raw_windows[identity][0]),
+                            raw_valid_until.is_(memory_raw_windows[identity][1]),
+                        ),
+                    )
+                )
     return PreparedContinuation(
-        frozenset(actor_ids(item, (binding.target_hint,), include_continuation_targets=True))
-    )
+        root,
+        family,
+        facts,
+        unit,
+        tuple((ref, source.revision) for ref, source in sources),
+        space_id,
+        tuple(event_checks),
+        tuple(memory_checks),
+        tuple(memory_windows),
+        memory_condition,
+        automation_ids_json,
+        json.dumps(sorted(evidence_ids.values()), separators=(",", ":")),
+        valid,
+    ), tuple(sorted(invalid, key=lambda value: (value.event_id, value.revision)))
+
+
+async def _continuation_sources_current(
+    binding: OrdinaryParticipationBinding,
+    prepared: PreparedContinuation,
+    session: AsyncSession,
+) -> bool:
+    conversation = await session.get(CanonicalConversationModel, binding.conversation_id)
+    if (
+        conversation is None
+        or conversation.generation != binding.generation
+        or conversation.kind != "space"
+        or conversation.person_id is not None
+        or conversation.space_id != prepared.space_id
+    ):
+        return False
+    for start in range(0, len(prepared.event_checks), 128):
+        page = prepared.event_checks[start : start + 128]
+        actual = set(
+            await session.scalars(
+                select(ChatEventModel.id).where(
+                    ChatEventModel.id > conversation.starts_after_event_id,
+                    or_(*(condition for _, condition in page)),
+                )
+            )
+        )
+        if actual != {identity for identity, _ in page}:
+            return False
+    for start in range(0, len(prepared.memory_checks), 32):
+        page = prepared.memory_checks[start : start + 32]
+        actual = set(
+            await session.scalars(
+                select(MemoryFactModel.id).where(
+                    cast(ColumnElement[bool], prepared.memory_condition),
+                    or_(*(condition for _, condition in page)),
+                ),
+                {
+                    "participation_basis_now": datetime.now(UTC),
+                    "participation_automation_ids": prepared.automation_ids_json,
+                    "participation_evidence_ids": prepared.evidence_ids_json,
+                },
+            )
+        )
+        if actual != {identity for identity, _ in page}:
+            return False
+    now = datetime.now(UTC)
+    if any(
+        (valid_from is not None and valid_from > now)
+        or (valid_until is not None and valid_until <= now)
+        for valid_from, valid_until in prepared.memory_windows
+    ):
+        return False
+    return True
 
 
 async def continuation_matches(
@@ -337,20 +759,22 @@ async def continuation_matches(
     *,
     session: AsyncSession,
 ) -> bool:
-    """Use fixed identity reads and the existing current-unit predicate."""
+    """Recheck this family's actual facts at the existing selection boundary."""
     if prepared is None:
         if (binding.conversation_id, binding.generation) in service._sessions:
             raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
         return False
-    roots = await current_person_ids(session, prepared.actors)
+    if not prepared.sources_valid:
+        raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
+    unit = cast(UnitBinding, prepared.unit)
+    root, family = await _current_family(session, unit.actor)
+    if root != prepared.root or family != prepared.family:
+        raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
+    if not await _continuation_sources_current(binding, prepared, session):
+        raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
     item = service._sessions.get((binding.conversation_id, binding.generation))
     if item is None:
         return False
-
-    def identity(actor: str) -> str:
-        if actor not in prepared.actors:
-            raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
-        return roots.get(actor, actor)
 
     event = item.controller.state.events.get(f"event:{binding.event_id}")
     versions = cast(
@@ -361,24 +785,33 @@ async def continuation_matches(
         binding.source_revision,
     ]:
         return False
-    invited = invitation_unit(item, event, actor_identity=identity)
+    if any(
+        versions.get(ref.event_id) != [ref.revision, digest]
+        for ref, digest in prepared.source_digests
+    ):
+        raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
+    now = time.time()
+    if (
+        item.controller.continuation_family_facts(event.ref, now, family=family, binding=unit)
+        != prepared.facts
+    ):
+        raise OrdinaryAdmissionConflict("ordinary_participation_preparation_changed")
+
+    def identity(actor: str) -> str:
+        return root if actor in family else actor
+
+    invited = invitation_unit(item, event, actor_identity=identity, family=family)
     if (
         invited is not None
         and invited.thread == binding.unit_key
         and identity(invited.target) == identity(binding.target_hint)
     ):
         return True
-    return item.controller.continuation_current(
+    return item.controller.continuation_current_for_family(
         event.ref,
-        UnitBinding(
-            scope=event.scope,
-            unit=ParticipationUnit(thread=binding.unit_key, target=binding.target_hint),
-            actor=event.author,
-            basis=tuple(
-                SourceRef(event_id=key, revision=revision) for key, revision in binding.basis
-            ),
-        ),
-        time.time(),
+        unit,
+        now,
+        family=family,
         actor_identity=identity,
     )
 
@@ -387,14 +820,27 @@ async def continuation_current(
     service: SemanticParticipationService, binding: OrdinaryParticipationBinding
 ) -> bool:
     """Read eligibility without borrowing a writer for controller preparation."""
+    try:
+        basis = tuple(SourceRef(event_id=key, revision=revision) for key, revision in binding.basis)
+    except ValueError:
+        return False
     while True:
         prepared = await prepare_continuation(service, binding)
         async with service.database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
             try:
                 return await continuation_matches(service, binding, prepared, session=reader)
             except OrdinaryAdmissionConflict as exc:
                 if str(exc) != "ordinary_participation_preparation_changed":
                     raise
+        selected = await continuation_for_event(
+            service,
+            binding.event_id,
+            source_basis=basis,
+            invalid_refs=prepared.invalid_refs if prepared is not None else (),
+        )
+        if selected is None:
+            return False
 
 
 async def on_ordinary_admitted(
@@ -441,53 +887,31 @@ async def runtime_context(
         return None
     identity = await actor_identity(service, item, (admission.actor_person_id,))
     binding = admission.binding
-    checkpoint = ParticipationCheckpoint.model_validate(
-        item.controller.state.host_checkpoint.get("participation_v1", {})
-    )
     reports: list[dict[str, Any]] = []
-    for unit in checkpoint.units.values():
-        if (
-            unit.binding.unit.thread != binding.unit_key
-            or identity(unit.binding.unit.target) != identity(binding.target_hint)
-            or not item.controller._binding_valid(unit.binding, checkpoint)
-            or not item.controller._unit_interpretation_valid(unit)
-        ):
-            continue
-        facts: dict[str, Any] = {"actor_person_id": unit.binding.actor}
-        hint = unit.hint
-        if hint is not None and all(
-            item.controller._unit_ref_valid(ref, unit) for ref in unit.hint_basis
-        ):
+    for report in item.controller.participation_context_reports(
+        binding.unit_key, binding.target_hint, actor_identity=identity
+    ):
+        facts: dict[str, Any] = {"actor_person_id": report.actor}
+        if (hint := report.hint) is not None:
             facts["self_intent"] = {
-                "engage": hint.delta.engage,
+                "engage": hint.engage,
                 "source": hint.source.model_dump(mode="json") if hint.source else None,
-                "basis": [ref.model_dump(mode="json") for ref in unit.hint_basis],
+                "basis": [ref.model_dump(mode="json") for ref in hint.basis],
                 "source_at": hint.at,
                 "sequence": hint.sequence,
             }
-        review = unit.review
-        if review is not None and all(
-            item.controller._unit_ref_valid(ref, unit) for ref in review.basis
-        ):
+        if (review := report.review) is not None:
             facts["semantic_review"] = {
-                "interaction": review.interaction.choice if review.interaction else None,
-                "floor": review.floor.choice if review.floor else None,
+                "interaction": review.interaction,
+                "floor": review.floor,
                 "source": review.source.model_dump(mode="json"),
                 "source_at": review.at,
                 "source_order": review.source_order,
                 "sequence": review.sequence,
             }
-            observation = item.controller.state.observations.get(review.source.event_id)
-            if (
-                observation is not None
-                and observation.observation_id == review.observation_id
-                and observation.snapshot.sequence == review.sequence
-            ):
-                boundary_scope = observation.answers.get("boundary_scope")
-                if boundary_scope is not None:
-                    facts["semantic_review"]["boundary_scope"] = boundary_scope.choice
-        if len(facts) > 1:
-            reports.append(facts)
+            if review.boundary_scope is not None:
+                facts["semantic_review"]["boundary_scope"] = review.boundary_scope
+        reports.append(facts)
     boundaries = []
     for boundary in item.controller.state.boundaries.values():
         if (
@@ -554,17 +978,13 @@ async def observe_main_response(
             delta=delta,
         )
         if delta.engage == "quiet" and runtime.visible_event_ids:
-            checkpoint = ParticipationCheckpoint.model_validate(
-                item.controller.state.host_checkpoint.get("participation_v1", {})
+            continuations = item.controller.participation_continuation_sources(
+                unit.unit.thread,
+                admission.actor_person_id,
+                unit.unit.target,
+                (f"event:{event_id}" for event_id in runtime.visible_event_ids),
+                actor_identity=identity,
             )
-            continuations = {
-                ref.event_id: ref
-                for current in checkpoint.units.values()
-                if current.binding.unit.thread == unit.unit.thread
-                and identity(current.binding.actor) == identity(admission.actor_person_id)
-                and identity(current.binding.unit.target) == identity(unit.unit.target)
-                for ref in current.continuation_refs
-            }
             refs = {
                 event_id: continuations[f"event:{event_id}"]
                 for event_id in runtime.visible_event_ids

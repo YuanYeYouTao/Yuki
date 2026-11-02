@@ -34,10 +34,7 @@ def actor_ids(
     if include_continuation_targets:
         # Current SELF units and semantic targets can outlive their raw human
         # source. Include them before the writer's fixed-ID identity lookup.
-        for unit in item.controller._participation_checkpoint().units.values():
-            ids.update((unit.binding.actor, unit.binding.unit.target))
-            if unit.review is not None and unit.review.resolved_unit is not None:
-                ids.add(unit.review.resolved_unit.target)
+        ids.update(item.controller.participation_identity_ids())
         ids.update(proposal.target_hint for proposal in item.controller.state.proposals.values())
         for candidate in item.controller.state.candidates.values():
             ids.update((candidate.event.author, candidate.event.target))

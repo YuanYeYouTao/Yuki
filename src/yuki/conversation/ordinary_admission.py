@@ -339,6 +339,30 @@ class OrdinaryAdmissionRepository:
             json.dumps(event.segments, ensure_ascii=False, separators=(",", ":")),
         )
 
+    @staticmethod
+    def reprepare(
+        prepared: PreparedOrdinaryAdmission,
+        binding: OrdinaryParticipationBinding,
+        *,
+        reason: str,
+    ) -> PreparedOrdinaryAdmission:
+        """Reselect the original uncommitted event without changing its activation."""
+        admission = prepared.admission
+        if (
+            binding.event_id != admission.event_id
+            or binding.conversation_id != admission.conversation_id
+            or binding.generation != admission.generation
+            or binding.source_revision != admission.source_revision
+        ):
+            raise OrdinaryAdmissionConflict("ordinary_binding_source_changed")
+        return replace(
+            prepared,
+            admission=replace(admission, binding=binding, reason=reason),
+            basis_json=json.dumps(
+                {"basis": binding.basis, "reason": reason}, separators=(",", ":")
+            ),
+        )
+
     def publisher(
         self, admission: PreparedOrdinaryAdmission
     ) -> Callable[[AsyncSession, int], Awaitable[None]]:

@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import and_, literal, or_, select, text
+from sqlalchemy import and_, bindparam, func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -36,21 +37,44 @@ class SelfMemoryOrigin:
     generation: int
 
 
-def self_execution_origin_sql(execution_id: str) -> str:
-    """Resolve an exact saved execution or Work, using its original task version.
-
-    The expression is a bound parameter or a caller-owned static SQL column.
-    No transport identity or newer automation definition reconstructs this source.
-    """
+def self_execution_source_sql(execution_id: str) -> str:
+    """The original execution source carried by a direct or plugin receipt."""
     # SDK boundaries retain the original actor.source_key between the plugin
     # prefix and their final SHA-256 digest. Decode that saved internal anchor;
     # the receipt's execution/call identity remains the SDK boundary itself.
-    source_execution = (
+    return (
         f"(CASE WHEN substr({execution_id},1,7)='plugin:' "
         f"AND instr({execution_id},':execution:')>0 THEN "
         f"substr({execution_id},instr({execution_id},':execution:')+length(':execution:'),"
         f"length({execution_id})-instr({execution_id},':execution:')-length(':execution:')-64) "
         f"ELSE {execution_id} END)"
+    )
+
+
+def _automation_run_id_sql(source: str) -> str:
+    tail = f"substr({source},12)"
+    return f"CAST(substr({tail},1,instr({tail},':')-1) AS INTEGER)"
+
+
+def self_execution_origin_sql(execution_id: str, *, prepared_automation_ids: bool = False) -> str:
+    """Resolve an exact saved execution or Work, using its original task version.
+
+    The expression is a bound parameter or a caller-owned static SQL column.
+    No transport identity or newer automation definition reconstructs this source.
+    """
+    source_execution = self_execution_source_sql(execution_id)
+    parent = (
+        "COALESCE(json_extract(source_work.source_json,'$.execution_source.parent_execution_id'),"
+        "json_extract(source_work.source_json,'$.parent_execution_id'))"
+    )
+    candidates = (
+        "SELECT value FROM json_each(:participation_automation_ids)"
+        if prepared_automation_ids
+        else (
+            f"{_automation_run_id_sql(source_execution)}, "
+            f"(SELECT {_automation_run_id_sql(parent)} FROM runtime_work source_work "
+            f"WHERE source_work.id={source_execution})"
+        )
     )
     step_id = (
         "COALESCE(json_extract(w.source_json,'$.execution_source.step_id'),"
@@ -76,7 +100,7 @@ def self_execution_origin_sql(execution_id: str) -> str:
         "THEN printf('automation:%d:%s',ar.id,av.script_hash) "
         "ELSE printf('automation:%d:%s:%s',ar.id,"
         f"{step_id},av.script_hash) END "
-        "WHERE a.creator_kind='self' "
+        f"WHERE ar.id IN ({candidates}) AND a.creator_kind='self' "
         "AND ic.kind='space' "
         f"AND ({source_execution}=printf('automation:%d:%s',ar.id,av.script_hash) "
         "OR w.id IS NOT NULL)"
@@ -183,7 +207,11 @@ async def resolve_self_origin(
 
 
 def sql_self_receipt_evidence_predicate(
-    *, fact: str = "f", evidence: str = "e", receipt: str = "t"
+    *,
+    fact: str = "f",
+    evidence: str = "e",
+    receipt: str = "t",
+    prepared_automation_ids: bool = False,
 ) -> str:
     """Canonical SELF receipt readability, using caller-owned SQL aliases.
 
@@ -216,12 +244,104 @@ def sql_self_receipt_evidence_predicate(
         f"AND (({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL) "
         f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ir.space_id))) "
         f"OR ({t}.initiative_run_id IS NULL AND EXISTS ("
-        + self_execution_origin_sql(f"{t}.execution_id")
+        + self_execution_origin_sql(
+            f"{t}.execution_id", prepared_automation_ids=prepared_automation_ids
+        )
         + f" AND {t}.canonical_space_id=ic.space_id AND {t}.canonical_person_id IS NULL "
         f"AND {t}.bot_user_id=ia.external_account_id "
         f"AND (({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL) "
         f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ic.space_id))))))"
     )
+
+
+def self_initiative_fact_visibility(
+    space_id: str, now: datetime | ColumnElement[datetime]
+) -> ColumnElement[bool]:
+    """The existing SELF fact visibility and validity for a specific space."""
+    from yuki.persistence.models import MemoryFactModel as f
+
+    current_group = and_(
+        f.scope_type == "group",
+        f.canonical_subject_space_id == space_id,
+        f.canonical_subject_person_id.is_(None),
+    )
+    visible_self = and_(
+        f.scope_type == "self",
+        f.canonical_subject_person_id.is_(None),
+        f.canonical_subject_space_id.is_(None),
+        f.canonical_visibility_person_id.is_(None),
+        or_(
+            and_(f.visibility_type == "global", f.canonical_visibility_space_id.is_(None)),
+            and_(f.visibility_type == "group", f.canonical_visibility_space_id == space_id),
+        ),
+    )
+    return and_(
+        f.status == "active",
+        f.review_state == "verified",
+        or_(current_group, visible_self),
+        or_(f.valid_from.is_(None), f.valid_from <= now),
+        or_(f.valid_until.is_(None), f.valid_until > now),
+    )
+
+
+def self_initiative_fact_condition(
+    space_id: str,
+    now: datetime | ColumnElement[datetime],
+    *,
+    prepared_automation_ids: bool = False,
+    prepared_evidence_ids: bool = False,
+) -> ColumnElement[bool]:
+    """The existing SELF visibility and live-evidence test for a specific space."""
+    from yuki.memory.repository import readable_evidence_predicate
+    from yuki.persistence.models import MemoryEvidenceModel as e
+    from yuki.persistence.models import MemoryFactModel as f
+
+    evidence = (
+        select(literal(1))
+        .select_from(e)
+        .where(
+            e.fact_id == f.id,
+            readable_evidence_predicate(prepared_automation_ids=prepared_automation_ids),
+        )
+    )
+    if prepared_evidence_ids:
+        identities = func.json_each(bindparam("participation_evidence_ids")).table_valued("value")
+        evidence = evidence.where(e.id.in_(select(identities.c.value)))
+    return and_(
+        self_initiative_fact_visibility(space_id, now),
+        evidence.correlate(f).exists(),
+    )
+
+
+async def read_self_initiative_revisions(
+    database: Database,
+    *,
+    canonical_conversation_id: str,
+    fact_ids: tuple[int, ...],
+    session: AsyncSession | None = None,
+) -> dict[int, str]:
+    """Read the original source digests without materializing Memory DTOs."""
+    from yuki.conversation.initiative_sources import MEMORY_REVISION_FIELDS, memory_revision
+    from yuki.persistence.models import MemoryFactModel as f
+
+    if not fact_ids:
+        return {}
+    async with optional_session(database, session, write=False) as session:
+        conversation = await session.get(CanonicalConversationModel, canonical_conversation_id)
+        if (
+            conversation is None
+            or conversation.kind != "space"
+            or not conversation.space_id
+            or conversation.person_id is not None
+        ):
+            return {}
+        rows = await session.execute(
+            select(f.id, *(getattr(f, name) for name in MEMORY_REVISION_FIELDS)).where(
+                f.id.in_(fact_ids),
+                self_initiative_fact_condition(conversation.space_id, datetime.now(UTC)),
+            )
+        )
+        return {row.id: memory_revision(row) for row in rows}
 
 
 async def read_self_initiative_facts(
@@ -237,11 +357,7 @@ async def read_self_initiative_facts(
     new initiative candidates or grants private Person access from a target.
     """
     from yuki.memory.projections import project_memory_fact_rows
-    from yuki.memory.repository import (
-        readable_evidence_count_expression,
-        readable_evidence_predicate,
-    )
-    from yuki.persistence.models import MemoryEvidenceModel as e
+    from yuki.memory.repository import readable_evidence_count_expression
     from yuki.persistence.models import MemoryFactModel as f
 
     if not fact_ids:
@@ -257,39 +373,12 @@ async def read_self_initiative_facts(
         ):
             return ()
         space_id = conversation.space_id
-        current_group = and_(
-            f.scope_type == "group",
-            f.canonical_subject_space_id == space_id,
-            f.canonical_subject_person_id.is_(None),
-        )
-        visible_self = and_(
-            f.scope_type == "self",
-            f.canonical_subject_person_id.is_(None),
-            f.canonical_subject_space_id.is_(None),
-            f.canonical_visibility_person_id.is_(None),
-            or_(
-                and_(f.visibility_type == "global", f.canonical_visibility_space_id.is_(None)),
-                and_(f.visibility_type == "group", f.canonical_visibility_space_id == space_id),
-            ),
-        )
-        readable = (
-            select(literal(1))
-            .select_from(e)
-            .where(e.fact_id == f.id, readable_evidence_predicate())
-            .correlate(f)
-            .exists()
-        )
         rows = (
             await session.execute(
                 select(f, readable_evidence_count_expression())
                 .where(
                     f.id.in_(fact_ids),
-                    f.status == "active",
-                    f.review_state == "verified",
-                    or_(current_group, visible_self),
-                    or_(f.valid_from.is_(None), f.valid_from <= now),
-                    or_(f.valid_until.is_(None), f.valid_until > now),
-                    readable,
+                    self_initiative_fact_condition(space_id, now),
                 )
                 .order_by(f.id)
             )

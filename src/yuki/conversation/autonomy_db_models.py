@@ -67,6 +67,11 @@ class InitiativeRunModel(Base):
             "state IN ('accepted', 'running', 'completed', 'no_reply', 'interrupted', 'failed')"
         ),
         Index("ix_autonomy_runs_active", "conversation_id", "generation", "state"),
+        Index(
+            "ix_autonomy_runs_reconcile",
+            "created_at",
+            sqlite_where=text("state IN ('accepted', 'running')"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

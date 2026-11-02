@@ -40,9 +40,6 @@ class HealthPayload(TypedDict):
     main_agent_manifest: dict[str, object]
     memory_embedding_enabled: bool
     memory_embedding_configured: bool
-    memory_embedding_coverage: float
-    memory_embedding_pending_jobs: int
-    memory_embedding_failed_jobs: int
     memory_maintenance_running: bool
     memory_contested_facts: int
     memory_active_contested_facts: int
@@ -63,7 +60,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     plugin_manager = getattr(container, "plugin_manager", None)
     plugin_running_count = int(getattr(plugin_manager, "running_count", 0))
     background_health = await container.plugin_background_turns.health()
-    embedding_health = await container.memory_embeddings.health()
     memory_health = await container.memory_audit.health()
     rebuild_health = await container.persistence.memory_rebuilds.health(
         enabled=container.settings.memory_rebuild_enabled,
@@ -121,11 +117,8 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         runtime_work=await container.work_scheduler.health(),
         subagents=await container.subagent_scheduler.health(),
         main_agent_manifest=container.main_agent_contract.health(),
-        memory_embedding_enabled=embedding_health.enabled,
-        memory_embedding_configured=embedding_health.provider_configured,
-        memory_embedding_coverage=embedding_health.coverage_ratio,
-        memory_embedding_pending_jobs=embedding_health.pending_job_count,
-        memory_embedding_failed_jobs=embedding_health.failed_job_count,
+        memory_embedding_enabled=container.memory_embeddings.enabled,
+        memory_embedding_configured=container.memory_embeddings.provider is not None,
         memory_maintenance_running=container.memory_maintenance_worker.running,
         memory_contested_facts=memory_health.contested_fact_count,
         memory_active_contested_facts=memory_health.active_contested_count,

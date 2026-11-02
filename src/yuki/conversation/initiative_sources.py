@@ -7,21 +7,51 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from yuki.domain.messages import mention_snapshots
+from sqlalchemy import String, case, func, select, type_coerce
+from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import ScalarSelect
+
+from yuki.domain.messages import MENTION_SNAPSHOT_FIELDS, mention_snapshots
+from yuki.persistence.models import ChatEventModel, MemoryFactModel
 from yuki.persistence.repository_records import EventRecord
+
+EVENT_TEXT_REVISION_FIELDS = ("content", "visual_summary", "audio_transcript")
+EVENT_IDENTITY_REVISION_FIELDS = (
+    "author_person_id",
+    "author_kind",
+    "suppression_status",
+    "canonical_conversation_id",
+    "caused_by_event_id",
+    "reply_to_event_id",
+)
+MEMORY_TIME_REVISION_FIELDS = ("valid_from", "valid_until")
+MEMORY_REVISION_FIELDS = (
+    "content",
+    "status",
+    "review_state",
+    "authority",
+    "scope_type",
+    "visibility_type",
+    "canonical_subject_person_id",
+    "canonical_visibility_person_id",
+    "canonical_subject_space_id",
+    "canonical_visibility_space_id",
+    *MEMORY_TIME_REVISION_FIELDS,
+)
+
+
+def memory_revision_time_columns() -> tuple[ColumnElement[str], ColumnElement[str]]:
+    """Read original SQLite date values without ORM datetime re-encoding."""
+    return (
+        type_coerce(MemoryFactModel.valid_from, String).label("revision_valid_from"),
+        type_coerce(MemoryFactModel.valid_until, String).label("revision_valid_until"),
+    )
 
 
 def source_revision(row: Any) -> int:
     payload = [
-        row.content or "",
-        row.visual_summary or "",
-        row.audio_transcript or "",
-        row.author_person_id,
-        row.author_kind,
-        row.suppression_status,
-        row.canonical_conversation_id,
-        row.caused_by_event_id,
-        row.reply_to_event_id,
+        *(getattr(row, name) or "" for name in EVENT_TEXT_REVISION_FIELDS),
+        *(getattr(row, name) for name in EVENT_IDENTITY_REVISION_FIELDS),
     ]
     segments = (
         row.segments if isinstance(row, EventRecord) else tuple(json.loads(row.segments_json))
@@ -33,6 +63,43 @@ def source_revision(row: Any) -> int:
     return int(digest[:15], 16) + 1
 
 
+def event_mentions_expression() -> ScalarSelect[str]:
+    """SQLite projection of exactly the event-time mentions in source_revision."""
+    parts = func.json_each(ChatEventModel.segments_json).table_valued("value")
+    return (
+        select(
+            func.json_group_array(
+                func.json_array(
+                    *(
+                        value
+                        for key in MENTION_SNAPSHOT_FIELDS
+                        for value in (
+                            func.coalesce(func.json_type(parts.c.value, f"$.data.{key}"), "null"),
+                            case(
+                                (
+                                    func.json_type(parts.c.value, f"$.data.{key}") == "text",
+                                    func.json_extract(parts.c.value, f"$.data.{key}"),
+                                ),
+                                else_=func.printf(
+                                    "%s",
+                                    func.coalesce(parts.c.value.op("->")(f"$.data.{key}"), "null"),
+                                ),
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+        .select_from(parts)
+        .where(
+            func.json_extract(parts.c.value, "$.type") == "mention",
+            func.json_type(parts.c.value, "$.data") == "object",
+        )
+        .correlate(ChatEventModel)
+        .scalar_subquery()
+    )
+
+
 def memory_revision(fact: Any) -> str:
     def value(item: Any) -> Any:
         if isinstance(item, datetime):
@@ -41,18 +108,5 @@ def memory_revision(fact: Any) -> str:
             ).isoformat()
         return getattr(item, "value", item)
 
-    payload = [
-        fact.content,
-        value(fact.status),
-        value(fact.review_state),
-        value(fact.authority),
-        value(fact.scope_type),
-        value(fact.visibility_type),
-        fact.canonical_subject_person_id,
-        fact.canonical_visibility_person_id,
-        fact.canonical_subject_space_id,
-        fact.canonical_visibility_space_id,
-        value(fact.valid_from),
-        value(fact.valid_until),
-    ]
+    payload = [value(getattr(fact, name)) for name in MEMORY_REVISION_FIELDS]
     return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()

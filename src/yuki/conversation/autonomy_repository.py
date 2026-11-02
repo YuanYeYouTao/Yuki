@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, func, literal, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 from sqlalchemy.sql.elements import ColumnElement
@@ -245,8 +245,16 @@ class AutonomyRepository:
         expected_events, expected_memories = set(), set()
         prepared_sources_valid = True
         if source_guard:
-            from yuki.conversation.initiative_sources import memory_revision, source_revision
-            from yuki.domain.messages import MENTION_SNAPSHOT_FIELDS
+            from yuki.conversation.initiative_sources import (
+                EVENT_IDENTITY_REVISION_FIELDS,
+                EVENT_TEXT_REVISION_FIELDS,
+                MEMORY_REVISION_FIELDS,
+                MEMORY_TIME_REVISION_FIELDS,
+                event_mentions_expression,
+                memory_revision,
+                memory_revision_time_columns,
+                source_revision,
+            )
             from yuki.persistence.models import ChatEventModel, MemoryFactModel
 
             async with self._database.read_session() as reader:
@@ -271,36 +279,19 @@ class AutonomyRepository:
                     if event_ids
                     else {}
                 )
-                memories = (
-                    {
-                        str(row.id): row
-                        for row in await reader.scalars(
-                            select(MemoryFactModel).where(MemoryFactModel.id.in_(memory_ids))
+                raw_valid_from, raw_valid_until = memory_revision_time_columns()
+                memories = {}
+                if memory_ids:
+                    memory_rows = await reader.execute(
+                        select(MemoryFactModel, raw_valid_from, raw_valid_until).where(
+                            MemoryFactModel.id.in_(memory_ids)
                         )
+                    )
+                    memories = {
+                        str(row.id): (row, valid_from, valid_until)
+                        for row, valid_from, valid_until in memory_rows
                     }
-                    if memory_ids
-                    else {}
-                )
-                parts = func.json_each(ChatEventModel.segments_json).table_valued("value")
-                mention_values = (
-                    select(
-                        func.json_group_array(
-                            func.json_array(
-                                *(
-                                    func.json_extract(parts.c.value, f"$.data.{key}")
-                                    for key in MENTION_SNAPSHOT_FIELDS
-                                )
-                            )
-                        )
-                    )
-                    .select_from(parts)
-                    .where(
-                        func.json_extract(parts.c.value, "$.type") == "mention",
-                        func.json_type(parts.c.value, "$.data") == "object",
-                    )
-                    .correlate(ChatEventModel)
-                    .scalar_subquery()
-                )
+                mention_values = event_mentions_expression()
                 event_mentions: dict[int, str] = (
                     dict(
                         (
@@ -315,31 +306,6 @@ class AutonomyRepository:
                     )
                     if event_ids
                     else {}
-                )
-                event_fields = (
-                    "content",
-                    "visual_summary",
-                    "audio_transcript",
-                    "author_person_id",
-                    "author_kind",
-                    "suppression_status",
-                    "canonical_conversation_id",
-                    "caused_by_event_id",
-                    "reply_to_event_id",
-                )
-                memory_fields = (
-                    "content",
-                    "status",
-                    "review_state",
-                    "authority",
-                    "scope_type",
-                    "visibility_type",
-                    "canonical_subject_person_id",
-                    "canonical_visibility_person_id",
-                    "canonical_subject_space_id",
-                    "canonical_visibility_space_id",
-                    "valid_from",
-                    "valid_until",
                 )
                 for ref in source_guard:
                     if ref.kind is InitiativeSourceKind.EVENT:
@@ -359,27 +325,40 @@ class AutonomyRepository:
                                 mention_values.is_(mentions),
                                 *(
                                     getattr(ChatEventModel, field).is_(getattr(event_row, field))
-                                    for field in event_fields
+                                    for field in (
+                                        *EVENT_TEXT_REVISION_FIELDS,
+                                        *EVENT_IDENTITY_REVISION_FIELDS,
+                                    )
                                 ),
                             )
                         )
                         expected_events.add(event_row.id)
                     else:
-                        memory_row = memories.get(ref.source_id)
+                        memory = memories.get(ref.source_id)
                         if (
-                            memory_row is None
-                            or memory_row.status != "active"
-                            or memory_row.review_state != "verified"
-                            or memory_revision(memory_row) != ref.revision
+                            memory is None
+                            or memory[0].status != "active"
+                            or memory[0].review_state != "verified"
+                            or memory_revision(memory[0]) != ref.revision
                         ):
                             prepared_sources_valid = False
                             continue
+                        memory_row, valid_from, valid_until = memory
                         memory_checks.append(
                             and_(
                                 MemoryFactModel.id == memory_row.id,
                                 *(
                                     getattr(MemoryFactModel, field).is_(getattr(memory_row, field))
-                                    for field in memory_fields
+                                    for field in MEMORY_REVISION_FIELDS
+                                    if field not in MEMORY_TIME_REVISION_FIELDS
+                                ),
+                                or_(
+                                    raw_valid_from.is_(valid_from),
+                                    MemoryFactModel.valid_from.is_(memory_row.valid_from),
+                                ),
+                                or_(
+                                    raw_valid_until.is_(valid_until),
+                                    MemoryFactModel.valid_until.is_(memory_row.valid_until),
                                 ),
                             )
                         )
@@ -488,7 +467,9 @@ class AutonomyRepository:
                 await session.scalars(
                     select(InitiativeRunModel)
                     .where(
-                        InitiativeRunModel.state.in_(_ACTIVE),
+                        InitiativeRunModel.state.in_(
+                            tuple(literal(state, literal_execute=True) for state in _ACTIVE)
+                        ),
                     )
                     .order_by(InitiativeRunModel.created_at)
                 )

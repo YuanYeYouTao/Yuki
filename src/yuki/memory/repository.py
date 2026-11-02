@@ -193,6 +193,7 @@ def readable_evidence_predicate(
     evidence: Any = MemoryEvidenceModel,
     evidence_table: Any = MemoryEvidenceModel,
     evidence_alias: str = "memory_evidence",
+    prepared_automation_ids: bool = False,
 ) -> Any:
     """The three mutually exclusive canonical source chains, evaluated in SQL.
 
@@ -249,6 +250,7 @@ def readable_evidence_predicate(
                     fact=fact_alias,
                     evidence=evidence_alias,
                     receipt="memory_tool_receipts",
+                    prepared_automation_ids=prepared_automation_ids,
                 )
             ),
         )
