@@ -13,7 +13,6 @@ from sqlalchemy import func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 from yuki_participation.models import Effect, Feedback, Scope, SourceRef
-from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfReport
 
 from yuki.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
@@ -92,15 +91,17 @@ async def _ordinary_bindings(
                     session=session,
                 )
             )
+        # Every returned admission has already hashed its source in this read
+        # transaction. Reuse only that verified hash when checking its basis.
+        source_revisions = {
+            admission.event_id: admission.source_revision for admission in admissions
+        }
         bindings = [(admission, admission_unit_binding(admission)) for admission in admissions]
         refs = tuple(ref for _, binding in bindings if binding is not None for ref in binding.basis)
         versions = cast(
             dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
         )
-        retained = ParticipationCheckpoint.model_validate(
-            item.controller.state.host_checkpoint.get("participation_v1", {})
-        )
-        known = {ref for unit in retained.units.values() for ref in unit.binding.basis}
+        known = set(item.controller.participation_binding_refs())
         known.update(event.ref for event in item.controller.state.events.values())
         for boundary in item.controller.state.boundaries.values():
             known.update((boundary.source, *boundary.dependencies, *boundary.release_dependencies))
@@ -111,7 +112,11 @@ async def _ordinary_bindings(
         # cold hydration leave this association unknown; invalidating an unseen
         # ref would poison its first real event.
         valid = (
-            await service._sources_current(item, verifiable, session=session) if verifiable else {}
+            await service._sources_current(
+                item, verifiable, session=session, source_revisions=source_revisions
+            )
+            if verifiable
+            else {}
         )
         for admission, binding in bindings:
             if binding is not None and all(valid.get(ref, False) for ref in binding.basis):
@@ -286,9 +291,7 @@ async def sync_scope_effects(
     valid_runs = {run.id for run in valid_run_rows}
     semantic_runs = {run.id for run in valid_run_rows if run.owner == "semantic"}
     run_threads = {run.id: run.thread_key for run in valid_run_rows if run.thread_key}
-    outbound_threads = dict(
-        cast(dict[str, str], item.controller.state.host_checkpoint.get("outbound_threads", {}))
-    )
+    outbound_updates: dict[str, str] = {}
     by_id = {row.id: row for row in current}
     output_ids = tuple({row.event_id for row in current if row.event_id is not None})
     valid_outputs: set[int] = set()
@@ -334,7 +337,7 @@ async def sync_scope_effects(
             item.controller.observe_public_anchor(run_id, key, _timestamp(row.updated_at))
         if marker and run_id in run_threads:
             thread = run_threads[run_id]
-            outbound_threads[key] = thread
+            outbound_updates[key] = thread
             cached = item.controller.state.events.get(key)
             if cached is not None and cached.kind == "self" and cached.thread != thread:
                 item.controller.set_state_entry(
@@ -362,7 +365,7 @@ async def sync_scope_effects(
             if item.controller.observe_unit_expression(
                 binding, actual[0], actual[1], anchor=anchor
             ):
-                outbound_threads[key] = binding.unit.thread
+                outbound_updates[key] = binding.unit.thread
                 cached = item.controller.state.events.get(key)
                 if (
                     cached is not None
@@ -372,10 +375,8 @@ async def sync_scope_effects(
                     item.controller.set_state_entry(
                         "events", key, cached.model_copy(update={"thread": binding.unit.thread})
                     )
-    if len(outbound_threads) > 1024:
-        for key in tuple(outbound_threads)[:-1024]:
-            outbound_threads.pop(key)
-    item.controller.set_state_entry("host_checkpoint", "outbound_threads", outbound_threads)
+    for key, thread in outbound_updates.items():
+        item.controller.set_host_mapping_entry("outbound_threads", key, thread)
     for run_ref, effect in effects.values():
         if apply_committed and (run_ref.startswith("social-run:") or run_ref in valid_runs):
             item.controller.observe_committed_effect(run_ref, effect)
@@ -502,6 +503,12 @@ async def _read_facts(
             .order_by(InitiativeFeedbackModel.sequence)
         )
     )
+    tools_by_run: dict[str | None, list[tuple[int, datetime]]] = {}
+    for identity, run_id, created in tools:
+        tools_by_run.setdefault(run_id, []).append((identity, created))
+    durable_by_run: dict[str, list[InitiativeFeedbackModel]] = {}
+    for feedback_row in durable:
+        durable_by_run.setdefault(feedback_row.run_id, []).append(feedback_row)
     task_ids = tuple(task["id"] for task in tasks if task["parent_work_id"] is None)
     from yuki.runtime.work_tree import rooted_tree
 
@@ -526,6 +533,9 @@ async def _read_facts(
         if task_ids
         else []
     )
+    charged_by_root: dict[str, list[Any]] = {}
+    for charged_row in charged:
+        charged_by_root.setdefault(charged_row["root_id"], []).append(charged_row)
     replay_ids = tuple(
         task["id"]
         for task in tasks
@@ -549,6 +559,7 @@ async def _read_facts(
     for run in runs:
         try:
             task = by_source.get(f"initiative:{run.run_id}")
+            tool_proofs = dict(tools_by_run.get(run.run_id, ()))
             social_proofs: dict[str, dict[str, tuple[Any, ...]]] = {}
             actual = {
                 key: effect
@@ -561,19 +572,17 @@ async def _read_facts(
                     f"tool:{identity}": Effect(
                         effect_id=f"tool:{identity}", kind="tool", at=_timestamp(created)
                     )
-                    for identity, run_id, created in tools
-                    if run_id == run.run_id
+                    for identity, created in tool_proofs.items()
                 }
             )
             counts = [(task["id"], task["model_requests"])] if task else []
-            counts.extend(
-                (row["id"], row["model_requests"])
-                for row in charged
-                if task
-                and row["root_id"] == task["id"]
-                and row["conversation_id"] == run.conversation_id
-                and row["generation"] == run.generation
-            )
+            if task:
+                counts.extend(
+                    (row["id"], row["model_requests"])
+                    for row in charged_by_root.get(task["id"], ())
+                    if row["conversation_id"] == run.conversation_id
+                    and row["generation"] == run.generation
+                )
             model_refs = {
                 f"work-model:{identity}:{ordinal}"
                 for identity, count in counts
@@ -585,14 +594,10 @@ async def _read_facts(
                     task,
                     actual,
                     model_refs,
-                    [row for row in durable if row.run_id == run.run_id],
+                    durable_by_run.get(run.run_id, []),
                     checkpoints.get(task["id"]) if task else None,
                     social_proofs,
-                    {
-                        identity: created
-                        for identity, run_id, created in tools
-                        if run_id == run.run_id
-                    },
+                    tool_proofs,
                     privacy,
                 )
             )

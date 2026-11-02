@@ -266,7 +266,7 @@ class OrdinaryParticipationService(Protocol):
     ) -> OrdinaryParticipationBinding | None: ...
 
     async def continuation_for_event(
-        self, event_id: int
+        self, event_id: int, *, prepared: PreparedContinuation | None = None
     ) -> (
         tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None
     ): ...
@@ -1003,7 +1003,12 @@ class MessageProcessor:
             return ProcessResult(False, reason="group_observed")
 
         binding = None
-        if self._participation is not None and record.author_is_human():
+        if (
+            direct_match is None
+            and decision.command is None
+            and self._participation is not None
+            and record.author_is_human()
+        ):
             with turn_detail("participation_binding"):
                 binding = await self._participation.binding_for_event(
                     record.id, record=record, runtime=runtime_snapshot
@@ -1591,12 +1596,16 @@ class MessageProcessor:
                 else None
             )
 
+            selected_prepared = prepared
+
             async def admission_allowed(
                 session: AsyncSession,
                 continuation: PreparedContinuation | None = continuation,
+                selected: PreparedOrdinaryAdmission = selected_prepared,
+                reason: str = decision.reason,
             ) -> bool:
                 return await self._ordinary_admission_allowed(
-                    prepared, decision.reason, session, continuation=continuation
+                    selected, reason, session, continuation=continuation
                 )
 
             try:
@@ -1609,6 +1618,23 @@ class MessageProcessor:
                     str(exc) == "ordinary_participation_preparation_changed"
                     and write_failure_committed(exc) is False
                 ):
+                    selected = (
+                        await self._participation.continuation_for_event(
+                            record.id, prepared=continuation
+                        )
+                        if self._participation is not None
+                        else None
+                    )
+                    if selected is None:
+                        return ProcessResult(False, reason="ordinary_continuation_closed")
+                    binding, reason = selected
+                    try:
+                        prepared = self.ordinary_admissions.reprepare(
+                            prepared, binding, reason=reason
+                        )
+                    except OrdinaryAdmissionConflict:
+                        return ProcessResult(False, reason="ordinary_source_changed")
+                    decision = replace(decision, reason=reason)
                     continue
                 if (
                     write_failure_phase(exc) is not None

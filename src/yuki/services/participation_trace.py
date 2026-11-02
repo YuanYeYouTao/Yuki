@@ -9,6 +9,7 @@ from yuki_participation.controller import ActorIdentity, original_actor
 from yuki_participation.models import Observation, Snapshot
 from yuki_participation.observer import SemanticObserver
 
+from yuki.execution_trace.payload import ModelFieldSnapshot
 from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.person_identity import current_person_ids
 from yuki.persistence.database import Database
@@ -75,7 +76,7 @@ class TracedSemanticObserver:
         started = time.monotonic()
         async with trace_span(
             "semantic_observation",
-            {"snapshot": snapshot.model_dump(mode="json")},
+            {"snapshot": ModelFieldSnapshot(snapshot)},
             recorder=self._recorder,
             conversation_id=snapshot.scope.conversation_id,
             source_event_id=_source_event(snapshot),

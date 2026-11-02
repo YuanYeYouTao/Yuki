@@ -10,6 +10,8 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel
+
 OPAQUE_KEYS = frozenset({"encrypted_content", "signature", "thoughtSignature"})
 
 
@@ -21,6 +23,13 @@ class PayloadCapacityError(ValueError):
 class HTTPResponseSnapshot:
     status: int
     content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ModelFieldSnapshot:
+    """Capture a known, stable model field graph without custom serialization."""
+
+    value: BaseModel
 
 
 def freeze_payload(value: object, capacity: int) -> tuple[object, int]:
@@ -36,7 +45,9 @@ def freeze_payload(value: object, capacity: int) -> tuple[object, int]:
     used, nodes = 512 * 1024, 0
     ancestors: set[int] = set()
 
-    def inspect(item: Any, depth: int = 0, path_chars: int = 1) -> None:
+    def inspect(
+        item: Any, depth: int = 0, path_chars: int = 1, *, model_fields: bool = False
+    ) -> None:
         nonlocal used, nodes
         nodes += 1
         if depth > 48 or nodes > 65536:
@@ -45,14 +56,24 @@ def freeze_payload(value: object, capacity: int) -> tuple[object, int]:
         if isinstance(item, HTTPResponseSnapshot):
             # Parsing arbitrary JSON can produce many small Python objects.
             used += len(item.content) * 160
+        elif isinstance(item, ModelFieldSnapshot):
+            inspect(item.value, depth + 1, path_chars, model_fields=True)
         elif isinstance(item, str):
             used += len(item) * 30
         elif isinstance(item, Enum):
-            inspect(item.value, depth + 1, path_chars)
-        elif isinstance(item, (dict, list, tuple)) or (
-            is_dataclass(item) and not isinstance(item, type)
+            inspect(item.value, depth + 1, path_chars, model_fields=model_fields)
+        elif (
+            isinstance(item, (dict, list, tuple))
+            or (model_fields and isinstance(item, BaseModel))
+            or (is_dataclass(item) and not isinstance(item, type))
         ):
-            count = len(fields(item)) if is_dataclass(item) else len(item)
+            count = (
+                len(type(item).model_fields)
+                if isinstance(item, BaseModel)
+                else len(fields(item))
+                if is_dataclass(item)
+                else len(item)
+            )
             if used + count * 512 > capacity or id(item) in ancestors:
                 raise PayloadCapacityError("diagnostic_structure_limit")
             ancestors.add(id(item))
@@ -61,17 +82,31 @@ def freeze_payload(value: object, capacity: int) -> tuple[object, int]:
                     for key, child in item.items():
                         if not isinstance(key, str):
                             raise TypeError("diagnostic_key_type")
-                        inspect(key, depth + 1, path_chars)
-                        inspect(child, depth + 1, path_chars + len(key) + 1)
+                        inspect(key, depth + 1, path_chars, model_fields=model_fields)
+                        inspect(
+                            child, depth + 1, path_chars + len(key) + 1, model_fields=model_fields
+                        )
+                elif isinstance(item, BaseModel):
+                    for name in type(item).model_fields:
+                        inspect(name, depth + 1, path_chars, model_fields=True)
+                        inspect(
+                            getattr(item, name),
+                            depth + 1,
+                            path_chars + len(name) + 1,
+                            model_fields=True,
+                        )
                 elif is_dataclass(item):
                     for field in fields(item):
-                        inspect(field.name, depth + 1, path_chars)
+                        inspect(field.name, depth + 1, path_chars, model_fields=model_fields)
                         inspect(
-                            getattr(item, field.name), depth + 1, path_chars + len(field.name) + 1
+                            getattr(item, field.name),
+                            depth + 1,
+                            path_chars + len(field.name) + 1,
+                            model_fields=model_fields,
                         )
                 else:
                     for child in item:
-                        inspect(child, depth + 1, path_chars + 20)
+                        inspect(child, depth + 1, path_chars + 20, model_fields=model_fields)
             finally:
                 ancestors.remove(id(item))
         elif item is not None and not isinstance(item, (bool, int, float)):
@@ -81,15 +116,25 @@ def freeze_payload(value: object, capacity: int) -> tuple[object, int]:
 
     inspect(value)
 
-    def copy(item: Any) -> Any:
+    def copy(item: Any, *, model_fields: bool = False) -> Any:
         if isinstance(item, Enum):
-            return copy(item.value)
+            return copy(item.value, model_fields=model_fields)
+        if isinstance(item, ModelFieldSnapshot):
+            return copy(item.value, model_fields=True)
+        if model_fields and isinstance(item, BaseModel):
+            return {
+                name: copy(getattr(item, name), model_fields=True)
+                for name in type(item).model_fields
+            }
         if isinstance(item, dict):
-            return {key: copy(child) for key, child in item.items()}
+            return {key: copy(child, model_fields=model_fields) for key, child in item.items()}
         if isinstance(item, (list, tuple)):
-            return [copy(child) for child in item]
+            return [copy(child, model_fields=model_fields) for child in item]
         if is_dataclass(item) and not isinstance(item, (type, HTTPResponseSnapshot)):
-            return {field.name: copy(getattr(item, field.name)) for field in fields(item)}
+            return {
+                field.name: copy(getattr(item, field.name), model_fields=model_fields)
+                for field in fields(item)
+            }
         return item
 
     return copy(value), used

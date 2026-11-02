@@ -51,7 +51,11 @@ from yuki.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from yuki.conversation.initiative_sources import memory_revision, source_revision
+from yuki.conversation.initiative_sources import (
+    EVENT_IDENTITY_REVISION_FIELDS,
+    EVENT_TEXT_REVISION_FIELDS,
+    source_revision,
+)
 from yuki.conversation.ordinary_admission import (
     OrdinaryAdmission,
     OrdinaryAdmissionRepository,
@@ -64,7 +68,7 @@ from yuki.domain.memory_config import MemoryConfigScope
 from yuki.domain.messages import InboundMessage, mention_snapshots
 from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
-from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.memory.self_origin import read_self_initiative_revisions
 from yuki.model_runtime.secrets import read_model_secrets
 from yuki.model_runtime.semantic_observation import (
     INVALID,
@@ -380,11 +384,13 @@ class SemanticParticipationService:
         return await binding_for_event(self, event_id, record=record, runtime=runtime)
 
     async def continuation_for_event(
-        self, event_id: int
+        self, event_id: int, *, prepared: PreparedContinuation | None = None
     ) -> tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None:
         from yuki.services.participation_ordinary import continuation_for_event
 
-        return await continuation_for_event(self, event_id)
+        return await continuation_for_event(
+            self, event_id, invalid_refs=prepared.invalid_refs if prepared is not None else ()
+        )
 
     async def continuation_current(self, binding: OrdinaryParticipationBinding) -> bool:
         from yuki.services.participation_ordinary import continuation_current
@@ -433,7 +439,7 @@ class SemanticParticipationService:
         await observe_main_response(self, runtime, request_sequence, response, delta)
 
     async def control_snapshot(self) -> dict[str, object]:
-        """Read current bounded host state without ticking, saving or re-evaluating Jev."""
+        """Read current host state without ticking, saving or re-evaluating Jev."""
         return {
             "model_profile": self._model_active_digest[:12],
             "model_config_error": self._model_config_error,
@@ -449,12 +455,11 @@ class SemanticParticipationService:
                     "observations": len(item.controller.state.observations),
                     "candidates": len(item.controller.state.candidates),
                     "pending": item.controller.state.pending is not None,
-                    "capacity_blocked": item.controller.state.capacity_blocked,
                     "feedback": len(item.controller.state.feedback),
                 }
                 for item in self._sessions.values()
             ],
-            "retention": "current_bounded_snapshot",
+            "retention": "current_snapshot",
         }
 
     def control_model_parameters(self) -> AutonomyParameters:
@@ -735,30 +740,9 @@ class SemanticParticipationService:
             and prior[1] == digest
             and old is not None
             and old.ref.revision == revision
-            and len(versions) <= 1024
         ):
             return old
-        if versions.get(key) != [revision, digest] or len(versions) > 1024:
-            versions = dict(versions)
-            versions[key] = [revision, digest]
-        for expired in tuple(versions):
-            if (
-                len(versions) > 1024
-                and expired not in state.seen
-                and expired != key
-                and not any(
-                    expired == ref.event_id
-                    for boundary in state.boundaries.values()
-                    for ref in (
-                        boundary.source,
-                        *boundary.dependencies,
-                        *boundary.release_dependencies,
-                        *((boundary.released_by,) if boundary.released_by else ()),
-                    )
-                )
-            ):
-                versions.pop(expired)
-        item.controller.set_state_entry("host_checkpoint", "source_versions", versions)
+        item.controller.set_host_mapping_entry("source_versions", key, [revision, digest])
         ref = SourceRef(event_id=key, revision=revision)
         old = state.events.get(ref.event_id)
         # Rereading an immutable source never rewrites its old unit projection.
@@ -786,48 +770,49 @@ class SemanticParticipationService:
             )
             thread = outbound_threads.get(key, thread)
         options = [HostUnitOption(key="new", thread=thread, target=target)]
-        recent = sorted(state.events.values(), key=lambda e: e.at, reverse=True)
-        self_anchors = [event for event in recent if event.kind == "self"]
-        for event in (*self_anchors, *(event for event in recent if event.kind != "self")):
-            resolved = item.controller.resolved_unit(event)
-            if (
-                anchor is None
-                and row.author_is_human()
-                and event.kind in {"human", "self"}
-                and event.ref != ref
-                and resolved is not None
-            ):
-                option = HostUnitOption(
-                    key=f"u{len(options)}",
-                    thread=resolved.thread,
-                    target=author,
-                    self_anchor=event.ref if event.kind == "self" else None,
-                )
-                if not any(
-                    o.thread == option.thread
-                    and o.target == option.target
-                    and o.self_anchor == option.self_anchor
-                    for o in options
-                ):
-                    options.append(option)
-        for boundary in state.boundaries.values():
-            if anchor is None and (
-                boundary.target == "group"
-                or (
-                    boundary.target is not None
-                    and actor_identity(boundary.target) == actor_identity(target)
-                )
-            ):
-                option = HostUnitOption(
-                    key=f"b{len(options)}",
-                    thread=boundary.thread,
-                    target=target,
-                    label="已有参与边界的讨论",
-                )
-                if not any(
-                    o.thread == option.thread and o.target == option.target for o in options
-                ):
-                    options.append(option)
+        if anchor is None:
+            option_keys: set[tuple[str, str, SourceRef | None]] = {(thread, target, None)}
+            option_units = {(thread, target)}
+            if row.author_is_human():
+                recent = sorted(state.events.values(), key=lambda e: e.at, reverse=True)
+                self_anchors = [event for event in recent if event.kind == "self"]
+                for event in (*self_anchors, *(event for event in recent if event.kind != "self")):
+                    if event.kind not in {"human", "self"} or event.ref == ref:
+                        continue
+                    resolved = item.controller.resolved_unit(event)
+                    if resolved is None:
+                        continue
+                    self_anchor = event.ref if event.kind == "self" else None
+                    option_key = (resolved.thread, author, self_anchor)
+                    if option_key in option_keys:
+                        continue
+                    option_keys.add(option_key)
+                    option_units.add((resolved.thread, author))
+                    options.append(
+                        HostUnitOption(
+                            key=f"u{len(options)}",
+                            thread=resolved.thread,
+                            target=author,
+                            self_anchor=self_anchor,
+                        )
+                    )
+            for boundary in state.boundaries.values():
+                if (
+                    boundary.target == "group"
+                    or (
+                        boundary.target is not None
+                        and actor_identity(boundary.target) == actor_identity(target)
+                    )
+                ) and (boundary.thread, target) not in option_units:
+                    option_units.add((boundary.thread, target))
+                    options.append(
+                        HostUnitOption(
+                            key=f"b{len(options)}",
+                            thread=boundary.thread,
+                            target=target,
+                            label="已有参与边界的讨论",
+                        )
+                    )
         return ScopedEvent(
             scope=scene.scope,
             ref=ref,
@@ -951,12 +936,6 @@ class SemanticParticipationService:
                 item.scene.conversation_id, item.scene.generation, admission_ids
             )
         )
-        current_admissions = {
-            admission.event_id: admission
-            for admission in await self.ordinary.current_admissions(
-                item.scene.conversation_id, item.scene.generation, admission_ids
-            )
-        }
         from yuki.services.participation_feedback import (
             admission_continuation,
             admission_unit_binding,
@@ -975,30 +954,54 @@ class SemanticParticipationService:
             else runtime.conversation_policy()
         )
         observe_enabled = item.scene.enabled and policy.semantic_participation_enabled
-        units = {
-            identity: admission_unit_binding(admission)
-            for identity, admission in current_admissions.items()
-        }
-        # Establish this page's source versions before validating frozen units.
-        # Project/observe in the original event order below: later quoted SELF
-        # events must still see units established by earlier human inputs.
-        basis_keys = {
-            ref.event_id for unit in units.values() if unit is not None for ref in unit.basis
-        }
-        versions = cast(
-            dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
-        )
-        for row in rows:
-            key = f"event:{row.id}"
-            if (
-                key in basis_keys
-                and key not in versions
-                and timestamp(row.occurred_at) >= now - 600
-            ):
-                self._event(row, item, actor_identity=identity)
-        basis_valid = await self._sources_current(
-            item, tuple(ref for unit in units.values() if unit is not None for ref in unit.basis)
-        )
+        current_admissions = {}
+        units = {}
+        basis_valid = {}
+        if admission_ids:
+            async with self.database.read_session() as session:
+                await session.execute(text("BEGIN"))
+                current_admissions = {
+                    admission.event_id: admission
+                    for admission in await self.ordinary.current_admissions(
+                        item.scene.conversation_id,
+                        item.scene.generation,
+                        admission_ids,
+                        session=session,
+                    )
+                }
+                units = {
+                    identity: admission_unit_binding(admission)
+                    for identity, admission in current_admissions.items()
+                }
+                # The admissions and basis checks share one read snapshot. Each
+                # returned admission already verified this event's source hash.
+                basis_keys = {
+                    ref.event_id
+                    for unit in units.values()
+                    if unit is not None
+                    for ref in unit.basis
+                }
+                versions = cast(
+                    dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
+                )
+                for row in rows:
+                    key = f"event:{row.id}"
+                    if (
+                        key in basis_keys
+                        and key not in versions
+                        and timestamp(row.occurred_at) >= now - 600
+                    ):
+                        self._event(row, item, actor_identity=identity)
+                basis_valid = await self._sources_current(
+                    item,
+                    tuple(ref for unit in units.values() if unit is not None for ref in unit.basis),
+                    session=session,
+                    source_revisions={
+                        admission.event_id: admission.source_revision
+                        for admission in current_admissions.values()
+                    },
+                )
+        # Later quoted SELF events must see units established by earlier inputs.
         for row in rows:
             if timestamp(row.occurred_at) < now - 600:
                 continue
@@ -1039,9 +1042,14 @@ class SemanticParticipationService:
         return (await self._sources_current(item, (ref,)))[ref]
 
     async def _sources_current(
-        self, item: _Session, refs: tuple[SourceRef, ...], *, session: AsyncSession | None = None
+        self,
+        item: _Session,
+        refs: tuple[SourceRef, ...],
+        *,
+        session: AsyncSession | None = None,
+        source_revisions: Mapping[int, str] | None = None,
     ) -> dict[SourceRef, bool]:
-        """Freeze only this verification phase, never authorization across awaits/ticks."""
+        """Verify sources; shared digests belong only to the supplied read snapshot."""
         if not refs:
             return {}
         if session is None:
@@ -1060,24 +1068,37 @@ class SemanticParticipationService:
         )
         event_ids = tuple(identities["event"])
         for start in range(0, len(event_ids) if current_generation else 0, 128):
-            rows = await session.scalars(
-                select(ChatEventModel).where(
+            rows = await session.execute(
+                select(
+                    ChatEventModel.id,
+                    *(
+                        getattr(ChatEventModel, name)
+                        for name in (*EVENT_TEXT_REVISION_FIELDS, *EVENT_IDENTITY_REVISION_FIELDS)
+                    ),
+                    ChatEventModel.segments_json,
+                ).where(
                     ChatEventModel.id.in_(event_ids[start : start + 128]),
                     ChatEventModel.canonical_conversation_id == item.scene.conversation_id,
                     ChatEventModel.id > (conversation.starts_after_event_id if conversation else 0),
                     keeper_event_clause(),
                 )
             )
-            digests.update({f"event:{row.id}": str(source_revision(row)) for row in rows})
+            for row in rows:
+                revision = source_revisions.get(row.id) if source_revisions is not None else None
+                if revision is None:
+                    revision = str(source_revision(row))
+                digests[f"event:{row.id}"] = revision
         fact_ids = tuple(identities["memory"])
         for start in range(0, len(fact_ids) if current_generation else 0, 32):
-            facts = await read_self_initiative_facts(
+            revisions = await read_self_initiative_revisions(
                 self.database,
                 canonical_conversation_id=item.scene.conversation_id,
                 fact_ids=fact_ids[start : start + 32],
                 session=session,
             )
-            digests.update({f"memory:{fact.id}": memory_revision(fact) for fact in facts})
+            digests.update(
+                {f"memory:{fact_id}": revision for fact_id, revision in revisions.items()}
+            )
         versions = cast(
             dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
         )
@@ -1100,9 +1121,7 @@ class SemanticParticipationService:
             refs.update((boundary.source, *boundary.dependencies, *boundary.release_dependencies))
             if boundary.released_by is not None:
                 refs.add(boundary.released_by)
-        refs.update(
-            item.controller._participation_refs(item.controller._participation_checkpoint())
-        )
+        refs.update(item.controller.participation_source_refs())
         await self._sources_current(item, tuple(refs))
 
     async def _admit(self, item: _Session, binding: AutonomyBinding, proposal: Proposal) -> None:
@@ -1406,12 +1425,13 @@ class SemanticParticipationService:
                     )
                     return
             else:
-                facts = await read_self_initiative_facts(
+                fact_id = int(source_ref.source_id)
+                revisions = await read_self_initiative_revisions(
                     self.database,
                     canonical_conversation_id=run.conversation_id,
-                    fact_ids=(int(source_ref.source_id),),
+                    fact_ids=(fact_id,),
                 )
-                if not facts or memory_revision(facts[0]) != source_ref.revision:
+                if revisions.get(fact_id) != source_ref.revision:
                     await self.repository.record_feedback(
                         run.run_id, sequence=run.feedback_sequence + 1, outcome="interrupted"
                     )

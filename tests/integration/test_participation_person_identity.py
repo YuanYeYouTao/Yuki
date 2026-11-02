@@ -141,7 +141,9 @@ async def test_merged_new_actor_has_one_original_admission_and_cold_progress_aft
         await host.on_ordinary_admitted(binding_b, accepted_b.admission)
         assert not await host.ordinary.commit(accepted_b)
         await host.on_ordinary_admitted(binding_b, accepted_b.admission)
-        before = item.controller.state.host_checkpoint["participation_v1"]
+        before = json.loads(item.controller.state.model_dump_json())["host_checkpoint"][
+            "participation_v1"
+        ]
         assert (
             before["units"][item.controller._unit_key(ua.unit.thread, a.author_person_id)][
                 "binding"
@@ -159,7 +161,12 @@ async def test_merged_new_actor_has_one_original_admission_and_cold_progress_aft
         restored = await host._session(item.scene)
         for _ in range(3):
             await host._hydrate(restored)
-        assert restored.controller.state.host_checkpoint["participation_v1"] == before
+        assert (
+            json.loads(restored.controller.state.model_dump_json())["host_checkpoint"][
+                "participation_v1"
+            ]
+            == before
+        )
         identity = await actor_identity(host, restored)
         current = restored.controller.participating_units(time.time(), actor_identity=identity)
         assert len(current) == 1

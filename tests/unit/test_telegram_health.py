@@ -34,6 +34,8 @@ def health_container(database, gateway):
         models=SimpleNamespace(configured=lambda task: True),
         plugin_background_turns=SimpleNamespace(health=AsyncMock(return_value={"running": True})),
         memory_embeddings=SimpleNamespace(
+            enabled=False,
+            provider=None,
             health=AsyncMock(
                 return_value=SimpleNamespace(
                     enabled=False,
@@ -42,7 +44,7 @@ def health_container(database, gateway):
                     pending_job_count=0,
                     failed_job_count=0,
                 )
-            )
+            ),
         ),
         memory_audit=SimpleNamespace(
             health=AsyncMock(

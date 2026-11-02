@@ -1,5 +1,6 @@
 """Ordinary Main sparse feedback and silence use the original tool loop."""
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -223,9 +224,9 @@ async def test_confirmed_ordinary_group_send_binds_original_unit_and_replays_onc
         item.controller = Controller.restore(snapshot, state.now)
         await sync_scope_effects(host, item)
         assert item.controller.state.effects == state.effects
-        assert item.controller.state.host_checkpoint["participation_v1"] == checkpoint.model_dump(
-            mode="json"
-        )
+        assert json.loads(item.controller.state.model_dump_json())["host_checkpoint"][
+            "participation_v1"
+        ] == checkpoint.model_dump(mode="json")
         async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(InitiativeRunModel)) == 0
             assert (

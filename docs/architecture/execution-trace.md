@@ -49,7 +49,9 @@ EXECUTION_TRACE_MAX_PAYLOAD_BYTES。超过上限保留明确 omitted 元数据�
 不静默截断为完整记录。诊断写入失败不重跑已完成效果，不丢弃成功模型响应；
 生产模型调用与过程记录复用一个有界、进程内诊断队列。调用端先冻结原
 turn、Work、activation、execution、Conversation/事件、发生时间及原 privacy generation，
-在原始资源准入检查之后才复制独立的 dict/list/dataclass 快照；不可变字符串和 HTTP 返回
+在原始资源准入检查之后才复制独立的 dict/list/dataclass 快照。语义观察显式交付已知模型的
+字段图，预检和复制遍历同一字段，不先完整 model_dump，也不运行自定义 serializer/computed field；
+普通 BaseModel 不因此成为通用诊断输入。不可变字符串和 HTTP 返回
 bytes 可共享，消费者不持有原 response、session、WorkControl 或 live ContextVar。
 空 Context 消费者先完成正文编码与 SQL 准备，原 ID 类型、存在、归属、隐私代次及
 Social 回执/出站事件条件直接在 INSERT 中原子核验，删除逐条独立来源 preflight 查询。

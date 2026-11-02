@@ -1,6 +1,6 @@
 # 架构文档入口
 
-电脑连接器、Codex/Claude/ACP的安装来源、原生准备与诊断、统一界面文案、配置删除、设备移除及旧链路收敛见[2026-11-03任务书](Yuki-电脑连接器与原生Agent管理收敛任务书-2026-11-03.md)。当前仅调查与设计，删除不物理清空原身份/执行/回执，尚未实施。
+电脑连接器、Codex/Claude/ACP的安装来源、原生准备与诊断、统一界面文案、配置删除、设备移除及旧链路收敛见[2026-11-03任务书](Yuki-电脑连接器与原生Agent管理收敛任务书-2026-11-03.md)及[连接器现行合同](../operations/local-agent-connector.zh-CN.md)。相关实现已进入当前源码，删除不物理清空原身份、执行与回执；验证、合并和上线分别记录。
 
 任务完成、等待与子 Agent 提示词的范围、源码对照和实施记录见[提示词整理任务书](Yuki-任务完成与子Agent提示词整理任务书-2026-11-01.md)。本地实现、验证与上线状态分别记录。
 
@@ -8,7 +8,7 @@
 
 代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
 
-本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0155`、Plugin API 为 `9.0`、个人 Client API revision 为 `9`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0156`、Plugin API 为 `9.0`、个人 Client API revision 为 `9`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 
@@ -45,6 +45,8 @@
 | [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
 
 ## 设计报告与后续计划
+
+- [11-03 语义参与状态与消息延迟优化任务书](Yuki-语义参与状态与消息延迟优化任务书-2026-11-03.md)：已知 checkpoint 单次校验、真实依赖窄查询、退役引用集合、命令快路、快照容量计量删除与 active-run 索引；源码、E2E、性能、合并和上线分别见[实施记录](../operations/participation-latency-implementation-20261103.md)。
 
 - [10-31 会话 Compact 统一换窗与复读修复任务书](Yuki-会话Compact统一换窗与复读修复任务书-2026-10-31.md)：直接复用现有公共／执行 compact，只修自动分流、未观察回执切点和执行目标；原换窗／冷恢复先回归、必要时补接线，不重写 planner 或持久化。补公共摘要不含私有目标、原生协议及 portable 回执边界，配套 E2E／CI。用户已授权实施、循环复审、PR／合并及备份后的 Bot-only 上线；各交付状态按实际证据记录。禁止防御性编程、删除优先。
 - [10-31 工具结果交付与查询接口修复任务书](Yuki-工具结果交付与查询接口修复任务书-2026-10-31.md)：基于 main `34167dd4` 的 14 项实施工作，覆盖结果正文与续读、预算、读取参数、联系人／会话拆分及原回执等配套；T13／T14 明列测试、真实 E2E、CI 和产物。用户已授权实施、循环复审、PR／合并及 Bot-only 上线；本地、CI 与生产状态见[实施记录](../operations/tool-result-delivery-implementation-20261031.md)。禁止防御性编程、删除优先。
