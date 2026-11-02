@@ -10,7 +10,7 @@ import pytest
 from websockets.asyncio.server import serve
 
 from yuki_agent_connector.config import Config, Instance
-from yuki_agent_connector.connector import Connector
+from yuki_agent_connector.connector import Connector, instance_source
 from yuki_agent_connector.journal import Journal
 
 
@@ -53,7 +53,7 @@ async def test_missing_codex_executable_publishes_actual_start_error_in_catalog(
                     "driver": "codex",
                     "capabilities": [],
                     "status": "unavailable",
-                    "error_type": "FileNotFoundError",
+                    "error_type": "native_not_installed",
                 }
                 assert connector.config.instances[0].command == str(tmp_path / "missing-codex.exe")
                 assert journal.db.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
@@ -164,7 +164,9 @@ async def test_ready_instance_connects_and_later_ready_catalog_does_not_wait_for
 
     journal = Journal(tmp_path / "journal.sqlite3", namespace="server/device")
     original = {"id": "original-watch", "instance_id": "recovering", "action": "watch"}
-    journal.begin(original)
+    journal.begin(
+        original, owner_source=instance_source(Instance("recovering", "fake", "recovering", "fake"))
+    )
     journal.complete(
         "original-watch", {"result": {"pending": True, "session_id": "original-session"}}
     )

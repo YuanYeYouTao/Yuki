@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.4.2 / wire protocol 4** connects an existing computer to Yuki through
+Connector **0.4.3 / wire protocol 4** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.4.2-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.4.3-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -44,22 +44,42 @@ Existing journals with URL/device metadata are opened under their original
 device ID; the URL change does not replay operations or rewrite their receipts.
 
 Instances are explicit native installations/profiles. `instance configure`
-accepts UTF-8 JSON stdin to update an original ID. Omitted arguments/environment
+accepts UTF-8 JSON stdin to update an original ID, or create the caller's ID with
+`create: true`. Desktop uses one save through its bundled CLI, including for an
+independently installed Connector's original data directory. Omitted arguments/environment
 are retained; an empty argument array clears arguments. `CODEX_HOME` and
 `CLAUDE_CONFIG_DIR` select native profiles. Cwd is working context, not a Yuki
 file-access boundary: new instances default to home, existing ones retain their
-configured directory, tasks can override it. Profile edits apply on service restart.
+configured directory, tasks can override it. Online Desktop saves refresh the original
+device through its existing status channel. Version 0.4.3 applies instance changes
+without restarting unrelated native owners, Shell or file transfers. Independent
+CLI edits are applied on the next status request or reconnect; older running services
+require their own reload, which Desktop reports without taking them over.
+
+`instance remove ID` removes that local configuration and, after applying the complete
+catalog, its current task candidate. Original device/instance IDs, native data and
+receipts remain. The delete action does not cancel paid work; explicit original
+operation controls still use its original owner while the device remains authorized.
 
 Discovery reads registered installations, PATH/native/npm locations and the
 installed Codex daemon's current package metadata. It does not search projects
 or login files. Registered installation sources are resolved again at startup
 so upgrades retain the original profile/daemon. `discover --instance ID --json`
 resolves that original source without starting it. `diagnose --instance ID`
-performs an explicit handshake/account read without creating a model task.
+performs the driver-specific readiness check without creating a model task. For a
+default Codex target, preparation invokes the selected installation's official daemon
+start once, then connects the original proxy target. Existing explicit endpoints or
+sockets are used directly, without starting another default daemon. Reconnects do not
+repeat daemon preparation; Yuki does not update or restart the native daemon.
 An explicitly changed manual executable clears its previous installation source.
 Claude npm discovery reads the current package's declared `bin` entry, including
 Windows native executables behind npm shims. Its original npm package source is
 resolved again on upgrade; old version directories are not additional candidates.
+The discovered desktop, daemon-package and npm labels describe installation sources,
+not different connection modes or proof that a native service is running. Claude's
+SDK calls the selected CLI; an npm installation is not an alternative to the SDK.
+ACP starts the selected compatible program with exact ordered arguments. Its flags
+come from that program's documentation, not a universal `--stdio` default.
 
 Desktop starts its Connector with `run --desktop-stdin` and owns the open stdin
 pipe. Desktop exit or loss of that pipe stops this Connector through its normal

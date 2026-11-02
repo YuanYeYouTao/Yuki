@@ -11,6 +11,38 @@ from yuki_agent_connector import cli, discovery
 from yuki_agent_connector.config import Config, Instance
 
 
+def test_single_configure_keeps_current_access_and_original_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "config.json"
+    Config("ws://localhost/agents/v1/connect", "device", "token", full_access=True).save(path)
+    journal = tmp_path / "journal.sqlite3"
+    journal.write_bytes(b"original receipts")
+
+    def candidates() -> list[dict[str, str]]:
+        # The separate permission writer wins while configure resolves the executable.
+        assert cli.main(["--data-dir", str(tmp_path), "full-access", "--enabled", "false"]) == 0
+        return [{"id": "native", "source": "test:original", "command": sys.executable}]
+
+    monkeypatch.setattr(cli, "candidates", candidates)
+    value = {"id": "original", "create": True, "candidateId": "native", "label": "Codex"}
+    monkeypatch.setattr(
+        sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(value).encode()), encoding="utf-8")
+    )
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "configure"]) == 0
+    current = Config.load(path)
+    assert current.device_id == "device" and current.token == "token"
+    assert current.full_access is False
+    assert len(current.instances) == 1 and current.instances[0].id == "original"
+    assert current.instances[0].cwd == str(Path.home())
+    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == {"instance_id": "original"}
+
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "remove", "original"]) == 0
+    assert cli.main(["--data-dir", str(tmp_path), "instance", "remove", "original"]) == 0
+    assert Config.load(path).instances == []
+    assert journal.read_bytes() == b"original receipts"
+
+
 def test_configure_preserves_original_identity_environment_and_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -299,6 +331,34 @@ async def test_diagnose_reads_account_without_model_or_auth_files(
     assert result["available"] is logged_in
     assert calls == ["start", ("account/read", {"refreshToken": False}), "stop"]
     assert "private" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_codex_diagnose_classifies_invalid_handshake_without_native_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from websockets.exceptions import InvalidMessage
+
+    from yuki_agent_connector.drivers import codex
+
+    class RPC:
+        def __init__(self, spec: Instance, emit: Any):
+            pass
+
+        async def start(self) -> None:
+            raise InvalidMessage("fixture-secret")
+
+        async def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(codex, "CodexRPC", RPC)
+    result = await discovery.diagnose(Instance("original", "codex", "Codex", "not-executed"))
+    assert result == {
+        "id": "original",
+        "available": False,
+        "problem": "native_owner_unavailable",
+    }
+    assert "fixture-secret" not in json.dumps(result)
 
 
 def test_discovery_never_searches_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

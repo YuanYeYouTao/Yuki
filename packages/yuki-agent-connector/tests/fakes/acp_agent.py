@@ -26,19 +26,41 @@ def request(method, params):
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
+    if trace := os.environ.get("FAKE_ACP_TRACE"):
+        with Path(trace).open("a", encoding="utf-8") as output:
+            output.write(f"{method}\n")
     parameters = message.get("params", {})
     result = {}
     if method == "initialize":
         capabilities = {"loadSession": True}
         if not os.environ.get("WITHOUT_SESSION_LIST"):
             capabilities["sessionCapabilities"] = {"list": {}, "resume": {}}
-        result = {"protocolVersion": 1, "agentCapabilities": capabilities}
+        result = {
+            "protocolVersion": int(os.environ.get("FAKE_ACP_VERSION", "1")),
+            "agentCapabilities": capabilities,
+        }
     elif method == "session/list":
+        if os.environ.get("FAKE_ACP_LIST_AUTH_REQUIRED"):
+            send(
+                {
+                    "id": message["id"],
+                    "error": {"code": -32000, "message": "fixture-secret"},
+                }
+            )
+            continue
         result = {
             "sessions": [{"sessionId": "native-session", "cwd": os.getcwd(), "title": "Local"}]
         }
     elif method == "session/new":
         assert parameters["cwd"] == os.getcwd()
+        if os.environ.get("FAKE_ACP_AUTH_REQUIRED"):
+            send(
+                {
+                    "id": message["id"],
+                    "error": {"code": -32000, "message": "fixture-secret"},
+                }
+            )
+            continue
         result = {"sessionId": "native-session"}
     elif method == "session/prompt":
         session = parameters["sessionId"]
