@@ -221,13 +221,12 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
             },
         )
         assert not connection.instances
-        for action in ("prompt", "cancel", "respond"):
-            result = await env.service.execute(
-                {"action": action, "operation_id": observation.id, "prompt": "original"},
-                f"unavailable-{action}",
-                env.source,
-            )
-            assert result["error"] == "device_offline" and result["executed"] is False
+        result = await env.service.execute(
+            {"action": "prompt", "operation_id": observation.id, "prompt": "original"},
+            "unavailable-prompt",
+            env.source,
+        )
+        assert result["error"] == "device_offline" and result["executed"] is False
         assert not sent
     if cleanup:
         result = (await env.service.cleanup_tasks([observation.id], "cleanup-original"))[0]

@@ -256,13 +256,24 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         assert wait_signal["conditions"][0]["matched"] == matched
 
 
-async def test_unavailable_hello_keeps_failure_fact_without_dispatching_to_missing_driver(native):
+async def test_unavailable_hello_keeps_failure_fact_and_routes_original_control(native):
     original, _ = await prepare(native)
     commands = []
 
     class Socket:
         async def send_json(self, command):
             commands.append(command)
+            connection.respond(
+                {
+                    "id": command["id"],
+                    "error": {
+                        "code": "instance_unavailable",
+                        "message": "The original native owner is unavailable",
+                        "admitted": False,
+                        "executed": False,
+                    },
+                }
+            )
 
         async def close(self, code=1000, reason=None):
             pass
@@ -292,7 +303,7 @@ async def test_unavailable_hello_keeps_failure_fact_without_dispatching_to_missi
     assert profile["status"] == "unavailable" and profile["error_type"] == "FileNotFoundError"
     assert profile["capabilities"] == []
     result = await native.service.execute(
-        {"action": "steer", "operation_id": original.id, "text": "continue"},
+        {"action": "list", "instance_id": native.instance},
         "not-dispatched-to-missing-driver",
         native.source,
     )
@@ -300,6 +311,21 @@ async def test_unavailable_hello_keeps_failure_fact_without_dispatching_to_missi
     assert commands == []
     with pytest.raises(ValueError, match="external_agent_not_found"):
         await native.repository.operation("not-dispatched-to-missing-driver", native.actor)
+    result = await native.service.execute(
+        {"action": "steer", "operation_id": original.id, "text": "continue"},
+        "original-owner-control",
+        native.source,
+    )
+    assert len(commands) == 1
+    assert commands[0]["arguments"]["operation_id"] == original.id
+    assert commands[0]["execution_id"] == original.native_execution_id
+    assert result["error"] == "instance_unavailable"
+    assert result["error_detail"]["admitted"] is False
+    assert result["executed"] is False and result["pending"] is False
+    retained = await native.repository.operation(original.id, native.actor)
+    assert retained.detached_at == original.detached_at
+    assert retained.native_execution_id == original.native_execution_id
+    assert retained.result_json == original.result_json
 
 
 @pytest.mark.parametrize(
