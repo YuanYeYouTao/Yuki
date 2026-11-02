@@ -128,7 +128,9 @@ async def test_server_cli_only_saves_original_installation(
     address_evidence["original_fields_preserved"] = True
 
 
-@pytest.mark.parametrize("server", ["http://100.100.100.100", "http://remote.invalid", "ftp://host"])
+@pytest.mark.parametrize(
+    "server", ["http://100.100.100.100", "http://remote.invalid", "ftp://host"]
+)
 async def test_server_cli_keeps_remote_tls_requirement(tmp_path, server, address_evidence):
     directory = tmp_path / "original-installation"
     path = directory / "config.json"
