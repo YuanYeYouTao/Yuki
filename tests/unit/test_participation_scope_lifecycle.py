@@ -21,12 +21,28 @@ from yuki.identity.db_models import CanonicalSpaceModel
 from yuki.runtime.work_control import WorkControl
 
 
+def tick_failures(caplog):
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "yuki.services.semantic_participation"
+        and record.getMessage().startswith(
+            (
+                "participation_scope_failed",
+                "participation_reconcile_failed",
+                "participation_tick_failed",
+            )
+        )
+    ]
+
+
 async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_controller(
-    database, tmp_path
+    database, tmp_path, caplog
 ):
     host, _ = await _host(database, tmp_path, observer=False)
     started, release = asyncio.Event(), asyncio.Event()
     entered = []
+    completed = []
 
     original_advance = host._advance_scene
 
@@ -35,6 +51,7 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
         started.set()
         await release.wait()
         await original_advance(item, direct=direct)
+        completed.append(item)
 
     host._advance_scene = delayed
     task = None
@@ -62,8 +79,8 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
         assert len(host._sessions) == 33
         release.set()
         await task
-        assert host._failures == 0
         assert len(entered) >= 32
+        assert {id(item) for item in originals.values()} <= {id(item) for item in completed}
         assert all(item.pins == 0 for item in originals.values())
         await host.tick()
         key = (fresh.canonical_conversation_id, 1)
@@ -71,7 +88,7 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
         assert f"event:{fresh.id}" in current.controller.state.events
         assert fresh.canonical_conversation_id not in host._dirty
         assert len(host._sessions) == 33
-        assert host._failures == 0
+        assert not tick_failures(caplog)
         # Reset retires the old generation only after its last async holder exits.
         current.pins += 1
         async with database.immediate_session() as session:
@@ -85,7 +102,7 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
         current.pins -= 1
         await host._retire_stale_sessions()
         assert key not in host._sessions
-        # Observation overload preserves existing scopes and records bounded loss.
+        # Observation overload preserves existing scopes.
         for index in range(128):
             host.observe_context(
                 replace(message, conversation_id=str(uuid4()), source_event_id=index + 1),
@@ -95,7 +112,6 @@ async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_contr
         host.observe_context(message, direct=False)
         assert set(host._dirty) == retained
         assert len(host._dirty) == 128
-        assert host._dirty_overflows == 1
     finally:
         release.set()
         if task is not None:
@@ -126,7 +142,7 @@ async def test_generation_retirement_preserves_a_held_controller(database, tmp_p
 
 @pytest.mark.parametrize("restart", [False, True])
 async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_original_outbox(
-    database, tmp_path, restart
+    database, tmp_path, restart, caplog
 ):
     host, _ = await _host(database, tmp_path, observer=True)
     settings = make_settings(database.url, conversation_semantic_participation_enabled=True)
@@ -191,7 +207,6 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
             host._last_discovery_at = 0
         requested_groups.clear()
         await host.tick()
-        assert host._failures == 0
         current = await host.repository.get_binding(item.scene.conversation_id, 1)
         assert current.effective_owner is AutonomyOwner.OFF
         assert not current.master_enabled and current.external_enabled
@@ -212,15 +227,18 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
         assert not await host.legacy_allowed(message)
         assert not await host.accept_legacy(message)
         await host.tick()
-        assert host._failures == 0 and not host._observer.calls
+        assert not host._observer.calls
         assert all(group is None for group in requested_groups)
+        assert not tick_failures(caplog)
         async with database.read_session() as session:
             assert await session.scalar(select(func.count()).select_from(InitiativeRunModel)) == 1
     finally:
         await host.close()
 
 
-async def test_disabled_scope_preserves_completed_work_and_original_feedback(database, tmp_path):
+async def test_disabled_scope_preserves_completed_work_and_original_feedback(
+    database, tmp_path, caplog
+):
     host, _ = await _host(database, tmp_path, observer=True)
     settings = make_settings(database.url, conversation_semantic_participation_enabled=True)
     host.settings = settings
@@ -277,7 +295,8 @@ async def test_disabled_scope_preserves_completed_work_and_original_feedback(dat
                 .values(enabled=False)
             )
         await host.tick()
-        assert host._failures == 0 and not host._observer.calls
+        assert not host._observer.calls
+        assert not tick_failures(caplog)
         assert (await host.repository.get_run(run.run_id)).state == "no_reply"
         assert (
             await host.repository.get_binding(run.conversation_id, run.generation)

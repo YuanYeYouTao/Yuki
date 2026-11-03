@@ -123,6 +123,12 @@ class WorkScheduler:
             "active_wait_oldest_seconds": max(0, int(time.time() - oldest_wait))
             if oldest_wait
             else 0,
+            **self.runtime_status(),
+        }
+
+    def runtime_status(self) -> dict[str, object]:
+        """Return the scheduler's current in-memory runtime facts."""
+        return {
             "enabled": True,
             "chat_admission_enabled": self._chat_admission_enabled,
             "running": self.running,

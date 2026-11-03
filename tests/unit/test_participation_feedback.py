@@ -137,7 +137,6 @@ async def test_feedback_preparation_closes_before_writer_and_preserves_original_
     await set_work(database, task, state="completed", model_requests=3)
     receipt = await social(database, run, "original-send")
     original_task = await service.work.get(task["id"])
-    service._failures = 0
     original_writer = database.immediate_session
     injected = False
 
@@ -155,7 +154,7 @@ async def test_feedback_preparation_closes_before_writer_and_preserves_original_
 
     monkeypatch.setattr(database, "immediate_session", intervening_writer)
     await SemanticParticipationService._reconcile_outbox(service)
-    assert injected and service._failures == 0
+    assert injected
     settled = await service.repository.get_run(run.run_id)
     assert settled.state == "completed" and settled.feedback_sequence == 1
     assert await service.work.get(task["id"]) == original_task
@@ -170,13 +169,12 @@ async def test_feedback_preparation_closes_before_writer_and_preserves_original_
 
 
 async def test_feedback_unknown_commit_ack_keeps_receipts_without_rebuilding_short_term_state(
-    database, monkeypatch
+    database, monkeypatch, caplog
 ):
     service, item, run, task = await setup(database)
     await set_work(database, task, state="completed", model_requests=3)
     await social(database, run, "original-send")
     original_task = await service.work.get(task["id"])
-    service._failures = 0
     original = service.repository.record_feedback
     calls = []
     native = sqlite3.OperationalError("commit acknowledgement lost")
@@ -197,14 +195,15 @@ async def test_feedback_unknown_commit_ack_keeps_receipts_without_rebuilding_sho
 
     monkeypatch.setattr(service.repository, "record_feedback", unknown_ack)
     await SemanticParticipationService._reconcile_outbox(service)
-    assert service._failures == 1 and calls == [(run.run_id, 1)]
+    assert calls == [(run.run_id, 1)]
+    assert "participation_reconcile_failed category=OperationalError" in caplog.messages
     assert run.run_id not in item.controller.state.feedback
     service._save.assert_not_awaited()
     settled = await service.repository.get_run(run.run_id)
     assert settled.state == "completed" and settled.feedback_sequence == 1
     await SemanticParticipationService._reconcile_outbox(service)
     await SemanticParticipationService._reconcile_outbox(service)
-    assert calls == [(run.run_id, 1)] and service._failures == 1
+    assert calls == [(run.run_id, 1)]
     assert run.run_id not in item.controller.state.feedback
     assert not item.controller.state.effects
     assert await service.work.get(task["id"]) == original_task
@@ -253,7 +252,6 @@ async def test_terminal_history_is_not_scanned_but_recent_late_send_keeps_origin
     database, monkeypatch, owner
 ):
     service, item, run, task = await setup(database, owner=owner)
-    service._failures = 0
     await set_work(database, task, state="completed", model_requests=120)
     await social(database, run, "old-confirmed-send", seconds=-3600)
     item.controller.advance(

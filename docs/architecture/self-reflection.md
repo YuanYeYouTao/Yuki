@@ -136,7 +136,8 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 最终报告复用 Social 的 prepared/succeeded/uncertain 回执。同一 cycle 的固定调用键不重发；
 传输结果未知时标记 unknown，不能声称端到端 exactly-once，也不能猜测失败后重新发送。
 
-健康区分 actionable、waiting_retry、isolated、recent_not_due、processing。
+公开 `/healthz` 的自省状态只读取当前配置和 worker 的实际运行状态，不查询历史积压。
+超级管理员的详细健康区分 actionable、waiting_retry、isolated、recent_not_due、processing。
 后者计数可以在同一 owner 不同范围出现；不能把各组会话数相加当作去重会话数。
 失败详情按 5 项分页，其他原始内容不进入报告。`retry <batch_id>` 可由超级管理员
 重新接纳隔离批次，保留原 ID、尝试次数和总额度。健康快照按最近 24 小时内周期提供
