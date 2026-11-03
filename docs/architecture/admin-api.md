@@ -66,9 +66,11 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
 角色名称与单 SOUL 沿同一领域服务发布，保原 UUID、profile revision、文件 CAS 和实际生效结果；
 不会编辑工具或授权规则，也不重写已付请求。个人客户端的共享资料／头像写入与 SOUL 原文读取、修改和重载使用 Person 当前超管资格；旧 character owner 授予入口已退出，历史授权行与回执保留且不自动升级。operator 的独立控制凭据及能力不因此改变。
-平台项来自已登记 Provider 的平台声明、实际 Presence 与原生网关 owner，公共 `/health`
-的 `gateways` 与管理健康行复用同一事实投影。旧 `onebot_connected`、`telegram_gateway`
-字段保留原形状；未知健康证据保持 null。数据库分别报告 reader 可读与 writer 接受写入。
+平台项来自已登记 Provider 的平台声明、实际 Presence 与原生网关 owner，公共 `/healthz`
+的 `gateways` 与管理健康行复用同一事实投影。已停用或结束的 Presence 仍保留其平台项；
+无 owner 的平台按 active Presence 是否存在及其与已绑定连接的交集判断运行和健康；没有
+active Presence 时健康未知。物理连接另按实际 registry 状态读取。旧 `onebot_connected`、
+`telegram_gateway` 字段保留原形状；未知健康证据保持 null。数据库分别报告 reader 可读与 writer 接受写入。
 公共 `llm_configured` 读取当前 `chat_agent` 路由及其 Pool 的已配置事实，支持显式 Profile、
 sidecar 密钥及注入客户端；健康检查不创建模型调用，也不返回密钥。
 聊天 status 显示当前 Conversation 所在平台连接与 `chat_agent` 当前选中 Profile 的模型。
