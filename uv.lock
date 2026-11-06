@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 
 [[package]]
@@ -1121,6 +1121,7 @@ dependencies = [
     { name = "agent-client-protocol" },
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "cryptography" },
     { name = "defusedxml" },
     { name = "httpcore" },
     { name = "httpx", extra = ["socks"] },
@@ -1162,6 +1163,7 @@ requires-dist = [
     { name = "agent-client-protocol", specifier = "==0.12.1" },
     { name = "aiosqlite", specifier = ">=0.22.1,<1" },
     { name = "alembic", specifier = ">=1.14,<2" },
+    { name = "cryptography", specifier = ">=48" },
     { name = "defusedxml", specifier = ">=0.7,<1" },
     { name = "httpcore", specifier = ">=1.0.9,<2" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },

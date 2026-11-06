@@ -672,6 +672,14 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     async def display_ticket(actor: Actor, request: Request) -> Any:
         return {"data": await computer().ticket(actor, request.scope.get("root_path", ""))}
 
+    @router.post("/computer/snowluma/display-tickets", response_model=Envelope[DisplayTicket])
+    async def qq_display_ticket(actor: Actor, request: Request, control: bool = False) -> Any:
+        return {
+            "data": await computer().ticket(
+                actor, request.scope.get("root_path", ""), qq=True, control=control
+            )
+        }
+
     @router.websocket("/computer/display")
     async def display(socket: WebSocket, ticket: str = "") -> None:
         if resolve().computer is None:

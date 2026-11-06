@@ -923,9 +923,8 @@ def _render_health(
     providers = selected_gateway_providers(environment)
     if "snowluma" in providers:
         webui_port = environment.get("SNOWLUMA_WEBUI_HOST_PORT", "5099")
-        novnc_port = environment.get("SNOWLUMA_NOVNC_PORT", "6081")
         ui.info(f"SnowLuma WebUI：http://127.0.0.1:{webui_port}")
-        ui.info(f"SnowLuma noVNC：http://127.0.0.1:{novnc_port}")
+        ui.info("QQ 登录扫码：在 Yuki Desktop 的电脑窗口选择「QQ 登入」。")
 
 
 def _ask_required_secret(ui: TerminalUI, label: str, existing: str) -> str:

@@ -17,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select, text
 from starlette.websockets import WebSocketState
 
+from yuki.client_api import snowluma_display
 from yuki.client_api.computer_commands import ComputerCommands, public_control, release_key
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
@@ -37,7 +38,9 @@ class ClientComputer:
         self.snapshot: dict[str, Any] | None = None
         self.connected = False
         self.revision = 0
-        self._tickets: dict[str, tuple[float, ClientPrincipal]] = {}
+        self._tickets: dict[str, tuple[float, ClientPrincipal, bool, bool]] = {}
+        self._qq_streams: set[WebSocket] = set()
+        self._qq_controller: WebSocket | None = None
         self._online: dict[str, int] = {}
         self._streams: dict[WebSocket, ClientPrincipal] = {}
         self._tasks: list[asyncio.Task[None]] = []
@@ -143,6 +146,7 @@ class ClientComputer:
                 {key: item[key] for key in ("wait_id", "kind", "work_id", "note", "since")}
                 for item in snapshot.get("help_requests", [])
             ],
+            "snowluma_display": snowluma_display.configured(),
             "tabs": [
                 {
                     "target_id": tab["target_id"],
@@ -197,13 +201,24 @@ class ClientComputer:
             else None,
         )
 
-    async def ticket(self, principal: ClientPrincipal, root_path: str = "") -> dict[str, Any]:
+    async def ticket(
+        self,
+        principal: ClientPrincipal,
+        root_path: str = "",
+        *,
+        qq: bool = False,
+        control: bool = False,
+    ) -> dict[str, Any]:
         principal = await self.authenticate(principal)
         await self.start()
+        if qq and not snowluma_display.configured():
+            raise ClientError("not_found")
+        if qq and control and self._qq_controller is not None:
+            raise ClientError("precondition_failed", details={"reason": "qq_display_in_use"})
         now = time.monotonic()
         self._tickets = {key: value for key, value in self._tickets.items() if value[0] > now}
         ticket = secrets.token_urlsafe(32)
-        self._tickets[ticket] = (now + 60, principal)
+        self._tickets[ticket] = (now + 60, principal, qq, control)
         return {
             "ticket": ticket,
             "expires_at": (datetime.now(UTC) + timedelta(seconds=60)).isoformat(),
@@ -272,8 +287,10 @@ class ClientComputer:
         self.connected = False
         await self._close_streams()
 
-    async def _close_streams(self) -> None:
+    async def _close_streams(self, *, sandbox_only: bool = False) -> None:
         for socket in tuple(self._streams):
+            if sandbox_only and socket in self._qq_streams:
+                continue
             if socket.application_state != WebSocketState.DISCONNECTED:
                 await socket.close(code=1012)
 
@@ -297,7 +314,7 @@ class ClientComputer:
                 if self.connected:
                     self.revision += 1
                     self.connected, self.snapshot = False, None
-                    await self._close_streams()
+                    await self._close_streams(sandbox_only=True)
                     self.identity.database.commit_hints.publish()
                 if isinstance(exc, ValueError) and str(exc) == "unknown_method":
                     return
@@ -382,7 +399,7 @@ class ClientComputer:
             await socket.close(code=1008)
             return
         saved = self._tickets.pop(ticket, None)
-        if saved is None or saved[0] <= time.monotonic() or not self.connected:
+        if saved is None or saved[0] <= time.monotonic() or (not saved[2] and not self.connected):
             await socket.close(code=1008)
             return
         try:
@@ -390,20 +407,38 @@ class ClientComputer:
         except ClientError:
             await socket.close(code=1008)
             return
-        await socket.accept(subprotocol="binary")
+        qq, control_requested = saved[2:]
+        if qq and control_requested:
+            if self._qq_controller is not None:
+                await socket.close(code=1008)
+                return
+            self._qq_controller = socket
+        try:
+            await socket.accept(subprotocol="binary")
+        except BaseException:
+            if self._qq_controller is socket:
+                self._qq_controller = None
+            raise
+        if qq:
+            self._qq_streams.add(socket)
         self._streams[socket] = principal
         self.device_connection(principal.device_id, 1)
-        parser, lock = RfbInputFilter(), asyncio.Lock()
+        parser, lock = RfbInputFilter(authenticated=qq), asyncio.Lock()
         tasks: list[asyncio.Task[None]] = []
         try:
-            async with self.sandbox.stream("display_stream", {}) as (_, reader, writer):
+            source = (
+                snowluma_display.screen(socket) if qq else self.sandbox.stream("display_stream", {})
+            )
+            async with source as (_, reader, writer):
 
                 async def input_update() -> None:
                     control = (self.snapshot or {}).get("control", {})
                     async with lock:
                         writer.write(
                             parser.set_holder(
-                                self.connected
+                                self._qq_controller is socket
+                                if qq
+                                else self.connected
                                 and control.get("holder") == "human"
                                 and control.get("device_id") == principal.device_id
                             )
@@ -439,9 +474,12 @@ class ClientComputer:
                     async with lock:
                         writer.write(parser.close())
                         await writer.drain()
-        except (OSError, ValueError, ClientError, WebSocketDisconnect, RfbProtocolError):
+        except (OSError, EOFError, ValueError, ClientError, WebSocketDisconnect, RfbProtocolError):
             pass
         finally:
+            self._qq_streams.discard(socket)
+            if self._qq_controller is socket:
+                self._qq_controller = None
             self._streams.pop(socket, None)
             self.device_connection(principal.device_id, -1)
             self._input_updates.pop(socket, None)

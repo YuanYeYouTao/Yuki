@@ -24,7 +24,7 @@ docker compose up -d
 
 SnowLuma 启动后：
 
-1. 打开 `http://127.0.0.1:6081`，用 `.env` 中的 `SNOWLUMA_VNC_PASSWORD` 进入 noVNC。
+1. 在已配对管理员的 Yuki Desktop 打开电脑窗口，选择 **QQ 登入**。
 2. 在 QQ 窗口扫码登录。
 3. 打开 `http://127.0.0.1:5099` 检查 SnowLuma WebUI 与账号状态。
 4. 按界面要求自行阅读并确认 SnowLuma、QQ 的协议和隐私事项。Yuki 安装器不会代替操作者接受。
@@ -38,24 +38,13 @@ doctor 只报告 Yuki 依赖的 OneBot v11 核心 action、反向 WebSocket 路�
 消息、不调用 Provider 私有 API，也不读取 token、Cookie 或 QQ 登录数据。实际连接的 Provider、
 ConnectionGeneration 和能力会由运行时 Registry 投影给控制面。
 
-## noVNC 与 WebUI 监听地址
+## QQ 画面与 WebUI
 
-默认值只允许本机访问：
-
-```dotenv
-SNOWLUMA_NOVNC_BIND_ADDRESS=127.0.0.1
-SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
-```
-
-只有明确需要从远端访问时，才把对应变量设为 `0.0.0.0`。公网绑定前必须同时做到：
-
-- 为 noVNC 设置不可复用的强 `SNOWLUMA_VNC_PASSWORD`，并确认 SnowLuma WebUI 自身的访问认证。
-- 用主机防火墙或云安全组只允许可信源地址；不要对全网开放。
-- 优先通过 VPN 或带 TLS 与额外认证的反向代理访问，不通过明文公网传输登录操作。
-- 绝不暴露 VNC 原始端口、OneBot HTTP/WS、access token、Cookie 或 QQ 登录目录。
-
-修改 bind address 后重新创建 SnowLuma 容器，并从非可信网络验证端口确实不可达。Yuki 安装器
-不会替你配置云防火墙、TLS 或 SnowLuma 的账户认证。
+QQ 与 Yuki 沙箱各有自己的画面。桌面窗口通过 Yuki 的认证连接查看 QQ 登录码，选择接管后可操作 QQ，
+关闭查看或切换屏幕会结束这次 QQ 输入授权。Bot 在内部网络连接 `snowluma:5900`，并用
+`SNOWLUMA_VNC_PASSWORD` 认证。独立部署可在 Bot 设置 `SNOWLUMA_VNC_HOST` 和
+`SNOWLUMA_VNC_PORT`。原生 VNC 和镜像内的 6081 网页默认均不发布。
+5099 管理 WebUI 继续由 `SNOWLUMA_WEBUI_BIND_ADDRESS` 和 `SNOWLUMA_WEBUI_HOST_PORT` 控制。
 
 ## 旧部署配置处理
 
@@ -94,8 +83,6 @@ SNOWLUMA_SHM_SIZE=2gb
 - 查看状态：`docker compose ps --all bot snowluma`，沿用部署时的全部 Compose 参数。
 - 查看 SnowLuma 日志：`docker compose logs --tail 200 snowluma`
 - 查看 Bot 日志：`docker compose logs --tail 200 bot`
-- noVNC 与 WebUI 默认只绑定 `127.0.0.1`。若使用可配置 bind address 暴露远程访问，必须遵守
-  上述强密码、防火墙和可信来源边界；VNC 与 OneBot HTTP/WS 始终不得暴露。
 - `/app/data`、`/app/.config`、`/app/.local/share` 与额外账号 HOME 都是持久登录数据，不要提交
   Git，也不要在升级时删除。
 

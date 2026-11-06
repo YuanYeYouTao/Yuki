@@ -154,6 +154,7 @@ class ComputerResources(BaseModel):
 
 
 class ComputerView(BaseModel):
+    snowluma_display: bool = False
     environment: Literal["running", "stopped", "unavailable"]
     display: Literal["running", "stopped", "starting", "unavailable"]
     control: ComputerControlView | None

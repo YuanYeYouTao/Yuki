@@ -40,20 +40,9 @@ Yuki 不再支持 NapCat，当前附带的 QQ/OneBot v11 Provider 为 SnowLuma�
 安装向导只写配置，不执行停止、启动或自动切换。旧部署的 Compose 与 `.env` 不会自动替换，
 需要按[旧 NapCat 配置清退](upgrade-3.9.0.md#旧-napcat-部署配置)逐项处理。
 
-SnowLuma 默认地址：
-
-- noVNC：`http://127.0.0.1:6081`
-- WebUI：`http://127.0.0.1:5099`
-
-默认 bind address 由以下变量明确控制：
-
-```dotenv
-SNOWLUMA_NOVNC_BIND_ADDRESS=127.0.0.1
-SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
-```
-
-只有明确需要远程访问时才设为 `0.0.0.0`，并同时启用强 VNC 密码、WebUI 认证、主机防火墙和
-可信源限制。优先使用 VPN 或 TLS 反向代理；不要公网暴露 VNC、OneBot HTTP/WS、token 或 Cookie。
+配对的管理员在 Yuki Desktop 的电脑窗口选择 **QQ 登入** 查看或接管 SnowLuma 的登录画面。
+Bot 在 Compose 内网连接 VNC。SnowLuma 管理页默认在 `http://127.0.0.1:5099`，
+由 `SNOWLUMA_WEBUI_BIND_ADDRESS` 控制监听范围。
 详见 [SnowLuma 部署](deployment/snowluma.md)。
 
 Provider 合同检查：
