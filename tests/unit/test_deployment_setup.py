@@ -203,8 +203,7 @@ def test_snowluma_port_validation_uses_current_listeners() -> None:
     }
     _validate_gateway_configuration(environment)
     environment["SNOWLUMA_WEBUI_HOST_PORT"] = "6099"
-    with pytest.raises(SetupValidationError, match="宿主端口不能重复"):
-        _validate_gateway_configuration(environment)
+    _validate_gateway_configuration(environment)  # The retired 6081 listener reserves no port.
 
 
 def _search_setup(tmp_path: Path, profiles: str, **updates: str):

@@ -20,9 +20,10 @@ class RfbProtocolError(ValueError):
 
 
 class RfbInputFilter:
-    def __init__(self) -> None:
+    def __init__(self, *, authenticated: bool = False) -> None:
+        self._shared = authenticated
         self.holder = False
-        self._handshake = [12, 1, 1]
+        self._handshake = [1] if authenticated else [12, 1, 1]
         self._header = bytearray()
         self._remaining = 0
         self._forward = False
@@ -98,7 +99,8 @@ class RfbInputFilter:
             ):
                 raise RfbProtocolError("unsupported_rfb_handshake")
             self._handshake.pop(0)
-            return header
+            # Always share the server: one viewer must not evict another.
+            return b"\x01" if self._shared and phase == 1 else header
         kind = header[0]
         self._forward = self.holder or kind not in {4, 5, 6, 251, 255}
         if kind == 2:

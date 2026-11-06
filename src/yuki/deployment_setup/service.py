@@ -574,18 +574,9 @@ def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
         value = environment.get(name, "1000").strip()
         if not value.isdigit() or not 0 <= int(value) <= 2_147_483_647:
             raise SetupValidationError(f"{name} 必须是有效的非负整数")
-    ports: dict[str, int] = {}
-    for name, default in (
-        ("SNOWLUMA_NOVNC_PORT", "6081"),
-        ("SNOWLUMA_WEBUI_HOST_PORT", "5099"),
-    ):
-        value = environment.get(name, default).strip()
-        if not value.isdigit() or not 1 <= int(value) <= 65535:
-            raise SetupValidationError(f"{name} 必须是 1 到 65535 之间的端口")
-        ports[name] = int(value)
-    occupied = set(ports.values())
-    if len(occupied) != len(ports):
-        raise SetupValidationError("QQ Gateway Provider 的宿主端口不能重复")
+    value = environment.get("SNOWLUMA_WEBUI_HOST_PORT", "5099").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 65535:
+        raise SetupValidationError("SNOWLUMA_WEBUI_HOST_PORT 必须是 1 到 65535 之间的端口")
     homes = tuple(
         item for item in re.split(r"[\s,]+", environment.get("SNOWLUMA_EXTRA_QQ_HOMES", "")) if item
     )
