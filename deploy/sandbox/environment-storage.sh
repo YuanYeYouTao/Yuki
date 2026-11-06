@@ -1,47 +1,50 @@
 #!/bin/sh
-# Fixed operator paths; never accepts model-supplied filesystem arguments.
+# Run on the Linux Manager host. Existing ext4 files only grow.
 set -eu
-test "$(id -u)" = 0
 root=/var/lib/yuki-sandbox
-image="$root/home.ext4"
-home_mount="$root/home"
-mkdir -p "$root" "$home_mount"
-test ! -L "$root"
-test ! -L "$image"
-test ! -L "$home_mount"
-if mountpoint -q "$home_mount"; then
-    test "$(findmnt -n -o FSTYPE --target "$home_mount")" = ext4
-    device=$(findmnt -n -o SOURCE --target "$home_mount")
-    test "$(losetup -n -O BACK-FILE "$device")" = "$image"
-elif [ ! -e "$image" ]; then
-    test "$(df -B1 --output=avail "$root" | tail -n1)" -gt 4294967296
-    umask 077
-    fallocate -l 2G "$image.pending"
-    mkfs.ext4 -q -F -m 0 "$image.pending"
-    mv "$image.pending" "$image"
-fi
-test "$(stat -c %s "$image")" = 2147483648
-mountpoint -q "$home_mount" || mount -o loop,nodev,nosuid "$image" "$home_mount"
-chmod 755 "$home_mount"
-chown 10001:10001 "$home_mount"
-# Runtime logs cannot bypass the home quota by writing through their bind mount.
-runtime_image="$root/runtime.ext4"
-runtime_mount="$root/environment-jobs"
-test ! -L "$runtime_image"
-test ! -L "$runtime_mount"
-mkdir -p "$runtime_mount"
-if mountpoint -q "$runtime_mount"; then
-    device=$(findmnt -n -o SOURCE --target "$runtime_mount")
-    test "$(findmnt -n -o FSTYPE --target "$runtime_mount")" = ext4
-    test "$(losetup -n -O BACK-FILE "$device")" = "$runtime_image"
-else
-    if [ ! -e "$runtime_image" ]; then
-        test -z "$(find "$runtime_mount" -mindepth 1 -maxdepth 1 -print -quit)"
-        fallocate -l 128M "$runtime_image.pending"
-        mkfs.ext4 -q -F -m 0 "$runtime_image.pending"
-        mv "$runtime_image.pending" "$runtime_image"
+mkdir -p "$root"
+exec 9>"$root/.storage.lock"
+flock 9
+
+mount_volume() {
+    image="$root/$1.ext4"
+    target="$root/$2"
+    size=$3
+    test ! -L "$image" && test ! -L "$target" || exit 1
+    mkdir -p "$target"
+    if mountpoint -q "$target"; then
+        device=$(findmnt -n -o SOURCE --target "$target")
+        test "$(losetup -n -O BACK-FILE "$device")" = "$image"
+        test "$(findmnt -n -o FSTYPE --target "$target")" = ext4
+    else
+        test -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)"
+        if [ ! -e "$image" ]; then
+            pending=$(mktemp "$root/.volume.XXXXXX")
+            trap 'rm -f "$pending"' EXIT
+            fallocate -l "${size:-$4}M" "$pending"
+            mkfs.ext4 -q -F -m 0 "$pending"
+            mv "$pending" "$image"
+            trap - EXIT
+        fi
+        mount -t ext4 -o loop,nodev,nosuid "$image" "$target"
+        device=$(findmnt -n -o SOURCE --target "$target")
     fi
-    test "$(stat -c %s "$runtime_image")" = 134217728
-    mount -o loop,nodev,nosuid "$runtime_image" "$runtime_mount"
-fi
-chmod 755 "$runtime_mount"
+    if [ -n "$size" ]; then
+        bytes=$(numfmt --from=iec "${size}M")
+        current=$(stat -c %s "$image")
+        if [ "$bytes" -lt "$current" ]; then
+            echo "Keeping $image at $current bytes; shrinking requires an offline migration." >&2
+        else
+            if [ "$bytes" -gt "$current" ]; then
+                fallocate -l "$bytes" "$image"
+            fi
+            # Also finish an expansion interrupted after allocation or loop resize.
+            losetup -c "$device"
+            resize2fs "$device"
+        fi
+    fi
+    chmod 755 "$target"
+}
+mount_volume home home "${YUKI_SANDBOX_HOME_MIB:-}" 2048
+chown 10001:10001 "$root/home"
+mount_volume runtime environment-jobs "${YUKI_SANDBOX_RUNTIME_MIB:-}" 128

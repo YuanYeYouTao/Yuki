@@ -3,8 +3,9 @@ FROM docker:28-dind
 RUN apk add --no-cache python3 curl tar bzip2 \
     && mkdir /tmp/gvisor-download \
     && cd /tmp/gvisor-download \
-    && curl -fsSLO https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.bz2 \
-    && curl -fsSLO https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.bz2.sha512 \
+    && arch=$(uname -m) \
+    && curl -fsSLO https://storage.googleapis.com/gvisor/releases/release/latest/$arch/gvisor.tar.bz2 \
+    && curl -fsSLO https://storage.googleapis.com/gvisor/releases/release/latest/$arch/gvisor.tar.bz2.sha512 \
     && sha512sum -c gvisor.tar.bz2.sha512 \
     && tar -xjf gvisor.tar.bz2 -C /usr/local/bin \
     && rm -rf /tmp/gvisor-download

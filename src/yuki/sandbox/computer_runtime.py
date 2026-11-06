@@ -22,22 +22,32 @@ class ComputerRuntime:
         self.manager = manager
         self.last_display: str | None = None
 
+    def browser_status(self) -> str:
+        return self._service_status().get("browser", "unavailable")
+
     def display_status(self) -> dict[str, Any]:
+        return {"display": self._service_status()["display"]}
+
+    def _service_status(self) -> dict[str, str]:
+        headless = self.manager.desktop_manifest.get("browser_mode") == "headless"
         if not self.manager.ready or (
-            not self.manager.testing and not self.manager.desktop_manifest.get("desktop")
+            not self.manager.testing
+            and not self.manager.desktop_manifest.get("desktop")
+            and not headless
         ):
             return {"display": "unavailable"}
         row = self.manager.db.execute(
             "SELECT enabled,run_id FROM environment_services WHERE name=?", (SERVICE,)
         ).fetchone()
         if row is None or not row["run_id"]:
-            return {"display": "stopped"}
+            return {"display": "unavailable" if headless else "stopped", "browser": "stopped"}
         run = self.manager.get(row["run_id"])
         if run.get("status") in TERMINAL:
             return {
                 "display": "unavailable"
-                if row["enabled"] and run["status"] == "failed"
-                else "stopped"
+                if headless or (row["enabled"] and run["status"] == "failed")
+                else "stopped",
+                "browser": "unavailable" if run["status"] == "failed" else "stopped",
             }
         try:
             with FileWorkspace(self.manager.runtime_root).open_file(
@@ -45,17 +55,19 @@ class ComputerRuntime:
             ) as descriptor:
                 with open(descriptor, closefd=False) as stream:
                     status = json.load(stream)
-            if status.get("run_id") == row["run_id"] and status.get("display") == "running":
-                return {"display": "running"}
+            if status.get("run_id") == row["run_id"] and (
+                status.get("browser") == "running" or status.get("display") == "running"
+            ):
+                return {"display": "unavailable" if headless else "running", "browser": "running"}
         except (OSError, ValueError, WorkspaceError):
             pass
-        return {"display": "starting"}
+        return {"display": "unavailable" if headless else "starting", "browser": "starting"}
 
     async def handle(self, method: str, args: dict[str, Any], key: str) -> dict[str, Any]:
         if method == "display_status":
             return self.display_status()
         if method == "tabs_list":
-            if self.display_status()["display"] != "running":
+            if self.browser_status() != "running":
                 return {"tabs": [], "available": False}
             code, raw = await self.manager.command(
                 "docker", "exec", self.manager.name, "yuki-computer", "status", "--json"
@@ -63,7 +75,11 @@ class ComputerRuntime:
             return json.loads(raw) if not code else {"error": "display_unavailable"}
         if method not in {"display_wake", "display_sleep"}:
             return {"error": "unknown_method"}
-        if not self.manager.testing and not self.manager.desktop_manifest.get("desktop"):
+        if not (
+            self.manager.testing
+            or self.manager.desktop_manifest.get("desktop")
+            or self.manager.desktop_manifest.get("browser_mode") == "headless"
+        ):
             return {"error": "display_unavailable"}
         identifier(key)
         digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()

@@ -24,6 +24,13 @@ def browser_ready() -> bool:
         return False
 
 
+def browser_mode() -> str:
+    manifest = Path("/opt/yuki-runtime/manifest.json")
+    if manifest.exists():
+        return str(json.loads(manifest.read_text()).get("browser_mode", "headed"))
+    return "headed"
+
+
 async def main() -> int:
     children: list[asyncio.subprocess.Process] = []
     stopped = asyncio.Event()
@@ -35,53 +42,57 @@ async def main() -> int:
     profile.mkdir(parents=True, exist_ok=True)
     environment = {**os.environ, "DISPLAY": ":1"}
     try:
-        children.append(
-            await asyncio.create_subprocess_exec(
-                *[
-                    "Xvnc",
-                    ":1",
-                    "-geometry",
-                    "1440x900",
-                    "-depth",
-                    "24",
-                    "-rfbport",
-                    "5901",
-                    "-localhost",
-                    "yes",
-                    "-SecurityTypes",
-                    "None",
-                    "-AlwaysShared",
-                ],
-                env=environment,
-            )
-        )
-        # Read actual socket readiness, rather than declaring failure after an age.
-        while not stopped.is_set() and children[0].returncode is None:
-            try:
-                _, connection = await asyncio.open_connection("127.0.0.1", 5901)
-                connection.close()
-                await connection.wait_closed()
-                break
-            except OSError:
-                await asyncio.sleep(0.1)
-        if stopped.is_set():
-            return 0
-        if children[0].returncode is not None:
+        mode = await asyncio.to_thread(browser_mode)
+        if mode == "none":
             return 1
-        for command in (
-            ["openbox"],
-            [
-                "chromium",
-                "--user-data-dir=" + str(profile),
-                "--remote-debugging-address=127.0.0.1",
-                "--remote-debugging-port=9222",
-                "--restore-last-session",
-                "--no-first-run",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
-        ):
-            children.append(await asyncio.create_subprocess_exec(*command, env=environment))
+        if mode == "headed":
+            children.append(
+                await asyncio.create_subprocess_exec(
+                    *[
+                        "Xvnc",
+                        ":1",
+                        "-geometry",
+                        "1440x900",
+                        "-depth",
+                        "24",
+                        "-rfbport",
+                        "5901",
+                        "-localhost",
+                        "yes",
+                        "-SecurityTypes",
+                        "None",
+                        "-AlwaysShared",
+                    ],
+                    env=environment,
+                )
+            )
+            # Read actual socket readiness, rather than declaring failure after an age.
+            while not stopped.is_set() and children[0].returncode is None:
+                try:
+                    _, connection = await asyncio.open_connection("127.0.0.1", 5901)
+                    connection.close()
+                    await connection.wait_closed()
+                    break
+                except OSError:
+                    await asyncio.sleep(0.1)
+            if stopped.is_set():
+                return 0
+            if children[0].returncode is not None:
+                return 1
+            children.append(await asyncio.create_subprocess_exec("openbox", env=environment))
+        browser = [
+            "chromium",
+            "--user-data-dir=" + str(profile),
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=9222",
+            "--restore-last-session",
+            "--no-first-run",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ]
+        if mode == "headless":
+            browser.extend(["--headless", "about:blank"])
+        children.append(await asyncio.create_subprocess_exec(*browser, env=environment))
         while not stopped.is_set() and all(child.returncode is None for child in children):
             if await asyncio.to_thread(browser_ready):
                 break
@@ -92,7 +103,14 @@ async def main() -> int:
         await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(dir=root, prefix=".desktop-status-")
         with os.fdopen(descriptor, "w") as stream:
-            json.dump({"run_id": os.environ["YUKI_JOB_ID"], "display": "running"}, stream)
+            json.dump(
+                {
+                    "run_id": os.environ["YUKI_JOB_ID"],
+                    "display": "running" if mode == "headed" else "unavailable",
+                    "browser": "running",
+                },
+                stream,
+            )
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, root / "desktop-status.json")

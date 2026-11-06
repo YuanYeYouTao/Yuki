@@ -48,7 +48,7 @@ class DesktopExternalComputer:
 
     async def manager_facts(self):
         # Observe the actual Linux peer process; a marker file cannot prove a restart.
-        from yuki.sandbox.acp_peer import read_protocol_line
+        from yuki.sandbox.protocol import read_protocol_line
 
         reader, writer = await asyncio.open_unix_connection(
             str(self.container.sandbox_client.socket)
@@ -103,4 +103,13 @@ class DesktopExternalComputer:
             status = await self.container.sandbox_client.execute(
                 "environment_status", {}, request_id=str(uuid4())
             )
-            return {"external_manager": True, "environment": status, **await self.work_facts()}
+            display = await self.container.sandbox_client.execute(
+                "display_status", {}, request_id=str(uuid4())
+            )
+            return {
+                "external_manager": True,
+                "headed": bool(status.get("desktop")),
+                "display": display,
+                "environment": status,
+                **await self.work_facts(),
+            }
