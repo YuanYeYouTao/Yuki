@@ -78,6 +78,7 @@ class PersistentManager:
         self.runtime_root.mkdir(mode=0o755, exist_ok=True)
         self.runtime_root.chmod(0o755)
         self.execd: Execd | None = None
+        self.observed_container: dict[str, Any] = {}
         self.container_id = ""
         self.connections: dict[str, Any] = {}
         self.pumps: dict[str, asyncio.Task[None]] = {}
@@ -232,6 +233,8 @@ class PersistentManager:
             "pids": int(self.setting("resource_pids", "128")),
             "tmp_mib": int(self.setting("resource_tmp_mib", "128")),
         }
+        if shm := self.setting("resource_shm_mib"):
+            limits["shm_mib"] = int(shm)
         return limits
 
     @staticmethod
@@ -433,6 +436,8 @@ class PersistentManager:
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
+            if "shm_mib" in limits:
+                args.extend(("--shm-size", f"{limits['shm_mib']}m"))
             if self.resolv_conf is not None:
                 args.extend(("--mount", f"type=bind,src={self.resolv_conf},dst=/etc/resolv.conf"))
             if self.media_cache is not None:
@@ -471,6 +476,17 @@ class PersistentManager:
                 raise RuntimeError("environment_start_failed")
             current = await self.inspect_container()
             assert current is not None
+        config = current.get("HostConfig", {})
+        self.observed_container = {
+            "image": current.get("Image"),
+            "image_reference": current.get("Config", {}).get("Image"),
+            "memory_bytes": config.get("Memory"),
+            "memory_and_swap_bytes": config.get("MemorySwap"),
+            "nano_cpus": config.get("NanoCpus"),
+            "pids": config.get("PidsLimit"),
+            "tmpfs": (config.get("Tmpfs") or {}).get("/tmp"),
+            "shm_bytes": config.get("ShmSize"),
+        }
         self.container_id = current["Id"] + ":" + current["State"]["StartedAt"]
         if not self.testing:
             code, raw = await self.command(
@@ -1002,6 +1018,10 @@ class PersistentManager:
                 "shared": self.media_cache_shared,
             },
             "storage": self.disk_status(),
+            "runtime_storage_bytes": shutil.disk_usage(self.runtime_root).total,
+            "configured_image": self.image,
+            "container_at_recovery": self.observed_container,
+            "browser": self.desktop.browser_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),
             "limits": {

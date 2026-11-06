@@ -1,11 +1,12 @@
 [Unit]
-Description=Yuki persistent home with 2 GiB filesystem capacity
+Description=Yuki persistent home and runtime filesystems
 Before=yuki-sandbox.service
 After=local-fs.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+EnvironmentFile=-/etc/yuki-sandbox/deployment.env
 ExecStart=/bin/sh /opt/yuki-sandbox/deploy/sandbox/environment-storage.sh
 # Do not unmount on Manager restart: the environment retains open files/processes.
 

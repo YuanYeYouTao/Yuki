@@ -31,14 +31,17 @@ async def main() -> None:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--socket", type=Path, required=True)
-    parser.add_argument("--image", required=True)
+    parser.add_argument(
+        "--image", default=os.environ.get("YUKI_SANDBOX_IMAGE", "yuki-environment:20260912")
+    )
     parser.add_argument("--persistent-home", type=Path, required=True)
     parser.add_argument("--network", default="yuki-sandbox-egress")
     parser.add_argument("--proxy", default="")
     parser.add_argument("--resolv-conf", type=Path)
-    for option in ("memory-mib", "swap-mib", "pids", "tmp-mib"):
-        parser.add_argument("--" + option, type=int)
-    parser.add_argument("--cpus", type=float)
+    for option in ("memory-mib", "swap-mib", "pids", "tmp-mib", "shm-mib"):
+        key = "YUKI_SANDBOX_" + option.upper().replace("-", "_")
+        parser.add_argument("--" + option, type=int, default=os.environ.get(key))
+    parser.add_argument("--cpus", type=float, default=os.environ.get("YUKI_SANDBOX_CPUS"))
     parser.add_argument(
         "--media-cache", type=Path, default=os.environ.get("YUKI_MANAGER_MEDIA_CACHE") or None
     )
@@ -55,7 +58,7 @@ async def main() -> None:
         resolv_conf=args.resolv_conf,
         media_cache=args.media_cache,
     )
-    for option in ("memory_mib", "swap_mib", "pids", "tmp_mib", "cpus"):
+    for option in ("memory_mib", "swap_mib", "pids", "tmp_mib", "shm_mib", "cpus"):
         value = getattr(args, option)
         if value is not None:
             manager.set_setting("resource_" + option, str(value))

@@ -1,29 +1,22 @@
-"""Declare headed capabilities only after checking actual installed packages."""
+"""Record the selected browser mode and installed package versions."""
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
-packages = {
-    "chromium": "chromium",
-    "Xvnc": "tigervnc-standalone-server",
-    "openbox": "openbox",
-    "socat": "socat",
-    "xdotool": "xdotool",
-    "Noto CJK": "fonts-noto-cjk",
-    "Noto Emoji": "fonts-noto-color-emoji",
-    "ImageMagick": "imagemagick",
-}
+mode, *packages = sys.argv[1:]
 manifest = {
-    "desktop": True,
+    "desktop": mode == "headed",
+    "browser_mode": mode,
     "tools": [
         {
-            "name": name,
+            "name": package,
             "version": subprocess.check_output(
                 ["dpkg-query", "-W", "-f=${Version}", package], text=True
             ).strip(),
         }
-        for name, package in packages.items()
+        for package in dict.fromkeys(packages)
     ],
 }
 Path("/opt/yuki-runtime/manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))

@@ -42,3 +42,35 @@ sh deploy/sandbox/install-desktop.sh --container ORIGINAL_ENVIRONMENT_NAME
 核验应分别记录：实际 manifest、`display_status`、Xvnc/RFB 画面、浏览器真实输入与截图、控制权撤销、原请求重试和原工作接续。仅有一个返回成功的 fixture 不能证明现场有头环境健康。源码测试中的协议 fixture 使用可控 RFB 端点验证 UI 和授权；独立的 `test_real_headed_service_renders_unicode_exposes_rfb_and_stops_children` 启动真实 Xvnc、Openbox、Chromium，读取真实 RFB banner、中文页面和 PNG，验证进程退出。完整容器与生产接入另外验收。
 
 本机 Codex、Claude 由桌面的原生 Agent 连接入口管理，云端复用固定 `external_agent` 操作。连接本身不要求项目目录；服务器角色电脑详细环境、画面、文件及控制供 Person 当前超管管理，基础可用性仍向有效设备公开，本人 Connector 的设备、原生会话和操作仍核真实 Person 归属。旧 `local_device` 文件执行器及活 API 已退出；原表、授权记录、操作 UUID 和回执字节保留，旧 Work 仅查询原事实，不重派、不转成 Native 操作，`unknown` 不转成成功或重做。
+
+## 按运行机器选择沙箱
+
+从源码目录将 `deploy/sandbox/profile.env.example` 中所需的设置合入 Manager 宿主的
+`/etc/yuki-sandbox/deployment.env`，保留其中原有的工作区和代理设置。也可在构建时使用本机独立的配置文件：
+
+```sh
+docker compose --env-file /etc/yuki-sandbox/deployment.env -f deploy/sandbox/compose.build.yaml build environment
+```
+
+`YUKI_SANDBOX_BROWSER_MODE` 支持 `none`（终端）、`headless`（仅 Chromium/CDP）与
+`headed`（增加 Xvnc、Openbox 和桌面输入）。`YUKI_SANDBOX_PACKAGES` 接受用空格分隔的
+Debian 软件包名，可独立于浏览器模式选择。构建完成后，Manager 从实际容器的 manifest
+读取模式和已安装版本。两种浏览器均使用 `yuki-computer wake`、`browser snapshot`、
+`screenshot --out /workspace/page.png` 和同一持久 profile。无头模式没有可接管的画面。
+
+新安装的 systemd 单元读取同一份配置。升级旧机器时，沿用自定义单元和 drop-in；
+用 `systemctl cat yuki-sandbox yuki-environment-storage` 核对生效配置。旧单元的固定
+`--image` 会覆盖环境变量，采用示例配置时删除该参数；存储单元的 `[Service]` 需包含
+`EnvironmentFile=-/etc/yuki-sandbox/deployment.env`。修改单元后执行 `systemctl daemon-reload`。
+CPU、RAM、额外 swap、PID、/tmp 和 /dev/shm 由 Manager 在创建容器时设置；
+已有容器的实际值可用 `docker inspect` 核对。`environment_status` 的 `limits` 是配置值，
+`container_at_recovery` 是 Manager 上次连接容器时观察到的镜像和限额。
+已有环境继续优先使用其 checkpoint。切换模式前先交还桌面并显式停止浏览器服务，备份
+HOME、运行记录与 rootFS。使用 `install-desktop.sh --container 原容器名 headless tree`
+这样的命令在原 rootFS 增量安装，再重启 Manager 读取 manifest。切换到较轻模式保留
+既有软件和浏览器资料。重建时沿原 checkpoint 恢复，勿用空镜像覆盖自装软件。
+
+`YUKI_SANDBOX_HOME_MIB` 与 `YUKI_SANDBOX_RUNTIME_MIB` 分别指定两块持久卷的容量。
+备份后重启 `yuki-environment-storage.service` 可在线扩容 ext4，以 `df` 查看实际容量。
+未指定容量时沿用已有卷，新卷分别默认 2048 和 128 MiB。选择更小的值会保留原卷；
+缩容需要单独迁移。资源数字由操作者按负载调整。

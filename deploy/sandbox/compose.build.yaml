@@ -1,0 +1,18 @@
+# Build on the Manager host with the same environment file used by systemd.
+name: yuki-sandbox-build
+services:
+  base:
+    build:
+      context: ../..
+      dockerfile: deploy/sandbox/Dockerfile.environment
+  environment:
+    image: ${YUKI_SANDBOX_IMAGE:?Set the output image tag for this machine}
+    build:
+      context: ../..
+      dockerfile: deploy/sandbox/Dockerfile.environment-desktop
+      additional_contexts:
+        yuki_base: service:base
+      args:
+        BASE_IMAGE: yuki_base
+        BROWSER_MODE: ${YUKI_SANDBOX_BROWSER_MODE:-none}
+        EXTRA_PACKAGES: ${YUKI_SANDBOX_PACKAGES:-}
