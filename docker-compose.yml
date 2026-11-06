@@ -65,6 +65,15 @@ services:
   snowluma:
     profiles: ["snowluma"]
     image: ${SNOWLUMA_IMAGE:-motricseven7/snowluma:latest}
+    # The upstream setup starts a web viewer unconditionally. Desktop talks to x11vnc.
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -f /opt/noVNC/utils/novnc_proxy ]; then
+          ln -sf /bin/true /opt/noVNC/utils/novnc_proxy
+        fi
+        exec /root/start.sh
     restart: unless-stopped
     init: true
     depends_on:

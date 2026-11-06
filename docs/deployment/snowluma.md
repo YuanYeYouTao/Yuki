@@ -43,7 +43,8 @@ ConnectionGeneration 和能力会由运行时 Registry 投影给控制面。
 QQ 与 Yuki 沙箱各有自己的画面。桌面窗口通过 Yuki 的认证连接查看 QQ 登录码，选择接管后可操作 QQ，
 关闭查看或切换屏幕会结束这次 QQ 输入授权。Bot 在内部网络连接 `snowluma:5900`，并用
 `SNOWLUMA_VNC_PASSWORD` 认证。独立部署可在 Bot 设置 `SNOWLUMA_VNC_HOST` 和
-`SNOWLUMA_VNC_PORT`。原生 VNC 和镜像内的 6081 网页默认均不发布。
+`SNOWLUMA_VNC_PORT`。Yuki 的 Compose 模板在启动官方镜像时禁用独立的 noVNC 网页转发；
+容器内也不再监听 6081。QQ 的虚拟显示与 x11vnc 继续运行，原生 VNC 不发布到宿主。
 5099 管理 WebUI 继续由 `SNOWLUMA_WEBUI_BIND_ADDRESS` 和 `SNOWLUMA_WEBUI_HOST_PORT` 控制。
 
 ## 旧部署配置处理
