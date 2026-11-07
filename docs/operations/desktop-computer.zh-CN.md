@@ -74,3 +74,10 @@ HOME、运行记录与 rootFS。使用 `install-desktop.sh --container 原容器
 备份后重启 `yuki-environment-storage.service` 可在线扩容 ext4，以 `df` 查看实际容量。
 未指定容量时沿用已有卷，新卷分别默认 2048 和 128 MiB。选择更小的值会保留原卷；
 缩容需要单独迁移。资源数字由操作者按负载调整。
+
+`YUKI_SANDBOX_ROOT` 指定 Manager 数据库、HOME 与运行记录卷所在的 Linux 目录，
+默认仍为 `/var/lib/yuki-sandbox`。存储脚本和配套 Manager 单元读取同一配置；
+已有自定义单元需同步其 `--root` 和 `--persistent-home`。指定独立数据盘时，在现场
+systemd drop-in 中用 `RequiresMountsFor=` 声明实际数据盘挂载路径，核对 `findmnt`。
+改路径不搬迁原数据：先停止相关写入，保留并复制原数据库、两块卷及其他文件，再更新
+配置和挂载；不能把空目录当成原 Yuki。挂载已在使用时不直接移动卷文件。

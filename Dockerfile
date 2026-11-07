@@ -8,6 +8,9 @@ COPY --from=rust /usr/local/rustup /usr/local/rustup
 COPY --from=uv /uv /uvx /bin/
 ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup \
     PATH="/usr/local/cargo/bin:$PATH" CARGO_BUILD_JOBS=1
+# Optional native build tuning; omitted values keep Monty's release profile.
+ARG CARGO_PROFILE_RELEASE_LTO
+ARG CARGO_PROFILE_RELEASE_CODEGEN_UNITS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /build

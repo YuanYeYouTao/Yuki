@@ -1,0 +1,117 @@
+{
+  "format": "yuki_monty_linux_isolation_v1",
+  "platform": "Linux-6.8.0-117-generic-aarch64-with-glibc2.41",
+  "worker_sha256": "8107ce2ec77594a54ae78992319162270cc01c0260868dd96995f996be21c9d4",
+  "launcher_sha256": "d452301c7fc3656dd3a362f2f204d03f0640b7622c0b0a170d2a8f888b624c97",
+  "bwrap_sha256": "b3b829e18a7d43ee589dc37e351cb9480ff7301b493d8227b8c754294638b976",
+  "verdict": "passed",
+  "worker": {
+    "host_uid": 10001,
+    "apparmor_profile": "yuki-bot-codemode//launcher//&yuki-bot-codemode//launcher//worker (enforce)",
+    "procfs_exposed": false,
+    "worker_namespace_uid": 65534,
+    "namespaces": {
+      "user": {
+        "host": "user:[4026531837]",
+        "worker": "user:[4026532721]"
+      },
+      "mnt": {
+        "host": "mnt:[4026532447]",
+        "worker": "mnt:[4026532658]"
+      },
+      "pid": {
+        "host": "pid:[4026532450]",
+        "worker": "pid:[4026532661]"
+      },
+      "net": {
+        "host": "net:[4026532452]",
+        "worker": "net:[4026532663]"
+      },
+      "ipc": {
+        "host": "ipc:[4026532449]",
+        "worker": "ipc:[4026532660]"
+      },
+      "uts": {
+        "host": "uts:[4026532448]",
+        "worker": "uts:[4026532659]"
+      }
+    },
+    "uid_map": [
+      [
+        65534,
+        10001,
+        1
+      ]
+    ],
+    "gid_map": [
+      [
+        65534,
+        10001,
+        1
+      ]
+    ],
+    "environment": {
+      "PWD": "/tmp"
+    },
+    "mountinfo": "517 399 0:57 /newroot / rw,nosuid,nodev,relatime - tmpfs tmpfs rw,uid=10001,gid=10001,inode64\n531 517 0:49 /opt/yuki-monty/monty /worker/monty ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/270/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/269/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/261/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/260/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/259/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/258/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/257/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/256/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/255/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/254/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/253/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/252/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/251/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/250/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/249/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/248/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/247/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/246/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/245/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/157/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/156/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/155/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/154/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/271/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/271/work,nouserxattr\n532 517 0:49 /usr/lib /usr/lib ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/270/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/269/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/261/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/260/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/259/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/258/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/257/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/256/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/255/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/254/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/253/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/252/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/251/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/250/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/249/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/248/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/247/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/246/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/245/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/157/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/156/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/155/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/154/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/271/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/271/work,nouserxattr\n533 517 0:49 /usr/lib /lib ro,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/270/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/269/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/261/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/260/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/259/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/258/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/257/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/256/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/255/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/254/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/253/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/252/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/251/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/250/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/249/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/248/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/247/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/246/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/245/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/157/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/156/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/155/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/154/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/271/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/271/work,nouserxattr\n534 517 0:59 / /dev rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755,uid=10001,gid=10001,inode64\n535 534 0:74 /null /dev/null rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n536 534 0:74 /zero /dev/zero rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n537 534 0:74 /full /dev/full rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n538 534 0:74 /random /dev/random rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n539 534 0:74 /urandom /dev/urandom rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n540 534 0:74 /tty /dev/tty rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64\n541 534 0:61 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,mode=620,ptmxmode=666\n542 517 0:70 / /tmp rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755,uid=10001,gid=10001,inode64\n",
+    "network_interfaces": [
+      "lo"
+    ],
+    "limits": "Limit                     Soft Limit           Hard Limit           Units     \nMax cpu time              30                   30                   seconds   \nMax file size             4194304              4194304              bytes     \nMax data size             unlimited            unlimited            bytes     \nMax stack size            8388608              unlimited            bytes     \nMax core file size        0                    0                    bytes     \nMax resident set          unlimited            unlimited            bytes     \nMax processes             unlimited            unlimited            processes \nMax open files            32                   32                   files     \nMax locked memory         8388608              8388608              bytes     \nMax address space         536870912            536870912            bytes     \nMax file locks            unlimited            unlimited            locks     \nMax pending signals       23469                23469                signals   \nMax msgqueue size         819200               819200               bytes     \nMax nice priority         0                    0                    \nMax realtime priority     0                    0                    \nMax realtime timeout      unlimited            unlimited            us        \n",
+    "status": "Name:\tmonty\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t16\nNgid:\t0\nPid:\t16\nPPid:\t15\nTracerPid:\t0\nUid:\t10001\t10001\t10001\t10001\nGid:\t10001\t10001\t10001\t10001\nFDSize:\t64\nGroups:\t10001 \nNStgid:\t16\t2\nNSpid:\t16\t2\nNSpgid:\t15\t1\nNSsid:\t15\t1\nKthread:\t0\nVmPeak:\t  177484 kB\nVmSize:\t  111968 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    8856 kB\nVmRSS:\t    8856 kB\nRssAnon:\t    1024 kB\nRssFile:\t    7832 kB\nRssShmem:\t       0 kB\nVmData:\t   16792 kB\nVmStk:\t     132 kB\nVmExe:\t   26048 kB\nVmLib:\t    2504 kB\nVmPTE:\t      96 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffff\nThreads:\t2\nSigQ:\t0/23469\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000081001000\nSigCgt:\t0000000100000440\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\tf\nCpus_allowed_list:\t0-3\nMems_allowed:\t00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\n",
+    "process_ids": [
+      14,
+      15,
+      16
+    ],
+    "native_pid": 16
+  },
+  "infinite_loop": "engine_time_limit",
+  "terminated_process_ids": [
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+  ],
+  "termination": "all_original_process_ids_gone",
+  "parent_death": {
+    "owner_signal": "SIGKILL",
+    "process_ids": [
+      29,
+      30,
+      31
+    ],
+    "verdict": "passed"
+  },
+  "host_policy": {
+    "max_native_workers": 2,
+    "background_limit": 1,
+    "observed_peak_native_workers": 2,
+    "native_high_water_rss_kib": [
+      8840,
+      8856
+    ],
+    "queued_cancellation_created_no_worker": true,
+    "all_capacity_process_ids_gone": [
+      33,
+      34,
+      35,
+      37,
+      38,
+      39
+    ],
+    "measurement_scope": "two suspended synthetic scripts; not production capacity sizing",
+    "host_watchdog": {
+      "configured_seconds": 0.5,
+      "elapsed_seconds": 0.5047795409991522,
+      "failure_category": "limit_time",
+      "all_process_ids_gone": [
+        41,
+        42,
+        43
+      ]
+    }
+  }
+}

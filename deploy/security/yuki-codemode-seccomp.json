@@ -1229,7 +1229,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1247,7 +1248,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1265,7 +1267,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1283,7 +1286,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1301,7 +1305,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1319,7 +1324,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1337,7 +1343,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1355,7 +1362,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1373,7 +1381,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1391,7 +1400,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "args": [
@@ -1409,7 +1419,8 @@
       "action": "SCMP_ACT_ALLOW",
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       }
     }

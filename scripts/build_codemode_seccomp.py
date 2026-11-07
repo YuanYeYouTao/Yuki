@@ -1,4 +1,4 @@
-"""Reproduce the AMD64 bubblewrap additions to the pinned Moby deny-default policy."""
+"""Reproduce the AMD64/ARM64 bubblewrap additions to the pinned Moby policy."""
 
 from __future__ import annotations
 
@@ -18,11 +18,16 @@ def generate() -> bytes:
     policy = json.loads(original)
 
     def allow(name: str, index: int | None = None, value: int = 0) -> None:
-        rule = {"names": [name], "action": "SCMP_ACT_ALLOW", "includes": {"arches": ["amd64"]}}
+        rule = {
+            "names": [name],
+            "action": "SCMP_ACT_ALLOW",
+            "includes": {"arches": ["amd64", "arm64"]},
+        }
         if index is not None:
             rule["args"] = [{"index": index, "value": value, "op": "SCMP_CMP_EQ"}]
         policy["syscalls"].append(rule)
 
+    # clone flags are argument 0 on both AMD64 and ARM64.
     # All six isolation namespaces plus cgroup namespace and SIGCHLD.
     allow("clone", 0, 0x7E020011)
     # bwrap enters a second user namespace after mounting and dropping caps.
