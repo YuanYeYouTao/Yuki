@@ -97,6 +97,12 @@ docker compose exec --user 10001:10001 bot yuki setup environment-check
 
 使用自定义 Compose 文件时，容器选择和最终检查都沿同一条实际 `-f` 链；也可直接给 `--bot-container` 传入已核实的容器名或 ID。该参数必填，不再从旧 `/opt/yuki-sandbox/src` 猜代码版本。
 
+在 Mac 的 Colima Linux VM 内安装时加 `--colima`。Colima 的数据盘在 `cloud-final.service` 中挂载，仅写 `RequiresMountsFor` 不能代替这一启动依赖。安装器给存储和 Manager 加入仓库提供的 `colima-boot.conf`，等待实际初始化完成，并把开机目标从 `multi-user.target` 改为 `cloud-init.target`，避免与 cloud-final 的顺序形成循环。已有 unit、资源配置和数据保持原样。首次挂载前先完成数据恢复；不要把非空 HOME 目录当作可覆盖的挂载点。
+
+如果 Bot Compose 也由 systemd 启动，其 unit 应依赖并排在 `yuki-sandbox.service` 之后，使用相同的 `cloud-init.target` 开机目标。Bot/QQ 的容器使用 `restart: on-failure`，让 systemd 决定开机顺序；`always`/`unless-stopped` 会让 Docker 在卷就绪前自行启动它们。带 SnowLuma profile 的 unit 需设置 `Environment=COMPOSE_PROFILES=snowluma`。宿主用 `colima start --profile NAME --activate=true --foreground` 交给登录服务管理，可在重启 profile 后恢复 Docker context；登录服务并不等于 Mac 登录前开机服务。
+
+此选项只处理 Linux VM 的启动顺序，不安装 Colima、runsc、Code Mode 镜像或 DNS，也不执行迁移与正式切换。待切换副本应先保持相关 unit 禁用；启用后用一次真实 VM 重启核对数据盘、HOME/runtime、Manager 与 Bot，不能只看 `/livez`。
+
 安装器调用 `sync-manager.py`，将该 Bot 的完整已安装 `yuki` 包放到 `/opt/yuki-sandbox/releases/<Bot镜像提交>/src`，定向更新现有 `90-source-release.conf` 的 `PYTHONPATH`。已有 unit 参数、媒体缓存覆盖、原 venv、HOME、工作区和仍被环境挂载的旧源码保持原样。已存在的同提交源码只核对字节并复用，不覆盖正在被引用的不同内容。同步入口本身不重启服务或修改数据；安装器随后重启原 Manager，并在真实 UID 10001 下完成 artifact 写权限与 `environment_status` 的握手。残留 socket 文件不能再被当作成功。
 
 部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。Bot `environment-check` 与宿主安装器复用同一个标准库检查实现，不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网或QQ表情送达已验收。
