@@ -7,9 +7,8 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -566,51 +565,41 @@ class LocalDeviceService:
         self,
         device_id: str,
         actor: str,
-        path: Path,
+        stream: Callable[[int], Awaitable[bytes]],
+        size: int,
+        sha256: str,
         destination: str,
         *,
         request_id: str,
     ) -> dict[str, Any]:
+        """Write one source of known size and hash; the Connector checks the whole file."""
         offset = 0
-        with path.open("rb") as source:
-
-            def stamp() -> tuple[int, int, int, int, int]:
-                stat = os.fstat(source.fileno())
-                return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-
-            version = stamp()
-            size = version[2]
-            digest = await asyncio.to_thread(
-                lambda: hashlib.file_digest(source, "sha256").hexdigest()
+        while True:
+            wanted = min(65536, size - offset)
+            data = await stream(wanted)
+            if len(data) != wanted:
+                raise WorkspaceError("source_stream_incomplete")
+            final = offset + len(data) == size
+            result = await self.file_request(
+                device_id,
+                actor,
+                "write",
+                {
+                    "path": destination,
+                    "transfer_id": request_id,
+                    "offset": offset,
+                    "data_base64": base64.b64encode(data).decode(),
+                    "final": final,
+                    "size": size,
+                    "sha256": sha256,
+                },
+                identity=f"{request_id}:write:{offset}",
             )
-            if stamp() != version:
-                raise WorkspaceError("file_changed_during_transfer")
-            source.seek(0)
-            while True:
-                data = await asyncio.to_thread(source.read, 65536)
-                if stamp() != version or (not data and offset != size):
-                    raise WorkspaceError("file_changed_during_transfer")
-                final = offset + len(data) == size
-                result = await self.file_request(
-                    device_id,
-                    actor,
-                    "write",
-                    {
-                        "path": destination,
-                        "transfer_id": request_id,
-                        "offset": offset,
-                        "data_base64": base64.b64encode(data).decode(),
-                        "final": final,
-                        "size": size,
-                        "sha256": digest,
-                    },
-                    identity=f"{request_id}:write:{offset}",
-                )
-                if result.get("uncertain"):
-                    return result
-                offset += len(data)
-                if final:
-                    return result
+            offset += len(data)
+            # The Connector folds an earlier part's receipt into its journal state,
+            # which keeps status "unknown"; the recorded next offset confirms it.
+            if final or result.get("next_offset") != offset:
+                return result
 
     async def upload_result(
         self,

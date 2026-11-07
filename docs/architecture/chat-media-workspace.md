@@ -97,7 +97,7 @@ SDK `vision.analyze_current_media` 是另一个明确授予 `VISION_ANALYZE` 的
 Bot 与 sandbox Manager 的媒体读取实现须配套更新。来源、文件版本、GIF、采帧与
 原生请求配对可离线核验；实际 Provider 图片能力、端到端速度和 QQ 自然流量分别验收。
 
-`save_conversation_attachment_to_workspace` 按同一真实内部来源显式复制到全局持久工作区；也可直接用终端从共享缓存 `cp` 到自己的目录。临时原件仍按原时间清理，持久副本自由编辑。保存与原生表情收藏共用 Manager 私有流式复制：直接从只读缓存复制到最终文件，同次读取核源哈希、原子覆盖目标，不产生永久中转 artifact。普通目标覆盖不要求目标 CAS。保存先读原 request 回执；成功后源过期、目标被用户改写或删除，都不会重拷。未知写入保持原未知事实。共享 Agent 文件范围不增加插件 SDK 的批准权限，插件 handle 仍沿自身合同。
+`save_conversation_attachment_to_workspace` 按同一真实内部来源显式复制原件，来源三选一：`event_id` + `attachment_index`（聊天附件）、`path`（Yuki 环境中的文件）或 `artifact_id`（已发布或已发送的不可变文件）；目标为全局持久工作区，或 `device_id` 指定的本人电脑（见下文“本机设备文件”）。也可直接用终端从共享缓存 `cp` 到自己的目录。临时原件仍按原时间清理，持久副本自由编辑。保存与原生表情收藏共用 Manager 私有流式复制：直接从只读缓存复制到最终文件，同次读取核源哈希、原子覆盖目标，不产生永久中转 artifact；`path` 来源写入环境同样走这条复制，`source_key` 为 `path:<path>`。`artifact_id` 写入 Yuki 环境需要 Manager 新方法，目前返回 `source_not_supported_for_destination`。普通目标覆盖不要求目标 CAS。保存先读原 request 回执；成功后源过期、目标被用户改写或删除，都不会重拷。未知写入保持原未知事实。共享 Agent 文件范围不增加插件 SDK 的批准权限，插件 handle 仍沿自身合同。
 
 `send(path=...)` 用原 Conversation、执行与 call ID 派生稳定发布子键，Manager 先查发布回执再接触可变路径。发布后中断、原件删除或改写，恢复仍用原冻结版本；已完成、部分完成或未知派发不自动重发。实际 artifact、文件名、版本沿原 Social 计划和回执交给 Work、Client 与效果汇总，原模型参数和指纹不被覆写。分段结果按原计划逐项报告，不以第一步的位置猜测文件成功。历史领域 action 与原回执保持，不注册成可执行工具。
 
@@ -160,6 +160,8 @@ Genie 出站 record 构造已退出；历史 record、真实转写和已接受�
 
 ## 本机设备文件
 
-`workspace_inspect`、`send(path)` 与 `save_conversation_attachment_to_workspace` 的可选 `device_id` 选择原文件所属电脑；不传继续使用 Yuki 自己的环境。本机读取保所选原文件句柄/版本、内容 hash 和内部传输 ID，64KiB 分片只穿过同一 WSS，不写入模型文本。媒体读取沿原尺寸预算，发送成果不借此限定普通文件大小。
+`workspace_inspect` 与 `send(path)` 的可选 `device_id` 选择原文件所属电脑；`save_conversation_attachment_to_workspace` 的 `device_id` 方向相反，指**写入目标**电脑，来源仍在 Yuki 一侧（附件、环境 `path` 或 `artifact_id`）。不传继续使用 Yuki 自己的环境。本机读取保所选原文件句柄/版本、内容 hash 和内部传输 ID，64KiB 分片只穿过同一 WSS，不写入模型文本。媒体读取沿原尺寸预算，发送成果不借此限定普通文件大小。工具面统一切换时该工具改名为 `copy_file`：`device` 一律指源电脑、`to_device` 指目标电脑，服务层 `WorkspaceService.copy_file` 已按这组参数实现。
 
-本机 inspect 的真实像素进入原私有媒体 tool_handle，已付输入与 Work journal 保原来源，不为每次截图建立长期公开快照。send 沿原确定 artifact ID/source_key 冻结一次文件；恢复先认已保存原件，后续修改或删除本机路径不改变原发送。附件保存先核原 event/index，再查同传输原回执；只有无原完成回执才需要读取附件缓存。两条路径共享设备传输，原身份、未知和不可变发送仍由原领域处理。
+写入本人电脑时，`transfer_id` 就是原调用的 invocation key。先查 Connector 的原传输回执：成功原样返回、不读源；从未记录才读源；其余一律保持未知，不重传。读源时三种来源在上传前都已知 size 与 sha256：`path` 经 Manager `files_read` 流（Manager 先取快照再发头部，Bot 不落临时文件，按头部 size 读满，短读报 `source_stream_incomplete`；Manager 未回头部即断开报 `source_file_unavailable`）；`artifact_id` 按 ID 打开不可变 blob（可变旧 artifact 报 `artifact_not_immutable`，与 `send(artifact_id)` 同一条件）；附件沿原事件与序号读取缓存原件。Connector 末片核整文件 sha256 后才替换目标。未确认的写入返回 `status: unknown`，附源 sha256 并说明目标目录可能残留 `.yuki-transfer-*.part`。`path` 来源只接受 `/workspace` 下的普通文件，符号链接与硬链接被 Manager 拒绝。
+
+本机 inspect 的真实像素进入原私有媒体 tool_handle，已付输入与 Work journal 保原来源，不为每次截图建立长期公开快照。send 沿原确定 artifact ID/source_key 冻结一次文件；恢复先认已保存原件，后续修改或删除本机路径不改变原发送。附件保存先核原 event/index，再查同传输原回执；只有传输从未记录时才读取附件缓存。两条路径共享设备传输，原身份、未知和不可变发送仍由原领域处理。

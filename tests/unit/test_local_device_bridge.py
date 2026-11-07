@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import io
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -195,33 +196,6 @@ async def test_selected_local_file_bytes_and_version_release(database, tmp_path)
     await c.service.close()
 
 
-@pytest.mark.parametrize("change", ["truncate", "grow"])
-async def test_upload_source_change_stops_before_repeating_an_eof_chunk(database, tmp_path, change):
-    c = await setup_device(database, tmp_path)
-    source = tmp_path / "selected-upload.bin"
-    source.write_bytes(b"a" * 140000)
-    writes = []
-
-    async def write_then_change(command):
-        assert command["resource"] == "file" and command["action"] == "write"
-        writes.append(command)
-        source.write_bytes(b"" if change == "truncate" else b"b" * 200000)
-        return {"pending": True}
-
-    c.connection.request.side_effect = write_then_change
-    try:
-        with pytest.raises(WorkspaceError, match="file_changed_during_transfer"):
-            await c.local.upload(
-                c.device_id, c.env.person, source, "saved.bin", request_id="original-upload"
-            )
-        assert len(writes) == 1
-        assert writes[0]["arguments"]["offset"] == 0
-        assert writes[0]["arguments"]["final"] is False
-        assert len(base64.b64decode(writes[0]["arguments"]["data_base64"])) == 65536
-    finally:
-        await c.service.close()
-
-
 async def test_inflight_control_id_cannot_share_a_receipt_with_another_original_run():
     socket = SimpleNamespace(send_json=AsyncMock())
     connection = DeviceConnection("original-device", socket)
@@ -280,12 +254,21 @@ async def test_lost_file_write_keeps_original_transfer_unknown_without_next_chun
     database, tmp_path
 ):
     c = await setup_device(database, tmp_path)
-    source = tmp_path / "selected-source.bin"
-    source.write_bytes(b"a" * 140000)
+    source = io.BytesIO(b"a" * 140000)
     c.connection.request.side_effect = DeviceOffline("reply_lost")
+
+    async def stream(size):
+        return source.read(size)
+
     try:
         result = await c.local.upload(
-            c.device_id, c.env.person, source, "saved.bin", request_id="original-file-transfer"
+            c.device_id,
+            c.env.person,
+            stream,
+            140000,
+            hashlib.sha256(b"a" * 140000).hexdigest(),
+            "saved.bin",
+            request_id="original-file-transfer",
         )
         assert result["status"] == "unknown" and result["uncertain"]
         assert result["transfer_id"] == "original-file-transfer"
