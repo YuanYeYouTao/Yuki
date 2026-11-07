@@ -4,6 +4,7 @@
 set -eu
 deployment_root=""
 bot_container=""
+colima=false
 deployment_files=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -17,7 +18,11 @@ while [ "$#" -gt 0 ]; do
             bot_container=$2
             shift 2
             ;;
-        *) echo 'Usage: install-manager.sh --bot-container CONTAINER [--deployment-root ABSOLUTE_PATH]' >&2; exit 1 ;;
+        --colima)
+            colima=true
+            shift
+            ;;
+        *) echo 'Usage: install-manager.sh --bot-container CONTAINER [--deployment-root ABSOLUTE_PATH] [--colima]' >&2; exit 1 ;;
     esac
 done
 test "$(id -u)" = 0
@@ -67,8 +72,19 @@ fi
 if [ ! -f /etc/systemd/system/yuki-environment-storage.service ]; then
     install -m 644 "$deployment_files/yuki-environment-storage.service" /etc/systemd/system/yuki-environment-storage.service
 fi
+if "$colima"; then
+    for unit in yuki-sandbox.service yuki-environment-storage.service; do
+        install -d "/etc/systemd/system/$unit.d"
+        install -m 644 "$deployment_files/colima-boot.conf" "/etc/systemd/system/$unit.d/colima-boot.conf"
+    done
+fi
 systemctl daemon-reload
-systemctl enable yuki-sandbox
+if "$colima"; then
+    # Replace any old multi-user.target links: cloud-final itself runs after it.
+    systemctl reenable yuki-environment-storage yuki-sandbox
+else
+    systemctl enable yuki-sandbox
+fi
 systemctl restart yuki-sandbox
 systemctl is-active yuki-sandbox
 attempt=0

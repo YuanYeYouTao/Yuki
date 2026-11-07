@@ -1,0 +1,19 @@
+{
+  "before_boot_id": "7d2580e7-783e-4fd1-b779-a40b6ec18e07",
+  "mac_rebooted": false,
+  "stopped_seconds": 24.48,
+  "https_livez": {
+    "status": "alive"
+  },
+  "after_boot_id": "bbd92823-4839-49e1-abe2-a830af100cdb",
+  "seconds_until_https_recovered": 62.02,
+  "docker_socket_recovered": true,
+  "reboot_verified": true,
+  "data_disk_backing_device": "253:17",
+  "home_and_runtime_backing_device": "253:17",
+  "manager_ready_after_boot": true,
+  "persistent_file_hash_matches": true,
+  "original_dispatched_run_not_replayed": true,
+  "manual_recovery_required": false,
+  "scope": "Native ARM64 Colima VM restart, not a Mac hardware reboot. Source cloud remained production; copied gateways stayed network-isolated."
+}

@@ -40,6 +40,7 @@ _MANAGER_DEPLOY_FILES = frozenset(
         for name in (
             "sync-manager.py",
             "install-manager.sh",
+            "colima-boot.conf",
             "configure-manager.py",
             "requirements-manager.txt",
             "yuki-sandbox.service",
