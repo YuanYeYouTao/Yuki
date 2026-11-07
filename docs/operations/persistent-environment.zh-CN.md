@@ -99,7 +99,9 @@ docker compose exec --user 10001:10001 bot yuki setup environment-check
 
 在 Mac 的 Colima Linux VM 内安装时加 `--colima`。Colima 的数据盘在 `cloud-final.service` 中挂载，仅写 `RequiresMountsFor` 不能代替这一启动依赖。安装器给存储和 Manager 加入仓库提供的 `colima-boot.conf`，等待实际初始化完成，并把开机目标从 `multi-user.target` 改为 `cloud-init.target`，避免与 cloud-final 的顺序形成循环。已有 unit、资源配置和数据保持原样。首次挂载前先完成数据恢复；不要把非空 HOME 目录当作可覆盖的挂载点。
 
-如果 Bot Compose 也由 systemd 启动，其 unit 应依赖并排在 `yuki-sandbox.service` 之后，使用相同的 `cloud-init.target` 开机目标。Bot/QQ 的容器使用 `restart: on-failure`，让 systemd 决定开机顺序；`always`/`unless-stopped` 会让 Docker 在卷就绪前自行启动它们。带 SnowLuma profile 的 unit 需设置 `Environment=COMPOSE_PROFILES=snowluma`。宿主用 `colima start --profile NAME --activate=true --foreground` 交给登录服务管理，可在重启 profile 后恢复 Docker context；登录服务并不等于 Mac 登录前开机服务。
+如果 Bot Compose 也由 systemd 启动，其 unit 应依赖并排在 Docker 和 `yuki-sandbox.service` 之后，设置 `WantedBy=cloud-init.target docker.service` 并重新 enable。Bot/QQ 的容器使用 `restart: on-failure`，让 systemd 决定开机顺序；`always`/`unless-stopped` 会让 Docker 在卷就绪前自行启动它们。带 SnowLuma profile 的 unit 需设置 `Environment=COMPOSE_PROFILES=snowluma`。宿主用 `colima start --profile NAME --activate=true --foreground` 交给登录服务管理，可在重启 profile 后恢复 Docker context；登录服务并不等于 Mac 登录前开机服务。
+
+Colima 还会在 cloud-final 中停止 Docker，再由宿主 CLI 启动。drop-in 因此也把两个 unit 启用到 `docker.service`：停止 Docker 会取消尚未完成的 Manager 启动，单靠已经到达的 `cloud-init.target` 不会再次发起启动。更新 drop-in 后需重新 enable 原 unit；Docker 重启不停止存储或卸载卷。
 
 此选项只处理 Linux VM 的启动顺序，不安装 Colima、runsc、Code Mode 镜像或 DNS，也不执行迁移与正式切换。待切换副本应先保持相关 unit 禁用；启用后用一次真实 VM 重启核对数据盘、HOME/runtime、Manager 与 Bot，不能只看 `/livez`。
 

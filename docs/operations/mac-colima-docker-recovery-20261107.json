@@ -1,0 +1,37 @@
+{
+  "before_boot_id": "cc207906-c232-4f6f-a7e7-5569c29832c9",
+  "after_boot_id": "3623e40c-41fe-43fd-95cf-e1231d68b254",
+  "vm_memory_gib": 4,
+  "sandbox_memory_mib": 2048,
+  "mac_rebooted": false,
+  "https_livez": {
+    "status": "alive"
+  },
+  "units_final": [
+    "active",
+    "active",
+    "active"
+  ],
+  "home_file_preserved": true,
+  "environment_check": {
+    "ok": true,
+    "uid": 10001,
+    "manager": "connected",
+    "workspace": "/workspace"
+  },
+  "manual_service_start_required": false,
+  "first_https_and_manager_recovery_seconds": 60.0,
+  "all_units_active_at_utc": "2026-11-07T19:26:10Z",
+  "home_probe": "SHA256 of an existing small HOME configuration file before/after the real VM restart",
+  "container_running": true,
+  "container_memory_bytes": 2147483648,
+  "container_cpus": 2,
+  "reproduction": [
+    "Install colima-boot.conf on storage and Manager; reenable both units.",
+    "Set the existing Compose unit WantedBy=cloud-init.target docker.service and reenable it.",
+    "Stop the local production units, stop the Colima profile, then start its existing login LaunchAgent.",
+    "Verify a changed VM boot ID, all three active units, HTTPS /livez, and Bot UID 10001 environment-check.",
+    "Compare the preexisting HOME file hash and actual Docker resource limits."
+  ],
+  "scope": "Real ARM64 Colima VM reboot; no manual service start, no Mac hardware reboot, no workload capacity claim."
+}
