@@ -159,7 +159,7 @@ class AutomationTaskSource:
     automation_created_at: datetime | None = None
     scheduled_for: datetime | None = None
 
-    def activation_context(self, now: datetime) -> dict[str, Any]:
+    def activation_context(self) -> dict[str, Any]:
         return {
             "origin": self.origin,
             "automation_id": self.automation_id,
@@ -170,7 +170,6 @@ class AutomationTaskSource:
             if self.automation_created_at
             else None,
             "scheduled_for": self.scheduled_for.isoformat() if self.scheduled_for else None,
-            "current_time": now.isoformat(),
             "instruction": (
                 "本次安排已经到期，继续完成这次发生尚未完成的工作；原话中的相对时间属于原安排。"
             ),

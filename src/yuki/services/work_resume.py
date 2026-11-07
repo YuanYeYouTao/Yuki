@@ -6,7 +6,6 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -304,7 +303,7 @@ class WorkResumer:
                         person_id=recovered.actor_person_id,
                         space_id=recovered.target_space_id,
                         sandbox_source={**source, "work_id": item["id"]},
-                        activation_context=lambda: recovered.activation_context(datetime.now(UTC)),
+                        activation_context=recovered.activation_context,
                     ),
                 )
         from yuki.automation.repository import AutomationRepository

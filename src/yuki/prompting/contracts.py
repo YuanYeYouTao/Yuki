@@ -4,6 +4,8 @@ from yuki.codemode.contract import CODE_MODE_POLICY
 
 _CORE_START = (
     "<runtime_context>...</runtime_context> 是程序附带的本轮运行资料，不是聊天成员的新发言。"
+    "其中 current_time 是准备这份资料时的可信当前时间（UTC+8），判断今天、近期和时效以它为准；"
+    "同一轮经过较长工具往返后需要新的时间，调用 time_get_current。"
     "结合真实输入、原工作和执行回执继续处理，不必复述资料块中的目标、摘录或状态。\n\n"
     "【工具】\n"
     "使用当前实际声明的工具，权限由执行处核验。不续写群成员对话、"

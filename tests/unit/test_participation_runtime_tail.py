@@ -173,13 +173,16 @@ async def test_gemini_signed_tool_round_keeps_wire_prefix_and_original_pairing(d
     assert any('"floor":"other"' in part.get("text", "") for part in tail["parts"])
 
 
-async def test_no_scoped_facts_adds_no_runtime_material(database, tmp_path):
+async def test_no_scoped_facts_adds_only_the_current_time(database, tmp_path):
     control, _, initial = await _session(database, tmp_path)
     provider = FakeLLMProvider(lambda request: "done")
     runner, runtime = await _runtime(database, control, initial, provider)
     backend = ParticipationBackend(None)
     await runner.run(initial, replace(runtime, work_control=None), backend)
-    assert provider.requests[0].messages == initial
+    sent = provider.requests[0].messages
+    assert (*sent[:-2], sent[-1]) == initial
+    material = json.loads(sent[-2].content.split("<runtime_context>\n", 1)[1].split("\n<", 1)[0])
+    assert list(material) == ["current_time"]
 
 
 async def test_real_main_keeps_participation_feedback_out_of_public_history(database, tmp_path):

@@ -307,9 +307,7 @@ class AutomationWorker:
                             space_id=recovered.target_space_id,
                             external_target_id=recovered.external_target_id,
                             sandbox_source=source,
-                            activation_context=lambda: recovered.activation_context(
-                                self._time.clock.now()
-                            ),
+                            activation_context=recovered.activation_context,
                         ),
                     )
                 if control.current is not None:

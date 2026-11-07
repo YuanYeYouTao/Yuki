@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
@@ -70,6 +71,7 @@ from yuki.services.turn_transcript import (
     TurnTranscript,
     validating_request,
 )
+from yuki.time.formatting import runtime_current_time
 from yuki.web.models import WebMode
 
 logger = logging.getLogger(__name__)
@@ -836,6 +838,8 @@ class TurnExecution:
 
     @staticmethod
     def _runtime_message(state: dict[str, Any]) -> ChatMessage:
+        # Every prepared runtime context carries the absolute time it was prepared at.
+        state = {"current_time": runtime_current_time(datetime.now(UTC)), **state}
         return ChatMessage(
             role="user",
             content="\n\n<runtime_context>\n"
@@ -875,7 +879,7 @@ class TurnExecution:
         participation = await self._participation_context(0)
         if participation:
             state["participation"] = participation
-        hosts = (self._runtime_message(state), *host) if state else host
+        hosts = (self._runtime_message(state), *host)
         current_inputs = tuple(self._initial_inputs)
         transcript.finalize_initial(initial, hosts, current_inputs)
         self.initial_messages = (*initial[:-1], *hosts, initial[-1], *current_inputs)
