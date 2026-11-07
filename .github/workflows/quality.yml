@@ -169,8 +169,12 @@ jobs:
           retention-days: 7
 
   native:
-    name: Native CodeMode
-    runs-on: ubuntu-24.04
+    name: Native CodeMode (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
     env:
       YUKI_MONTY_BINARY: /opt/yuki-monty/monty
       YUKI_MONTY_LAUNCHER: /opt/yuki-monty/monty-isolated
@@ -183,7 +187,9 @@ jobs:
       - run: uv sync --frozen --all-extras --python 3.12
       - name: Install isolation and media dependencies
         run: |
-          sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
+          if [ "$(dpkg --print-architecture)" = amd64 ]; then
+            sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
+          fi
           sudo apt-get update
           sudo apt-get install -y bubblewrap apparmor-utils ffmpeg
       - name: Build the pinned native distribution
@@ -212,11 +218,22 @@ jobs:
         run: >-
           aa-exec -p yuki-bot-codemode -- .venv/bin/python -m pytest tests -q
           -m native_worker --strict-markers --junitxml=test-results/native.xml
+      - name: Exercise the same worker with Docker seccomp and AppArmor together
+        run: |
+          docker build --target direct -t yuki:native-policy-base .
+          docker build --build-context native=.cache/monty-ci -t yuki:native-policy -f - . <<'DOCKERFILE'
+          FROM yuki:native-policy-base
+          COPY --from=native /monty/target/release/monty /opt/yuki-monty/monty
+          COPY --from=native /monty-isolated /opt/yuki-monty/monty-isolated
+          COPY --from=native /wheels /opt/yuki-monty/wheels
+          RUN /usr/local/bin/python -m pip install --no-deps --target /app/.venv/lib/python3.12/site-packages /opt/yuki-monty/wheels/*.whl
+          DOCKERFILE
+          sh scripts/verify_codemode_container.sh yuki:native-policy test-results/monty-container-isolation.json
       - name: Save the exact native distribution for isolated replay
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: monty-native-distribution
+          name: monty-native-distribution-${{ matrix.os }}
           path: |
             .cache/monty-ci/artifacts.json
             .cache/monty-ci/wheels/*.whl
@@ -227,6 +244,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tests-native
+          name: tests-native-${{ matrix.os }}
           path: test-results/
           retention-days: 7

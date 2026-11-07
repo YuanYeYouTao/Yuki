@@ -334,6 +334,9 @@ def main() -> None:
     if args.output is None:
         parser.error("--output is required for validation")
     result = asyncio.run(verify(args.worker, args.launcher))
+    if args.output == Path("-"):
+        print(json.dumps(result, indent=2))
+        return
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(
         json.dumps(

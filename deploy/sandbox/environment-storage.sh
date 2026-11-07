@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run on the Linux Manager host. Existing ext4 files only grow.
 set -eu
-root=/var/lib/yuki-sandbox
+root=${YUKI_SANDBOX_ROOT:-/var/lib/yuki-sandbox}
 mkdir -p "$root"
 exec 9>"$root/.storage.lock"
 flock 9
