@@ -24,9 +24,6 @@ from yuki.admin.models import (
     RuntimeConfigSnapshot,
 )
 from yuki.asr.service import ASRService, AudioInput
-from yuki.automation.repository import AutomationRepository
-from yuki.automation.service import AutomationService
-from yuki.automation.worker import AutomationWorker
 from yuki.config import Settings
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.media_index import indexed_media_segments, observed_reply_media_segments
@@ -58,8 +55,6 @@ from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.ingress import CanonicalIngressResolver, IngressPreAdmit
 from yuki.identity.readers import canonical_group_policy, canonical_private_policy
 from yuki.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
-from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
-from yuki.memory.service import MemoryFactService
 from yuki.memory.worker import MemoryWorker
 from yuki.persistence.database import Database, write_failure_committed, write_failure_phase
 from yuki.persistence.models import ConversationMediaItemModel
@@ -373,24 +368,20 @@ class MessageProcessor:
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
         command_service: CommandService,
-        people: PeopleRepository | None = None,
-        memories: MemoryFactService | None = None,
-        memory_worker: MemoryWorker | None = None,
-        autonomous_groups: AutonomousGroupService | None = None,
-        runtime_config: RuntimeConfigService | None = None,
-        asr_service: ASRService | None = None,
-        conversation_media: ConversationMediaService | None = None,
-        automation_service: AutomationService | None = None,
-        automation_repository: AutomationRepository | None = None,
-        automation_worker: AutomationWorker | None = None,
-        direct_plugin_commands: DirectPluginCommandResolver | None = None,
-        turn_coordinator: ConversationTurnCoordinator | None = None,
-        admission_signals: AdmissionSignalProvider | None = None,
-        event_publisher: LifecycleEventPublisher | None = None,
-        emoji_library: EmojiLibrary | None = None,
+        people: PeopleRepository,
+        memory_worker: MemoryWorker,
+        autonomous_groups: AutonomousGroupService,
+        runtime_config: RuntimeConfigService,
+        asr_service: ASRService,
+        conversation_media: ConversationMediaService,
+        direct_plugin_commands: DirectPluginCommandResolver,
+        turn_coordinator: ConversationTurnCoordinator,
+        admission_signals: AdmissionSignalProvider,
+        event_publisher: LifecycleEventPublisher,
+        emoji_library: EmojiLibrary,
         canonical_ingress: CanonicalIngressResolver,
-        group_recovery: GroupRecoveryHandler | None = None,
-        client_links: ClientLinkCommands | None = None,
+        group_recovery: GroupRecoveryHandler,
+        client_links: ClientLinkCommands,
         canonical_uow: CanonicalIngressUnitOfWork,
     ) -> None:
         database = ledger._database
@@ -409,42 +400,22 @@ class MessageProcessor:
         self._participation: OrdinaryParticipationService | None = None
         self._observed_human_turns: OrderedDict[int, _ObservedHumanTurn] = OrderedDict()
         self._ordinary_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
-        self._people = people or PeopleRepository(database)
-        self._memories = memories or MemoryFactService(MemoryFactRepository(database))
-        self._memory_worker = memory_worker or MemoryWorker(
-            settings=settings,
-            jobs=MemoryJobRepository(database),
-            facts=self._memories,
-            ledger=self._ledger,
-            model_executor=chat._models,
-            concurrency=concurrency,
-        )
+        self._people = people
+        self._memory_worker = memory_worker
         self._autonomous = autonomous_groups
-        self._runtime_config = runtime_config or RuntimeConfigService(
-            settings=settings,
-            database=database,
-        )
-        self._turn_coordinator = turn_coordinator or chat._turn_coordinator
+        self._runtime_config = runtime_config
+        self._turn_coordinator = turn_coordinator
         self._admission_signals = admission_signals
         self._conversation_media = conversation_media
-        self._automation = automation_service
-        self._automation_repository = automation_repository
-        self._automation_worker = automation_worker
         self._commands = command_service
         self._direct_plugin_commands = direct_plugin_commands
-        self._event_publisher: LifecycleEventPublisher | None = None
         self._emoji_library = emoji_library
         self._canonical_ingress = canonical_ingress
         self._group_recovery = group_recovery
         self._canonical_uow = canonical_uow
-        if event_publisher is not None:
-            self.set_event_publisher(event_publisher)
-
-    def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
-        """Attach one notification bus to the complete direct-chat lifecycle."""
-
-        self._event_publisher = publisher
-        self._chat.set_event_publisher(publisher)
+        # One notification bus covers the complete direct-chat lifecycle.
+        self._event_publisher = event_publisher
+        chat.set_event_publisher(event_publisher)
 
     def set_participation(self, service: OrdinaryParticipationService) -> None:
         self._participation = service
@@ -583,8 +554,6 @@ class MessageProcessor:
         observed.ordinary_reason = reason
         observed.binding = binding
         worker = self._autonomous
-        if worker is None:
-            return await self._promote_observed_input(observed, binding, reason=reason)
 
         async def attempt() -> int:
             result = await self._promote_observed_input(observed, binding, reason=reason)
@@ -647,16 +616,14 @@ class MessageProcessor:
         on_committed: Callable[[ScopedAppendResult], None] | None,
     ) -> ProcessResult:
         """Keep input preparation and admission inside the foreground activity scope."""
-        if (
-            self._client_links is not None
-            and message.platform not in LOCAL_CLIENT_PLATFORMS
-            and self._client_links.is_request(message)
+        if message.platform not in LOCAL_CLIENT_PLATFORMS and self._client_links.is_request(
+            message
         ):
             link_response = await self._client_links.execute(getattr(sender, "bot", None), message)
             await sender.send(OutboundMessage(text=link_response))
             result = ProcessResult(True, sent_messages=1, reason="client_link")
             return result
-        if self._group_recovery is not None and self._group_recovery.is_enable_request(message):
+        if self._group_recovery.is_enable_request(message):
             limited = await self._rate_limiter.check(
                 user_id=message.sender.user_id,
                 group_id=message.group_id,
@@ -714,8 +681,7 @@ class MessageProcessor:
         private_policy = await self._effective_private_policy(message)
         direct_match = (
             self._direct_plugin_commands.match(message.text)
-            if self._direct_plugin_commands is not None
-            and admitted.provider not in LOCAL_CLIENT_PLATFORMS
+            if admitted.provider not in LOCAL_CLIENT_PLATFORMS
             else None
         )
         is_superuser = await self._person_is_superuser(message.person_id)
@@ -906,14 +872,10 @@ class MessageProcessor:
             source_event_id=record.id,
             conversation_id=record.canonical_conversation_id,
         )
-        if (
-            created
-            and (
-                message.attachments
-                or message.reply_attachments
-                or any(indexed_media_segments(message.reply_segments))
-            )
-            and self._conversation_media is not None
+        if created and (
+            message.attachments
+            or message.reply_attachments
+            or any(indexed_media_segments(message.reply_segments))
         ):
             media_gateway = (
                 cast(PlatformMediaGateway, sender)
@@ -924,7 +886,7 @@ class MessageProcessor:
                 message, media_gateway, source_segments=record.segments
             )
             self._conversation_media.submit(record.id, media_gateway, message=message)
-        if self._autonomous is not None and message.scope_type is ScopeType.GROUP:
+        if message.scope_type is ScopeType.GROUP:
             self._autonomous.observe_context(
                 message,
                 direct=bool(decision.should_respond or admin_candidate),
@@ -937,7 +899,7 @@ class MessageProcessor:
             coordinator_version=turn_token.version,
             transport_scope_key=(identity.key if identity.key != coordinator_key else None),
         )
-        if self._emoji_library is not None and created:
+        if created:
             self._emoji_library.submit(message, source_event_id=record.id)
 
         if not direct_turn:
@@ -996,8 +958,7 @@ class MessageProcessor:
                 and runtime_snapshot.conversation_policy().autonomous_enabled
                 and group_policy.autonomous_enabled
             ):
-                if self._autonomous is not None:
-                    self._autonomous.observe(message)
+                self._autonomous.observe(message)
             return ProcessResult(False, reason="group_observed")
 
         binding = None
@@ -1695,11 +1656,7 @@ class MessageProcessor:
             else None
         )
         with turn_detail("attachment_preparation"):
-            audio = (
-                await self._asr.prepare(message, gateway)
-                if self._asr is not None
-                else AudioInput(error="not_configured")
-            )
+            audio = await self._asr.prepare(message, gateway)
         if turn_token is not None and not self._turn_coordinator.is_current(turn_token):
             raise TurnInterruptedError("audio_source_superseded")
         if audio.transcript:
@@ -1766,12 +1723,11 @@ class MessageProcessor:
         limited = await self._rate_limiter.check(
             user_id=message.sender.user_id, group_id=message.group_id, category="ingress_drop"
         )
-        if limited.allowed and self._group_recovery is not None:
+        if limited.allowed:
             hint = await self._group_recovery.hint(getattr(sender, "bot", None), message, reason)
             if hint is not None:
                 await sender.send(OutboundMessage(text=hint))
                 return ProcessResult(True, sent_messages=1, reason="group_route_paused")
-        if limited.allowed:
             logger.info("canonical_ingress_dropped reason=%s", reason)
         return ProcessResult(False, reason=reason)
 

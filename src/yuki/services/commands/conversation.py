@@ -34,8 +34,8 @@ class ConversationCommands:
         model_executor: ModelExecutor,
         runtime_config: RuntimeConfigService,
         vision: VisionService | None,
-        automation_repository: AutomationRepository | None,
-        automation_worker: AutomationWorker | None,
+        automation_repository: AutomationRepository,
+        automation_worker: AutomationWorker,
     ) -> None:
         self._settings = settings
         self._conversation_scopes = conversation_scopes
@@ -71,26 +71,10 @@ class ConversationCommands:
         vision_busy = self._vision is not None and self._vision.busy
         vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
         vision_running = self._vision.running_count if self._vision is not None else 0
-        automation_count = (
-            await self._automation_repository.active_count()
-            if self._automation_repository is not None
-            else 0
-        )
-        automation_last_run = (
-            await self._automation_repository.latest_run_at()
-            if self._automation_repository is not None
-            else None
-        )
-        automation_next_run = (
-            await self._automation_repository.next_due_at()
-            if self._automation_repository is not None
-            else None
-        )
-        automation_worker_status = (
-            "运行中"
-            if self._automation_worker is not None and self._automation_worker.running
-            else "未运行"
-        )
+        automation_count = await self._automation_repository.active_count()
+        automation_last_run = await self._automation_repository.latest_run_at()
+        automation_next_run = await self._automation_repository.next_due_at()
+        automation_worker_status = "运行中" if self._automation_worker.running else "未运行"
         automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
         automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
         text = (

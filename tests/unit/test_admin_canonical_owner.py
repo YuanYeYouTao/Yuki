@@ -165,7 +165,7 @@ async def test_preferences_for_tg_person_do_not_require_a_qq_binding(database):
     event = inbound(outsider)
     changed = await execute(harness, event, CommandName.PREFERENCE, "set tone concise")
     assert "已设置" in changed.text
-    rows = await harness.processor._memories.list_preferences(person_id=outsider)
+    rows = await harness.processor._chat._memories.list_preferences(person_id=outsider)
     assert len(rows) == 1 and rows[0].content == "concise"
     assert rows[0].canonical_subject_person_id == outsider
     shown = await execute(harness, event, CommandName.PREFERENCE, "list")

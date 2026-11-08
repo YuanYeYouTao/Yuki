@@ -9,9 +9,11 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,14 +21,16 @@ import pytest_asyncio
 
 from tests.support.model_executor import require_model_executor
 from yuki.admin.config_service import RuntimeConfigService
+from yuki.asr.service import ASRService
 from yuki.config import Settings
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.messages import OutboundMessage, OutboundSendReceipt
 from yuki.llm.base import LLMProvider
 from yuki.llm.fake import FakeLLMProvider
-from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
 from yuki.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
 from yuki.memory.service import MemoryFactService
+from yuki.memory.worker import MemoryWorker
 from yuki.persistence.database import Database
 from yuki.persistence.repositories import (
     EventLedgerRepository,
@@ -44,6 +48,7 @@ from yuki.services.effect_gate import ConversationEffectGate
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolver
 from yuki.services.processor import DirectPluginCommandResolver, MessageProcessor
+from yuki.services.prompt_composer import PromptComposer
 from yuki.services.rate_limit import SlidingWindowRateLimiter
 from yuki.services.turn_coordinator import ConversationTurnCoordinator
 from yuki.services.vision_rate_limit import VisionRateLimiter
@@ -108,6 +113,38 @@ class MemorySender:
             platform_message_id=str(next(self._message_ids)),
             transport="test",
         )
+
+
+class _AbsentGroupRecovery:
+    """Production always wires native group recovery; the harness has no recovery route."""
+
+    def is_enable_request(self, message):
+        return False
+
+    async def enable(self, bot, message):
+        return None
+
+    async def hint(self, bot, message, reason):
+        return None
+
+
+class _ImmediateOrdinaryInput:
+    """Autonomous-group stand-in: no quiet window, ordinary input is promoted at once."""
+
+    def __init__(self):
+        self.tasks: set[asyncio.Task[int]] = set()
+
+    def observe(self, message, *, ordinary_attempt=None):
+        if ordinary_attempt is not None:
+            task = asyncio.create_task(ordinary_attempt())
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+
+    def observe_context(self, message, *, direct):
+        return None
+
+    def is_current_ordinary_input(self, message):
+        return True
 
 
 @dataclass(slots=True)
@@ -228,32 +265,43 @@ def build_harness(
         short_state=ShortState(dependencies["workspace_service"].store),
         observe_main_response=AsyncMock(),
         participation_runtime_context=AsyncMock(return_value=None),
+        memory_context=agent_tools._memory_context,
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
+        prompt_composer=PromptComposer(settings),
         conversation_scopes=conversation_scopes,
         effect_gate=effect_gate,
         turn_coordinator=turn_coordinator,
+        processing_status=SimpleNamespace(during=lambda **_: nullcontext()),
     )
     from tests.support.canonical_ingress import fixture_ingress
     from tests.support.client_identity import client_identity_service
     from yuki.admin.audit import AdminAuditService
     from yuki.admin.config_files import ConfigFileService
+    from yuki.admin.control_resolution import ControlAccess
     from yuki.admin.operations import AdminOperations
     from yuki.admin.permission_catalog import PermissionCatalogService
     from yuki.admin.queries import AdminQueries
+    from yuki.application.modules.automation import AutomationModule
     from yuki.memory.claim_processor import MemoryClaimProcessor
     from yuki.memory.event_extractor import MemoryEventExtractor
     from yuki.memory.mutation.service import MemoryMutationService
     from yuki.memory.rebuild.repository import MemoryRebuildRepository
     from yuki.memory.rebuild.service import MemoryRebuildService
+    from yuki.model_runtime.repository import ModelInvocationRepository
+    from yuki.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
+    from yuki.plugin_host.command_adapter import PluginCommandAdapter
+    from yuki.plugin_host.direct_command_router import DirectCommandRouter
     from yuki.plugin_host.discovery import PluginDiscovery
     from yuki.plugin_host.event_bus import PluginEventBus
     from yuki.plugin_host.extension_registry import ExtensionRegistry
     from yuki.plugin_host.loader import PluginLoader
     from yuki.plugin_host.manager import PluginManager
     from yuki.plugin_host.repository import PluginInstallationRepository
+    from yuki.runtime.work_repository import WorkRepository
     from yuki.services.admin.config_admin import ConfigAdminService
     from yuki.services.admin.memory_admin import MemoryAdminService
     from yuki.services.admin.preference_admin import PreferenceAdminService
+    from yuki.time.service import TimeContextService
     from yuki_plugin_sdk.testing import FakePluginContext
 
     audit = AdminAuditService(database)
@@ -272,6 +320,8 @@ def build_harness(
         ledger=ledger,
         runtime_config=runtime_config,
     )
+    extensions = ExtensionRegistry()
+    plugin_events = PluginEventBus()
     plugins = PluginManager(
         enabled=False,
         discovery=PluginDiscovery(
@@ -279,10 +329,25 @@ def build_harness(
         ),
         installations=PluginInstallationRepository(database),
         loader=PluginLoader(),
-        extensions=ExtensionRegistry(),
-        event_bus=PluginEventBus(),
+        extensions=extensions,
+        event_bus=plugin_events,
         context_factory=lambda manifest, _permissions: FakePluginContext(manifest.id),
     )
+    plugin_direct_commands = DirectCommandRouter(
+        bindings=settings.plugin_direct_command_bindings, registry=extensions, manager=plugins
+    )
+    automation = AutomationModule(
+        settings=settings,
+        database=database,
+        chat=chat,
+        runtime_config=runtime_config,
+        time_service=TimeContextService(default_timezone=settings.default_timezone),
+        admin_audit=audit,
+        conversation_scopes=conversation_scopes,
+        turns=turn_coordinator,
+        concurrency=concurrency,
+        work_repository=WorkRepository(database),
+    ).build()
     files = ConfigFileService(settings)
     operations = AdminOperations(
         database,
@@ -328,7 +393,17 @@ def build_harness(
         config_admin=ConfigAdminService(runtime_config),
         permission_catalog=PermissionCatalogService(config_registry=runtime_config.registry),
         vision_service=vision,
+        automation_service=automation.service,
+        automation_repository=automation.repository,
+        automation_worker=automation.worker,
         turn_coordinator=turn_coordinator,
+        plugin_commands=PluginCommandAdapter(
+            manager=plugins,
+            registry=extensions,
+            control=ControlAccess(database),
+            direct_commands=plugin_direct_commands,
+        ),
+        model_invocations=ModelInvocationRepository(database),
     )
     ingress = fixture_ingress(database)
     processor = MessageProcessor(
@@ -347,11 +422,36 @@ def build_harness(
         ),
         concurrency=concurrency,
         people=profiles,
-        memories=memories,
+        memory_worker=MemoryWorker(
+            settings=settings,
+            jobs=MemoryJobRepository(database),
+            facts=memories,
+            ledger=ledger,
+            model_executor=models,
+            concurrency=concurrency,
+        ),
+        autonomous_groups=_ImmediateOrdinaryInput(),
         runtime_config=runtime_config,
+        asr_service=ASRService(
+            settings=settings.asr,
+            provider=None,
+            resolver=MediaResolver(
+                max_download_bytes=settings.asr_max_download_bytes,
+                timeout_seconds=settings.asr_timeout_seconds,
+            ),
+        ),
+        conversation_media=SimpleNamespace(
+            prepare_message=lambda message, gateway, *, source_segments: message,
+            submit=lambda event_id, gateway, *, message: None,
+        ),
         command_service=command_service,
-        direct_plugin_commands=direct_plugin_commands,
+        direct_plugin_commands=direct_plugin_commands or plugin_direct_commands,
         turn_coordinator=turn_coordinator,
+        admission_signals=PluginAdmissionSignalAdapter(extensions),
+        event_publisher=plugin_events,
+        emoji_library=SimpleNamespace(submit=lambda message, *, source_event_id: None),
+        group_recovery=_AbsentGroupRecovery(),
+        client_links=SimpleNamespace(is_request=lambda message: False),
     )
     return Harness(
         settings,
