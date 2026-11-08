@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any
 
 from yuki.capabilities.results import ToolExecutionResult, process_receipt
@@ -35,6 +37,23 @@ class ResultCapture:
 current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
     "work_result_capture", default=None
 )
+
+# Read-only: a tool name kept in original durable records -> the current tool
+# whose receipt semantics it shares. Only readers of original receipts and
+# history consult it; a new call never resolves through it, and records keep
+# their original name. Retired names without a successor (local_device,
+# run_python, ...) are not aliases and keep their own reading.
+RECORDED_TOOL_NAMES: Mapping[str, str] = MappingProxyType(
+    {
+        "send_message": "send",
+        "web_read": "read_webpage",
+    }
+)
+
+
+def recorded_tool(name: str) -> str:
+    """The current tool whose semantics an originally recorded name carries."""
+    return RECORDED_TOOL_NAMES.get(name, name)
 
 
 def execution_finished(evidence: dict[str, Any]) -> bool:
@@ -66,6 +85,8 @@ def execution_evidence(
     body = value if isinstance(value, dict) else {}
     if isinstance(body.get("progress"), dict):
         body = body["progress"]
+    # The evidence keeps the original name; only its reading follows the map.
+    reading = recorded_tool(tool)
     artifacts: list[str] = []
     observed_event_ids: list[int] = []
 
@@ -82,7 +103,7 @@ def execution_evidence(
                 if isinstance(item.get("artifact_id"), str):
                     artifacts.append(item["artifact_id"])
                 if (
-                    tool in {"send", "send_message"}
+                    reading == "send"
                     and item.get("status") == "succeeded"
                     and type(item.get("event_id")) is int
                 ):
@@ -96,13 +117,13 @@ def execution_evidence(
         args = {}
     # local_device names only retained here to interpret original durable receipts.
     if (
-        tool in {"external_agent", "local_device"}
+        reading in {"external_agent", "local_device"}
         and isinstance(args, dict)
         and args.get("action") in {"list", "get"}
     ):
         side_effecting = False
     control: dict[str, Any] | None = None
-    if tool == "external_agent" and isinstance(args, dict):
+    if reading == "external_agent" and isinstance(args, dict):
         control = (
             body.get("permission_response", body)
             if args.get("action") == "respond"
@@ -119,7 +140,7 @@ def execution_evidence(
     delivered: list[str] = []
     caption_delivered = False
     delivered_message = False
-    if tool in {"send", "send_message"} and isinstance(args, dict):
+    if reading == "send" and isinstance(args, dict):
         parts = body.get("parts")
         steps = (
             parts
@@ -192,7 +213,7 @@ def execution_evidence(
         "tool": tool,
         **(
             {"action": args.get("action")}
-            if tool in {"external_agent", "local_device"} and isinstance(args, dict)
+            if reading in {"external_agent", "local_device"} and isinstance(args, dict)
             else {}
         ),
         "side_effecting": side_effecting,
@@ -431,8 +452,12 @@ def historical_evidence(
         result.update(ok=False, uncertain=True)
     elif result.get("status") in {"running", "queued", "waiting"}:
         result["pending"] = True
-    if isinstance(invocation, dict) and invocation.get("tool_id") == "external_agent":
-        result["tool"] = "external_agent"
+    if (
+        isinstance(invocation, dict)
+        and isinstance(invocation.get("tool_id"), str)
+        and recorded_tool(invocation["tool_id"]) == "external_agent"
+    ):
+        result["tool"] = invocation["tool_id"]
         if "action" in invocation:
             result.setdefault("action", invocation["action"])
     if state in {"prepared", "unknown"} and result.get("side_effecting") is not False:

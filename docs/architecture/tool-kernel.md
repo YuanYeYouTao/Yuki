@@ -335,3 +335,5 @@ direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入�
 - `read_memory(view=fact/evidence)` 保原scope与观察事实；`subagent_control(action=message)` 保原父子ID、ask/reply_to、运行中补充和resume区别。
 
 退役名称不接收新调用，也不注册新执行别名；旧已接受call/result_ref、参数hash、原ID、预算、unknown及原Provider输入继续只读恢复。工具声明变化只在合法新链生效。
+
+按工具名读取原回执与历史（效果证据、Work 步骤投影、owned run 归类）统一经 `runtime/effect_outcomes.py` 的只读 `RECORDED_TOOL_NAMES` 解析：原记录名映射到语义相同的现役工具，原记录保留原名，新调用不经它解析。没有后继的退役名（如 `local_device`、`run_python`）不是别名，按各自原事实读取。终端与环境工具经 `sandbox/client.py` 的 `MODEL_TOOL_RPC_METHODS` 得到 Manager RPC 方法；RPC 方法名与任务行 `{"tool": method}` 是 Manager wire 合同，不随模型工具改名。

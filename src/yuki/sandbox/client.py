@@ -4,23 +4,51 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
-from yuki.capabilities.executions import is_execution
 from yuki.domain.messages import ChatTool
-from yuki.sandbox.environment_tools import (
-    READ_TOOLS,
-    SANDBOX_TOOLS,
-    environment_tools,
-)
-from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
+from yuki.sandbox.environment_tools import EXECUTION_TOOLS, environment_tools
 
 if TYPE_CHECKING:
     from yuki.external_agents.local_device import LocalDeviceService
     from yuki.sandbox.task_repository import SandboxTaskRepository
+
+# Model tool -> Manager RPC method. Methods are the deployed Manager wire
+# protocol and the original task-row payload ``{"tool": method}``; renaming a
+# model tool changes only the keys here, never a method or a stored row.
+MODEL_TOOL_RPC_METHODS: Mapping[str, str] = MappingProxyType(
+    {
+        "terminal_exec": "terminal_exec",
+        "terminal_read": "terminal_read",
+        "terminal_control": "terminal_control",
+        "environment_status": "environment_status",
+        "environment_service": "environment_service",
+    }
+)
+# Submitted methods that may already have taken effect when no answer arrives.
+_MUTATING_METHODS = frozenset(
+    {
+        "terminal_exec",
+        "terminal_control",
+        "environment_service",
+        "workspace_copy",
+        "workspace_publish",
+    }
+)
+# Terminal methods whose settled receipt is staged for the owning Work.
+_TERMINAL_METHODS = frozenset(
+    {
+        "terminal_exec",
+        "terminal_read",
+        "terminal_control",
+        "environment_status",
+        "environment_service",
+    }
+)
 
 
 def sandbox_tools() -> tuple[ChatTool, ...]:
@@ -70,6 +98,7 @@ class SandboxClient:
         request_id: str,
         source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Call one Manager RPC ``name``; model tools arrive via MODEL_TOOL_RPC_METHODS."""
         if self.local_devices is not None:
             if name in {"terminal_exec", "environment_status"} and "device_id" in args:
                 return await self.local_devices.execute(
@@ -111,7 +140,7 @@ class SandboxClient:
                 if json.loads(row.progress_json).get("kind") == "external_agent":
                     return await self._native_terminal(name, args, request_id, source)
                 # Existing host-owned rows from before protocol 4 belong to the Manager.
-        execution = is_execution(name, args)
+        execution = name in EXECUTION_TOOLS
         wire_args = args
         if name == "terminal_exec" and source is not None and source.get("work_id"):
             wire_args = {**args, "env": {"YUKI_WORK_ID": source["work_id"]}}
@@ -126,6 +155,7 @@ class SandboxClient:
                 return {"error": "missing_task_source", "retryable": False}
             # Must commit before any socket write, including uncertain submissions.
             # Source never crosses into the execution container/Manager payload.
+            # ``name`` is the RPC method; the original row payload keeps it.
             prepared = await self.tasks.prepare(
                 request_id,
                 {"tool": name, "arguments": args},
@@ -209,16 +239,7 @@ class SandboxClient:
             return {
                 "error": "sandbox_unavailable",
                 "retryable": False,
-                "uncertain": submitted
-                and (
-                    name.startswith("acp_")
-                    or name
-                    in (
-                        (SANDBOX_TOOLS - READ_TOOLS)
-                        | (WORKSPACE_TOOLS - WORKSPACE_READ_TOOLS)
-                        | {"workspace_copy", "workspace_publish"}
-                    )
-                ),
+                "uncertain": submitted and (name.startswith("acp_") or name in _MUTATING_METHODS),
             }
 
     async def _native_terminal(
@@ -250,7 +271,7 @@ class SandboxClient:
         if (
             self.tasks is None
             or not result.get("run_id")
-            or (name not in SANDBOX_TOOLS and not name.startswith("acp_"))
+            or (name not in _TERMINAL_METHODS and not name.startswith("acp_"))
         ):
             return
         # Cursor views must stage the same terminal receipt as the durable outbox.

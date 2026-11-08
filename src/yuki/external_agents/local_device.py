@@ -165,6 +165,7 @@ class LocalDeviceService:
             existing = await self.tasks.get(request_id)
             target = {"device_id": device_id, "command": args["command"], "cwd": args.get("cwd")}
             run_id = str(uuid5(NAMESPACE_URL, f"yuki:local-terminal:{request_id}"))
+            # ``name`` is the Manager RPC method; the original row payload keeps it.
             row = await self.tasks.prepare(
                 request_id,
                 {"tool": name, "arguments": args},

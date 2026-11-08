@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuki.capabilities.executions import is_execution
 from yuki.client_api.errors import ClientError
 from yuki.client_api.pagination import decode_cursor
-from yuki.runtime.effect_outcomes import execution_finished, historical_evidence
+from yuki.runtime.effect_outcomes import execution_finished, historical_evidence, recorded_tool
 from yuki.runtime.work_schema_v1 import effects
 from yuki.runtime.work_wait_schema import waits
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
@@ -42,7 +42,8 @@ async def steps_token(session: AsyncSession, identity: str) -> tuple[int, str]:
 def public_step(row: Any, secret: bytes) -> dict[str, Any]:
     receipt = json.loads(row["receipt_json"])
     evidence = historical_evidence(receipt, state=row["state"], kind=row["kind"])
-    tool = receipt.get("invocation", {}).get("tool_id", evidence.get("tool", ""))
+    # Original receipts keep their recorded name; it is read through the history map.
+    tool = recorded_tool(receipt.get("invocation", {}).get("tool_id", evidence.get("tool", "")))
     if row["state"] == "prepared":
         status = "recorded"
     elif row["state"] == "failed":
@@ -66,7 +67,7 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         else ("search", "搜尋")
         if tool == "web_search"
         else ("web", "讀網頁")
-        if tool in {"read_webpage", "web_read"}
+        if tool == "read_webpage"
         else ("file", "讀取檔案")
         if tool in WORKSPACE_READ_TOOLS
         else ("file", "保存檔案")
@@ -80,7 +81,7 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         else ("memory", "記憶")
         if "memory" in tool
         else ("message", "傳送訊息")
-        if tool in {"send", "send_message"}
+        if tool == "send"
         else ("other", "其他")
     )
     if tool.startswith("terminal_") and evidence.get("step_label") in {"browser", "computer"}:
@@ -167,7 +168,7 @@ async def wait_view(
                     func.json_extract(effects.c.receipt_json, "$.outcome.run_id") == item["run_id"],
                 )
             )
-            names = set(tools)
+            names = {recorded_tool(name) for name in tools if isinstance(name, str)}
             summary["run_kind"] = (run_kind(item["run_id"], identity) if run_kind else None) or (
                 "terminal"
                 if "terminal_exec" in names
