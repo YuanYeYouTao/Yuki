@@ -207,6 +207,20 @@ def prepare_event_media(
     return tuple(items)
 
 
+def observed_identity(segment: Mapping[str, Any]) -> str:
+    """One original across observations: its platform handle, not a rotating signed URL.
+
+    Uses the same origin keys as ``attachment_origin``; ``url`` counts only when
+    the segment carries no other handle.
+    """
+    data = segment.get("data")
+    body = data if isinstance(data, Mapping) else {}
+    origin = attachment_origin({key: value for key, value in body.items() if key != "url"})
+    if origin == attachment_origin({}):
+        origin = attachment_origin(body)
+    return f"{segment.get('type')}:{origin}"
+
+
 async def observe_media_slots(
     session: AsyncSession,
     *,
@@ -216,11 +230,13 @@ async def observe_media_slots(
     segments: Sequence[dict[str, Any]],
     observed: Sequence[tuple[int, dict[str, Any]]],
 ) -> dict[str, int]:
-    """Append originals observed through this receive event after all of its slots.
+    """Give originals observed through this receive event a slot after all of its own.
 
     ``observed`` pairs the event's own segment position with one actually
-    returned media segment. The same snapshot keeps its slot; only this event's
-    own rows are read inside the writer.
+    returned media segment. The same original keeps its slot; a not yet cached
+    slot keeps the latest observed segment (a fresh signed URL), a cached one
+    keeps the segment its bytes came from. Only this event's rows are read.
+    Returns the slot of each observed segment snapshot.
     """
     existing = (
         await session.scalars(
@@ -229,8 +245,8 @@ async def observe_media_slots(
             )
         )
     ).all()
-    slots = {
-        row.source_snapshot_json: row.attachment_index
+    rows = {
+        observed_identity(json.loads(row.source_snapshot_json)): row
         for row in existing
         if row.source_snapshot_json is not None
     }
@@ -241,14 +257,13 @@ async def observe_media_slots(
         ]
     )
     now = datetime.now(UTC)
+    slots: dict[str, int] = {}
     for position, segment in observed:
         snapshot = segment_snapshot(segment)
-        if snapshot in slots:
-            continue
-        slots[snapshot] = following
-        data = segment.get("data")
-        session.add(
-            _media_item(
+        row = rows.get(observed_identity(segment))
+        if row is None:
+            data = segment.get("data")
+            row = _media_item(
                 event_id=event_id,
                 attachment_index=following,
                 conversation_id=conversation_id,
@@ -259,8 +274,12 @@ async def observe_media_slots(
                 snapshot=snapshot,
                 now=now,
             )
-        )
-        following += 1
+            session.add(row)
+            rows[observed_identity(segment)] = row
+            following += 1
+        elif row.cache_status == "uncached":
+            row.source_snapshot_json = snapshot
+        slots[snapshot] = row.attachment_index
     return slots
 
 

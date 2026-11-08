@@ -102,6 +102,16 @@ FIRST_LAYER = {
 }
 
 
+def _resigned(reply: dict, rkey: str) -> dict:
+    """The same nodes as a later get_forward_msg returns them: every media URL re-signed."""
+    text = json.dumps(reply, ensure_ascii=False).replace("rkey=signed-secret", rkey)
+    layer = json.loads(text)
+    image = layer["messages"][1]["message"][1]
+    assert image["type"] == "image"
+    image["data"]["url"] = f"https://multimedia.nt.qq.com.cn/download?{rkey}"
+    return layer
+
+
 def _revision() -> dict:
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=ROOT)
@@ -285,12 +295,31 @@ async def test_main_reads_first_forward_layer_and_views_inner_image_on_demand(da
     ]
     assert json.loads(rows[0].source_snapshot_json)["data"]["file"] == "inner-photo.png"
 
-    # A later read of the same snapshot keeps its slot (case 21).
-    again = await env.service.execute(
-        "read_chat", {"around": outer.id, "context": 0}, replace(env.context, call_id="again")
+    # QQ signs every get_forward_msg reply with a fresh URL for the same file. Re-reading
+    # keeps one slot per original and its numbering (case 21).
+    image_before = rows[0].source_snapshot_json
+    for round_number in (2, 3):
+        _answer_onebot(env, {"fwd-A": _resigned(FIRST_LAYER, f"rkey=round-{round_number}")})
+        again = await env.service.execute(
+            "read_chat",
+            {"around": outer.id, "context": 0},
+            replace(env.context, call_id=f"again-{round_number}"),
+        )
+        assert again["forwards"][0]["messages"][1]["attachments"] == [image, document]
+        rows = await _media_rows(database, outer.id)
+        assert [(row.attachment_index, row.kind) for row in rows] == [(3, "image"), (4, "file")]
+        # The cached image keeps the segment its bytes came from; the uncached file
+        # keeps the latest observed URL.
+        assert rows[0].cache_status == "cached" and rows[0].source_snapshot_json == image_before
+        assert f"rkey=round-{round_number}" in rows[1].source_snapshot_json
+    env.bot.calls.clear()
+    viewed_again = await env.service.workspace_service.execute(
+        "view_file",
+        {"event_id": outer.id, "attachment": 3, "question": "再看一次"},
+        request_id="view-after-resigned-reads",
     )
-    assert again["forwards"][0]["messages"][1]["attachments"][0]["attachment"] == 3
-    assert len(await _media_rows(database, outer.id)) == 2
+    assert viewed_again["sha256"] == viewed["sha256"]
+    assert not any(action == "get_image" for action, _ in env.bot.calls)
 
     # Browsing and neighbours never reach the gateway (case 1).
     env.bot.calls.clear()

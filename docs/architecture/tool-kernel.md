@@ -324,7 +324,9 @@ forward 按原位置（`segment`）一组，给出第一层节点的作者名、
 events 与各组状态。取消原样传播。
 
 内层图片、视频、文件、语音不下载、不读取，作为 E 下的观察附件槽登记（与未入账引用附件同一
-`source_snapshot_json` 机制，序号接在 E 已有槽位之后，相同 segment 复用原槽位），结果按 read_chat
+`source_snapshot_json` 机制，序号接在 E 已有槽位之后）。同一原件按 `attachment_origin` 的平台句柄
+（file／file_id／media_id，不含每次重签的 `url`）复用原槽位与序号；尚未缓存的槽位就地保存最新观察
+到的 segment（新签名 URL），已缓存或已过期的槽位保留原 segment。结果按 read_chat
 现行附件形状给 `attachment` 序号；模型用 `view_file(event_id=E, attachment=N)` 按需读取，下载沿原接收
 连接与 24 小时缓存。写槽位在网络读取之后的短 writer 中只核 E 本身仍是 keeper；E 已被清退返回
 `history_source_changed`。结果不带图片、平台定位或账号号码，完整投影沿共同预算／artifact 链处理，
