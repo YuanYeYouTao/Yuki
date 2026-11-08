@@ -209,7 +209,10 @@ class CanonicalIngressUnitOfWork:
             if existing is not None:
                 original_parts = json.loads(existing.segments_json)
                 if (
-                    existing.author_account_id != admitted.author_account_id
+                    existing.author_kind != AuthorKind.ACCOUNT.value
+                    or existing.author_person_id is not None
+                    or existing.author_presence_id is not None
+                    or existing.author_account_id != admitted.author_account_id
                     or existing.reply_to_message_id != message.reply_to_message_id
                     or _native_payload(original_parts, existing.content)
                     != _native_payload(segments, message.text)
@@ -217,19 +220,21 @@ class CanonicalIngressUnitOfWork:
                     raise CanonicalIdentityError("receipt_conflict")
                 require_compatible_v2_live(
                     existing,
-                    scope=scope,
-                    conversation_id=None,
-                    presence_id=cast(str, admitted.presence_id),
-                    origin_key=message.ingress_key,
-                    sender_user_id=message.sender.user_id,
-                    direction="inbound",
-                    event_kind="message",
-                    content=existing.content,
-                    segments=original_parts,
-                    timestamp=message.occurred_at or existing.occurred_at,
-                    author_kind=AuthorKind.ACCOUNT.value,
-                    author_person_id=None,
-                    author_presence_id=None,
+                    ChatEventModel(
+                        canonical_conversation_id=None,
+                        ingress_presence_id=admitted.presence_id,
+                        bot_user_id=scope.bot_user_id,
+                        origin_key=message.ingress_key,
+                        sender_user_id=message.sender.user_id,
+                        direction="inbound",
+                        event_kind="message",
+                        content=existing.content,
+                        segments_json=existing.segments_json,
+                        occurred_at=message.occurred_at,
+                        scope_type=scope.scope_type.value,
+                        group_id=scope.group_id,
+                        private_peer_user_id=scope.private_peer_user_id,
+                    ),
                     receipt=await _load_receipt(
                         session,
                         presence_id=cast(str, admitted.presence_id),
@@ -237,7 +242,7 @@ class CanonicalIngressUnitOfWork:
                         event_type=message.event_type,
                         ingress_key=message.ingress_key,
                     ),
-                    external_event_type=message.event_type,
+                    event_type=message.event_type,
                 )
                 return _event_record(existing, segments=tuple(original_parts))
             row = ChatEventModel(
@@ -764,7 +769,6 @@ async def _reuse_claimed_inbound(
     if _native_payload(original_segments, existing.content) == _native_payload(segments, content):
         # The original receipt owns the accepted author and display snapshot,
         # even after account retirement, transfer or a profile observation.
-        segments = original_segments
         normalized_segments = normalize_live_json(existing.segments_json)
         content = existing.content
     scope = replace(message, conversation_id=conversation.id).scope(
@@ -772,22 +776,23 @@ async def _reuse_claimed_inbound(
     )
     require_compatible_v2_live(
         existing,
-        scope=scope,
-        conversation_id=conversation.id,
-        presence_id=admitted.presence_id,
-        origin_key=message.ingress_key,
-        sender_user_id=message.sender.user_id,
-        direction="inbound",
-        event_kind="message",
-        content=content,
-        segments=segments,
-        normalized_segments=normalized_segments,
-        timestamp=message.occurred_at or existing.occurred_at,
-        author_kind=existing.author_kind,
-        author_person_id=existing.author_person_id,
-        author_presence_id=existing.author_presence_id,
+        ChatEventModel(
+            canonical_conversation_id=conversation.id,
+            ingress_presence_id=admitted.presence_id,
+            bot_user_id=scope.bot_user_id,
+            origin_key=message.ingress_key,
+            sender_user_id=message.sender.user_id,
+            direction="inbound",
+            event_kind="message",
+            content=content,
+            occurred_at=message.occurred_at,
+            scope_type=scope.scope_type.value,
+            group_id=scope.group_id,
+            private_peer_user_id=scope.private_peer_user_id,
+        ),
         receipt=receipt,
-        external_event_type=message.event_type,
+        event_type=message.event_type,
+        normalized_segments=normalized_segments,
     )
     return ScopedAppendResult(
         event=_event_record(existing, segments=tuple(original_segments)),

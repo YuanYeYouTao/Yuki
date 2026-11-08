@@ -224,11 +224,7 @@ class ScopedEventLedgerUnitOfWork:
         reply_to_message_id: str | None = None,
         reply_to_event_id: int | None = None,
         occurred_at: datetime | None = None,
-        sender_nickname: str = "",
-        sender_group_card: str = "",
         origin: str = "user_message",
-        automation_id: int | None = None,
-        automation_run_id: int | None = None,
         event_kind: str = "message",
         source_plugin_id: str | None = None,
         external_source: str | None = None,
@@ -245,7 +241,6 @@ class ScopedEventLedgerUnitOfWork:
         prepared: ScopedEventPreparation | None = None,
     ) -> ScopedAppendResult:
         """Record confirmed outbound or external facts using their original entry."""
-        timestamp = occurred_at
         observed_at = datetime.now(UTC)
         if prepared is None:
             if session is not None:
@@ -256,66 +251,57 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 prepared_terms=prepared_terms,
             )
-        append = partial(
-            self._append_canonical,
-            scope=scope,
+        # The candidate row is both what a fresh append stores and what an
+        # existing event must match. Without occurred_at it accepts the original.
+        row = ChatEventModel(
+            bot_user_id=scope.bot_user_id,
             origin_key=origin_key,
             native_message_id=native_message_id,
+            scope_type=scope.scope_type.value,
+            group_id=scope.group_id,
+            private_peer_user_id=scope.private_peer_user_id,
             sender_user_id=sender_user_id,
             direction=direction,
-            content=content,
-            segments=segments,
-            reply_to_message_id=reply_to_message_id,
-            reply_to_event_id=reply_to_event_id,
-            timestamp=timestamp,
-            observed_at=observed_at,
-            sender_nickname=sender_nickname,
-            sender_group_card=sender_group_card,
-            origin=origin,
-            automation_id=automation_id,
-            automation_run_id=automation_run_id,
             event_kind=event_kind,
             source_plugin_id=source_plugin_id,
             external_source=external_source,
             external_event_key=external_event_key,
             external_event_type=external_event_type,
-            external_payload=external_payload,
+            external_payload_json=prepared.external_payload_json,
             external_target_id=external_target_id,
+            content=content,
+            segments_json=prepared.segments_json,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_event_id=reply_to_event_id,
+            origin=origin[:32],
             caused_by_event_id=caused_by_event_id,
+            occurred_at=occurred_at,
+            observed_at=observed_at,
+            canonical_event_id=prepared.canonical_event_id,
+            suppression_status="keeper",
+        )
+        append = partial(
+            self._append_canonical,
+            row=row,
+            scope=scope,
+            segments=segments,
+            external_payload=external_payload,
             identity_binding_id=identity_binding_id,
             space_binding_id=space_binding_id,
             source_event_id=source_event_id,
             prepared_terms=prepared.terms,
-            prepared_segments_json=prepared.segments_json,
-            prepared_external_json=prepared.external_payload_json,
-            canonical_event_id=prepared.canonical_event_id,
         )
         if session is not None:
-            result = await append(session)
-            assert result is not None
-            return result
+            return await append(session)
         if scope.conversation_id is not None and scope.presence_id is not None:
             async with self._database.read_session() as reader:
                 await reader.execute(text("BEGIN"))
-                existing, _ = await self._find_existing_live(
-                    reader,
-                    scope=scope,
-                    presence_id=scope.presence_id,
-                    origin_key=origin_key,
-                    event_type=(external_event_type or "message")[:64],
-                    source_plugin_id=source_plugin_id,
-                    external_event_key=external_event_key,
-                    external_target_id=external_target_id,
-                    event_kind=event_kind,
-                )
+                existing, _ = await self._find_existing_live(reader, scope, row, scope.presence_id)
                 if existing is not None:
-                    result = await append(reader, read_only=True)
-                    assert result is not None
-                    return result
+                    # Same snapshot: the full path finds and checks this row again.
+                    return await append(reader)
         async with self._database.immediate_session() as writer:
-            result = await append(writer)
-            assert result is not None
-            return result
+            return await append(writer)
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:
         normalized = summary.strip()[:6000]
@@ -602,68 +588,47 @@ class ScopedEventLedgerUnitOfWork:
     async def _find_existing_live(
         self,
         session: AsyncSession,
-        *,
         scope: ConversationScope,
+        row: ChatEventModel,
         presence_id: str,
-        origin_key: str | None,
-        event_type: str,
-        source_plugin_id: str | None = None,
-        external_event_key: str | None = None,
-        external_target_id: str | None = None,
-        event_kind: str = "message",
     ) -> tuple[ChatEventModel | None, CanonicalEventReceiptModel | None]:
         receipt = (
             await transport_receipt(
                 session,
                 presence_id=presence_id,
                 scope=scope,
-                event_type=event_type,
-                ingress_key=origin_key,
+                event_type=(row.external_event_type or "message")[:64],
+                ingress_key=row.origin_key,
             )
-            if origin_key is not None
+            if row.origin_key is not None
             else None
         )
         if receipt is not None:
             claimed = await load_claimed_keeper(session, receipt.canonical_event_id)
             return require_claimed_event(receipt, claimed), receipt
-        plugin_external = (
-            event_kind == "external_event" or bool(source_plugin_id) or bool(external_event_key)
-        )
-        if plugin_external:
-            return await self._find_existing_plugin_external(
-                session,
-                scope=scope,
-                source_plugin_id=source_plugin_id,
-                external_event_key=external_event_key,
-                external_target_id=external_target_id,
-            ), None
+        if row.event_kind == "external_event" or row.source_plugin_id or row.external_event_key:
+            return await self._find_existing_plugin_external(session, scope, row), None
         # Canonical-only schemas require a non-null event ID for every ledger
         # row. A receipt miss cannot be rescued by a legacy NULL row.
         return None, None
 
     async def _find_existing_plugin_external(
-        self,
-        session: AsyncSession,
-        *,
-        scope: ConversationScope,
-        source_plugin_id: str | None,
-        external_event_key: str | None,
-        external_target_id: str | None,
+        self, session: AsyncSession, scope: ConversationScope, row: ChatEventModel
     ) -> ChatEventModel | None:
         """Reuse by the unique external key. Never invent a receipt or pick first-row."""
 
-        if not source_plugin_id or not external_event_key or not external_target_id:
+        if not row.source_plugin_id or not row.external_event_key or not row.external_target_id:
             raise CanonicalIdentityError("receipt_conflict")
         rows = list(
             (
                 await session.scalars(
                     select(ChatEventModel).where(
                         ChatEventModel.event_kind == "external_event",
-                        ChatEventModel.source_plugin_id == source_plugin_id,
-                        ChatEventModel.external_event_key == external_event_key,
+                        ChatEventModel.source_plugin_id == row.source_plugin_id,
+                        ChatEventModel.external_event_key == row.external_event_key,
                         ChatEventModel.canonical_conversation_id == scope.conversation_id,
                         ChatEventModel.scope_type == scope.scope_type.value,
-                        ChatEventModel.external_target_id == external_target_id,
+                        ChatEventModel.external_target_id == row.external_target_id,
                     )
                 )
             ).all()
@@ -672,59 +637,29 @@ class ScopedEventLedgerUnitOfWork:
             raise CanonicalIdentityError("receipt_conflict")
         return rows[0] if rows else None
 
-    async def _load_receipt_claimed_event(
-        self,
-        session: AsyncSession,
-        *,
-        scope: ConversationScope,
-        presence_id: str,
-        event_type: str,
-        origin_key: str | None,
-    ) -> tuple[CanonicalEventReceiptModel | None, ChatEventModel | None]:
-        receipt = (
-            await transport_receipt(
-                session,
-                presence_id=presence_id,
-                scope=scope,
-                event_type=event_type,
-                ingress_key=origin_key,
-            )
-            if origin_key is not None
-            else None
-        )
-        if receipt is None:
-            return None, None
-        claimed = await load_claimed_keeper(session, receipt.canonical_event_id)
-        return receipt, require_claimed_event(receipt, claimed)
-
-    async def _require_causal_source(
-        self,
-        session: AsyncSession,
-        *,
-        conversation_id: str,
-        caused_by_event_id: int | None,
-        direction: Literal["outbound", "external"],
-        event_kind: str,
-        origin: str,
-    ) -> None:
+    async def _require_causal_source(self, session: AsyncSession, row: ChatEventModel) -> None:
         """Validate durable causality before appending a proactive plugin reply."""
 
         plugin_outbound = (
-            origin == "plugin_background" and direction == "outbound" and event_kind == "message"
+            row.origin == "plugin_background"
+            and row.direction == "outbound"
+            and row.event_kind == "message"
         )
-        if plugin_outbound and caused_by_event_id is None:
+        if plugin_outbound and row.caused_by_event_id is None:
             raise CanonicalIdentityError("causal_source_required")
-        if caused_by_event_id is None:
+        if row.caused_by_event_id is None:
             return
         task_outbound = (
-            origin == "system_task" and direction == "outbound" and event_kind == "message"
+            row.origin == "system_task"
+            and row.direction == "outbound"
+            and row.event_kind == "message"
         )
         if not plugin_outbound and not task_outbound:
             raise CanonicalIdentityError("causal_source_not_allowed")
-        source = await session.get(ChatEventModel, caused_by_event_id)
+        source = await session.get(ChatEventModel, row.caused_by_event_id)
         if (
             source is None
-            or source.canonical_conversation_id != conversation_id
+            or source.canonical_conversation_id != row.canonical_conversation_id
             or (
                 plugin_outbound
                 and (
@@ -738,162 +673,24 @@ class ScopedEventLedgerUnitOfWork:
         ):
             raise CanonicalIdentityError("causal_source_invalid")
 
-    def _require_compatible_live(
-        self,
-        existing: ChatEventModel,
-        *,
-        scope: ConversationScope,
-        conversation_id: str,
-        presence_id: str,
-        origin_key: str | None,
-        sender_user_id: str,
-        direction: Literal["outbound", "external"],
-        event_kind: str,
-        content: str,
-        segments: tuple[dict[str, Any], ...],
-        timestamp: datetime,
-        author_kind: str,
-        author_person_id: str | None,
-        author_presence_id: str | None,
-        receipt: CanonicalEventReceiptModel | None,
-        external_event_type: str | None,
-        source_plugin_id: str | None = None,
-        external_event_key: str | None = None,
-        external_target_id: str | None = None,
-        external_payload: dict[str, Any] | None = None,
-        caused_by_event_id: int | None = None,
-    ) -> None:
-        require_compatible_v2_live(
-            existing,
-            scope=scope,
-            conversation_id=conversation_id,
-            presence_id=presence_id,
-            origin_key=origin_key,
-            sender_user_id=sender_user_id,
-            direction=direction,
-            event_kind=event_kind,
-            content=content,
-            segments=segments,
-            timestamp=timestamp,
-            author_kind=author_kind,
-            author_person_id=author_person_id,
-            author_presence_id=author_presence_id,
-            receipt=receipt,
-            external_event_type=external_event_type,
-        )
-        if existing.caused_by_event_id != caused_by_event_id:
-            raise CanonicalIdentityError("receipt_conflict")
-        if event_kind != "external_event":
-            return
-        incoming_payload = (
-            json.dumps(external_payload, ensure_ascii=False, separators=(",", ":"))
-            if external_payload is not None
-            else None
-        )
-        if (
-            existing.source_plugin_id != source_plugin_id
-            or existing.external_event_key != external_event_key
-            or existing.external_target_id != external_target_id
-            or normalize_live_json(existing.external_payload_json)
-            != normalize_live_json(incoming_payload)
-        ):
-            raise CanonicalIdentityError("receipt_conflict")
-
-    async def _reuse_identical_live(
-        self,
-        session: AsyncSession,
-        existing: ChatEventModel,
-        *,
-        scope: ConversationScope,
-        conversation: CanonicalConversationModel,
-        presence_id: str,
-        origin_key: str | None,
-        sender_user_id: str,
-        direction: Literal["outbound", "external"],
-        event_kind: str,
-        content: str,
-        segments: tuple[dict[str, Any], ...],
-        timestamp: datetime | None,
-        receipt: CanonicalEventReceiptModel | None,
-        external_event_type: str | None,
-        source_plugin_id: str | None = None,
-        external_event_key: str | None = None,
-        external_target_id: str | None = None,
-        external_payload: dict[str, Any] | None = None,
-        caused_by_event_id: int | None = None,
-    ) -> ScopedAppendResult:
-        self._require_compatible_live(
-            existing,
-            scope=scope,
-            conversation_id=conversation.id,
-            presence_id=presence_id,
-            origin_key=origin_key,
-            sender_user_id=sender_user_id,
-            direction=direction,
-            event_kind=event_kind,
-            content=content,
-            segments=segments,
-            timestamp=timestamp or existing.occurred_at,
-            author_kind=existing.author_kind,
-            author_person_id=existing.author_person_id,
-            author_presence_id=existing.author_presence_id,
-            receipt=receipt,
-            external_event_type=external_event_type,
-            source_plugin_id=source_plugin_id,
-            external_event_key=external_event_key,
-            external_target_id=external_target_id,
-            external_payload=external_payload,
-            caused_by_event_id=caused_by_event_id,
-        )
-        return ScopedAppendResult(
-            event=_event_record(existing),
-            scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
-            created=False,
-        )
-
     async def _append_canonical(
         self,
         session: AsyncSession,
         *,
+        row: ChatEventModel,
         scope: ConversationScope,
-        origin_key: str | None,
-        native_message_id: str | None = None,
-        sender_user_id: str,
-        direction: Literal["outbound", "external"],
-        content: str,
         segments: tuple[dict[str, Any], ...],
-        reply_to_message_id: str | None,
-        reply_to_event_id: int | None,
-        timestamp: datetime | None,
-        observed_at: datetime,
-        sender_nickname: str,
-        sender_group_card: str,
-        origin: str,
-        automation_id: int | None,
-        automation_run_id: int | None,
-        event_kind: str,
-        source_plugin_id: str | None,
-        external_source: str | None,
-        external_event_key: str | None,
-        external_event_type: str | None,
         external_payload: dict[str, Any] | None,
-        external_target_id: str | None,
-        caused_by_event_id: int | None,
-        identity_binding_id: str | None = None,
-        space_binding_id: str | None = None,
-        source_event_id: int | None = None,
+        identity_binding_id: str | None,
+        space_binding_id: str | None,
+        source_event_id: int | None,
         prepared_terms: tuple[str, ...],
-        prepared_segments_json: str,
-        prepared_external_json: str | None,
-        canonical_event_id: str,
-        read_only: bool = False,
-    ) -> ScopedAppendResult | None:
+    ) -> ScopedAppendResult:
         from sqlalchemy.exc import IntegrityError
 
         presence = await session.get(PresenceModel, scope.presence_id)
         if presence is None:
             raise CanonicalIdentityError("no_presence")
-        presence_id = presence.id
         if scope.conversation_id is not None:
             original = await session.get(CanonicalConversationModel, scope.conversation_id)
             if original is None:
@@ -904,9 +701,13 @@ class ScopedEventLedgerUnitOfWork:
 
                 original_entry = (
                     binding is not None
-                    and direction == "outbound"
+                    and row.direction == "outbound"
                     and await event_entry_matches(
-                        session, original, binding, presence, source_event_id or caused_by_event_id
+                        session,
+                        original,
+                        binding,
+                        presence,
+                        source_event_id or row.caused_by_event_id,
                     )
                 )
                 if (
@@ -929,8 +730,7 @@ class ScopedEventLedgerUnitOfWork:
                     SpaceBindingModel, original.space_binding_id or space_binding_id
                 )
                 if (
-                    scope.scope_type is not ScopeType.GROUP
-                    or entry_space_binding is None
+                    entry_space_binding is None
                     or entry_space_binding.space_id != original.space_id
                     or entry_space_binding.platform != presence.platform
                     or entry_space_binding.external_space_id != scope.group_id
@@ -967,20 +767,15 @@ class ScopedEventLedgerUnitOfWork:
             else:
                 person_binding = await session.get(IdentityBindingModel, identity_binding_id)
                 if (
-                    direction != "outbound"
+                    row.direction != "outbound"
                     or person_binding is None
                     or person_binding.platform != presence.platform
                     or person_binding.external_account_id != scope.private_peer_user_id
                 ):
                     raise CanonicalIdentityError("canonical_owner_mismatch")
-                person = (
-                    None
-                    if person_binding is None
-                    else await session.get(CanonicalPersonModel, person_binding.person_id)
-                )
+                person = await session.get(CanonicalPersonModel, person_binding.person_id)
                 if person is None:
                     raise CanonicalIdentityError("no_person")
-                assert person_binding is not None
                 hydrated = await ensure_canonical_conversation(
                     session,
                     kind="private",
@@ -995,189 +790,84 @@ class ScopedEventLedgerUnitOfWork:
             conversation_id=hydrated.conversation_id,
             key=f"conversation:{hydrated.conversation_id}",
         )
-        receipt_event_type = (external_event_type or "message")[:64]
-        existing, receipt = await self._find_existing_live(
-            session,
-            scope=scope,
-            presence_id=presence_id,
-            origin_key=origin_key,
-            event_type=receipt_event_type,
-            source_plugin_id=source_plugin_id,
-            external_event_key=external_event_key,
-            external_target_id=external_target_id,
-            event_kind=event_kind,
-        )
+        row.canonical_conversation_id = hydrated.conversation_id
+        row.ingress_presence_id = presence.id
+        existing, receipt = await self._find_existing_live(session, scope, row, presence.id)
         conversation = await session.get(CanonicalConversationModel, hydrated.conversation_id)
         if conversation is None:
             raise CanonicalIdentityError("unclassified")
-        await self._require_causal_source(
-            session,
-            conversation_id=conversation.id,
-            caused_by_event_id=caused_by_event_id,
-            direction=direction,
-            event_kind=event_kind,
-            origin=origin,
-        )
-        if existing is not None:
-            return await self._reuse_identical_live(
-                session,
-                existing,
-                scope=scope,
-                conversation=conversation,
-                presence_id=presence_id,
-                origin_key=origin_key,
-                sender_user_id=sender_user_id,
-                direction=direction,
-                event_kind=event_kind,
-                content=content,
-                segments=segments,
-                timestamp=timestamp,
-                receipt=receipt,
-                external_event_type=external_event_type,
-                source_plugin_id=source_plugin_id,
-                external_event_key=external_event_key,
-                external_target_id=external_target_id,
-                external_payload=external_payload,
-                caused_by_event_id=caused_by_event_id,
-            )
-        if read_only:
-            return None
+        await self._require_causal_source(session, row)
         plugin_external = (
-            event_kind == "external_event"
-            or direction == "external"
-            or bool(source_plugin_id)
-            or bool(external_source)
-            or bool(external_event_key)
+            row.event_kind == "external_event"
+            or row.direction == "external"
+            or bool(row.source_plugin_id)
+            or bool(row.external_source)
+            or bool(row.external_event_key)
         )
-        if not plugin_external and origin_key is not None:
+        receipt_event_type = (row.external_event_type or "message")[:64]
+        if existing is None and not plugin_external and row.origin_key is not None:
             try:
                 async with session.begin_nested():
                     session.add(
                         CanonicalEventReceiptModel(
-                            ingress_presence_id=presence_id,
+                            ingress_presence_id=presence.id,
                             ingress_account_id=presence.account_id,
                             transport_namespace=transport_namespace(scope),
                             event_type=receipt_event_type,
-                            ingress_key=origin_key,
-                            canonical_event_id=canonical_event_id,
-                            created_at=observed_at,
-                            observed_at=observed_at,
+                            ingress_key=row.origin_key,
+                            canonical_event_id=row.canonical_event_id,
+                            created_at=row.observed_at,
+                            observed_at=row.observed_at,
                         )
                     )
                     await session.flush()
             except IntegrityError as exc:
-                raced_receipt, raced = await self._load_receipt_claimed_event(
-                    session,
-                    scope=scope,
-                    presence_id=presence_id,
-                    event_type=receipt_event_type,
-                    origin_key=origin_key,
-                )
-                if raced_receipt is None or raced is None:
+                existing, receipt = await self._find_existing_live(session, scope, row, presence.id)
+                if existing is None:
                     raise CanonicalIdentityError("receipt_conflict") from exc
-                return await self._reuse_identical_live(
-                    session,
-                    raced,
-                    scope=scope,
-                    conversation=conversation,
-                    presence_id=presence_id,
-                    origin_key=origin_key,
-                    sender_user_id=sender_user_id,
-                    direction=direction,
-                    event_kind=event_kind,
-                    content=content,
-                    segments=segments,
-                    timestamp=timestamp,
-                    receipt=raced_receipt,
-                    external_event_type=external_event_type,
-                    source_plugin_id=source_plugin_id,
-                    external_event_key=external_event_key,
-                    external_target_id=external_target_id,
-                    external_payload=external_payload,
-                    caused_by_event_id=caused_by_event_id,
-                )
-        await require_reply_source(
-            session, conversation_id=conversation.id, reply_to_event_id=reply_to_event_id
-        )
-        row = ChatEventModel(
-            bot_user_id=scope.bot_user_id,
-            origin_key=origin_key,
-            native_message_id=native_message_id,
-            scope_type=scope.scope_type.value,
-            group_id=scope.group_id,
-            private_peer_user_id=scope.private_peer_user_id,
-            sender_user_id=sender_user_id,
-            sender_nickname=sender_nickname[:128],
-            sender_group_card=sender_group_card[:128],
-            direction=direction,
-            event_kind=event_kind,
-            source_plugin_id=source_plugin_id,
-            external_source=external_source,
-            external_event_key=external_event_key,
-            external_event_type=external_event_type,
-            external_payload_json=prepared_external_json,
-            external_target_id=external_target_id,
-            content=content,
-            visual_summary="",
-            segments_json=prepared_segments_json,
-            reply_to_message_id=reply_to_message_id,
-            reply_to_event_id=reply_to_event_id,
-            origin=origin[:32],
-            automation_id=automation_id,
-            automation_run_id=automation_run_id,
-            caused_by_event_id=caused_by_event_id,
-            occurred_at=timestamp or observed_at,
-            observed_at=observed_at,
-        )
-        trip("before_event_shadow")
-        row.author_kind = AuthorKind.SYSTEM.value if plugin_external else AuthorKind.YUKI.value
-        row.author_person_id = None
-        row.author_account_id = None
-        row.author_presence_id = None if plugin_external else presence.id
-        row.canonical_event_id = canonical_event_id
-        row.canonical_conversation_id = hydrated.conversation_id
-        row.suppression_status = "keeper"
-        row.ingress_presence_id = presence_id
-        try:
-            if plugin_external:
-                async with session.begin_nested():
+        if existing is None:
+            await require_reply_source(
+                session, conversation_id=conversation.id, reply_to_event_id=row.reply_to_event_id
+            )
+            trip("before_event_shadow")
+            row.author_kind = AuthorKind.SYSTEM.value if plugin_external else AuthorKind.YUKI.value
+            row.author_presence_id = None if plugin_external else presence.id
+            row.occurred_at = row.occurred_at or row.observed_at
+            try:
+                if plugin_external:
+                    async with session.begin_nested():
+                        session.add(row)
+                        await session.flush()
+                else:
                     session.add(row)
                     await session.flush()
-            else:
-                session.add(row)
-                await session.flush()
-        except IntegrityError as exc:
-            if not plugin_external:
-                raise
-            raced = await self._find_existing_plugin_external(
-                session,
-                scope=scope,
-                source_plugin_id=source_plugin_id,
-                external_event_key=external_event_key,
-                external_target_id=external_target_id,
+            except IntegrityError as exc:
+                if not plugin_external:
+                    raise
+                existing = await self._find_existing_plugin_external(session, scope, row)
+                if existing is None:
+                    raise CanonicalIdentityError("receipt_conflict") from exc
+        if existing is not None:
+            # Same key, same event: reuse it; anything else conflicts. The
+            # original receipt keeps the author it accepted.
+            require_compatible_v2_live(
+                existing, row, receipt=receipt, event_type=receipt_event_type
             )
-            if raced is None:
-                raise CanonicalIdentityError("receipt_conflict") from exc
-            return await self._reuse_identical_live(
-                session,
-                raced,
-                scope=scope,
-                conversation=conversation,
-                presence_id=presence_id,
-                origin_key=origin_key,
-                sender_user_id=sender_user_id,
-                direction=direction,
-                event_kind=event_kind,
-                content=content,
-                segments=segments,
-                timestamp=timestamp,
-                receipt=None,
-                external_event_type=external_event_type,
-                source_plugin_id=source_plugin_id,
-                external_event_key=external_event_key,
-                external_target_id=external_target_id,
-                external_payload=external_payload,
-                caused_by_event_id=caused_by_event_id,
+            if existing.caused_by_event_id != row.caused_by_event_id or (
+                row.event_kind == "external_event"
+                and (
+                    existing.source_plugin_id != row.source_plugin_id
+                    or existing.external_event_key != row.external_event_key
+                    or existing.external_target_id != row.external_target_id
+                    or normalize_live_json(existing.external_payload_json)
+                    != normalize_live_json(row.external_payload_json)
+                )
+            ):
+                raise CanonicalIdentityError("receipt_conflict")
+            return ScopedAppendResult(
+                event=_event_record(existing),
+                scope=await hydrate_scope_state_from_canonical(session, scope, conversation),
+                created=False,
             )
         await replace_event(
             session,
