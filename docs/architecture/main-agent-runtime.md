@@ -478,7 +478,11 @@ Main 激活不设每段模型请求或业务工具调用上限，也没有段末
 辅助请求与 HTTP 重试同样不受写死的段额度限制。插件 SDK `agent.run` 的显式
 `max_model_requests`/`max_tool_calls` 在首次接纳时与 Work 同一事务写入根 Work 预算的
 `model_limit`/`tool_limit`，是整棵 Work 的总额度；旧来源中保存的 `max_*` 只读保留，
-恢复时不再使用。持久工作仅记入原根 Work 账本，
+恢复时不再使用。非法值按原规则收敛（请求至少 1，工具至少 0）；`max_tool_calls=0` 表示
+不声明任何工具、只作回答。工具额度在批次派发前按根预算剩余量拒绝超出的调用
+（`executed=false`、`work_total_budget_exhausted`），T2 仍原子扣费。没有 Work 时
+（`RUNTIME_WORK_ENABLED=false` 且无原 Work），或在已有激活内调用 `agent.run` 而复用当前
+控制时，没有新根预算可写，显式上限不生效；不另设替代限额。持久工作仅记入原根 Work 账本，
 同一次发生不再叠加定时 limits、timeout、第二 run 预算或二次扣费。根 Work 的既存
 累计值、明确有限预算和真实 Provider 超时仍保持；恢复不清零，不为升级取得新额度。
 发生记录在真实根 Work 终态后结算并安排下一次时间；没有 Work 的激活结算其实际返回计数，
@@ -510,15 +514,16 @@ Executor 不在同一物理 attempt 前重复调用它。原 Work source guard �
 `execute_code`）之前，Host 先标记该轮已开始效果，再按 `validate_turn_snapshot` 核对版本；
 版本有效时，以预生成的 Work ID 在同一 writer 中提交接纳、接纳前已付模型计量与首份
 `phase=response` journal，然后才为整批绑定调用身份。goal 只引用原触发事件，模型可用
-update 改写。版本已失效则按下述抢占处理，不接纳。纯 `send` 或无工具的轮次、群聊不接纳。
+update 改写。版本已失效则按下述抢占处理，不接纳。只由 `send` 与 Work 控制
+（`task_control`、`subagent_*`）组成的批次、无工具的轮次和群聊不接纳；批次中有模型自己的
+accept 或 resume 时同样不接纳，让 resume 沿中性前台把用户消息交回原 Work 原链。
 接纳后新消息经 `preserve_active` 进入该 Work：同批尚未执行的副作用调用返回
 `new_input_before_execution`，下一次请求前接入新输入，收尾回复遇新输入重做，不另开 Main。
 版本核对与接纳提交之间到达的新输入已推进版本，但不取消已受保护的旧轮，它在旧轮结束后
 作为独立 Main 处理。插话只在激活期间进入同一执行：Work 处于 queued、waiting_external
 或 suspended 时，新消息另起 Main，经 `recent_work` 看到原 Work。接纳后可重试失败按
 2/10/30 秒自动重排，未作决定即退出记为 suspended 或 waiting_external；私聊此前失败即
-静默，现在由 WorkScheduler 后台沿原 journal 继续。同一批次中已有模型自己的 accept 时，
-沿原控制屏障接纳，Host 不另行接纳；接纳后再 accept 会得到
+静默，现在由 WorkScheduler 后台沿原 journal 继续。接纳后再 accept 会得到
 `work_already_active_use_update`，有新输入时才另排独立 Work。
 
 普通私聊的新用户输入可抢占尚未接纳 Work、尚未开始本地效果且尚未派发原生工具的旧轮。
@@ -538,7 +543,10 @@ update 改写。版本已失效则按下述抢占处理，不接纳。纯 `send`
 定时 claim 使用每次唯一所有者并续期，首次发生提交时核对原 owner、到期时间和版本。
 会话忙时不分配新 run；已开始的发生在会话锁内取得 Work 租约，同会话用户 Main 排队等待
 会话锁，不因租约忙被丢弃。发生只受 generation 约束，不受此后用户输入版本作废。
-WorkScheduler 按原 Work 恢复激活时同样持有会话锁。原版本与绑定的 canonical 目标保存于既有版本表，新定义只用于
+WorkScheduler 按原 Work 恢复激活时同样持有会话锁。会话锁覆盖整次激活，而普通执行已不设
+段上限：一次长的发生或恢复期间，同会话用户 Main 会一直排队到它结束（插话不进入定时发生
+的 Work 时尤其如此）。这是有意的取舍，不另设时长或次数上限；需要时用 `/ai stop` 或取消
+原 Work。原版本与绑定的 canonical 目标保存于既有版本表，新定义只用于
 未来发生；缺失旧版本事实不按当前角色、日期或 hash 猜补。实际身份从原永久 Person
 当前账号关系解析，历史创建账号仅为来源元数据。
 每次新发生使用原目标会话的当前 generation；创建时的旧 generation 不封锁未来发生。

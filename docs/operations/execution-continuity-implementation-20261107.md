@@ -39,7 +39,7 @@
 
 ### 3.2 E2E
 
-`uv run pytest tests/integration/test_execution_continuity_e2e.py -q`（12 passed；须单进程运行，xdist 下各 worker 会各写一份不完整产物），产物写入 `test-results/execution-continuity-e2e.json`（`test-results/` 被 `.gitignore` 忽略，按此命令重新生成；每次运行覆盖）。隔离 SQLite、`FakeLLMProvider`、假 QQ 网关，走真实 processor / Main / Work / Social 路径。场景与 §8 对应：
+`uv run pytest tests/integration/test_execution_continuity_e2e.py -q`（复审修复后 14 passed；须单进程运行，xdist 下各 worker 会各写一份不完整产物），产物写入 `test-results/execution-continuity-e2e.json`（`test-results/` 被 `.gitignore` 忽略，按此命令重新生成；每次运行覆盖）。隔离 SQLite、`FakeLLMProvider`、假 QQ 网关，走真实 processor / Main / Work / Social 路径。场景与 §8 对应：
 
 | 场景 | 结论 |
 | --- | --- |
@@ -55,11 +55,14 @@
 | 发生异常 | `uncertain`，`llm_calls=2` 等于实际请求数 |
 | 下一轮“刚才做了什么” | `recent_work` 给出原 work_id 与 `recent_steps`，`task_control get` 返回原步骤 |
 | 插件显式上限 | `max_model_requests=2, max_tool_calls=5` 写入根预算，第 3 次请求前 Work 进入 `suspended` |
+| 私聊 resume 与查询（复审） | 原 Work `failed` 后下一轮只调 `resume(W1)`：不建新 Work，W1 `queued`，WorkScheduler 沿原链继续并完成，恢复请求含用户新消息；只含 `get`/`list` 的批次不建 Work |
+| 插件工具额度（复审） | `max_tool_calls=1` 的并行两调用：第二个在派发前返回 `executed=false`、`work_total_budget_exhausted`，无 `uncertain`，只派发 1 次；`max_tool_calls=0` 的请求不声明任何工具 |
 
 ### 3.3 回归
 
 - 命令：`uv run --with pytest-timeout --with pytest-xdist pytest tests/unit tests/integration -q -m "not native_worker" --timeout 120 -n 10`（`pytest-timeout`/`pytest-xdist` 只为本地限时与并行临时加入，未改锁文件）。
-- 结果：**4765 passed、22 skipped、15 failed**。15 项失败均为本机 macOS 环境问题，与本改动无关：`AF_UNIX path too long`（Manager/Workspace socket 类 7 项）、BSD `script` 不支持 `-c`（安装脚本平台选择 4 项）、缺 `/proc/meminfo`、`/var`→`/private/var` 符号链接触发 `unsafe_workspace_root` 等；同一批测试在 `69420ce8` 原始源码副本上同样失败或报错。`native_worker` 标记的真实 Monty worker 测试未在本机运行。
+- 复审修复并 rebase 到 `ce518d99` 后（另加 `--basetemp /private/tmp/yk/full` 避开 socket 路径过长）：**4776 passed、22 skipped、8 failed**，8 项均属下述环境问题（安装脚本 BSD `script -c` 4 项、`/proc/meminfo`、`/var` 符号链接、Manager socket 等）。
+- 首次提交时结果：**4765 passed、22 skipped、15 failed**。15 项失败均为本机 macOS 环境问题，与本改动无关：`AF_UNIX path too long`（Manager/Workspace socket 类 7 项）、BSD `script` 不支持 `-c`（安装脚本平台选择 4 项）、缺 `/proc/meminfo`、`/var`→`/private/var` 符号链接触发 `unsafe_workspace_root` 等；同一批测试在 `69420ce8` 原始源码副本上同样失败或报错。`native_worker` 标记的真实 Monty worker 测试未在本机运行。
 - `tests/unit/test_turn_coordinator_cancellation.py`：16 passed，未修改。
 - 冻结段语义的测试改写：原用 `request_limit`/`agent_max_model_requests` 让激活在 N 次请求后“段让出”的恢复类测试，改为测试辅助 `yield_activation_after` / `yield_each_activation_after`：第 N+1 次请求在派发准入前以可重试的 `LLMUnavailableError` 结束激活（不购买请求），Work 走真实 RETRY 路径进入 `queued`，`retry_due_now` 只把该合成退出改为立即到期的首次重试；依赖单次请求停止的 Runner 级测试改为在根 Work 写显式总额度（结果为 `suspended`）。删除 `tests/unit/test_worker_hot_limits.py`。
 
@@ -76,12 +79,25 @@
 - 行为变化：私聊执行失败不再静默结束，接纳后按 2/10/30 秒由 WorkScheduler 后台重试；普通执行不再在 24 次请求处停止，只有显式根预算、`/ai stop` 与 Provider 真实失败会结束执行。
 - 依赖 `RUNTIME_WORK_ENABLED=true`；关闭时私聊不接纳 Work，但同样不再按段截断。
 
-## 6. 提交与推送
+## 6. 独立复审修复（rebase 到 `ce518d99` 后）
+
+已 rebase 到包含 #575、#576 的 main；冲突只在 `automation/worker.py`，保留会话锁内激活与 #576 的 `activation_context=recovered.activation_context`。
+
+1. **HIGH，已复现**：私聊批次只含 `task_control resume/get/list/update` 时也会触发 Host 接纳，resume 因此不走中性前台（`continue_original_chain`、把用户消息交给原 Work、`handoff_work_id`），落入 `manage_work` 只把目标置 queued，再由新 Host Work 重做。修复：只有既非 `send`、也不在 `WORK_CONTROL_NAMES` 的调用才触发接纳；批次中有模型自己的 `accept` 或 `resume` 时同样不接纳。新增 E2E 场景（修复前该场景无限循环、修复后通过）。
+2. **MEDIUM 插件显式上限**：
+   - (a) `RUNTIME_WORK_ENABLED=false` 且无原 Work，或在已有激活内调用 `agent.run` 复用当前控制时，没有新根预算可写，显式上限不生效；已写入 `main-agent-runtime.md`、`service-facades.md` 与本记录，不另设替代限额。
+   - (b) 恢复收敛：`max_model_requests` 至少 1、`max_tool_calls` 至少 0；`max_tool_calls=0`（含恢复时来源中的 `tool_limit=0`）不声明任何工具与原生能力，只作回答。
+   - (c) 恢复派发前拒绝：协调器重新接受 `remaining_calls`，由 `WorkControl.remaining_tools()` 读根预算剩余工具额度，超出的调用复用原拒绝路径返回 `executed=false`、`work_total_budget_exhausted`，不再在 T2 被兄弟取消成 uncertain；T2 原子扣费不变。
+3. **MEDIUM-LOW**：定时发生与 WorkScheduler 恢复在整次激活内持有会话锁，且已无段上限，同会话用户 Main 可能长时间排队；不新增限制，已在 `main-agent-runtime.md` 与本记录写明（需要时 `/ai stop` 或取消原 Work）。
+4. **LOW**：`supervise_lease` 以续租失败替换原取消异常时，把原异常上记录的已付请求数转挂到续租异常上，`llm_calls` 保持准确；隔离测试先列失败情形后编写（`test_runtime_recovery.py::test_pulse_failure_keeps_interrupted_activation_request_count`）。
+5. **CI Native CodeMode**：`test_codemode_provider_wire.py::test_code_children_never_become_provider_function_calls[True-*]` 原靠删除的 `max_model_requests=2` 在第三次请求前结束激活，验证下一激活交付原未观察结果。该边界仍是测试意图，改用 `yield_each_activation_after(monkeypatch, 2)`（第三次请求在派发准入前以可重试失败结束，真实 RETRY 路径），Code Mode 设计不变。本机无法运行 `native_worker`，以推送后的 CI 为准。
+
+## 7. 提交与推送
 
 - 本地提交：`d5304c0b`（E2E）、`78f7e76d`（Host 接纳与删除段机制）、`cd6b9903`（自动化排队与 recent_work）、`f03e73bc`（文档）及本记录更新。
-- 已推送 `feat/execution-continuity-20261107` 并开 PR 到 main；未合并、未部署、无生产验证。
+- 已推送 `feat/execution-continuity-20261107` 并开 PR #577；复审修复后 rebase 到 `ce518d99` 并 `--force-with-lease` 推送（提交号以 PR 为准）。未合并、未部署、无生产验证。
 
-## 7. 未做与后续
+## 8. 未做与后续
 
 - 任务书 5.1“待核实（推测）”两项未改：`stage_work_input` 只按 Person 匹配，若定时发生已成为 Work，用户私聊消息可能并入提醒任务；会话中有 SELF Work 时 `preserve_active` 的归属。需要单独核实后再处理。
 - 版本核对与接纳提交之间到达的新输入：旧轮已受保护不被取消，新消息在旧轮结束后作为独立 Main 处理（不并入 Work），此窗口未专门构造 E2E。

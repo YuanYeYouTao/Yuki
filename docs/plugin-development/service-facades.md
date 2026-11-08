@@ -163,7 +163,10 @@ SELF 与定时 Main 使用原 actor 和场景，无真人事件时不伪造 Inbo
 Runtime 升级后，`agent.run` 返回 `state`、`work_id`、`pending`。
 显式 `max_model_requests`/`max_tool_calls` 在首次接纳时写入该 Work 的根预算，是整项工作
 （含其子任务）的累计上限；耗尽后 Work 暂停为 `suspended`，不再按段重新排队。不传时没有
-次数上限。
+次数上限。非法值收敛为请求至少 1、工具至少 0；`max_tool_calls=0` 不声明任何工具，只作回答。
+同一批次超出剩余工具额度的调用在派发前拒绝（`executed=false`）。
+没有新 Work 时显式上限不生效：`RUNTIME_WORK_ENABLED=false` 且无原 Work，或在已有激活内调用
+`agent.run` 复用当前控制时，不会写入根预算，也不另设替代限额。
 每次调用均返回 `PluginResult`；调用方检查状态与结果，不把等待句柄当作生成正文。
 Host 等待约 5 秒后可返回持久任务句柄，生成由 Host 继续持有。
 `await ctx.agent.result(work_id)` 可在原回调退出后查询本插件的任务；检查批准版本、权限和 generation。
