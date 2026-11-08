@@ -475,8 +475,9 @@ class AgentToolService:
                 effect="read_state",
                 description=(
                     "搜索有来源的长期记忆，或用 fact_id 读取一条。省略 target 时搜索你有权读取的"
-                    "全部人物、群与自己的记忆，当前群或提及不会自动缩小范围。结果有界、可能不全，"
-                    "缺证据时换个说法再查；原始聊天用 read_chat。"
+                    "全部人物、群与自己的记忆，当前群或提及不会自动缩小范围。省略 query 时按"
+                    "重要度列出该范围的记忆。结果有界、可能不全，缺证据时换个说法再查；"
+                    "原始聊天用 read_chat。"
                 ),
                 parameters=_object_schema(
                     {
@@ -992,13 +993,8 @@ class AgentToolService:
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> ToolExecutionResult:
-        unknown = set(arguments) - {"query", "target", "since", "until", "limit", "fact_id"}
-        if unknown:
-            return self._result(
-                error="invalid_arguments",
-                detail=f"search_memory 不接受参数：{', '.join(sorted(unknown))}",
-            )
-        query = arguments.get("query")
+        # The frozen schema already refused undeclared keys and bad limits for
+        # every caller; fact_id exclusivity is a cross-field rule it cannot carry.
         if "fact_id" in arguments:
             if set(arguments) != {"fact_id"}:
                 return self._result(
@@ -1006,10 +1002,6 @@ class AgentToolService:
                     detail="fact_id 读取单条记忆时不要再给 query、target 或时间范围",
                 )
             return await self._memory_fact(arguments, runtime)
-        if not isinstance(query, str) or not query.strip():
-            return self._result(
-                error="invalid_arguments", detail="提供非空 query 搜索，或用 fact_id 读取一条记忆"
-            )
         selected = self._memory_target(arguments.get("target"))
         if isinstance(selected, _ToolFailure):
             return self._result(error=selected.code, detail=selected.detail)
@@ -1106,17 +1098,13 @@ class AgentToolService:
                 authorized_scope = authorized_scope.model_copy(
                     update={"resolved_targets": scope.targets}
                 )
-        limit = arguments.get("limit")
-        if limit is not None and (
-            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100
-        ):
-            return self._result(error="invalid_arguments", detail="limit 必须是 1～100 的整数")
+        # Without query the same scope is listed (intent mode OVERVIEW).
         result = await MemoryQueryPlane(self._memory_context).read(
             MemoryReadConsumer.AGENT_TOOL,
             MemoryReadRequest(
-                text=query.strip(),
+                text=arguments.get("query", "").strip(),
                 intent=intent,
-                requested_limit=limit,
+                requested_limit=arguments.get("limit"),
                 resolved_scope=scope,
                 authorized_scope=authorized_scope,
             ),

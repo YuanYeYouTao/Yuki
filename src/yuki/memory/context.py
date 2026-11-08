@@ -61,6 +61,7 @@ class MemoryContextService:
         self,
         *,
         text: str,
+        mode: MemoryRetrievalMode,
         scope: AuthorizedMemoryScope,
         runtime: RuntimeConfigSnapshot,
         limit: int,
@@ -68,7 +69,7 @@ class MemoryContextService:
     ) -> MemoryRetrievalResult:
         query = self._queries.for_targets(
             text=text,
-            mode=MemoryRetrievalMode.RELEVANT,
+            mode=mode,
             targets=(),
             runtime=runtime,
             limit=limit,

@@ -75,6 +75,7 @@ class MemoryQueryKernel(Protocol):
         self,
         *,
         text: str,
+        mode: MemoryRetrievalMode,
         scope: AuthorizedMemoryScope,
         runtime: RuntimeConfigSnapshot,
         limit: int,
@@ -173,6 +174,7 @@ class MemoryQueryPlane:
         if request.authorized_scope is not None:
             return await self._kernel.search_authorized(
                 text=request.text,
+                mode=retrieval_mode_for_request(request),
                 scope=request.authorized_scope,
                 runtime=runtime,
                 limit=resolve_read_limit(consumer, request, runtime),

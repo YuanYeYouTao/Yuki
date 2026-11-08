@@ -151,6 +151,8 @@ class MemoryRetriever:
         limit: int,
     ) -> MemoryRetrievalResult:
         """One authorization-filtered global candidate pool, including unbound owners."""
+        if query.mode is MemoryRetrievalMode.OVERVIEW:
+            return await self._list_authorized(query, scope, limit=limit)
         if not isinstance(self._index, SQLiteMemoryFTSIndex):
             raise RuntimeError("global memory search requires SQLite FTS index")
         query_hash = hashlib.sha256(query.normalized_text.encode("utf-8")).hexdigest()
@@ -220,23 +222,9 @@ class MemoryRetriever:
         semantic_by_id: dict[int, AuthorizedSemanticCandidate] = {
             item.fact_id: item for item in semantic
         }
-        async with self._repository.database.read_session() as reader:
-            person_roots = await current_person_ids(
-                reader,
-                (
-                    person
-                    for fact in facts
-                    for person in (
-                        fact.canonical_subject_person_id,
-                        fact.canonical_visibility_person_id,
-                    )
-                    if person is not None
-                ),
-            )
         by_target: dict[str, list[MemoryFact]] = {}
         targets: dict[str, MemoryEntityTarget] = {}
-        for fact in facts:
-            target = target_for_authorized_fact(fact, scope, person_roots=person_roots)
+        for fact, target in zip(facts, await self._owner_targets(facts, scope), strict=True):
             targets[target.block_id] = target
             by_target.setdefault(target.block_id, []).append(fact)
         pooled: list[MemoryRetrievalHit] = []
@@ -329,6 +317,69 @@ class MemoryRetriever:
             truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
             ranked_count=len(ranked),
+        )
+
+    async def _owner_targets(
+        self, facts: tuple[MemoryFact, ...], scope: AuthorizedMemoryScope
+    ) -> list[MemoryEntityTarget]:
+        async with self._repository.database.read_session() as reader:
+            person_roots = await current_person_ids(
+                reader,
+                (
+                    person
+                    for fact in facts
+                    for person in (
+                        fact.canonical_subject_person_id,
+                        fact.canonical_visibility_person_id,
+                    )
+                    if person is not None
+                ),
+            )
+        return [
+            target_for_authorized_fact(fact, scope, person_roots=person_roots) for fact in facts
+        ]
+
+    async def _list_authorized(
+        self, query: MemoryQuery, scope: AuthorizedMemoryScope, *, limit: int
+    ) -> MemoryRetrievalResult:
+        """No query text: the scope's facts in the overview order, without ranking."""
+        facts = await self._repository.list_overview(
+            scope,
+            limit=limit + 1,
+            temporal=query.intent.temporal if query.intent is not None else None,
+        )
+        truncated = len(facts) > limit
+        facts = facts[:limit]
+        hits = tuple(
+            MemoryRetrievalHit(
+                fact=fact,
+                target=target,
+                rank=rank,
+                sources=("overview",),
+                selection_reason="overview",
+            )
+            for rank, (fact, target) in enumerate(
+                zip(facts, await self._owner_targets(facts, scope), strict=True), start=1
+            )
+        )
+        by_target: dict[MemoryEntityTarget, list[MemoryRetrievalHit]] = {}
+        for hit in hits:
+            by_target.setdefault(hit.target, []).append(hit)
+        return MemoryRetrievalResult(
+            blocks=tuple(
+                MemoryRetrievalBlock(target=target, hits=tuple(items))
+                for target, items in by_target.items()
+            ),
+            hits=hits,
+            candidate_count=len(hits),
+            selected_count=len(hits),
+            query_hash=hashlib.sha256(query.normalized_text.encode("utf-8")).hexdigest(),
+            mode=query.mode,
+            semantic_status="overview",
+            exhaustive=not truncated,
+            truncated=truncated,
+            partial_reason="global_result_limit" if truncated else None,
+            ranked_count=len(hits),
         )
 
     async def retrieve(

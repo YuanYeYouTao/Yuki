@@ -904,17 +904,23 @@ class MemoryFactRepository:
 
     async def list_overview(
         self,
-        target: MemoryEntityTarget,
+        target: MemoryEntityTarget | AuthorizedMemoryScope,
         *,
         limit: int,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryFact, ...]:
+        """Active facts of one target, or of a whole authorized scope, by importance."""
         async with self._database.read_session() as session:
+            selector = (
+                [authorized_fact_condition(target)]
+                if isinstance(target, AuthorizedMemoryScope)
+                else await self._async_target_conditions(session, target)
+            )
             rows = await self._execute_facts_with_count(
                 session,
                 [
                     *strict_time_conditions(temporal),
-                    *(await self._async_target_conditions(session, target)),
+                    *selector,
                     MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                     MemoryFactModel.review_state != "quarantined",
                     or_(
