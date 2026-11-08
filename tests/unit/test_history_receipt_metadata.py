@@ -64,6 +64,7 @@ async def test_missing_owned_receipt_remains_metadata_for_restricted_sources(res
         database,
         {"target": {"operation_id": operation.id}},
         context,
+        router=SimpleNamespace(),
         runtime=runtime,
     )
     assert result["receipt"] == {
@@ -85,5 +86,6 @@ async def test_missing_destination_does_not_grant_another_sources_receipt():
             database,
             {"target": {"operation_id": operation.id}},
             context,
+            router=SimpleNamespace(),
             runtime=SimpleNamespace(origin="plugin_background"),
         )

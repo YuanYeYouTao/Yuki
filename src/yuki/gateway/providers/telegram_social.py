@@ -9,7 +9,9 @@ from typing import cast
 
 from yuki.domain.conversations import ConversationScope
 from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient
+from yuki.gateway.registry import RegistryClosed
 from yuki.gateway.social import (
+    ForwardNode,
     TransportMedia,
     TransportMention,
     TransportMessage,
@@ -135,3 +137,7 @@ class TelegramSocialOperations:
             and result.get("status") not in {"left", "kicked"}
             and (result.get("status") != "restricted" or result.get("is_member") is True)
         )
+
+    async def read_forward(self, handle: object, locator: str) -> tuple[ForwardNode, ...]:
+        # No merged-forward read: this connection does not declare ``forward_read``.
+        raise RegistryClosed("capability")

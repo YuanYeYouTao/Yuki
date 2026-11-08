@@ -12,9 +12,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import uuid4
 
+from yuki.adapters.onebot.normalizer import forward_nodes
 from yuki.adapters.onebot.sender import parse_onebot_send_receipt
 from yuki.domain.conversations import ConversationScope
 from yuki.gateway.social import (
+    ForwardNode,
     TransportEffectError,
     TransportMention,
     TransportMessage,
@@ -162,3 +164,8 @@ class OneBotSocialOperations:
             "get_group_member_info", group_id=int(space), user_id=int(account), no_cache=True
         )
         return isinstance(result, dict) and str(result.get("user_id")) == account
+
+    async def read_forward(self, handle: object, locator: str) -> tuple[ForwardNode, ...]:
+        bot = cast(Any, handle)
+        payload = await bot.call_api("get_forward_msg", id=locator)
+        return forward_nodes(payload, self_id=str(bot.self_id))

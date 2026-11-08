@@ -1043,7 +1043,7 @@ class SocialService:
         if name == "read_chat":
             from yuki.social.history import read_history
 
-            return await read_history(self.database, args, context)
+            return await read_history(self.database, args, context, router=self.router)
         if name == "find_contacts":
             from yuki.social.contacts import read_contacts
 

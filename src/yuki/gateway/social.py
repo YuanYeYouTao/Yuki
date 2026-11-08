@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 from typing import Any, Protocol
 
 from yuki.domain.conversations import ConversationScope
@@ -110,6 +111,20 @@ class TransportReceipt:
     reference: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ForwardNode:
+    """One first-layer node of a merged forward, as the native connection returned it.
+
+    ``segments`` keeps the serialized native segments so media can be fetched
+    later on the same receiving connection; nothing here is downloaded.
+    """
+
+    author_name: str
+    occurred_at: datetime | None
+    text: str
+    segments: tuple[dict[str, Any], ...]
+
+
 class TransportEffectError(Exception):
     """A send adapter's own boundary between preparation and a message call."""
 
@@ -141,3 +156,7 @@ class PlatformSocialOperations(Protocol):
     async def recall(self, handle: object, target: TransportTarget, reference: str) -> None: ...
 
     async def is_member(self, handle: object, space: str, account: str) -> bool: ...
+
+    async def read_forward(self, handle: object, locator: str) -> tuple[ForwardNode, ...]:
+        """First layer of one merged forward; only connections with ``forward_read``."""
+        ...

@@ -61,7 +61,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 `send` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。
 
-`read_chat` 读取当前获准的已入账永久账本，不受 `/ai new` 上下文起点或 App/ACP 来源门槛限制。不带 target 与筛选时读当前 Conversation，带筛选未给 target 时检索所有获准入口；Person/Space/Binding 对应多个入口时直接合查，around 按内部事件 ID 定位原 Conversation。结果给可读会话名的 sources 目录，跨会话时逐条带 conversation_id，不拼接自动上下文。`target.operation_id` 可读取原发送的真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_members` 返回已观察的成员账号，不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
+`read_chat` 读取当前获准的已入账永久账本，不受 `/ai new` 上下文起点或 App/ACP 来源门槛限制。不带 target 与筛选时读当前 Conversation，带筛选未给 target 时检索所有获准入口；Person/Space/Binding 对应多个入口时直接合查，around 按内部事件 ID 定位原 Conversation。结果给可读会话名的 sources 目录，跨会话时逐条带 conversation_id，不拼接自动上下文。`target.operation_id` 可读取原发送的真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_members` 返回已观察的成员账号，不代表完整平台名册。查询不隐式请求远端历史或刷新平台群名单；只有 around 锚点自身带合并转发时，沿其原接收连接的 `read_forward` 原生操作读取第一层（QQ/SnowLuma 的 `get_forward_msg`，其他 Provider 不声明 `forward_read`，见[工具内核](tool-kernel.md#合并转发读取)）。
 
 默认模型的任意 OneBot action、戳一戳和远端/raw 历史入口已退役。独立批准的 QQ SDK 传输扩展保留明确的 QQ 边界，不能替代通用发送出口。历史已执行工具和回执继续可读。
 

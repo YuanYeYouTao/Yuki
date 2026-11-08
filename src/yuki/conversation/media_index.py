@@ -8,6 +8,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -126,12 +127,46 @@ def observed_reply_media_segments(
     yield from indexed_media_segments(reply_segments, offset=offset)
 
 
+def segment_snapshot(segment: Mapping[str, Any]) -> str:
+    """The one observed segment an attachment slot keeps as its source."""
+    return json.dumps(segment, ensure_ascii=False, separators=(",", ":"))
+
+
 def reply_media_snapshots(segments: Sequence[dict[str, Any]]) -> dict[int, str]:
     """Freeze only the actual observed media segments before entering a writer."""
     return {
-        position: json.dumps(segments[position], ensure_ascii=False, separators=(",", ":"))
+        position: segment_snapshot(segments[position])
         for _index, position, _kind, _data in indexed_media_segments(segments)
     }
+
+
+def _media_item(
+    *,
+    event_id: int,
+    attachment_index: int,
+    conversation_id: str,
+    generation: int,
+    segment_index: int,
+    kind: str,
+    data: Mapping[str, Any],
+    snapshot: str | None,
+    now: datetime,
+) -> ConversationMediaItemModel:
+    raw_name = str(data.get("name") or data.get("filename") or "")
+    size = data.get("file_size")
+    return ConversationMediaItemModel(
+        source_event_id=event_id,
+        attachment_index=attachment_index,
+        conversation_id=conversation_id,
+        generation=generation,
+        segment_index=segment_index,
+        kind=kind,
+        source_snapshot_json=snapshot,
+        display_name=raw_name.replace("\\", "/").split("/")[-1],
+        declared_size=int(size) if isinstance(size, int) and size >= 0 else None,
+        created_at=now,
+        cache_status="uncached",
+    )
 
 
 def prepare_event_media(
@@ -156,25 +191,77 @@ def prepare_event_media(
     )
     for observed_reply, positions in sources:
         for attachment_index, segment_index, kind, data in positions:
-            raw_name = str(data.get("name") or data.get("filename") or "")
-            name = raw_name.replace("\\", "/").split("/")[-1]
-            size = data.get("file_size")
             items.append(
-                ConversationMediaItemModel(
-                    source_event_id=event_id,
+                _media_item(
+                    event_id=event_id,
                     attachment_index=attachment_index,
                     conversation_id=conversation_id,
                     generation=generation,
                     segment_index=segment_index,
                     kind=kind,
-                    source_snapshot_json=snapshots[segment_index] if observed_reply else None,
-                    display_name=name,
-                    declared_size=int(size) if isinstance(size, int) and size >= 0 else None,
-                    created_at=now,
-                    cache_status="uncached",
+                    data=data,
+                    snapshot=snapshots[segment_index] if observed_reply else None,
+                    now=now,
                 )
             )
     return tuple(items)
+
+
+async def observe_media_slots(
+    session: AsyncSession,
+    *,
+    event_id: int,
+    conversation_id: str,
+    generation: int,
+    segments: Sequence[dict[str, Any]],
+    observed: Sequence[tuple[int, dict[str, Any]]],
+) -> dict[str, int]:
+    """Append originals observed through this receive event after all of its slots.
+
+    ``observed`` pairs the event's own segment position with one actually
+    returned media segment. The same snapshot keeps its slot; only this event's
+    own rows are read inside the writer.
+    """
+    existing = (
+        await session.scalars(
+            select(ConversationMediaItemModel).where(
+                ConversationMediaItemModel.source_event_id == event_id
+            )
+        )
+    ).all()
+    slots = {
+        row.source_snapshot_json: row.attachment_index
+        for row in existing
+        if row.source_snapshot_json is not None
+    }
+    following = max(
+        [
+            sum(segment.get("type") not in _IGNORED for segment in segments),
+            *(row.attachment_index + 1 for row in existing),
+        ]
+    )
+    now = datetime.now(UTC)
+    for position, segment in observed:
+        snapshot = segment_snapshot(segment)
+        if snapshot in slots:
+            continue
+        slots[snapshot] = following
+        data = segment.get("data")
+        session.add(
+            _media_item(
+                event_id=event_id,
+                attachment_index=following,
+                conversation_id=conversation_id,
+                generation=generation,
+                segment_index=position,
+                kind=str(segment.get("type")),
+                data=data if isinstance(data, dict) else {},
+                snapshot=snapshot,
+                now=now,
+            )
+        )
+        following += 1
+    return slots
 
 
 async def index_event_media(

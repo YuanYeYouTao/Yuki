@@ -1,5 +1,6 @@
 """Facts from an immutable ledger record, shared by interface envelopes."""
 
+from collections.abc import Mapping
 from typing import Any
 
 from yuki.conversation.media_index import indexed_media_segments
@@ -7,6 +8,18 @@ from yuki.domain.audio import parse_transcripts
 from yuki.domain.messages import mention_snapshots
 from yuki.persistence.repository_records import EventRecord
 from yuki.time.formatting import local_iso
+
+_ATTACHMENT_FACTS = frozenset(
+    {"media_id", "artifact_id", "version", "filename", "name", "mime_type", "size"}
+)
+
+
+def attachment_facts(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Public facts of one media segment; platform file handles and URLs stay out."""
+    facts = {key: value for key, value in data.items() if key in _ATTACHMENT_FACTS}
+    if "size" not in data and "file_size" in data:
+        facts["size"] = data["file_size"]
+    return facts
 
 
 def event_view(row: EventRecord, *, timezone: str = "Asia/Taipei") -> dict[str, Any]:
@@ -45,25 +58,7 @@ def event_view(row: EventRecord, *, timezone: str = "Asia/Taipei") -> dict[str, 
                 "attachment_index": index,
                 "segment_index": position,
                 "kind": kind,
-                **{
-                    key: value
-                    for key, value in data.items()
-                    if key
-                    in {
-                        "media_id",
-                        "artifact_id",
-                        "version",
-                        "filename",
-                        "name",
-                        "mime_type",
-                        "size",
-                    }
-                },
-                **(
-                    {"size": data["file_size"]}
-                    if "size" not in data and "file_size" in data
-                    else {}
-                ),
+                **attachment_facts(data),
             }
             for index, position, kind, data in indexed_media_segments(row.segments)
         ],

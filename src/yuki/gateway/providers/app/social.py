@@ -1,7 +1,9 @@
 """Local App effects commit through the canonical ledger transaction."""
 
 from yuki.domain.conversations import ConversationScope
+from yuki.gateway.registry import RegistryClosed
 from yuki.gateway.social import (
+    ForwardNode,
     TransportMention,
     TransportMessage,
     TransportReceipt,
@@ -30,3 +32,7 @@ class AppSocialOperations:
 
     async def is_member(self, handle: object, space: str, account: str) -> bool:
         return False
+
+    async def read_forward(self, handle: object, locator: str) -> tuple[ForwardNode, ...]:
+        # No merged-forward read: this connection does not declare ``forward_read``.
+        raise RegistryClosed("capability")

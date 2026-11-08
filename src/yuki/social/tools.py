@@ -112,7 +112,9 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "read_chat",
             "读取已入账的聊天记录。省略 target 且不带筛选时读当前会话；"
             "带 query、author、has、platform、scope、since 或 until 时检索所有获准的聊天。"
-            "around 按事件 ID 读取前后各 context 条邻文，此时不接受其他筛选。"
+            "around 按事件 ID 读取前后各 context 条邻文，此时不接受其他筛选；"
+            "该事件含合并转发时，forwards 附带其第一层消息（内层转发不展开），"
+            "其中附件用该事件 ID 与 attachment 序号交给 view_file。"
             "since/until 为带时区的时间，until 不含。只读已入账内容，不接受平台消息号。",
             {
                 "target": target_schema(

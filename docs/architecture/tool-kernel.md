@@ -301,15 +301,35 @@ sources 提供可读会话名与目录，结果跨多个会话时事件才带 co
 `/ai new` 的 starts_after 只限制自动上下文，不限制显式查找永久原记录；原 generation 失效仍停止旧执行。
 结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
 
-默认模型已退役任意 OneBot action、戳一戳和远端/raw 转发历史展开。原始 segments、
-历史真实工具结果、已付请求和旧回执保留，不因退役重写冻结内容或重派旧调用。
-新 read call 经当前授权读取事实，不以另一 call 的同参结果代替。原 call 和历史
-readonly alias 仍读自己的真实持久回执，不增加缓存失效总线。
+默认模型已退役任意 OneBot action 与戳一戳。原始 segments、历史真实工具结果、已付请求和
+旧回执保留，不因退役重写冻结内容或重派旧调用。新 read call 经当前授权读取事实，不以另一
+call 的同参结果代替。原 call 和历史 readonly alias 仍读自己的真实持久回执，不增加缓存失效总线。
 
 共同 Social 管内部目标、授权、预算、原操作 claim、账本与回执。GatewayProvider 的
 原生操作接口负责文字/媒体布局、参数、引用和响应。纯 plan_send 不执行网络请求，
 每项各有实际派发和持久回执；平台适配器不能内部多次发送却只返回一个成功。
 详见[平台适配与升级](platform-adapters.md)。
+
+## 合并转发读取
+
+`read_chat(around=E)` 的锚点事件 E 自身带 forward segment 时，结果另附 `forwards`：每个外层
+forward 按原位置（`segment`）一组，给出第一层节点的作者名、时间、正文、附件与 `nested_forwards`
+计数。只展开锚点，邻文、浏览与检索结果不请求远端；锚点不在获准范围时不请求。内层 forward 不递归。
+读取沿 E 的 `ingress_presence_id` 解析原接收连接，由该连接 Provider 的原生操作
+`PlatformSocialOperations.read_forward` 执行（SnowLuma 声明 `forward_read` 能力，固定使用
+`get_forward_msg`）；不按平台判断、不换账号、不探测。原 Presence 停用或离线为
+`forward_presence_unavailable`，连接不声明该能力为 `forward_unsupported`，原生失败或响应中没有
+节点列表为 `forward_read_failed`，缺定位为 `forward_locator_missing`。同一调用内相同定位只读一次、
+不同定位并行，空列表是成功的空组。部分失败保留成功组；全部失败时工具结果为该首个错误，仍带
+events 与各组状态。取消原样传播。
+
+内层图片、视频、文件、语音不下载、不读取，作为 E 下的观察附件槽登记（与未入账引用附件同一
+`source_snapshot_json` 机制，序号接在 E 已有槽位之后，相同 segment 复用原槽位），结果按 read_chat
+现行附件形状给 `attachment` 序号；模型用 `view_file(event_id=E, attachment=N)` 按需读取，下载沿原接收
+连接与 24 小时缓存。写槽位在网络读取之后的短 writer 中只核 E 本身仍是 keeper；E 已被清退返回
+`history_source_changed`。结果不带图片、平台定位或账号号码，完整投影沿共同预算／artifact 链处理，
+不另设节点、正文或递归上限；`source_event_ids` 与读取前取得的隐私代次照常交给发布围栏。
+原 call 的已存回执按原调用键读取，不重新请求转发。
 
 ## 跨入口读取与发送
 

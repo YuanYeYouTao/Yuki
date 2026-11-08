@@ -238,6 +238,7 @@ def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
         "send_group_msg",
         "get_group_member_info",
         "get_image",
+        "get_forward_msg",
         "get_group_msg_history",
         "get_friend_msg_history",
     }

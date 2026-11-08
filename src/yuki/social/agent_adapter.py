@@ -251,6 +251,10 @@ SOCIAL_ERROR_MESSAGES = {
     "history_source_changed": "来源授权或隐私状态已变化，未返回旧内容",
     "history_scope_denied": "当前只获准读取指定的人物或群",
     "history_unavailable": "所选范围没有可读取的会话",
+    "forward_presence_unavailable": "接收这条转发的原账号当前不可用，未读取转发内容",
+    "forward_unsupported": "该消息所在平台连接不提供合并转发读取",
+    "forward_read_failed": "平台没有返回这份合并转发的内容",
+    "forward_locator_missing": "这条转发缺少平台定位信息，无法读取",
     "invalid_cursor": "cursor 必须原样使用上一页返回的 next_cursor",
     "permission_denied": "当前执行没有该操作的权限",
 }

@@ -41,6 +41,8 @@ async def read_personal_history(database, runtime, args):
             runtime.effective_conversation_id,
             actor=runtime.require_actor(),
         ),
+        # These personal entries carry no merged forward; no gateway is reached.
+        router=SimpleNamespace(),
         runtime=runtime,
     )
 
