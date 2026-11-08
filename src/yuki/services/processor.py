@@ -198,7 +198,8 @@ async def _attachment_metadata(
                         else {}
                     ),
                     "event_id": event_id,
-                    "attachment_index": index,
+                    # Named as view_file / copy_file take it.
+                    "attachment": index,
                     "kind": kind,
                     "filename": raw_name.replace("\\", "/").split("/")[-1],
                     **{
@@ -228,7 +229,7 @@ async def _attachment_metadata(
             )
         }
     for reference in references:
-        item = items.get((reference["event_id"], reference["attachment_index"]))
+        item = items.get((reference["event_id"], reference["attachment"]))
         if item is None:
             continue
         root = "/inputs/media-cache/v1"

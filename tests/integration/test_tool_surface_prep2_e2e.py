@@ -210,7 +210,7 @@ async def test_web_sources_and_media_budget_follow_typed_outcomes(database, tmp_
         {"url": "https://example.com/b", "title": "B", "snippet": ""},
     ]
     committed = json.loads(visible["image-committed"])
-    assert committed["ok"] is True and committed["media_error"] == "image_capability_unavailable"
+    assert "error" not in committed and committed["media_error"] == "image_capability_unavailable"
     assert json.loads(visible["image-uncommitted"]) == {
         "ok": False,
         "error": "image_capability_unavailable",
@@ -251,7 +251,7 @@ async def test_same_sources_from_two_searches_are_recorded_once(database, tmp_pa
 
 
 async def test_model_accept_keeps_visible_result_receipt_and_replay(database, tmp_path):
-    calls = (tool("task_control", {"action": "accept", "goal": "original goal"}, "accept"),)
+    calls = (tool("manage_task", {"action": "start", "goal": "original goal"}, "accept"),)
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls), "done"])
     probe.control.current = None
     probe.control.source_key = "prep2-accept-source"
@@ -329,7 +329,7 @@ async def test_plugin_host_admission_search_and_member_directory(database, tmp_p
     def respond(request):
         if len(provider.requests) == 1:
             return _tool("web_search", {"query": "query"}, "search")
-        return _tool("task_control", {"action": "complete", "result": "done"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "done"}, "finish")
 
     provider._responder = respond
     try:
@@ -363,7 +363,7 @@ async def test_plugin_host_admission_search_and_member_directory(database, tmp_p
     ("label", "quote"),
     [
         ("data", "test-10001"),
-        ("presentation-only", "get_group_members"),
+        ("presentation-only", "get_members"),
         ("absent", "不存在的工具结果"),
     ],
 )
@@ -391,17 +391,14 @@ async def test_main_self_quote_is_verified_against_the_real_result(
     actor = await self_actor(database, env)
     mutations, _facts, _ledger, _ = _service(database, self_memory_enabled=True)
     write = {
-        "operation": "create",
-        "target": {"subject_ref": "self", "scope_type": "self"},
-        "new_content": "我实际查询了当前群成员列表。",
-        "memory_key": "self_episode:prep2",
-        "category": "self_episode",
+        "target": {"self": True},
+        "content": "我实际查询了当前群成员列表。",
         "kind": "episode",
-        "evidence_quote": quote,
+        "quote": quote,
     }
     calls = [
-        ("get_group_members", {"limit": 10, "target_id": env.space}),
-        ("memory_change", write),
+        ("get_members", {"limit": 10, "target": {"space_id": env.space}}),
+        ("save_memory", write),
     ]
 
     def respond(request):
@@ -509,17 +506,17 @@ async def test_main_self_quote_is_verified_against_the_real_result(
         {
             "quote": quote,
             "members_model_visible": visible["original-0"],
-            "memory_change_ok": written.get("ok"),
-            "memory_change_error": written.get("error_code"),
+            "save_memory_ok": written.get("ok", True),
+            "save_memory_error": written.get("error"),
             "mutations_written": mutations_written,
             "stored_excerpts": excerpts,
         },
     )
     assert visible["original-0"]
-    # The excerpt is the bounded text the model actually saw. Today it still
-    # carries presentation fields, so a tool-name quote matches; the switch that
-    # removes them from the projection removes that match with them.
-    assert written.get("ok") is (label != "absent"), written
+    # The excerpt is the bounded text the model actually saw. The cutover removed
+    # presentation fields (tool name, provider) from it, so a quote found only in
+    # them no longer matches; a quote from the real result data still does.
+    assert written.get("ok", True) is (label == "data"), written
 
 
 async def test_self_reflection_reads_recorded_tool_names_through_the_map(database):

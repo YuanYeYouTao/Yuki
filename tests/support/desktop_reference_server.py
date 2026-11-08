@@ -123,8 +123,7 @@ async def publish_artifact(runtime, code):
     result = await runtime.social_service.execute(
         "send",
         {
-            "artifact_id": artifact["artifact_id"],
-            "attachment_kind": "file",
+            "file": {"artifact_id": artifact["artifact_id"]},
             "text": "Fixture artifact",
         },
         SocialContext(

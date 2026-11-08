@@ -67,7 +67,7 @@ async def test_failed_atomic_admission_does_not_dispatch_text_or_leave_orphan_in
         await admit(*args, **kwargs)
         raise OperationalError("uncommitted admission", (), sqlite3.OperationalError("lost"))
 
-    arguments = {"text": "first", "emoji": {"goal": "happy"}}
+    arguments = {"text": "first", "sticker": {"goal": "happy"}}
     with monkeypatch.context() as patch:
         patch.setattr(delivery, "admit", fail_before_claim_commit)
         with pytest.raises(OperationalError):
@@ -92,7 +92,7 @@ async def test_confirmed_text_interruption_recovers_only_original_illustration(
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
     context = split_context(env.context) if split else env.context
-    arguments = {"text": "first\nsecond" if split else "first", "emoji": {"goal": "happy"}}
+    arguments = {"text": "first\nsecond" if split else "first", "sticker": {"goal": "happy"}}
     sequence = env.service._send_message_sequence
 
     async def stop_after_confirmed_text(*args, **kwargs):
@@ -159,7 +159,7 @@ async def test_inflight_text_does_not_release_image_or_block_another_intent(
     monkeypatch.setattr(env.bot, "call_api", hold_text)
     await delivery.start()
     sending = asyncio.create_task(
-        env.service.execute("send", {"text": "first\nsecond", "emoji": {"goal": "slow"}}, context)
+        env.service.execute("send", {"text": "first\nsecond", "sticker": {"goal": "slow"}}, context)
     )
     try:
         await asyncio.wait_for(first.wait(), 3)
@@ -185,7 +185,7 @@ async def test_inflight_text_does_not_release_image_or_block_another_intent(
                     )
                 )
         independent = replace(context, call_id="independent")
-        await env.service.execute("send", {"emoji": {"goal": "fast"}}, independent)
+        await env.service.execute("send", {"sticker": {"goal": "fast"}}, independent)
         assert (await settle(delivery, independent))["status"] == "succeeded"
         assert len(messages(env)) == 1  # Only the independent image.
         from sqlalchemy import delete
@@ -233,7 +233,7 @@ async def test_text_failure_ends_its_dispatch_without_requiring_success_for_imag
 
     monkeypatch.setattr(env.bot, "call_api", fail_text)
     result = await env.service.execute(
-        "send", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
+        "send", {"text": "first\nsecond", "sticker": {"goal": "happy"}}, context
     )
     assert result["emoji"]["status"] == "accepted"
     text = await env.service.receipts.find(context.turn_id, f"{sequence_prefix(context.call_id)}0")
@@ -291,7 +291,7 @@ async def test_later_text_preflight_exit_does_not_leave_image_pending_forever(
     await delivery.start()
     try:
         result = await env.service.execute(
-            "send", {"text": "first\nsecond", "emoji": {"goal": "happy"}}, context
+            "send", {"text": "first\nsecond", "sticker": {"goal": "happy"}}, context
         )
         assert result["emoji"]["status"] == "accepted"
         assert len(messages(env)) == 1
@@ -319,7 +319,7 @@ async def test_obsolete_source_closes_while_its_text_transport_is_still_pending(
     monkeypatch.setattr(env.bot, "call_api", pending_text)
     sending = asyncio.create_task(
         env.service.execute(
-            "send", {"text": "pending text", "emoji": {"goal": "happy"}}, env.context
+            "send", {"text": "pending text", "sticker": {"goal": "happy"}}, env.context
         )
     )
     try:
@@ -363,7 +363,7 @@ async def test_shutdown_between_text_parts_preserves_original_image_without_rese
         return result
 
     monkeypatch.setattr(env.service, "_effect", observe_first_effect)
-    arguments = {"text": "first\nsecond", "emoji": {"goal": "happy"}}
+    arguments = {"text": "first\nsecond", "sticker": {"goal": "happy"}}
     sending = asyncio.create_task(env.service.execute("send", arguments, context))
     await asyncio.wait_for(first_finished.wait(), 3)
     original = await delivery.intents.find(context.turn_id, context.call_id)
@@ -405,7 +405,7 @@ async def test_startup_keeps_fully_confirmed_text_sequence_parent_facts(database
     env = await social_env(database, tmp_path)
     delivery, _ = make_delivery(env)
     context = split_context(env.context)
-    arguments = {"text": "first\nsecond", "emoji": {"goal": "happy"}}
+    arguments = {"text": "first\nsecond", "sticker": {"goal": "happy"}}
     result = await env.service.execute("send", arguments, context)
     assert result["status"] == "succeeded"
     original = await delivery.intents.find(context.turn_id, context.call_id)
@@ -466,7 +466,7 @@ async def test_committed_first_admission_cancel_wakes_and_settles_unattempted_te
             raise error
 
     monkeypatch.setattr(delivery, "admit", arm)
-    arguments = {"emoji": {"goal": "happy"}}
+    arguments = {"sticker": {"goal": "happy"}}
     if with_text:
         arguments["text"] = "first"
     try:

@@ -62,17 +62,17 @@ async def test_missing_owned_receipt_remains_metadata_for_restricted_sources(res
     )
     result = await read_history(
         database,
-        {"view": "around", "target": {"operation_id": operation.id}},
+        {"target": {"operation_id": operation.id}},
         context,
         runtime=runtime,
     )
-    assert result["receipt_status"] == "succeeded"
-    assert result["receipt_anchor"] == {
+    assert result["receipt"] == {
+        "operation_id": operation.id,
+        "receipt_status": "succeeded",
         "event_id": 912,
-        "conversation_id": operation.original_conversation_id,
-        "status": "missing",
+        "anchor_status": "missing",
     }
-    assert result["events"] == [] and not result["has_more"]
+    assert result["events"] == [] and "next_cursor" not in result
     assert result.source_event_ids == ()
     assert all(call.args[0] is not ChatEventModel for call in session.get.await_args_list)
 
@@ -83,7 +83,7 @@ async def test_missing_destination_does_not_grant_another_sources_receipt():
     with pytest.raises(SocialError, match="history_receipt_unavailable"):
         await read_history(
             database,
-            {"view": "around", "target": {"operation_id": operation.id}},
+            {"target": {"operation_id": operation.id}},
             context,
             runtime=SimpleNamespace(origin="plugin_background"),
         )

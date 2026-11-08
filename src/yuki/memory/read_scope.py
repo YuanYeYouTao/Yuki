@@ -12,27 +12,21 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.identity.db_models import (
-    AccountModel,
-    AccountNameObservationModel,
-    AccountSpaceProfileModel,
     CanonicalPersonModel,
     CanonicalSpaceModel,
-    IdentityBindingModel,
-    SpaceBindingModel,
 )
 from yuki.identity.person_identity import (
     current_person_ids,
     person_family_condition,
     person_family_ids,
     person_root_id,
-    same_person_condition,
 )
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.enums import MemoryScopeType, MemoryTargetRole
 from yuki.memory.models import MemoryEntityTarget
 from yuki.memory.runtime.query_plane import ResolvedReadScope
 from yuki.persistence.database import Database
-from yuki.persistence.models import MembershipModel, PersonAliasModel
+from yuki.persistence.models import MembershipModel
 
 
 class MemoryReadScopeResolver:
@@ -257,127 +251,3 @@ class MemoryReadScopeResolver:
                 ),
             )
         )
-
-    async def people_named(self, requester: str, name: str) -> tuple[str, ...]:
-        """Complete exact-name candidates inside authorized relationships."""
-        async with self._database.read_session() as session:
-            requester_id = await self._person(session, requester)
-            if requester_id is None:
-                return ()
-            groups = select(MembershipModel.canonical_space_id).where(
-                person_family_condition(MembershipModel.canonical_person_id, requester_id)
-            )
-            related = select(person_root_id(MembershipModel.canonical_person_id)).where(
-                MembershipModel.canonical_space_id.in_(groups)
-            )
-            alias_match = (
-                select(PersonAliasModel.id)
-                .where(
-                    same_person_condition(
-                        PersonAliasModel.canonical_person_id, CanonicalPersonModel.id
-                    ),
-                    PersonAliasModel.alias == name.strip(),
-                    or_(
-                        PersonAliasModel.canonical_space_id.is_(None),
-                        PersonAliasModel.canonical_space_id.in_(groups),
-                    ),
-                )
-                .exists()
-            )
-            card_match = (
-                select(IdentityBindingModel.id)
-                .join(
-                    AccountSpaceProfileModel,
-                    AccountSpaceProfileModel.account_id == IdentityBindingModel.account_id,
-                )
-                .join(
-                    SpaceBindingModel,
-                    SpaceBindingModel.id == AccountSpaceProfileModel.space_binding_id,
-                )
-                .where(
-                    same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
-                    IdentityBindingModel.status != "ended",
-                    SpaceBindingModel.space_id.in_(groups),
-                    AccountSpaceProfileModel.display_name == name.strip(),
-                )
-                .exists()
-            )
-            display_match = (
-                select(IdentityBindingModel.id)
-                .join(AccountModel, AccountModel.id == IdentityBindingModel.account_id)
-                .where(
-                    same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
-                    IdentityBindingModel.status != "ended",
-                    AccountModel.display_name == name.strip(),
-                )
-                .exists()
-            )
-            observed_name = (
-                select(AccountNameObservationModel.id)
-                .join(
-                    IdentityBindingModel,
-                    IdentityBindingModel.id == AccountNameObservationModel.assignment_id,
-                )
-                .outerjoin(
-                    SpaceBindingModel,
-                    SpaceBindingModel.id == AccountNameObservationModel.space_binding_id,
-                )
-                .where(
-                    same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
-                    AccountNameObservationModel.name == name.strip(),
-                    or_(
-                        AccountNameObservationModel.space_binding_id.is_(None),
-                        SpaceBindingModel.space_id.in_(groups),
-                    ),
-                )
-                .exists()
-            )
-            return tuple(
-                await session.scalars(
-                    select(person_root_id(CanonicalPersonModel.id))
-                    .where(
-                        or_(
-                            person_family_condition(CanonicalPersonModel.id, requester_id),
-                            person_root_id(CanonicalPersonModel.id).in_(related),
-                        ),
-                        or_(
-                            CanonicalPersonModel.display_name == name.strip(),
-                            display_match,
-                            alias_match,
-                            card_match,
-                            observed_name,
-                        ),
-                    )
-                    .distinct()
-                    .order_by(person_root_id(CanonicalPersonModel.id))
-                )
-            )
-
-    async def groups_named(self, requester: str, name: str) -> tuple[str, ...]:
-        """Names resolve within the requester's historical canonical relationships."""
-        async with self._database.read_session() as session:
-            requester_id = await self._person(session, requester)
-            if requester_id is None:
-                return ()
-            groups = select(MembershipModel.canonical_space_id).where(
-                person_family_condition(MembershipModel.canonical_person_id, requester_id)
-            )
-            display_match = (
-                select(SpaceBindingModel.id)
-                .where(
-                    SpaceBindingModel.space_id == CanonicalSpaceModel.id,
-                    SpaceBindingModel.status == "active",
-                    SpaceBindingModel.display_name == name.strip(),
-                )
-                .exists()
-            )
-            return tuple(
-                await session.scalars(
-                    select(CanonicalSpaceModel.id)
-                    .where(
-                        CanonicalSpaceModel.id.in_(groups),
-                        or_(CanonicalSpaceModel.name == name.strip(), display_match),
-                    )
-                    .order_by(CanonicalSpaceModel.id)
-                )
-            )

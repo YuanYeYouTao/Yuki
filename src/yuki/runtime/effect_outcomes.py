@@ -42,11 +42,34 @@ current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
 # whose receipt semantics it shares. Only readers of original receipts and
 # history consult it; a new call never resolves through it, and records keep
 # their original name. Retired names without a successor (local_device,
-# run_python, ...) are not aliases and keep their own reading.
+# run_python, environment_service, get_my_capabilities, time_get_current) are
+# not aliases and keep their own reading. A split tool maps to the successor
+# carrying its action semantics; readers still branch on the original action.
 RECORDED_TOOL_NAMES: Mapping[str, str] = MappingProxyType(
     {
         "send_message": "send",
         "web_read": "read_webpage",
+        "recall_own_message": "recall_message",
+        "query_chat_history": "read_chat",
+        "find_conversations": "find_contacts",
+        "get_group_members": "get_members",
+        "read_memory": "search_memory",
+        "memory_change": "edit_memory",
+        "update_short_state": "set_short_note",
+        "workspace_inspect": "view_file",
+        "inspect_conversation_attachment": "view_file",
+        "save_conversation_attachment_to_workspace": "copy_file",
+        "read_tool_artifact": "read_result",
+        "terminal_exec": "run_command",
+        "terminal_read": "read_command",
+        "terminal_control": "control_command",
+        "environment_status": "get_environment",
+        "task_control": "manage_task",
+        "subagent_start": "start_subtask",
+        "subagent_control": "message_task",
+        "automation_query": "get_schedules",
+        "automation_manage": "manage_schedule",
+        "external_agent": "use_coding_agent",
     }
 )
 
@@ -115,22 +138,23 @@ def execution_evidence(
         args = json.loads(arguments)
     except ValueError:
         args = {}
-    # local_device names only retained here to interpret original durable receipts.
-    if (
-        reading in {"external_agent", "local_device"}
+    # local_device is retained only to interpret its original durable receipts.
+    if reading == "get_coding_agents" or (
+        reading in {"use_coding_agent", "local_device"}
         and isinstance(args, dict)
         and args.get("action") in {"list", "get"}
     ):
         side_effecting = False
     control: dict[str, Any] | None = None
-    if reading == "external_agent" and isinstance(args, dict):
+    if reading == "use_coding_agent" and isinstance(args, dict):
+        # ``respond`` is the original recorded action of today's ``answer``.
         control = (
             body.get("permission_response", body)
-            if args.get("action") == "respond"
+            if args.get("action") in {"respond", "answer"}
             else body.get("close")
             if args.get("action") == "close"
             else body
-            if args.get("action") in {"cancel", "detach", "steer", "respond", "watch"}
+            if args.get("action") in {"cancel", "detach", "steer", "respond", "answer", "watch"}
             else None
         )
     admitted = isinstance(control, dict) and (
@@ -213,7 +237,8 @@ def execution_evidence(
         "tool": tool,
         **(
             {"action": args.get("action")}
-            if reading in {"external_agent", "local_device"} and isinstance(args, dict)
+            if reading in {"use_coding_agent", "get_coding_agents", "local_device"}
+            and isinstance(args, dict)
             else {}
         ),
         "side_effecting": side_effecting,
@@ -455,7 +480,7 @@ def historical_evidence(
     if (
         isinstance(invocation, dict)
         and isinstance(invocation.get("tool_id"), str)
-        and recorded_tool(invocation["tool_id"]) == "external_agent"
+        and recorded_tool(invocation["tool_id"]) == "use_coding_agent"
     ):
         result["tool"] = invocation["tool_id"]
         if "action" in invocation:

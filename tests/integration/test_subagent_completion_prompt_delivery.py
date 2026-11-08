@@ -68,20 +68,19 @@ def _child_notice(request, child_id):
 
 def _guidance(request):
     tools = {tool.name: tool for tool in request.tools}
-    spawn = tools["subagent_start"].description
-    control = tools["task_control"]
-    properties = control.parameters["properties"]
+    spawn = tools["start_subtask"].description
+    wait = tools["wait"]
+    signals = {
+        key
+        for item in wait.parameters["properties"]["for"]["items"]["oneOf"]
+        for key in item["properties"]
+    }
     system = "\n".join(message.content for message in request.messages if message.role == "system")
     return {
         "explicit_delivery": "send" in system and "交付" in system,
-        "spawn_identifies_waitable_child": "child_id" in spawn and "wait" in spawn,
-        "wait_parameter_connects_child": "child_id" in properties["run_id"].get("description", ""),
-        "condition_example_connects_child": all(
-            text in properties["conditions"].get("description", "")
-            for text in ("owned_run", "child_id", "conversation")
-        ),
-        "remaining_dependencies_after_any": "剩余" in control.description
-        and "any" in control.description,
+        "spawn_identifies_waitable_child": "id" in spawn,
+        "wait_connects_child_and_message": {"run", "message"} <= signals,
+        "wait_any_or_all": "all" in wait.parameters["properties"] and "任一" in wait.description,
     }
 
 
@@ -119,46 +118,39 @@ async def test_child_result_reaches_original_parent_request_and_image_receipt(
         ):
             worker_requests.append(request)
             return _tool(
-                "task_control", {"action": "complete", "result": child_result}, "child-complete"
+                "manage_task", {"action": "finish", "result": child_result}, "child-complete"
             )
         parent_requests.append(request)
         phase = script["phase"]
         if phase == "accept":
             script["phase"] = "spawn"
-            return _tool("task_control", {"action": "accept", "goal": GOAL}, "parent-accept")
+            return _tool("manage_task", {"action": "start", "goal": GOAL}, "parent-accept")
         if phase == "spawn":
             script["phase"] = "wait"
             return _tool(
-                "subagent_start",
+                "start_subtask",
                 {"goal": "核对原图片并回传已发布的 artifact 引用", "acceptance": "返回核对结果"},
                 "spawn-original-child",
             )
         if phase == "wait":
-            child_id = _last_tool_result(request, "spawn-original-child")["child_id"]
+            child_id = _last_tool_result(request, "spawn-original-child")["id"]
             script["child_id"] = child_id
             script["phase"] = "await-child"
-            arguments = {"action": "wait", "run_id": child_id}
+            arguments = {"for": [{"run": child_id}]}
             if conversation_first:
-                arguments = {
-                    "action": "wait",
-                    "wait_mode": "any",
-                    "conditions": [
-                        {"kind": "owned_run", "run_id": child_id},
-                        {"kind": "conversation"},
-                    ],
-                }
-            return _tool("task_control", arguments, "wait-original-child")
+                arguments = {"for": [{"run": child_id}, {"message": True}]}
+            return _tool("wait", arguments, "wait-original-child")
         if phase == "await-child" and not script["child_done"]:
             assert conversation_first, "the parent resumed without a completion or conversation"
             script["phase"] = "rearm-child"
             return _tool(
-                "update_short_state", {"slot": 2, "text": INDEPENDENT_PROGRESS}, "independent-work"
+                "set_short_note", {"slot": 2, "text": INDEPENDENT_PROGRESS}, "independent-work"
             )
         if phase == "rearm-child":
             script["phase"] = "await-child"
             return _tool(
-                "task_control",
-                {"action": "wait", "run_id": script["child_id"]},
+                "wait",
+                {"for": [{"run": script["child_id"]}]},
                 "wait-remaining-original-child",
             )
         assert phase == "await-child" and script["child_done"], script
@@ -176,8 +168,7 @@ async def test_child_result_reaches_original_parent_request_and_image_receipt(
                         "send",
                         json.dumps(
                             {
-                                "artifact_id": artifact["artifact_id"],
-                                "attachment_kind": "image",
+                                "file": {"artifact_id": artifact["artifact_id"]},
                                 "text": "原图片任务的结果",
                             }
                         ),
@@ -185,7 +176,7 @@ async def test_child_result_reaches_original_parent_request_and_image_receipt(
                 ),
                 ToolCall(
                     "parent-complete",
-                    ToolFunction("task_control", '{"action":"complete","result":"已交付原图"}'),
+                    ToolFunction("manage_task", '{"action":"finish","result":"已交付原图"}'),
                 ),
             ),
         )

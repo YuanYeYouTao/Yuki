@@ -8,9 +8,11 @@
 文件语义；不再提供 `workspace_list/read/write/search/patch/mkdir/move/delete`，也不保留
 旧 artifact 的公开目录、分页文本读取和删除兼容接口。终端操作不要求工作区版本或 CAS。
 
-模型侧只保留 `workspace_inspect` 选读媒体。文字、图片、文件与表情统一通过 `send`
-发送；文件传 `path` 和 `attachment_kind`，程序内部冻结不可变 artifact 后沿原 Social 出口
-交付，也可直接传已有 `artifact_id`。没有独立发布或发文件的模型工具，也没有旧发送别名。
+模型侧只保留 `view_file` 选读媒体（来源三选一：path 可带 device、artifact_id、event_id 加
+attachment）。文字、图片、文件与表情统一通过 `send` 发送；文件传单个
+`file={path 或 artifact_id, device?, name?}`，图片默认显示为聊天图片，`as_file=true` 或非图片时按
+文件发送（QQ 走 `upload_group_file`／`upload_private_file`）；程序内部冻结不可变 artifact 后沿原
+Social 出口交付。没有独立发布或发文件的模型工具，也没有旧发送别名。
 终端后来改写或删除原文件，不改变已经发布的快照与投递回执。发布与普通 artifact 读回
 没有固定 200 MiB 单文件、512 MiB 总量或 1000 对象配额；真实磁盘和平台传输错误照实返回。
 模型看图的字节与帧数预算属于实际输入准备，不等于发布文件的容量。
@@ -22,7 +24,7 @@
 
 ## 媒体引用与读取
 
-入站消息在原位置留下 `[图片附件0]`、`[视频附件0]` 或 `[文件附件0：名称]` 等稳定文字标记。编号对应 `chat_events.id + attachment_index`：接入在同一短事务写入真实 segment 位置、canonical Conversation、generation 和媒体元数据。标记只说明附件存在，不表示 Yuki 已看过内容。公共历史不放 URL、网关文件 ID、Base64 或缓存路径；当前激活的附件索引可提供共享沙箱的真实文件路径或尚在下载的目录，不把待缓存冒充已读。
+入站消息在原位置留下 `[图片附件0]`、`[视频附件0]` 或 `[文件附件0：名称]` 等稳定文字标记。编号对应 `chat_events.id` 加附件序号（存储列 `attachment_index`；本轮附件索引与 `view_file`／`copy_file` 的参数名为 `attachment`）：接入在同一短事务写入真实 segment 位置、canonical Conversation、generation 和媒体元数据。标记只说明附件存在，不表示 Yuki 已看过内容。公共历史不放 URL、网关文件 ID、Base64 或缓存路径；当前激活的附件索引可提供共享沙箱的真实文件路径或尚在下载的目录，不把待缓存冒充已读。
 
 原生编辑在同一个原事件更新正文、提及与附件索引。仅 caption 或位置变化时复用同一媒体的原缓存期限；替换媒体后当前索引改指新原件，旧下载不得覆盖新来源。历史附件解析前后核当前来源、路径及内容版本，文档正文不能搭配另一版本的哈希。已经冻结的请求与工具结果保留原件；旧版本缓存沿原文件寿命回收，来源被遗忘或删除时不继续保留。
 
@@ -45,7 +47,7 @@ Bot 是原件缓存的唯一 writer 与清理 owner。Host 的 `data/conversatio
 身份、类型、大小和修改时间；未过期引用、刚替换的文件和其他来源仍保留。取消等待中的 GC
 先结束当前线程页，再释放锁，不能让后台 unlink 与新发布竞争。正在写入的暂存文件由实际 owner 引用保留，mtime 变旧不证明写入已经结束。
 
-主 Agent 的 `query_chat_history` 按 recent/search/around 返回真实内部事件 ID。自动聊天上下文仍认原 Conversation、generation 与起点；显式历史查询可读当前获准的跨平台永久账本，不受 `/ai new` 的上下文 floor 截断，结果逐条保原入口来源，详见[聊天记录读取](chat-history.md)。共享原文件是独立的文件访问范围：`inspect_conversation_attachment` 与保存桥按内部 event/index 找到真实入站 keeper，不另加当前 Conversation、generation 或 floor 的读取限制，也不向调用者拼入另一会话的自动上下文。图片与视频选读后才进入原 Main 的原生视觉输入；文档沿本地有界 reader 解析。附件工具不调用独立 Qwen，也不扣辅助模型请求，结果标明真实来源、hash 和处理模式。
+主 Agent 的 `read_chat` 按当前会话浏览、筛选检索或 around 邻文返回真实内部事件 ID（附件以 `attachment` 标序号）。自动聊天上下文仍认原 Conversation、generation 与起点；显式历史查询可读当前获准的跨平台永久账本，不受 `/ai new` 的上下文 floor 截断，结果逐条保原入口来源，详见[聊天记录读取](chat-history.md)。共享原文件是独立的文件访问范围：`view_file` 与 `copy_file` 的附件来源按内部 event/attachment 找到真实入站 keeper，不另加当前 Conversation、generation 或 floor 的读取限制，也不向调用者拼入另一会话的自动上下文。图片与视频选读后才进入原 Main 的原生视觉输入；文档沿本地有界 reader 解析。附件工具不调用独立 Qwen，也不扣辅助模型请求，结果标明真实来源、hash 和处理模式。
 
 已知引用复用原 keeper 的内部事件与附件；Yuki 的出站图片沿真实不可变 artifact。原消息从未入账但当前确实观察到引用附件时，`source_snapshot_json` 只保存这一实际 segment，并在本次真实事件下追加附件槽，当前索引标明 `reply_observed`。不从平台消息号制造过去事件、作者或对话。快照在首次 writer 前序列化，编辑沿原内部引用事实处理，不在写事务解析整份历史。
 
@@ -71,8 +73,7 @@ GIF 按真实字节识别，包含 Telegram animation 的缺 MIME 或误扩展�
 没有经验接纳配额不代表一次看图可以无限读取内存。解码、文件读取和采帧不进入
 SQLite writer。没有 `image_input` 时如实报告未读，不暗中调用 Qwen 或换模型。
 
-`workspace_inspect` 接受 `path` 或 `artifact_id` 二选一和 `question`；path 可带已选定文件的
-`expected_version`，不要求先调用已退役的文件读取工具；`/inputs/media-cache/` 与 `/workspace/` 都沿现有桥读取。Manager 通过实际源目录 FD 核验路径、软链接/硬链接和真实内容版本，
+`view_file` 的来源三选一在执行处单点检查（`choose_one_source`），另带可选 `question`；不要求先调用已退役的文件读取工具；`/inputs/media-cache/` 与 `/workspace/` 都沿现有桥读取。Manager 通过实际源目录 FD 核验路径、软链接/硬链接和真实内容版本，
 返回冻结字节；这次读取不发布 artifact，也不修改文件。已发布 artifact 必须不可变。
 工作区视频因控制通道的读取预算同样限制为 20 MiB；超限明确拒绝。Agent 可自行先用终端
 生成较小文件/代表帧，再选择它查看，Host 不为其自动扫描全部工作文件或图片。
@@ -85,8 +86,7 @@ SQLite writer。没有 `image_input` 时如实报告未读，不暗中调用 Qwe
 派发前在模型名额取得后再次核验选中媒体的真实 keeper、源版本和 hash，已选像素不要求临时原件文件仍存在；共享媒体不再被本轮 Conversation、generation 或 floor 拦截。上下文来源检查只核实际聊天输入，不因附图而把另一会话的事件变成本轮历史依赖。工作区路径仍核实际版本，artifact 保不可变。Work journal 保存选中图片、原 call_id 与顺序，工具回执已落地而 paired 检查点未落地时按原回执恢复，不重新下载、搜索或执行已确认效果。普通下一轮不自动带入旧图，私有检查点只用于原执行恢复。
 
 获准工具图片 使用同一纯准备器进入原生输入，工具图片归入原
-读取授权的私有 artifact。`read_tool_artifact(operation="image")` 返回像素；text/get/search
-仅返回图片 manifest。来源权限、owner、generation、有效期和字节完整性在读取前后及派发前
+读取授权的私有 artifact。`read_result` 对图片 Artifact 自动返回像素；`structure=true` 只返回图片 manifest。来源权限、owner、generation、有效期和字节完整性在读取前后及派发前
 复核，不把任意 URL 当成可读取文件。插件自己拥有的媒体 handle 不因此开放跨插件读取；
 SDK `vision.analyze_current_media` 是另一个明确授予 `VISION_ANALYZE` 的辅助合同。
 它按实际原件内容 hash、问题和模型配置复用观察；同一事件编辑换图后读取新原件，同图不重复购买分析。
@@ -97,9 +97,9 @@ SDK `vision.analyze_current_media` 是另一个明确授予 `VISION_ANALYZE` 的
 Bot 与 sandbox Manager 的媒体读取实现须配套更新。来源、文件版本、GIF、采帧与
 原生请求配对可离线核验；实际 Provider 图片能力、端到端速度和 QQ 自然流量分别验收。
 
-`save_conversation_attachment_to_workspace` 按同一真实内部来源显式复制原件，来源三选一：`event_id` + `attachment_index`（聊天附件）、`path`（Yuki 环境中的文件）或 `artifact_id`（已发布或已发送的不可变文件）；目标为全局持久工作区，或 `device_id` 指定的本人电脑（见下文“本机设备文件”）。也可直接用终端从共享缓存 `cp` 到自己的目录。临时原件仍按原时间清理，持久副本自由编辑。保存与原生表情收藏共用 Manager 私有流式复制：直接从只读缓存复制到最终文件，同次读取核源哈希、原子覆盖目标，不产生永久中转 artifact；`path` 来源写入环境同样走这条复制，`source_key` 为 `path:<path>`。`artifact_id` 写入 Yuki 环境需要 Manager 新方法，目前返回 `source_not_supported_for_destination`。普通目标覆盖不要求目标 CAS。保存先读原 request 回执；成功后源过期、目标被用户改写或删除，都不会重拷。未知写入保持原未知事实。共享 Agent 文件范围不增加插件 SDK 的批准权限，插件 handle 仍沿自身合同。
+`copy_file` 按同一真实内部来源显式复制原件，来源三选一：`event_id` + `attachment`（聊天附件）、`path`（Yuki 环境中的文件）或 `artifact_id`（已发布或已发送的不可变文件）；目标 `destination` 在全局持久工作区，或 `to_device` 指定的本人电脑（见下文“本机设备文件”）。成功返回 `{destination, size, sha256}`，未确认返回 `status: "unknown"` 与核对说明。也可直接用终端从共享缓存 `cp` 到自己的目录。临时原件仍按原时间清理，持久副本自由编辑。保存与原生表情收藏共用 Manager 私有流式复制：直接从只读缓存复制到最终文件，同次读取核源哈希、原子覆盖目标，不产生永久中转 artifact；`path` 来源写入环境同样走这条复制，`source_key` 为 `path:<path>`。`artifact_id` 写入 Yuki 环境需要 Manager 新方法，目前返回 `source_not_supported_for_destination`。普通目标覆盖不要求目标 CAS。保存先读原 request 回执；成功后源过期、目标被用户改写或删除，都不会重拷。未知写入保持原未知事实。共享 Agent 文件范围不增加插件 SDK 的批准权限，插件 handle 仍沿自身合同。
 
-`send(path=...)` 用原 Conversation、执行与 call ID 派生稳定发布子键，Manager 先查发布回执再接触可变路径。发布后中断、原件删除或改写，恢复仍用原冻结版本；已完成、部分完成或未知派发不自动重发。实际 artifact、文件名、版本沿原 Social 计划和回执交给 Work、Client 与效果汇总，原模型参数和指纹不被覆写。分段结果按原计划逐项报告，不以第一步的位置猜测文件成功。历史领域 action 与原回执保持，不注册成可执行工具。
+`send(file={path})` 用原 Conversation、执行与 call ID 派生稳定发布子键，Manager 先查发布回执再接触可变路径。发布后中断、原件删除或改写，恢复仍用原冻结版本；已完成、部分完成或未知派发不自动重发。实际 artifact、文件名、版本沿原 Social 计划和回执交给 Work、Client 与效果汇总，原模型参数和指纹不被覆写。分段结果按原计划逐项报告，不以第一步的位置猜测文件成功。历史领域 action 与原回执保持，不注册成可执行工具。
 
 ## 入站语音
 
@@ -118,7 +118,7 @@ ASR 与视频的临时目录、文件读写和清理在共享事件循环外完�
 
 原图与 `stickers/<platform>/index/<asset-id>.json` 是唯一图库资料源，短 tags 与长 description/OCR 分开。Main 与 Qwen 自由编辑相同文件；Yuki 主业务库不保存资产、标签、来源或倒排资料。每平台 `search.sqlite3` 是可删除重建的派生缓存。独立 helper 在原持久环境运行，Main 可直接 update/rebuild/search；Manager 调同一实现，Host 不直接连接用户可编辑路径的 SQLite。任意终端编辑后新标签在 update/rebuild 完成后可搜；命中项重读当前 JSON 和原件，不全库扫描、不从缓存回写旧资料。冷构建不冒充无候选，也不阻塞正文。自动选图只使用明确的 goal/emotion，中文连续段与其他语言词、原生 emoji 分别取词，不把混合标签中的英文拆成单字；分词格式变化沿派生缓存版本重建，原图与 JSON 不变。
 
-Main 主动收藏聊天图片时，直接沿 `save_conversation_attachment_to_workspace` 把原件存入 `stickers/<platform>/files/<filename>`，不必为了保存再先看图。已有工作区图片也可用普通 `cp` 放进去。随后在自己的终端增量编目这一张：
+Main 主动收藏聊天图片时，直接沿 `copy_file` 把原件存入 `stickers/<platform>/files/<filename>`，不必为了保存再先看图。已有工作区图片也可用普通 `cp` 放进去。随后在自己的终端增量编目这一张：
 
 ```sh
 python /opt/yuki-runtime/sticker_index.py --workspace /workspace update stickers/qq/files/开心.png --tag 开心 --tag 赞同
@@ -139,13 +139,13 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platfo
 
 重复原生表情先核原事件与附件来源，再按已发表原件哈希查询当前图库；已有有效原图与编目时复用资料，不再次读取、解析缓存原件或请求描述。首次收藏才读取原件、核实际哈希并直接复制；原生贴纸标记可补到已有普通图片资料，原标签和描述保持。Manager 的显式媒体读取同次读取核内容版本与文件变化，不预先完整扫描一遍原件。
 
-`send.emoji` 表示可选配图意图。图文的配图输入与首条正文发送 claim 在同一短事务保存原来源，后台沿原文本回执等待正文派发结束，再选图、publish 和发送图片；Main 不等待选图或发图，正文后也不另开接纳写事务。正文的明确失败或未知不会删除配图意图；分段后续预检退出沿原父回执记录实际停止，不把未派发子项伪装成已发送。纯配图返回接纳事实，不能冒充已投递。图片沿原 Social 服务使用独立稳定派生键与不可变 artifact，发送结果只认原 Social 回执，不追加进已开始的正文分段计划。普通 Main/Work 完成不撤销已接纳配图，真实取消、换代和撤权在原 claim 边界处理；已 claim 中断保留未知，不自动重发。公共图片记录仅有表情标记和短 tags，长描述不进入公共历史或自动摘要。恢复与 Work 效果查询复用原 Social 实际分步回执，父 PREPARED 不否认已成功子项；已派发或未知不因图库或 Manager 失效而重发。纯图提及/引用交给原图片计划，有正文时仅正文提醒一次。
+`send.sticker`（`{goal, emotion?}`）表示可选配图意图。图文的配图输入与首条正文发送 claim 在同一短事务保存原来源，后台沿原文本回执等待正文派发结束，再选图、publish 和发送图片；Main 不等待选图或发图，正文后也不另开接纳写事务。正文的明确失败或未知不会删除配图意图；分段后续预检退出沿原父回执记录实际停止，不把未派发子项伪装成已发送。纯配图返回接纳事实，不能冒充已投递。图片沿原 Social 服务使用独立稳定派生键与不可变 artifact，发送结果只认原 Social 回执，不追加进已开始的正文分段计划。普通 Main/Work 完成不撤销已接纳配图，真实取消、换代和撤权在原 claim 边界处理；已 claim 中断保留未知，不自动重发。公共图片记录仅有表情标记和短 tags，长描述不进入公共历史或自动摘要。恢复与 Work 效果查询复用原 Social 实际分步回执，父 PREPARED 不否认已成功子项；已派发或未知不因图库或 Manager 失效而重发。纯图提及/引用交给原图片计划，有正文时仅正文提醒一次。
 
 普通聊天的图文与纯配图都不要求先登记 Work。工具结果采集中的空 Work ID 只表示没有任务，不参与任务取消检查或 Work 效果绑定；配图仍保存原 Social 意图与发送回执。存在真实 Work 时保留原任务身份、效果归属及实际取消事实。
 
 明确指定的 artifact 图片和普通文件保持原同步发送语义。QQ 小表情沿 OneBot 原生 `image.data.sub_type=1`，普通图片不附此字段。Telegram 原生贴纸使用 `sendSticker`，GIF 配图使用动画发送，明确的 GIF 文件仍使用 `sendDocument`；无原生跨端转换的格式按实际传输结果报告，不伪造静态替代图。
 
-图片、视频、原生贴纸及普通文件入站均只提供附件资料，后台保原件缓存；Main 按需沿既有 inspect 或沙箱路径读取，也可直接保存原件。没有自动像素准备、视频采帧或文档展开，不隐式调用独立视觉模型。WebM 与 MP4 沿共用视频采帧器产生真实帧。TGS 原件继续保存和原生发送；Main 只读取平台实际提供并随原附件保存的缩略图，明确标注静态预览，不把动画 JSON 冒充图片。缺少预览时保留原生 emoji 与格式资料，不能宣称已看过像素；后续读取仍沿原内部事件、附件索引、来源版本和实际文件。
+图片、视频、原生贴纸及普通文件入站均只提供附件资料，后台保原件缓存；Main 按需沿 `view_file` 或沙箱路径读取，也可用 `copy_file` 直接保存原件。没有自动像素准备、视频采帧或文档展开，不隐式调用独立视觉模型。WebM 与 MP4 沿共用视频采帧器产生真实帧。TGS 原件继续保存和原生发送；Main 只读取平台实际提供并随原附件保存的缩略图，明确标注静态预览，不把动画 JSON 冒充图片。缺少预览时保留原生 emoji 与格式资料，不能宣称已看过像素；后续读取仍沿原内部事件、附件索引、来源版本和实际文件。
 
 旧 Telegram 事件即使保存为 IMAGE、文件名为 sticker 且没有 MIME，当前、引用、缓存、历史与 Workspace 仍按原件字节识别 TGS/WebM。读取修正不改写原事件 segments、冻结正文或已付请求；TGS 无真实预览时只提供元信息，WebM 使用共用实际采帧器。
 
@@ -160,7 +160,7 @@ Genie 出站 record 构造已退出；历史 record、真实转写和已接受�
 
 ## 本机设备文件
 
-`workspace_inspect` 与 `send(path)` 的可选 `device_id` 选择原文件所属电脑；`save_conversation_attachment_to_workspace` 的 `device_id` 方向相反，指**写入目标**电脑，来源仍在 Yuki 一侧（附件、环境 `path` 或 `artifact_id`）。不传继续使用 Yuki 自己的环境。本机读取保所选原文件句柄/版本、内容 hash 和内部传输 ID，64KiB 分片只穿过同一 WSS，不写入模型文本。媒体读取沿原尺寸预算，发送成果不借此限定普通文件大小。工具面统一切换时该工具改名为 `copy_file`：`device` 一律指源电脑、`to_device` 指目标电脑，服务层 `WorkspaceService.copy_file` 已按这组参数实现。
+`view_file`、`send(file)` 与 `copy_file` 的 `device` 一律表示**源**文件所属电脑；`copy_file` 的目标电脑另用 `to_device`，来源仍在 Yuki 一侧（附件、环境 `path` 或 `artifact_id`；本期源 `device` 返回 `source_not_supported_for_destination`）。不传继续使用 Yuki 自己的环境。本机读取保所选原文件句柄/版本、内容 hash 和内部传输 ID，64KiB 分片只穿过同一 WSS，不写入模型文本。媒体读取沿原尺寸预算，发送成果不借此限定普通文件大小。模型参数在工具边界翻成服务层 `WorkspaceService.copy_file` 的参数。
 
 写入本人电脑时，`transfer_id` 就是原调用的 invocation key。先查 Connector 的原传输回执：成功原样返回、不读源；从未记录才读源；其余一律保持未知，不重传。读源时三种来源在上传前都已知 size 与 sha256：`path` 经 Manager `files_read` 流（Manager 先取快照再发头部，Bot 不落临时文件，按头部 size 读满，短读报 `source_stream_incomplete`；Manager 未回头部即断开报 `source_file_unavailable`）；`artifact_id` 按 ID 打开不可变 blob（可变旧 artifact 报 `artifact_not_immutable`，与 `send(artifact_id)` 同一条件）；附件沿原事件与序号读取缓存原件。Connector 末片核整文件 sha256 后才替换目标。未确认的写入返回 `status: unknown`，附源 sha256 并说明目标目录可能残留 `.yuki-transfer-*.part`。`path` 来源只接受 `/workspace` 下的普通文件，符号链接与硬链接被 Manager 拒绝。
 

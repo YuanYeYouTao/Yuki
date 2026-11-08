@@ -70,13 +70,13 @@ async def test_original_256_byte_effect_key_cursor_can_be_passed_back_through_to
         await _persisted_tool_receipt(
             control, key, "read_fixture", {"ok": True}, side_effecting=False
         )
-    request = {"action": "get", "work_id": control.current["id"], "limit": 1}
-    first = json.loads(await control.execute("task_control", request, "first-page"))
-    cursor = first["work"]["next_cursor"]
+    request = {"id": control.current["id"], "limit": 1}
+    first = json.loads(await control.execute("get_tasks", request, "first-page"))
+    cursor = first["next_cursor"]
     assert len(cursor) > 256
     following = {**request, "cursor": cursor}
-    definition = work_control_tools()[0]
+    definition = next(tool for tool in work_control_tools() if tool.name == "get_tasks")
     Draft202012Validator(definition.parameters).validate(following)
-    older = json.loads(await control.execute("task_control", following, "older-page"))
-    assert older["ok"] and older["work"]["steps"][0]["effect_key"] == original_keys[0]
-    assert older["work"]["next_cursor"] is None
+    older = json.loads(await control.execute("get_tasks", following, "older-page"))
+    assert older.get("ok") is not False and older["steps"][0]["effect_key"] == original_keys[0]
+    assert "next_cursor" not in older

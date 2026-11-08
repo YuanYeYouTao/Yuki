@@ -40,6 +40,7 @@ from yuki.runtime.work_budget import WorkBudgetExceeded
 from yuki.services.agent_runner import AgentRuntime, AgentToolBackend
 from yuki.services.agent_tools import ToolRuntime, database_failure_result
 from yuki.services.turn_coordinator import TurnSupersededError
+from yuki.workspace.short_state import STATE_TOOL
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -50,7 +51,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_ARTIFACT_READER_NAME = "read_tool_artifact"
+_ARTIFACT_READER_NAME = "read_result"
 
 
 class MainAgentBackend(AgentToolBackend):
@@ -146,13 +147,14 @@ class MainAgentBackend(AgentToolBackend):
     def work_control_allowed(self, name: str) -> bool:
         # Lifecycle tools are declared globally, but remain subject to the
         # currently executing backend's mutation and delivery restrictions.
-        if name == "task_control":
+        if name in {"manage_task", "wait", "get_tasks"}:
             # Recording lifecycle state grants no business or send authority.
             # Even a restricted calculation must be able to answer or stop.
+            # get_tasks is still checked by work_query_allowed.
             return True
         return not self._runtime.tools_closed
 
-    def work_query_allowed(self, action: str) -> bool:
+    def work_query_allowed(self, name: str) -> bool:
         """Read Work facts using the original actor and tree scope."""
         if self._runtime.tools_closed:
             return False
@@ -299,7 +301,7 @@ class MainAgentBackend(AgentToolBackend):
             return _refused_result(
                 name, "tools_closed", detail="本轮只声明会话前缀工具 schema，不允许真实调用。"
             )
-        if name == "update_short_state" and contract is not None:
+        if name == STATE_TOOL.name and contract is not None:
             state = contract.state
             execution_runtime = self._request_runtime()
             if execution_runtime.turn_token is not None:
@@ -323,15 +325,8 @@ class MainAgentBackend(AgentToolBackend):
                 outcome = (
                     database_failure_result(exc, provider_id="host_prefix", tool_name=name)
                     if write_failure_phase(exc) is not None
-                    else ToolExecutionResult(
-                        ok=False,
-                        error_code=type(exc).__name__,
-                        public_message="工具执行失败",
-                        retryable=False,
-                        uncertain=state_started,
-                        mutation_committed=None if state_started else False,
-                        provider_id="host_prefix",
-                        tool_name=name,
+                    else _unexpected_failure(
+                        exc, uncertain=state_started, provider_id="host_prefix", tool_name=name
                     )
                 )
             return (await ToolResultBudgeter(max_characters=None).render(outcome)).text
@@ -389,10 +384,10 @@ class MainAgentBackend(AgentToolBackend):
                     host = self._plugin_host
                     try:
                         await self._require_plugin_domain(effective_descriptor, parsed)
-                        if host is not None and effective_descriptor.namespace_id in {
-                            "memory.read",
-                            "memory.search",
-                        }:
+                        if (
+                            host is not None
+                            and effective_descriptor.namespace_id == "memory.search"
+                        ):
                             host._require_any(
                                 (
                                     PluginPermission.MEMORY_PERSON_READ,
@@ -447,13 +442,9 @@ class MainAgentBackend(AgentToolBackend):
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
                     if write_failure_phase(exc) is not None
-                    else ToolExecutionResult(
-                        ok=False,
-                        error_code=type(exc).__name__,
-                        public_message="工具执行失败",
-                        retryable=False,
+                    else _unexpected_failure(
+                        exc,
                         uncertain=uncertain,
-                        mutation_committed=None if uncertain else False,
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
@@ -586,7 +577,7 @@ class MainAgentBackend(AgentToolBackend):
         elif namespace == "memory.state.write":
             permission = (
                 PluginPermission.MEMORY_DELETE
-                if arguments.get("operation") == "invalidate"
+                if arguments.get("action") == "invalidate"
                 else PluginPermission.MEMORY_WRITE
             )
         elif namespace == "web.search":
@@ -611,12 +602,24 @@ class MainAgentBackend(AgentToolBackend):
             ):
                 raise PluginPermissionError("message is outside the original Conversation")
         elif namespace == "social.send":
-            if arguments.get("artifact_id") or arguments.get("path") or arguments.get("emoji"):
+            if arguments.get("file") or arguments.get("sticker"):
                 permission = PluginPermission.MESSAGE_MEDIA_SEND
             else:
                 target = arguments.get("target")
-                kind = target.get("kind") if isinstance(target, dict) else None
-                group = kind == "space" or (kind is None and self._runtime.current_group_id)
+                target = target if isinstance(target, dict) else {}
+                group: object
+                if target.get("conversation_id"):
+                    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+
+                    async with self._service._ledger._database.read_session() as session:
+                        conversation = await session.get(
+                            CanonicalConversationModel, str(target["conversation_id"])
+                        )
+                    group = conversation is not None and conversation.space_id is not None
+                elif target:
+                    group = "space_id" in target
+                else:
+                    group = self._runtime.current_group_id
                 permission = (
                     PluginPermission.MESSAGE_GROUP_SEND
                     if group
@@ -747,7 +750,7 @@ class MainAgentBackend(AgentToolBackend):
         runtime: AgentRuntime,
     ) -> bool:
         """Classify cache invalidation through the same descriptor used for execution."""
-        if name == "update_short_state":
+        if name == STATE_TOOL.name:
             return True
 
         del runtime
@@ -773,6 +776,30 @@ class MainAgentBackend(AgentToolBackend):
         return self._runtime
 
 
+def _unexpected_failure(
+    exc: Exception, *, uncertain: bool, provider_id: str, tool_name: str
+) -> ToolExecutionResult:
+    """A failure the domain did not classify, stated in terms the model can act on."""
+    logger.warning(
+        "tool_unexpected_failure tool=%s exception_category=%s", tool_name, type(exc).__name__
+    )
+    if isinstance(exc, TurnSupersededError):
+        code, message = "superseded", "这一轮已被新的输入接替，调用没有继续；按新输入处理。"
+    elif uncertain:
+        code, message = "tool_failed", "执行中途出错，效果未知；先查询原结果，不要直接重做。"
+    else:
+        code, message = "tool_failed", "执行出错，没有产生效果。"
+    return ToolExecutionResult(
+        ok=False,
+        error_code=code,
+        public_message=message,
+        uncertain=uncertain,
+        mutation_committed=None if uncertain else False,
+        provider_id=provider_id,
+        tool_name=tool_name,
+    )
+
+
 def _refused_result(
     name: str, error_code: str, *, detail: str = "", restart_required: bool = False
 ) -> str:
@@ -782,7 +809,15 @@ def _refused_result(
     outcome = ToolExecutionResult(
         ok=False,
         error_code=error_code,
-        public_message=detail,
+        public_message=detail
+        or {
+            "unknown_capability": f"没有名为 {name} 的工具；只调用当前声明的工具。",
+            "capability_not_allowed": "当前执行不能调用这个工具。",
+            "invalid_json": "参数不是有效的 JSON 对象。",
+            "new_input_before_execution": "执行前收到了新的输入，调用没有执行；按新输入处理。",
+            "plugin_tool_contract_changed": "插件工具已更新，需重启后才能调用。",
+            "main_agent_contract_unavailable": "工具清单尚未就绪。",
+        }.get(error_code, "调用没有执行。"),
         mutation_committed=False,
         data={"executed": False, **({"restart_required": True} if restart_required else {})},
         provider_id="core",

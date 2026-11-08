@@ -224,7 +224,6 @@ class MemoryMutationReceipt:
 @dataclass(frozen=True, slots=True)
 class MemoryMutationCandidate:
     fact_id: int
-    memory_ref: str
     memory_key: str
     category: str
     kind: MemoryKind
@@ -246,32 +245,32 @@ class MemoryMutationResult:
     candidates: tuple[MemoryMutationCandidate, ...] = ()
 
     def tool_payload(self) -> dict[str, Any]:
-        """Project the original mutation result for live and recovered callers."""
+        """What the model reads of a live or recovered mutation, without null fields.
+
+        ``applied`` and ``outcome`` are the real effect: a request downgraded to
+        contest or noop did not overwrite, delete or correct anything.
+        """
         payload: dict[str, Any] = {
-            "ok": self.ok,
-            "mutation_id": self.mutation_id,
-            "requested_operation": self.requested_operation.value,
-            "applied_operation": self.applied_operation.value,
+            "applied": self.applied_operation.value,
             "outcome": self.outcome.value,
-            "old_fact_id": self.old_fact_id,
-            "new_fact_id": self.new_fact_id,
-            "reason_code": self.reason_code,
-            "deduplicated": self.deduplicated,
-            "candidates": [
+        }
+        fact_id = self.new_fact_id if self.new_fact_id is not None else self.old_fact_id
+        if fact_id is not None:
+            payload["fact_id"] = fact_id
+        if self.old_fact_id is not None and self.new_fact_id not in (None, self.old_fact_id):
+            payload["replaced_fact_id"] = self.old_fact_id
+        if self.deduplicated:
+            payload["deduplicated"] = True
+        if self.candidates:
+            payload["candidates"] = [
                 {
                     "fact_id": candidate.fact_id,
-                    "memory_ref": candidate.memory_ref,
-                    "key": candidate.memory_key,
-                    "category": candidate.category,
                     "kind": candidate.kind.value,
                     "content": candidate.content,
                     "status": candidate.status.value,
                 }
                 for candidate in self.candidates
-            ],
-        }
-        if self.ok and self.applied_operation is MemoryMutationAppliedOperation.INVALIDATE:
-            payload["persistence_semantics"] = "invalidated_not_deleted"
+            ]
         return payload
 
     @classmethod

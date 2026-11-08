@@ -48,7 +48,7 @@ from yuki.social.emoji_intents import derived_call_id
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
 from yuki.social.repository import payload_hash
 
-ARGS = {"text": "正文先到", "emoji": {"goal": "开心", "emotion": "高兴"}}
+ARGS = {"text": "正文先到", "sticker": {"goal": "开心", "emotion": "高兴"}}
 
 
 def sends(env):
@@ -95,9 +95,7 @@ async def test_text_returns_while_selection_never_finishes(database, tmp_path):
             assert long_description not in events[1].content
             assert long_description not in events[1].segments_json
             assert "开心" in events[1].content and "开心" in events[1].segments_json
-        history = await env.service.execute(
-            "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
-        )
+        history = await env.service.execute("read_chat", {}, env.context)
         rendered = json.dumps(history, ensure_ascii=False)
         assert long_description not in rendered and "开心" in rendered
     finally:
@@ -113,7 +111,7 @@ async def test_qq_library_sticker_reaches_native_small_sticker_payload_only(
     target = {}
     if private:
         assert await env.router.cas_takeover_person(env.person) == "taken"
-        target = {"target": {"kind": "person", "target_id": env.person}}
+        target = {"target": {"person_id": env.person}}
     await delivery.start()
     try:
         text = await env.service.execute("send", {**ARGS, **target}, env.context)
@@ -154,7 +152,11 @@ async def test_qq_library_sticker_reaches_native_small_sticker_payload_only(
         for kind in ("image", "file"):
             result = await env.service.execute(
                 "send",
-                {**target, "artifact_id": artifact["artifact_id"], "attachment_kind": kind},
+                {
+                    **target,
+                    "file": {"artifact_id": artifact["artifact_id"]},
+                    **({"as_file": True} if kind == "file" else {}),
+                },
                 replace(env.context, call_id=f"ordinary-{kind}"),
             )
             assert result["status"] == "succeeded"
@@ -217,9 +219,9 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
         )
     delivery = EmojiDeliveryService(env.service, library)
     env.service.emoji_delivery = delivery
-    target = {"kind": "person", "target_id": env.person}
-    if target_platform == "telegram":
-        target["binding_id"] = binding.id
+    target = (
+        {"binding_id": binding.id} if target_platform == "telegram" else {"person_id": env.person}
+    )
     arguments = {**ARGS, "target": target}
     await delivery.start()
     try:
@@ -269,16 +271,16 @@ async def test_empty_library_does_not_block_text(database, tmp_path):
 async def test_pure_illustration_is_accepted_without_fake_text_receipt(database, tmp_path):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    arguments = {"emoji": {"goal": "开心" * 800, "emotion": "高兴" * 200}}
+    arguments = {"sticker": {"goal": "开心" * 800, "emotion": "高兴" * 200}}
     result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "accepted"
     assert sends(env) == []
     assert await env.service.receipts.find(env.context.turn_id, env.context.call_id) is None
     original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
-    assert original.intent == arguments["emoji"]
+    assert original.intent == arguments["sticker"]
     assert await env.service.execute("send", arguments, env.context) == result
     with pytest.raises(SocialError, match="idempotency_conflict"):
-        await env.service.execute("send", {"emoji": {"goal": "另一张"}}, env.context)
+        await env.service.execute("send", {"sticker": {"goal": "另一张"}}, env.context)
     await delivery.start()
     try:
         assert (await settle(delivery, env.context))["status"] == "succeeded"
@@ -360,9 +362,8 @@ async def test_claimed_unknown_media_is_never_resent_after_restart(database, tmp
     artifact = await library.publish(library.asset, request_id=intent.id)
     arguments = {
         "text": "",
-        "target": {"kind": "space", "target_id": env.space},
-        "artifact_id": artifact["artifact_id"],
-        "attachment_kind": "image",
+        "target": {"space_id": env.space},
+        "file": {"artifact_id": artifact["artifact_id"]},
     }
     receipt = await env.service.receipts.prepare(
         source_turn_id=intent.source_turn_id,
@@ -526,7 +527,7 @@ async def test_illustration_preserves_explicit_account_among_same_person_same_pr
     delivery, _ = make_delivery(env)
     arguments = {
         **ARGS,
-        "target": {"kind": "person", "target_id": env.person, "binding_id": binding_b},
+        "target": {"binding_id": binding_b},
     }
     text = await env.service.execute("send", arguments, env.context)
     assert text["status"] == "succeeded"
@@ -594,7 +595,7 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
         tmp_path,
         [
             ChatResponse("", 0, tool_calls=(tool("send", arguments, "illustration-send"),)),
-            ChatResponse("", 0, tool_calls=(tool("task_control", {"action": "complete"}),)),
+            ChatResponse("", 0, tool_calls=(tool("manage_task", {"action": "finish"}),)),
         ],
     )
     env = fixture.env
@@ -625,7 +626,7 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
                 )
             finally:
                 current_result_capture.reset(token)
-            assert recovered["ok"] and recovered["data"]["status"] == "accepted"
+            assert recovered.get("ok") is not False and recovered["data"]["status"] == "accepted"
             assert recovered["data"]["emoji"]["status"] == "accepted"
             assert recovered["replay_forbidden"] is True
         return json.dumps({"ok": True, "data": result})
@@ -684,7 +685,7 @@ async def test_person_merge_preserves_accepted_original_target(database, tmp_pat
     env = await social_env(database, tmp_path)
     await env.router.cas_takeover_person(env.person)
     delivery, _ = make_delivery(env)
-    arguments = {**ARGS, "target": {"kind": "person", "target_id": env.person}}
+    arguments = {**ARGS, "target": {"person_id": env.person}}
     await env.service.execute("send", arguments, env.context)
     async with database.immediate_session() as session:
         new_root = await ensure_person(session, "10002")

@@ -30,12 +30,12 @@ async def test_real_provider_schema_call_and_authorized_get(database, tmp_path, 
         max_output_tokens=1024,
     )
     expected = {tool.name: tool.parameters for tool in definitions}
-    arguments = {"view": "get", "automation_id": case.row.id}
+    arguments = {"id": case.row.id}
     reply = ChatResponse(
         "",
         0,
         tool_calls=(
-            ToolCall("read-original", ToolFunction("automation_query", json.dumps(arguments))),
+            ToolCall("read-original", ToolFunction("get_schedules", json.dumps(arguments))),
         ),
     )
     captured = []
@@ -87,12 +87,10 @@ async def test_real_provider_schema_call_and_authorized_get(database, tmp_path, 
         conversation_key=case.actor.conversation_id,
     )
     result = await tools.execute(call.function.name, call.function.arguments, runtime)
-    assert result.ok and result.data["task"]["goal"] == "PRIVATE_WIRE_GOAL"
+    assert result.ok and result.data["goal"] == "PRIVATE_WIRE_GOAL"
     # Code discovery carries exactly the same frozen schema and operation identity.
     api = project(definitions, "automation-contract")
-    found = json.loads(lookup_tools(api, '{"name":"automation_query"}'))
-    assert found["ok"] and found["data"]["parameters"] == actual["automation_query"]
+    found = json.loads(lookup_tools(api, '{"name":"get_schedules"}'))
+    assert found.get("ok") is not False and found["data"]["parameters"] == actual["get_schedules"]
     assert api.tool_for(found["data"]["script_name"]) == call.function.name
-    assert not validator.validate(
-        "automation_query", '{"view":"get","automation_id":1,"limit":7}'
-    ).ok
+    assert not validator.validate("get_schedules", '{"id":1,"view":"get"}').ok

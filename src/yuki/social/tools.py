@@ -1,185 +1,188 @@
 """Deployment-stable social schemas; execution lives in the social service."""
 
+from typing import Any
+
 from yuki.domain.messages import ChatTool
-from yuki.services.contact_query import contact_schema, conversation_schema
+
+_ID = {"type": "string", "format": "uuid"}
+
+
+def target_schema(*keys: str, description: str) -> dict[str, Any]:
+    """One internal selector: exactly one of ``keys``."""
+    return {
+        "type": "object",
+        "description": description,
+        "properties": {key: _ID for key in keys},
+        "minProperties": 1,
+        "maxProperties": 1,
+        "additionalProperties": False,
+    }
+
+
+def _tool(
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    *,
+    namespace: str,
+    effect: str,
+    required: tuple[str, ...] = (),
+    result_cacheable: bool = True,
+) -> ChatTool:
+    return ChatTool(
+        name=name,
+        namespace=namespace,
+        effect=effect,
+        result_cacheable=result_cacheable,
+        description=description,
+        parameters={
+            "type": "object",
+            "properties": properties,
+            "required": list(required),
+            "additionalProperties": False,
+        },
+    )
 
 
 def social_tool_definitions() -> tuple[ChatTool, ...]:
-    message: dict[str, object] = {
-        "text": {"type": "string"},
-        "path": {
-            "type": "string",
-            "description": (
-                "要发送的 /workspace 文件、/inputs/media-cache 原件，"
-                "或 device_id 指定本人电脑的路径；"
-                "程序冻结本次版本后发送。与 artifact_id 二选一。"
-            ),
-        },
-        "device_id": {
-            "type": "string",
-            "description": "可选；path 所在的本人电脑设备 ID。省略时使用 Yuki 自己的持久环境。",
-        },
-        "artifact_id": {
-            "type": "string",
-            "description": "已发布不可变快照的内部 ID；与 path 二选一，不是 URL。",
-        },
-        "name": {"type": "string", "description": "可选；路径文件本次交付的文件名。"},
-        "expected_version": {
-            "type": "string",
-            "description": "可选；path 所选原文件的内容 SHA256，不是目标覆盖门槛。",
-        },
-        "attachment_kind": {
-            "type": "string",
-            "enum": ["image", "file"],
-            "description": (
-                "提供 path 或 artifact_id 时必填。普通文件用 file；可附 text，"
-                "平台分步交付时分别返回确认。"
-                "图片用 image。部分成功不要重发文件。"
-            ),
-        },
-    }
-
-    group_selector: dict[str, object] = {
-        "target_id": {"type": "string", "description": "目标群的 canonical UUID；当前群省略"},
-        "display_name": {
-            "type": "string",
-            "maxLength": 128,
-            "description": "目标群名称，不是成员名",
-        },
-    }
-
-    def tool(
-        name: str, description: str, fields: dict[str, object], required: tuple[str, ...] = ()
-    ) -> ChatTool:
-        return ChatTool(
-            name=name,
-            schema_version="5" if name == "send" else "1",
-            description=description,
-            parameters={
-                "type": "object",
-                "properties": fields,
-                "required": list(required),
-                "additionalProperties": False,
-            },
-        )
-
+    cursor = {"type": "string"}
+    limit = {"type": "integer", "minimum": 1}
     return (
-        ChatTool(
-            name="find_contacts",
-            schema_version="3",
-            description=(
-                "以 kind=person/space 发现人物或群及其当前可联系入口。"
-                "已知主体用 target_id；当前人物引用用 subject_ref；按名称包含查询用 display_name。"
-                "source 可按平台和 private/group 交集筛选。"
-                "limit 为页大小，按内部 ID 升序，cursor 续查；同名返回候选，不猜目标。"
-                "查真实历史 Conversation 使用 find_conversations。"
-            ),
-            parameters=contact_schema(),
-        ),
-        ChatTool(
-            name="find_conversations",
-            schema_version="1",
-            description=(
-                "发现真实历史 Conversation，平铺平台、群私聊、话题与原 Binding/Presence 阶段，"
-                "含旧账号入口。"
-                "target 可用一个内部 Person/Space/Conversation/Binding/operation ID；"
-                "source 可按平台和 private/group 取交集，display_name 按会话名称包含查询。"
-                "不要求先查联系人或按平台分层；已知 ID 可直接用。"
-                "limit 为页大小，按内部 Conversation ID 升序，cursor 续查。"
-                "读取许可不代表旧入口仍能发送；当前人物或群主体资料使用 find_contacts。"
-            ),
-            parameters=conversation_schema(),
-        ),
-        tool(
+        _tool(
             "send",
-            "向当前会话或指定目标发送文字、图片、文件或表情；普通最终正文只是内部结果，不会送达。"
-            "发文件可直接提供 path 和 attachment_kind，无须先调用发布工具；"
-            "已有 artifact_id 也可发送。"
-            "一次调用的纯文本会按回复分条规则自动发送为一条或多条，每条均有投递回执；"
-            "确有需要时可多次调用，遵循发言节奏；发送后仍可继续工作。"
-            "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
-            "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
-            "App/ACP 主会话显式指定 person 目标时用 conversation_id 或 binding_id 明确入口；"
-            "两者同时提供时 conversation_id 优先。省略 target 只回复本入口。"
-            "正文在原位置写 @名字即可真实提及；同名默认选择目标会话最近发言的账号。"
-            "要指定账号时复制目录给出的 @{account:UUID}。",
+            "向当前会话或指定目标发送文字、一个文件或表情；只写最终正文不会送达。"
+            "text 中换行由程序按分条规则发送；正文原位置写 @名字即可提及，"
+            "指定账号复制成员目录的 @{account:UUID}。"
+            "结果 status 为 unknown 或部分分条已成功时不要重发。",
             {
-                "target": {
+                "text": {"type": "string"},
+                "file": {
                     "type": "object",
-                    "description": (
-                        "可选；省略时发送到当前群或当前私聊。明确发给别处时须指定 kind 和唯一标识。"
-                    ),
+                    "description": "要发送的一个文件；多个文件分多次调用",
                     "properties": {
-                        "kind": {"type": "string", "enum": ["person", "space"]},
-                        "binding_id": {
+                        "path": {
                             "type": "string",
-                            "format": "uuid",
                             "description": (
-                                "person 的指定入口绑定；App/ACP 显式 person 目标"
-                                "可用此字段或 conversation_id。"
-                                "同时提供时 conversation_id 优先。"
+                                "/workspace、/inputs/media-cache 或 device 所指电脑上的路径"
                             ),
                         },
-                        "target_id": {
-                            "type": "string",
-                            "format": "uuid",
-                            "description": "内部 Person/Space ID",
-                        },
-                        "conversation_id": {
-                            "type": "string",
-                            "format": "uuid",
-                            "description": (
-                                "明确发送入口的内部 Conversation ID；与 binding_id 同时提供时优先。"
-                            ),
-                        },
+                        "artifact_id": {"type": "string", "description": "已有文件快照 ID"},
+                        "device": {"type": "string", "description": "path 所在的本人电脑"},
+                        "name": {"type": "string", "description": "送达时的文件名"},
                     },
-                    "required": ["kind", "target_id"],
+                    "minProperties": 1,
                     "additionalProperties": False,
                 },
-                **message,
-                "emoji": {
+                "as_file": {
+                    "type": "boolean",
+                    "description": "图片默认显示为聊天图片；true 按原文件发送",
+                },
+                "sticker": {
                     "type": "object",
-                    "description": (
-                        "可选的后台配图意图，goal写明想表达的完整含义。可以只发表情，不填 text；"
-                        "有正文时先发正文，"
-                        "后台从图库选图并单独发送；accepted只表示已接纳，无须等待或重发。"
-                    ),
-                    "properties": {
-                        "goal": {"type": "string"},
-                        "emotion": {"type": "string"},
-                    },
+                    "description": "后台配一张表情，goal 写想表达的含义；可不带 text",
+                    "properties": {"goal": {"type": "string"}, "emotion": {"type": "string"}},
                     "required": ["goal"],
                     "additionalProperties": False,
                 },
-                "reply_to_event_id": {
+                "reply_to": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "可选；实际授权会话中的内部 #EventRecord.id，非平台消息号。",
+                    "description": "引用回复的内部事件 ID",
                 },
+                "target": target_schema(
+                    "person_id",
+                    "space_id",
+                    "conversation_id",
+                    "binding_id",
+                    description="省略为当前会话；发给其他人或群时给一个内部 ID",
+                ),
             },
+            namespace="social.send",
+            effect="platform_send",
         ),
-        tool(
-            "get_group_members",
-            "分页读取实际群入口已观察到的逐账号目录；coverage=observed，不代表平台完整名册。",
+        _tool(
+            "recall_message",
+            "撤回自己发送的一条消息；只能由原发送账号撤回。",
+            {"event_id": {"type": "integer", "minimum": 1}},
+            namespace="social.recall",
+            effect="platform_mutate",
+            required=("event_id",),
+        ),
+        _tool(
+            "read_chat",
+            "读取已入账的聊天记录。省略 target 且不带筛选时读当前会话；"
+            "带 query、author、has、platform、scope、since 或 until 时检索所有获准的聊天。"
+            "around 按事件 ID 读取前后各 context 条邻文，此时不接受其他筛选。"
+            "since/until 为带时区的时间，until 不含。只读已入账内容，不接受平台消息号。",
             {
-                **group_selector,
-                "binding_id": {
-                    "type": "string",
-                    "format": "uuid",
-                    "description": "具体群入口的内部 SpaceBinding ID",
+                "target": target_schema(
+                    "person_id",
+                    "space_id",
+                    "conversation_id",
+                    "binding_id",
+                    "operation_id",
+                    description="一个内部 ID；operation_id 定位一次发送回执",
+                ),
+                "query": {"type": "string", "description": "原文或语音转写中的关键词"},
+                "author": {"type": "string", "description": "作者的 Person ID，或 yuki"},
+                "has": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["image", "video", "file", "audio"]},
                 },
-                "conversation_id": {"type": "string", "format": "uuid"},
-                "cursor": {"type": "string"},
+                "platform": {"type": "string"},
+                "scope": {"type": "string", "enum": ["private", "group"]},
+                "order": {"type": "string", "enum": ["recent", "oldest"]},
+                "since": {"type": "string", "description": "带时区 ISO-8601，含"},
+                "until": {"type": "string", "description": "带时区 ISO-8601，不含"},
+                "around": {"type": "integer", "minimum": 1, "description": "锚点事件 ID"},
+                "context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "每条结果前后各附带的邻文条数",
+                },
+                "limit": limit,
+                "cursor": cursor,
+            },
+            namespace="social.history",
+            effect="read_state",
+            result_cacheable=False,
+        ),
+        _tool(
+            "find_contacts",
+            "查找人物或群，返回其当前可联系入口与历史会话。name 按名称包含查询；"
+            "已知内部 ID 用 target；同名返回多个候选，不猜目标。",
+            {
+                "name": {"type": "string", "maxLength": 128},
+                "target": target_schema(
+                    "person_id",
+                    "space_id",
+                    "conversation_id",
+                    "binding_id",
+                    description="一个内部 ID",
+                ),
+                "type": {"type": "string", "enum": ["person", "group"]},
+                "platform": {"type": "string"},
+                "limit": limit,
+                "cursor": cursor,
+            },
+            namespace="social.contacts",
+            effect="read_state",
+        ),
+        _tool(
+            "get_members",
+            "分页读取群里已观察到的成员账号目录；不代表平台完整名册。",
+            {
+                "target": target_schema(
+                    "space_id",
+                    "binding_id",
+                    "conversation_id",
+                    description="群的一个内部 ID；当前群可省略",
+                ),
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "cursor": cursor,
             },
-        ),
-        tool(
-            "recall_own_message",
-            "撤回真实账本中自己发送的消息；必须由原发送账号执行，新账号不能代撤回。",
-            {
-                "event_id": {"type": "integer", "minimum": 1},
-            },
-            ("event_id",),
+            namespace="social.members",
+            effect="external_read",
         ),
     )
 

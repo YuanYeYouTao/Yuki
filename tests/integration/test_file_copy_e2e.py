@@ -51,7 +51,7 @@ from yuki.workspace.tools import workspace_tools
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Manager safe FDs require POSIX")
 
-TOOL = "save_conversation_attachment_to_workspace"
+TOOL = "copy_file"
 
 
 def sha(data: bytes) -> str:
@@ -245,13 +245,25 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 {
                     "path": "src/report.md",
                     "destination": str(offline_target),
-                    "device_id": device_id,
+                    "to_device": device_id,
                 },
                 "copy-offline-first",
             )
             assert offline["status"] == "unknown" and offline["uncertain"] is True
             assert not offline_target.exists()
             record("device_offline_first_call", result=offline, target_exists=False)
+            # The model reads the same unconfirmed copy as a failure with unknown status.
+            offline_model = await call(
+                {
+                    "path": "src/report.md",
+                    "destination": str(device_root / "offline-model.md"),
+                    "to_device": device_id,
+                },
+                "copy-offline-model",
+            )
+            assert offline_model["error"] and offline_model["uncertain"] is True
+            assert offline_model["status"] == "unknown" and offline_model["message"]
+            record("device_offline_model_result", result=offline_model)
 
             async with actual_connector(bridge, tmp_path, monkeypatch) as connector:
                 artifacts = {}
@@ -272,7 +284,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                                 f"src/{name}" if kind == "path" else artifacts[name]
                             ),
                             "destination": str(target),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         }
                         started = time.perf_counter()
                         result = await call(arguments, request_id)
@@ -319,9 +331,9 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 result = await call(
                     {
                         "event_id": event_id,
-                        "attachment_index": 0,
+                        "attachment": 0,
                         "destination": str(target),
-                        "device_id": device_id,
+                        "to_device": device_id,
                     },
                     "copy-attachment-computer",
                 )
@@ -337,7 +349,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                     receipt=result,
                 )
                 result = await call(
-                    {"event_id": event_id, "attachment_index": 0, "destination": "copies/a.png"},
+                    {"event_id": event_id, "attachment": 0, "destination": "copies/a.png"},
                     "copy-attachment-env",
                 )
                 assert (manager.files.root / "copies" / "a.png").read_bytes() == attachment
@@ -370,7 +382,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         {
                             "path": "src/report.md",
                             "destination": str(path_target),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-path-report.md",
                     )
@@ -378,7 +390,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         {
                             "artifact_id": artifacts["report.md"],
                             "destination": str(artifact_target),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-artifact-report.md",
                     )
@@ -425,7 +437,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 arguments = {
                     "path": "src/one-mib-plus-one.bin",
                     "destination": str(cut_target),
-                    "device_id": device_id,
+                    "to_device": device_id,
                 }
                 cut_result = await service(arguments, "copy-cut-before-final")
                 monkeypatch.setattr(devices, "file_request", original_request)
@@ -473,7 +485,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 arguments = {
                     "path": "src/one-mib-plus-one.bin",
                     "destination": str(lost_target),
-                    "device_id": device_id,
+                    "to_device": device_id,
                 }
                 lost_result = await service(arguments, "copy-lost-final-ack")
                 monkeypatch.setattr(devices, "file_request", original_request)
@@ -502,7 +514,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                             {
                                 "path": "src/report.md",
                                 "destination": str(closed_target),
-                                "device_id": device_id,
+                                "to_device": device_id,
                             },
                             "copy-full-access-closed",
                         )
@@ -510,7 +522,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         {
                             "path": "src/report.md",
                             "destination": str(path_target),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-path-report.md",
                     )
@@ -545,7 +557,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                     {
                         "path": "src/one-mib-plus-one.bin",
                         "destination": str(changing),
-                        "device_id": device_id,
+                        "to_device": device_id,
                     },
                     "copy-source-changes",
                 )
@@ -564,7 +576,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 existing = device_root / "existing.md"
                 existing.write_bytes(b"older content")
                 replaced = await service(
-                    {"path": "src/report.md", "destination": str(existing), "device_id": device_id},
+                    {"path": "src/report.md", "destination": str(existing), "to_device": device_id},
                     "copy-overwrite",
                 )
                 assert replaced["status"] == "succeeded" and existing.read_bytes() == report
@@ -575,7 +587,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                     {
                         "path": "src/report.md",
                         "destination": str(directory),
-                        "device_id": device_id,
+                        "to_device": device_id,
                     },
                     "copy-into-directory",
                 )
@@ -590,7 +602,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                     {
                         "path": "src/report.md",
                         "destination": str(missing_parent),
-                        "device_id": device_id,
+                        "to_device": device_id,
                     },
                     "copy-missing-parent",
                 )
@@ -613,7 +625,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                             {
                                 "path": f"src/{linked}",
                                 "destination": str(device_root / linked),
-                                "device_id": device_id,
+                                "to_device": device_id,
                             },
                             f"copy-{linked}",
                         )
@@ -634,7 +646,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         {
                             "artifact_id": mutable,
                             "destination": str(device_root / "legacy.md"),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-mutable-artifact",
                     )
@@ -646,13 +658,24 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         "copy-artifact-env",
                     )
                 assert str(unsupported.value) == "source_not_supported_for_destination"
+                # ``device`` names the source computer; that direction is not served yet.
+                with pytest.raises(WorkspaceError) as source_device:
+                    await service(
+                        {
+                            "path": "C:\\report.md",
+                            "device": device_id,
+                            "destination": "copies/from-device.md",
+                        },
+                        "copy-from-device",
+                    )
+                assert str(source_device.value) == "source_not_supported_for_destination"
                 with pytest.raises(WorkspaceError) as ambiguous:
                     await service(
                         {
                             "path": "src/report.md",
                             "artifact_id": artifacts["report.md"],
                             "destination": str(device_root / "both.md"),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-two-sources",
                     )
@@ -668,7 +691,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         {
                             "path": "src/one-mib-plus-one.bin",
                             "destination": str(shared),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-concurrent-a",
                     ),
@@ -676,7 +699,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         {
                             "path": "src/exact-128k.bin",
                             "destination": str(shared),
-                            "device_id": device_id,
+                            "to_device": device_id,
                         },
                         "copy-concurrent-b",
                     ),
@@ -695,7 +718,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 big_target = device_root / "big.bin"
                 started = time.perf_counter()
                 big_result = await service(
-                    {"path": "src/big.bin", "destination": str(big_target), "device_id": device_id},
+                    {"path": "src/big.bin", "destination": str(big_target), "to_device": device_id},
                     "copy-64-mib",
                 )
                 elapsed = time.perf_counter() - started

@@ -345,9 +345,9 @@ async def test_standard_stdio_answer_resumes_original_work_and_controls_its_outp
     env = acp_runtime
     env.provider._responder = scripted(
         [
-            ("task_control", {"action": "accept", "goal": "Return the city result"}),
+            ("manage_task", {"action": "start", "goal": "Return the city result"}),
             ("send", {"text": "Which city?"}),
-            ("task_control", {"action": "need_input", "reason": "Need the city"}),
+            ("wait", {"for": [{"message": True}]}),
         ]
     )
     peer = Peer()
@@ -394,7 +394,7 @@ async def test_standard_stdio_answer_resumes_original_work_and_controls_its_outp
                 env.provider._responder = scripted(
                     [
                         ("send", {"text": "Taipei result"}),
-                        ("task_control", {"action": "complete", "result": "City task completed"}),
+                        ("manage_task", {"action": "finish", "result": "City task completed"}),
                     ]
                 )
                 await env.app.work_resumer.resume(queued)
@@ -415,9 +415,9 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
     env = acp_runtime
     env.provider._responder = scripted(
         [
-            ("task_control", {"action": "accept", "goal": "Continue the original city task"}),
+            ("manage_task", {"action": "start", "goal": "Continue the original city task"}),
             ("send", {"text": "Which city before restart?"}),
-            ("task_control", {"action": "need_input", "reason": "Need the city"}),
+            ("wait", {"for": [{"message": True}]}),
         ]
     )
     state = tmp_path / "cold-stdio"
@@ -463,7 +463,7 @@ async def test_standard_stdio_answer_keeps_original_work_across_cold_runtime(
         scripted(
             [
                 ("send", {"text": "Taipei result after restart"}),
-                ("task_control", {"action": "complete", "result": "Original city task completed"}),
+                ("manage_task", {"action": "finish", "result": "Original city task completed"}),
             ]
         )
     )
@@ -586,10 +586,13 @@ async def test_acp_keeps_explicit_person_routing_and_original_entry_history(acp_
     original = await read_personal_history(
         database, runtime, {"conversation_id": base.conversation_id}
     )
-    assert original["conversation_id"] == base.conversation_id and original["platform"] == "app"
+    assert all(
+        source["conversation_id"] == base.conversation_id and source["platform"] == "app"
+        for source in original["sources"]
+    )
     result = await env.app.social_service.execute(
         "send",
-        {"target": {"kind": "person", "target_id": principal.person_id}, "text": "choose entry"},
+        {"target": {"person_id": principal.person_id}, "text": "choose entry"},
         SocialContext(
             str(uuid4()),
             str(uuid4()),

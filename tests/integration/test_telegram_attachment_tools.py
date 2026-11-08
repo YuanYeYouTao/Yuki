@@ -231,9 +231,7 @@ async def attachment_tools(database, tmp_path, request):
             await resolver.close()
 
 
-@pytest.mark.parametrize(
-    "tool", ["inspect_conversation_attachment", "save_conversation_attachment_to_workspace"]
-)
+@pytest.mark.parametrize("tool", ["view_file", "copy_file"])
 @pytest.mark.parametrize(
     "cached,original_offline", [(False, False), (True, False), (True, True), (False, True)]
 )
@@ -251,7 +249,7 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
         case.registry.disconnect(case.original_client)
     arguments = {
         "event_id": case.source.id,
-        "attachment_index": 0,
+        "attachment": 0,
         "question": "查看原图",
         "destination": "original.png",
     }
@@ -270,7 +268,7 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
         ]
     )
     assert "original-bot-a-file" not in str(result)
-    if tool == "inspect_conversation_attachment":
+    if tool == "view_file":
         assert result["event_id"] == case.source.id
         assert result["status"] == "prepared_for_main_agent"
         assert result.images[0].source_event_id == case.source.id
@@ -291,8 +289,8 @@ async def test_native_file_selection_uses_resolvers_actual_locator_priority(
         segments[0]["data"]["url"] = "data:image/ignored-url-field"
         event.segments_json = json.dumps(segments)
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "查看原图"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "查看原图"},
         runtime=case.runtime,
         request_id="original-native-priority",
     )
@@ -327,8 +325,8 @@ async def test_known_reply_prepared_from_another_bot_keeps_original_media_presen
     # may reuse this source, but its original file namespace still belongs to A.
     assert prepared.reply_attachments[0].prepared_media is not None and not case.wire
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "查看引用原图"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "查看引用原图"},
         runtime=case.runtime,
         request_id="known-reply-original-presence",
     )
@@ -372,8 +370,8 @@ async def test_attachment_bridge_keeps_qq_adapter_and_inline_without_connection(
     workspace.conversation_media = media
     try:
         result = await workspace.execute(
-            "inspect_conversation_attachment",
-            {"event_id": source.id, "attachment_index": 0, "question": "查看原图"},
+            "view_file",
+            {"event_id": source.id, "attachment": 0, "question": "查看原图"},
             runtime=ToolRuntime(inbound=None, conversation_id=source.canonical_conversation_id),
         )
         assert result.images and result["sha256"] == hashlib.sha256(content).hexdigest()

@@ -1055,18 +1055,15 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     actor = await self_actor(database, env)
     mutations, facts, _ledger, _ = _service(database, self_memory_enabled=True)
     write = {
-        "operation": "create",
-        "target": {"subject_ref": "self", "scope_type": "self"},
-        "new_content": "我实际查询了当前群成员列表，确认了 member 的成员资料。",
-        "memory_key": "self_episode:actual-tool",
-        "category": "self_episode",
+        "target": {"self": True},
+        "content": "我实际查询了当前群成员列表，确认了 test-10001 的成员资料。",
         "kind": "episode",
-        "evidence_quote": "member",
+        "quote": "test-10001",
     }
     calls = [
-        ("get_group_members", {"limit": 10, "target_id": env.space}),
-        ("get_group_members", {"limit": 20, "target_id": env.space}),
-        ("memory_change", write),
+        ("get_members", {"limit": 10, "target": {"space_id": env.space}}),
+        ("get_members", {"limit": 20, "target": {"space_id": env.space}}),
+        ("save_memory", write),
     ]
     results = []
 
@@ -1174,7 +1171,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
                 ),
             )
     assert result.text == "" and len(provider.requests) == 4, results
-    assert all(json.loads(text).get("ok") for text in results), results[1]
+    assert all(json.loads(text).get("ok", True) for text in results), results
     async with database.read_session() as session:
         mutation = await session.scalar(select(MemoryMutationReceiptModel))
         assert mutation is not None, results
@@ -1186,7 +1183,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         receipts = list(
             await session.scalars(
                 select(MemoryToolReceiptModel)
-                .where(MemoryToolReceiptModel.tool_name == "get_group_members")
+                .where(MemoryToolReceiptModel.tool_name == "get_members")
                 .order_by(MemoryToolReceiptModel.id)
             )
         )

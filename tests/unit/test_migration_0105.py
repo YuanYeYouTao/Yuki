@@ -16,6 +16,7 @@ from tests.support.legacy_conversation_seed import (
     seed_legacy_space,
 )
 from tests.support.social_identity_cases import social_env
+from tests.support.work_runner_helpers import derive_business_child
 
 from yuki.automation.repository import AutomationRepository
 from yuki.persistence.database import Database
@@ -269,7 +270,9 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
                 parent = await repository.accept(
                     lease, source_key="new-root", source={}, goal="new work"
                 )
-                derived = await repository.derive(lease, parent["id"], "new-derived", "new subgoal")
+                derived = await derive_business_child(
+                    repository, lease, parent["id"], "new-derived", "new subgoal"
+                )
                 database.subagents_enabled = True
                 identity = await SubagentRepository(repository).start(
                     lease, derived["id"], "new-worker", {"goal": "new worker"}

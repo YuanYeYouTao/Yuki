@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from yuki.admin.config_service import RuntimeConfigService
-from yuki.admin.permission_catalog import PermissionCatalogService
 from yuki.application.lifecycle import LifecycleRegistry
 from yuki.application.modules.model_runtime import ModelRuntimeBundle
 from yuki.application.modules.persistence import PersistenceBundle
@@ -68,7 +67,6 @@ class ConversationModule:
         persistence: PersistenceBundle,
         model_runtime: ModelRuntimeBundle,
         runtime_config: RuntimeConfigService,
-        permission_catalog: PermissionCatalogService,
         concurrency: ConcurrencyManager,
         turns: ConversationTurnCoordinator,
         effect_gate: ConversationEffectGate,
@@ -89,7 +87,6 @@ class ConversationModule:
         self._persistence = persistence
         self._model_runtime = model_runtime
         self._runtime_config = runtime_config
-        self._permission_catalog = permission_catalog
         self._concurrency = concurrency
         self._turns = turns
         self._effect_gate = effect_gate
@@ -140,7 +137,6 @@ class ConversationModule:
             memory_mutations=memory_mutations,
             web_provider=self._web_provider,
             runtime_config=self._runtime_config,
-            permission_catalog=self._permission_catalog,
         )
         chat = ChatService(
             settings=settings,

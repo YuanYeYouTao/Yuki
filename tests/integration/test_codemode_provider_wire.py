@@ -180,7 +180,7 @@ async def test_code_children_never_become_provider_function_calls(
     }
     responses = iter(
         [
-            call("task_control", ACCEPT, "accept"),
+            call("manage_task", ACCEPT, "accept"),
             call("execute_code", script, "outer"),
             ChatResponse("done", 0),
         ]
@@ -265,7 +265,7 @@ async def test_code_children_never_become_provider_function_calls(
         assert len(captured) == 3
         payload = json.loads(captured[-1])
         names, results = wire_calls_and_results(payload, protocol)
-        assert names == ["task_control", "execute_code"]
+        assert names == ["manage_task", "execute_code"]
         assert [identity for identity, _ in results] == ["accept", "outer"]
         if boundary:
             # No public event/mailbox input was admitted in this fixture. A new

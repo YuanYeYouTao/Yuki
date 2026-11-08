@@ -85,7 +85,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
     gateway.return_value = {}
     uploaded = await env.service.execute(
         "send",
-        {"artifact_id": artifact["artifact_id"], "attachment_kind": "file"},
+        {"file": {"artifact_id": artifact["artifact_id"]}},
         replace(env.context, call_id="upload-no-message-id"),
     )
     assert uploaded["status"] == "succeeded"
@@ -264,7 +264,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             runtime_config=snapshot,
             conversation_key=scope.key,
         )
-        for media in ("emoji",):
+        for media in ("sticker",):
             args = {
                 "text": "#62052>Yuki已收到",
                 media: {"goal": "开心"},
@@ -286,10 +286,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                         "send",
                         {
                             **args,
-                            "target": {
-                                "kind": "person",
-                                "target_id": env.person,
-                            },
+                            "target": {"person_id": env.person},
                         },
                         runtime,
                     )
@@ -366,7 +363,7 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     )
     quoted = await env.service.execute(
         "send",
-        {"text": "first second", "reply_to_event_id": source_event.event.id},
+        {"text": "first second", "reply_to": source_event.event.id},
         quoted_context,
     )
     assert quoted["status"] == "succeeded"
@@ -390,9 +387,9 @@ async def test_deferred_illustration_keeps_selected_target(database, tmp_path, t
     delivery, _ = make_delivery(env)
     selected_id = env.space if target_kind == "space" else env.person
     arguments = {
-        "target": {"kind": target_kind, "target_id": selected_id},
+        "target": {f"{target_kind}_id": selected_id},
         "text": "sent",
-        "emoji": {"goal": "开心"},
+        "sticker": {"goal": "开心"},
     }
     result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "succeeded" and result["emoji"]["status"] == "accepted"

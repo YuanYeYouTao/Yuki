@@ -152,8 +152,7 @@ class DesktopFaultFixture:
             result = await runtime.social_service.execute(
                 "send",
                 {
-                    "artifact_id": item["artifact_id"],
-                    "attachment_kind": "file",
+                    "file": {"artifact_id": item["artifact_id"]},
                     "text": "成果 " + item["name"],
                 },
                 SocialContext(
@@ -324,11 +323,11 @@ class DesktopFaultFixture:
                 "event_id": None,
                 "work_id": None,
                 "script": [
-                    ("task_control", {"action": "accept", "goal": "原工作整合測試"}),
+                    ("manage_task", {"action": "start", "goal": "原工作整合測試"}),
                     ("send", {"text": "需要你提供城市"}),
-                    ("task_control", {"action": "need_input", "reason": "city missing"}),
+                    ("wait", {"for": [{"message": True}]}),
                     ("send", {"text": "已依原工作完成"}),
-                    ("task_control", {"action": "complete", "result": "original work finished"}),
+                    ("manage_task", {"action": "finish", "result": "original work finished"}),
                 ],
             }
             return {"ok": True}

@@ -66,7 +66,7 @@ async def test_native_telegram_file_index_survives_current_input_composition(
     assert indices[0] == {
         "source": "reply" if mode == "reply" else "current",
         "event_id": source.id,
-        "attachment_index": indexed.attachment_index,
+        "attachment": indexed.attachment_index,
         "kind": indexed.kind,
         "filename": media["file_name"],
         "mime_type": data["mime_type"],
@@ -172,7 +172,7 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
             current = material.rsplit("[本轮附件索引]\n", 1)[1]
             indices, _ = json.JSONDecoder().raw_decode(current)
             assert indices[1]["event_id"] == events[0].id
-            assert indices[1]["origin"] == "reply_observed" and indices[1]["attachment_index"] == 1
+            assert indices[1]["origin"] == "reply_observed" and indices[1]["attachment"] == 1
             assert "observed-native-id" not in material
             assert not any(message.images for message in env.model.requests[0].messages)
             if prefetch_first:
@@ -180,16 +180,16 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
             else:
                 assert not downloads  # Main reached its first request while prefetch was blocked.
             result = await workspace.execute(
-                "inspect_conversation_attachment",
-                {"event_id": events[0].id, "attachment_index": 1, "question": "读取引用文件"},
+                "view_file",
+                {"event_id": events[0].id, "attachment": 1, "question": "读取引用文件"},
                 request_id="explicit-observed-reply",
             )
             assert "OBSERVED reply original file" in result["result"]["text"]
             release.set()
             await asyncio.gather(*tuple(service._pending))
             again = await workspace.execute(
-                "inspect_conversation_attachment",
-                {"event_id": events[0].id, "attachment_index": 1, "question": "再次读取引用文件"},
+                "view_file",
+                {"event_id": events[0].id, "attachment": 1, "question": "再次读取引用文件"},
                 request_id="explicit-observed-reply-again",
             )
             assert again["sha256"] == result["sha256"]
@@ -213,8 +213,8 @@ async def test_unknown_reply_is_observed_with_current_event_without_inventing_hi
             assert json.loads(sources[0].source_snapshot_json)["data"]["file"] == "new-observed-id"
             assert sources[0].cache_name is None and sources[0].cache_status == "uncached"
             selected = await workspace.execute(
-                "inspect_conversation_attachment",
-                {"event_id": events[0].id, "attachment_index": 0, "question": "读取新的引用原件"},
+                "view_file",
+                {"event_id": events[0].id, "attachment": 0, "question": "读取新的引用原件"},
                 request_id="explicit-edited-observed-reply",
             )
             assert "NEW observed reply original file" in selected["result"]["text"]

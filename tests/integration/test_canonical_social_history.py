@@ -52,8 +52,8 @@ async def test_same_person_multiple_entries_query_together_without_merging_sourc
     env.registry.disconnect(env.bot)
     env.bot.calls.clear()
     result = await env.service.execute(
-        "query_chat_history",
-        {"view": "recent", "event_kind": "all", "target": {"person_id": env.person}},
+        "read_chat",
+        {"target": {"person_id": env.person}},
         env.context,
     )
     assert [row["event_id"] for row in result["events"]] == [second.id, first.id]
@@ -62,15 +62,12 @@ async def test_same_person_multiple_entries_query_together_without_merging_sourc
         second.canonical_conversation_id,
     }
     result = await env.service.execute(
-        "query_chat_history",
+        "read_chat",
         {
-            "view": "recent",
-            "event_kind": "all",
             "target": {"conversation_id": second.canonical_conversation_id},
         },
         env.context,
     )
-    assert result["source"] == "canonical_ledger"
     assert [row["event_id"] for row in result["events"]] == [second.id]
     assert result["events"][0]["person_id"] == env.person
     assert env.bot.calls == []
@@ -84,24 +81,21 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
     env.bot.calls.clear()
     with pytest.raises(SocialError, match="history_receipt_unavailable"):
         await env.service.execute(
-            "query_chat_history",
+            "read_chat",
             {
-                "view": "recent",
-                "event_kind": "all",
                 "target": {"operation_id": receipt["operation_id"]},
             },
             context,
         )
     unavailable = await env.service.execute(
-        "query_chat_history",
+        "read_chat",
         {
-            "view": "around",
-            "event_id": receipt["event_id"],
+            "around": receipt["event_id"],
             "target": {"conversation_id": private.canonical_conversation_id},
         },
         context,
     )
-    assert unavailable["anchor_status"] == "unavailable" and not unavailable["events"]
+    assert unavailable["around_status"] == "unavailable" and not unavailable["events"]
     token = current_invocation.set(
         ToolInvocationContext(
             SimpleNamespace(read_target_id=env.person), invocation_key="delegated"
@@ -109,17 +103,13 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
     )
     try:
         with pytest.raises(SocialError, match="history_scope_denied"):
-            await env.service.execute(
-                "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
-            )
+            await env.service.execute("read_chat", {}, env.context)
     finally:
         current_invocation.reset(token)
     env.registry.disconnect(env.bot)
     original = await env.service.execute(
-        "query_chat_history",
+        "read_chat",
         {
-            "view": "recent",
-            "event_kind": "all",
             "target": {"operation_id": receipt["operation_id"]},
         },
         env.context,
@@ -138,9 +128,7 @@ async def test_permanent_group_history_survives_new_context_window(database, tmp
         conversation = await session.get(CanonicalConversationModel, env.context.conversation_id)
         conversation.starts_after_event_id = source.id
     env.bot.calls.clear()
-    result = await env.service.execute(
-        "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
-    )
+    result = await env.service.execute("read_chat", {}, env.context)
     assert [row["event_id"] for row in result["events"]] == [sent["event_id"], source.id]
     assert "after reset" in result["events"][0]["content"]
     assert env.bot.calls == []
@@ -180,23 +168,19 @@ async def test_platform_personal_history_and_cross_entry_binding_survive_new_win
         space_id=None,
         actor=SimpleNamespace(person_id=env.person, principal_kind="person"),
     )
-    recent = await env.service.execute("query_chat_history", {"view": "recent"}, context)
+    recent = await env.service.execute("read_chat", {}, context)
     assert [row["event_id"] for row in recent["events"]] == [current.id, original.id]
-    found = await env.service.execute(
-        "query_chat_history", {"view": "search", "keyword": "雷达站"}, context
-    )
+    found = await env.service.execute("read_chat", {"query": "雷达站"}, context)
     assert [row["event_id"] for row in found["events"]] == [original.id]
-    around = await env.service.execute(
-        "query_chat_history", {"view": "around", "event_id": original.id, "after": 1}, context
-    )
+    around = await env.service.execute("read_chat", {"around": original.id, "context": 1}, context)
     assert [row["event_id"] for row in around["events"]] == [original.id, current.id]
     cross_entry = await env.service.execute(
-        "query_chat_history",
-        {"view": "search", "keyword": "雷达站", "target": {"binding_id": entry.binding_id}},
+        "read_chat",
+        {"query": "雷达站", "target": {"binding_id": entry.binding_id}},
         replace(env.context, actor=SimpleNamespace(person_id=env.person, principal_kind="person")),
     )
     assert cross_entry["events"] == found["events"]
-    assert cross_entry["platform"] == platform
+    assert cross_entry["sources"][0]["platform"] == platform
     assert cross_entry["events"][0]["person_id"] == env.person
     version, automatic_context = await EventLedgerRepository(database).read_scope_context(
         entry.scope, limit=20
@@ -235,11 +219,13 @@ async def test_account_transfer_keeps_original_binding_conversation_and_author(d
     assert current.canonical_conversation_id != original.canonical_conversation_id
     for binding_id, expected in ((old_binding_id, original), (new_binding_id, current)):
         result = await env.service.execute(
-            "query_chat_history",
-            {"view": "recent", "target": {"binding_id": binding_id}},
+            "read_chat",
+            {"target": {"binding_id": binding_id}},
             env.context,
         )
-        assert result["conversation_id"] == expected.canonical_conversation_id
+        assert [source["conversation_id"] for source in result["sources"]] == [
+            expected.canonical_conversation_id
+        ]
         assert [row["event_id"] for row in result["events"]] == [expected.id]
         assert result["events"][0]["person_id"] == expected.author_person_id
     assert original.author_person_id == env.person
@@ -270,8 +256,8 @@ async def test_history_discovers_original_entries_after_person_merge(
     env.registry.disconnect(env.bot)
     env.bot.calls.clear()
     entries = await env.service.execute(
-        "query_chat_history",
-        {"view": "recent", "event_kind": "all", "target": {"person_id": target}},
+        "read_chat",
+        {"target": {"person_id": target}},
         env.context,
     )
     assert [row["event_id"] for row in entries["events"]] == [other.id, original.id]
@@ -280,16 +266,15 @@ async def test_history_discovers_original_entries_after_person_merge(
         other.canonical_conversation_id,
     }
     result = await env.service.execute(
-        "query_chat_history",
+        "read_chat",
         {
-            "view": "recent",
-            "event_kind": "all",
             "target": {"conversation_id": original.canonical_conversation_id},
         },
         env.context,
     )
-    assert result["conversation_id"] == original.canonical_conversation_id
-    assert result["target_id"] == target
+    assert [source["conversation_id"] for source in result["sources"]] == [
+        original.canonical_conversation_id
+    ]
     assert result["events"][0]["person_id"] == env.person
     assert env.bot.calls == []
 
@@ -324,21 +309,23 @@ async def test_delegated_history_keeps_same_person_scope_after_merge(database, t
     try:
         result = await invoke_social(
             env.service,
-            "query_chat_history",
-            {"view": "recent", "target": {"conversation_id": original.canonical_conversation_id}},
+            "read_chat",
+            {"target": {"conversation_id": original.canonical_conversation_id}},
             runtime,
         )
-        assert result["conversation_id"] == original.canonical_conversation_id
+        assert [source["conversation_id"] for source in result["sources"]] == [
+            original.canonical_conversation_id
+        ]
         assert result["events"][0]["person_id"] == env.person
         with pytest.raises(SocialError, match="history_scope_denied"):
             await invoke_social(
-                env.service, "find_contacts", {"kind": "person", "target_id": foreign}, runtime
+                env.service, "find_contacts", {"target": {"person_id": foreign}}, runtime
             )
         with pytest.raises(SocialError, match="history_scope_denied"):
             await invoke_social(
                 env.service,
-                "query_chat_history",
-                {"view": "recent", "target": {"conversation_id": env.context.conversation_id}},
+                "read_chat",
+                {"target": {"conversation_id": env.context.conversation_id}},
                 runtime,
             )
     finally:

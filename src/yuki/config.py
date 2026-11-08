@@ -286,8 +286,7 @@ class Settings(BaseSettings):
     conversation_autonomous_presence_window_seconds: int = 300
     conversation_interrupt_autonomous_on_new_message: bool = True
     conversation_effect_gate_timeout_seconds: float = Field(default=30.0, gt=0)
-    conversation_history_around_before: int = Field(default=6, ge=0)
-    conversation_history_around_after: int = Field(default=6, ge=0)
+    conversation_history_around_context: int = Field(default=6, ge=0)
     reply_hard_max_messages: int = 10
 
     # Local in-process plugins.  Approval is API governance, not a Python sandbox.

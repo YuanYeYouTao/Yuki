@@ -17,7 +17,8 @@ from yuki.client_api.pagination import decode_cursor
 from yuki.runtime.effect_outcomes import execution_finished, historical_evidence, recorded_tool
 from yuki.runtime.work_schema_v1 import effects
 from yuki.runtime.work_wait_schema import waits
-from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
+
+_COMMAND_TOOLS = frozenset({"run_command", "read_command", "control_command"})
 
 
 def step_id(secret: bytes, key: str) -> str:
@@ -61,21 +62,23 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         status = "succeeded" if not execution or execution_finished(evidence) else "unknown"
     else:
         status = "unknown"
+    # Retired terminal_* names without a successor (terminal_write) stay terminal.
+    terminal = tool in _COMMAND_TOOLS or tool.startswith("terminal_")
     category, label = (
         ("terminal", "終端")
-        if tool.startswith("terminal_")
+        if terminal
         else ("search", "搜尋")
         if tool == "web_search"
         else ("web", "讀網頁")
         if tool == "read_webpage"
         else ("file", "讀取檔案")
-        if tool in WORKSPACE_READ_TOOLS
+        if tool == "view_file"
         else ("file", "保存檔案")
-        if tool in WORKSPACE_TOOLS
+        if tool == "copy_file"
         else ("file", "發布檔案")
         if tool == "workspace_publish"
         else ("agent", "委託其他 Agent")
-        if tool == "external_agent"
+        if tool in {"use_coding_agent", "get_coding_agents"}
         else ("device", "本機操作（歷史）")
         if tool == "local_device"
         else ("memory", "記憶")
@@ -84,7 +87,7 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         if tool == "send"
         else ("other", "其他")
     )
-    if tool.startswith("terminal_") and evidence.get("step_label") in {"browser", "computer"}:
+    if terminal and evidence.get("step_label") in {"browser", "computer"}:
         category = evidence["step_label"]
         label = "使用瀏覽器" if category == "browser" else "操作電腦"
     artifacts = []
@@ -171,9 +174,9 @@ async def wait_view(
             names = {recorded_tool(name) for name in tools if isinstance(name, str)}
             summary["run_kind"] = (run_kind(item["run_id"], identity) if run_kind else None) or (
                 "terminal"
-                if "terminal_exec" in names
+                if "run_command" in names
                 else "acp"
-                if "external_agent" in names
+                if "use_coding_agent" in names
                 else "other"
             )
         conditions.append(summary)

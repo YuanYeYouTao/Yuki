@@ -28,7 +28,7 @@ from yuki_plugin_sdk.permissions import PluginPermission
 async def test_old_boundary_work_survives_callback_observation(
     database, tmp_path, monkeypatch, state, observation
 ):
-    provider = FakeLLMProvider(lambda _: _tool("environment_status", {}, "original-status"))
+    provider = FakeLLMProvider(lambda _: _tool("get_environment", {}, "original-status"))
     _, _, chat, source, host = await source_host(database, tmp_path, provider, ())
     # Each activation of the original Work ends after one request (retryable exit).
     yield_each_activation_after(monkeypatch, 1)
@@ -82,7 +82,7 @@ async def test_old_boundary_work_survives_callback_observation(
     entered, release = asyncio.Event(), asyncio.Event()
     complete = provider.complete
     provider._responder = lambda _: _tool(
-        "task_control", {"action": "complete", "result": "original finished"}, "finish-original"
+        "manage_task", {"action": "finish", "result": "original finished"}, "finish-original"
     )
 
     async def paused(request):

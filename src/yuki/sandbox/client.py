@@ -22,11 +22,10 @@ if TYPE_CHECKING:
 # model tool changes only the keys here, never a method or a stored row.
 MODEL_TOOL_RPC_METHODS: Mapping[str, str] = MappingProxyType(
     {
-        "terminal_exec": "terminal_exec",
-        "terminal_read": "terminal_read",
-        "terminal_control": "terminal_control",
-        "environment_status": "environment_status",
-        "environment_service": "environment_service",
+        "run_command": "terminal_exec",
+        "read_command": "terminal_read",
+        "control_command": "terminal_control",
+        "get_environment": "environment_status",
     }
 )
 # Submitted methods that may already have taken effect when no answer arrives.

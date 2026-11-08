@@ -1,14 +1,13 @@
 """Real Main/Plugin calls keep discovery, validation and delivery contracts together.
 
-Failure cases are specified before the product change: the retired view and mixed
-selectors must be rejected before execution; missing/type/enum errors must stay
-useful without echoing values; directory grants can be revoked between calls;
-around must keep neighbours despite inapplicable filters; explicit Conversation
-delivery must keep its original receipt rather than use a competing Binding.
+Failure cases are specified before the product change: retired parameters and two-key
+targets must be rejected before execution; type/enum errors must stay useful without
+echoing values; directory grants can be revoked between calls; around refuses filters
+it cannot apply instead of silently ignoring them; an explicit Conversation target
+delivers through that original entry.
 """
 
 import json
-from uuid import uuid4
 
 import pytest
 from tests.integration.test_plugin_agent_domain_grants import source_host
@@ -74,41 +73,28 @@ async def test_main_discovers_subject_and_conversation_reads_neighbours_and_send
         replies=replies,
     )
     calls = [
-        ("find_contacts", {"kind": "person", "target": "PRIVATE_PARAMETER_VALUE"}),
-        ("find_contacts", {}),
-        ("find_contacts", {"kind": 7}),
-        ("find_contacts", {"kind": "invalid"}),
-        ("find_contacts", {"kind": "person", "view": "subjects"}),
-        ("find_contacts", {"kind": "person", "subject_ref": "current_speaker"}),
-        ("find_conversations", {"kind": "space"}),
+        ("find_contacts", {"type": "person", "target": "PRIVATE_PARAMETER_VALUE"}),
+        ("find_contacts", {"kind": "person"}),
+        ("find_contacts", {"type": 7}),
+        ("find_contacts", {"type": "invalid"}),
+        ("find_contacts", {"view": "subjects"}),
+        ("find_contacts", {"target": {"person_id": case.env.person}}),
+        ("read_chat", {"view": "recent"}),
+        ("find_contacts", {"target": {"space_id": case.env.space}, "platform": "qq"}),
+        ("read_chat", {"around": records[1], "context": 1, "query": "does-not-match"}),
+        ("read_chat", {"around": records[1], "context": 1}),
         (
-            "find_conversations",
-            {"target": {"space_id": case.env.space}, "source": {"platform": "qq"}},
-        ),
-        (
-            "query_chat_history",
+            "send",
             {
-                "view": "around",
-                "event_id": records[1],
-                "before": 1,
-                "after": 1,
-                "keyword": "does-not-match",
-                "start_at": "2100-01-01T00:00:00Z",
-                "end_at": "2100-01-02T00:00:00Z",
-                "order": "recent",
-                "has": ["image"],
+                "text": "two selectors",
+                "target": {"space_id": case.env.space, "conversation_id": case.env.space},
             },
         ),
         (
             "send",
             {
                 "text": "discovery and original neighbours checked",
-                "target": {
-                    "kind": "space",
-                    "target_id": case.env.space,
-                    "conversation_id": case.env.context.conversation_id,
-                    "binding_id": str(uuid4()),
-                },
+                "target": {"conversation_id": case.env.context.conversation_id},
             },
         ),
     ]
@@ -117,8 +103,9 @@ async def test_main_discovers_subject_and_conversation_reads_neighbours_and_send
         definitions = {tool.name: tool.parameters for tool in request.tools}
         assert evidence.setdefault("declarations", definitions) == definitions
         evidence.setdefault("requests", []).append(request_evidence(request))
-        assert {"find_contacts", "find_conversations"} <= definitions.keys()
-        for name in ("find_contacts", "find_conversations"):
+        assert {"find_contacts", "read_chat"} <= definitions.keys()
+        assert "find_conversations" not in definitions
+        for name in ("find_contacts", "read_chat"):
             assert "view" not in definitions[name]["properties"]
             assert "oneOf" not in definitions[name]
         index = len(case.provider.requests) - 1
@@ -139,53 +126,51 @@ async def test_main_discovers_subject_and_conversation_reads_neighbours_and_send
     for index, field in (
         (0, "target"),
         (1, "kind"),
-        (2, "kind"),
-        (3, "kind"),
+        (2, "type"),
+        (3, "type"),
         (4, "view"),
-        (6, "kind"),
+        (6, "view"),
+        (10, "target"),
     ):
         refused = replies[index]
-        assert refused["error_code"] == "tool_input_validation_failed"
-        assert refused["data"]["executed"] is False
+        assert refused["ok"] is False
+        assert refused["error"] == "tool_input_validation_failed"
+        assert refused["executed"] is False
         assert field in json.dumps(refused)
         assert "PRIVATE_PARAMETER_VALUE" not in json.dumps(refused)
-    assert replies[5]["data"]["target_id"] == case.env.person
-    directory = replies[7]["data"]
+    assert replies[5]["items"][0]["id"] == case.env.person
+    directory = replies[7]["items"][0]
     assert case.env.context.conversation_id in {
-        row["conversation_id"] for row in directory["items"]
+        row["conversation_id"] for row in directory["conversations"]
     }
-    around = replies[8]["data"]
+    assert replies[8]["ok"] is False and replies[8]["error"] == "around_with_filters"
+    around = replies[9]
     assert [row["event_id"] for row in around["events"]] == records
-    assert around["order"] == "oldest"
-    assert not around.get("start_at") and not around.get("end_at")
-    assert replies[9]["data"]["status"] == "succeeded"
+    assert replies[11]["status"] == "succeeded" and replies[11]["event_id"]
+    assert "delivered_text" not in json.dumps(replies[11])
     assert [name for name, _ in case.env.bot.calls].count("send_group_msg") == 1
     if code_enabled:
         from yuki.codemode.tool_visibility import lookup_tools
 
         api = case.chat.runtime.runner.main_contract.script_api
-        for name in ("find_contacts", "find_conversations"):
+        for name in ("find_contacts", "read_chat"):
             found = json.loads(lookup_tools(api, json.dumps({"name": name})))
             assert found["data"]["direct"] is True
             assert found["data"]["parameters"] == evidence["declarations"][name]
             assert api.tool_for(found["data"]["script_name"]) == name
         evidence["script_names"] = {
-            name: api.schemas[name] for name in ("find_contacts", "find_conversations")
+            name: api.schemas[name] for name in ("find_contacts", "read_chat")
         }
 
 
-@pytest.mark.parametrize("name", ["find_contacts", "find_conversations"])
+@pytest.mark.parametrize("name", ["find_contacts", "read_chat"])
 async def test_plugin_discovery_uses_current_history_grant_without_changing_declarations(
     database, tmp_path, tool_delivery_evidence, name
 ):
     _, evidence = tool_delivery_evidence
     provider = FakeLLMProvider()
     env, _, _, source, host = await source_host(database, tmp_path, provider, ())
-    arguments = (
-        {"kind": "space", "target_id": env.space}
-        if name == "find_contacts"
-        else {"target": {"space_id": env.space}}
-    )
+    arguments = {"target": {"space_id": env.space}}
     replies = []
     evidence.update(tool=name, arguments=arguments, replies=replies)
 
@@ -193,7 +178,7 @@ async def test_plugin_discovery_uses_current_history_grant_without_changing_decl
         index = len(provider.requests) - 1
         evidence.setdefault("requests", []).append(request_evidence(request))
         evidence.setdefault("declarations", []).append([tool.name for tool in request.tools])
-        assert {"find_contacts", "find_conversations"} <= {tool.name for tool in request.tools}
+        assert {"find_contacts", "read_chat"} <= {tool.name for tool in request.tools}
         if index:
             replies.append(json.loads(request.messages[-1].content))
         if index == 1:
@@ -202,7 +187,7 @@ async def test_plugin_discovery_uses_current_history_grant_without_changing_decl
             host._approved_permissions = frozenset({PluginPermission.AGENT_RUN})
         elif index == 3:
             return _tool(
-                "task_control", {"action": "complete", "result": "checked current grant"}, "finish"
+                "manage_task", {"action": "finish", "result": "checked current grant"}, "finish"
             )
         return _tool(name, arguments, f"directory-grant-{index}")
 
@@ -213,8 +198,8 @@ async def test_plugin_discovery_uses_current_history_grant_without_changing_decl
         evidence["work_result"] = result.data
         evidence["gateway_calls"] = env.bot.calls
         assert result.ok
-        assert replies[0]["error_code"] == replies[2]["error_code"] == "permission_denied"
-        assert replies[1]["ok"], replies
+        assert replies[0]["error"] == replies[2]["error"] == "permission_denied"
+        assert "ok" not in replies[1], replies
         assert all(tools == evidence["declarations"][0] for tools in evidence["declarations"])
         assert not any(action.startswith("send_") for action, _ in env.bot.calls)
     finally:

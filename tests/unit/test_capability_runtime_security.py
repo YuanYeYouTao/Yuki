@@ -147,7 +147,7 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
         return await backend.execute_call(invocation)
 
     result = await invoke_tool(work, call, invoke)
-    assert json.loads(result)["data"]["compiled_input_seen"]
+    assert json.loads(result)["compiled_input_seen"]
     assert await invoke_tool(work, call, invoke) == result
     assert dispatched == [invocation.identity.operation_id]
     assert await work.journal.effect_state(invocation.identity.operation_id) == "accepted"
@@ -214,38 +214,31 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
 
     _, retired = await execute("admin_set_config", {"key": "agent.max_tool_calls", "value": 17})
     assert not json.loads(retired)["ok"]
-    _, failed = await execute("memory_change", {"operation": "create"})
-    assert not json.loads(failed)["ok"]
-    arguments = {
-        "operation": "create",
-        "target": {"subject_ref": "current_speaker", "scope_type": "person"},
-        "new_content": "现在住在上海",
-        "memory_key": "location:home",
-        "category": "location",
-        "reason": "当前请求记录居住地",
-    }
-    original, committed = await execute("memory_change", arguments)
+    _, failed = await execute("save_memory", {"content": "现在住在上海"})
+    assert json.loads(failed)["ok"] is False
+    arguments = {"content": "现在住在上海", "target": {"person_id": env.person}}
+    original, committed = await execute("save_memory", arguments)
     result = json.loads(committed)
-    assert result["ok"], result
-    fact_id = result["data"]["new_fact_id"]
+    assert result["outcome"] == "committed", result
+    fact_id = result["fact_id"]
     _, changed = await execute(
-        "memory_change",
+        "edit_memory",
         {
-            "operation": "correct",
             "fact_id": fact_id,
-            "new_content": "现在住在北京",
+            "action": "correct",
+            "content": "现在住在北京",
             "reason": "更新居住地",
         },
     )
     replacement = json.loads(changed)
-    assert replacement["ok"], replacement
+    assert replacement["applied"] == "correct", replacement
 
     async def replay():
         return await backend.execute_call(original)
 
     assert await invoke_tool(owner, original.call, replay, invocation=original) == committed
     assert await owner.journal.effect_state(original.identity.operation_id) == "accepted"
-    fact = await facts.get_fact(replacement["data"]["new_fact_id"])
+    fact = await facts.get_fact(replacement["fact_id"])
     assert fact.content == "现在住在北京"
     backend.refresh_catalog(context)
     assert await contract.model_definitions() == declared

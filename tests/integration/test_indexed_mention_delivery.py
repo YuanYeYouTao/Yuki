@@ -241,7 +241,7 @@ async def test_natural_name_uses_the_destination_conversation_not_the_invoking_o
     )
     assert target_message.conversation_id != env.source.conversation_id
     assert await env.router.cas_takeover_space(space) == "taken"
-    result = await send(env, "@ Diana 去目标群", target={"kind": "space", "target_id": space})
+    result = await send(env, "@ Diana 去目标群", target={"space_id": space})
     selected = await account(env, later)
     assert result["status"] == "succeeded"
     assert [item["account_id"] for item in result["mentioned_accounts"]] == [selected.id]
@@ -268,7 +268,7 @@ async def test_cross_target_private_name_uses_the_original_participants_history(
             .where(AccountModel.platform == "qq", AccountModel.external_account_id == "10002")
         )
     assert await env.router.cas_takeover_person(member.person_id) == "taken"
-    target = {"kind": "person", "target_id": member.person_id}
+    target = {"person_id": member.person_id}
     route = await env.router.resolve_send_for_person(member.person_id)
     assert route.conversation_id is None
     await send(env, "先前的私聊回复", target=target, call_id="private-history")

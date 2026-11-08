@@ -363,19 +363,14 @@ class EmojiDeliveryService:
             or intent.source["target_presence_id"],
             prepared_content=intent.source["content"],
         )
-        target = {"kind": intent.target.kind, "target_id": str(intent.target.id)}
-        if stored_route.get("conversation_id"):
-            target["conversation_id"] = stored_route["conversation_id"]
-        if intent.target.kind == "person":
-            target["binding_id"] = stored_route.get("binding_id") or intent.source["binding_id"]
+        # The original text send committed this conversation; the sticker follows it.
         args: dict[str, Any] = {
             "text": content.text,
-            "target": target,
-            "artifact_id": artifact_id,
-            "attachment_kind": "image",
+            "target": {"conversation_id": stored_route["conversation_id"]},
+            "file": {"artifact_id": artifact_id},
         }
         if reply_id is not None:
-            args["reply_to_event_id"] = reply_id
+            args["reply_to"] = reply_id
         return args, SocialContext(**values)
 
     async def _committed_target_conversation(self, intent: EmojiIntent) -> str | None:

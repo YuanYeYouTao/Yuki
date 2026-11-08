@@ -29,7 +29,9 @@ from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationReques
 
 
 @pytest.mark.parametrize(
-    ("budget", "artifacts_enabled"), [(24000, True), (128, False), (128, True)]
+    # 40 characters is below even the short send receipt, so it is truncated.
+    ("budget", "artifacts_enabled"),
+    [(24000, True), (40, False), (40, True)],
 )
 async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive(
     database, tmp_path, monkeypatch, budget, artifacts_enabled
@@ -138,7 +140,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
             presence_id=env.presence,
             conversation_id=event.canonical_conversation_id,
         )
-        if artifacts_enabled and budget == 128:
+        if artifacts_enabled and budget == 40:
             with pytest.raises(PermissionError, match="tool_actor_unavailable"):
                 await invocation
             assert len(provider.requests) == 1 and len(actor_checks) == 1
@@ -151,11 +153,9 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
             ]
             assert len(replies) == 1 and replies[0].tool_call_id == "original-send"
             receipt = json.loads(replies[0].content)
-            assert receipt["ok"] is True
+            assert "ok" not in receipt and receipt["status"] == "succeeded"
             assert "artifact_handle" not in receipt
-            if artifacts_enabled:
-                assert receipt["data"]["status"] == "succeeded"
-            else:
+            if not artifacts_enabled:
                 assert receipt["truncated"] is True
     # Rendering cannot invalidate or repeat the already confirmed transport effect.
     assert [action for action, _ in env.bot.calls].count("send_group_msg") == 1
@@ -192,7 +192,7 @@ async def test_small_research_resolves_original_scope_and_archives_complete_resu
     writer.write_artifact.assert_awaited_once()
     written = writer.write_artifact.await_args.kwargs
     assert written["access"] is access
-    assert json.loads(written["content"])["data"] == outcome.data
+    assert json.loads(written["content"]) == outcome.data
 
 
 async def test_oversized_artifact_read_does_not_resolve_or_recursively_archive():
@@ -207,7 +207,7 @@ async def test_oversized_artifact_read_does_not_resolve_or_recursively_archive()
             ok=True,
             data="original-page " * 1000,
             provider_id="artifacts",
-            tool_name="read_tool_artifact",
+            tool_name="read_result",
         )
     )
     assert rendered.truncated and rendered.artifact_id is None
@@ -272,7 +272,7 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
             tool_calls=(
                 ToolCall(
                     "original-fact",
-                    ToolFunction("read_memory", json.dumps({"view": "fact", "fact_id": fact.id})),
+                    ToolFunction("search_memory", json.dumps({"fact_id": fact.id})),
                 ),
             ),
         )
@@ -292,9 +292,9 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
             "model_result": rendered,
         }
     )
-    assert rendered["ok"], rendered
+    assert "ok" not in rendered, rendered
     assert not rendered.get("truncated", False), rendered
-    assert rendered["data"]["memory"]["content"] == original
+    assert rendered["memories"][0]["content"] == original
     assert original not in "\n".join(m.content or "" for m in case.provider.requests[0].messages)
 
 

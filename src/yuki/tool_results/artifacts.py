@@ -430,6 +430,15 @@ class ToolArtifactRepository:
         def sourced(data: dict[str, object]) -> dict[str, object]:
             return ArtifactRead(data, source_event_ids, source_privacy)
 
+        if operation == "auto":
+            # read_result chooses by the archived content type, not a model selector.
+            operation = (
+                "image"
+                if media_type == _PRIVATE_MEDIA_TYPE
+                else ("search" if query else "get")
+                if media_type == "application/json"
+                else "text"
+            )
         if media_type == _PRIVATE_MEDIA_TYPE and access is None:
             return _artifact_error("artifact_not_authorized", "图片 Artifact 需要原读取授权")
         file_path = (self._root / relative).resolve()
@@ -1181,7 +1190,7 @@ def _search_json(
                 candidate.update(
                     value_omitted=True,
                     value_shape=_value_shape(record),
-                    instruction="匹配对象过大，请对 path 执行 inspect 或 get",
+                    instruction="匹配对象过大，请按 path 读取，或加 structure=true 查看结构",
                 )
             prepared.append(candidate)
             yield json_character_count(candidate, limit=max_characters, cache=cache)

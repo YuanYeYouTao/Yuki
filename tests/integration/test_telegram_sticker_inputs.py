@@ -93,8 +93,8 @@ async def test_tgs_current_uses_shared_real_preview_and_keeps_original_cache(
     await case.media._cache_event(case.source.id, case.original_client, inbound)
     assert case.wire.count(("GET", "/file/botfixture-a/photos/preview.png")) == 1
     prepared = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "查看贴纸预览"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "查看贴纸预览"},
         runtime=case.runtime,
         request_id="explicit-current-preview",
     )
@@ -122,8 +122,8 @@ async def test_tgs_without_thumbnail_keeps_native_facts_without_document_failure
     inbound = original(case, preview=False)
     assert inbound.attachments[0].is_sticker and case.wire == []
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "看一下贴纸"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "看一下贴纸"},
         runtime=case.runtime,
         request_id="native-sticker-without-preview",
     )
@@ -146,9 +146,9 @@ async def test_tgs_history_preview_uses_original_presence_and_original_ttl(
     attachment_tools, database
 ):
     case = attachment_tools
-    args = {"event_id": case.source.id, "attachment_index": 0, "question": "看一下贴纸"}
+    args = {"event_id": case.source.id, "attachment": 0, "question": "看一下贴纸"}
     result = await case.workspace.execute(
-        "inspect_conversation_attachment", args, runtime=case.runtime, request_id="tgs-preview"
+        "view_file", args, runtime=case.runtime, request_id="tgs-preview"
     )
     assert result["mode"] == "sticker_preview" and result["preview"] == "platform_static_thumbnail"
     assert len(result.images) == 1 and result.images[0].source_event_id == case.source.id
@@ -172,7 +172,7 @@ async def test_tgs_history_preview_uses_original_presence_and_original_ttl(
     case.wire.clear()
     with pytest.raises(WorkspaceError, match="attachment_expired"):
         await case.workspace.execute(
-            "inspect_conversation_attachment",
+            "view_file",
             args,
             runtime=case.runtime,
             request_id="expired-preview",
@@ -273,8 +273,8 @@ async def test_actual_webm_current_cache_history_and_workspace_share_decoding(
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
     await case.media._cache_event(case.source.id, case.original_client, inbound)
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "查看原视频贴纸"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "查看原视频贴纸"},
         runtime=case.runtime,
         request_id="webm-history",
     )
@@ -317,8 +317,8 @@ async def test_reply_tgs_preview_retains_reply_source_and_media_owner(attachment
         case.source.id, 0, case.original_client, prepared_media=attachment.prepared_media
     )
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "查看引用贴纸"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "查看引用贴纸"},
         runtime=case.runtime,
         request_id="explicit-reply-preview",
     )
@@ -358,8 +358,8 @@ async def test_preview_download_failure_does_not_misclassify_native_tgs(
     item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     with pytest.raises(WorkspaceError, match="resource_unavailable"):
         await case.workspace.execute(
-            "inspect_conversation_attachment",
-            {"event_id": case.source.id, "attachment_index": 0, "question": "查看贴纸预览"},
+            "view_file",
+            {"event_id": case.source.id, "attachment": 0, "question": "查看贴纸预览"},
             runtime=case.runtime,
             request_id="failed-explicit-preview",
         )
@@ -439,8 +439,8 @@ async def test_historical_truncated_filename_reads_original_suffix(attachment_to
             :80
         ]  # Existing databases already contain this truncation.
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "读取文本"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "读取文本"},
         runtime=case.runtime,
         request_id="long-filename-history",
     )
@@ -472,8 +472,8 @@ async def test_cached_tgs_preview_cannot_switch_to_another_live_bot(attachment_t
     case.wire.clear()
     with pytest.raises(WorkspaceError, match="resource_unavailable"):
         await case.workspace.execute(
-            "inspect_conversation_attachment",
-            {"event_id": case.source.id, "attachment_index": 0, "question": "看一下贴纸"},
+            "view_file",
+            {"event_id": case.source.id, "attachment": 0, "question": "看一下贴纸"},
             runtime=case.runtime,
             request_id="offline-original-preview",
         )

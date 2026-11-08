@@ -117,8 +117,9 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
         ]
         assert len(responses) == 1 and responses[0]["id"] == "actual-boundary-send"
         receipt = json.loads(responses[0]["response"]["output"])
-        assert receipt["ok"] and receipt["data"]["status"] == "succeeded"
-        assert sent_text in responses[0]["response"]["output"]
+        assert receipt["status"] == "succeeded" and receipt["event_id"]
+        # The model already holds its own arguments; the receipt carries no echo.
+        assert sent_text not in responses[0]["response"]["output"]
         assert sent_text not in _plain_text(wire[1])
         assert continuation[-1]["role"] == "user"
         saved = await _saved(database)

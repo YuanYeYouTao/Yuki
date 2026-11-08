@@ -67,11 +67,11 @@ async def test_intrinsic_to_real_chat_and_terminal_feedback(database, tmp_path, 
         nonlocal turns
         turns += 1
         tool_feedback.extend(m.content for m in request.messages if m.role == "tool")
-        action = None
+        action = name = None
         if scenario == "time_due" and turns == 1:
-            action = {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 30}]}
+            name, action = "wait", {"for": [{"seconds": 30}]}
         elif scenario == "fail":
-            action = {"action": "fail", "reason": "isolated explicit failure"}
+            name, action = "manage_task", {"action": "fail", "text": "isolated explicit failure"}
         if action:
             return ChatResponse(
                 content="",
@@ -79,7 +79,7 @@ async def test_intrinsic_to_real_chat_and_terminal_feedback(database, tmp_path, 
                 tool_calls=(
                     ToolCall(
                         id=f"{scenario}-{turns}",
-                        function=ToolFunction(name="task_control", arguments=json.dumps(action)),
+                        function=ToolFunction(name=name, arguments=json.dumps(action)),
                     ),
                 ),
             )
@@ -202,15 +202,12 @@ async def test_intrinsic_to_real_chat_and_terminal_feedback(database, tmp_path, 
             ) as control:
                 receipt = json.loads(
                     await control.execute(
-                        "task_control",
-                        {
-                            "action": "wait",
-                            "conditions": [{"kind": "time_due", "after_seconds": 30}],
-                        },
+                        "wait",
+                        {"for": [{"seconds": 30}]},
                         "api-wait-before-model",
                     )
                 )
-                assert receipt["ok"], receipt
+                assert receipt.get("ok") is not False, receipt
             await host._reconcile_outbox()
             await observe("api_wait_registered", run_id, task_id)
             assert (await repo.get(task_id))["state"] == "waiting_external"

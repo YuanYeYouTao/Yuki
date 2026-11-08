@@ -310,7 +310,6 @@ class ApplicationContainer:
             persistence=persistence,
             model_runtime=model_runtime,
             runtime_config=self.runtime_config,
-            permission_catalog=self.permission_catalog,
             concurrency=self.concurrency,
             turns=self.turn_coordinator,
             effect_gate=self.conversation_effect_gate,

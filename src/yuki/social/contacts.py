@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from yuki.identity.person_identity import person_family_condition, person_root_id
+from yuki.identity.person_identity import current_person_id, person_family_condition
 from yuki.persistence.models import ChatEventModel, PersonAliasModel
-from yuki.services.contact_query import ConversationQuery, SubjectContactsQuery
-from yuki.services.history_query import HistorySource
+from yuki.services.contact_query import ContactsQuery
+from yuki.services.history_query import HistorySource, HistoryTarget
 from yuki.social.history_sources import history_source_statement
 from yuki.social.models import SocialError
 
@@ -108,108 +109,146 @@ async def subject_contacts(
     ]
 
 
+async def contact_subject(session: AsyncSession, target: HistoryTarget) -> tuple[str, str]:
+    """The Person or Space a single internal selector points at."""
+    if target.person_id is not None:
+        return "person", str(target.person_id)
+    if target.space_id is not None:
+        return "space", str(target.space_id)
+    if target.conversation_id is not None:
+        conversation = await session.get(CanonicalConversationModel, str(target.conversation_id))
+        if conversation is not None and (conversation.space_id or conversation.person_id):
+            if conversation.space_id:
+                return "space", conversation.space_id
+            return "person", cast(str, conversation.person_id)
+    if target.binding_id is not None:
+        personal = await session.get(IdentityBindingModel, str(target.binding_id))
+        if personal is not None and personal.person_id:
+            return "person", personal.person_id
+        group = await session.get(SpaceBindingModel, str(target.binding_id))
+        if group is not None:
+            return "space", group.space_id
+    raise SocialError("target_not_found")
+
+
 async def read_contacts(
     service: SocialService, arguments: dict[str, Any], context: SocialContext
 ) -> dict[str, Any]:
-    request = SubjectContactsQuery.model_validate(arguments)
-    selected = None
-    if request.target_id or request.subject_ref:
-        selected = await service.target(request.kind, arguments, context)
+    """Subjects with their current entries and original conversations, paged by subject.
+
+    An explicit target is read as itself: historic conversations stay discoverable
+    without the name search's current-contact filter, as entry discovery always was.
+    """
+    request = ContactsQuery.model_validate(arguments)
+    source = HistorySource(platform=request.platform) if request.platform else None
     async with service.database.read_session() as session:
         await session.execute(text("BEGIN"))
-        rows = await subject_contacts(
-            session,
-            request.kind,
-            request.display_name,
-            target_id=str(selected.id) if selected is not None else None,
-            source=request.source,
-            limit=request.limit + 1,
-            cursor=str(request.cursor) if request.cursor is not None else None,
-        )
-        has_more = len(rows) > request.limit
-        items = rows[: request.limit]
-        identities = [item["target_id"] for item in items]
-        bindings_by_target: dict[str, list[dict[str, str]]] = {
-            identity: [] for identity in identities
-        }
-        if identities:
-            model = IdentityBindingModel if request.kind == "person" else SpaceBindingModel
+        has_more = False
+        if request.target is not None:
+            kind, raw = await contact_subject(session, request.target)
+            if kind == "person":
+                raw = await current_person_id(session, raw)
+                subject = await session.get(CanonicalPersonModel, raw)
+                name = subject.display_name if subject is not None else None
+            else:
+                space = await session.get(CanonicalSpaceModel, raw)
+                name = space.name if space is not None else None
+            label = "person" if kind == "person" else "group"
+            rows = (
+                [{"kind": kind, "target_id": raw, "display_name": name}]
+                if request.type in (None, label)
+                else []
+            )
+        else:
+            after_kind, after_id = (
+                request.cursor.split(":", 1) if request.cursor is not None else (None, None)
+            )
+            kinds = [
+                kind
+                for kind, label in (("person", "person"), ("space", "group"))
+                if request.type in (None, label) and (after_kind != "group" or label == "group")
+            ]
+            rows = []
+            for kind in kinds:
+                label = "person" if kind == "person" else "group"
+                rows.extend(
+                    await subject_contacts(
+                        session,
+                        kind,
+                        request.name,
+                        source=source,
+                        limit=request.limit + 1 - len(rows),
+                        cursor=after_id if after_kind == label else None,
+                    )
+                )
+                if len(rows) > request.limit:
+                    break
+            has_more = len(rows) > request.limit
+        items = []
+        for row in rows[: request.limit]:
+            kind = str(row["kind"])
+            model = IdentityBindingModel if kind == "person" else SpaceBindingModel
             owner = (
-                person_root_id(IdentityBindingModel.person_id)
-                if request.kind == "person"
-                else SpaceBindingModel.space_id
+                person_family_condition(IdentityBindingModel.person_id, row["target_id"])
+                if kind == "person"
+                else SpaceBindingModel.space_id == row["target_id"]
             )
-            statement = select(owner, model.id, model.platform).where(
-                owner.in_(identities), model.status == "active"
+            entries = select(model.id, model.platform).where(owner, model.status == "active")
+            if request.platform is not None:
+                entries = entries.where(model.platform == request.platform)
+            statement = await history_source_statement(
+                session,
+                context=context,
+                target=HistoryTarget.model_validate(
+                    {"person_id" if kind == "person" else "space_id": row["target_id"]}
+                ),
+                source=source,
             )
-            if request.source is not None and request.source.platform is not None:
-                statement = statement.where(model.platform == request.source.platform)
-            for owner_id, binding_id, platform in (
-                await session.execute(statement.order_by(model.id))
-            ).all():
-                bindings_by_target[owner_id].append(
+            columns = statement.selected_columns
+            conversations = (
+                (await session.execute(statement.order_by(columns.conversation_id)))
+                .mappings()
+                .all()
+            )
+            item = {
+                "type": "person" if kind == "person" else "group",
+                "id": row["target_id"],
+                "name": row["display_name"],
+                "entries": [
                     {"binding_id": binding_id, "platform": platform}
-                )
-        for item in items:
-            item["bindings"] = bindings_by_target[item["target_id"]]
-        cursor_key = "target_id"
-    page = {
-        "items": items,
-        "has_more": has_more,
-        "next_cursor": items[-1][cursor_key] if has_more else None,
-    }
-    if selected is not None and items:
-        return {**items[0], "has_more": has_more, "next_cursor": page["next_cursor"]}
-    return page
-
-
-async def read_conversations(
-    service: SocialService, arguments: dict[str, Any], context: SocialContext
-) -> dict[str, Any]:
-    request = ConversationQuery.model_validate(arguments)
-    async with service.database.read_session() as session:
-        await session.execute(text("BEGIN"))
-        statement = await history_source_statement(
-            session, context=context, target=request.target, source=request.source
-        )
-        columns = statement.selected_columns
-        if request.display_name:
-            statement = statement.where(
-                columns.conversation_name.contains(request.display_name, autoescape=True)
-            )
-        if request.cursor is not None:
-            statement = statement.where(columns.conversation_id > str(request.cursor))
-        entries = (
-            (
-                await session.execute(
-                    statement.order_by(columns.conversation_id).limit(request.limit + 1)
-                )
-            )
-            .mappings()
-            .all()
-        )
-        items = [
-            {
-                "conversation_id": row["conversation_id"],
-                "kind": "person" if row["conversation_kind"] == "private" else "space",
-                "target_id": row["person_id"] or row["space_id"],
-                "person_id": row["person_id"],
-                "space_id": row["space_id"],
-                "binding_id": row["binding_id"],
-                "entry_presence_id": row["presence_id"],
-                "thread_id": row["thread_id"],
-                "platform": row["platform"],
-                "scope": "private" if row["conversation_kind"] == "private" else "group",
-                "display_name": row["conversation_name"],
-                "binding_status": row["binding_status"],
-                "presence_status": row["presence_status"],
+                    for binding_id, platform in (
+                        await session.execute(entries.order_by(model.id))
+                    ).all()
+                ],
+                "conversations": [
+                    {
+                        key: value
+                        for key, value in {
+                            "conversation_id": entry["conversation_id"],
+                            "platform": entry["platform"],
+                            "scope": "private"
+                            if entry["conversation_kind"] == "private"
+                            else "group",
+                            "name": entry["conversation_name"],
+                            "thread_id": entry["thread_id"],
+                            "person_id": entry["person_id"]
+                            if entry["person_id"] != row["target_id"]
+                            else None,
+                            # Only an entry that is no longer current says so.
+                            "binding_status": entry["binding_status"]
+                            if entry["binding_status"] != "active"
+                            else None,
+                            "presence_status": entry["presence_status"]
+                            if entry["presence_status"] != "active"
+                            else None,
+                        }.items()
+                        if value
+                    }
+                    for entry in conversations
+                ],
             }
-            for row in entries[: request.limit]
-        ]
-        has_more = len(entries) > request.limit
-        cursor_key = "conversation_id"
-    return {
-        "items": items,
-        "has_more": has_more,
-        "next_cursor": items[-1][cursor_key] if has_more else None,
-    }
+            items.append({key: value for key, value in item.items() if value is not None})
+    page: dict[str, Any] = {"items": items}
+    if has_more:
+        page["next_cursor"] = f"{items[-1]['type']}:{items[-1]['id']}"
+    return page

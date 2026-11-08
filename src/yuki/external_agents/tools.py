@@ -1,100 +1,172 @@
-"""Deployment-stable external Agent contract, independent of host or provider."""
+"""Deployment-stable coding-Agent contract, independent of host or provider."""
 
 from __future__ import annotations
 
-from yuki.domain.messages import ChatTool
+from typing import Any
 
-EXTERNAL_AGENT_TOOLS = frozenset({"external_agent"})
+from yuki.domain.messages import ChatTool
+from yuki.external_agents.errors import ExternalAgentArgumentError
+
+EXTERNAL_AGENT_TOOLS = frozenset({"get_coding_agents", "use_coding_agent"})
+_TARGET_KEYS = ("instance_id", "session_id", "execution_id", "operation_id")
+
+
+def _target(description: str) -> dict[str, object]:
+    return {
+        "type": "object",
+        "description": description,
+        "properties": {key: {"type": "string"} for key in _TARGET_KEYS},
+        "oneOf": [{"required": [key]} for key in _TARGET_KEYS],
+        "additionalProperties": False,
+    }
 
 
 def external_agent_tools() -> tuple[ChatTool, ...]:
     text = {"type": "string"}
     return (
         ChatTool(
-            name="external_agent",
-            description=(
-                "调用本人已授权电脑上的原生 Agent。list 查看设备、实例和会话的实际能力；"
-                "get 读取原资源、操作、状态和历史，无需接纳 Work。"
-                "问当前/最后做了什么，用原 session_id 或 execution_id 读取相关行动；"
-                "在线、idle/completed 和操作回执不单独证明业务进度。"
-                "发生时间认原生已有字段及原单位；received_at/observed_at 仅是入账/查询时间，"
-                "晚观察不代表刚发生，发生时间缺失时保留未知。"
-                "prompt/queue/watch 前必须先 task_control(action=accept) 接纳 Work。"
-                "cursor 续读原 operation 的服务器重要事件；native_cursor 续读原生目录/历史，"
-                "按结果 cursor_parameter 回填，不跨资源混用。"
-                "include_history 读取最新相关一页；next_cursor 指向哪一端认 history_order/范围，"
-                "刷新当前不沿旧页游标继续向过去翻。"
-                "指定 execution_id 查该轮，历史缺失按结果说明，不自动恢复或重做业务；"
-                "同传 operation_id/run_id 只核原关联，不将指定轮换成监督的最新轮。"
-                "watch 将已有会话纳入当前 Work 持续监督，跨轮接收进度；"
-                "指定 execution_id 时只监督该轮。"
-                "prompt 提交新输入，queue 明确排入原生队列，均沿当前 Work 保存原操作。"
-                "steer 给指定活跃执行追加要求；respond 回答原问题；cancel 精确取消原操作；"
-                "detach 结束监督，不关闭用户会话或 daemon。参数只使用目录返回的内部 ID。"
-                "respond/detach 必须带原 operation_id 或 run_id；execution_id 不能代替原操作。"
-                "respond 的 permission_id 使用服务器事件顶层值，option_id/response 沿原问题选项。"
-                "pending 或 unknown 后查询原 operation_id，不重提，不暗中另开会话或取消重启。"
-            ),
+            name="get_coding_agents",
+            namespace="external_agent.read",
+            effect="read_state",
             result_cacheable=False,
+            description=(
+                "查看本人电脑上的编码 Agent（如 Codex、Claude Code）。省略 target 列出设备与实例；"
+                "target 给实例列出会话，给会话或执行读取最近进展，给 operation_id 读取原操作的"
+                "状态、事件与待回答的问题。history=true 带上最近历史；用 next_cursor 继续翻页。"
+                "在线或空闲不代表任务已完成。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "device": text,
+                    "target": _target("要查看的实例、会话、执行或原操作，只给一个 ID"),
+                    "history": {"type": "boolean"},
+                    "cursor": text,
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ChatTool(
+            name="use_coding_agent",
+            namespace="external_agent.control",
+            effect="write_state",
+            result_cacheable=False,
+            description=(
+                "让本人电脑上的编码 Agent 工作。prompt 向实例或会话提交新任务，queue 排入原生队列，"
+                "watch 持续跟进已有会话，steer 给运行中的执行追加要求，answer 回答它的权限请求或"
+                "提问，cancel 取消，detach 停止跟进（不关闭会话）。prompt、queue、watch 须在"
+                "工作中调用。结果未知时用 get_coding_agents 按 operation_id 查询，不要重提。"
+            ),
             parameters={
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": [
-                            "list",
-                            "get",
-                            "watch",
                             "prompt",
-                            "steer",
                             "queue",
-                            "respond",
+                            "steer",
+                            "watch",
+                            "answer",
                             "cancel",
                             "detach",
                         ],
                     },
-                    **{
-                        name: text
-                        for name in (
-                            "device_id",
-                            "instance_id",
-                            "session_id",
-                            "prompt",
-                            "cwd",
-                            "option_id",
-                        )
+                    "target": _target(
+                        "目录返回的实例、会话、执行或原操作 ID，只给一个；"
+                        "answer 与 detach 用原 operation_id"
+                    ),
+                    "prompt": {**text, "description": "prompt、queue、steer 的文字"},
+                    "question": {
+                        "type": ["string", "integer"],
+                        "description": "answer 要回答的权限请求或提问事件 ID（见原操作的事件）",
                     },
-                    "operation_id": {
-                        **text,
-                        "description": "原 operation_id；respond/detach 需此项或 run_id。",
+                    "answer": {
+                        "type": ["string", "object"],
+                        "description": "所选选项 ID，或该 Agent 原生回答对象",
                     },
-                    "run_id": {
-                        **text,
-                        "description": "原监督 run_id，可代替 operation_id；不是原生执行 ID。",
-                    },
-                    "execution_id": {
-                        **text,
-                        "description": "内部执行 ID，用于 get/steer/cancel；"
-                        "不代替 respond/detach 的原 operation_id。",
-                    },
-                    "request_id": {
-                        **text,
-                        "description": "仅 get 查证的兼容别名；新写调用身份由 Host 提供。",
-                    },
-                    "permission_id": {
-                        **text,
-                        "description": "原 operation 的 permission/question 顶层 permission_id；"
-                        "不是 payload 内的原生 request ID。",
-                    },
+                    "cwd": text,
                     "resume": {"type": "boolean"},
-                    "native_cursor": text,
-                    "include_history": {"type": "boolean"},
-                    "response": {"type": "object", "additionalProperties": True},
-                    "outcome": {"type": "string", "enum": ["cancelled"]},
-                    "cursor": {"type": "integer", "minimum": 0},
                 },
-                "required": ["action"],
+                "required": ["action", "target"],
                 "additionalProperties": False,
             },
         ),
     )
+
+
+def coding_agent_arguments(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Translate a model call into the service arguments of the original contract."""
+    target = args.get("target") or {}
+    if not isinstance(target, dict) or len(target) > 1:
+        raise ExternalAgentArgumentError("invalid_target", "target 只给一个 ID")
+    key, identity = next(iter(target.items()), (None, None))
+    if name == "get_coding_agents":
+        wire: dict[str, Any] = {
+            "action": "get" if key in {"session_id", "execution_id", "operation_id"} else "list"
+        }
+        if "device" in args:
+            wire["device_id"] = args["device"]
+        if key is not None:
+            wire[key] = identity
+        if args.get("history"):
+            wire["include_history"] = True
+        if "cursor" in args:
+            if key == "operation_id":
+                # Server event pages are numbered; native catalogs keep their own cursor.
+                from yuki.sandbox.environment_tools import _cursor
+
+                wire["cursor"] = _cursor(args["cursor"])
+            else:
+                wire["native_cursor"] = args["cursor"]
+        return wire
+    action = args.get("action")
+    wire = {"action": "respond" if action == "answer" else action}
+    if key is not None:
+        wire[key] = identity
+    for field in ("prompt", "cwd", "resume"):
+        if field in args:
+            wire[field] = args[field]
+    if action == "answer":
+        if "question" not in args:
+            raise ExternalAgentArgumentError(
+                "question_required", "answer 需要 question：原操作事件中的请求 ID"
+            )
+        wire["permission_id"] = str(args["question"])
+        answer = args.get("answer")
+        if isinstance(answer, dict):
+            wire["response"] = answer
+        elif isinstance(answer, str):
+            wire["option_id"] = answer
+    return wire
+
+
+# Receipt bookkeeping kept in typed data for recovery, never shown to the model.
+_AGENT_INTERNAL = frozenset(
+    {
+        "kind",
+        "request_id",
+        "admitted",
+        "native_reference",
+        "ownership",
+        "cursor_parameter",
+        "query_scope",
+        "status_scope",
+        "retryable",
+        "uncertain",
+        "error",
+        "last_confirmed",
+    }
+)
+
+
+def coding_agent_view(data: dict[str, Any]) -> dict[str, Any]:
+    view = {
+        key: value
+        for key, value in data.items()
+        if key not in _AGENT_INTERNAL and value is not None
+    }
+    cursor = data.get("next_cursor")
+    if isinstance(cursor, int) and not isinstance(cursor, bool):
+        view["next_cursor"] = str(cursor)
+    return view

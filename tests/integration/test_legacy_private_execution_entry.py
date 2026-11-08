@@ -268,9 +268,7 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                     "",
                     0,
                     tool_calls=(
-                        ToolCall(
-                            "finish-old", ToolFunction("task_control", '{"action":"complete"}')
-                        ),
+                        ToolCall("finish-old", ToolFunction("manage_task", '{"action":"finish"}')),
                     ),
                 )
             )

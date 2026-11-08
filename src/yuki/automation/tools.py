@@ -19,13 +19,6 @@ from yuki.persistence.database import write_failure_committed, write_failure_pha
 from yuki.services.agent_tools import ToolRuntime
 from yuki.time.formatting import local_iso
 
-_CREATE_DESCRIPTION = (
-    "创建持久化安排。goal 保存完整要求与真实收件人线索，到期由同一个主 Agent 执行。"
-    "运行时使用主 Agent 的完整工具，按创建者当前权限执行，无需选择工具或预算。"
-    "是否需要沟通由完整要求决定，实际消息使用正常 send 发送。"
-    "创建时不要提前执行任务；收到 confirmation='persisted' 和 automation_id 才表示成功。"
-)
-
 
 def _object_schema(
     properties: Mapping[str, object], *, required: tuple[str, ...] = ()
@@ -38,96 +31,77 @@ def _object_schema(
     }
 
 
-def _task_intent_schema() -> dict[str, object]:
-    """Compact TaskSpec envelope for the model; backend still validates the real type."""
+def _trigger_schema() -> dict[str, object]:
+    """Time arrangement; the backend still validates the real TaskSpec."""
 
     return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["goal", "trigger"],
-        "description": "完整的主 Agent 任务要求与时间安排。",
-        "properties": {
-            "name": {
-                "type": ["string", "null"],
-                "minLength": 1,
-                "description": "可选公开显示标签；不要从私有要求生成标签。",
-            },
-            "goal": {"type": "string", "minLength": 1},
-            "trigger": {
-                "oneOf": [
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["type", "seconds"],
-                        "properties": {
-                            "type": {"const": "after"},
-                            "seconds": {
-                                "type": "integer",
-                                "minimum": 1,
-                            },
-                        },
-                    },
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["type", "local_datetime"],
-                        "properties": {
-                            "type": {"const": "once"},
-                            "local_datetime": {
-                                "type": "string",
-                                "format": "date-time",
-                                "description": "包含 UTC offset 的绝对时刻。",
-                            },
-                        },
-                    },
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["type", "hour", "minute"],
-                        "properties": {
-                            "type": {"const": "daily"},
-                            "hour": {"type": "integer", "minimum": 0, "maximum": 23},
-                            "minute": {"type": "integer", "minimum": 0, "maximum": 59},
-                            "timezone": {"type": "string"},
-                        },
-                    },
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["type", "weekdays", "hour", "minute"],
-                        "properties": {
-                            "type": {"const": "weekly"},
-                            "weekdays": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {"type": "integer", "minimum": 1, "maximum": 7},
-                            },
-                            "hour": {"type": "integer", "minimum": 0, "maximum": 23},
-                            "minute": {"type": "integer", "minimum": 0, "maximum": 59},
-                            "timezone": {"type": "string"},
-                        },
-                    },
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["type", "seconds"],
-                        "properties": {
-                            "type": {"const": "interval"},
-                            "seconds": {
-                                "type": "integer",
-                                "minimum": 1,
-                            },
-                        },
-                    },
-                ]
-            },
-        },
-        "examples": [
+        "description": "时间安排：after/interval 用 seconds，once 用带时区 local_datetime，"
+        "daily/weekly 用 hour、minute（weekly 另给 weekdays 1–7）",
+        "oneOf": [
             {
-                "name": "五分钟后喝水提醒",
-                "goal": "提醒我喝水",
-                "trigger": {"type": "after", "seconds": 300},
-            }
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "seconds"],
+                "properties": {
+                    "type": {"const": "after"},
+                    "seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                },
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "local_datetime"],
+                "properties": {
+                    "type": {"const": "once"},
+                    "local_datetime": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "包含 UTC offset 的绝对时刻。",
+                    },
+                },
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "hour", "minute"],
+                "properties": {
+                    "type": {"const": "daily"},
+                    "hour": {"type": "integer", "minimum": 0, "maximum": 23},
+                    "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                    "timezone": {"type": "string"},
+                },
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "weekdays", "hour", "minute"],
+                "properties": {
+                    "type": {"const": "weekly"},
+                    "weekdays": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "integer", "minimum": 1, "maximum": 7},
+                    },
+                    "hour": {"type": "integer", "minimum": 0, "maximum": 23},
+                    "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                    "timezone": {"type": "string"},
+                },
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "seconds"],
+                "properties": {
+                    "type": {"const": "interval"},
+                    "seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                },
+            },
         ],
     }
 
@@ -135,21 +109,17 @@ def _task_intent_schema() -> dict[str, object]:
 class AutomationToolService:
     """Expose global safe reads and owner-scoped mutations to the main Agent."""
 
-    _ALLOWED_ARGUMENTS: ClassVar[dict[str, dict[str, frozenset[str]]]] = {
-        "automation_query": {
-            "list": frozenset({"view", "status", "limit", "cursor"}),
-            "get": frozenset({"view", "automation_id"}),
-            "history": frozenset({"view", "automation_id", "limit", "cursor"}),
+    _ACTIONS: ClassVar[frozenset[str]] = frozenset(
+        {"create", "update", "pause", "resume", "cancel", "run_now"}
+    )
+    _QUERY_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"id", "history", "limit", "cursor"})
+    _MANAGE_ARGUMENTS: ClassVar[dict[str, frozenset[str]]] = {
+        "create": frozenset({"action", "goal", "trigger", "name", "max_runs"}),
+        "update": frozenset({"action", "id", "goal", "trigger", "name", "max_runs"}),
+        **{
+            action: frozenset({"action", "id"})
+            for action in ("pause", "resume", "cancel", "run_now")
         },
-        "automation_manage": {
-            "create": frozenset({"action", "task", "max_runs"}),
-            "update": frozenset({"action", "automation_id", "task", "max_runs"}),
-            **{
-                action: frozenset({"action", "automation_id"})
-                for action in ("pause", "resume", "cancel", "run_now")
-            },
-        },
-        "time_get_current": {"time_get_current": frozenset()},
     }
 
     def __init__(self, service: AutomationService) -> None:
@@ -157,109 +127,60 @@ class AutomationToolService:
 
     def definitions(self) -> tuple[ChatTool, ...]:
         identifier = {"type": "integer", "minimum": 1}
-        task = _task_intent_schema()
         maximum = {"type": "integer", "minimum": 1}
         cursor = {"type": "string", "pattern": "^[0-9]+$"}
-        runs = {
-            "type": ["integer", "null"],
-            "minimum": 1,
-            "description": "累计发生次数上限；create 缺省不限，update 缺省保留，null 解除限制。",
-        }
         return (
             ChatTool(
-                name="automation_query",
-                schema_version="2",
+                name="get_schedules",
+                namespace="automation.read",
+                effect="read_state",
                 result_cacheable=False,
                 description=(
-                    "查询自动化。list 为全局安全摘要（默认 active）；"
-                    "get 读取本人或超管获准的完整定义；history 读取获准的原发生与结果。"
-                    "目录可见不授予私有读取或修改权限。"
+                    "查看定时安排。不给 id 列出全部安排的摘要（含状态）；给 id 读取完整定义，"
+                    "history=true 读取它的历次运行与结果。完整定义只对创建者或超级管理员开放。"
                 ),
-                parameters={
-                    "type": "object",
-                    "oneOf": [
-                        _object_schema(
-                            {
-                                "view": {"const": "list"},
-                                "status": {
-                                    "type": "string",
-                                    "enum": [status.value for status in AutomationStatus] + ["all"],
-                                },
-                                "limit": maximum,
-                                "cursor": cursor,
-                            },
-                            required=("view",),
-                        ),
-                        _object_schema(
-                            {"view": {"const": "get"}, "automation_id": identifier},
-                            required=("view", "automation_id"),
-                        ),
-                        _object_schema(
-                            {
-                                "view": {"const": "history"},
-                                "automation_id": identifier,
-                                "limit": maximum,
-                                "cursor": cursor,
-                            },
-                            required=("view", "automation_id"),
-                        ),
-                    ],
-                },
+                parameters=_object_schema(
+                    {
+                        "id": identifier,
+                        "history": {"type": "boolean"},
+                        "limit": maximum,
+                        "cursor": cursor,
+                    }
+                ),
             ),
             ChatTool(
-                name="automation_manage",
-                schema_version="2",
+                name="manage_schedule",
+                namespace="automation.write",
+                effect="write_state",
                 result_cacheable=False,
                 description=(
-                    "创建、更新、暂停、恢复、取消或立即调度自动化。"
-                    "create/update 提交完整 goal/trigger。"
-                    "update 中 name 缺省保留，null 清除公开标签；"
-                    "max_runs 缺省保留，null 解除次数限制。"
-                    "按真实 owner/超管权限管理；run_now 只确认入队。"
-                )
-                + _CREATE_DESCRIPTION,
-                parameters={
-                    **_object_schema(
-                        {
-                            "action": {
-                                "type": "string",
-                                "enum": list(self._ALLOWED_ARGUMENTS["automation_manage"]),
-                            },
-                            "automation_id": identifier,
-                            "task": task,
-                            "max_runs": runs,
+                    "创建、修改、暂停、恢复、取消或立即运行定时安排。create 与 update 提交完整"
+                    " goal 和 trigger，到期由主 Agent 按创建者当前权限执行，消息照常用 send 发出；"
+                    "创建时不要提前执行任务。结果含 confirmation=persisted 和 id 才表示已保存。"
+                ),
+                parameters=_object_schema(
+                    {
+                        "action": {"type": "string", "enum": sorted(self._ACTIONS)},
+                        "id": identifier,
+                        "goal": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "完整要求与真实收件人线索",
                         },
-                        required=("action",),
-                    ),
-                    "oneOf": [
-                        _object_schema(
-                            {"action": {"const": "create"}, "task": {}, "max_runs": {}},
-                            required=("action", "task"),
-                        ),
-                        _object_schema(
-                            {
-                                "action": {"const": "update"},
-                                "automation_id": {},
-                                "task": {},
-                                "max_runs": {},
-                            },
-                            required=("action", "automation_id", "task"),
-                        ),
-                        *[
-                            _object_schema(
-                                {"action": {"const": action}, "automation_id": {}},
-                                required=("action", "automation_id"),
-                            )
-                            for action in ("pause", "resume", "cancel", "run_now")
-                        ],
-                    ],
-                },
-            ),
-            ChatTool(
-                name="time_get_current",
-                result_cacheable=False,
-                description="读取可信当前 UTC、本地时间、日期和星期。",
-                parameters=_object_schema({}),
+                        "trigger": _trigger_schema(),
+                        "name": {
+                            "type": ["string", "null"],
+                            "minLength": 1,
+                            "description": "公开显示标签；update 省略保留，null 清除",
+                        },
+                        "max_runs": {
+                            "type": ["integer", "null"],
+                            "minimum": 1,
+                            "description": "累计运行次数上限；update 省略保留，null 解除",
+                        },
+                    },
+                    required=("action",),
+                ),
             ),
         )
 
@@ -275,66 +196,67 @@ class AutomationToolService:
                 raise ValueError("参数必须是 JSON 对象")
         except (json.JSONDecodeError, ValueError) as exc:
             return _result(error="invalid_arguments", detail=str(exc))
-        operations = self._ALLOWED_ARGUMENTS.get(name)
-        if operations is None:
-            return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
-        operation = (
-            "time_get_current"
-            if name == "time_get_current"
-            else arguments.get("view" if name == "automation_query" else "action")
-        )
-        if not isinstance(operation, str) or operation not in operations:
-            return _result(error="invalid_arguments", detail="未知 action/view")
-        allowed = operations[operation]
+        operation: Any
+        if name == "get_schedules":
+            allowed = self._QUERY_ARGUMENTS
+            operation = (
+                "list"
+                if "id" not in arguments
+                else "history"
+                if arguments.get("history") is True
+                else "get"
+            )
+        elif name == "manage_schedule":
+            operation = arguments.get("action")
+            if not isinstance(operation, str) or operation not in self._ACTIONS:
+                return _result(
+                    error="invalid_arguments",
+                    detail="action 必须是 create、update、pause、resume、cancel 或 run_now",
+                )
+            allowed = self._MANAGE_ARGUMENTS[operation]
+        else:
+            return _result(error="unknown_tool", detail=f"未知安排工具：{name}")
         unexpected = set(arguments) - allowed
         if unexpected:
-            error = ValueError(f"不接受参数：{', '.join(sorted(unexpected))}")
-            return _result(error="invalid_arguments", detail=str(error))
+            return _result(
+                error="invalid_arguments",
+                detail=f"{operation} 不接受参数：{', '.join(sorted(unexpected))}",
+            )
         try:
             if operation == "create":
                 row = await self._service.create_task(
-                    arguments.get("task"),
+                    _task(arguments),
                     actor=actor,
                     conversation_key=runtime.conversation_key,
                     max_runs=arguments.get("max_runs"),
                 )
-                return _result(
-                    data=_record(row, persisted=True),
-                    public_message=f"自动化任务已创建（ID {row.id}）。",
-                    mutation_committed=True,
-                )
+                return _result(data=_record(row, persisted=True), mutation_committed=True)
             if operation == "list":
                 maximum, offset = _pagination(arguments)
                 fetched = await self._service.list_directory(
-                    status=str(arguments.get("status") or "active"),
+                    status="all",
                     limit=maximum + 1,
                     offset=offset,
                 )
                 return _result(
                     data={
-                        "tasks": [_directory_record(entry) for entry in fetched[:maximum]],
+                        "schedules": [_directory_record(entry) for entry in fetched[:maximum]],
                         "next_cursor": str(offset + maximum) if len(fetched) > maximum else None,
                     }
                 )
-            if operation == "time_get_current":
-                return _result(data=self._service.current_time())
             automation_id = _automation_id(arguments)
             if operation == "get":
                 row = await self._service.require_manageable(automation_id, actor)
-                return _result(data={**_record(row), "task": row.script})
+                return _result(data={**_record(row), **_script(row.script)})
             if operation == "update":
                 row = await self._service.update_task(
                     automation_id,
-                    arguments.get("task"),
+                    _task(arguments),
                     actor=actor,
                     conversation_key=runtime.conversation_key,
                     **({"max_runs": arguments["max_runs"]} if "max_runs" in arguments else {}),
                 )
-                return _result(
-                    data=_record(row, persisted=True),
-                    public_message=f"自动化任务已更新（ID {row.id}）。",
-                    mutation_committed=True,
-                )
+                return _result(data=_record(row, persisted=True), mutation_committed=True)
             if operation == "pause":
                 changed = await self._service.pause(
                     automation_id, actor=actor, conversation_key=runtime.conversation_key
@@ -361,17 +283,20 @@ class AutomationToolService:
                     data={
                         "runs": [
                             {
-                                "id": row.id,
-                                "status": row.status.value,
-                                "version_id": row.version_id,
-                                "definition": row.definition,
-                                "result": row.result_summary,
-                                "delivery": row.delivery,
-                                "legacy_messages_sent": row.messages_sent,
-                                "scheduled_for_local": local_iso(row.scheduled_for, task.timezone),
-                                "finished_at_local": local_iso(row.finished_at, task.timezone),
-                                "timezone": task.timezone,
-                                "error_category": row.error_category,
+                                key: value
+                                for key, value in {
+                                    "run_id": row.id,
+                                    "status": row.status.value,
+                                    "version_id": row.version_id,
+                                    "definition": row.definition,
+                                    "result": row.result_summary,
+                                    "delivery": row.delivery,
+                                    "legacy_messages_sent": row.messages_sent,
+                                    "scheduled_for": local_iso(row.scheduled_for, task.timezone),
+                                    "finished_at": local_iso(row.finished_at, task.timezone),
+                                    "error": row.error_category,
+                                }.items()
+                                if value is not None
                             }
                             for row in history_rows
                         ],
@@ -382,12 +307,6 @@ class AutomationToolService:
                 )
             else:
                 return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
-            public_message = {
-                "pause": "任务已暂停。" if changed else "任务状态没有改变。",
-                "resume": "任务已恢复。" if changed else "该任务不能恢复。",
-                "cancel": "任务已取消。" if changed else "任务状态没有改变。",
-                "run_now": ("任务已进入待执行队列。" if changed else "该任务不能立即执行。"),
-            }[operation]
             satisfied: bool | None = None
             if operation == "cancel":
                 # A repeated cancel of an already cancelled task meets its request.
@@ -399,8 +318,11 @@ class AutomationToolService:
                 satisfied = changed
             return replace(
                 _result(
-                    data={"automation_id": automation_id, "changed": changed},
-                    public_message=public_message,
+                    data={
+                        "id": automation_id,
+                        "changed": changed,
+                        **({"status": "queued"} if operation == "run_now" and changed else {}),
+                    },
                     mutation_committed=changed,
                 ),
                 request_postcondition_satisfied=satisfied,
@@ -408,7 +330,12 @@ class AutomationToolService:
         except (PermissionError, ValueError) as exc:
             if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
                 raise
-            return _result(error=type(exc).__name__, detail=str(exc))
+            return _result(
+                error="permission_denied"
+                if isinstance(exc, PermissionError)
+                else "invalid_arguments",
+                detail=str(exc) or "安排参数无效",
+            )
 
     @staticmethod
     def _valid_runtime(runtime: ToolRuntime) -> bool:
@@ -431,10 +358,19 @@ def _pagination(arguments: dict[str, Any]) -> tuple[int, int]:
 
 
 def _automation_id(arguments: dict[str, Any]) -> int:
-    value = arguments.get("automation_id")
+    value = arguments.get("id")
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError("automation_id 必须是正整数")
+        raise ValueError("id 必须是安排的正整数 id")
     return value
+
+
+def _task(arguments: dict[str, Any]) -> dict[str, Any]:
+    """The flat model arguments as the TaskSpec the service validates."""
+    return {key: arguments[key] for key in ("name", "goal", "trigger") if key in arguments}
+
+
+def _script(script: dict[str, Any]) -> dict[str, Any]:
+    return {key: script[key] for key in ("goal", "trigger") if key in script}
 
 
 def _record(
@@ -443,12 +379,12 @@ def _record(
     persisted: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "automation_id": row.id,
+        "id": row.id,
         "name": row.name,
         "status": row.status.value,
         "timezone": row.timezone,
-        "schedule": row.schedule.model_dump(mode="json"),
-        "next_run_at_local": local_iso(row.next_run_at, row.timezone),
+        "trigger": row.schedule.model_dump(mode="json"),
+        "next_run_at": local_iso(row.next_run_at, row.timezone),
         "run_count": row.run_count,
         "max_runs": row.max_runs,
         "version_id": row.version_id,
@@ -464,13 +400,13 @@ def _directory_record(entry: AutomationDirectoryEntry) -> dict[str, Any]:
     if creator["kind"] == "person":
         creator.pop("kind")
     payload: dict[str, Any] = {
-        "automation_id": row.id,
-        "task": row.name,
-        "next_run_at_local": local_iso(row.next_run_at, row.timezone),
+        "id": row.id,
+        "name": row.name,
+        "next_run_at": local_iso(row.next_run_at, row.timezone),
         "creator": creator,
         "status": row.status.value,
     }
-    return payload
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def _result(

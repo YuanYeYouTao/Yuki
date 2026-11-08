@@ -335,7 +335,16 @@ class ChatService:
                 if not isinstance(decoded, dict):
                     raise ValueError("artifact arguments must be an object")
                 handle = str(decoded.get("handle", ""))
-                operation = str(decoded.get("operation", "get"))
+                query = str(decoded.get("query", ""))
+                if decoded.get("structure") and query:
+                    return ToolExecutionResult(
+                        ok=False,
+                        error_code="invalid_arguments",
+                        public_message="structure 与 query 二选一",
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
+                operation = "inspect" if decoded.get("structure") else "auto"
                 raw_path = decoded.get("path", [])
                 if not isinstance(raw_path, list) or any(
                     isinstance(part, bool) or not isinstance(part, (str, int)) for part in raw_path
@@ -347,11 +356,19 @@ class ChatService:
                         provider_id=_ARTIFACT_PROVIDER_ID,
                         tool_name=_ARTIFACT_READER_NAME,
                     )
-                offset = int(decoded.get("offset", 0))
+                cursor = decoded.get("cursor", "0")
+                if not isinstance(cursor, str) or not cursor.isdigit():
+                    return ToolExecutionResult(
+                        ok=False,
+                        error_code="invalid_cursor",
+                        public_message="cursor 使用上一次结果返回的 next_cursor 原值",
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
+                offset = int(cursor)
                 runtime = context.runtime_config or await self._runtime_config.snapshot()
                 max_characters = cast(int, effective_result_character_budget(runtime))
                 limit = int(decoded.get("limit", max_characters))
-                query = str(decoded.get("query", ""))
                 from yuki.tool_results.access import access_from_runtime
 
                 result = await artifacts.read(
@@ -399,9 +416,29 @@ class ChatService:
                 from yuki.capabilities.media import result_images
                 from yuki.tool_results.access import ArtifactRead
 
+                # The model reads pages by cursor; archive bookkeeping stays typed.
+                view = {
+                    key: value
+                    for key, value in result.items()
+                    if key
+                    not in {
+                        "provider_id",
+                        "tool_name",
+                        "logical_root",
+                        "offset",
+                        "offset_unit",
+                        "next_offset",
+                        "available_operations",
+                        "mode",
+                    }
+                    and value is not None
+                }
+                if isinstance(result.get("next_offset"), int):
+                    view["next_cursor"] = str(result["next_offset"])
                 return ToolExecutionResult(
                     ok=True,
                     data=result,
+                    view=view,
                     images=result_images(result),
                     mutation_committed=False,
                     provider_id=_ARTIFACT_PROVIDER_ID,
@@ -420,28 +457,19 @@ class ChatService:
                     source=CapabilityTrustSource.CORE,
                     definitions=lambda _context: (
                         ChatTool(
-                            name="read_tool_artifact",
+                            name="read_result",
+                            namespace="kernel.artifact.read",
+                            effect="read_state",
                             description=(
-                                "读取工具产生的短期 Artifact。默认 get 按路径读取 JSON，"
-                                "read_more 中的参数项可原样传入；"
-                                "可用 inspect 查看结构、search 返回关键词命中的完整对象；"
-                                "文本使用 text。"
-                                "get 字符串按字符分页，offset/next_offset 单位为 characters；"
-                                "limit 默认当前有效结果字符预算，实际页受该预算约束。"
-                                "图片 Artifact 使用 image 将原图交给当前主模型原生查看。"
+                                "继续读取被截断或存档的工具结果。handle、path、cursor 可直接用"
+                                "结果中 read_more 的项；按内容自动读取 JSON、文本或图片。"
+                                "query 在 JSON 中找含关键词的对象、在文本中定位；"
+                                "structure=true 只看结构。用 next_cursor 翻下一页。"
                             ),
                             parameters={
                                 "type": "object",
                                 "properties": {
                                     "handle": {"type": "string"},
-                                    "operation": {
-                                        "type": "string",
-                                        "enum": ["inspect", "get", "search", "text", "image"],
-                                        "description": (
-                                            "默认 get；JSON 使用 inspect/get/search，"
-                                            "文本使用 text，图片使用 image"
-                                        ),
-                                    },
                                     "path": {
                                         "type": "array",
                                         "items": {
@@ -450,25 +478,12 @@ class ChatService:
                                                 {"type": "integer"},
                                             ]
                                         },
-                                        "description": (
-                                            "相对返回中 logical_root 的 JSON 路径，"
-                                            "对象键用字符串、数组下标用整数"
-                                        ),
+                                        "description": "JSON 路径：对象键用字符串，数组下标用整数",
                                     },
-                                    "offset": {
-                                        "type": "integer",
-                                        "minimum": 0,
-                                        "description": "JSON 的键/元素/匹配偏移，或 text 字符偏移",
-                                    },
-                                    "limit": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "description": "JSON 条目数，或 text 最大字符数",
-                                    },
-                                    "query": {
-                                        "type": "string",
-                                        "description": "search 关键词，或 text 的字符串定位词",
-                                    },
+                                    "query": {"type": "string"},
+                                    "structure": {"type": "boolean"},
+                                    "limit": {"type": "integer", "minimum": 1},
+                                    "cursor": {"type": "string"},
                                 },
                                 "required": ["handle"],
                                 "additionalProperties": False,

@@ -226,11 +226,10 @@ async def test_main_history_search_archives_original_requested_page(
                     ToolCall(
                         "original-history-read",
                         ToolFunction(
-                            "query_chat_history",
+                            "read_chat",
                             json.dumps(
                                 {
-                                    "view": "search",
-                                    "keyword": "history-needle",
+                                    "query": "history-needle",
                                     "order": "oldest",
                                     "limit": 101,
                                 }
@@ -260,15 +259,15 @@ async def test_main_history_search_archives_original_requested_page(
     )
     manifest = json.loads(reply.content)
     evidence["model_result"] = manifest
-    assert manifest["ok"] and manifest["original_characters"] > 200000
+    assert "ok" not in manifest and manifest["original_characters"] > 200000
     page = await store.read(manifest["artifact_handle"], limit=1000000, max_characters=1000000)
     original = json.loads(page["content"])
-    assert original["data"]["returned_count"] == 101
-    assert original["data"]["has_more"] is False
-    assert [row["content"] for row in original["data"]["events"]] == originals
+    assert len(original["events"]) == 101
+    assert "next_cursor" not in original
+    assert [row["content"] for row in original["events"]] == originals
     evidence["original_characters"] = len(page["content"])
     evidence["original_sha256"] = hashlib.sha256(page["content"].encode()).hexdigest()
-    evidence["verified_event_count"] = len(original["data"]["events"])
+    evidence["verified_event_count"] = len(original["events"])
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
 
 

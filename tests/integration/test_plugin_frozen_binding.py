@@ -179,7 +179,7 @@ async def run(*, native_child=False):
             # Identical approved code survives an unchanged lifecycle restart.
             await manager.enable("test.contract", actor_user_id="9000")
             restarted = await execute(backend, {"value": "after-restart"}, 10)
-            assert restarted["ok"], restarted
+            assert "error" not in restarted, restarted
             assert contract.health()["restart_required"] is False
             # A call already waiting for its authorized scope cannot pick up a
             # newer registration. The Host must check again after that wait.
@@ -244,8 +244,10 @@ async def run(*, native_child=False):
                 )
                 receipt = json.loads(leaf["receipt_json"])
                 refusal = json.loads(receipt["result"])
-                assert refusal["error_code"] == "plugin_tool_contract_changed"
-                assert refusal["executed"] is False and refusal["mutation_committed"] is False
+                assert refusal["error"] == "plugin_tool_contract_changed"
+                assert refusal["executed"] is False
+                # The commit fact stays in the typed receipt outcome.
+                assert receipt["outcome"]["mutation_committed"] is False
                 assert await CodeModeDriver(env.host, outer).run() == raw
                 assert await effect_rows(db, env.control.current["id"]) == (rows, tools, budget)
                 assert not ctx.effect_file.exists()
@@ -270,26 +272,23 @@ async def run(*, native_child=False):
                 "old_arguments_original_backend": await execute(backend, {"value": "fixture"}, 5),
             }
             out["handler_calls"] = ctx.calls
-            assert out["before"]["result"]["ok"]
+            assert "error" not in out["before"]["result"]
             assert not out["disabled_result"]["ok"]
             assert out["after_risk_change"]["result"]["ok"] is False
-            assert (
-                out["after_risk_change"]["result"]["error_code"] == "plugin_tool_contract_changed"
-            )
+            assert out["after_risk_change"]["result"]["error"] == "plugin_tool_contract_changed"
             assert contract.health()["restart_required"] is True
             assert not out["after_risk_change"]["fixture_file_committed"]
-            assert out["after_risk_change"]["result"]["mutation_committed"] is False
             assert out["schema_change"]["frozen_same"] and out["schema_change"]["revision_same"]
             assert ctx.calls == [
                 {"version": 1, "args": {"value": "fixture"}, "declared_risk": "READ"},
                 {"version": 1, "args": {"value": "after-restart"}, "declared_risk": "READ"},
             ]
             assert (
-                out["schema_change"]["old_arguments_fresh_backend"]["error_code"]
+                out["schema_change"]["old_arguments_fresh_backend"]["error"]
                 == "plugin_tool_contract_changed"
             )
             assert (
-                out["schema_change"]["new_arguments_fresh_backend"]["error_code"]
+                out["schema_change"]["new_arguments_fresh_backend"]["error"]
                 == "plugin_tool_contract_changed"
             )
             return out

@@ -51,7 +51,7 @@ async def test_large_native_turn_does_not_hide_latest_failure_behind_user_prompt
     rendered = await ToolResultBudgeter(
         max_characters=1800, artifacts=store, artifact_access=access
     ).render(
-        ToolExecutionResult(ok=True, data=data, provider_id="core", tool_name="external_agent")
+        ToolExecutionResult(ok=True, data=data, provider_id="core", tool_name="get_coding_agents")
     )
     short = json.loads(rendered.text)
     assert short["artifact_handle"] == rendered.artifact_id
@@ -64,7 +64,8 @@ async def test_large_native_turn_does_not_hide_latest_failure_behind_user_prompt
     full = await store.read(
         rendered.artifact_id, access=access, limit=2000000, max_characters=2000000
     )
-    assert json.loads(full["content"])["data"] == data
+    # The archived value is the projected result itself.
+    assert json.loads(full["content"]) == data
     denied = await store.read(rendered.artifact_id, access=replace(access, generation=2))
     assert denied["error_code"] == "artifact_not_authorized"
 
@@ -90,25 +91,25 @@ async def test_large_work_progress_keeps_original_latest_step_and_private_artifa
     token = current_result_capture.set(capture)
     try:
         await control.execute(
-            "task_control",
-            {"action": "get", "work_id": control.current["id"], "limit": 1},
+            "get_tasks",
+            {"id": control.current["id"], "limit": 1},
             "original-progress-query",
         )
     finally:
         current_result_capture.reset(token)
     outcome = capture.outcome
     assert outcome is not None and outcome.provider_id == "work_control"
-    data = outcome.data
     rendered = await ToolResultBudgeter(
         max_characters=1800, artifacts=store, artifact_access=access
     ).render(outcome)
     short = json.loads(rendered.text)
     preview = short["progress"]["work"]
     assert "LATEST_WORK_FACT" in preview["content_preview"]
-    assert preview["next_cursor"] and preview["history_order"] == "desc"
+    assert preview["next_cursor"] and preview["id"] == control.current["id"]
     full = await store.read(
         rendered.artifact_id, access=access, limit=500000, max_characters=500000
     )
-    assert json.loads(full["content"])["data"] == data
+    # The archived value is the projected result itself.
+    assert json.loads(full["content"]) == outcome.model_payload()
     denied = await store.read(rendered.artifact_id, access=replace(access, generation=2))
     assert denied["error_code"] == "artifact_not_authorized"

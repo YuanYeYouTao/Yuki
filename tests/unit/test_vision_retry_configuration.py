@@ -59,12 +59,7 @@ async def test_six_inputs_preserve_all_results_indices_and_explicit_thinking(thi
     )
     indices = (1, 2, 3, 4, 5, 6, 1, 7) if thinking else (1, 1, 3, 7, 5, 6)
     body = json.dumps(
-        {
-            "items": [
-                {"index": index, "description": f"seen-{index}"}
-                for index in indices
-            ]
-        }
+        {"items": [{"index": index, "description": f"seen-{index}"} for index in indices]}
     )
 
     def respond(request):

@@ -521,7 +521,7 @@ class WorkJournal:
             )
 
     async def effect_result(self, key: str, *, original_tool: str = "legacy_tool") -> str:
-        def recorded_result(result: str, *, recovered: bool = False) -> str:
+        def recorded_result(result: str, *, recovered: dict[str, Any] | None = None) -> str:
             # This is the original persisted receipt reader, never a live adapter.
             from yuki.runtime.effect_outcomes import (
                 current_result_capture,
@@ -531,13 +531,14 @@ class WorkJournal:
             capture = current_result_capture.get()
             if capture is not None:
                 stored = json.loads(row["receipt_json"]) if row is not None else {}
+                # A recovered domain receipt is read from its typed outcome, not its text.
                 capture.evidence = historical_evidence(
                     stored
                     if row is not None
-                    and not recovered
+                    and recovered is None
                     and (row["state"] == "accepted" or row["kind"] == "final")
                     else {
-                        "result": result,
+                        **({"result": result} if recovered is None else {"outcome": recovered}),
                         **({"invocation": stored["invocation"]} if "invocation" in stored else {}),
                     },
                     state=row["state"]
@@ -588,13 +589,14 @@ class WorkJournal:
                 json.dumps(
                     {
                         "ok": False,
-                        "executed": False,
-                        "uncertain": False,
                         "error": "never_dispatched",
-                        "replay_forbidden": True,
+                        "message": "原调用没有派发，也不会重放；需要时重新决定并调用。",
+                        "executed": False,
                     }
                 )
             )
+        from yuki.runtime.effect_outcomes import execution_evidence, recorded_tool
+
         value = json.loads(row["receipt_json"])
         invocation = value.get("invocation", {})
         reference = invocation.get("original_domain_ref")
@@ -611,12 +613,9 @@ class WorkJournal:
                 outcome = await queries.inspect_local_operation(
                     reference=reference, work_id=row["work_id"], operation_key=key
                 )
-            elif invocation.get("tool_id") == "external_agent" and invocation.get("action") in {
-                "steer",
-                "respond",
-                "cancel",
-                "detach",
-            }:
+            elif recorded_tool(str(invocation.get("tool_id"))) == "use_coding_agent" and (
+                invocation.get("action") in {"steer", "respond", "answer", "cancel", "detach"}
+            ):
                 outcome = await queries.inspect_native_operation(
                     work_id=row["work_id"], operation_key=key, action=invocation["action"]
                 )
@@ -631,7 +630,12 @@ class WorkJournal:
                         },
                         ensure_ascii=False,
                     ),
-                    recovered=True,
+                    recovered=execution_evidence(
+                        outcome,
+                        tool=str(invocation.get("tool_id")),
+                        side_effecting=True,
+                        arguments=json.dumps({"action": invocation.get("action")}),
+                    ),
                 )
             original = (
                 await queries.inspect_social_operation(

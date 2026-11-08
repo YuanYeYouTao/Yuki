@@ -18,7 +18,7 @@ async def test_original_reporting_call_recovers_without_rewriting_paid_input(dat
     control, first, _selected, _unselected = await _session(database)
     call = ToolCall(
         "original-reporting-call",
-        ToolFunction("task_control", '{"action":"update","reporting":"quiet"}'),
+        ToolFunction("manage_task", '{"action":"update","reporting":"quiet"}'),
     )
     first.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
     first.transcript.accept(
@@ -68,7 +68,7 @@ async def test_original_reporting_call_recovers_without_rewriting_paid_input(dat
         assert result == original_receipt
         execute.assert_not_awaited()
     else:
-        assert json.loads(result)["ok"]
+        assert "error" not in json.loads(result)
         execute.assert_awaited_once()
     saved = await _saved(database, control)
     if executed:

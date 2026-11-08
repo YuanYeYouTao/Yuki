@@ -48,8 +48,10 @@ WRITES = ("workspace_write",)
 TOOLS = (
     *(ChatTool(name, name, {"type": "object"}) for name in (*READS, *WRITES)),
     ChatTool("send", "send", {"type": "object"}),
-    ChatTool("memory_change", "memory", {"type": "object"}),
-    ChatTool("task_control", "control", {"type": "object"}),
+    ChatTool("save_memory", "memory", {"type": "object"}),
+    ChatTool("manage_task", "control", {"type": "object"}),
+    ChatTool("wait", "control", {"type": "object"}),
+    ChatTool("get_tasks", "control", {"type": "object"}),
     EXECUTE_CODE_TOOL,
 )
 LIMITS = CodeModeLimits(
@@ -104,9 +106,9 @@ class FakeDomain:
 
 def classify(call: ToolCall) -> ChildClass:
     name = call.function.name
-    if name == "task_control":
+    if name in {"manage_task", "wait", "get_tasks"}:
         return ChildClass("control", False, False)
-    if name == "memory_change":
+    if name == "save_memory":
         return ChildClass("memory_write", False, True)
     if name == "send":
         return ChildClass("send", False, True)
@@ -133,13 +135,16 @@ def build_host(owner, domain, *, tool_limit=32, max_parallel=2):
             from yuki.capabilities.results import normalize_legacy_result
             from yuki.runtime.effect_outcomes import current_result_capture
 
+            # Scripted replies are written as typed facts; the child receives the
+            # same model projection a real binding returns.
             result = await domain(invocation.call.function.name, invocation.call.function.arguments)
+            outcome = normalize_legacy_result(
+                result, provider_id="fixture", tool_name=invocation.call.function.name
+            )
             capture = current_result_capture.get()
             if capture is not None:
-                capture.outcome = normalize_legacy_result(
-                    result, provider_id="fixture", tool_name=invocation.call.function.name
-                )
-            return result
+                capture.outcome = outcome
+            return json.dumps(outcome.model_payload(), ensure_ascii=False)
 
         return await service.invoke(invocation, invoke, side_effecting=side_effecting)
 

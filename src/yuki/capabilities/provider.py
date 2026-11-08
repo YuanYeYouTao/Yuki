@@ -18,69 +18,8 @@ from yuki.capabilities.models import (
 )
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.messages import ChatTool
-from yuki.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
-from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
-_CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
-    "external_agent": (
-        "external_agent.control",
-        CapabilityEffect.WRITE_STATE,
-        CapabilityRisk.MUTATE,
-    ),
-    **{
-        name: (
-            "sandbox.read" if name in READ_TOOLS else "sandbox.run",
-            CapabilityEffect.READ_STATE if name in READ_TOOLS else CapabilityEffect.WRITE_STATE,
-            CapabilityRisk.READ if name in READ_TOOLS else CapabilityRisk.MUTATE,
-        )
-        for name in SANDBOX_TOOLS
-    },
-    **{
-        name: (
-            "workspace.read" if name in WORKSPACE_READ_TOOLS else "workspace.write",
-            CapabilityEffect.READ_STATE
-            if name in WORKSPACE_READ_TOOLS
-            else CapabilityEffect.WRITE_STATE,
-            CapabilityRisk.READ if name in WORKSPACE_READ_TOOLS else CapabilityRisk.MUTATE,
-        )
-        for name in WORKSPACE_TOOLS
-    },
-    "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "find_conversations": ("social.entry.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "send": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
-    "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
-    "recall_own_message": (
-        "social.recall",
-        CapabilityEffect.PLATFORM_MUTATE,
-        CapabilityRisk.MUTATE,
-    ),
-    "get_my_capabilities": (
-        "kernel.authority.read",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "read_tool_artifact": (
-        "kernel.artifact.read",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "query_chat_history": ("social.history", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "read_memory": ("memory.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "search_memory": (
-        "memory.search",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "memory_change": (
-        "memory.state.write",
-        CapabilityEffect.WRITE_STATE,
-        CapabilityRisk.MUTATE,
-    ),
-    "web_search": ("web.search", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
-    "read_webpage": ("web.read", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
-}
-
-_AUTOMATION_READ = frozenset({"automation_query"})
+_READ_EFFECTS = frozenset({CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ})
 
 
 class CapabilityProvider(Protocol):
@@ -144,17 +83,16 @@ class ChatToolCapabilityProvider:
         )
 
     def _metadata(self, tool: ChatTool) -> tuple[str, CapabilityEffect, CapabilityRisk] | None:
-        if self._source is CapabilityTrustSource.CORE:
-            mapped = _CORE_METADATA.get(tool.name)
-            if mapped is None:
+        if self._source in {CapabilityTrustSource.CORE, CapabilityTrustSource.AUTOMATION}:
+            # Host tools carry their policy on the declaration itself.
+            if not tool.namespace or not tool.effect:
                 return None
-            return mapped
-        if self._source is CapabilityTrustSource.AUTOMATION:
-            if tool.name == "time_get_current":
-                return "kernel.time", CapabilityEffect.READ_STATE, CapabilityRisk.READ
-            if tool.name in _AUTOMATION_READ:
-                return "automation.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ
-            return "automation.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE
+            effect = CapabilityEffect(tool.effect)
+            return (
+                tool.namespace,
+                effect,
+                CapabilityRisk.READ if effect in _READ_EFFECTS else CapabilityRisk.MUTATE,
+            )
         namespace = tool.namespace.strip() or f"plugin.{tool.name}"
         read_only = bool(self._plugin_read_only and self._plugin_read_only(tool.name))
         return (

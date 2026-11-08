@@ -75,15 +75,15 @@ async def test_prefetch_and_immediate_inspect_save_share_the_actual_stream(
     await asyncio.wait_for(body.entered.wait(), 5)
     inspect = asyncio.create_task(
         case.workspace.execute(
-            "inspect_conversation_attachment",
-            {"event_id": case.source.id, "attachment_index": 0, "question": "查看选定原件"},
+            "view_file",
+            {"event_id": case.source.id, "attachment": 0, "question": "查看选定原件"},
             runtime=case.runtime,
         )
     )
     save = asyncio.create_task(
         case.workspace.execute(
-            "save_conversation_attachment_to_workspace",
-            {"event_id": case.source.id, "attachment_index": 0, "destination": "saved.png"},
+            "copy_file",
+            {"event_id": case.source.id, "attachment": 0, "destination": "saved.png"},
             runtime=case.runtime,
             request_id="original-stream-save",
         )

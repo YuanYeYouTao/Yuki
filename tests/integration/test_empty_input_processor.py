@@ -106,7 +106,7 @@ async def test_absent_qq_input_does_not_enqueue_or_interrupt_original_work(
         {"actor_person_id": original.author_person_id, "principal_kind": "person"},
         validate,
     )
-    await control.execute("task_control", {"action": "accept", "goal": "继续原工作"}, "accept")
+    await control.execute("manage_task", {"action": "start", "goal": "继续原工作"}, "accept")
     before = await repository.get(control.current["id"])
     sender = MemorySender()
     try:

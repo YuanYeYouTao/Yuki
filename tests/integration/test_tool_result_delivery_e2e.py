@@ -3,8 +3,8 @@
 Inputs and failure expectations are fixed before the implementation:
 * small web search/page bodies stay inline, with an unchanged complete archive;
 * an explicit token budget overrides the agent budget in either direction;
-* public get defaults to the logical root, honors Unicode offsets and requested
-  pages above the former 32000 cap, and never recursively archives its pages;
+* read_result picks JSON, text or image by content, honors Unicode cursors and
+  requested pages above the former 32000 cap, and never recursively archives its pages;
 * Memory keeps every selected fact and its tail before presentation; an oversized
   first fact remains a successful original result, not an unavailable read;
 * runtime configuration accepts positive budgets below/above the old caps and
@@ -138,17 +138,19 @@ async def test_small_web_results_reach_the_next_main_request(
         assert result.status is RunStatus.SUCCEEDED, result
         assert len(seen) == 2
         for payload in seen:
-            assert payload["ok"] and not payload.get("truncated", False), payload
-            assert payload["data"]["sources"][0]["relevant_content"] == original
-            assert payload["evidence_state"]
+            assert "error" not in payload and not payload.get("truncated", False), payload
+            assert payload["sources"][0]["relevant_content"] == original
+            assert not {"ok", "provider_id", "tool_name", "evidence_state"} & payload.keys()
         async with database.read_session() as session:
             rows = (await session.scalars(select(ToolArtifactModel))).all()
             assert len(rows) == 2
-            by_tool = {payload["tool_name"]: payload for payload in seen}
-            for row in rows:
+            assert {row.tool_name for row in rows} == {"web_search", "read_webpage"}
+            for row, payload in zip(
+                sorted(rows, key=lambda row: row.tool_name != "web_search"), seen, strict=True
+            ):
                 archived = json.loads((root / row.relative_path).read_text(encoding="utf8"))
-                assert archived["data"]["sources"][0]["relevant_content"] == original
-                assert archived["evidence_state"] == by_tool[row.tool_name]["evidence_state"]
+                # The archive is exactly the projection the model read.
+                assert archived == payload
                 access = json.loads(row.access_json)
                 assert access["conversation_id"] == case.env.context.conversation_id
                 assert access["actor_person_id"] == case.env.person
@@ -202,25 +204,23 @@ async def test_public_reader_uses_effective_budget_and_exact_unicode_continuatio
         seen.append(payload)
         assert len(json.dumps(payload, ensure_ascii=False)) <= budget
         if handle is None:
-            assert payload["ok"] and payload["truncated"], payload
+            assert "error" not in payload and payload["truncated"], payload
             handle = payload["artifact_handle"]
-            offset = 0
+            cursor = "0"
         else:
-            assert payload["ok"], payload
-            page = payload["data"]
-            assert page["mode"] == "json" and page["offset_unit"] == "characters"
+            assert "error" not in payload, payload
+            page = payload
             assert page["path"] == ["sources", 0, "relevant_content"]
-            assert page["offset"] == sum(len(piece) for piece in pieces)
             pieces.append(page["value"])
-            offset = page["next_offset"]
-            if offset is None:
+            cursor = page.get("next_cursor")
+            if cursor is None:
                 return "original reconstructed"
-            assert offset == sum(len(piece) for piece in pieces)
+            assert cursor == str(sum(len(piece) for piece in pieces))
         call_id = f"read-{len(pieces)}"
-        args = {"handle": handle, "path": ["sources", 0, "relevant_content"], "offset": offset}
+        args = {"handle": handle, "path": ["sources", 0, "relevant_content"], "cursor": cursor}
         if requested_limit is not None:
             args["limit"] = requested_limit
-        return _tool("read_tool_artifact", args, call_id)
+        return _tool("read_result", args, call_id)
 
     case.provider._responder = respond
     evidence.update(
@@ -278,7 +278,7 @@ async def test_oversized_first_web_source_exposes_body_and_exact_continuation(
             return _tool("web_search", {"query": "large source"}, call_id)
         payload = _last_result(request, call_id)
         seen.append(payload)
-        assert payload["ok"], payload
+        assert "error" not in payload, payload
         assert len(json.dumps(payload, ensure_ascii=False)) <= 4096
         if handle is None:
             assert payload["truncated"]
@@ -292,17 +292,21 @@ async def test_oversized_first_web_source_exposes_body_and_exact_continuation(
                 for item in payload["read_more"]
                 if item["path"] == ["sources", 0, "relevant_content"]
             )
-            assert continuation["offset"] == len(pieces[0])
+            assert continuation == {
+                "handle": handle,
+                "path": ["sources", 0, "relevant_content"],
+                "cursor": str(len(pieces[0])),
+            }
         else:
-            page = payload["data"]
+            page = payload
             assert page["path"] == ["sources", 0, "relevant_content"]
-            assert page["offset"] == sum(map(len, pieces))
             pieces.append(page["value"])
-            if page["next_offset"] is None:
+            if "next_cursor" not in page:
                 return "read the complete source tail"
-            continuation = {"handle": handle, "path": page["path"], "offset": page["next_offset"]}
+            assert page["next_cursor"] == str(sum(map(len, pieces)))
+            continuation = {"handle": handle, "path": page["path"], "cursor": page["next_cursor"]}
         call_id = f"source-page-{len(pieces)}"
-        return _tool("read_tool_artifact", continuation, call_id)
+        return _tool("read_result", continuation, call_id)
 
     case.provider._responder = respond
     evidence.update(
@@ -359,30 +363,29 @@ async def test_plugin_memory_keeps_complete_selected_facts_before_delivery(
             return _tool("search_memory", {"query": "observatory", "limit": 100}, call_id)
         payload = _last_result(request, call_id)
         seen.append(payload)
-        assert payload["ok"], payload
+        assert "error" not in payload, payload
         if call_id == "memory-search":
             if not payload.get("truncated"):
-                values.extend(payload["data"]["memories"])
-                return _tool("task_control", {"action": "complete", "result": "read all"}, "done")
+                values.extend(payload["memories"])
+                return _tool("manage_task", {"action": "finish", "result": "read all"}, "done")
             handle = payload["artifact_handle"]
             values.extend(payload["data"]["memories"])
             continuation = next(
                 item for item in payload["read_more"] if item["path"] == ["memories"]
             )
             assert continuation["handle"] == handle
-            assert continuation["offset"] == len(values)
+            assert continuation["cursor"] == str(len(values))
             call_id = f"memory-page-{len(values)}"
-            return _tool("read_tool_artifact", continuation, call_id)
+            return _tool("read_result", continuation, call_id)
         else:
-            page = payload["data"]
-            values.extend(page["value"])
-            offset = page.get("next_offset")
-            if offset is None:
-                return _tool("task_control", {"action": "complete", "result": "read all"}, "done")
+            values.extend(payload["value"])
+            cursor = payload.get("next_cursor")
+            if cursor is None:
+                return _tool("manage_task", {"action": "finish", "result": "read all"}, "done")
         call_id = f"memory-page-{len(values)}"
         return _tool(
-            "read_tool_artifact",
-            {"handle": handle, "path": ["memories"], "offset": offset},
+            "read_result",
+            {"handle": handle, "path": ["memories"], "cursor": cursor},
             call_id,
         )
 
@@ -408,12 +411,8 @@ async def test_plugin_memory_keeps_complete_selected_facts_before_delivery(
             async with database.read_session() as session:
                 rows = (await session.scalars(select(ToolArtifactModel))).all()
                 original = json.loads((root / rows[0].relative_path).read_text(encoding="utf8"))
-                assert len(original["data"]["memories"]) == 3
-                assert original["data"]["returned_count"] == 3
-                assert original["evidence_state"]
+                assert len(original["memories"]) == 3
             evidence["originals"] = await _originals(database, root)
-        else:
-            assert seen[0]["evidence_state"]
     finally:
         await host.close_host_resources()
 
@@ -475,31 +474,32 @@ async def test_oversized_memory_fact_continues_from_its_actual_preview(
     def respond(request):
         nonlocal call_id, handle
         if len(provider.requests) == 1:
-            return _tool("read_memory", {"view": "fact", "fact_id": fact.id}, call_id)
+            return _tool("search_memory", {"fact_id": fact.id}, call_id)
         payload = _last_result(request, call_id)
         seen.append(payload)
-        assert payload["ok"], payload
+        assert "error" not in payload, payload
         if handle is None:
             assert payload["truncated"]
             handle = payload["artifact_handle"]
-            pieces.append(payload["data"]["memory"]["content"])
+            # The one oversized list item is shown at its explicit path.
+            assert payload["preview"]["path"] == ["memories", 0]
+            pieces.append(payload["preview"]["value"]["content"])
             continuation = next(
-                item for item in payload["read_more"] if item["path"] == ["memory", "content"]
+                item for item in payload["read_more"] if item["path"] == ["memories", 0, "content"]
             )
-            assert continuation["offset"] == len(pieces[0])
+            assert continuation["cursor"] == str(len(pieces[0]))
         else:
-            page = payload["data"]
-            assert page["offset"] == sum(map(len, pieces))
-            pieces.append(page["value"])
-            if page["next_offset"] is None:
-                return _tool("task_control", {"action": "complete", "result": "read tail"}, "done")
+            pieces.append(payload["value"])
+            if "next_cursor" not in payload:
+                return _tool("manage_task", {"action": "finish", "result": "read tail"}, "done")
+            assert payload["next_cursor"] == str(sum(map(len, pieces)))
             continuation = {
                 "handle": handle,
-                "path": ["memory", "content"],
-                "offset": page["next_offset"],
+                "path": ["memories", 0, "content"],
+                "cursor": payload["next_cursor"],
             }
         call_id = f"single-page-{len(pieces)}"
-        return _tool("read_tool_artifact", continuation, call_id)
+        return _tool("read_result", continuation, call_id)
 
     provider._responder = respond
     evidence.update(
@@ -522,16 +522,15 @@ async def test_oversized_memory_fact_continues_from_its_actual_preview(
             rows = (await session.scalars(select(ToolArtifactModel))).all()
             assert len(rows) == 1
             archived = json.loads((root / rows[0].relative_path).read_text(encoding="utf8"))
-            assert archived["data"]["memory"]["content"] == original
-            assert archived["evidence_state"]
+            assert archived["memories"][0]["content"] == original
     finally:
         await host.close_host_resources()
 
 
-async def test_public_reader_defaults_to_logical_root_and_keeps_explicit_text_and_image(
+async def test_public_reader_picks_json_structure_and_image_by_content(
     database, tmp_path, tool_delivery_evidence
 ):
-    """Root get, text and image stay separate public operations, never manifests of pages."""
+    """One reader: JSON value, JSON structure and native image, never manifests of pages."""
     _, evidence = tool_delivery_evidence
     case = await setup_run(database, tmp_path, mode="silent", work_enabled=False)
     root = tmp_path / "reader-artifacts"
@@ -546,6 +545,7 @@ async def test_public_reader_defaults_to_logical_root_and_keeps_explicit_text_an
         ),
     )
     value = {"source": "original", "nested": ["first", "last"]}
+    # An archive written before the cutover keeps its envelope; it reads from ``data``.
     content = json.dumps({"ok": True, "data": value}, ensure_ascii=False)
     handle = await store.write_artifact(
         provider_id="fixture",
@@ -571,15 +571,15 @@ async def test_public_reader_defaults_to_logical_root_and_keeps_explicit_text_an
                 "",
                 0,
                 tool_calls=tuple(
-                    ToolCall(name, ToolFunction("read_tool_artifact", json.dumps(args)))
+                    ToolCall(name, ToolFunction("read_result", json.dumps(args)))
                     for name, args in (
                         ("root", {"handle": handle}),
-                        ("text", {"handle": handle, "operation": "text"}),
-                        ("image", {"handle": image_handle, "operation": "image"}),
+                        ("structure", {"handle": handle, "structure": True}),
+                        ("image", {"handle": image_handle}),
                     )
                 ),
             )
-        for name in ("root", "text", "image"):
+        for name in ("root", "structure", "image"):
             seen[name] = _last_result(request, name)
         images.extend(image for message in request.messages for image in message.images)
         return "read original structured, text and image values"
@@ -596,12 +596,13 @@ async def test_public_reader_defaults_to_logical_root_and_keeps_explicit_text_an
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED, result
-    assert all(payload["ok"] for payload in seen.values()), seen
-    assert seen["root"]["data"]["logical_root"] == "data"
-    assert seen["root"]["data"]["path"] == []
-    assert seen["root"]["data"]["value"] == value
-    assert seen["text"]["data"]["content"] == content
-    assert seen["image"]["data"]["mode"] == "image"
+    assert all("error" not in payload for payload in seen.values()), seen
+    assert seen["root"]["path"] == [] and seen["root"]["value"] == value
+    assert seen["structure"]["type"] == "object"
+    assert {child["key"] for child in seen["structure"]["children"]} == {"source", "nested"}
+    assert seen["image"]["image_count"] == 1
+    for payload in seen.values():
+        assert not {"provider_id", "tool_name", "logical_root", "mode"} & payload.keys()
     assert [image.data_url for image in images] == [data_url]
     evidence["image_sha256"] = hashlib.sha256(pixels.getvalue()).hexdigest()
     evidence["originals"] = await _originals(database, root)
@@ -609,10 +610,10 @@ async def test_public_reader_defaults_to_logical_root_and_keeps_explicit_text_an
         assert len((await session.scalars(select(ToolArtifactModel))).all()) == 2
 
 
-async def test_public_reader_errors_allow_an_explicit_text_read_without_archive_recursion(
+async def test_public_reader_reads_text_by_content_and_reports_real_failures(
     database, tmp_path, tool_delivery_evidence
 ):
-    """Non-JSON get and a missing path are real read failures, not empty successful pages."""
+    """Text needs no selector; a missing path or bad cursor is a real failure, not a page."""
     _, evidence = tool_delivery_evidence
     case = await setup_run(database, tmp_path, mode="silent", work_enabled=False)
     root = tmp_path / "reader-error-artifacts"
@@ -649,21 +650,18 @@ async def test_public_reader_errors_allow_an_explicit_text_read_without_archive_
                 "",
                 0,
                 tool_calls=tuple(
-                    ToolCall(name, ToolFunction("read_tool_artifact", json.dumps(args)))
+                    ToolCall(name, ToolFunction("read_result", json.dumps(args)))
                     for name, args in (
-                        ("non-json", {"handle": text_handle}),
+                        ("text", {"handle": text_handle}),
                         ("missing-path", {"handle": json_handle, "path": ["absent"]}),
+                        ("bad-cursor", {"handle": text_handle, "cursor": "next"}),
+                        ("both", {"handle": json_handle, "structure": True, "query": "x"}),
                     )
                 ),
             )
-        if len(case.provider.requests) == 2:
-            for name in ("non-json", "missing-path"):
-                seen[name] = _last_result(request, name)
-            return _tool(
-                "read_tool_artifact", {"handle": text_handle, "operation": "text"}, "explicit-text"
-            )
-        seen["explicit-text"] = _last_result(request, "explicit-text")
-        return "read original plain text after the explicit correction"
+        for name in ("text", "missing-path", "bad-cursor", "both"):
+            seen[name] = _last_result(request, name)
+        return "read original plain text"
 
     case.provider._responder = respond
     evidence.update(
@@ -672,13 +670,14 @@ async def test_public_reader_errors_allow_an_explicit_text_read_without_archive_
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED, result
-    assert not seen["non-json"]["ok"]
-    assert seen["non-json"]["error_code"] == "artifact_not_json"
-    assert "text" in seen["non-json"]["public_message"]
-    assert not seen["missing-path"]["ok"]
-    assert seen["missing-path"]["error_code"] == "artifact_path_not_found"
-    assert seen["explicit-text"]["ok"]
-    assert seen["explicit-text"]["data"]["content"] == original
+    assert "error" not in seen["text"] and seen["text"]["content"] == original
+    for name, code in (
+        ("missing-path", "artifact_path_not_found"),
+        ("bad-cursor", "invalid_cursor"),
+        ("both", "invalid_arguments"),
+    ):
+        assert seen[name]["ok"] is False and seen[name]["error"] == code, seen
+        assert seen[name]["message"]
     evidence["originals"] = await _originals(database, root)
     async with database.read_session() as session:
         assert len((await session.scalars(select(ToolArtifactModel))).all()) == 2

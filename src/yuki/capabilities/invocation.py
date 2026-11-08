@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def counts_toward_business_limit(tool_name: str) -> bool:
     """Frozen core readback policy, never selected by generated arguments."""
-    return tool_name != "read_tool_artifact"
+    return tool_name != "read_result"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +78,7 @@ class Invocation:
             "tool_id": self.call.function.name,
             **(
                 {"action": parsed_arguments.get("action")}
-                if self.call.function.name == "external_agent"
+                if self.call.function.name == "use_coding_agent"
                 and isinstance(parsed_arguments, dict)
                 else {}
             ),

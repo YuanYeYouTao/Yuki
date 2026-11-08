@@ -121,7 +121,7 @@ class Fixture:
         env.context, origin="plugin_background", caused_by_event_id=source.source_event_id
     )
     sent = await app.social_service.execute(
-        "send", {"text": "正文已经送达", "emoji": {"goal": "开心"}}, context
+        "send", {"text": "正文已经送达", "sticker": {"goal": "开心"}}, context
     )
     assert sent["status"] == "succeeded" and sent["emoji"]["status"] == "accepted"
     await app.plugin_manager.stop()

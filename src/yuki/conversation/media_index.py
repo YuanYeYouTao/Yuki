@@ -23,9 +23,7 @@ _ORIGIN_KEYS = ("file", "url", "file_id", "media_id")
 def attachment_origin(data: Mapping[str, Any]) -> str:
     """Identity of the bytes. Caption text and segment position are not part of it."""
     picked = {
-        key: data[key]
-        for key in _ORIGIN_KEYS
-        if isinstance(data.get(key), str) and data[key]
+        key: data[key] for key in _ORIGIN_KEYS if isinstance(data.get(key), str) and data[key]
     }
     return json.dumps(picked, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

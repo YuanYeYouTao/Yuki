@@ -92,12 +92,11 @@ async def test_local_inspect_prepares_actual_pixels_with_original_device_and_has
     service, devices, _ = workspace(tmp_path)
     digest = hashlib.sha256(devices.path.read_bytes()).hexdigest()
     result = await service.execute(
-        "workspace_inspect",
+        "view_file",
         {
-            "device_id": "computer",
+            "device": "computer",
             "path": "C:\\pictures\\selected.png",
             "question": "查看原图",
-            "expected_version": digest,
         },
         request_id="inspect-original",
         source={"actor_person_id": "source-person"},
@@ -106,7 +105,7 @@ async def test_local_inspect_prepares_actual_pixels_with_original_device_and_has
     assert result["device_id"] == "computer" and result["version"] == result["sha256"] == digest
     assert result.images[0].content_hash == digest
     assert devices.reads == [
-        ("computer", "source-person", "C:\\pictures\\selected.png", "inspect-original", digest)
+        ("computer", "source-person", "C:\\pictures\\selected.png", "inspect-original", None)
     ]
     assert list(service.store.root.glob("*.blob")) == []
 
@@ -115,8 +114,8 @@ async def test_local_inspect_does_not_invent_a_person_from_the_device_id(tmp_pat
     service, devices, _ = workspace(tmp_path)
     with pytest.raises(ValueError, match="local_device_person_source_required"):
         await service.execute(
-            "workspace_inspect",
-            {"device_id": "computer", "path": "selected.png", "question": "看图"},
+            "view_file",
+            {"device": "computer", "path": "selected.png", "question": "看图"},
             request_id="read",
             source=None,
         )
@@ -129,9 +128,9 @@ async def test_local_png_uses_the_real_private_core_media_consumer_after_source_
     env = await social_env(database, tmp_path / "identity")
     service, devices, _ = workspace(tmp_path)
     prepared = await service.execute(
-        "workspace_inspect",
+        "view_file",
         {
-            "device_id": "original-device",
+            "device": "original-device",
             "path": "C:\\pictures\\selected.png",
             "question": "查看原图",
         },
@@ -156,7 +155,7 @@ async def test_local_png_uses_the_real_private_core_media_consumer_after_source_
             data=dict(prepared),
             images=prepared.images,
             provider_id="core",
-            tool_name="workspace_inspect",
+            tool_name="view_file",
         )
     )
     handle = budgeted.artifact_id
@@ -179,7 +178,7 @@ async def test_local_png_uses_the_real_private_core_media_consumer_after_source_
         row = await reader.scalar(
             select(ToolArtifactModel).where(ToolArtifactModel.handle_id == handle)
         )
-        assert row.provider_id == "core" and row.tool_name == "workspace_inspect"
+        assert row.provider_id == "core" and row.tool_name == "view_file"
         assert row.media_type == "application/x-yuki-prepared-images" and row.work_id is None
         assert json.loads(row.access_json)["actor_person_id"] == env.person
     async with database.immediate_session() as writer:
@@ -211,12 +210,12 @@ async def test_attachment_save_replays_original_receipt_after_cache_expiry(tmp_p
         "confirmed upload must not fetch expired source"
     )
     result = await service.execute(
-        "save_conversation_attachment_to_workspace",
+        "copy_file",
         {
             "event_id": 41,
-            "attachment_index": 2,
+            "attachment": 2,
             "destination": "C:\\saved.png",
-            "device_id": "computer",
+            "to_device": "computer",
         },
         request_id="original-save",
         source={"actor_person_id": "person"},
@@ -233,12 +232,12 @@ async def test_attachment_save_uploads_authorized_original_bytes(tmp_path):
         devices.path,
     )
     result = await service.execute(
-        "save_conversation_attachment_to_workspace",
+        "copy_file",
         {
             "event_id": 41,
-            "attachment_index": 2,
+            "attachment": 2,
             "destination": "/home/person/saved.png",
-            "device_id": "computer",
+            "to_device": "computer",
         },
         request_id="save-once",
         source={"actor_person_id": "person"},
@@ -284,9 +283,7 @@ async def test_send_path_carries_only_the_trusted_context_person_to_the_file_own
         "original-conversation",
         actor=SimpleNamespace(person_id="real-source-person"),
     )
-    message = SocialMessage(
-        path="C:\\original.txt", device_id="original-device", attachment_kind="file"
-    )
+    message = SocialMessage(file={"path": "C:\\original.txt", "device": "original-device"})
     args = message.model_dump(mode="json", exclude_none=True)
     await service._path_artifact(
         message, args, context, SocialTarget(kind="person", id=uuid4()), None

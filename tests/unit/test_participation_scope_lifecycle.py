@@ -282,7 +282,7 @@ async def test_disabled_scope_preserves_completed_work_and_original_feedback(
             current=await host.work.get(row["id"]),
         )
         await control.execute(
-            "task_control", {"action": "complete", "result": "original result"}, "original-complete"
+            "manage_task", {"action": "finish", "result": "original result"}, "original-complete"
         )
         await control.settle(pending_inputs=False)
         await host.work.release(lease)

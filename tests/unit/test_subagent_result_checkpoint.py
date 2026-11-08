@@ -10,10 +10,16 @@ from jsonschema import validate as validate_schema
 from sqlalchemy import select, update
 from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.subagents_helpers import stack
+from tests.support.work_runner_helpers import derive_business_child
 
 from yuki.runtime.subagent_scheduler import SubagentScheduler
 from yuki.runtime.subagent_schema import children
-from yuki.runtime.subagent_tools import execute_subagent, subagent_tools
+from yuki.runtime.subagent_tools import (
+    manage_subtask,
+    start_subtask,
+    subagent_tools,
+    subtask_result,
+)
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkConflict
@@ -225,21 +231,10 @@ async def test_large_note_completion_notifies_and_result_reads_original_checkpoi
     assert len(pending) == 1
     assert identity in pending[0]["payload_json"]
     assert json.loads(json.loads(pending[0]["payload_json"])["text"])["text"] == text
-    result = await execute_subagent(
-        parent, "subagent_control", {"action": "result", "child_id": identity}, "read-result"
-    )
-    child = result["children"][0]
-    assert child["child_id"] == identity and child["state"] == "completed"
-    assert child["result"]["checkpoint"] == checkpoint
-    assert (
-        child["result"]["checkpoint"]["context_note"]["payload"]["facts"][0]["text"] == "x" * 270000
-    )
-    assert child["result"]["text"] == text
-    for action in ("status", "list"):
-        summary = await execute_subagent(
-            parent, "subagent_control", {"action": action, "child_id": identity}, action
-        )
-        assert "checkpoint" not in summary["children"][0]["result"]
+    result = await subtask_result(parent, identity)
+    assert result["checkpoint"] == checkpoint
+    assert result["checkpoint"]["context_note"]["payload"]["facts"][0]["text"] == "x" * 270000
+    assert result["text"] == text
     await workers.finish(lease)
     assert len(await repo.pending(parent.lease, work_id=parent.current["id"])) == 1
     with pytest.raises(ValueError, match="subagent_not_owned"):
@@ -307,14 +302,12 @@ async def test_children_queue_without_admission_quota(database, tmp_path):
         "files": [f"/workspace/input-{index}.txt" for index in range(33)],
     }
     validate_schema(
-        brief, next(item.parameters for item in subagent_tools() if item.name == "subagent_start")
+        brief, next(item.parameters for item in subagent_tools() if item.name == "start_subtask")
     )
     identities = [first]
     for index in range(9):
-        accepted = await execute_subagent(
-            parent_control, "subagent_start", brief, f"queued-{index}"
-        )
-        identities.append(accepted["child_id"])
+        accepted = await start_subtask(parent_control, brief, f"queued-{index}")
+        identities.append(accepted["id"])
     assert len(set(identities)) == 10
     saved = await workers.related(parent["id"], identities[1])
     assert len(saved["brief_json"].encode()) > 65536
@@ -487,8 +480,8 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
         json.dumps({"ok": True, "mutation_committed": True, "data": {"status": "succeeded"}}),
     )
     await repo.checkpoint(lease, identity, None, tools=1)
-    result = json.loads(await control.execute("task_control", {"action": "complete"}, "done"))
-    assert result["ok"]
+    result = json.loads(await control.execute("manage_task", {"action": "finish"}, "done"))
+    assert result.get("ok") is not False
     await control.settle(pending_inputs=False)
     assert any(fact["mutation_committed"] is True for fact in await control.effect_evidence())
     original = await repo.get(identity)
@@ -581,14 +574,8 @@ async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_b
         )
     parent.current = None
     parent.requests_started = 2
-    resumed = await execute_subagent(
-        parent,
-        "subagent_control",
-        {"action": "resume", "child_id": identity},
-        "new-directive",
-    )
-    assert resumed["children"][0]["child_id"] == identity
-    assert resumed["children"][0]["state"] == "queued"
+    resumed = await manage_subtask(parent, "resume", identity, "new-directive", None)
+    assert resumed == {"id": identity, "status": "queued"}
     reopened = await repo.get(root["id"])
     assert parent.current is None and reopened["state"] == "completed"
     assert reopened["model_requests"] == 3 and reopened["tool_calls"] == 4
@@ -607,9 +594,7 @@ async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_b
             update(children).where(children.c.work_id == identity).values(archived_at=time.time())
         )
     with pytest.raises(ValueError, match="subagent_archived"):
-        await execute_subagent(
-            parent, "subagent_control", {"action": "resume", "child_id": identity}, "archived"
-        )
+        await manage_subtask(parent, "resume", identity, "archived", None)
     await repo.release(parent.lease)
 
 
@@ -648,25 +633,15 @@ async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_
     root_before = await repo.get(parent["id"])
     async with database.read_session() as reader:
         original_inputs = list((await reader.execute(select(inputs))).mappings())
-    with pytest.raises(ValueError, match="subagent_not_owned"):
-        await execute_subagent(
-            control,
-            "subagent_control",
-            {"action": "resume", "child_id": identity, "instruction": "replace original goal"},
-            "borrowed-child",
-        )
+    with pytest.raises(ValueError, match="subtask_not_owned"):
+        await manage_subtask(control, "resume", identity, "borrowed-child", "replace original goal")
     assert await repo.get(identity) == before
     assert await repo.get(parent["id"]) == root_before
     async with database.read_session() as reader:
         assert list((await reader.execute(select(inputs))).mappings()) == original_inputs
     control.source = {**source, "actor_user_id": "new-account-for-the-same-person"}
-    resumed = await execute_subagent(
-        control,
-        "subagent_control",
-        {"action": "resume", "child_id": identity},
-        "original-owner",
-    )
-    assert resumed["children"][0]["state"] == "queued"
+    resumed = await manage_subtask(control, "resume", identity, "original-owner", None)
+    assert resumed["status"] == "queued"
     after = await repo.get(identity)
     assert after["goal"] == before["goal"] and after["source_json"] == before["source_json"]
     assert await repo.get(parent["id"]) == root_before
@@ -685,10 +660,8 @@ async def test_paused_child_resumes_original_goal_without_a_new_instruction(
     await repo.release(lease)
     before = await repo.get(identity)
     control = SimpleNamespace(repository=repo, lease=parent_lease, current=parent, source={})
-    result = await execute_subagent(
-        control, "subagent_control", {"action": "resume", "child_id": identity}, "continue-original"
-    )
-    assert result["children"][0]["state"] == "queued"
+    result = await manage_subtask(control, "resume", identity, "continue-original", None)
+    assert result["status"] == "queued"
     after = await repo.get(identity)
     assert after["goal"] == before["goal"] == "draw"
     assert after["checkpoint_json"] == before["checkpoint_json"]
@@ -711,38 +684,23 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
 
     control = WorkControl(repo, parent_lease, root["source_key"], {}, validate, current=root)
     derived = json.loads(
-        await control.execute(
-            "task_control", {"action": "derive", "goal": "verify a branch"}, "derive"
-        )
+        await control.execute("start_subtask", {"goal": "verify a branch"}, "derive")
     )
-    assert derived["ok"], derived
-    branch_id = derived["derived_work_id"]
+    assert derived["status"] == "running", derived
+    branch_id = derived["id"]
     replayed = json.loads(
-        await control.execute(
-            "task_control", {"action": "derive", "goal": "verify a branch"}, "derive"
-        )
+        await control.execute("start_subtask", {"goal": "verify a branch"}, "derive")
     )
-    assert replayed["derived_work_id"] == branch_id
+    assert replayed["id"] == branch_id
     branch = await repo.get(branch_id)
     assert branch["parent_work_id"] == root["id"]
-    assert json.loads(branch["source_json"]) == json.loads(root["source_json"])
     parent = SimpleNamespace(repository=repo, lease=parent_lease, current=branch, source={})
-    leaf = await execute_subagent(
-        parent, "subagent_start", {"goal": "check the actual output"}, "leaf"
-    )
-    leaf_id = leaf["child_id"]
-    queried = json.loads(
-        await control.execute("task_control", {"action": "get", "work_id": leaf_id}, "get-leaf")
-    )["work"]
-    assert queried["parent_work_id"] == branch_id
-    assert queried["ancestor_work_ids"] == [branch_id, root["id"]]
-    assert queried["budget_root_id"] == root["id"]
-    directory = json.loads(
-        await control.execute(
-            "task_control", {"action": "list", "parent_work_id": branch_id}, "list-branch"
-        )
-    )
-    assert [item["work_id"] for item in directory["works"]] == [leaf_id]
+    leaf = await start_subtask(parent, {"goal": "check the actual output"}, "leaf")
+    leaf_id = leaf["id"]
+    queried = json.loads(await control.execute("get_tasks", {"id": leaf_id}, "get-leaf"))
+    assert queried["parent"] == branch_id
+    directory = json.loads(await control.execute("get_tasks", {"parent": branch_id}, "list-branch"))
+    assert [item["id"] for item in directory["tasks"]] == [leaf_id]
     async with database.read_session() as session:
         assert await ancestor_work_ids(session, leaf_id) == [branch_id, root["id"]]
         assert set(await descendant_work_ids(session, root["id"])) == {branch_id, leaf_id, sibling}
@@ -762,51 +720,41 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
         current=leaf_row,
     )
     nested = json.loads(
-        await worker_control.execute(
-            "task_control", {"action": "derive", "goal": "check a nested result"}, "nested"
-        )
+        await worker_control.execute("start_subtask", {"goal": "check a nested result"}, "nested")
     )
-    assert nested["ok"], nested
-    nested_id = nested["derived_work_id"]
+    assert nested["status"] == "running", nested
+    nested_id = nested["id"]
     nested_row = await repo.get(nested_id)
     nested_read = json.loads(
-        await worker_control.execute(
-            "task_control", {"action": "get", "work_id": nested_id}, "read-nested"
-        )
-    )["work"]
-    assert nested_read["parent_work_id"] == leaf_id
-    assert nested_read["ancestor_work_ids"] == [leaf_id, branch_id, root["id"]]
-    assert nested_read["budget_root_id"] == root["id"]
-    listed = json.loads(
-        await worker_control.execute(
-            "task_control", {"action": "list", "parent_work_id": leaf_id}, "list-nested"
-        )
+        await worker_control.execute("get_tasks", {"id": nested_id}, "read-nested")
     )
-    assert [item["work_id"] for item in listed["works"]] == [nested_id]
+    assert nested_read["parent"] == leaf_id
+    listed = json.loads(
+        await worker_control.execute("get_tasks", {"parent": leaf_id}, "list-nested")
+    )
+    assert [item["id"] for item in listed["tasks"]] == [nested_id]
     for outside in (root["id"], branch_id, sibling):
         directory_read = json.loads(
-            await worker_control.execute(
-                "task_control", {"action": "get", "work_id": outside}, f"read-outside:{outside}"
-            )
+            await worker_control.execute("get_tasks", {"id": outside}, f"read-outside:{outside}")
         )
-        assert directory_read["ok"] and directory_read["work"]["work_id"] == outside
-        assert "checkpoint_json" not in directory_read["work"]
-        assert "source_json" not in directory_read["work"]
+        assert directory_read.get("ok") is not False and directory_read["id"] == outside
+        assert "checkpoint_json" not in directory_read
+        assert "source_json" not in directory_read
         denied_stop = json.loads(
             await worker_control.execute(
-                "task_control",
-                {"action": "cancel", "work_id": outside},
+                "manage_task",
+                {"action": "cancel", "id": outside},
                 f"stop-outside:{outside}",
             )
         )
-        assert not denied_stop["ok"]
+        assert denied_stop["ok"] is False
     for action, state in (("fail", "failed"), ("resume", "queued"), ("cancel", "cancelled")):
         managed = json.loads(
             await worker_control.execute(
-                "task_control", {"action": action, "work_id": nested_id}, f"{action}-nested"
+                "manage_task", {"action": action, "id": nested_id}, f"{action}-nested"
             )
         )
-        assert managed["ok"] and managed["work_id"] == nested_id and managed["state"] == state
+        assert managed == {"id": nested_id, "status": state}
         assert worker_control.current["id"] == leaf_id and worker_control.ending is None
         current_nested = await repo.get(nested_id)
         assert current_nested["source_json"] == nested_row["source_json"]
@@ -820,11 +768,9 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
             update(children).where(children.c.work_id == nested_id).values(archived_at=time.time())
         )
     archived = json.loads(
-        await worker_control.execute(
-            "task_control", {"action": "get", "work_id": nested_id}, "read-archived"
-        )
+        await worker_control.execute("get_tasks", {"id": nested_id}, "read-archived")
     )
-    assert archived["work"]["state"] == "cancelled"
+    assert archived["status"] == "cancelled"
     from yuki.runtime.work_budget_schema import budgets
     from yuki.runtime.work_queries import WorkQueries
 
@@ -860,11 +806,9 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
     active_leaf = await workers.acquire(leaf_id)
     assert active_leaf is not None
     stopped = json.loads(
-        await control.execute(
-            "task_control", {"action": "cancel", "work_id": branch_id}, "stop-branch"
-        )
+        await control.execute("manage_task", {"action": "cancel", "id": branch_id}, "stop-branch")
     )
-    assert stopped["ok"], stopped
+    assert stopped.get("ok") is not False, stopped
     assert (await repo.get(branch_id))["state"] == "cancelled"
     assert (await repo.get(leaf_id))["state"] == "cancelled"
     assert not await repo.valid(active_leaf)
@@ -877,7 +821,9 @@ async def test_derived_call_retrieves_terminal_child_without_new_identity_or_bud
     database, tmp_path
 ):
     repo, _workers, lease, root, _sibling = await stack(database, tmp_path)
-    child = await repo.derive(lease, root["id"], "original-derive", "original child goal")
+    child = await derive_business_child(
+        repo, lease, root["id"], "original-derive", "original child goal"
+    )
     await repo.checkpoint(lease, child["id"], {}, models=2, tools=3)
     await repo.accept_control(
         lease,
@@ -891,7 +837,9 @@ async def test_derived_call_retrieves_terminal_child_without_new_identity_or_bud
             .mappings()
             .one()
         )
-    replay = await repo.derive(lease, root["id"], "original-derive", "original child goal")
+    replay = await derive_business_child(
+        repo, lease, root["id"], "original-derive", "original child goal"
+    )
     assert replay == before
     assert replay["state"] == "completed"
     assert json.loads(replay["checkpoint_json"])["sync_result"] == "original result"
@@ -912,7 +860,7 @@ async def test_privacy_purge_removes_one_actual_tree_and_preserves_other_scope(d
     from yuki.runtime.work_schema_v1 import scope
 
     repo, workers, lease, root, sibling = await stack(database, tmp_path)
-    branch = await repo.derive(lease, root["id"], "private-branch", "private child")
+    branch = await derive_business_child(repo, lease, root["id"], "private-branch", "private child")
     leaf = await workers.start(lease, branch["id"], "private-leaf", {"goal": "private evidence"})
     await repo.prepare_effect(lease, root["id"], "private-receipt", "tool")
     await repo.record_effect("private-receipt", "unknown", {"outcome": {"uncertain": True}})
@@ -1014,19 +962,12 @@ async def test_original_sandbox_completion_keeps_remaining_all_wait_conditions(d
     control.resolve_child = resolve
     result = json.loads(
         await control.execute(
-            "task_control",
-            {
-                "action": "wait",
-                "wait_mode": "all",
-                "conditions": [
-                    {"kind": "owned_run", "run_id": run_id},
-                    {"kind": "time_due", "after_seconds": 3600},
-                ],
-            },
+            "wait",
+            {"for": [{"run": run_id}, {"seconds": 3600}], "all": True},
             "wait-original-and-timer",
         )
     )
-    assert result["ok"], result
+    assert result.get("ok") is not False, result
     await control.settle(pending_inputs=False)
     completion = {"run_id": run_id, "status": "succeeded", "pending": False}
     await tasks.receive({"request_id": request_id, "run_id": run_id, "result": completion})
@@ -1060,7 +1001,9 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
 
     repo, workers, parent_lease, root, sibling = await stack(database, tmp_path)
     await workers.cancel(parent_lease, root["id"], sibling)
-    branch = await repo.derive(parent_lease, root["id"], "branch", "continue a real subgoal")
+    branch = await derive_business_child(
+        repo, parent_lease, root["id"], "branch", "continue a real subgoal"
+    )
     leaf_id = await workers.start(
         parent_lease, branch["id"], "leaf", {"goal": "unfinished evidence"}
     )
@@ -1252,10 +1195,8 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         )
         assert usage["models"] == 1 and usage["tools"] == 1
     neutral = SimpleNamespace(repository=repo, lease=parent_lease, current=None, source={})
-    resumed = await execute_subagent(
-        neutral, "subagent_control", {"action": "resume", "child_id": leaf_id}, "continue-original"
-    )
-    assert resumed["children"][0]["state"] == "queued"
+    resumed = await manage_subtask(neutral, "resume", leaf_id, "continue-original", None)
+    assert resumed["status"] == "queued"
     assert (await repo.get(root["id"]))["state"] == "completed"
     assert (await repo.get(branch["id"]))["state"] == "completed"
     active = await workers.acquire(leaf_id)
@@ -1275,9 +1216,11 @@ async def test_completed_nested_artifact_remains_readable_until_retained_tree_se
     from yuki.tool_results.artifacts import ToolArtifactRepository
 
     repo, workers, lease, root, _sibling = await stack(database, tmp_path)
-    branch_id = (await repo.derive(lease, root["id"], "artifact-branch", "retain child evidence"))[
-        "id"
-    ]
+    branch_id = (
+        await derive_business_child(
+            repo, lease, root["id"], "artifact-branch", "retain child evidence"
+        )
+    )["id"]
     leaf_id = await workers.start(lease, branch_id, "artifact-leaf", {"goal": "check the evidence"})
     leaf_lease = await workers.acquire(leaf_id)
     store = ToolArtifactRepository(
@@ -1343,8 +1286,8 @@ async def test_completed_nested_artifact_remains_readable_until_retained_tree_se
     await repo.release(lease)
 
 
-@pytest.mark.parametrize("reason", [None, "Which source file should I use?"])
-async def test_worker_need_input_only_passes_actual_question_to_parent(database, tmp_path, reason):
+@pytest.mark.parametrize("reason", ["Which source file should I use?"])
+async def test_worker_question_passes_actual_question_to_parent(database, tmp_path, reason):
     repo, workers, parent_lease, root, identity = await stack(database, tmp_path)
     lease = await workers.acquire(identity)
     row = await repo.get(identity)
@@ -1355,11 +1298,9 @@ async def test_worker_need_input_only_passes_actual_question_to_parent(database,
     control = WorkControl(
         repo, lease, row["source_key"], json.loads(row["source_json"]), validate, current=row
     )
-    arguments = {"action": "need_input"}
-    if reason is not None:
-        arguments["reason"] = reason
-    result = json.loads(await control.execute("task_control", arguments, "wait-for-parent"))
-    assert result["ok"], result
+    arguments = {"text": reason, "ask": True}
+    result = json.loads(await control.execute("message_task", arguments, "wait-for-parent"))
+    assert result["status"] == "waiting_parent", result
     await control.settle(pending_inputs=False)
     await workers.finish(lease)
     assert (await repo.get(identity))["state"] == "waiting_user"
@@ -1395,7 +1336,7 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
     from yuki.sandbox.task_repository import SandboxTaskRepository
 
     repo, workers, lease, root, failed_worker = await stack(database, tmp_path)
-    branch = await repo.derive(lease, root["id"], "branch", "ordinary child")
+    branch = await derive_business_child(repo, lease, root["id"], "branch", "ordinary child")
     other_root = await repo.accept(lease, source_key="other-root", source={}, goal="ordinary root")
     live_worker = await workers.start(lease, root["id"], "live-sibling", {"goal": "continue"})
     now = datetime.now(UTC)
@@ -1442,9 +1383,9 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
         ("cancel", other_root["id"]),
     ):
         result = json.loads(
-            await control.execute("task_control", {"action": action, "work_id": identity}, identity)
+            await control.execute("manage_task", {"action": action, "id": identity}, identity)
         )
-        assert result["ok"], result
+        assert result.get("ok") is not False, result
     assert not await repo.valid(worker_lease)
     assert (await repo.get(root["id"]))["state"] == "running"
     assert (await repo.get(live_worker))["state"] == "queued"

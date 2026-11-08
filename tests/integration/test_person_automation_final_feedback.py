@@ -30,12 +30,12 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
                 calls.append(
                     ToolCall(
                         "accept",
-                        ToolFunction("task_control", '{"action":"accept","goal":"原始完整任务"}'),
+                        ToolFunction("manage_task", '{"action":"start","goal":"原始完整任务"}'),
                     )
                 )
             arguments = {"text": text}
             if recipient == "person":
-                arguments["target"] = {"kind": "person", "target_id": case.env.person}
+                arguments["target"] = {"person_id": case.env.person}
             calls.append(ToolCall("explicit-send", ToolFunction("send", json.dumps(arguments))))
             return ChatResponse("", 0, tool_calls=tuple(calls))
         if accept_work:
@@ -46,8 +46,8 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
                     ToolCall(
                         "finish",
                         ToolFunction(
-                            "task_control",
-                            '{"action":"complete","result":"INTERNAL_FINAL_MUST_NOT_AUTO_SEND"}',
+                            "manage_task",
+                            '{"action":"finish","result":"INTERNAL_FINAL_MUST_NOT_AUTO_SEND"}',
                         ),
                     ),
                 ),
@@ -122,22 +122,21 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
         if index:
             result = json.loads(request.messages[-1].content)
             responses.append(result)
-            assert result["ok"], result
+            assert result.get("ok") is not False, result
         if index == 0:
-            name, arguments = "find_contacts", {"kind": "person", "target_id": case.env.person}
+            name, arguments = "find_contacts", {"target": {"person_id": case.env.person}}
         elif index == 1:
-            assert responses[-1]["data"]["target_id"] == case.env.person
+            assert responses[-1]["items"][0]["id"] == case.env.person
             name, arguments = "send", {"text": "SCHEDULED_SHARED_SOCIAL"}
         elif index == 2:
             name, arguments = (
-                "query_chat_history",
+                "read_chat",
                 {
-                    "view": "recent",
-                    "target": {"operation_id": responses[-1]["data"]["operation_id"]},
+                    "target": {"operation_id": responses[-1]["operation_id"]},
                 },
             )
         elif index == 3:
-            name, arguments = "recall_own_message", {"event_id": responses[1]["data"]["event_id"]}
+            name, arguments = "recall_message", {"event_id": responses[1]["event_id"]}
         else:
             return "NO_REPLY"
         return ChatResponse(
@@ -150,16 +149,16 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED and result.llm_calls == 5
-    assert len(responses) == 4 and all(response["ok"] for response in responses)
+    assert len(responses) == 4 and all(response.get("ok") is not False for response in responses)
     assert len(sent(case.env)) == 1
     assert sum(action == "get_group_msg_history" for action, _ in case.env.bot.calls) == 0
-    assert responses[2]["data"]["source"] == "canonical_ledger"
+    assert responses[2]["receipt"]["receipt_status"] == "succeeded"
     assert sum(action == "delete_msg" for action, _ in case.env.bot.calls) == 1
     assert {name for name, _ in contexts} >= {
         "find_contacts",
         "send",
-        "query_chat_history",
-        "recall_own_message",
+        "read_chat",
+        "recall_message",
     }
     assert all(
         context.actor.principal_kind == principal
@@ -199,7 +198,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
                         json.dumps(
                             {
                                 "text": text,
-                                "target": {"kind": "person", "target_id": case.env.person},
+                                "target": {"person_id": case.env.person},
                             }
                         ),
                     ),

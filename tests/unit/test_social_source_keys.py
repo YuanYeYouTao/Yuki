@@ -163,16 +163,13 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
         origin_key="second-known-person",
         content="known inbound",
     )
-    matches = await env.service.contacts("person", "same", exact=True)
-    assert {item["target_id"] for item in matches} == {first, last}
-    with pytest.raises(SocialError, match="target_ambiguous"):
-        await env.service.target("person", {"display_name": "same"}, env.context)
+    # Names never resolve a target on their own: same-named people stay two candidates.
     result = await env.service.execute(
-        "find_contacts", {"kind": "person", "display_name": "same"}, env.context
+        "find_contacts", {"type": "person", "name": "same"}, env.context
     )
-    items = {item["target_id"]: item for item in result["items"]}
+    items = {item["id"]: item for item in result["items"]}
     assert set(items) == {first, last}
-    assert len(items[first]["bindings"]) == 33 and len(items[last]["bindings"]) == 1
+    assert len(items[first]["entries"]) == 33 and len(items[last]["entries"]) == 1
 
 
 @pytest.mark.asyncio
@@ -184,15 +181,8 @@ async def test_history_reads_canonical_ledger_without_probing_any_presence(datab
     env.registry.connect(other, provider_id="snowluma", presence_id=second)
     env.bot.calls.clear()
     result = await env.service.execute(
-        "query_chat_history",
-        {
-            "view": "recent",
-            "event_kind": "all",
-            "target": {"conversation_id": env.context.conversation_id},
-        },
-        env.context,
+        "read_chat", {"target": {"conversation_id": env.context.conversation_id}}, env.context
     )
-    assert result["source"] == "canonical_ledger" and result["coverage"] == "observed"
-    assert result["returned_count"] == 1
+    assert len(result["events"]) == 1
     assert result["events"][0]["person_id"] == env.person
     assert not env.bot.calls and not other.calls

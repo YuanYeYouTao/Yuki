@@ -45,9 +45,9 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
     def respond(_request):
         if len(provider.requests) == 1:
             return _tool(
-                "subagent_start", {"goal": "check the original SDK source"}, "spawn-sdk-child"
+                "start_subtask", {"goal": "check the original SDK source"}, "spawn-sdk-child"
             )
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "complete")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "complete")
 
     provider._responder = respond
     with host.invocation_scope(host.plugin_id, source_runtime):
@@ -143,7 +143,7 @@ async def test_code_child_uses_main_script_api_and_fixed_direct_tools(database, 
     contract = chat.runtime.runner.main_contract
     assert executor.script_api is contract.script_api
     assert executor.definitions == await contract.definitions()
-    assert {"send", "subagent_start", "subagent_control", "update_short_state"} <= set(
+    assert {"send", "start_subtask", "message_task", "set_short_note"} <= set(
         executor.script_api.schemas
     )
 
@@ -195,19 +195,19 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
     def respond(request):
         count = len(provider.requests)
         if count == 1:
-            return _tool("subagent_start", {"goal": "keep original plugin authority"}, "spawn")
+            return _tool("start_subtask", {"goal": "keep original plugin authority"}, "spawn")
         if count == 3:
             return _tool("send", {"text": "this source did not grant sending"}, "ungranted")
         if count == 4:
             results.append(json.loads(request.messages[-1].content))
             return _tool(
-                "query_chat_history",
-                {"view": "recent", "event_kind": "all", "target": {"space_id": other_space}},
+                "read_chat",
+                {"target": {"space_id": other_space}},
                 "other",
             )
         if count == 5:
             results.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "complete")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "complete")
 
     provider._responder = respond
     try:
@@ -247,9 +247,9 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
         assert actual_runtime[0].memory_allowed_scopes == ()
         assert actual_runtime[0].read_target_id == env.space
         assert actual_runtime[0].read_scope.conversation_id == event.canonical_conversation_id
-        assert not results[0]["ok"]
-        assert results[0]["error_code"] == "permission_denied", results[0]
-        assert not results[1]["ok"] and results[1]["error_code"] == "history_scope_denied"
+        assert results[0]["ok"] is False
+        assert results[0]["error"] == "permission_denied", results[0]
+        assert results[1]["ok"] is False and results[1]["error"] == "history_scope_denied"
         assert not any(
             action in {"send_group_msg", "send_private_msg"} for action, _ in env.bot.calls
         )

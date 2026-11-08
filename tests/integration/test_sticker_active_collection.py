@@ -87,10 +87,10 @@ async def test_save_original_then_terminal_update_collects_without_inspection(
 
     try:
         saved = await case.workspace.execute(
-            "save_conversation_attachment_to_workspace",
+            "copy_file",
             {
                 "event_id": case.source.id,
-                "attachment_index": 0,
+                "attachment": 0,
                 "destination": destination,
             },
             runtime=case.runtime,
@@ -153,11 +153,11 @@ async def test_main_reads_an_uploaded_file_only_after_its_explicit_tool_call(
                     ToolCall(
                         "read-original-file",
                         ToolFunction(
-                            "inspect_conversation_attachment",
+                            "view_file",
                             json.dumps(
                                 {
                                     "event_id": committed[0].event.id,
-                                    "attachment_index": 0,
+                                    "attachment": 0,
                                     "question": "读取这份原附件",
                                 }
                             ),

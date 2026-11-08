@@ -427,9 +427,9 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
     def finish_actual_work(request):
         dispatched_controls.append(current_work_control.get())
         action = (
-            {"action": "accept", "goal": "只核原始来源，完成后结束"}
+            {"action": "start", "goal": "只核原始来源，完成后结束"}
             if len(provider.requests) == first_wakeup_call + 1
-            else {"action": "complete", "result": "原来源已核"}
+            else {"action": "finish", "result": "原来源已核"}
         )
         return ChatResponse(
             "",
@@ -437,7 +437,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
             tool_calls=(
                 ToolCall(
                     f"source-{len(provider.requests)}",
-                    ToolFunction("task_control", json.dumps(action)),
+                    ToolFunction("manage_task", json.dumps(action)),
                 ),
             ),
         )
@@ -613,13 +613,13 @@ async def test_parallel_tool_receipts_stay_before_later_inputs(database, tmp_pat
                     ToolCall(
                         f"slot-{number}",
                         ToolFunction(
-                            "update_short_state",
+                            "set_short_note",
                             json.dumps({"slot": number, "text": f"tool-value-{number}"}),
                         ),
                     ),
                     ToolCall(
                         f"history-{number}",
-                        ToolFunction("query_chat_history", '{"view": "recent"}'),
+                        ToolFunction("read_chat", "{}"),
                     ),
                 ),
             )

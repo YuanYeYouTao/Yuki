@@ -8,11 +8,9 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, text
-from tests.conftest import make_settings
 from tests.support.account_observations import apply_observations, profile_message
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.canonical_ingress import fixture_ingress
-from tests.support.service_dependencies import tool_dependencies
 from tests.support.user_profiles_helpers import inbound, observe_members
 
 from yuki.conversation.canonical_db_models import (
@@ -454,59 +452,3 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
         displayed.available_subjects[0].display_label
         == f"event nickname（Person {event.author_person_id}）"
     )
-
-
-@pytest.mark.asyncio
-async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
-    database: Database,
-) -> None:
-    from yuki.memory.repository import MemoryFactRepository
-    from yuki.memory.service import MemoryFactService
-    from yuki.persistence.repositories import EventLedgerRepository
-    from yuki.services.agent_tools import AgentToolService, ToolRuntime, _ToolFailure
-
-    user_ids = tuple(str(62081 + index) for index in range(8))
-    await observe_members(database, ("1001", *user_ids))
-    for user_id in user_ids:
-        await apply_observations(
-            database,
-            profile_message(user_id=user_id, nickname="共同名字", group_id="2001", group_card=""),
-        )
-    groups = tuple(str(62101 + index) for index in range(8))
-    for group_id in groups:
-        await observe_members(database, ("1001",), group_id=group_id)
-    async with database.immediate_session() as session:
-        for group_id in groups:
-            binding = await session.scalar(
-                select(SpaceBindingModel).where(SpaceBindingModel.external_space_id == group_id)
-            )
-            assert binding is not None
-            space = await session.get(CanonicalSpaceModel, binding.space_id)
-            assert space is not None
-            space.name = "共同群名"
-    tools = AgentToolService(
-        settings=make_settings(database.url),
-        ledger=EventLedgerRepository(database),
-        memories=MemoryFactService(MemoryFactRepository(database)),
-        **tool_dependencies(database, make_settings(database.url)),
-    )
-    runtime = ToolRuntime(
-        inbound=await _canonical_message(
-            database, inbound("choose target", message_id="ambiguity", group_id="2001")
-        ),
-    )
-    people_failure = await tools._resolve_person_memory_selection(
-        {"display_name": "共同名字"}, runtime
-    )
-    group_failure = await tools._read_group_selector(
-        {"space_name": "共同群名"}, runtime, default_current=False
-    )
-    assert isinstance(people_failure, _ToolFailure) and people_failure.code == "ambiguous_person"
-    people_ids, space_ids = await _owners(database)
-    assert {item["person_id"] for item in people_failure.data["candidates"]} == {
-        people_ids[item] for item in user_ids
-    }
-    assert isinstance(group_failure, _ToolFailure) and group_failure.code == "ambiguous_group"
-    assert {item["space_id"] for item in group_failure.data["candidates"]} == {
-        space_ids[item] for item in groups
-    }

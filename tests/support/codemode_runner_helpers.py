@@ -46,8 +46,21 @@ class Backend(StubAgentBackend):
         return name not in {"lookup", "search_chat_history"}
 
     async def execute_call(self, invocation):
+        from yuki.capabilities.results import ToolExecutionResult
+        from yuki.runtime.effect_outcomes import current_result_capture
+
         self.log.append((invocation.call.function.name, invocation.identity.operation_id))
-        return json.dumps({"ok": True, "data": json.loads(invocation.call.function.arguments)})
+        # A real binding publishes its typed outcome and returns the model projection.
+        outcome = ToolExecutionResult(
+            ok=True,
+            data=json.loads(invocation.call.function.arguments),
+            provider_id="fixture",
+            tool_name=invocation.call.function.name,
+        )
+        capture = current_result_capture.get()
+        if capture is not None:
+            capture.outcome = outcome
+        return json.dumps(outcome.model_payload())
 
     def finalize(self, text, runtime):
         return text
@@ -105,4 +118,4 @@ async def runner_env(database, tmp_path, responses):
     return chat, provider, control, runtime, repo
 
 
-ACCEPT = {"action": "accept", "goal": "compose"}
+ACCEPT = {"action": "start", "goal": "compose"}

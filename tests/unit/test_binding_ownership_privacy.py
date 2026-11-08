@@ -187,7 +187,7 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
     assert await env.router.cas_takeover_person(env.person) == "taken"
     receipt = await env.service.execute(
         "send",
-        {"target": {"kind": "person", "target_id": env.person}, "text": "old"},
+        {"target": {"person_id": env.person}, "text": "old"},
         env.context,
     )
     await transfer_account(database, "10001")
@@ -196,24 +196,14 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
         assert await PeopleRepository(database).delete_person_id(env.person)
     else:
         original = await env.service.execute(
-            "query_chat_history",
-            {
-                "view": "recent",
-                "event_kind": "all",
-                "target": {"operation_id": receipt["operation_id"]},
-            },
-            env.context,
+            "read_chat", {"target": {"operation_id": receipt["operation_id"]}}, env.context
         )
-        assert original["source"] == "canonical_ledger"
+        assert original["receipt"]["operation_id"] == receipt["operation_id"]
         assert all("new owner's message" not in item["content"] for item in original["events"])
     env.bot.calls.clear()
     result = await env.service.execute(
-        "query_chat_history",
-        {
-            "view": "recent",
-            "event_kind": "all",
-            "target": {"conversation_id": new_event.canonical_conversation_id},
-        },
+        "read_chat",
+        {"target": {"conversation_id": new_event.canonical_conversation_id}},
         env.context,
     )
     assert [item["event_id"] for item in result["events"]] == [new_event.id]

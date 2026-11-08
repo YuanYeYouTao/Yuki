@@ -59,8 +59,8 @@ async def test_main_history_preview_resumes_at_first_unseen_event(
         evidence["requests"] = [asdict(item) for item in case.provider.requests]
         if len(case.provider.requests) == 1:
             return call(
-                "query_chat_history",
-                {"view": "search", "keyword": "preview-needle", "order": "oldest", "limit": 8},
+                "read_chat",
+                {"query": "preview-needle", "order": "oldest", "limit": 8},
                 "original-history-query",
             )
         reply = next(message for message in reversed(request.messages) if message.role == "tool")
@@ -69,21 +69,20 @@ async def test_main_history_preview_resumes_at_first_unseen_event(
         evidence["model_tool_results"] = observed
         assert len(reply.content) <= 7000
         if len(observed) == 1:
-            assert payload["ok"] and payload["truncated"]
+            assert "error" not in payload and payload["truncated"]
             rows.extend(payload["data"]["events"])
             assert 0 < len(rows) < len(originals)
             continuation = next(item for item in payload["read_more"] if item["path"] == ["events"])
-            assert continuation["offset"] == len(rows)
+            assert continuation["cursor"] == str(len(rows))
         else:
-            assert payload["ok"], payload
-            page = payload["data"]
-            assert page["path"] == ["events"]
-            rows.extend(page["value"])
-            if page["next_offset"] is None:
+            assert "error" not in payload, payload
+            assert payload["path"] == ["events"]
+            rows.extend(payload["value"])
+            if "next_cursor" not in payload:
                 evidence["reconstructed_events"] = rows
                 return "All original history items were read."
-            continuation = {**continuation, "offset": page["next_offset"]}
-        return call("read_tool_artifact", continuation, f"history-page-{len(rows)}")
+            continuation = {**continuation, "cursor": payload["next_cursor"]}
+        return call("read_result", continuation, f"history-page-{len(rows)}")
 
     case.provider._responder = respond
     case.clock.advance(2)

@@ -204,9 +204,7 @@ async def test_real_main_keeps_participation_feedback_out_of_public_history(data
                 tool_calls=(
                     ToolCall(
                         "original-task",
-                        ToolFunction(
-                            "task_control", '{"action":"accept","goal":"inspect evidence"}'
-                        ),
+                        ToolFunction("manage_task", '{"action":"start","goal":"inspect evidence"}'),
                     ),
                 ),
             )

@@ -746,9 +746,10 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     frozen = await contract.definitions()
-    declared = next(item for item in frozen if item.name == "query_chat_history")
+    declared = next(item for item in frozen if item.name == "read_chat")
     Draft202012Validator(declared.parameters).validate({})
-    assert "around" in declared.parameters["properties"]["view"]["enum"]
+    assert "around" in declared.parameters["properties"]
+    assert "view" not in declared.parameters["properties"]
     assert "platform_message_id" not in declared.parameters["properties"]
     event = (
         await seed_scoped_event(
@@ -778,34 +779,24 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
             "80001", "20001", conversation_id=event.canonical_conversation_id
         ),
     )
-    recent = (await tools.execute("query_chat_history", '{"limit":1}', runtime)).model_payload()
-    assert recent["ok"] and len(recent["data"]["events"]) == 1
-    assert recent["data"]["events"][0]["id"] == event.id
+    recent = (await tools.execute("read_chat", '{"limit":1}', runtime)).model_payload()
+    assert "ok" not in recent and len(recent["events"]) == 1
+    assert recent["events"][0]["event_id"] == event.id
     invalid = (
-        await tools.execute(
-            "query_chat_history",
-            '{"view":"around", "platform_message_id":"history-attachment"}',
-            runtime,
-        )
+        await tools.execute("read_chat", '{"platform_message_id":"history-attachment"}', runtime)
     ).model_payload()
-    assert not invalid["ok"]
+    assert invalid["ok"] is False and invalid["error"] == "invalid_arguments"
     around = (
-        await tools.execute(
-            "query_chat_history", json.dumps({"view": "around", "event_id": event.id}), runtime
-        )
+        await tools.execute("read_chat", json.dumps({"around": event.id}), runtime)
     ).model_payload()
-    center = next(row for row in around["data"]["events"] if row["id"] == event.id)
-    assert around["ok"] and center["attachments"] == [
-        {"attachment_index": 1, "segment_index": 1, "kind": "video", "name": "clip.mp4"}
+    center = next(row for row in around["events"] if row["event_id"] == event.id)
+    assert center["attachments"] == [
+        {"attachment": 1, "segment_index": 1, "kind": "video", "name": "clip.mp4"}
     ]
-    searched = (
-        await tools.execute("query_chat_history", '{"view":"search", "keyword":"release"}', runtime)
-    ).model_payload()
-    assert searched["ok"] and [row["id"] for row in searched["data"]["events"]] == [event.id]
-    metadata = (
-        await tools.execute("query_chat_history", '{"view":"search", "has":["video"]}', runtime)
-    ).model_payload()
-    assert metadata["ok"] and metadata["data"]["events"][0]["id"] == event.id
+    searched = (await tools.execute("read_chat", '{"query":"release"}', runtime)).model_payload()
+    assert [row["event_id"] for row in searched["events"]] == [event.id]
+    metadata = (await tools.execute("read_chat", '{"has":["video"]}', runtime)).model_payload()
+    assert metadata["events"][0]["event_id"] == event.id
     assert env.bot.calls == []
 
 

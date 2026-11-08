@@ -4,6 +4,7 @@ from typing import Any
 
 
 def is_execution(name: str, args: dict[str, Any]) -> bool:
-    return name == "terminal_exec" or (
-        name == "external_agent" and args.get("action") in {"prompt", "queue"}
+    """``name`` is a current tool; historical readers pass it via ``recorded_tool``."""
+    return name == "run_command" or (
+        name == "use_coding_agent" and args.get("action") in {"prompt", "queue"}
     )

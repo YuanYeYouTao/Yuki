@@ -78,8 +78,8 @@ async def test_legacy_image_webm_current_cache_history_share_real_original(
     )
     assert path.suffix == ".webm" and path.read_bytes() == content
     history = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "看之前的贴纸"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "看之前的贴纸"},
         runtime=case.runtime,
         request_id="legacy-webm-history",
     )
@@ -122,8 +122,8 @@ async def test_legacy_image_webm_reply_uses_real_frames_and_one_original_downloa
         prepared_media=inbound.reply_attachments[0].prepared_media,
     )
     result = await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "看引用原视频"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "看引用原视频"},
         runtime=case.runtime,
         request_id="explicit-legacy-webm-reply",
     )

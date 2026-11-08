@@ -399,9 +399,6 @@ class AutomationService:
         runs = await self._repository.run_history(automation_id, limit=limit, offset=offset)
         return row, await read_run_deliveries(self._repository._database, runs)
 
-    def current_time(self) -> dict[str, str]:
-        return self._time.current_default().to_model_dict()
-
     async def _resolve_creator_person(
         self,
         person_id: str,

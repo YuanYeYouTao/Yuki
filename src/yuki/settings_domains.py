@@ -124,8 +124,7 @@ class ConversationSettings(DomainSettings):
     conversation_autonomous_presence_window_seconds: int = Field(gt=0)
     conversation_interrupt_autonomous_on_new_message: bool
     conversation_effect_gate_timeout_seconds: float = Field(gt=0)
-    conversation_history_around_before: int = Field(ge=0)
-    conversation_history_around_after: int = Field(ge=0)
+    conversation_history_around_context: int = Field(ge=0)
 
 
 class PluginSettings(DomainSettings):

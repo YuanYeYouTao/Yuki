@@ -17,7 +17,7 @@ from tests.support.codemode_cases import (
     requires_worker,
 )
 from tests.support.work_effect_results_helpers import execute
-from tests.support.work_runner_helpers import case
+from tests.support.work_runner_helpers import case, derive_business_child
 from tests.support.work_session import WorkSession
 
 from yuki.capabilities.results import ToolExecutionResult
@@ -57,9 +57,12 @@ class FakeRun:
     """Host-only model of two sequential awaited wrappers: control then a write."""
 
     def __init__(self, arguments=None, calls=None):
-        self.arguments = arguments or {"action": "need_input", "reason": "Which file?"}
+        self.arguments = arguments or {"for": [{"message": True}]}
         self.calls = calls or [
-            ("yuki_task_control", self.arguments),
+            (
+                "yuki_wait" if "for" in self.arguments else "yuki_manage_task",
+                self.arguments,
+            ),
             ("yuki_workspace_write", {"path": "after-control"}),
         ]
         self.index = 0
@@ -127,24 +130,21 @@ class FakeEngine:
 @pytest.mark.parametrize(
     "action,ending",
     [
-        ("need_input", "waiting_user"),
         ("wait", "waiting_external"),
-        ("complete", "completed"),
+        ("finish", "completed"),
         ("fail", "failed"),
         ("cancel", "cancelled"),
-        ("accept", None),
+        ("start", None),
     ],
 )
 async def test_control_receipt_crash_restores_decision_and_valid_tail(
     database, tmp_path, monkeypatch, native, action, ending
 ):
     env = await environment(database, tmp_path)
-    args = {"action": action}
-    if action in {"need_input", "fail"}:
-        args["reason"] = "Which file?"
-    if action == "wait":
-        args["conditions"] = [{"kind": "time_due", "after_seconds": 60}]
-    if action == "accept":
+    args = {"for": [{"seconds": 60}]} if action == "wait" else {"action": action}
+    if action == "fail":
+        args["text"] = "Which file?"
+    if action == "start":
         from sqlalchemy import select
 
         from yuki.persistence.models import ChatEventModel
@@ -170,7 +170,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
         env.host.engine_factory = lambda *_args: FakeEngine(args)
     outer = outer_call(
         env,
-        f"await yuki_task_control({args!r})\n"
+        f"await {'yuki_wait' if action == 'wait' else 'yuki_manage_task'}({args!r})\n"
         "await yuki_workspace_write({'path':'after-control'})",
     )
     env.owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
@@ -181,7 +181,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
     async def save_then_crash(self, key, state, receipt, **kwargs):
         nonlocal crashed
         await original(self, key, state, receipt, **kwargs)
-        if receipt.get("outcome", {}).get("tool") == "task_control" and not crashed:
+        if receipt.get("outcome", {}).get("tool") in {"manage_task", "wait"} and not crashed:
             assert receipt["outcome"]["ok"], receipt
             crashed = True
             raise asyncio.CancelledError("simulated crash after child control commit")
@@ -221,7 +221,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
         assert result["stop_reason"] == "admission_closed"
     else:
         assert result["status"] == "completed"
-    if action == "accept":
+    if action == "start":
         checkpoint = json.loads(restored_control.current["checkpoint_json"])
         assert restored_control.handoff_work_id == checkpoint["handoff_work_id"]
         assert restored_control.handoff_work_id != restored_control.current["id"]
@@ -250,15 +250,15 @@ async def test_pending_owned_execution_allows_code_wait_condition(database, tmp_
         ),
     )
 
-    args = {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 60}]}
-    outer = outer_call(env, "await yuki_task_control(...)")
+    args = {"for": [{"seconds": 60}]}
+    outer = outer_call(env, "await yuki_wait(...)")
     driver = CodeModeDriver(env.host, outer)
     child = _Child(
         "audit-wait-control",
         0,
         0,
         0,
-        "task_control",
+        "wait",
         json.dumps(args),
         ChildClass("control", False, False),
     )
@@ -273,7 +273,9 @@ async def test_pending_owned_execution_allows_code_wait_condition(database, tmp_
     # Waiting is a real persisted decision; it does not close the original VM.
     await driver._dispatch_child(_State(outer.identity.operation_id, 0), child)
     assert control.ending == "waiting_external"
-    assert json.loads(child.receipt)["ok"] is True, "Code Mode must retain direct wait semantics"
+    assert json.loads(child.receipt).get("ok") is not False, (
+        "Code Mode must retain direct wait semantics"
+    )
 
 
 @pytest.mark.parametrize(
@@ -286,17 +288,21 @@ async def test_control_of_other_target_keeps_current_program(
     database, tmp_path, native, action, state
 ):
     env = await environment(database, tmp_path)
-    target = json.loads(
-        await env.control.execute(
-            "task_control", {"action": "derive", "goal": "other target"}, "derive"
+    target = (
+        await derive_business_child(
+            env.control.repository,
+            env.control.lease,
+            env.control.current["id"],
+            "derive",
+            "other target",
         )
-    )["derived_work_id"]
+    )["id"]
     if action == "resume":
         row = await env.control.repository.get(target)
         await env.control.repository.transition(
             env.control.lease, target, row["revision"], "suspended"
         )
-    args = {"action": action, "work_id": target, "reason": "target only"}
+    args = {"action": action, "id": target, "text": "target only"}
     if not native:
         env.host.worker = SimpleNamespace(execution_digest=lambda: "fake-engine-for-audit")
         env.host.engine_factory = lambda *_args: FakeEngine(args)
@@ -305,7 +311,7 @@ async def test_control_of_other_target_keeps_current_program(
             env.host,
             outer_call(
                 env,
-                f"c = await yuki_task_control({args!r})\n"
+                f"c = await yuki_manage_task({args!r})\n"
                 "await yuki_workspace_write({'path':'after-control'})\n"
                 "[c['ok'], 6 * 7]",
             ),
@@ -328,8 +334,8 @@ async def test_real_current_revocation_after_completion_proposal_stops_tail(
 ):
     env = await environment(database, tmp_path)
     calls = [
-        ("yuki_task_control", {"action": "complete"}),
-        ("yuki_task_control", {"action": action, "reason": "revoked original execution"}),
+        ("yuki_manage_task", {"action": "finish"}),
+        ("yuki_manage_task", {"action": action, "text": "revoked original execution"}),
         ("yuki_workspace_write", {"path": "revoked-tail"}),
     ]
     if not native:
@@ -358,7 +364,7 @@ async def test_completion_proposal_survives_segment_yield_until_original_tail_se
     env.host.tool_limit = 1
     calls = [
         ("yuki_lookup", {"q": "before completion"}),
-        ("yuki_task_control", {"action": "complete", "result": "original decision"}),
+        ("yuki_manage_task", {"action": "finish", "result": "original decision"}),
         ("yuki_workspace_write", {"path": "next segment"}),
     ]
     if not native:
@@ -420,9 +426,9 @@ async def test_revoked_original_work_settles_pending_program_without_reopening_v
     # This actual current-work decision was made outside the saved program;
     # there is no old code_stop child to infer it from.
     revoked = json.loads(
-        await env.control.execute("task_control", {"action": action}, "revoke-original-work")
+        await env.control.execute("manage_task", {"action": action}, "revoke-original-work")
     )
-    assert revoked["ok"]
+    assert revoked.get("ok") is not False
     env.host.tool_limit = 32
     env.host.engine_factory = lambda *_args: pytest.fail("revoked execution reopened its VM")
     body = json.loads(await CodeModeDriver(env.host, outer).resume())
@@ -486,7 +492,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     )
     calls = [
         ("yuki_lookup", {"q": "first"}),
-        ("yuki_subagent_control", {"action": "message", "text": "Which artifact?", "ask": True}),
+        ("yuki_message_task", {"text": "Which artifact?", "ask": True}),
         ("yuki_workspace_write", {"path": "after question"}),
     ]
     if not native:
@@ -495,11 +501,10 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     outer = outer_call(
         env,
         "await yuki_lookup({'q':'first'})\n"
-        "q = await yuki_subagent_control({'action':'message',"
-        "'text':'Which artifact?','ask':True})\n"
+        "q = await yuki_message_task({'text':'Which artifact?','ask':True})\n"
         "await yuki_workspace_write({'path':'after question'})\n"
         "print('child tail completed')\n"
-        "[q['ok'], q['data']['waiting_parent'], 6 * 7]",
+        "[q['ok'], q['data']['status'] == 'waiting_parent', 6 * 7]",
     )
     owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
     await owner.save("response", (outer.call,))
@@ -510,7 +515,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
         async def save_then_crash(self, key, state, receipt, **kwargs):
             nonlocal crashed
             await original(self, key, state, receipt, **kwargs)
-            if receipt.get("outcome", {}).get("tool") == "subagent_control" and not crashed:
+            if receipt.get("outcome", {}).get("tool") == "message_task" and not crashed:
                 crashed = True
                 raise asyncio.CancelledError("crash after durable child question")
 
@@ -558,7 +563,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     questions = [
         row
         for row in rows.values()
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "subagent_control"
+        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "message_task"
     ]
     assert len(questions) == 1 and tools == 2
     _, parent_tools, root = await effect_rows(database, parent_env.control.current["id"])
@@ -664,7 +669,7 @@ async def test_original_code_stop_and_changed_api_never_reopen_program(
         env.host.api = replace(env.host.api, api_revision="yuki.codemode.api.v1")
     outer = outer_call(
         env,
-        "await yuki_task_control({'action':'need_input','reason':'Which file?'})\n"
+        "await yuki_wait({'for':[{'message':True}]})\n"
         "await yuki_workspace_write({'path':'after-control'})",
     )
     env.owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
@@ -674,7 +679,7 @@ async def test_original_code_stop_and_changed_api_never_reopen_program(
 
     async def save_original_stop_then_crash(self, key, state, receipt, **kwargs):
         nonlocal crashed
-        if receipt.get("outcome", {}).get("tool") == "task_control" and not crashed:
+        if receipt.get("outcome", {}).get("tool") == "wait" and not crashed:
             receipt = {
                 **receipt,
                 "code_stop": {
@@ -712,7 +717,7 @@ async def test_original_code_stop_and_changed_api_never_reopen_program(
     original_control = next(
         row["receipt_json"]
         for row in saved_rows.values()
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "task_control"
+        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "wait"
     )
     if changed_api:
         env.host.api = replace(env.host.api, api_revision="yuki.codemode.api.v2")

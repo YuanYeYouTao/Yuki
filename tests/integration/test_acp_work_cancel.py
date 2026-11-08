@@ -37,8 +37,8 @@ async def prepare_resumable_work(env, *, queue_input=True):
     request_id = str(uuid4())
     env.provider._responder = scripted(
         [
-            ("task_control", {"action": "accept", "goal": "Preserve original ACP cancellation"}),
-            ("task_control", {"action": "need_input", "reason": "Wait for the city"}),
+            ("manage_task", {"action": "start", "goal": "Preserve original ACP cancellation"}),
+            ("wait", {"for": [{"message": True}]}),
         ]
     )
     submitted = await env.http.post(
@@ -60,7 +60,7 @@ async def prepare_resumable_work(env, *, queue_input=True):
     env.provider._responder = scripted(
         [
             ("send", {"text": "Already claimed ACP result"}),
-            ("task_control", {"action": "complete", "result": "Done"}),
+            ("manage_task", {"action": "finish", "result": "Done"}),
         ]
     )
     return session, request_id, work_id

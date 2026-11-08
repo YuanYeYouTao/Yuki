@@ -1,6 +1,6 @@
 # 聊天记录读取
 
-Main 使用 `query_chat_history(view=recent/search/around)`。Social、个人入口、Client、Plugin
+Main 使用 `read_chat`（2026-11-07 起取代 query_chat_history 的 recent/search/around 三个视图）。Social、个人入口、Client、Plugin
 共用 `EventLedgerRepository.query_history/history_around` 和原事件事实提取，各接口只组自己的信封。
 查询使用同一只读快照，没有 DML；原作者、Conversation、授权与已发生回执沿共同开发约束。
 
@@ -11,50 +11,52 @@ Main 使用 `query_chat_history(view=recent/search/around)`。Social、个人入
 当前 actor、委托范围、插件批准、keeper 及隐私沿原合同；每条结果保留原 Conversation、平台和作者来源。
 `/ai new` 只清理聊天上下文，不删除永久账本或截断显式查询；自动上下文的 starts_after、
 FrozenFragments 与 generation 继续沿原上下文和原执行合同管理。
-recent 未指定 target/source 时浏览当前 Conversation；仅给 source 时浏览所选来源集合。
-search 未指定 target 时一次检索所有当前获准的已入账 Conversation，不按平台名单枚举。
-source.platform 为真实平台标识，source.scope 可选 private/group；所有来源条件与 target 取交集，
-未知或无交集时返回空结果，不回退到当前会话或全局。空 source 等同省略。
+未给 target 且不带筛选时浏览当前 Conversation；带 query、author（Person ID 或 `yuki`）、has、platform、
+scope、since 或 until 任一筛选时，未给 target 即一次检索所有当前获准的已入账 Conversation，不按平台名单枚举。
+platform 为真实平台标识，scope 可选 private/group；所有来源条件与 target 取交集，
+未知或无交集时返回空结果，不回退到当前会话或全局。target 是恰含一个内部 ID 的对象
+（person_id／space_id／conversation_id／binding_id／operation_id）。
 显式 Person、Space 或 Binding 可选择多个真实入口，直接在该集合内
-查询，不要求模型逐个挑选候选。around 未指定 target 时由内部 event_id 定位原 Conversation。
-结果的 sources 给出可读会话名与来源目录；每条事件保 conversation_id、platform、scope 和 thread_id。
+查询，不要求模型逐个挑选候选。around 由内部事件 ID 定位原 Conversation。
+结果的 sources 给出可读会话名与来源目录（conversation_id、platform、scope、name、thread_id 及主体 ID）；
+事件只保留一套名字、不输出 null，结果跨多个会话时才逐条带 conversation_id。只返回消息事件，插件外部事件不在
+模型结果中；附件以 `attachment` 标序号。
 跨入口命中作为有来源的工具证据返回，不拼接各 Conversation 的自动上下文。
 人物筛选使用原作者 Person 的当前同人族；账号转移、改名、解绑或无账号不改写旧作者。
 
-`find_contacts` 以 kind=person/space 查询当前人物或群主体及其可联系入口，使用
-target_id、subject_ref 或 display_name 定位；current_speaker、mentioned_user 和
-replied_message_author 等原人物引用继续可用。`find_conversations` 平铺真实 Conversation，提供平台、
-scope、话题、原 Binding/Presence ID 及各自阶段状态。来源按原入口事实读取，legacy 缺失时保未知，
+`find_contacts(name?, target?, type?, platform?, limit?, cursor?)` 查询人物（type=person）或群（type=group）
+主体，每项返回当前可联系入口（binding_id、platform）与真实历史 Conversation（原 find_conversations 已并入）。
+name 按名称包含查询，已知内部 ID 用 target 直接读取（停用的人物和已结束的入口仍可发现）；
+原 subject_ref、current_speaker 等人物引用选择器已删除。来源按原入口事实读取，legacy 缺失时保未知，
 不按今日主动发送路由猜测。历史入口不要求目标现在启用、Binding active 或曾有真人入站；
 当前 actor、实际委托与插件批准仍在读取处核验，发送沿自己的当前资格执行。
-目录以内部 ID 升序分页，limit 为缺省页大小而非总数上限，cursor 继续取 N+1 页；来源筛选先于分页。
-两项查询均保留 source、display_name、limit 和 cursor；历史目录的 target 可用一个内部
-Person/Space/Conversation/Binding/operation ID。名称查询没有128字符帽，已知目标可直接使用内部 ID；
-不要求先查询主体或选择平台、群私聊和话题层级。两个工具没有 view 切换，不注册旧 entries 执行别名。
+目录先人物后群、各以内部 ID 升序分页，同一不透明 cursor 续页；limit 为缺省页大小而非总数上限；来源筛选先于分页。
+委托读取的 `read_target_id` 只开放该主体，其他目标返回 `history_scope_denied`。
+不要求先查询主体或选择平台、群私聊和话题层级。没有 view 切换，不注册旧执行别名。
 
-`operation_id` 沿原发送回执定位。`SocialOperation.event_id` 是存活 FK，原事件和 Conversation 另存永久事实；
+`target.operation_id` 沿原发送回执定位。`SocialOperation.event_id` 是存活 FK，原事件和 Conversation 另存永久事实；
 原件删除后返回 missing 与原效果状态，不能用 recent 或后来消息代替。回执继续核原来源归属，
 另传锚点按其真实 Conversation 和当前读取授权定位，不借回执扩大委托范围。
 
-单会话与跨会话页均按内部整数事件 ID 排序，用 N+1 真实命中证明 has_more，next_cursor 指最后返回的命中。
-recent 向较小 ID、oldest 向较大 ID 前进；删除页尾不妨碍续读。页间实时变化可改变后页，不另设
+单会话与跨会话页均按内部整数事件 ID 排序，用 N+1 真实命中证明还有更多，next_cursor 指最后返回的命中，
+没有更多时省略。order=recent 向较小 ID、oldest 向较大 ID 前进；删除页尾不妨碍续读。页间实时变化可改变后页，不另设
 签名、epoch 或静态导出协议。SQLite 原生 AUTOINCREMENT 保证事件 ID 在删末尾或清空后仍不复用。
-limit 为正整数，没有 50/100 条经验上限；before/after 配置只作缺省值，不截断显式请求。
+limit 为正整数，没有 50/100 条经验上限；`CONVERSATION_HISTORY_AROUND_CONTEXT`（默认 6）只作 around 邻文缺省值，不截断显式请求。
 
-邻文沿各锚点原 Conversation、event_kind 和读取授权，按锚点 ID 分别有界读取。邻文不继承
-关键词、作者、日期和媒体筛选；与 matches 去重后标记 context，不扫描远隔锚点之间的整段。
-recent/search 的 context_before/context_after 邻文默认0；已核实结果不重查中心，
+邻文沿各锚点原 Conversation 和读取授权，按锚点 ID 分别有界读取。邻文不继承
+关键词、作者、日期和媒体筛选；与匹配结果去重后标记 context，不扫描远隔锚点之间的整段。
+列表与检索的 `context` 邻文默认 0，给出时前后各取该条数；已核实结果不重查中心，
 两侧直接读取所需数量，不为侧页多探测N+1。
-around 先定位实际中心，不使用搜索的关键词/作者/日期/附件筛选，中心仍与 target/source 取交集。
-around 只用 before/after 选择邻文数量，按事件 ID 升序呈现；不应用 cursor/limit/order，
-结果不回显未采用的日期条件，order 如实报告 oldest。recent/search 的筛选和原游标语义不变。
-Artifact 的 offset 只翻阅一次调用已经保存的载荷，聊天 cursor 才查询下一批原事件。
+around 先定位实际中心，中心仍与 target 取交集；around 只配合 target 与 context，加其他筛选、
+cursor、limit 或 order 返回 `around_with_filters`；结果按事件 ID 升序呈现。
+`read_result` 的 cursor 只翻阅一次调用已经保存的载荷，聊天 cursor 才查询下一批原事件。
 
 ## 字面匹配与索引
 
 完整字段按 NFKC、casefold、NFKC、Unicode 空白折叠处理；基础表示与完整 OpenCC t2s 表示
 分别匹配。正文和每个 current ASR 片段独立，不匹配回复 ASR、JSON 键或拼接片段。
-all/any/phrase 与 exclude 均为字面语义，最终精确核验。原文、原提及、两种时间和稳定附件编号
+模型的 `query` 按空白拆词、全部命中（原 match=all 的缺省语义；模型工具不再提供 match、exclude 与
+event_kind）；共用内核的 all/any/phrase 与 exclude 均为字面语义，最终精确核验。原文、原提及、两种时间和稳定附件编号
 原样呈现；ASR-only 命中返回实际转录证据。附件过期不删消息元数据，也不重新下载或调用模型。
 
 唯一 `chat_history_fts` 使用 Conversation 前缀的完整 1/2/3-gram、contentless-delete、detail=none。

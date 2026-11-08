@@ -172,24 +172,6 @@ class WorkWaitRepository:
                 **({"work": managed} if managed is not None else {}),
             }
 
-    async def cancel(self, lease: WorkLease, work_id: str) -> bool:
-        async with self.repository.database.immediate_session() as session:
-            await self.repository._assert_lease(session, lease)
-            changed = (
-                await session.execute(
-                    update(waits)
-                    .where(
-                        waits.c.work_id == work_id,
-                        waits.c.conversation_id == lease.conversation_id,
-                        waits.c.generation == lease.generation,
-                        waits.c.status == "active",
-                    )
-                    .values(status="cancelled", updated=time.time())
-                    .returning(waits.c.id)
-                )
-            ).first()
-            return changed is not None
-
     async def register(
         self,
         lease: WorkLease,

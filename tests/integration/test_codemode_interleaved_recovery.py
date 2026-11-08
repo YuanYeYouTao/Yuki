@@ -53,9 +53,9 @@ async def test_pending_code_interleave(
         n = len(provider.requests)
         if n in (1, 5):
             return _tool(
-                "task_control",
+                "manage_task",
                 dict(
-                    action="accept",
+                    action="start",
                     goal="W1" if n == 1 else "W2",
                 ),
                 "accept-" + str(n),
@@ -64,11 +64,11 @@ async def test_pending_code_interleave(
             return _tool(
                 "execute_code",
                 {
-                    "code": "await yuki_task_control({'action': 'update', 'context_note': "
-                    "{'version': 1, 'facts': [{'text': '" + MARK + "', 'refs': ['goal']}], "
+                    "code": "await yuki_manage_task({'action': 'update', 'note': "
+                    "{'facts': [{'text': '" + MARK + "', 'refs': ['goal']}], "
                     "'unresolved': [], 'next_steps': []}})\n"
-                    "await yuki_query_chat_history({'view': 'search', 'query': 'inert-first'})\n"
-                    "await yuki_query_chat_history({'view': 'search', 'query': 'inert-second'})\n"
+                    "await yuki_read_chat({'query': 'inert-first'})\n"
+                    "await yuki_read_chat({'query': 'inert-second'})\n"
                     "'PROGRAM_RESULT_' + 'EXACTLY_ONCE'",
                     "inputs": {},
                 },
@@ -78,11 +78,10 @@ async def test_pending_code_interleave(
             return _tool("send", {"text": "ordinary response"}, "ordinary-send")
         if n == 6:
             return _tool(
-                "task_control",
+                "manage_task",
                 dict(
                     action="update",
-                    context_note=dict(
-                        version=1,
+                    note=dict(
                         facts=[dict(text=OTHER, refs=["goal"])],
                         unresolved=[],
                         next_steps=[],
@@ -92,7 +91,7 @@ async def test_pending_code_interleave(
             )
         if n == 7:
             return _tool(
-                "task_control",
+                "manage_task",
                 {"action": "update"},
                 "post-resume-safe-control",
             )
@@ -114,19 +113,18 @@ async def test_pending_code_interleave(
 
         calls = [
             (
-                "yuki_task_control",
+                "yuki_manage_task",
                 {
                     "action": "update",
-                    "context_note": {
-                        "version": 1,
+                    "note": {
                         "facts": [{"text": MARK, "refs": ["goal"]}],
                         "unresolved": [],
                         "next_steps": [],
                     },
                 },
             ),
-            ("yuki_query_chat_history", {"view": "search", "query": "inert-first"}),
-            ("yuki_query_chat_history", {"view": "search", "query": "inert-second"}),
+            ("yuki_read_chat", {"query": "inert-first"}),
+            ("yuki_read_chat", {"query": "inert-second"}),
         ]
         monkeypatch.setattr(FakeRun, "event", fake_event)
 
@@ -256,8 +254,8 @@ async def test_pending_code_interleave(
         await snap("original_work_resumed")
         assert len(wires) == 8
         assert domain.log == [
-            ("query_chat_history", {"view": "search", "query": "inert-first"}),
-            ("query_chat_history", {"view": "search", "query": "inert-second"}),
+            ("read_chat", {"query": "inert-first"}),
+            ("read_chat", {"query": "inert-second"}),
         ]
         # A neutral turn may use current public history, but does not publish
         # another Work's private note into ordinary input.

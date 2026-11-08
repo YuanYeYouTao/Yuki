@@ -38,7 +38,7 @@ async def test_new_memory_service_allows_distinct_mutations_and_preserves_effect
     calls = []
 
     async def domain(name, arguments):
-        assert name == "memory_change"
+        assert name == "save_memory"
         # No in-memory lock/session/authority state is shared between activations.
         service, _, _, _ = _service(database)
         token = current_work_control.set(owner.control)
@@ -52,7 +52,7 @@ async def test_new_memory_service_allows_distinct_mutations_and_preserves_effect
         return json.dumps({"ok": result.ok, "data": asdict(result)})
 
     env = build_host(owner, domain)
-    first_code = "await yuki_memory_change(" + repr(claim("喜欢茶", "preference:tea")) + ")"
+    first_code = "await yuki_save_memory(" + repr(claim("喜欢茶", "preference:tea")) + ")"
     first, outer = await run_code(env, first_code)
     assert first["status"] == "completed"
     assert calls[-1].ok and calls[-1].new_fact_id is not None
@@ -69,7 +69,7 @@ async def test_new_memory_service_allows_distinct_mutations_and_preserves_effect
     resumed = build_host(owner, domain)
     second, _ = await run_code(
         resumed,
-        "await yuki_memory_change(" + repr(claim("喜欢咖啡", "preference:coffee")) + ")",
+        "await yuki_save_memory(" + repr(claim("喜欢咖啡", "preference:coffee")) + ")",
         call_id="code-after-recovery",
     )
     assert second["status"] == "completed"

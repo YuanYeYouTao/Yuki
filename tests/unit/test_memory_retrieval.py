@@ -306,8 +306,8 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     intent = parse_memory_tool_intent(
         {
             "query": "camera",
-            "start_at": "2026-09-09T00:00:00+08:00",
-            "end_at": "2026-09-10T00:00:00+08:00",
+            "since": "2026-09-09T00:00:00+08:00",
+            "until": "2026-09-10T00:00:00+08:00",
         }
     )
     query = _query("camera", _target("1001"), limit=1).model_copy(
@@ -370,11 +370,11 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     assert parse_memory_tool_intent({}).mode.value == "overview"
     assert parse_memory_tool_intent({"query": "camera"}).mode.value == "hybrid"
     for invalid in (
-        {"purpose": "invented"},
-        {"mode": "none"},
-        {"start_at": "2026-09-09"},
-        {"start_at": "invalid"},
-        {"start_at": "2026-09-10T00:00:00Z", "end_at": "2026-09-09T00:00:00Z"},
+        {"since": "2026-09-09"},
+        {"since": "invalid"},
+        {"until": 20260909},
+        {"since": "2026-09-10T00:00:00Z", "until": "2026-09-09T00:00:00Z"},
+        {"since": "2026-09-10T00:00:00Z", "until": "2026-09-10T00:00:00Z"},
     ):
         with pytest.raises(ValueError):
             parse_memory_tool_intent(invalid)

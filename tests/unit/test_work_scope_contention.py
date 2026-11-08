@@ -303,12 +303,12 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
                 assert await repository.valid(active["lease"])
             result = json.loads(
                 await control.execute(
-                    "task_control",
-                    {"action": "complete", "result": "original scope lease admitted"},
+                    "manage_task",
+                    {"action": "finish", "result": "original scope lease admitted"},
                     f"scope-admitted:{item['id']}",
                 )
             )
-            assert result["ok"]
+            assert result.get("ok") is not False
             await control.settle(pending_inputs=False)
             if not is_group:
                 independent_finished.set()

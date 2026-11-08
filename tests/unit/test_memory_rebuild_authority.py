@@ -1,4 +1,3 @@
-
 """A historical rebuild keeps paid work while its original Person loses authorization."""
 
 import asyncio

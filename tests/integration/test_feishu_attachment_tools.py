@@ -31,9 +31,7 @@ from yuki.services.media_resolver import MediaResolver
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
-@pytest.mark.parametrize(
-    "tool", ["inspect_conversation_attachment", "save_conversation_attachment_to_workspace"]
-)
+@pytest.mark.parametrize("tool", ["view_file", "copy_file"])
 @pytest.mark.parametrize("cached,offline", [(False, False), (True, True), (False, True)])
 async def test_feishu_tools_resolve_original_app_and_cached_media(
     database, tmp_path, tool, cached, offline
@@ -199,7 +197,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
                 registry.disconnect(original)
             arguments = {
                 "event_id": source.id,
-                "attachment_index": 0,
+                "attachment": 0,
                 "question": "查看原图",
                 "destination": "original.png",
             }
@@ -211,7 +209,7 @@ async def test_feishu_tools_resolve_original_app_and_cached_media(
             result = await workspace.execute(tool, arguments, runtime=runtime, request_id=tool)
             assert downloads == ([] if cached else ["Bearer token-cli_a"])
             assert "img_original" not in str(result) and "fixture-secret" not in str(result)
-            if tool == "inspect_conversation_attachment":
+            if tool == "view_file":
                 assert result.images and result["sha256"] == hashlib.sha256(picture).hexdigest()
             else:
                 assert result["version"] == hashlib.sha256(picture).hexdigest()

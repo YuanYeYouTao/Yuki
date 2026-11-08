@@ -15,9 +15,7 @@ async def test_overlong_message_is_reported_before_work_staging(
     database, tmp_path, monkeypatch, active_work
 ):
     provider = FakeLLMProvider(
-        lambda request: _tool(
-            "task_control", {"action": "accept", "goal": "original work"}, "accept"
-        )
+        lambda request: _tool("manage_task", {"action": "start", "goal": "original work"}, "accept")
     )
     _, harness, chat, _, message = await _scene(database, tmp_path, provider, yield_after=1)
     if active_work:

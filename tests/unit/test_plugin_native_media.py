@@ -225,9 +225,9 @@ async def test_media_selection_requires_explicit_permission_without_losing_resul
     env = await environment(database, tmp_path, permissions=(PluginPermission.TOOL_REGISTER,))
     result = await env.adapter.execute(env.name, "{}", env.runtime)
     payload = result.model_payload()
-    assert payload["ok"] is True and payload["data"]["selected"] is True
-    assert payload["data"]["media_error"] == "PluginPermissionError"
-    assert payload["data"]["media_read"] is False and not result.images
+    assert "error" not in payload and payload["selected"] is True
+    assert payload["media_error"] == "PluginPermissionError"
+    assert payload["media_read"] is False and not result.images
     assert len(env.calls) == 1
 
 
@@ -325,8 +325,8 @@ async def test_foreign_owned_handle_and_fake_json_never_grant_read(database, tmp
     env = await environment(database, tmp_path, handler=select_foreign)
     result = await env.adapter.execute(env.name, "{}", env.runtime)
     assert not result.images
-    assert result.model_payload()["data"]["media_error"] == "PluginPermissionError"
-    assert result.model_payload()["data"]["media_read"] is False
+    assert result.model_payload()["media_error"] == "PluginPermissionError"
+    assert result.model_payload()["media_read"] is False
     assert len(env.calls) == 1
 
     async def fake_json(context, handle):

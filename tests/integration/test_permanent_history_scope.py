@@ -82,29 +82,30 @@ async def test_main_searches_all_permanent_platforms_and_threads_with_one_cursor
     env, entries = permanent_entries
     expected = {entry.event.id: entry for entry in entries}
     observed = []
-    request = {"view": "search", "keyword": "雷达站", "limit": 2, "order": order}
+    request = {"query": "雷达站", "limit": 2, "order": order}
     while True:
-        result = await env.service.execute("query_chat_history", request, env.context)
-        assert result["source"] == "canonical_ledger" and result["coverage"] == "observed"
+        result = await env.service.execute("read_chat", request, env.context)
         sources = {source["conversation_id"]: source for source in result["sources"]}
         for row in result["events"]:
             entry = expected[row["event_id"]]
             observed.append(row["event_id"])
-            assert row["conversation_id"] == entry.event.canonical_conversation_id
+            source = sources[entry.event.canonical_conversation_id]
+            if len(sources) > 1:
+                assert row["conversation_id"] == entry.event.canonical_conversation_id
+            else:
+                assert "conversation_id" not in row
             assert row["person_id"] == entry.event.author_person_id
-            assert row["platform"] == entry.scope.platform
-            assert row["scope"] == entry.scope.scope_type.value
-            assert row["thread_id"] == entry.scope.thread_id
-            assert sources[row["conversation_id"]]["platform"] == entry.scope.platform
+            assert source["platform"] == entry.scope.platform
+            assert source["scope"] == entry.scope.scope_type.value
+            assert source.get("thread_id") == entry.scope.thread_id
             expected_name = (
                 f"{entry.scope.platform} friend"
                 if entry.scope.scope_type.value == "private"
                 else "雷达讨论"
             )
-            assert row["conversation_name"] == expected_name
-            assert sources[row["conversation_id"]]["conversation_name"] == expected_name
+            assert source["name"] == expected_name
         assert set(result.source_event_ids) <= set(expected)
-        if not result["has_more"]:
+        if "next_cursor" not in result:
             break
         request = {**request, "cursor": result["next_cursor"]}
     assert observed == sorted(expected, reverse=order == "recent")
@@ -120,8 +121,8 @@ async def test_owner_selectors_combine_entries_and_around_finds_original_convers
         ({"space_id": env.space}, entries[3:]),
     ):
         result = await env.service.execute(
-            "query_chat_history",
-            {"view": "search", "keyword": "雷达站", "target": target},
+            "read_chat",
+            {"query": "雷达站", "target": target},
             env.context,
         )
         assert [row["event_id"] for row in result["events"]] == sorted(
@@ -129,13 +130,13 @@ async def test_owner_selectors_combine_entries_and_around_finds_original_convers
         )
     original = entries[1].event
     around = await env.service.execute(
-        "query_chat_history",
-        {"view": "around", "event_id": original.id, "before": 2, "after": 2},
+        "read_chat",
+        {"around": original.id, "context": 2},
         env.context,
     )
     assert [row["event_id"] for row in around["events"]] == [original.id]
-    assert around["events"][0]["platform"] == "telegram"
-    recent = await env.service.execute("query_chat_history", {"view": "recent"}, env.context)
+    assert around["sources"][0]["platform"] == "telegram"
+    recent = await env.service.execute("read_chat", {}, env.context)
     assert [row["content"] for row in recent["events"]] == ["hello"]
     assert env.bot.calls == []
 
@@ -156,15 +157,12 @@ async def test_global_search_keeps_real_delegated_conversation_scope(permanent_e
         ToolInvocationContext(runtime, invocation_key="delegated-search")
     )
     try:
-        result = await env.service.execute(
-            "query_chat_history", {"view": "search", "keyword": "雷达站"}, env.context
-        )
+        result = await env.service.execute("read_chat", {"query": "雷达站"}, env.context)
         assert [row["event_id"] for row in result["events"]] == [selected.event.id]
         with pytest.raises(SocialError, match="history_scope_denied"):
             await env.service.execute(
-                "query_chat_history",
+                "read_chat",
                 {
-                    "view": "search",
                     "target": {"conversation_id": entries[-1].event.canonical_conversation_id},
                 },
                 env.context,
@@ -173,7 +171,7 @@ async def test_global_search_keeps_real_delegated_conversation_scope(permanent_e
         current_invocation.reset(token)
 
 
-@pytest.mark.parametrize("view", ["recent", "search"])
+@pytest.mark.parametrize("query", ["", "雷达站"])
 @pytest.mark.parametrize(
     "source, selected",
     [
@@ -185,18 +183,18 @@ async def test_global_search_keeps_real_delegated_conversation_scope(permanent_e
     ],
 )
 async def test_source_filters_select_their_collection_once(
-    permanent_entries, view, source, selected
+    permanent_entries, query, source, selected
 ):
     env, entries = permanent_entries
     result = await env.service.execute(
-        "query_chat_history",
-        {"view": view, "source": source, "keyword": "雷达站", "limit": 100},
+        "read_chat",
+        {**source, "query": query, "limit": 100},
         env.context,
     )
-    assert [row["event_id"] for row in result["events"]] == sorted(
+    assert [row["event_id"] for row in result["events"] if "雷达站" in row["content"]] == sorted(
         (entries[index].event.id for index in selected), reverse=True
     )
-    assert {row["conversation_id"] for row in result["sources"]} == {
+    assert {row["conversation_id"] for row in result["sources"]} >= {
         entries[index].event.canonical_conversation_id for index in selected
     }
     assert env.bot.calls == []
@@ -205,38 +203,33 @@ async def test_source_filters_select_their_collection_once(
 async def test_source_and_target_intersect_without_scope_fallback(permanent_entries):
     env, entries = permanent_entries
     target = {"conversation_id": entries[0].event.canonical_conversation_id}
-    request = {"target": target, "source": {"platform": "telegram"}}
-    for view in ("recent", "search", "around"):
-        result = await env.service.execute(
-            "query_chat_history",
-            {**request, "view": view, "event_id": entries[1].event.id},
-            env.context,
-        )
+    for request in (
+        {"target": target, "platform": "telegram"},
+        {"target": target, "platform": "telegram", "query": "雷达站"},
+        {"target": target, "around": entries[1].event.id},
+    ):
+        result = await env.service.execute("read_chat", request, env.context)
         assert result["events"] == [] and result["sources"] == []
         assert result.source_event_ids == ()
-        if view == "around":
-            assert result["center_status"] == "unavailable"
-    for source in ({}, {"platform": None, "scope": None}):
-        result = await env.service.execute(
-            "query_chat_history", {"view": "recent", "source": source}, env.context
-        )
-        assert [row["content"] for row in result["events"]] == ["hello"]
+        if "around" in request:
+            assert result["around_status"] == "unavailable"
+    result = await env.service.execute("read_chat", {}, env.context)
+    assert [row["content"] for row in result["events"]] == ["hello"]
 
 
 async def test_filtered_receipt_keeps_effect_and_actual_evidence(database, tmp_path):
     env = await social_env(database, tmp_path)
     receipt = await env.service.execute("send", {"text": "receipt proof"}, env.context)
     result = await env.service.execute(
-        "query_chat_history",
+        "read_chat",
         {
-            "view": "search",
             "target": {"operation_id": receipt["operation_id"]},
-            "source": {"platform": "telegram"},
+            "platform": "telegram",
         },
         env.context,
     )
-    assert result["receipt_status"] == "succeeded"
-    assert result["receipt_anchor"]["status"] == "unavailable"
+    assert result["receipt"]["receipt_status"] == "succeeded"
+    assert result["receipt"]["anchor_status"] == "unavailable"
     assert result["events"] == [] and result["sources"] == []
     assert result.source_event_ids == ()
 
@@ -268,11 +261,9 @@ async def test_empty_entry_name_keeps_real_subject_name_discoverable(database, t
             )
             binding.display_name = ""
     target = {"conversation_id": conversation_id}
-    directory = await env.service.execute(
-        "find_conversations",
-        {"target": target, "display_name": "Known archive"},
-        env.context,
-    )
-    history = await env.service.execute("query_chat_history", {"target": target}, env.context)
-    assert [row["conversation_id"] for row in directory["items"]] == [conversation_id]
-    assert history["events"][0]["conversation_name"] == "Known archive"
+    directory = await env.service.execute("find_contacts", {"target": target}, env.context)
+    history = await env.service.execute("read_chat", {"target": target}, env.context)
+    (item,) = directory["items"]
+    assert [row["conversation_id"] for row in item["conversations"]] == [conversation_id]
+    assert item["conversations"][0]["name"] == "Known archive"
+    assert history["sources"][0]["name"] == "Known archive"

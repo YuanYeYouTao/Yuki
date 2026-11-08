@@ -111,7 +111,7 @@ cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 
 tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来源。
 
 主 SELF 入口使用 actorless TurnMemorySession，按真实来源准备当前群与可见 SELF 范围，
-需要长期事实时通过 `search_memory` 读取；主SELF的 `memory_change` 沿实际原发起来源和
+需要长期事实时通过 `search_memory` 读取；主SELF的 `save_memory`／`edit_memory` 沿实际原发起来源和
 原execution的工具回执写SELF事实，引用按真实摘录查证，不借真人event。
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。

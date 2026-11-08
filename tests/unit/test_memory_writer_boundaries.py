@@ -65,6 +65,7 @@ async def test_unexpired_and_empty_maintenance_do_not_acquire_writer(database):
 
 async def test_missing_preference_returns_without_waiting_for_writer(database):
     import asyncio
+
     _, service, _ = await facts(database)
     async with other_writer_and_read_only(database):
         assert not await asyncio.wait_for(service.delete_preference("1001", "missing-key"), 1)

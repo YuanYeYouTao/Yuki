@@ -73,13 +73,16 @@ async def deliver_report(social: SocialService, cycle: dict[str, Any]) -> dict[s
             or event.canonical_conversation_id != conversation.id
         ):
             return {"status": "failed", "error_category": "reflection_report_source_missing"}
-        target = conversation.space_id or conversation.person_id
-        target_kind = "space" if conversation.space_id else "person"
+        target = (
+            {"space_id": conversation.space_id}
+            if conversation.space_id
+            else {"person_id": conversation.person_id}
+        )
     try:
         return await social.execute(
             "send",
             {
-                "target": {"kind": target_kind, "target_id": target},
+                "target": target,
                 "text": format_report(cycle),
             },
             SocialContext(

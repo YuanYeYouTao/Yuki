@@ -33,11 +33,8 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
             *(
                 [
                     (
-                        "task_control",
-                        {
-                            "action": "accept",
-                            "goal": "检查",
-                        },
+                        "manage_task",
+                        {"action": "start", "goal": "检查"},
                     )
                 ]
                 if accepted

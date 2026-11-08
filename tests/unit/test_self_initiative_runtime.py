@@ -408,8 +408,8 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
         await kwargs["before_model_request"]()
         control = current_work_control.get()
         assert control.current["id"] == item["id"]
-        result = await control.execute("task_control", {"action": "complete"}, "finish-silently")
-        assert json.loads(result)["ok"]
+        result = await control.execute("manage_task", {"action": "finish"}, "finish-silently")
+        assert "error" not in json.loads(result)
         assert not control.known_effects
         return SimpleNamespace(text="NO_REPLY", outcome=None)
 
@@ -526,7 +526,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         )
         assert response.content == "checked"
         await runtime.work_control.execute(
-            "task_control", {"action": "complete", "result": "checked"}, "done"
+            "manage_task", {"action": "finish", "result": "checked"}, "done"
         )
         responded.set()
         return SimpleNamespace(text="checked")
@@ -555,7 +555,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         load_tools=AsyncMock(
             return_value=tuple(
                 ChatTool(name, name, {"type": "object"})
-                for name in ("task_control", "send", "subagent_start")
+                for name in ("manage_task", "send", "start_subtask")
             )
         ),
     )

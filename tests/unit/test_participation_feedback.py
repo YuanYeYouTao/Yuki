@@ -381,12 +381,12 @@ async def test_running_child_does_not_block_intrinsic_admission_while_parent_wai
     )
     waited = json.loads(
         await control.execute(
-            "task_control",
-            {"action": "wait", "conditions": [{"kind": "owned_run", "run_id": identity}]},
+            "wait",
+            {"for": [{"run": identity}]},
             "wait-original-child",
         )
     )
-    assert waited["ok"]
+    assert waited.get("ok") is not False
     await control.settle(pending_inputs=False)
     assert (await service.work.get(task["id"]))["state"] == "waiting_external"
     await service.work.release(lease)

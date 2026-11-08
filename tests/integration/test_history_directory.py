@@ -1,4 +1,4 @@
-"""Directory pages expose real entry facts without inheriting sendability gates."""
+"""find_contacts pages subjects with real entry facts, without inheriting sendability gates."""
 
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -7,17 +7,13 @@ from types import SimpleNamespace
 import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.event_seed import seed_scoped_event
 from tests.support.social_history_cases import stored_private_entry
 from tests.support.social_identity_cases import social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
-from yuki.conversation.canonical_db_models import (
-    CanonicalConversationModel,
-    ConversationLegacyAliasModel,
-)
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import create_space_binding, replace_assignment
@@ -29,53 +25,41 @@ from yuki.identity.db_models import (
 )
 from yuki.identity.person_identity import merge_persons, prepare_person_merge
 from yuki.services.agent_tools import ToolRuntime
-from yuki.services.contact_query import (
-    ConversationQuery,
-    SubjectContactsQuery,
-    contact_schema,
-    conversation_schema,
-)
+from yuki.services.contact_query import ContactsQuery
 from yuki.social.agent_adapter import invoke_social
 from yuki.social.models import SocialError
+from yuki.social.tools import social_tool_definitions
 
 
-def test_subject_and_conversation_schemas_keep_their_own_selectors():
-    cases = (
-        (
-            SubjectContactsQuery,
-            contact_schema(),
-            {"kind": "space", "display_name": "群" * 200},
-            (
-                {},
-                {"view": "subjects", "kind": "space"},
-                {"kind": "space", "target": {}},
-                {"kind": "space", "limit": 0},
-            ),
-        ),
-        (
-            ConversationQuery,
-            conversation_schema(),
-            {"source": {"platform": "telegram"}},
-            (
-                {"view": "entries"},
-                {"kind": "space"},
-                {"subject_ref": "current_speaker"},
-                {"limit": 0},
-            ),
-        ),
-    )
-    for model, schema, valid, invalid in cases:
-        assert "oneOf" not in schema and "view" not in schema["properties"]
-        validator = Draft202012Validator(schema)
-        validator.validate(valid)
-        model.model_validate(valid)
-        for value in invalid:
-            with pytest.raises(ValidationError):
-                model.model_validate(value)
-            assert list(validator.iter_errors(value))
+def test_find_contacts_schema_and_query_reject_old_selectors_and_two_key_targets():
+    (schema,) = [
+        tool.parameters for tool in social_tool_definitions() if tool.name == "find_contacts"
+    ]
+    validator = Draft202012Validator(schema)
+    validator.validate({"name": "群" * 128, "type": "group", "platform": "telegram"})
+    for value in (
+        {"kind": "space"},
+        {"display_name": "x"},
+        {"subject_ref": "current_speaker"},
+        {"source": {"platform": "telegram"}},
+        {"target": {}},
+        {"target": {"person_id": "a", "space_id": "b"}},
+        {"target": {"operation_id": "00000000-0000-0000-0000-000000000001"}},
+        {"limit": 0},
+    ):
+        assert list(validator.iter_errors(value)), value
+    for value in (
+        {"kind": "space"},
+        {"target": {}},
+        {"target": {"operation_id": "00000000-0000-0000-0000-000000000001"}},
+        {"cursor": "not-a-cursor"},
+        {"limit": 0},
+    ):
+        with pytest.raises(ValidationError):
+            ContactsQuery.model_validate(value)
 
 
-async def test_subject_source_filter_precedes_paging_and_all_pages_are_reachable(
+async def test_group_name_and_platform_filter_precede_paging_and_all_pages_are_reachable(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -98,49 +82,39 @@ async def test_subject_source_filter_precedes_paging_and_all_pages_are_reachable
             if platform == "telegram":
                 expected.add(binding.space_id)
     seen = []
-    arguments = {
-        "kind": "space",
-        "display_name": "同名群",
-        "source": {"platform": "telegram", "scope": "group"},
-        "limit": 7,
-    }
+    arguments = {"type": "group", "name": "同名群", "platform": "telegram", "limit": 7}
     while True:
         page = await env.service.execute("find_contacts", arguments, env.context)
-        identities = [item["target_id"] for item in page["items"]]
+        identities = [item["id"] for item in page["items"]]
         assert identities == sorted(identities)
+        assert all(item["type"] == "group" for item in page["items"])
         assert all(
-            binding["platform"] == "telegram"
-            for item in page["items"]
-            for binding in item["bindings"]
+            entry["platform"] == "telegram" for item in page["items"] for entry in item["entries"]
         )
         seen.extend(identities)
-        if not page["has_more"]:
-            assert page["next_cursor"] is None
+        if "next_cursor" not in page:
             break
         arguments["cursor"] = page["next_cursor"]
     assert seen == sorted(expected)
     whole = await env.service.execute(
         "find_contacts", {**arguments, "cursor": None, "limit": 30}, env.context
     )
-    assert len(whole["items"]) == 24 and not whole["has_more"]
-    mismatch = await env.service.execute(
-        "find_contacts", {"kind": "space", "source": {"scope": "private"}}, env.context
-    )
-    assert mismatch["items"] == []
+    assert len(whole["items"]) == 24 and "next_cursor" not in whole
     long_name = await env.service.execute(
-        "find_contacts", {"kind": "space", "display_name": "群" * 200}, env.context
+        "find_contacts", {"type": "group", "name": "群" * 128}, env.context
     )
     assert long_name["items"] == []
     assert env.bot.calls == []
 
 
-async def test_more_than_twenty_people_are_reachable_through_subject_name_pages(database, tmp_path):
+async def test_people_then_groups_share_one_cursor(database, tmp_path):
     env = await social_env(database, tmp_path)
     people = {}
     async with database.immediate_session() as session:
-        for index in range(24):
+        for index in range(5):
             account = str(912300000 + index)
-            people[account] = await ensure_person(session, account, display_name="分页人物")
+            people[account] = await ensure_person(session, account, display_name="分页对象")
+        group = await ensure_space(session, "paging-group", name="分页对象")
     for account in people:
         await seed_scoped_event(
             env.service.writer,
@@ -150,19 +124,22 @@ async def test_more_than_twenty_people_are_reachable_through_subject_name_pages(
             direction="inbound",
             content="observed person",
         )
-    arguments = {"kind": "person", "display_name": "分页人物", "limit": 9}
+    arguments = {"name": "分页对象", "limit": 2}
     seen = []
     while True:
         page = await env.service.execute("find_contacts", arguments, env.context)
-        seen.extend(item["target_id"] for item in page["items"])
-        if not page["has_more"]:
-            assert page["next_cursor"] is None
+        seen.extend((item["type"], item["id"]) for item in page["items"])
+        if "next_cursor" not in page:
             break
         arguments["cursor"] = page["next_cursor"]
-    assert seen == sorted(people.values())
+    assert seen == [("person", identity) for identity in sorted(people.values())] + [
+        ("group", group)
+    ]
 
 
-async def test_entries_keep_ended_binding_and_original_disabled_presence(database, tmp_path):
+async def test_explicit_target_keeps_ended_binding_disabled_presence_and_disabled_person(
+    database, tmp_path
+):
     env = await social_env(database, tmp_path)
     env.bot.calls.clear()
     entry = await stored_private_entry(env, "telegram")
@@ -174,26 +151,33 @@ async def test_entries_keep_ended_binding_and_original_disabled_presence(databas
         person.enabled = False
         await replace_assignment(session, binding.account, binding.id, None, now=datetime.now(UTC))
     env.registry.disconnect(env.bot)
-    result = await env.service.execute(
-        "find_conversations",
-        {
-            "target": {"binding_id": entry.binding_id},
-            "source": {"platform": "telegram", "scope": "private"},
-        },
-        env.context,
-    )
-    assert len(result["items"]) == 1
-    actual = result["items"][0]
-    assert actual["conversation_id"] == entry.event.canonical_conversation_id
-    assert actual["binding_id"] == entry.binding_id
-    assert actual["entry_presence_id"] == entry.scope.presence_id
-    assert actual["binding_status"] == "ended"
-    assert actual["presence_status"] == "disabled"
-    assert actual["target_id"] == env.person
+    # The actor itself stays enabled; only the looked-up person is disabled.
+    context = replace(env.context, actor=None)
+    for target in (
+        {"binding_id": entry.binding_id},
+        {"conversation_id": entry.event.canonical_conversation_id},
+        {"person_id": env.person},
+    ):
+        result = await env.service.execute(
+            "find_contacts", {"target": target, "platform": "telegram"}, context
+        )
+        (item,) = result["items"]
+        assert item["type"] == "person" and item["id"] == env.person
+        (conversation,) = item["conversations"]
+        assert conversation == {
+            "conversation_id": entry.event.canonical_conversation_id,
+            "platform": "telegram",
+            "scope": "private",
+            "name": "telegram friend",
+            "binding_status": "ended",
+            "presence_status": "disabled",
+        }
     assert env.bot.calls == []
 
 
-async def test_entries_flatten_threads_and_keep_legacy_unknown_platform(database, tmp_path):
+async def test_group_conversations_flatten_threads_and_keep_legacy_unknown_platform(
+    database, tmp_path
+):
     env = await social_env(database, tmp_path)
     async with database.immediate_session() as session:
         space = await ensure_space(session, "legacy-directory", name="原群")
@@ -214,54 +198,25 @@ async def test_entries_flatten_threads_and_keep_legacy_unknown_platform(database
                 thread_id=str(index),
             )
             conversations.add(entry.conversation_id)
-    seen = []
-    deleted_cursor = None
-    arguments = {"target": {"space_id": space}, "limit": 6}
-    while True:
-        page = await env.service.execute("find_conversations", arguments, env.context)
-        seen.extend(item["conversation_id"] for item in page["items"])
-        for item in page["items"]:
-            if item["conversation_id"] == legacy.conversation_id:
-                assert item["platform"] is None and item["binding_id"] is None
-            else:
-                assert item["platform"] == "qq" and item["binding_id"] == binding.id
-        if not page["has_more"]:
-            break
-        if deleted_cursor is None:
-            deleted_cursor = page["next_cursor"]
-            async with database.immediate_session() as session:
-                await session.execute(
-                    delete(CanonicalConversationModel).where(
-                        CanonicalConversationModel.id == deleted_cursor
-                    )
-                )
-                await session.execute(
-                    delete(ConversationLegacyAliasModel).where(
-                        ConversationLegacyAliasModel.conversation_id == deleted_cursor
-                    )
-                )
-            async with database.read_session() as session:
-                assert await session.get(CanonicalConversationModel, deleted_cursor) is None
-        arguments["cursor"] = page["next_cursor"]
-    assert seen == sorted(conversations)
-    named = await env.service.execute(
-        "find_conversations",
-        {**arguments, "cursor": None, "display_name": "原群", "limit": 30},
-        env.context,
-    )
-    assert len(named["items"]) == 23
-    assert deleted_cursor not in {item["conversation_id"] for item in named["items"]}
-    actual_platform = await env.service.execute(
-        "find_conversations",
-        {**arguments, "cursor": None, "source": {"platform": "qq"}},
-        env.context,
-    )
-    assert actual_platform["items"] and all(
-        item["conversation_id"] != legacy.conversation_id for item in actual_platform["items"]
-    )
+    (item,) = (
+        await env.service.execute("find_contacts", {"target": {"space_id": space}}, env.context)
+    )["items"]
+    assert item["type"] == "group" and item["name"] == "原群"
+    assert {row["conversation_id"] for row in item["conversations"]} == conversations
+    for row in item["conversations"]:
+        if row["conversation_id"] == legacy.conversation_id:
+            assert "platform" not in row and "thread_id" not in row
+        else:
+            assert row["platform"] == "qq" and row["thread_id"]
+    (qq,) = (
+        await env.service.execute(
+            "find_contacts", {"target": {"space_id": space}, "platform": "qq"}, env.context
+        )
+    )["items"]
+    assert legacy.conversation_id not in {row["conversation_id"] for row in qq["conversations"]}
 
 
-async def test_entry_directory_keeps_real_read_delegation(database, tmp_path):
+async def test_directory_keeps_real_read_delegation(database, tmp_path):
     env = await social_env(database, tmp_path)
     private = await stored_private_entry(env, "telegram")
     runtime = ToolRuntime(
@@ -275,24 +230,23 @@ async def test_entry_directory_keeps_real_read_delegation(database, tmp_path):
     )
     token = current_invocation.set(ToolInvocationContext(runtime, invocation_key="directory-grant"))
     try:
-        page = await invoke_social(env.service, "find_conversations", {}, runtime)
-        assert page["items"] and all(item["space_id"] == env.space for item in page["items"])
-        other = await invoke_social(
-            env.service,
-            "find_conversations",
-            {
-                "target": {"conversation_id": private.event.canonical_conversation_id},
-            },
-            runtime,
-        )
-        assert other["items"] == []
+        page = await invoke_social(env.service, "find_contacts", {}, runtime)
+        (item,) = page["items"]
+        assert item["id"] == env.space and item["conversations"]
+        with pytest.raises(SocialError, match="history_scope_denied"):
+            await invoke_social(
+                env.service,
+                "find_contacts",
+                {"target": {"conversation_id": private.event.canonical_conversation_id}},
+                runtime,
+            )
+        with pytest.raises(SocialError, match="history_scope_denied"):
+            await invoke_social(env.service, "find_contacts", {"type": "person"}, runtime)
     finally:
         current_invocation.reset(token)
 
 
-async def test_entry_discovery_retains_person_family_and_filters_original_platform(
-    database, tmp_path
-):
+async def test_person_family_keeps_both_entries_and_filters_original_platform(database, tmp_path):
     env = await social_env(database, tmp_path)
     first = await stored_private_entry(env, "telegram")
     async with database.immediate_session() as session:
@@ -304,51 +258,33 @@ async def test_entry_discovery_retains_person_family_and_filters_original_platfo
     async with database.immediate_session() as session:
         await merge_persons(session, env.person, root, prepared=prepared)
     for person_id in (env.person, root):
-        result = await env.service.execute(
-            "find_conversations", {"target": {"person_id": person_id}}, env.context
-        )
-        assert {item["conversation_id"] for item in result["items"]} == {
+        (item,) = (
+            await env.service.execute(
+                "find_contacts", {"target": {"person_id": person_id}}, env.context
+            )
+        )["items"]
+        assert item["id"] == root
+        assert {row["conversation_id"] for row in item["conversations"]} == {
             first.event.canonical_conversation_id,
             second.event.canonical_conversation_id,
         }
-        assert {item["person_id"] for item in result["items"]} == {env.person, root}
-    filtered = await env.service.execute(
-        "find_conversations",
-        {
-            "target": {"person_id": root},
-            "source": {"platform": "telegram"},
-        },
-        env.context,
-    )
-    assert [item["conversation_id"] for item in filtered["items"]] == [
+    (filtered,) = (
+        await env.service.execute(
+            "find_contacts", {"target": {"person_id": root}, "platform": "telegram"}, env.context
+        )
+    )["items"]
+    assert [row["conversation_id"] for row in filtered["conversations"]] == [
         first.event.canonical_conversation_id
     ]
 
 
-async def test_entries_keep_original_operation_source_and_current_actor_revocation(
-    database, tmp_path
-):
+async def test_disabled_actor_cannot_read_the_directory(database, tmp_path):
     env = await social_env(database, tmp_path)
-    receipt = await env.service.execute("send", {"text": "saved receipt"}, env.context)
-    request = {"target": {"operation_id": receipt["operation_id"]}}
-    page = await env.service.execute("find_conversations", request, env.context)
-    assert [item["conversation_id"] for item in page["items"]] == [env.context.conversation_id]
-    source_conflict = await env.service.execute(
-        "find_conversations", {**request, "source": {"platform": "telegram"}}, env.context
-    )
-    assert source_conflict["items"] == []
-    private = await stored_private_entry(env, "telegram")
-    with pytest.raises(SocialError, match="history_receipt_unavailable"):
-        await env.service.execute(
-            "find_conversations",
-            request,
-            replace(env.context, conversation_id=private.event.canonical_conversation_id),
-        )
     async with database.immediate_session() as session:
         (await session.get(CanonicalPersonModel, env.person)).enabled = False
     with pytest.raises(SocialError, match="permission_denied"):
         await env.service.execute(
-            "find_conversations",
+            "find_contacts",
             {},
             replace(
                 env.context, actor=SimpleNamespace(person_id=env.person, principal_kind="person")

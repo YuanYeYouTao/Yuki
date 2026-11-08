@@ -143,8 +143,7 @@ async def test_two_external_cli_devices_share_original_message_and_persistent_ou
             return response(
                 "send",
                 {
-                    "artifact_id": artifact["artifact_id"],
-                    "attachment_kind": "file",
+                    "file": {"artifact_id": artifact["artifact_id"]},
                     "text": "original file",
                 },
                 "file",
@@ -243,10 +242,10 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
     initial = iter(
         (
             response(
-                "task_control", {"action": "accept", "goal": "continue original work"}, "accept"
+                "manage_task", {"action": "start", "goal": "continue original work"}, "accept"
             ),
             response("send", {"text": "which city?"}, "question"),
-            response("task_control", {"action": "need_input", "reason": "city missing"}, "waiting"),
+            response("wait", {"for": [{"message": True}]}, "waiting"),
         )
     )
     app, qq, message, sender = await _deployment(
@@ -409,15 +408,14 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
                 response(
                     "send",
                     {
-                        "artifact_id": artifact["artifact_id"],
-                        "attachment_kind": "file",
+                        "file": {"artifact_id": artifact["artifact_id"]},
                         "text": "Taipei result from original Work",
                     },
                     "result",
                 ),
                 response(
-                    "task_control",
-                    {"action": "complete", "result": "original task finished"},
+                    "manage_task",
+                    {"action": "finish", "result": "original task finished"},
                     "complete",
                 ),
             )
@@ -450,7 +448,7 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
             "Use Taipei" in (item.content or "") for call in observed for item in call.messages
         )
         assert all(
-            "query_chat_history" in {tool.name for tool in call.tools}
+            "read_chat" in {tool.name for tool in call.tools}
             and "read_personal_entry" not in {tool.name for tool in call.tools}
             for call in observed
         )

@@ -492,7 +492,7 @@ async def test_artifact_directory_uses_original_confirmed_versions_and_revocatio
         snapshot = snapshot_bytes(case.env.store, name, data)
         sent = await case.env.social.execute(
             "send",
-            {"artifact_id": snapshot["artifact_id"], "attachment_kind": "file"},
+            {"file": {"artifact_id": snapshot["artifact_id"]}},
             replace(context, call_id=str(uuid4())),
         )
         assert sent["status"] == "succeeded"

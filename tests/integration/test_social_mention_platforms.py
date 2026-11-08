@@ -160,7 +160,7 @@ async def test_cross_platform_exact_account_uses_target_namespace(database, tmp_
         result = await invoke(
             env,
             {
-                "target": {"kind": "space", "target_id": target.space},
+                "target": {"space_id": target.space},
                 "text": f"@{{account:{selected}}} hello",
             },
         )
@@ -180,7 +180,7 @@ async def test_unknown_telegram_username_does_not_invent_an_internal_account(dat
         result = await invoke(
             env,
             {
-                "target": {"kind": "space", "target_id": target.space},
+                "target": {"space_id": target.space},
                 "text": "请到 @Remote_User 看看",
             },
         )
@@ -259,7 +259,7 @@ async def test_exact_account_from_other_platform_remains_literal_with_resolution
         result = await invoke(
             env,
             {
-                "target": {"kind": "space", "target_id": target.space},
+                "target": {"space_id": target.space},
                 "text": f"@{{account:{env.account}}}",
             },
         )

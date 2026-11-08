@@ -151,7 +151,7 @@ async def test_plugin_main_uses_original_scheduled_source_and_reuses_confirmed_r
         ),
     )
     case.provider._responder = lambda _: calls(
-        ("complete-plugin", {"action": "complete", "result": "插件内部工作完成"})
+        ("complete-plugin", "manage_task", {"action": "finish", "result": "插件内部工作完成"})
     )
     try:
         with host.invocation_scope(host.plugin_id, source):
@@ -192,14 +192,12 @@ async def test_due_agent_can_create_an_independent_followup(database, tmp_path):
                     ToolCall(
                         "independent-followup",
                         ToolFunction(
-                            "automation_manage",
+                            "manage_schedule",
                             json.dumps(
                                 {
                                     "action": "create",
-                                    "task": {
-                                        "goal": "明天检查新的资料",
-                                        "trigger": {"type": "after", "seconds": 86400},
-                                    },
+                                    "goal": "明天检查新的资料",
+                                    "trigger": {"type": "after", "seconds": 86400},
                                 }
                             ),
                         ),
@@ -212,7 +210,7 @@ async def test_due_agent_can_create_an_independent_followup(database, tmp_path):
     case.clock.advance(2)
     result = await case.dispatch()
     receipt = json.loads(case.provider.requests[1].messages[-1].content)
-    assert receipt["ok"] and receipt["data"]["confirmation"] == "persisted"
+    assert receipt.get("ok") is not False and receipt["confirmation"] == "persisted"
     assert result.status is RunStatus.SUCCEEDED and not sent(case.env)
     async with database.read_session() as reader:
         assert await reader.scalar(select(func.count()).select_from(AutomationModel)) == 2
@@ -222,9 +220,9 @@ async def test_resumed_work_has_one_current_goal_and_keeps_original_occurrence(d
     case = await setup_run(database, tmp_path, mode="silent", goal="原来安排的完整目标")
     current_goal = "已经核实原资料；继续更新后的工作目标"
     case.provider._responder = lambda _: calls(
-        ("accept", {"action": "accept", "goal": "最初接纳的目标"}),
-        ("update", {"action": "update", "goal": current_goal}),
-        ("wait", {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]}),
+        ("accept", "manage_task", {"action": "start", "goal": "最初接纳的目标"}),
+        ("update", "manage_task", {"action": "update", "goal": current_goal}),
+        ("wait", "wait", {"for": [{"seconds": 0}]}),
     )
     case.clock.advance(2)
     original_run = await case.dispatch()
@@ -237,7 +235,7 @@ async def test_resumed_work_has_one_current_goal_and_keeps_original_occurrence(d
         conversation_key=case.actor.conversation_id,
     )
     case.provider._responder = lambda _: calls(
-        ("complete", {"action": "complete", "result": "完成"})
+        ("complete", "manage_task", {"action": "finish", "result": "完成"})
     )
     waits = WorkWaitRepository(case.works)
     binding = await waits.describe(original_work["id"])
@@ -330,7 +328,7 @@ async def feishu_source_case(database, tmp_path, *, goal=None):
         qq_binding = await reader.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.person_id == case.env.person)
         )
-    target = {"kind": "person", "target_id": case.env.person, "binding_id": qq_binding.id}
+    target = {"binding_id": qq_binding.id}
     task = await case.service.create_task(
         {
             "goal": goal or f"一个小时后在 QQ 私聊提醒此目标背单词：{json.dumps(target)}",

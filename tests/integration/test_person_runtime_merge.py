@@ -45,14 +45,14 @@ async def test_warm_work_retains_paid_request_source_and_budget(
 
     def respond(_request):
         count = len(env.provider.requests)
-        action = "accept" if count == 1 else "update" if change == "merge_disabled" else "complete"
+        action = "start" if count == 1 else "update" if change == "merge_disabled" else "finish"
         arguments = {"action": action}
-        arguments["result" if action == "complete" else "goal"] = "original internal task"
+        arguments["result" if action == "finish" else "goal"] = "original internal task"
         return ChatResponse(
             "",
             0,
             tool_calls=(
-                ToolCall(f"original-{count}", ToolFunction("task_control", json.dumps(arguments))),
+                ToolCall(f"original-{count}", ToolFunction("manage_task", json.dumps(arguments))),
             ),
         )
 
@@ -179,7 +179,7 @@ async def test_queued_child_keeps_original_owner_and_budget_without_an_active_ac
         tool_calls=(
             ToolCall(
                 "original-complete",
-                ToolFunction("task_control", '{"action":"complete","result":"internal result"}'),
+                ToolFunction("manage_task", '{"action":"finish","result":"internal result"}'),
             ),
         ),
     )

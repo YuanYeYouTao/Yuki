@@ -111,8 +111,8 @@ async def test_selected_manager_file_pixels_and_dispatch_version_guard(tmp_path)
     service.sandbox = sandbox
     service.visual_inspector = WorkspaceInspector(store, ImagePreprocessor())
     result = await service.execute(
-        "workspace_inspect",
-        {"path": "selected.png", "expected_version": version, "question": "查看我选定的文件"},
+        "view_file",
+        {"path": "selected.png", "question": "查看我选定的文件"},
     )
     assert result.images[0].workspace_path == "/workspace/selected.png"
     assert result.images[0].version == version
@@ -124,9 +124,9 @@ async def test_selected_manager_file_pixels_and_dispatch_version_guard(tmp_path)
     sandbox.execute.return_value = {"error": "version_conflict"}
     with pytest.raises(WorkspaceError, match="version_changed"):
         await service.validate_images(result.images)
-    with pytest.raises(WorkspaceError, match="choose_path_or_artifact_id"):
+    with pytest.raises(WorkspaceError, match="choose_one_source"):
         await service.execute(
-            "workspace_inspect", {"path": "selected.png", "artifact_id": "x", "question": "q"}
+            "view_file", {"path": "selected.png", "artifact_id": "x", "question": "q"}
         )
 
 

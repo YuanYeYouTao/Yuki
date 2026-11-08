@@ -590,10 +590,9 @@ class ConversationMediaService:
             prepared_media = prepared_media or self._originals.get(
                 (event_id, item.attachment_index, item.source_snapshot_json is not None, False)
             )
-            if (
-                prepared_media is not None
-                and self._prepared_origin.get(prepared_media) != attachment_origin(source[1])
-            ):
+            if prepared_media is not None and self._prepared_origin.get(
+                prepared_media
+            ) != attachment_origin(source[1]):
                 # An admitted download still names its original file.
                 if explicit_original:
                     raise ConversationMediaError("attachment_source_changed")
@@ -1023,9 +1022,8 @@ class ConversationMediaService:
             item, data, _segments = sources[key]
             if item.conversation_id != conversation_id:
                 raise ConversationMediaError("attachment_source_changed")
-            if (
-                source_version is not None
-                and source_version != attachment_source_version(data, item.source_snapshot_json)
+            if source_version is not None and source_version != attachment_source_version(
+                data, item.source_snapshot_json
             ):
                 raise ConversationMediaError("attachment_source_changed")
             # The selected pixels already belong to the tool result or private

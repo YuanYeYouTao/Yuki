@@ -21,7 +21,7 @@ from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.persistent import PersistentManager
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Actual Manager FDs require POSIX")
-ARGS = {"text": "body", "emoji": {"goal": "happy"}}
+ARGS = {"text": "body", "sticker": {"goal": "happy"}}
 
 
 @pytest.fixture

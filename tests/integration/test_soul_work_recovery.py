@@ -27,9 +27,9 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
     database, tmp_path, monkeypatch, native
 ):
     calls = (
-        tool("task_control", {"action": "complete", "result": "原结果"}, "original-complete"),
+        tool("manage_task", {"action": "finish", "result": "原结果"}, "original-complete"),
         tool("write_fixture", {"step": 1}, "original-write"),
-        tool("task_control", {"action": "get"}, "original-status"),
+        tool("get_tasks", {}, "original-status"),
         tool("send", {"text": "原已付报告"}, "original-send"),
     )
     continuation = ProviderContinuation(
@@ -218,7 +218,7 @@ async def test_paired_work_new_business_activation_uses_new_soul(database, tmp_p
         assert "Aurora" in request.messages[0].content
         assert "初雪" not in request.messages[0].content
         assert "committed-original" in str(request.messages)
-        return _tool("task_control", {"action": "complete"}, "finish-existing-work")
+        return _tool("manage_task", {"action": "finish"}, "finish-existing-work")
 
     provider._responder = finish
     scheduler = original_scheduler(repository, env, harness, chat)

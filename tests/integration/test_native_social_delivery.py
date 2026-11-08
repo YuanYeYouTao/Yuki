@@ -212,7 +212,7 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
         trigger_event_id=source.id,
     )
     sent = await env.service.execute(
-        "send", {"text": "original reply", "reply_to_event_id": source.id}, context
+        "send", {"text": "original reply", "reply_to": source.id}, context
     )
     assert sent["status"] == "succeeded"
     send_params = sends(env)[-1][1]
@@ -253,10 +253,10 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
         other_requests.clear()
         recall_context = replace(context, call_id="topic-recall")
         args = {"event_id": sent["event_id"]}
-        result = await env.service.execute("recall_own_message", args, recall_context)
+        result = await env.service.execute("recall_message", args, recall_context)
         assert result["status"] == "succeeded"
         assert result["presence_id"] == source.ingress_presence_id
-        assert await env.service.execute("recall_own_message", args, recall_context) == result
+        assert await env.service.execute("recall_message", args, recall_context) == result
         assert not other_requests
     deletes = [params for method, params, _ in env.wire if method == "deleteMessage"]
     assert deletes == [{"chat_id": "-10042", "message_id": int(original[2].rsplit(":", 1)[-1])}]
@@ -281,7 +281,7 @@ async def test_native_text_limit_counts_decoded_mentions_and_preserves_reply(nat
     text = "<&你好>" * 1200
     args = {
         "text": f"@{{account:{env.account}}}" + text,
-        "reply_to_event_id": env.event.id,
+        "reply_to": env.event.id,
     }
     result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded" and result["planned_messages"] == 2
@@ -301,10 +301,9 @@ async def test_native_short_file_caption_is_one_atomic_receipt(native_env):
     env = native_env
     artifact = snapshot_bytes(env.store, "native.txt", b"original file")
     args = {
-        "artifact_id": artifact["artifact_id"],
-        "attachment_kind": "file",
+        "file": {"artifact_id": artifact["artifact_id"]},
         "text": "x" * 1024,
-        "reply_to_event_id": env.event.id,
+        "reply_to": env.event.id,
     }
     result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded" and "parts" not in result
@@ -322,8 +321,7 @@ async def test_native_long_caption_has_distinct_facts_and_never_reuploads(native
     env = native_env
     artifact = snapshot_bytes(env.store, "long.txt", b"immutable")
     args = {
-        "artifact_id": artifact["artifact_id"],
-        "attachment_kind": "file",
+        "file": {"artifact_id": artifact["artifact_id"]},
         "text": f"@{{account:{env.account}}}" + "长" * 5000,
     }
     if fail_caption:
@@ -349,7 +347,7 @@ async def test_native_timeout_is_unknown_and_same_call_never_retries(native_env)
     env = native_env
     artifact = snapshot_bytes(env.store, "unknown.txt", b"original")
     env.failure.method, env.failure.timeout = "sendDocument", True
-    args = {"artifact_id": artifact["artifact_id"], "attachment_kind": "file", "text": "caption"}
+    args = {"file": {"artifact_id": artifact["artifact_id"]}, "text": "caption"}
     result = await env.service.execute("send", args, env.context)
     assert result["status"] == "uncertain"
     assert await env.service.execute("send", args, env.context) == result
@@ -369,8 +367,7 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
         )
     artifact = snapshot_bytes(env.store, "qq.txt", b"original")
     args = {
-        "artifact_id": artifact["artifact_id"],
-        "attachment_kind": "file",
+        "file": {"artifact_id": artifact["artifact_id"]},
         "text": f"@{{account:{env.account}}}附言",
     }
     result = await env.service.execute("send", args, env.context)
@@ -433,7 +430,7 @@ async def test_qq_confirmed_file_is_not_reuploaded_when_caption_fails(
 ):
     env = await social_env(database, tmp_path)
     artifact = snapshot_bytes(env.store, "confirmed.txt", b"original")
-    args = {"artifact_id": artifact["artifact_id"], "attachment_kind": "file", "text": "附言"}
+    args = {"file": {"artifact_id": artifact["artifact_id"]}, "text": "附言"}
     original_call, original_effect = env.bot.call_api, env.service._effect
 
     class Rejected(RuntimeError):
@@ -828,8 +825,7 @@ async def test_native_t3_recovery_preserves_exact_media_and_caption_facts(
     env = native_env
     artifact = snapshot_bytes(env.store, "paid.txt", b"immutable original")
     args = {
-        "artifact_id": artifact["artifact_id"],
-        "attachment_kind": "file",
+        "file": {"artifact_id": artifact["artifact_id"]},
         "text": "附言" * (2500 if long_caption else 10),
     }
     control, capture, context = await prepare_paid_send(env, args)
@@ -878,7 +874,7 @@ async def test_legacy_qq_file_caption_layout_t3_recovery_reads_original_ledger(
 
     env = await social_env(database, tmp_path)
     artifact = snapshot_bytes(env.store, "legacy.txt", b"original legacy file")
-    args = {"artifact_id": artifact["artifact_id"], "attachment_kind": "file", "text": "原附言"}
+    args = {"file": {"artifact_id": artifact["artifact_id"]}, "text": "原附言"}
     control, capture, context = await prepare_paid_send(env, args)
     target = await env.service.target("space", {}, context)
     route = await env.service.send_route(target, context)
@@ -1071,10 +1067,9 @@ async def test_qq_file_keeps_internal_reply_on_first_part_without_fake_native_re
     result = await env.service.execute(
         "send",
         {
-            "artifact_id": artifact["artifact_id"],
-            "attachment_kind": "file",
+            "file": {"artifact_id": artifact["artifact_id"]},
             "text": caption,
-            "reply_to_event_id": source.id,
+            "reply_to": source.id,
         },
         env.context,
     )
@@ -1101,10 +1096,9 @@ async def test_qq_file_keeps_internal_reply_on_first_part_without_fake_native_re
         await env.service.execute(
             "send",
             {
-                "artifact_id": artifact["artifact_id"],
-                "attachment_kind": "file",
+                "file": {"artifact_id": artifact["artifact_id"]},
                 "text": caption,
-                "reply_to_event_id": source.id,
+                "reply_to": source.id,
             },
             env.context,
         )
