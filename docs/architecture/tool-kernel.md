@@ -88,8 +88,9 @@ flowchart LR
 ```
 
 同一模型响应中符合 `parallel_safe` 的读取可并行；修改、发送和不确定效果按现有
-执行围栏处理，工具结果按原 call 顺序追加。每段模型/工具限额与根任务累计预算分别
-执行，分段或重启不重新发放根预算。模型最终正文不自动投递，发送走 `send`。
+执行围栏处理，工具结果按原 call 顺序追加。普通执行不设每段模型/工具限额；只有根
+Work 预算中明确写入的有限额度在每次请求和 T2 处执行，重启不重新发放。模型最终正文
+不自动投递，发送走 `send`。
 
 结果预算器保留必要 ID、URL、状态与错误，较大的完整结果可保存为 artifact。
 `mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
@@ -122,8 +123,8 @@ VM 只收到已保存的原回执视图（`ToolReceiptView`）。
 `read_tool_artifact` 在直调与子调用中均不扣业务工具次数，但照常提交 T2 的
 `dispatch_started=true` 与 T3 原回执，`budget_admitted=false` 表示免扣费而非未执行。
 Code Mode 的累计 suspension、内存、并发、快照和时间限制继续生效且不因恢复重置。
-业务次数来自配置 `agent.max_tool_calls`（默认 32），达到段额度时恢复原 composition；
-根预算仍累计，不存在固定 18 次的执行限制。
+已删除每段业务次数配置，Code Mode 不再按段额度让出；根预算仍累计并在子调用 T2
+执行，不存在固定次数的执行限制。
 
 启用 Code 时，主 Agent 与工作者共享 `CODE_MODE_POLICY`：有效 Work 内多个步骤已知、无需模型逐步
 解释新证据时，默认用 Code Mode 编排批量读取、过滤汇总、确定性循环、串行操作与原回执
@@ -174,8 +175,6 @@ Code 子调用在 T2 后恢复时认实际回执：已确认结果继续原程�
 这一轮原调用 ID、effect key 和详细回执，作为 `work_unobserved_tool_round` 工作证据，
 与当前聊天一起呈现；不复制旧聊天、Provider 签名或 reasoning。直接工具同样适用。
 已观察的旧工具往返可退出，必要累积发现与中间值由有来源的 context_note 接续。
-段额度用尽后，在原模型预算内允许一次保留当前工作上下文的请求，用于保存累计 note
-或在目标核验后 complete；业务剩余额度仍为零。模型预算不足时由原未观察回执兜底。
 
 wrapper 返回字典，用 `r['ok']`/`r['data']`，不用 `r.ok`。并发前先 `import asyncio`；
 Monty 内置模块（例如 asyncio、math）可用，宿主 Python 包、文件系统、网络及环境变量

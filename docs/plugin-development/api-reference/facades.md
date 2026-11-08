@@ -93,6 +93,7 @@ agent.result(work_id) -> PluginResult
 agent.resume(work_id, text, *, request_id) -> PluginResult
 agent.run(instruction, *, context_profile="none",
           max_tool_calls=None, max_model_requests=None) -> PluginResult
+# 显式上限写入该 Work 的根预算，是整项工作的累计额度；不传时不限次数。
 
 agent_sessions.create(CreateAgentSessionRequest) -> AgentSession
 agent_sessions.run(RunAgentSessionRequest) -> AgentSessionRunResult

@@ -45,8 +45,12 @@ Main 恢复同样登记活动。SELF 自省沿原 best-effort 后台名额退让
 
 运行状态用 `state_scope=current_activation` 区分本轮激活与持久 Work 生命周期。
 `no_active_work` 只表示本轮没有激活的 Work，不表示过去未接纳工作或工具失败。
-没有当前 Work 时，`recent_work` 保留最近一项当前来源可见 Work 的真实 ID、状态和目标短线索，
-用于识别已有工作，避免重复创建；三项执行计数和创建者等详情使用既有查询工具按需读取。
+没有当前 Work 时，`recent_work` 保留本人（或同一 SELF 场景）在当前 Conversation 与
+generation 中最近一项 Work 的真实 ID、状态和目标短线索；它不按入口区分，用户消息和本人
+的定时发生互相可见，插件、委托与执行边界来源仍分开。`recent_steps` 附该 Work 最近至多
+8 条原回执事实（tool、ok/pending/uncertain、status、run_id、error_code、artifacts、
+delivered），不含调用参数原文。这用于识别已有工作与已发生的效果，避免重复创建或重做；
+三项执行计数、完整步骤和创建者等详情使用既有查询工具按需读取，授权不变。
 有当前 Work 时保留其完整目标，不混入另一项工作的状态。
 未设置的 work ID、goal 和空 `available_work` 不占常驻提示。
 `available_work` 至多 16 项，只提供内部 ID、状态、目标摘录、创建者显示名和 `has_wait`。
@@ -448,7 +452,8 @@ Host 对原 run 独立对账真实效果；终态迟到回执保留，但不复�
 资料尚存的 failed 可明确沿原 ID 继续；子目标不为读取来源和预算重开已结束的祖先或原 run。
 只有真实终态根 Work 才终结原 run，参与控制器不自行启动新任务。首次连接准备失败继续沿
 原 Work 重排，不因三次重试或未开始执行另判终结失败。
-WorkScheduler 始终启动；`RUNTIME_WORK_ENABLED` 控制普通聊天及 Host 调用的新 Work 接纳。
+WorkScheduler 始终启动；`RUNTIME_WORK_ENABLED` 控制普通聊天及 Host 调用的新 Work 接纳，
+包括私聊多步执行的 Host 接纳。关闭时私聊执行不登记 Work，也没有按段截断。
 关闭开关不停止 WorkScheduler 所管理的已有 Work，也不阻断原定时 Work 的恢复与发生结算。SELF 接纳继续使用这套持久恢复机制，不能产生无人调度的执行记录。
 SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭不等于停止已有子任务的恢复。
 
@@ -469,10 +474,15 @@ prompt／queue 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操�
 与强制管理审计共用事务，审计失败一同回滚，before 使用写时实际版本；resume/run_now
 沿当前任务定义合同核验未来安排。读取目录不授予修改权限，修改按当前 canonical owner 或 superuser 核验。
 
-所有 Main 激活使用同一部署配置的模型/工具段预算。持久工作仅记入原根 Work 账本，
+Main 激活不设每段模型请求或业务工具调用上限，也没有段末 handoff 请求或到限排队；
+辅助请求与 HTTP 重试同样不受写死的段额度限制。插件 SDK `agent.run` 的显式
+`max_model_requests`/`max_tool_calls` 在首次接纳时与 Work 同一事务写入根 Work 预算的
+`model_limit`/`tool_limit`，是整棵 Work 的总额度；旧来源中保存的 `max_*` 只读保留，
+恢复时不再使用。持久工作仅记入原根 Work 账本，
 同一次发生不再叠加定时 limits、timeout、第二 run 预算或二次扣费。根 Work 的既存
 累计值、明确有限预算和真实 Provider 超时仍保持；恢复不清零，不为升级取得新额度。
-发生记录在真实根 Work 终态后结算并安排下一次时间；没有 Work 的激活结算其实际返回计数。
+发生记录在真实根 Work 终态后结算并安排下一次时间；没有 Work 的激活结算其实际返回计数，
+异常退出时按该激活实际已接纳的模型请求数记 `llm_calls`。
 历史 messages_sent 的无 Work 成功分片口径和 Work 投递预留口径不能混称送达数。查询从原 Social
 操作/分片回执解释成功、失败和未知，预留及待派发认原 Work 意图，不改预算或预留数来修正展示。
 确定无 send 且无意图时是已知零发送，有派发或预留但缺确认则保持未知。丢进程或未知执行保留
@@ -496,6 +506,21 @@ Executor 不在同一物理 attempt 前重复调用它。原 Work source guard �
 
 根 Work 的精确协议恢复保留原私有前缀、签名和工具配对；原调用配对后，在下一次真实模型派发前沿同一公共观察边界追加该 Conversation 的新片段。可回收投影缺失时按原内部 Conversation 准备公共历史与摘要，不以空基线代替，也不改写已付输入。原 Work 只增加本次实际交给模型的事件依赖，共享投影中别轮新增的片段不成为它的来源门槛。插件原本未获历史读取时，恢复也不装载公共观察入口。
 
+私聊（含 App 私聊）Main 收到首个含 `send` 以外调用的工具批次后、执行该批次（含
+`execute_code`）之前，Host 先标记该轮已开始效果，再按 `validate_turn_snapshot` 核对版本；
+版本有效时，以预生成的 Work ID 在同一 writer 中提交接纳、接纳前已付模型计量与首份
+`phase=response` journal，然后才为整批绑定调用身份。goal 只引用原触发事件，模型可用
+update 改写。版本已失效则按下述抢占处理，不接纳。纯 `send` 或无工具的轮次、群聊不接纳。
+接纳后新消息经 `preserve_active` 进入该 Work：同批尚未执行的副作用调用返回
+`new_input_before_execution`，下一次请求前接入新输入，收尾回复遇新输入重做，不另开 Main。
+版本核对与接纳提交之间到达的新输入已推进版本，但不取消已受保护的旧轮，它在旧轮结束后
+作为独立 Main 处理。插话只在激活期间进入同一执行：Work 处于 queued、waiting_external
+或 suspended 时，新消息另起 Main，经 `recent_work` 看到原 Work。接纳后可重试失败按
+2/10/30 秒自动重排，未作决定即退出记为 suspended 或 waiting_external；私聊此前失败即
+静默，现在由 WorkScheduler 后台沿原 journal 继续。同一批次中已有模型自己的 accept 时，
+沿原控制屏障接纳，Host 不另行接纳；接纳后再 accept 会得到
+`work_already_active_use_update`，有新输入时才另排独立 Work。
+
 普通私聊的新用户输入可抢占尚未接纳 Work、尚未开始本地效果且尚未派发原生工具的旧轮。
 入口在 Coordinator guard 内捕获原 token 登记的 task，推进输入版本后只取消该原 task，
 并在 guard 外等待它真正退出；不得延迟按 conversation key 重新找当前请求来取消。
@@ -511,7 +536,9 @@ Executor 不在同一物理 attempt 前重复调用它。原 Work source guard �
 主请求的派发 admission 在真实原生工具请求启动前调用该保护；不依赖已退休的旧循环。
 
 定时 claim 使用每次唯一所有者并续期，首次发生提交时核对原 owner、到期时间和版本。
-会话忙时不分配新 run。原版本与绑定的 canonical 目标保存于既有版本表，新定义只用于
+会话忙时不分配新 run；已开始的发生在会话锁内取得 Work 租约，同会话用户 Main 排队等待
+会话锁，不因租约忙被丢弃。发生只受 generation 约束，不受此后用户输入版本作废。
+WorkScheduler 按原 Work 恢复激活时同样持有会话锁。原版本与绑定的 canonical 目标保存于既有版本表，新定义只用于
 未来发生；缺失旧版本事实不按当前角色、日期或 hash 猜补。实际身份从原永久 Person
 当前账号关系解析，历史创建账号仅为来源元数据。
 每次新发生使用原目标会话的当前 generation；创建时的旧 generation 不封锁未来发生。
@@ -531,7 +558,7 @@ LOCKED 不当外部 writer 繁忙；心跳不重放模型、工具或计量。�
 work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累计，不重新执行原工具。
 原效果未知时保留未知，同一原调用不得重新派发，独立新调用仍沿普通执行合同处理。
 
-普通回答无需接纳 Work。模型最终文字可结束内部循环，但不触发发送；
+普通回答无需接纳 Work；私聊执行工具时由 Host 接纳（见上）。模型最终文字可结束内部循环，但不触发发送；
 工作完成由 Agent 提交决定，原 writer 收拢实际所属执行。发送是否成功只看显式发送回执，
 不自动把工具 JSON 或固定成功句发到聊天中。
 分条 `send` 在首条网关调用前持久记录计划段数，并按原调用的确定性子调用 ID
@@ -614,7 +641,7 @@ SELF 工具证据沿原真实执行来源归属，不通过假聊天事件进入
 真实指标。离线请求回放可证明协议前缀，不等于真实缓存命中率；指标不可用标记未知。
 
 本地已对照 SELF 的 Responses / Chat Completions 真实序列化输入，以及 Responses 原生工具
-声明；第 24 次请求后第 25 次继续原 Work，恢复前缀不改写。这不替代 T20 真实 QQ、生产
+声明；长执行跨越多次请求时继续原 Work，恢复前缀不改写。这不替代 T20 真实 QQ、生产
 缓存和长期参与效果验收。Jev 合成 smoke 只提供协议及样本分歧证据，不是独立人工准确率。
 
 

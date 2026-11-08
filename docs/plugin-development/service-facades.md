@@ -107,7 +107,8 @@ await ctx.messages.send_text(turn.text)
 - 在原配置的历史消息查询范围内保留完整正文，模型返回的可见正文完整保存并返回。
   Host 与 Repository 不再额外压到 500/10000 条；SDK 输入合同只在 SDK 验证，Host 仍拒绝空白输入。
   不按固定字符数截取消息后缀或输出；完整请求仍由原模型容量检查负责，初始历史超容量时明确失败。
-- 独立会话只调用模型，不加载工具；`max_model_requests` 沿实际请求预算生效。
+- 独立会话只调用模型，不加载工具，每次 `run()` 是一次无工具请求；`max_model_requests`
+  仍可传入且总被满足，嵌套在主 Agent 内调用时请求计入发起方的根 Work。
 - 自然到期或到期维护不丢弃已接纳调用的结果；结果仍沿原会话保存并返回，状态如实为 `expired`，新 `run()` 按到期资格拒绝。真正删除的会话不重建。
 - `reset()` 只清空该会话历史；`close()` 关闭后不能继续运行。
 - 会话 UUID 是不透明标识，不能用来跨插件或跨真实场景访问。
@@ -160,6 +161,9 @@ SELF 与定时 Main 使用原 actor 和场景，无真人事件时不伪造 Inbo
 ## 持续调用的状态
 
 Runtime 升级后，`agent.run` 返回 `state`、`work_id`、`pending`。
+显式 `max_model_requests`/`max_tool_calls` 在首次接纳时写入该 Work 的根预算，是整项工作
+（含其子任务）的累计上限；耗尽后 Work 暂停为 `suspended`，不再按段重新排队。不传时没有
+次数上限。
 每次调用均返回 `PluginResult`；调用方检查状态与结果，不把等待句柄当作生成正文。
 Host 等待约 5 秒后可返回持久任务句柄，生成由 Host 继续持有。
 `await ctx.agent.result(work_id)` 可在原回调退出后查询本插件的任务；检查批准版本、权限和 generation。
