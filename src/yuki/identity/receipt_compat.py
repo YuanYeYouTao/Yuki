@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,64 +132,50 @@ def require_claimed_event(
 
 def require_compatible_v2_live(
     existing: ChatEventModel,
+    candidate: ChatEventModel,
     *,
-    scope: ConversationScope,
-    conversation_id: str | None,
-    presence_id: str,
-    origin_key: str | None,
-    sender_user_id: str,
-    direction: str,
-    event_kind: str,
-    content: str,
-    segments: tuple[dict[str, Any], ...] | list[dict[str, Any]],
-    timestamp: datetime,
-    author_kind: str,
-    author_person_id: str | None,
-    author_presence_id: str | None,
     receipt: CanonicalEventReceiptModel | None,
-    external_event_type: str | None,
+    event_type: str,
     normalized_segments: str | None = None,
 ) -> None:
-    receipt_event_type = (external_event_type or "message")[:64]
+    """Fail closed unless ``existing`` is the same event as the ``candidate`` row.
+
+    Authors are not compared: the original receipt keeps the author it accepted.
+    A candidate without ``occurred_at`` accepts the original time.
+    """
     if normalized_segments is None:
-        normalized_segments = normalize_live_json(
-            json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
-        )
-    if existing.canonical_conversation_id != conversation_id:
+        normalized_segments = normalize_live_json(candidate.segments_json)
+    if existing.canonical_conversation_id != candidate.canonical_conversation_id:
         raise CanonicalIdentityError("receipt_conflict")
     if receipt is not None:
         if (
-            receipt.event_type != receipt_event_type
-            or receipt.ingress_key != origin_key
+            receipt.event_type != event_type[:64]
+            or receipt.ingress_key != candidate.origin_key
             or receipt.canonical_event_id != existing.canonical_event_id
         ):
             raise CanonicalIdentityError("receipt_conflict")
     elif (
-        existing.ingress_presence_id not in {None, presence_id}
-        or existing.bot_user_id != scope.bot_user_id
+        existing.ingress_presence_id not in {None, candidate.ingress_presence_id}
+        or existing.bot_user_id != candidate.bot_user_id
     ):
-        raise CanonicalIdentityError("receipt_conflict")
-    if existing.event_kind != event_kind or existing.direction != direction:
         raise CanonicalIdentityError("receipt_conflict")
     if (
-        existing.author_kind != author_kind
-        or existing.author_person_id != author_person_id
-        or existing.author_presence_id != author_presence_id
-        or existing.sender_user_id != sender_user_id
+        existing.event_kind != candidate.event_kind
+        or existing.direction != candidate.direction
+        or existing.sender_user_id != candidate.sender_user_id
+        or existing.scope_type != candidate.scope_type
+        or existing.group_id != candidate.group_id
+        or existing.private_peer_user_id != candidate.private_peer_user_id
+        or existing.origin_key != candidate.origin_key
     ):
         raise CanonicalIdentityError("receipt_conflict")
-    if normalize_live_text(existing.content) != normalize_live_text(content):
+    if normalize_live_text(existing.content) != normalize_live_text(candidate.content):
         raise CanonicalIdentityError("receipt_conflict")
     if normalize_live_json(existing.segments_json) != normalized_segments:
         raise CanonicalIdentityError("receipt_conflict")
-    if occurred_at_token(existing.occurred_at) != occurred_at_token(timestamp):
-        raise CanonicalIdentityError("receipt_conflict")
-    if (
-        existing.scope_type != scope.scope_type.value
-        or existing.group_id != scope.group_id
-        or existing.private_peer_user_id != scope.private_peer_user_id
-        or existing.origin_key != origin_key
-    ):
+    if candidate.occurred_at is not None and occurred_at_token(
+        existing.occurred_at
+    ) != occurred_at_token(candidate.occurred_at):
         raise CanonicalIdentityError("receipt_conflict")
 
 
