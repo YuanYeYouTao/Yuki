@@ -336,3 +336,10 @@ direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入�
 退役名称不接收新调用，也不注册新执行别名；旧已接受call/result_ref、参数hash、原ID、预算、unknown及原Provider输入继续只读恢复。工具声明变化只在合法新链生效。
 
 按工具名读取原回执与历史（效果证据、Work 步骤投影、owned run 归类）统一经 `runtime/effect_outcomes.py` 的只读 `RECORDED_TOOL_NAMES` 解析：原记录名映射到语义相同的现役工具，原记录保留原名，新调用不经它解析。没有后继的退役名（如 `local_device`、`run_python`）不是别名，按各自原事实读取。终端与环境工具经 `sandbox/client.py` 的 `MODEL_TOOL_RPC_METHODS` 得到 Manager RPC 方法；RPC 方法名与任务行 `{"tool": method}` 是 Manager wire 合同，不随模型工具改名。
+
+Host 自身不经模型工具名调用核心工具：插件主调用与持久 Host 调用接纳自己的目标时调用
+`WorkControl.admit_goal`，与模型 `task_control(accept)` 共用同一 writer、预算计费与来源核验，
+但不产生模型结果文本或 effect 回执；接纳失败（来源失效、目标为空、写入失败）按原异常抛给
+Host 调用方。插件 `group.list_members` 调用 `SocialService.group_members`，与模型
+`get_group_members` 共用同一 Space 目录读取，权限与群范围仍在插件门面核验。
+Host 内部依据读 typed outcome 而非模型结果文本，见[结果预算与 Artifact](tool-results.md#模型可见文本与内部读取)。

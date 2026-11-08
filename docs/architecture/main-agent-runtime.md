@@ -295,6 +295,7 @@ WorkScheduler 的监督任务拥有候选恢复循环和独立时间维护循环
 它们使用的依赖。
 Host 同步主调用的持久接纳由 `DurableInvocations` 管理，沿原 invocation boundary 查询和
 接纳 Work 后进入已准备的执行路径，不递归调用主入口，也不重置原身份、历史和预算。
+接纳直接调用 `WorkControl.admit_goal`，不经 `task_control` 工具；接纳失败按原异常抛出。
 根 Work、自动化和子任务共用 `bind_work_activation` 的 ContextVar、续租、计量、恢复和
 释放边界；来源核验和所属执行的结算仍使用各自原有合同。
 整理来源能完整容纳时直接沿原完整来源处理；真实超容量才分页，分页让出执行机会，避免饿死心跳和消息处理。

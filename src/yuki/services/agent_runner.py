@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Awaitable, Callable, Set
+from collections.abc import Awaitable, Callable, Mapping, Set
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
@@ -412,7 +412,9 @@ class AgentRunner:
         transcript: TurnTranscript,
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
+        evidence: Mapping[str, dict[str, Any]],
     ) -> tuple[tuple[ToolCall, str, bool], ...]:
+        """Bound new pixels; whether a refused result committed is read from typed evidence."""
         existing = {
             image
             for message in transcript.portable_entries()
@@ -439,7 +441,8 @@ class AgentRunner:
                 if error:
                     outcome = json.loads(result)
                     if isinstance(outcome, dict) and (
-                        outcome.get("mutation_committed") is True
+                        evidence.get(call.id, {}).get("mutation_committed") is True
+                        # Code Mode keeps its own composition result contract.
                         or (
                             call.function.name == EXECUTE_CODE_NAME
                             and outcome.get("executed") is True
@@ -474,6 +477,19 @@ class AgentRunner:
         )
         paired = session.paired_call_ids()
         results = []
+        facts: dict[str, dict[str, Any]] = {}
+
+        async def recorded(call: ToolCall, key: str) -> str:
+            # The original receipt's typed evidence travels with its stored text.
+            capture = ResultCapture("", key)
+            token = current_result_capture.set(capture)
+            try:
+                return await session.journal.effect_result(key, original_tool=call.function.name)
+            finally:
+                current_result_capture.reset(token)
+                if capture.evidence is not None:
+                    facts[call.id] = capture.evidence
+
         for item in pending:
             call = ToolCall(item["id"], ToolFunction(item["name"], item["arguments"]))
             key = await session._pending_result_key(item, session.call_key(call.id))
@@ -481,7 +497,7 @@ class AgentRunner:
                 control.current["id"] if control.current else None, key
             )
             if call.id in paired:
-                result = await session.journal.effect_result(key, original_tool=call.function.name)
+                result = await recorded(call, key)
             elif composition is not None:
                 # This is the original open program's settlement/recovery,
                 # including a recorded cancellation, rather than a new call.
@@ -498,9 +514,7 @@ class AgentRunner:
                     max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
                 )
                 if isinstance(host, str):
-                    result = await session.journal.effect_result(
-                        key, original_tool=call.function.name
-                    )
+                    result = await recorded(call, key)
                 else:
                     assert control.current is not None
                     outer = Invocation(
@@ -543,12 +557,13 @@ class AgentRunner:
                     return True
                 fact = coordinated.evidence.get(call.id)
                 if fact is not None:
+                    facts[call.id] = fact
                     control.observe_evidence(fact)
             else:
-                result = await session.journal.effect_result(key, original_tool=call.function.name)
+                result = await recorded(call, key)
             results.append((call, result, True))
 
-        results = list(self._budget_tool_media(tuple(results), transcript, runtime, tools))
+        results = list(self._budget_tool_media(tuple(results), transcript, runtime, tools, facts))
         for call, result, _executed in results:
             if call.id not in paired:
                 transcript.append_result(call.id, result)
@@ -787,6 +802,7 @@ class AgentRunner:
             # lifecycle decision does not revoke the remaining original calls.
             mixed_calls: list[tuple[ToolCall, str, bool]] = []
             mixed_evidence: dict[str, dict[str, Any]] = {}
+            mixed_outcomes: dict[str, ToolExecutionResult] = {}
             mixed_executed = mixed_reused = index = 0
             while index < len(calls):
                 end = index + 1
@@ -811,13 +827,14 @@ class AgentRunner:
                 )
                 mixed_calls.extend(part_result.calls)
                 mixed_evidence.update(part_result.evidence)
+                mixed_outcomes.update(part_result.outcomes)
                 mixed_executed += part_result.executed_count
                 mixed_reused += part_result.reused_count
                 if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in part_result.calls):
                     break
                 index = end
             return CoordinatedToolResult(
-                tuple(mixed_calls), mixed_executed, mixed_reused, mixed_evidence
+                tuple(mixed_calls), mixed_executed, mixed_reused, mixed_evidence, mixed_outcomes
             )
 
         from yuki.codemode.tool_visibility import TOOL_LOOKUP_NAME, lookup_tools
@@ -1032,6 +1049,7 @@ class AgentRunner:
             executed_count=coordinated.executed_count,
             reused_count=coordinated.reused_count,
             evidence=coordinated.evidence,
+            outcomes=coordinated.outcomes,
         )
 
     @staticmethod

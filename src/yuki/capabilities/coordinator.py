@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from yuki.capabilities.invocation import Invocation, direct_invocations
+from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.messages import ToolCall
 from yuki.execution_trace.recorder import trace_span
 from yuki.services.invocation_service import BatchPlan, InvocationService
@@ -44,6 +45,8 @@ class CoordinatedToolResult:
     executed_count: int
     reused_count: int = 0
     evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Live typed outcomes by call id; an original receipt read back has none.
+    outcomes: dict[str, ToolExecutionResult] = field(default_factory=dict)
 
 
 class ToolInvocationCoordinator:
@@ -87,6 +90,7 @@ class ToolInvocationCoordinator:
         counted_executions = 0
         results: dict[str, str] = {}
         facts: dict[str, dict[str, Any]] = {}
+        outcomes: dict[str, ToolExecutionResult] = {}
         plan = BatchPlan.prepare(calls)
         invocations = {
             invocation.call.id: invocation
@@ -163,6 +167,8 @@ class ToolInvocationCoordinator:
             )
             if fact is not None:
                 facts[call.id] = fact
+            if capture.outcome is not None:
+                outcomes[call.id] = capture.outcome
             if facts.get(call.id, {}).get("executed") is False:
                 rejected_ids.add(call.id)
                 if counts_toward_limit(call):
@@ -206,6 +212,7 @@ class ToolInvocationCoordinator:
             _attach_batch_results(calls, results=results, rejected_ids=rejected_ids),
             counted_executions,
             evidence=facts,
+            outcomes=outcomes,
         )
 
 

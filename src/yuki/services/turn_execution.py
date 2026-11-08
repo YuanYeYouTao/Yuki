@@ -1493,7 +1493,11 @@ class TurnExecution:
         self.state.coordinated = replace(
             self.state.coordinated,
             calls=self.runner._budget_tool_media(
-                self.state.coordinated.calls, self.state.transcript, self.runtime, self.tools
+                self.state.coordinated.calls,
+                self.state.transcript,
+                self.runtime,
+                self.tools,
+                self.state.coordinated.evidence,
             ),
         )
         batch, executed = self.state.coordinated.calls, self.state.coordinated.executed_count
@@ -1516,19 +1520,17 @@ class TurnExecution:
             return End(await self._code_yield(request_index + 1))
         for call, result, _was_executed in batch:
             fact = self.state.coordinated.evidence.get(call.id, {})
+            outcome = self.state.coordinated.outcomes.get(call.id)
             if (
                 call.function.name == "web_search"
                 and fact.get("ok") is True
+                and outcome is not None
                 and self.runtime.work_control is not None
                 and self.runtime.work_control.session is not None
             ):
-                # Source snippets remain presentation material. Only the accepted
-                # typed fact decides whether this execution succeeded.
-                try:
-                    display = json.loads(result)
-                except ValueError:
-                    display = None
-                data = display.get("data") if isinstance(display, dict) else None
+                # Sources come from the live typed outcome, never the model's
+                # display text; the accepted typed fact decides success.
+                data = outcome.data
                 sources = data.get("sources") if isinstance(data, dict) else None
                 if isinstance(sources, list):
                     self.runtime.work_control.session.record_search_sources(

@@ -1154,8 +1154,7 @@ class _GroupFacade:
         actor = _invocation_actor(invocation)
         from yuki.social.service import SocialContext
 
-        result = await social.execute(
-            "get_group_members",
+        result = await social.group_members(
             {"target_id": target, "limit": _bounded_limit(limit, maximum=100)},
             SocialContext(
                 f"plugin:{self._host.plugin_id}",
