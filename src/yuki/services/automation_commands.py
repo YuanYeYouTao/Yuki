@@ -20,7 +20,7 @@ class AutomationCommandHandler:
         self,
         *,
         settings: Settings,
-        automation_service: AutomationService | None,
+        automation_service: AutomationService,
     ) -> None:
         self._settings = settings
         self._automation = automation_service
@@ -34,8 +34,6 @@ class AutomationCommandHandler:
     ) -> str:
         """Manage owner-scoped tasks through the same service used by Agent tools."""
 
-        if self._automation is None:
-            return "自动化功能当前未启用。"
         assert message.person_id is not None
         parts = argument.split()
         operation = parts.pop(0).casefold() if parts else "list"

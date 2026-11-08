@@ -52,16 +52,11 @@ from yuki.execution_trace.phases import collect_phase_metrics, timed_lock, turn_
 from yuki.execution_trace.recorder import trace_span
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
-from yuki.memory.fts import SQLiteMemoryFTSIndex
-from yuki.memory.query import MemoryQueryBuilder
-from yuki.memory.repository import MemoryFactRepository
-from yuki.memory.retrieval import MemoryRetriever
 from yuki.memory.runtime.partition_lookup import MemoryPartitionLookup
 from yuki.memory.runtime.turn_session import (
     TurnMemorySession,
 )
 from yuki.memory.service import MemoryFactService
-from yuki.memory.targets import MemoryTargetResolver
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repositories import (
@@ -229,17 +224,15 @@ class ChatService:
         short_state: ShortState,
         observe_main_response: Callable[..., Awaitable[None]],
         participation_runtime_context: Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]],
-        memory_context: MemoryContextService | None = None,
+        memory_context: MemoryContextService,
         memory_partition_lookup: MemoryPartitionLookup,
-        context_assembler: ContextAssembler | None = None,
-        prompt_composer: PromptComposer | None = None,
-        turn_coordinator: ConversationTurnCoordinator | None = None,
-        event_publisher: LifecycleEventPublisher | None = None,
+        prompt_composer: PromptComposer,
+        turn_coordinator: ConversationTurnCoordinator,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_receipts: ToolReceiptRecorder | None = None,
-        conversation_scopes: ConversationScopeRepository | None = None,
-        effect_gate: ConversationEffectGate | None = None,
-        processing_status: ProcessingStatusService | None = None,
+        conversation_scopes: ConversationScopeRepository,
+        effect_gate: ConversationEffectGate,
+        processing_status: ProcessingStatusService,
     ) -> None:
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
@@ -247,10 +240,8 @@ class ChatService:
         self._models = models
         self._concurrency = concurrency
         self._ledger = ledger
-        self._conversation_scopes = conversation_scopes or ConversationScopeRepository(
-            ledger._database
-        )
-        self._effect_gate = effect_gate or ConversationEffectGate()
+        self._conversation_scopes = conversation_scopes
+        self._effect_gate = effect_gate
         self._people = people
         self._memories = memories
         self._tools = tools
@@ -259,31 +250,16 @@ class ChatService:
         self._plugin_tools: PluginToolProvider | None = None
         self._tool_artifacts = tool_artifacts
         self._tool_receipts = tool_receipts
-        if memory_context is None:
-            memory_repository = MemoryFactRepository(self._ledger._database)
-            memory_context = MemoryContextService(
-                query_builder=MemoryQueryBuilder(MemoryTargetResolver(self._people)),
-                retriever=MemoryRetriever(
-                    repository=memory_repository,
-                    lexical_index=SQLiteMemoryFTSIndex(self._ledger._database),
-                ),
-            )
         self._memory_context = memory_context
-        if context_assembler is not None:
-            self._context_assembler = context_assembler
-        else:
-            self._context_assembler = ContextAssembler(
-                settings=settings,
-                ledger=self._ledger,
-                conversation_scopes=self._conversation_scopes,
-            )
-        self._prompt_composer = prompt_composer or PromptComposer(settings)
-        self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
-            interrupt_autonomous_on_new_message=(
-                settings.conversation_interrupt_autonomous_on_new_message
-            ),
+        self._context_assembler = ContextAssembler(
+            settings=settings,
+            ledger=self._ledger,
+            conversation_scopes=self._conversation_scopes,
         )
-        self._event_publisher = event_publisher
+        self._prompt_composer = prompt_composer
+        self._turn_coordinator = turn_coordinator
+        # Attached by MessageProcessor before any turn runs.
+        self._event_publisher: LifecycleEventPublisher | None = None
         self.observe_main_response = observe_main_response
         self.participation_runtime_context = participation_runtime_context
         from yuki.services.main_agent_contract import MainAgentContract
@@ -922,8 +898,6 @@ class ChatService:
         *,
         autonomous: bool,
     ) -> TurnMemorySession | None:
-        if self._memory_context is None:
-            return None
         origin = (
             RuntimeTurnOrigin.AUTONOMOUS_GROUP if autonomous else RuntimeTurnOrigin.USER_MESSAGE
         )
@@ -1331,8 +1305,6 @@ class ChatService:
         self,
         trigger: SelfInitiativeTrigger,
     ) -> TurnMemorySession | None:
-        if self._memory_context is None:
-            return None
         return await TurnMemorySession.open_self_origin(
             initiative_run_id=trigger.run_id,
             canonical_conversation_id=trigger.conversation_id,

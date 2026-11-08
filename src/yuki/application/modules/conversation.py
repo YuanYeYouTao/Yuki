@@ -81,9 +81,9 @@ class ConversationModule:
         short_state: ShortState,
         observe_main_response: Callable[..., Awaitable[None]],
         participation_runtime_context: Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]],
-        tool_artifacts: ToolArtifactWriter | None = None,
-        tool_receipts: ToolReceiptRecorder | None = None,
-        processing_status: ProcessingStatusService | None = None,
+        tool_artifacts: ToolArtifactWriter,
+        tool_receipts: ToolReceiptRecorder,
+        processing_status: ProcessingStatusService,
     ) -> None:
         self._settings = settings
         self._persistence = persistence

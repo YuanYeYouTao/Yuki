@@ -76,13 +76,13 @@ class CommandService:
         admin_operations: AdminOperations,
         admin_queries: AdminQueries,
         memory_rebuild: MemoryRebuildService,
-        vision_service: VisionService | None = None,
-        automation_service: AutomationService | None = None,
-        automation_repository: AutomationRepository | None = None,
-        automation_worker: AutomationWorker | None = None,
-        turn_coordinator: ConversationTurnCoordinator | None = None,
-        plugin_commands: PluginCommandAdapter | None = None,
-        model_invocations: ModelInvocationRepository | None = None,
+        vision_service: VisionService | None,
+        automation_service: AutomationService,
+        automation_repository: AutomationRepository,
+        automation_worker: AutomationWorker,
+        turn_coordinator: ConversationTurnCoordinator,
+        plugin_commands: PluginCommandAdapter,
+        model_invocations: ModelInvocationRepository,
     ) -> None:
         self._people, self._runtime_config = people, runtime_config
         self._concurrency, self._turn_coordinator = concurrency, turn_coordinator
@@ -129,8 +129,6 @@ class CommandService:
     async def execute_direct_plugin(
         self, message: InboundMessage, identity: ConversationScope, match: DirectCommandMatch
     ) -> CommandExecution:
-        if self._plugin_commands is None:
-            return CommandExecution("插件直达命令当前不可用。")
         runtime = await self._runtime_config.snapshot(
             user_id=message.person_id, group_id=message.space_id
         )
@@ -184,10 +182,9 @@ class CommandService:
 
                 await WorkRepository(self._people._database).cancel(message.conversation_id)
             cancelled = await self._concurrency.cancel(conversation_key)
-            if self._turn_coordinator is not None:
-                cancelled = (
-                    await self._turn_coordinator.cancel_interruptible(conversation_key) or cancelled
-                )
+            cancelled = (
+                await self._turn_coordinator.cancel_interruptible(conversation_key) or cancelled
+            )
             text = "已取消当前 AI 请求。" if cancelled else "当前没有正在处理的 AI 请求。"
         elif command is CommandName.PING:
             text = f"pong ({(time.perf_counter() - started) * 1000:.1f} ms)"
@@ -215,15 +212,12 @@ class CommandService:
                 message=message, identity=identity, argument=argument
             )
         elif command is CommandName.PLUGIN:
-            if self._plugin_commands is None:
-                text = "插件系统当前未启用。"
-            else:
-                runtime = await self._runtime_config.snapshot(
-                    user_id=message.person_id, group_id=message.space_id
-                )
-                text = await self._plugin_commands.execute(
-                    message=message, identity=identity, argument=argument, runtime=runtime
-                )
+            runtime = await self._runtime_config.snapshot(
+                user_id=message.person_id, group_id=message.space_id
+            )
+            text = await self._plugin_commands.execute(
+                message=message, identity=identity, argument=argument, runtime=runtime
+            )
         elif command is CommandName.ADMIN:
             text = await self._admin.execute(principal, actor, message, argument, gateway)
         else:
