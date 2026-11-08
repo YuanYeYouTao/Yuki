@@ -69,14 +69,11 @@ async def test_original_work_receipt_survives_retirement_and_reopen(database, tm
     first = await read_result(database, control, key)
     result, evidence, _ = first
     assert result["original_domain_ref"] == "local_device:" + op_id
-    assert result["data"]["operation_id"] == op_id
-    assert result["data"]["state"] == state
-    assert result["data"]["result"] == {"original_receipt": "untouched"}
+    assert result["operation_id"] == op_id
+    assert result["state"] == state
+    assert result["result"] == {"original_receipt": "untouched"}
     assert result["replay_forbidden"] is True
-    assert result.get("uncertain", False) is (state == "unknown")
-    assert result.get("mutation_committed") is (
-        None if state in {"unknown", "acknowledged"} else state == "succeeded"
-    )
+    assert (result.get("status") == "unknown") is (state == "unknown")
     assert evidence["pending"] is (state == "acknowledged")
     assert evidence["uncertain"] is (state == "unknown")
     assert await read_result(database, control, key) == first
@@ -130,7 +127,7 @@ async def test_fixed_contract_and_execution_retire_only_local_device(
     )
     names = {tool.name for tool in await contract.definitions()}
     assert "local_device" not in names
-    assert {"external_agent", "terminal_exec", "send"} <= names
+    assert {"use_coding_agent", "run_command", "send"} <= names
     runtime = replace(runtime, runtime_config=await chat._runtime_config.snapshot())
     result = await chat._tools.execute("local_device", json.dumps({"action": "execute"}), runtime)
     assert result.ok is False

@@ -27,7 +27,7 @@ class DesktopComputerWorkScenario:
         state["phase"] += 1
         phase = state["phase"]
         if phase == 1:
-            name, arguments = "task_control", {"action": "accept", "goal": state["goal"]}
+            name, arguments = "manage_task", {"action": "start", "goal": state["goal"]}
         elif phase == 2:
             if getattr(self.computer, "external", False):
                 program = Path(__file__).with_name("desktop_browser_work.py").read_text("utf-8")
@@ -55,22 +55,19 @@ class DesktopComputerWorkScenario:
             receipt = json.loads(request.messages[-1].content)
             state["run_id"] = receipt["data"]["run_id"]
             name, arguments = (
-                "task_control",
-                {
-                    "action": "wait",
-                    "conditions": [{"kind": "owned_run", "run_id": state["run_id"]}],
-                },
+                "wait",
+                {"for": [{"run": state["run_id"]}]},
             )
         elif phase == 4:
             name, arguments = "terminal_read", {"run_id": state["run_id"]}
         elif phase == 5:
             assert "畫面處理完成，請沿原工作接續。" in request.messages[-1].content
             name = "send"
-            arguments = {"attachment_kind": "file", "text": "原電腦工作成果"}
+            arguments = {"text": "原電腦工作成果"}
             if getattr(self.computer, "external", False):
-                arguments.update(path="original-computer.md", name="原電腦成果.md")
+                arguments["file"] = {"path": "original-computer.md", "name": "原電腦成果.md"}
             else:
-                arguments["artifact_id"] = state["artifact"]["artifact_id"]
+                arguments["file"] = {"artifact_id": state["artifact"]["artifact_id"]}
         elif phase == 6:
             if getattr(self.computer, "external", False):
                 store = self.container.workspace_service.store
@@ -83,9 +80,9 @@ class DesktopComputerWorkScenario:
                 assert row is not None
                 state["artifact"] = {"artifact_id": row["id"], "sha256": row["sha256"]}
             name, arguments = (
-                "task_control",
+                "manage_task",
                 {
-                    "action": "complete",
+                    "action": "finish",
                     "result": "已讀原交回回執並交付原版本成果",
                 },
             )

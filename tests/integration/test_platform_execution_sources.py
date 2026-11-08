@@ -70,11 +70,9 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
     )
     chat.set_automation_tools(AutomationToolService(service))
     arguments = {
-        "task": {
-            "name": "App reminder",
-            "goal": "remind me of tea",
-            "trigger": {"type": "after", "seconds": 3600},
-        }
+        "name": "App reminder",
+        "goal": "remind me of tea",
+        "trigger": {"type": "after", "seconds": 3600},
     }
     results = []
 
@@ -82,7 +80,7 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
         if request.messages[-1].role == "tool":
             results.append(json.loads(request.messages[-1].content))
             return "internal result"
-        return tool("automation_manage", {"action": "create", **(arguments)}, "app-reminder")
+        return tool("manage_schedule", {"action": "create", **arguments}, "app-reminder")
 
     env.provider._responder = respond
     response = await env.client.post(
@@ -95,7 +93,7 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
     principal = await env.identity.authenticate(device["token"])
     async with database.read_session() as reader:
         row = (await reader.scalars(select(AutomationModel))).one()
-    assert results and results[0]["ok"]
+    assert results and results[0]["confirmation"] == "persisted"
     assert row.canonical_creator_person_id == person
     assert row.canonical_conversation_id == principal.conversation_id
     assert row.source_event_id is not None
@@ -139,7 +137,7 @@ async def test_app_plugin_main_uses_real_person_without_qq_reinterpretation(
             result = await host.agent.run("use the current App source")
         assert result.ok, result.model_dump()
         assert len(env.provider.requests) == before + 1
-        assert any(t.name == "query_chat_history" for t in env.provider.requests[-1].tools)
+        assert any(t.name == "read_chat" for t in env.provider.requests[-1].tools)
     finally:
         await host.close_host_resources()
 
@@ -329,9 +327,9 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
                     env.gateway.handle, provider_id="app", presence_id=actor.presence_id
                 )
             return tool(
-                "task_control", {"action": "update", "goal": "checked original App"}, "update"
+                "manage_task", {"action": "update", "goal": "checked original App"}, "update"
             )
-        return tool("task_control", {"action": "complete", "result": "done"}, "complete")
+        return tool("manage_task", {"action": "finish", "result": "done"}, "complete")
 
     env.provider._responder = respond
     if transport == "offline":
@@ -350,7 +348,7 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
     assert len(env.provider.requests) == before + 2
     full = await contract.definitions()
     if code_enabled:
-        assert "query_chat_history" in contract.script_api.schemas
+        assert "read_chat" in contract.script_api.schemas
         assert "read_personal_entry" not in contract.script_api.schemas
     else:
         assert tuple(snapshots[0].tools) == full
@@ -643,7 +641,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         0,
         tool_calls=(
             ToolCall("original-effect", ToolFunction("send", '{"text":"original effect"}')),
-            ToolCall("original-finish", ToolFunction("task_control", '{"action":"complete"}')),
+            ToolCall("original-finish", ToolFunction("manage_task", '{"action":"finish"}')),
         ),
     )
     executor = make_child_executor(

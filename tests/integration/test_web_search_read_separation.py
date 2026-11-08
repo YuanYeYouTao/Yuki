@@ -107,7 +107,7 @@ async def test_code_composition_calls_real_search_reader_and_social_once(
                 tool_calls=(
                     ToolCall(
                         "accept-original-work",
-                        ToolFunction("task_control", '{"action":"accept","goal":"完成研究并交付"}'),
+                        ToolFunction("manage_task", '{"action":"start","goal":"完成研究并交付"}'),
                     ),
                 ),
             )
@@ -279,7 +279,7 @@ async def test_main_search_then_historical_read_then_social_send(
         for message in request.messages
         if message.role == "tool" and message.tool_call_id == "explicit-read"
     ]
-    assert results and results[-1]["ok"] is not page_fails
+    assert results and results[-1].get("ok", True) is not page_fails
     async with database.read_session() as session:
         assert await session.scalar(select(func.count()).select_from(WebSearchRunModel)) == 0
         assert await session.scalar(select(func.count()).select_from(WebSearchSourceModel)) == 0

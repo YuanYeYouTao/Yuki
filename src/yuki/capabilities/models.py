@@ -104,6 +104,7 @@ class CapabilityDescriptor:
             description=envelope,
             parameters=self.input_schema,
             namespace=self.namespace_id,
+            effect=self.effect.value,
             aliases=self.aliases,
             use_when=self.use_when,
             tags=self.tags,

@@ -37,7 +37,7 @@ async def test_actual_adapters_continue_original_ordinary_chain_after_input_hand
     release = {number: asyncio.Event() for number in (1, 2)}
     responses = iter(
         [
-            _tool("query_chat_history", {"view": "recent"}, "signed-read"),
+            _tool("read_chat", {}, "signed-read"),
             ChatResponse("NO_REPLY", 0),
         ]
     )
@@ -124,7 +124,7 @@ async def test_actual_adapters_continue_original_ordinary_chain_after_input_hand
             assert C not in json.dumps(captured[0], ensure_ascii=False)
             assert C in json.dumps(captured[1], ensure_ascii=False)
             calls, results = wire_calls_and_results(captured[1], protocol)
-            assert calls == ["query_chat_history"]
+            assert calls == ["read_chat"]
             assert len(results) == 1 and results[0][0] == "signed-read"
             assert SIGNATURE in json.dumps(captured[1])
             assert captured[0]["tools"] == captured[1]["tools"]

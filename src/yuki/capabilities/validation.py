@@ -97,14 +97,14 @@ def _validate(
         return CapabilityValidationResult(
             ok=False,
             error_category=SCHEMA_QUARANTINED,
-            detail="tool schema is not safe to validate",
+            detail="工具声明无法校验，未执行。",
         )
     validator = validators.get(capability_id)
     if validator is None:
         return CapabilityValidationResult(
             ok=False,
             error_category=UNDECLARED_TOOL,
-            detail="tool is not declared for this turn",
+            detail="本轮没有声明这个工具，未执行。",
         )
     try:
         payload = json.loads(arguments_json)
@@ -112,13 +112,13 @@ def _validate(
         return CapabilityValidationResult(
             ok=False,
             error_category=TOOL_INPUT_VALIDATION_FAILED,
-            detail="arguments must be a JSON object",
+            detail="参数必须是 JSON 对象。",
         )
     if not isinstance(payload, dict):
         return CapabilityValidationResult(
             ok=False,
             error_category=TOOL_INPUT_VALIDATION_FAILED,
-            detail="arguments must be a JSON object",
+            detail="参数必须是 JSON 对象。",
         )
     try:
         validator.validate(payload)
@@ -134,52 +134,77 @@ def _validate(
             return CapabilityValidationResult(
                 ok=False,
                 error_category=TOOL_INPUT_VALIDATION_FAILED,
-                detail="arguments do not match the declared schema",
+                detail="参数不符合工具声明。",
             )
         raise
     return CapabilityValidationResult(ok=True)
 
 
 def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:
-    """Locate invalid fields without echoing argument values or raw exceptions."""
-    location = "$" + "".join(
-        f"[{json.dumps(segment[:64], ensure_ascii=False)}]"
-        if isinstance(segment, str)
-        else f"[{segment}]"
+    """One readable sentence: which parameter, what is expected; never echo values."""
+    location = ".".join(
+        segment[:64] if isinstance(segment, str) else f"[{segment}]"
         for segment in error.absolute_path
-    )
-    location = location[:256]
+    ).replace(".[", "[")[:256]
     category = str(error.validator)
     expected = error.validator_value
+
+    def names(values: Iterable[object]) -> str:
+        return "、".join(str(value)[:64] for value in list(values)[:8])
+
     if category == "required" and isinstance(expected, list):
-        # Check names declared in this schema, not the exception message, which
-        # may contain arbitrary instance keys or values.
+        # Names declared in this schema, not the exception message, which may
+        # contain arbitrary instance keys or values.
         instance = error.instance if isinstance(error.instance, dict) else {}
-        missing = [name[:64] for name in expected if name not in instance][:8]
-        requirement = "required fields: " + json.dumps(missing[:8], ensure_ascii=False)
+        requirement = "缺少必填参数 " + names(name for name in expected if name not in instance)
     elif category == "type":
-        requirement = "expected type: " + json.dumps(expected, ensure_ascii=False)
+        requirement = "类型应为 " + (
+            names(expected) if isinstance(expected, list) else str(expected)
+        )
     elif category == "enum" and isinstance(expected, list):
-        values = [
-            value
-            for value in expected[:8]
+        requirement = "只能取 " + names(
+            json.dumps(value, ensure_ascii=False)
+            for value in expected
             if value is None
             or isinstance(value, (int, float, bool))
             or (isinstance(value, str) and len(value) <= 80)
-        ]
-        label = "allowed values" if len(values) == len(expected) else "allowed values (partial)"
-        requirement = label + ": " + json.dumps(values, ensure_ascii=False)
+        )
+    elif category == "const":
+        requirement = "只能取 " + json.dumps(expected, ensure_ascii=False)[:80]
     elif category in {"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"}:
-        requirement = f"{category}: {expected}"
-    elif category == "additionalProperties":
+        label = {
+            "minimum": "不能小于",
+            "maximum": "不能大于",
+            "minLength": "长度不能少于",
+            "maxLength": "长度不能超过",
+            "minItems": "至少需要项数",
+            "maxItems": "最多允许项数",
+        }[category]
+        requirement = f"{label} {expected}"
+    elif category in {"additionalProperties", "unevaluatedProperties"}:
         fields = list(
             find_additional_properties(cast(Any, error.instance), cast(Any, error.schema))
         )
-        requirement = "undeclared fields: " + json.dumps(fields, ensure_ascii=False)
-    elif category in {"anyOf", "oneOf"} and depth < 2 and error.context:
-        requirement = "declared alternatives: " + "; ".join(
-            _validation_detail(child, depth=depth + 1) for child in error.context[:3]
-        )
+        requirement = "不接受参数 " + names(fields)
+    elif category in {"anyOf", "oneOf"} and isinstance(expected, list):
+        # Single-key objects (target, sources, wait conditions) list their keys.
+        shapes = [
+            names(branch.get("required") or branch.get("properties", {}))
+            for branch in expected
+            if isinstance(branch, dict)
+        ]
+        if shapes and all(shapes):
+            requirement = "须且只能给出以下一种：" + "；".join(shapes[:8])
+        elif depth < 2 and error.context:
+            requirement = (
+                "须符合其中一种形式（"
+                + "；".join(
+                    _validation_detail(child, depth=depth + 1) for child in error.context[:3]
+                )
+                + "）"
+            )
+        else:
+            requirement = "须符合声明的其中一种形式"
     else:
-        requirement = "must satisfy the declared constraint"
-    return f"{location}: {category}; {requirement}"[:1024]
+        requirement = "不符合声明的约束"
+    return (f"参数 {location}：{requirement}" if location else requirement)[:1024]

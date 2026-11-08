@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from yuki.time.models import TimeContext
-
 
 class Clock(Protocol):
     """Injectable UTC clock used by scheduling and deterministic tests."""
@@ -53,22 +51,3 @@ class TimeContextService:
     @property
     def default_timezone(self) -> str:
         return self._default_timezone
-
-    def current_default(self) -> TimeContext:
-        """Return trusted current time in the common default timezone."""
-
-        return self.at(self._utc_now(), self._default_timezone)
-
-    def at(self, moment: datetime, timezone: str) -> TimeContext:
-        normalized = validate_timezone(timezone)
-        utc = self._as_utc(moment)
-        return TimeContext(utc=utc, local=utc.astimezone(ZoneInfo(normalized)), timezone=normalized)
-
-    def _utc_now(self) -> datetime:
-        return self._as_utc(self._clock.now())
-
-    @staticmethod
-    def _as_utc(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            raise ValueError("clock must return an aware datetime")
-        return value.astimezone(UTC)

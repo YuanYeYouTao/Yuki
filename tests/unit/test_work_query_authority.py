@@ -48,8 +48,7 @@ async def query_environment(database):
 async def test_queries_do_not_require_automation_or_mutation_admission(query_environment):
     chat, runtime = query_environment
     backend = MainAgentBackend(chat, runtime)
-    for action in ("get", "list"):
-        assert backend.work_query_allowed(action)
+    assert backend.work_query_allowed("get_tasks")
 
 
 @pytest.mark.asyncio
@@ -63,19 +62,16 @@ async def test_queries_require_trusted_internal_actor(query_environment):
     )
     for candidate in invalid:
         backend = MainAgentBackend(chat, candidate)
-        assert not backend.work_query_allowed("get")
-        assert not backend.work_query_allowed("list")
+        assert not backend.work_query_allowed("get_tasks")
 
 
 @pytest.mark.asyncio
 async def test_delegated_query_scope_and_closed_profiles_are_enforced(query_environment):
     chat, runtime = query_environment
     delegated = MainAgentBackend(chat, runtime)
-    assert delegated.work_query_allowed("get")
-    assert delegated.work_query_allowed("list")
+    assert delegated.work_query_allowed("get_tasks")
     closed = MainAgentBackend(chat, replace(runtime, tools_closed=True))
-    assert not closed.work_query_allowed("get")
-    assert not closed.work_query_allowed("list")
+    assert not closed.work_query_allowed("get_tasks")
 
 
 @pytest.mark.asyncio
@@ -104,12 +100,10 @@ async def test_self_directory_reads_do_not_require_or_borrow_a_person(query_envi
     with pytest.raises(ValueError, match="invalid_self_tool_actor"):
         replace(actor, user_id="1001")
     backend = MainAgentBackend(chat, runtime)
-    assert backend.work_query_allowed("get")
-    assert backend.work_query_allowed("list")
+    assert backend.work_query_allowed("get_tasks")
     for invalid in (replace(runtime, initiative_run_id="another-initiative"),):
         refused = MainAgentBackend(chat, invalid)
-        assert not refused.work_query_allowed("get")
-        assert not refused.work_query_allowed("list")
+        assert not refused.work_query_allowed("get_tasks")
 
 
 @pytest.mark.asyncio
@@ -141,18 +135,22 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
         work_control=control,
     )
 
+    calls = {
+        "get": ("get_tasks", {"id": "original-work"}),
+        "list": ("get_tasks", {}),
+        "complete": ("manage_task", {"action": "finish"}),
+    }
+
     async def dispatch(action, allowed):
-        arguments = {"action": action}
-        if action == "get":
-            arguments["work_id"] = "original-work"
-        call = ToolCall(action, ToolFunction("task_control", json.dumps(arguments)))
+        name, arguments = calls[action]
+        call = ToolCall(action, ToolFunction(name, json.dumps(arguments)))
         backend = MainAgentBackend(chat, replace(tool_runtime, tools_closed=not allowed))
         return await chat.runtime.runner._execute_tool_batch(
             (call,),
             backend,
             runtime,
             max_parallel_calls=1,
-            declared_names=frozenset({"task_control"}),
+            declared_names=frozenset({"get_tasks", "manage_task"}),
         )
 
     for action in ("get", "list"):
@@ -162,8 +160,8 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
     assert executed == []
     for action in ("get", "list", "complete"):
         accepted = await dispatch(action, action != "complete")
-        assert json.loads(accepted.calls[0][1])["ok"]
+        assert "error" not in json.loads(accepted.calls[0][1])
         assert accepted.calls[0][2] is (action == "complete")
         assert accepted.executed_count == 0
-    assert [entry[1]["action"] for entry in executed] == ["get", "list", "complete"]
+    assert [entry[1] for entry in executed] == [arguments for _name, arguments in calls.values()]
     assert executed[0][2] == "get"  # Read-only metadata keeps the original call ID.

@@ -207,7 +207,7 @@ class WebModule:
                     else settings.mode,
                     "tavily_api_key": clients.api_key_for_alias(catalog.search.tavily_api_key_env)
                     if clients
-                    else ""
+                    else "",
                 }
             )
         self._settings = settings

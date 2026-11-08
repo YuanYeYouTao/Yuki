@@ -41,8 +41,8 @@ def calls(*items):
         "",
         0,
         tool_calls=tuple(
-            ToolCall(identity, ToolFunction("task_control", json.dumps(arguments)))
-            for identity, arguments in items
+            ToolCall(identity, ToolFunction(name, json.dumps(arguments)))
+            for identity, name, arguments in items
         ),
     )
 
@@ -84,7 +84,12 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
             ChatResponse(
                 "",
                 0,
-                tool_calls=(ToolCall("common-clock", ToolFunction("time_get_current", "{}")),),
+                tool_calls=(
+                    ToolCall(
+                        "common-clock",
+                        ToolFunction("get_schedules", json.dumps({"id": case.row.id})),
+                    ),
+                ),
             ),
             "完成内部读取",
         )
@@ -94,15 +99,13 @@ async def test_common_main_clock_keeps_explicit_task_timezone_and_original_versi
     run = await case.dispatch()
     assert run.status is RunStatus.SUCCEEDED
     names = {tool.name for tool in case.provider.requests[0].tools}
-    assert "time_get_current" in names
-    assert not {"time_get_timezone", "time_set_timezone"} & names
+    assert "get_schedules" in names
+    assert not {"time_get_current", "time_get_timezone", "time_set_timezone"} & names
     results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
     result = json.loads(results[0].content)
-    assert result["ok"]
-    clock = result["data"]
-    assert clock["timezone"] == "Asia/Shanghai"
-    assert datetime.fromisoformat(clock["local"]).utcoffset() == timedelta(hours=8)
-    assert datetime.fromisoformat(clock["utc"]) == case.clock.now()
+    assert result.get("ok") is not False
+    assert result["timezone"] == "America/New_York"
+    assert datetime.fromisoformat(result["next_run_at"]).utcoffset() != timedelta(hours=8)
     assert not sent(case.env)
     async with database.read_session() as reader:
         old = await reader.get(AutomationVersionModel, case.row.version_id)
@@ -129,7 +132,7 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     responses = iter(
         (
             ChatResponse(
-                "", 0, tool_calls=(ToolCall("read-time", ToolFunction("time_get_current", "{}")),)
+                "", 0, tool_calls=(ToolCall("read-time", ToolFunction("get_schedules", "{}")),)
             ),
             "完成本次内部读取",
         )
@@ -176,7 +179,7 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     assert sources[0].space_id == case.env.space
     assert not sent(case.env)
     results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
-    assert len(results) == 1 and json.loads(results[0].content)["ok"]
+    assert len(results) == 1 and json.loads(results[0].content).get("ok") is not False
     async with database.read_session() as reader:
         assert not list(await reader.execute(select(work)))
 
@@ -198,14 +201,14 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
         tool_calls=(
             ToolCall(
                 "accept-original",
-                ToolFunction("task_control", '{"action":"accept","goal":"原工作"}'),
+                ToolFunction("manage_task", '{"action":"start","goal":"原工作"}'),
             ),
             ToolCall("send-original", ToolFunction("send", '{"text":"原先已发送"}')),
             ToolCall(
                 "wait-original",
                 ToolFunction(
-                    "task_control",
-                    '{"action":"wait","conditions":[{"kind":"time_due","after_seconds":0}]}',
+                    "wait",
+                    '{"for":[{"seconds":0}]}',
                 ),
             ),
         ),
@@ -246,7 +249,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("read-current", ToolFunction("time_get_current", "{}")),
+                    ToolCall("read-current", ToolFunction("get_schedules", "{}")),
                     ToolCall("send-current", ToolFunction("send", '{"text":"当前代际的新发生"}')),
                 ),
             ),
@@ -349,19 +352,19 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
         async def validate(source=source, execution_id=execution_id):
             await recover_automation_source(database, state.id, source, request_id=execution_id)
 
-        operations = [("task_control", {"action": "accept", "goal": source["instruction"]})]
+        operations = [("manage_task", {"action": "start", "goal": source["instruction"]})]
         if step["id"] == "sent":
             operations.extend(
                 (
                     ("send", {"text": "ORIGINAL_CONFIRMED_FIRST_RESULT"}),
-                    ("task_control", {"action": "complete", "result": "first finished"}),
+                    ("manage_task", {"action": "finish", "result": "first finished"}),
                 )
             )
         else:
             operations.append(
                 (
-                    "task_control",
-                    {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]},
+                    "wait",
+                    {"for": [{"seconds": 0}]},
                 )
             )
         response = ChatResponse(
@@ -465,7 +468,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
     assert len(sent(case.env)) == 1 and len(case.provider.requests) == 2
 
     case.provider._responder = lambda _: calls(
-        ("complete-original", {"action": "complete", "result": "second finished"})
+        ("complete-original", "manage_task", {"action": "finish", "result": "second finished"})
     )
     waits = WorkWaitRepository(case.works)
     binding = await waits.describe(pending["id"])
@@ -510,8 +513,8 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
         goal="原始完整目标",
     )
     case.provider._responder = lambda _: calls(
-        ("accept", {"action": "accept", "goal": "原始完整任务"}),
-        ("wait", {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]}),
+        ("accept", "manage_task", {"action": "start", "goal": "原始完整任务"}),
+        ("wait", "wait", {"for": [{"seconds": 0}]}),
     )
     case.clock.advance(61)
     first = await case.dispatch()
@@ -541,7 +544,7 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
     # A future schedule switch is not a gate on already accepted Work.
     case.settings.automation_enabled = False
     case.provider._responder = lambda _: calls(
-        ("complete", {"action": "complete", "result": "完成原目标"})
+        ("complete", "manage_task", {"action": "finish", "result": "完成原目标"})
     )
     waits = WorkWaitRepository(case.works)
     binding = await waits.describe(original["id"])
@@ -574,8 +577,8 @@ async def test_waiting_occurrence_keeps_original_version_and_current_work_recove
 async def test_schedule_management_preserves_already_accepted_work(database, tmp_path, action):
     case = await setup_run(database, tmp_path, mode="silent")
     case.provider._responder = lambda _: calls(
-        ("accept", {"action": "accept", "goal": "原始完整任务"}),
-        ("wait", {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]}),
+        ("accept", "manage_task", {"action": "start", "goal": "原始完整任务"}),
+        ("wait", "wait", {"for": [{"seconds": 0}]}),
     )
     case.clock.advance(2)
     first = await case.dispatch()
@@ -586,7 +589,7 @@ async def test_schedule_management_preserves_already_accepted_work(database, tmp
     )
     assert await case.works.get(original["id"]) == original
     case.provider._responder = lambda _: calls(
-        ("complete", {"action": "complete", "result": "原工作结束"})
+        ("complete", "manage_task", {"action": "finish", "result": "原工作结束"})
     )
     waits = WorkWaitRepository(case.works)
     binding = await waits.describe(original["id"])

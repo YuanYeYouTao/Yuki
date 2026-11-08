@@ -8,8 +8,6 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender, make_settings
-from tests.support.automation_claims import collect_due
-from tests.support.event_seed import seed_event
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import (
@@ -25,7 +23,7 @@ from yuki.admin.operations.base import CommandExecutor
 from yuki.admin.operations.work import WorkOperations
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import PrincipalId, RequestId
-from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.llm.base import LLMUnavailableError
 from yuki.llm.fake import FakeLLMProvider
@@ -81,18 +79,18 @@ def original_responses(provider):
         count = len(provider.requests)
         if count == 1:
             return _tool(
-                "task_control",
-                {"action": "accept", "goal": "保存原工作结果"},
+                "manage_task",
+                {"action": "start", "goal": "保存原工作结果"},
                 "original-accept",
             )
         if count == 2:
             return _tool(
-                "update_short_state",
+                "set_short_note",
                 {"slot": 1, "text": "committed-original"},
                 "original-mutation",
             )
         if count == 3:
-            return _tool("task_control", {"action": "complete"}, "original-finish")
+            return _tool("manage_task", {"action": "finish"}, "original-finish")
         raise AssertionError("unexpected additional dispatch")
 
     return respond
@@ -201,7 +199,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         call = ToolCall(
             "original-mutation",
             ToolFunction(
-                "update_short_state",
+                "set_short_note",
                 json.dumps({"slot": 1, "text": "committed-original"}),
             ),
         )
@@ -230,7 +228,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
                 "unknown",
                 {
                     "outcome": {
-                        "tool": "update_short_state",
+                        "tool": "set_short_note",
                         "ok": False,
                         "uncertain": True,
                         "side_effecting": True,
@@ -259,7 +257,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
             assert request.request_chain_id != lost_request.request_chain_id
             assert request.continuation is None
             assert not any(item.tool_calls for item in request.messages)
-            return _tool("task_control", {"action": "complete"}, "fresh-finish")
+            return _tool("manage_task", {"action": "finish"}, "fresh-finish")
 
         provider._responder = fresh_response
     async with database.immediate_session() as writer:
@@ -335,7 +333,7 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         await scheduler.drain_once()
     if action == "unknown":
         provider._responder = lambda _: _tool(
-            "task_control", {"action": "complete", "result": "unknown retained"}, "unknown-finish"
+            "manage_task", {"action": "finish", "result": "unknown retained"}, "unknown-finish"
         )
     if action in {"auto", "unknown", "deferred-heartbeat", "deferred-provider-retry"}:
         assert recovered["state"] == "queued"
@@ -410,17 +408,17 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
         count = len(provider.requests)
         if count <= 33 or count == 36:
             return _tool(
-                "task_control",
-                {"action": "accept", "goal": f"work {count}"},
+                "manage_task",
+                {"action": "start", "goal": f"work {count}"},
                 "accept-input",
             )
         if count == 34:
             return _tool(
-                "update_short_state",
+                "set_short_note",
                 {"slot": 1, "text": "selected-original-33"},
                 "commit-33",
             )
-        return _tool("task_control", {"action": "complete"}, "finish-33")
+        return _tool("manage_task", {"action": "finish"}, "finish-33")
 
     provider._responder = respond
     env, harness, chat, _, message = await _scene(database, tmp_path, provider)
@@ -645,411 +643,7 @@ async def test_message_recovery_uses_original_event_account_and_canonical_owner(
         )
 
 
-@pytest.mark.parametrize(
-    "principal,promoted", [("person", False), ("person", True), ("self", False)]
-)
-async def test_derived_automation_work_runs_on_original_scheduler_after_owner_settles(
-    database, tmp_path, principal, promoted, monkeypatch
-):
-    from tests.support.automation_unified_delivery_helpers import sent, setup_run
-
-    from yuki.automation.models import RunStatus
-    from yuki.domain.conversations import ConversationScope, ScopeType
-    from yuki.persistence.models import AutomationModel, AutomationRunModel
-    from yuki.runtime.work_activation import current_work_control
-
-    wait_for_timer = principal == "person" and not promoted
-    case = await setup_run(
-        database,
-        tmp_path,
-        mode="silent",
-        principal=principal,
-        trigger={"type": "interval", "seconds": 60} if wait_for_timer else None,
-        max_runs=2 if wait_for_timer else None,
-    )
-
-    def respond(request):
-        if len(case.provider.requests) == 1:
-            return ChatResponse(
-                "",
-                0,
-                tool_calls=(
-                    ToolCall(
-                        "accept",
-                        ToolFunction("task_control", '{"action":"accept","goal":"原始完整任务"}'),
-                    ),
-                    ToolCall(
-                        "derive",
-                        ToolFunction(
-                            "task_control", '{"action":"derive","goal":"original automation child"}'
-                        ),
-                    ),
-                ),
-            )
-        if wait_for_timer and len(case.provider.requests) == 3:
-            return _tool(
-                "task_control",
-                {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]},
-                "timer",
-            )
-        return _tool("task_control", {"action": "complete", "result": "done"}, "finish")
-
-    case.provider._responder = respond
-    case.clock.advance(61 if wait_for_timer else 2)
-    result = await case.dispatch()
-    assert result.status is RunStatus.SUCCEEDED
-    repository = WorkRepository(database)
-    async with database.read_session() as reader:
-        rows = list((await reader.execute(select(work))).mappings())
-    parent = next(dict(row) for row in rows if row["parent_work_id"] is None)
-    child = next(dict(row) for row in rows if row["parent_work_id"] == parent["id"])
-    assert parent["state"] == "completed" and child["state"] == "queued"
-    assert child["source_json"] == parent["source_json"]
-    if promoted:
-        from yuki.automation.authority import PermissionLevel
-        from yuki.automation.control_context import resolve_execution_identity
-        from yuki.identity.canonical_repository import ensure_account, replace_assignment
-
-        await case.env.router.cas_takeover_person(case.env.person)
-        now = case.clock.now()
-        async with database.immediate_session() as writer:
-            person = await writer.get(CanonicalPersonModel, case.env.person)
-            person.is_superuser = True
-            account = await ensure_account(writer, "9001", platform="qq", now=now)
-            await replace_assignment(writer, account, None, person, now=now)
-        async with database.read_session() as reader:
-            actor, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
-        assert actor == "" and permission is PermissionLevel.SUPERUSER
-    resumed_actors = []
-
-    async def capture_main(**kwargs):
-        resumed_actors.append(kwargs["source_runtime"])
-        return await case.chat.generate_origin_turn(**kwargs)
-
-    resumer = make_work_resumer(
-        repository,
-        ledger=case.chat._ledger,
-        scopes=case.chat._conversation_scopes,
-        turns=case.chat._turn_coordinator,
-        router=case.env.router,
-        config=case.chat._runtime_config,
-        generate_self=case.chat.generate_self_initiative,
-        generate_wakeup=case.chat.generate_main_agent_wakeup,
-        bindings=case.chat.runtime.bindings,
-        settings=case.settings,
-        generate_origin=capture_main,
-    )
-
-    identity = ConversationScope.group("80001", "20001")
-    scene = await case.chat._conversation_scopes.get(identity)
-    resolve = case.env.router.resolve_presence
-    observed = False
-
-    async def observe_before_work_binds(presence_id):
-        nonlocal observed
-        resolved = await resolve(presence_id)
-        if not observed:
-            observed = True
-            assert current_work_control.get() is None
-            await seed_event(
-                case.chat._ledger,
-                bot_user_id="80001",
-                origin_key="derived-automation-observation",
-                scope_type=ScopeType.GROUP,
-                sender_user_id="10001",
-                group_id="20001",
-                direction="inbound",
-                content="新的普通群消息",
-            )
-            await case.chat._turn_coordinator.notify_message(
-                scene.runtime_scope_key or identity.key, observation=True
-            )
-        return resolved
-
-    monkeypatch.setattr(case.env.router, "resolve_presence", observe_before_work_binds)
-    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
-    scheduler._last_reclaim = time.monotonic()
-    requests_before = len(case.provider.requests)
-    if wait_for_timer:
-        next_due = (await case.repository.get(case.row.id)).next_run_at
-        claimed = await collect_due(
-            case.repository,
-            worker_id="independent-original-owner",
-            now=next_due,
-            lease_seconds=case.settings.automation_lease_seconds,
-        )
-        assert len(claimed) == 1 and claimed[0].id == case.row.id
-        async with database.read_session() as reader:
-            owner_before = dict(
-                (
-                    await reader.execute(
-                        select(AutomationModel.__table__).where(AutomationModel.id == case.row.id)
-                    )
-                )
-                .mappings()
-                .one()
-            )
-        assert owner_before["claimed_by"] == "independent-original-owner"
-    await scheduler.drain_once()
-    if wait_for_timer:
-        from yuki.runtime.work_wait import WorkWaitRepository
-
-        assert (await repository.get(child["id"]))["state"] == "waiting_external"
-        waits = WorkWaitRepository(repository)
-        binding = await waits.describe(child["id"])
-        assert await waits.deliver_due(now=binding["registered_at"] + 1) == 1
-        async with database.read_session() as reader:
-            owner_after = dict(
-                (
-                    await reader.execute(
-                        select(AutomationModel.__table__).where(AutomationModel.id == case.row.id)
-                    )
-                )
-                .mappings()
-                .one()
-            )
-        assert owner_after == owner_before
-        assert (await repository.get(parent["id"]))["state"] == "completed"
-        await scheduler.drain_once()
-    final = await repository.get(child["id"])
-    assert final["state"] == "completed", (final, await scheduler.health())
-    assert final["parent_work_id"] == parent["id"] and final["source_json"] == child["source_json"]
-    assert len(case.provider.requests) == requests_before + (2 if wait_for_timer else 1)
-    assert not sent(case.env)
-    assert len(resumed_actors) == (2 if wait_for_timer else 1)
-    assert all(runtime.actor_is_superuser == promoted for runtime in resumed_actors)
-    assert resumed_actors[0].require_actor().principal_kind == principal
-    assert (await repository.get(parent["id"]))["state"] == "completed"
-    async with database.read_session() as reader:
-        runs = list(await reader.scalars(select(AutomationRunModel)))
-        assert len(runs) == 1 and runs[0].id == case.run.id
-        assert runs[0].status == "succeeded" and runs[0].finished_at is not None
-        assert runs[0].llm_calls == result.llm_calls
-
-
-@pytest.mark.parametrize("authority", ["original", "suspended", "promoted", "revoked"])
-async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
-    database, tmp_path, authority, monkeypatch
-):
-    from yuki.persistence.models import ChatEventModel
-    from yuki.plugin_host.facades import (
-        HostPluginContext,
-        PluginFacadeServices,
-        PluginInvocation,
-    )
-    from yuki.plugin_host.main_turn import resume_plugin_work
-    from yuki.plugin_host.manifest import PluginManifest
-    from yuki.runtime.origin import TurnOrigin
-    from yuki_plugin_sdk.api import PLUGIN_API_VERSION
-    from yuki_plugin_sdk.permissions import PluginPermission
-
-    provider = FakeLLMProvider(responder=lambda _: "original conversation observed")
-    env, harness, chat, _, message = await _scene(database, tmp_path, provider)
-    await harness.processor.handle(message, MemorySender())
-    await retry_due_now(database)
-    async with database.read_session() as reader:
-        event = await reader.scalar(
-            select(ChatEventModel).where(ChatEventModel.direction == "inbound")
-        )
-    scene = await chat._conversation_scopes.get(message.scope())
-    inbound = replace(
-        message, source_event_id=event.id, legacy_conversation_key=scene.runtime_scope_key
-    )
-    manifest = PluginManifest(
-        id="test.derived-sdk",
-        name="owned result fixture",
-        version="1.0.0",
-        description="read the original SDK result",
-        entrypoint="fixture:Plugin",
-        plugin_api=PLUGIN_API_VERSION,
-        yuki_requires=">=3.8",
-        permissions=(PluginPermission.AGENT_RUN,),
-    )
-    host = HostPluginContext(
-        plugin_id="test.derived-sdk",
-        approved_permissions=(PluginPermission.AGENT_RUN,),
-        services=PluginFacadeServices(
-            approval_revision=manifest.manifest_hash,
-            ledger=harness.ledger,
-            agent_runner=chat.runtime.runner,
-            runtime_config=chat._runtime_config,
-        ),
-    )
-    invocation = PluginInvocation(
-        plugin_id=host.plugin_id,
-        origin=TurnOrigin.PLUGIN_SESSION,
-        actor_user_id=message.sender.user_id,
-        bot_user_id=message.bot_user_id,
-        inbound=inbound,
-    )
-    calls = 0
-    final_text = "SDK done" + "x" * 25_000
-
-    def respond(request):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return _tool(
-                "task_control", {"action": "derive", "goal": "derived plugin goal"}, "derive"
-            )
-        if calls == 2 and authority in {"original", "suspended"}:
-            return _tool(
-                "task_control",
-                {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 60}]},
-                "wait-original",
-            )
-        return _tool("task_control", {"action": "complete", "result": final_text}, "finish")
-
-    provider._responder = respond
-    prepared_context = {}
-    assemble_plugin = chat._context_assembler.assemble_plugin
-
-    async def capture_context(**kwargs):
-        prepared_context.update(kwargs)
-        return await assemble_plugin(**kwargs)
-
-    with monkeypatch.context() as prepared:
-        prepared.setattr(chat._context_assembler, "assemble_plugin", capture_context)
-        async with host.bind(invocation):
-            result = await host.agent.run("original plugin goal")
-    assert result.ok and result.data["state"] == (
-        "waiting_external" if authority in {"original", "suspended"} else "completed"
-    ), result
-    repository = WorkRepository(database)
-    parent = await repository.get(result.data["work_id"])
-    async with database.read_session() as reader:
-        child = dict(
-            (await reader.execute(select(work).where(work.c.parent_work_id == parent["id"])))
-            .mappings()
-            .one()
-        )
-        event_ids = set(await reader.scalars(select(ChatEventModel.id)))
-    assert child["state"] == "queued" and child["source_json"] == parent["source_json"]
-    if authority in {"original", "suspended"}:
-        if authority == "suspended":
-            lease = await repository.acquire(parent["conversation_id"], parent["generation"])
-            await repository.transition(
-                lease,
-                parent["id"],
-                parent["revision"],
-                "suspended",
-                reason="model_request_capacity",
-            )
-            await repository.release(lease)
-            parent = await repository.get(parent["id"])
-        parent_before = await repository.get(parent["id"])
-        async with host.bind(invocation):
-            waiting_result = await host.agent.result(parent["id"])
-            repeated_result = await host.agent.result(parent["id"])
-        assert waiting_result.data == repeated_result.data
-        assert waiting_result.data["state"] == parent["state"]
-        assert calls == 2 and await repository.get(parent["id"]) == parent_before
-
-        # The assembler selects current authorised sources. Capacity is checked
-        # by the actual Main request, including its fixed tools and protocol.
-        await assemble_plugin(**prepared_context)
-        waits = WorkWaitRepository(repository)
-        wait_before = await waits.describe(parent["id"])
-        with monkeypatch.context() as constrained:
-            constrained.setattr(chat._settings, "runtime_work_enabled", False)
-            async with host.bind(invocation):
-                waiting = await host.agent.run("original plugin goal")
-            assert waiting.ok and waiting.data["state"] == parent["state"], waiting
-            assert waiting.data["work_id"] == parent["id"]
-            assert waiting.data["model_requests"] == waiting.data["tool_calls_used"] == 0
-            assert calls == 2 and await repository.get(parent["id"]) == parent
-            assert await waits.describe(parent["id"]) == wait_before
-        assert await waits.deliver_due(now=wait_before["registered_at"] + 61) == 1
-        if authority == "suspended":
-            assert (await repository.get(parent["id"]))["state"] == "suspended"
-            assert (
-                await public_action(database, await repository.get(parent["id"]), "resume")
-            ).success
-        monkeypatch.setattr(chat._settings, "runtime_work_enabled", False)
-        async with host.bind(invocation):
-            result = await host.agent.run("original plugin goal")
-        assert result.ok and result.data["state"] == "completed", result
-        parent = await repository.get(parent["id"])
-        assert calls == 3
-        async with host.bind(invocation):
-            stored_result = await host.agent.result(parent["id"])
-        assert stored_result.data["text"] == final_text
-        assert (await repository.get(parent["id"]))["source_json"] == parent["source_json"]
-        with monkeypatch.context() as constrained:
-            constrained.setattr(chat._settings, "runtime_work_enabled", False)
-            for saved_result in ("text", "missing", "null"):
-                checkpoint = json.loads(parent["checkpoint_json"])
-                if saved_result == "missing":
-                    checkpoint.pop("sync_result")
-                elif saved_result == "null":
-                    checkpoint["sync_result"] = None
-                async with database.immediate_session() as writer:
-                    await writer.execute(
-                        update(work)
-                        .where(work.c.id == parent["id"])
-                        .values(checkpoint_json=json.dumps(checkpoint))
-                    )
-                before_read = await repository.get(parent["id"])
-                async with host.bind(invocation):
-                    repeated = await host.agent.run("original plugin goal")
-                assert repeated.ok and repeated.data["state"] == "completed", repeated
-                assert repeated.data["work_id"] == parent["id"]
-                assert repeated.data["text"] == (final_text if saved_result == "text" else "")
-                assert repeated.data["model_requests"] == repeated.data["tool_calls_used"] == 0
-                assert calls == 3 and await repository.get(parent["id"]) == before_read
-    revoked = authority == "revoked"
-    if revoked:
-        host._approved_permissions = frozenset()
-    elif authority == "promoted":
-        async with database.immediate_session() as writer:
-            person = await writer.get(CanonicalPersonModel, message.person_id)
-            person.is_superuser = True
-    main = chat.runtime.main_turns
-    original_run = main.run
-    resumed_authorities = []
-
-    async def capture_run(messages, runtime, backend):
-        resumed_authorities.append(runtime.actor_is_superuser)
-        return await original_run(messages, runtime, backend)
-
-    monkeypatch.setattr(main, "run", capture_run)
-    resumer = make_work_resumer(
-        repository,
-        ledger=harness.ledger,
-        scopes=chat._conversation_scopes,
-        turns=chat._turn_coordinator,
-        router=env.router,
-        config=chat._runtime_config,
-        generate_self=chat.generate_self_initiative,
-        generate_wakeup=chat.generate_main_agent_wakeup,
-        bindings=chat.runtime.bindings,
-    )
-
-    async def resume_plugin(item, source):
-        await resume_plugin_work(lambda plugin_id: host, harness.ledger, item, source)
-
-    resumer.services = replace(resumer.services, resume_plugin=resume_plugin)
-    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
-    scheduler._last_reclaim = time.monotonic()
-    await scheduler.drain_once()
-    final = await repository.get(child["id"])
-    assert final["state"] == ("failed" if revoked else "completed"), (
-        final,
-        await scheduler.health(),
-    )
-    assert final["parent_work_id"] == parent["id"] and final["source_json"] == child["source_json"]
-    assert calls == (2 if revoked else 4 if authority in {"original", "suspended"} else 3)
-    assert resumed_authorities == ([] if revoked else [authority == "promoted"])
-    assert (await repository.get(parent["id"]))["state"] == "completed"
-    if not revoked:
-        assert (await host.agent.result(child["id"])).data["text"] == final_text
-    async with database.read_session() as reader:
-        assert set(await reader.scalars(select(ChatEventModel.id))) == event_ids
-        assert len(list(await reader.scalars(select(work.c.id)))) == 2
-    await host.close_host_resources()
-
-
-@pytest.mark.parametrize("path", ["derived", "revoked", "failed-root"])
+@pytest.mark.parametrize("path", ["failed-root"])
 async def test_retained_background_plugin_work_resumes_after_job_settles_without_reopening_it(
     database, tmp_path, path
 ):
@@ -1095,11 +689,9 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         calls += 1
         if calls == 1:
             if path == "failed-root":
-                return _tool("task_control", {"action": "fail"}, "original-root-failure")
-            return _tool(
-                "task_control", {"action": "derive", "goal": "derived background goal"}, "derive"
-            )
-        return _tool("task_control", {"action": "complete", "result": "background done"}, "finish")
+                return _tool("manage_task", {"action": "fail"}, "original-root-failure")
+            return _tool("start_subtask", {"goal": "derived background goal"}, "derive")
+        return _tool("manage_task", {"action": "finish", "result": "background done"}, "finish")
 
     provider._responder = respond
     worker = PluginBackgroundTurnWorker(

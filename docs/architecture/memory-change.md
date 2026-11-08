@@ -14,8 +14,18 @@ CREATE 不搜索同 key 的旧事实，不调用关系分类模型，不争议�
 事实的 confidence、authority 和各条 evidence 的原始值保留，不经固定权重、权威等级或证据乘积重算。
 
 普通提取与 Rebuild 只创建 Person、PersonGroup、Group 事实；自省只以本批新证据创建 SELF 记忆和 Episode，
-模型输出不再携带旧 fact 操作或候选裁决。以下完整领域操作仍供 Main、命令和管理入口显式使用，
-Dream 仍整理已有正式记忆；收窄自省不删除共享操作、SELF 主体解析或原执行授权。
+模型输出不再携带旧 fact 操作或候选裁决。以下完整领域操作供命令、管理入口、Client API 与 Dream
+显式使用；收窄自省不删除共享操作、SELF 主体解析或原执行授权。
+
+Main 的模型工具（2026-11-07 工具面切换）只暴露其中三项：`save_memory` 对应 create，
+`edit_memory(action=correct|invalidate)` 对应 correct 与 invalidate。target 直接接受任意 Person／
+Space 内部 ID 或 `{"self": true}`，`group` 与人物 target 同给即 PersonGroup；原
+current_speaker、named_member、member_{id}、replied_message_author、candidate_ref 等选择器随之删除，
+它们只能解析到本轮出现者的附带限制也一并删除，不改写成新的授权门槛（存在性核对不是授权）。
+真实来源照旧：人类写入的 evidence 须为真实入站事件，SELF 写入须给 `quote` 并按本轮
+`memory_tool_receipts.result_excerpt` 子串核验。`memory_key` 与 `category` 由 kind 生成（SELF 为
+`self_<kind>`），只作检索标签。restore、contest、merge、reassign、update_metadata、selector、
+expected_fact_state、valid_from／until、confidence、request_basis 不再提供给模型。
 
 Dream 可按实际内容重组 fact、preference 或 episode，不要求 focus、正文和 key 唯一，
 不限制固定输出条数。部分整理只替换输出实际引用的来源；其余事实保持原样，不提前写处理
@@ -33,7 +43,7 @@ checkpoint。新事实复制全部获准原证据，模型输入采样不裁剪�
 | reassign | 按真实目标建新版本并保留原事实历史 |
 | update_metadata | 按指定事实建新版本 |
 
-`fact_id`/`merge_fact_id` 是实际数据库事实 ID；没有 ID 时，selector 必须在已解析 target 内
+`fact_id`/`merge_fact_id` 是实际数据库事实 ID；管理入口没有 ID 时，selector 必须在已解析 target 内
 唯一精确匹配 key、旧内容和所提供分类。模糊或多条匹配返回候选供调用方选择，不猜测目标。
 
 ## 身份、来源与可见范围

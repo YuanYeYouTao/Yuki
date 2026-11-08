@@ -53,7 +53,7 @@ async def setup_run(
         if turns == 1 and mode != "silent":
             args = {"text": "PUBLIC_RESULT"}
             if recipient == "person":
-                args["target"] = {"kind": "person", "target_id": env.person}
+                args["target"] = {"person_id": env.person}
             if mode == "reject":
                 args = {"text": ""}
             return ChatResponse(

@@ -24,7 +24,6 @@ from tests.unit.test_history_dispatch_ownership import (
     yield_activation_after,
 )
 from tests.unit.test_memory_mutation import _service
-from tests.unit.test_memory_operation_identity import create_request
 
 from yuki.codemode.api_projection import project
 from yuki.codemode.driver import ChildClass, CodeModeDriver
@@ -116,14 +115,20 @@ async def budget(database, root_id):
 async def test_memory_commit_is_consumed_by_original_main_or_worker(
     database, tmp_path, monkeypatch, worker
 ):
-    request = create_request("remember the original committed preference")
     provider = FakeLLMProvider()
 
     def respond(_request):
         if len(provider.requests) == 1:
-            return _tool("task_control", {"action": "accept", "goal": "remember once"}, "accept")
+            return _tool("manage_task", {"action": "start", "goal": "remember once"}, "accept")
         if len(provider.requests) == 2:
-            return _tool("memory_change", request.model_dump(exclude_none=True), "remember-once")
+            return _tool(
+                "save_memory",
+                {
+                    "content": "remember the original committed preference",
+                    "target": {"person_id": env.person},
+                },
+                "remember-once",
+            )
         return "The original committed result is available."
 
     provider._responder = respond
@@ -136,12 +141,12 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
     observe = WorkControl.observe_evidence
 
     def observe_memory(owner, evidence):
-        if evidence.get("tool") == "memory_change":
+        if evidence.get("tool") == "save_memory":
             observed_effects.append(dict(evidence))
         return observe(owner, evidence)
 
     monkeypatch.setattr(WorkControl, "observe_evidence", observe_memory)
-    boundary = DomainCommitBoundary(monkeypatch, "memory_change")
+    boundary = DomainCommitBoundary(monkeypatch, "save_memory")
     await harness.processor.handle(message, MemorySender())
     await retry_due_now(database)
     repository = WorkRepository(database)
@@ -202,11 +207,15 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
         assert await resumer.resume(before) is None
     assert len(provider.requests) == original_requests + 1
     observed = "\n".join(message.content or "" for message in provider.requests[-1].messages)
-    assert mutation_id in observed and str(fact_id) in observed
+    assert str(fact_id) in observed
     assert "execution_outcome_unknown" not in observed
     assert "remember-once" in observed
     recovered = next(item for item in observed_effects if item.get("effect_key") == boundary.key)
-    assert recovered["ok"] and recovered["executed"] and recovered["mutation_committed"]
+    assert (
+        recovered.get("ok") is not False
+        and recovered["executed"]
+        and recovered["mutation_committed"]
+    )
     assert not recovered["uncertain"] and not recovered["pending"]
     after = await repository.get(identity)
     after_budget = await budget(database, root_id)
@@ -242,7 +251,7 @@ async def test_code_resume_consumes_original_native_control_receipt(
     dispatched, views = [], []
 
     async def domain(name, arguments):
-        assert name == "external_agent"
+        assert name == "use_coding_agent"
         capture = current_result_capture.get()
         request_id = sha256(capture.effect_key.encode()).hexdigest()
         await prepare(
@@ -261,7 +270,7 @@ async def test_code_resume_consumes_original_native_control_receipt(
             }
         )
 
-    args = {"action": "steer", "text": "continue the original work"}
+    args = {"action": "steer", "prompt": "continue the original work"}
 
     class ObservedRun(FakeRun):
         async def settle(self, results):
@@ -270,12 +279,12 @@ async def test_code_resume_consumes_original_native_control_receipt(
 
     class Engine(FakeEngine):
         def run(self, names):
-            return ObservedRun(calls=[("yuki_external_agent", args)])
+            return ObservedRun(calls=[("yuki_use_coding_agent", args)])
 
     def host(session):
         env = build_host(session, domain)
         env.host.api = project(
-            (*TOOLS, ChatTool("external_agent", "agent", {"type": "object"})), "manifest-test"
+            (*TOOLS, ChatTool("use_coding_agent", "agent", {"type": "object"})), "manifest-test"
         )
         env.host.classify = lambda call: ChildClass("write", False, True)
         env.host.worker = SimpleNamespace(execution_digest=lambda: "stable-fake-engine")
@@ -283,10 +292,10 @@ async def test_code_resume_consumes_original_native_control_receipt(
         return env
 
     env = host(owner)
-    outer = outer_call(env, "await yuki_external_agent({})")
+    outer = outer_call(env, "await yuki_use_coding_agent({})")
     owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
     await owner.save("response", (outer.call,))
-    boundary = DomainCommitBoundary(monkeypatch, "external_agent")
+    boundary = DomainCommitBoundary(monkeypatch, "use_coding_agent")
     assert json.loads(await CodeModeDriver(env.host, outer).run())["status"] == "completed"
     await boundary.restore(database)
     original_budget = await budget(database, control.current["id"])

@@ -207,10 +207,10 @@ async def serve(
                             ToolCall(
                                 str(uuid4()),
                                 ToolFunction(
-                                    "task_control",
+                                    "manage_task",
                                     json.dumps(
                                         {
-                                            "action": "complete",
+                                            "action": "finish",
                                             "result": "Desktop reference complete",
                                         }
                                     ),

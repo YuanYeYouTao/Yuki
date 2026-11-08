@@ -44,9 +44,7 @@ async def stored_private_entry(env, platform, *, content="之前讨论过雷达�
     return SimpleNamespace(event=added.event, scope=scope, binding_id=binding_id)
 
 
-async def history_agent_loop(
-    env, *, same_batch=False, arguments='{"view": "recent", "event_kind": "all"}'
-):
+async def history_agent_loop(env, *, same_batch=False, arguments="{}"):
     from tests.conftest import MemorySender, build_harness, make_settings
 
     from yuki.domain.conversations import ScopeType
@@ -71,17 +69,14 @@ async def history_agent_loop(
             json.loads(message.content) for message in request.messages if message.role == "tool"
         ]
         if calls == 2:
-            assert returned[-1]["ok"], returned[-1]
-            assert returned[-1]["data"]["source"] == "canonical_ledger"
-            assert returned[-1]["data"]["returned_count"] >= 1
+            assert "ok" not in returned[-1], returned[-1]
+            assert returned[-1]["events"] and returned[-1]["sources"]
             if same_batch:
-                assert len(returned) == 2 and all(
-                    r["data"]["source"] == "canonical_ledger" for r in returned
-                )
+                assert len(returned) == 2 and all(r["events"] for r in returned)
                 return "读到两份原结果"
             env.bot.history["messages"].append({"message_id": 51, "message": "第二条"})
         if calls == 3:
-            assert returned[-1]["data"]["source"] == "canonical_ledger"
+            assert returned[-1]["events"]
             return "读到两条消息"
         return ChatResponse(
             content="",
@@ -89,7 +84,7 @@ async def history_agent_loop(
             tool_calls=tuple(
                 ToolCall(
                     id=f"history-{calls}-{index}",
-                    function=ToolFunction(name="query_chat_history", arguments=arguments),
+                    function=ToolFunction(name="read_chat", arguments=arguments),
                 )
                 for index in range(2 if same_batch else 1)
             ),

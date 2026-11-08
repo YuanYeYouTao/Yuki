@@ -77,7 +77,7 @@ async def test_merge_cold_work_observes_original_paired_result_once(
     mutation_receipt = next(
         row
         for row in receipts
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "update_short_state"
+        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "set_short_note"
     )
     assert mutation_receipt["state"] == "accepted"
     original_requests = copy.deepcopy(provider.requests)
@@ -98,9 +98,9 @@ async def test_merge_cold_work_observes_original_paired_result_once(
         calls = evidence[0]["calls"]
         assert len(calls) == 1 and calls[0]["call_id"] == "original-mutation"
         assert calls[0]["effect_key"] == mutation_receipt["effect_key"]
-        assert calls[0]["tool"] == "update_short_state"
+        assert calls[0]["tool"] == "set_short_note"
         assert "committed-original" in calls[0]["result"]
-        return _tool("task_control", {"action": "complete"}, "original-finish")
+        return _tool("manage_task", {"action": "finish"}, "original-finish")
 
     provider._responder = complete_from_recorded_result
     scheduler = original_scheduler(repository, env, harness, chat)

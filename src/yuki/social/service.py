@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -269,9 +270,9 @@ class SocialService:
     @staticmethod
     def _message_arguments(args: dict[str, Any]) -> dict[str, Any]:
         """Validate only the current fixed send contract."""
-        outer_fields = {"target", "reply_to_event_id"}
+        outer_fields = {"target", "reply_to"}
         if set(args) - (SocialMessage.model_fields.keys() | outer_fields):
-            raise SocialError("invalid_message_arguments")
+            raise SocialError("invalid_arguments")
         return {key: value for key, value in args.items() if key in SocialMessage.model_fields}
 
     @staticmethod
@@ -288,9 +289,7 @@ class SocialService:
                 canonical["text"] = ""
         if isinstance(canonical.get("text"), str) and canonical["text"].strip() == "NO_REPLY":
             raise SocialError("control_token_not_message")
-        if not canonical.get("text") and not any(
-            canonical.get(key) for key in ("artifact_id", "path", "emoji")
-        ):
+        if not canonical.get("text") and not any(canonical.get(key) for key in ("file", "sticker")):
             raise SocialError("empty_message_after_sanitization")
         message_arguments["text"] = canonical.get("text", "")
         return canonical, SocialMessage.model_validate(message_arguments)
@@ -318,16 +317,16 @@ class SocialService:
                 ),
             )
         )
+        assert message.file is not None
         try:
             metadata = await self.workspace_service.publish_for_send(
-                path=cast(str, message.path),
+                path=cast(str, message.file.path),
                 request_id=f"send-publish:{identity}",
                 artifact_id=identity,
                 source_key="send:"
                 + payload_hash("send_message", target, args, context.conversation_id),
-                name=message.name,
-                expected_version=message.expected_version,
-                device_id=message.device_id,
+                name=message.file.name,
+                device_id=message.file.device,
                 actor_person_id=getattr(context.actor, "person_id", None),
             )
         except WorkspaceError as exc:
@@ -338,12 +337,7 @@ class SocialService:
         self, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any] | None:
         selected = args.get("target")
-        if (
-            not isinstance(selected, dict)
-            or selected.get("kind") != "person"
-            or selected.get("binding_id")
-            or selected.get("conversation_id")
-        ):
+        if not isinstance(selected, dict) or set(selected) != {"person_id"}:
             return None
         async with self.database.read_session() as session:
             platform = await session.scalar(
@@ -358,8 +352,7 @@ class SocialService:
             )
         if platform not in LOCAL_CLIENT_PLATFORMS:
             return None
-        target = await self.target("person", selected, context)
-        await self.check_target(target)
+        target = await self.target("person", selected["person_id"], context)
         async with self.database.read_session() as session:
             bindings = list(
                 await session.scalars(
@@ -380,40 +373,22 @@ class SocialService:
             ],
         }
 
-    async def contacts(
-        self, kind: str, query: str = "", *, exact: bool = False
-    ) -> list[dict[str, Any]]:
-        from yuki.social.contacts import subject_contacts
-
-        async with self.database.read_session() as session:
-            return await subject_contacts(session, kind, query, exact=exact)
-
     async def target(
-        self, kind: str, args: dict[str, Any], context: SocialContext, *, validate: bool = True
+        self, kind: str, target_id: Any, context: SocialContext, *, validate: bool = True
     ) -> SocialTarget:
-        selectors = [key for key in ("target_id", "display_name", "subject_ref") if args.get(key)]
-        if not selectors and kind == "space" and context.space_id:
+        """An explicit internal Person/Space ID, or the current one of that kind."""
+        if target_id:
+            raw = str(target_id)
+        elif kind == "space" and context.space_id:
             raw = context.space_id
-        elif not selectors and kind == "person" and context.person_refs.get("current_speaker"):
+        elif kind == "person" and context.person_refs.get("current_speaker"):
             raw = context.person_refs["current_speaker"]
-        elif len(selectors) != 1:
-            raise SocialError("target_selector_conflict")
-        elif selectors[0] == "subject_ref":
-            if kind != "person":
-                raise SocialError("group_target_required")
-            if args["subject_ref"] not in context.person_refs:
-                raise SocialError("subject_ref_unavailable")
-            raw = context.person_refs[args["subject_ref"]]
-        elif selectors[0] == "display_name":
-            matches = [
-                row for row in await self.contacts(kind, str(args["display_name"]), exact=True)
-            ]
-            if len(matches) != 1:
-                raise SocialError("target_ambiguous" if matches else "target_not_found")
-            raw = matches[0]["target_id"]
         else:
-            raw = str(args["target_id"])
-        target = SocialTarget.model_validate({"kind": kind, "id": raw})
+            raise SocialError("group_target_required" if kind == "space" else "target_required")
+        try:
+            target = SocialTarget.model_validate({"kind": kind, "id": raw})
+        except ValidationError as exc:
+            raise SocialError("invalid_target_id") from exc
         if kind == "person":
             async with self.database.read_session() as session:
                 raw = await current_person_id(session, str(target.id))
@@ -421,6 +396,38 @@ class SocialService:
         if validate:
             await self.check_target(target)
         return target
+
+    async def send_target(
+        self, selected: dict[str, Any], context: SocialContext
+    ) -> tuple[SocialTarget, str | None, str | None]:
+        """Resolve send's single-key target into (subject, chosen conversation, binding)."""
+        if not selected:
+            kind = "space" if context.space_id else "person"
+            return await self.target(kind, None, context, validate=False), None, None
+        (key, value), *rest = selected.items()
+        if rest or not isinstance(value, str) or not value:
+            raise SocialError("invalid_target")
+        if key in {"person_id", "space_id"}:
+            kind = "person" if key == "person_id" else "space"
+            return await self.target(kind, value, context, validate=False), None, None
+        async with self.database.read_session() as session:
+            if key == "conversation_id":
+                conversation = await session.get(CanonicalConversationModel, value)
+                if conversation is None or not (conversation.space_id or conversation.person_id):
+                    raise SocialError("target_not_found")
+                kind = "space" if conversation.space_id else "person"
+                owner = conversation.space_id or conversation.person_id
+                return await self.target(kind, owner, context, validate=False), value, None
+            if key == "binding_id":
+                binding = await session.get(IdentityBindingModel, value)
+                if binding is None:
+                    raise SocialError("binding_unavailable")
+                if binding.person_id is None:
+                    raise SocialError("binding_requires_person")
+                person = binding.person_id
+        if key == "binding_id":
+            return await self.target("person", person, context, validate=False), None, value
+        raise SocialError("invalid_target")
 
     async def check_target(
         self,
@@ -455,8 +462,9 @@ class SocialService:
         self, target: SocialTarget, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
         async with self.database.read_session() as session:
-            binding_id = args.get("binding_id")
-            conversation_id = args.get("conversation_id") or context.conversation_id
+            selected = args.get("target") or {}
+            binding_id = selected.get("binding_id")
+            conversation_id = selected.get("conversation_id") or context.conversation_id
             conversation = await session.get(CanonicalConversationModel, conversation_id)
             if (
                 binding_id is None
@@ -795,17 +803,10 @@ class SocialService:
         def arguments(part: TransportMessage, index: int) -> dict[str, Any]:
             value = dict(args, text=part.text)
             if part.media is None:
-                for field in (
-                    "artifact_id",
-                    "path",
-                    "name",
-                    "expected_version",
-                    "attachment_kind",
-                    "emoji",
-                ):
+                for field in ("file", "as_file", "sticker"):
                     value.pop(field, None)
             if index != 0:
-                value.pop("reply_to_event_id", None)
+                value.pop("reply_to", None)
             return value
 
         def segments(part: TransportMessage) -> tuple[dict[str, Any], ...]:
@@ -865,7 +866,7 @@ class SocialService:
                 content=content,
                 ledger_segments=segments(part),
                 known_event_id=known_event_id,
-                emoji_request=(args, context) if args.get("emoji") else None,
+                emoji_request=(args, context) if args.get("sticker") else None,
             )
             if "emoji" in result:
                 illustration = result["emoji"]
@@ -928,7 +929,7 @@ class SocialService:
                             "social_sequence_preflight_failed category=%s", type(exc).__name__
                         )
                         await self.receipts.stop_sequence(parent.operation_id, type(exc).__name__)
-                        if args.get("emoji"):
+                        if args.get("sticker"):
                             self.emoji_delivery.wake()
                         break
                     if result.get("status") != OperationStatus.SUCCEEDED.value:
@@ -937,7 +938,7 @@ class SocialService:
                 # A host shutdown ends this dispatch loop, not the accepted
                 # illustration. Unsent child receipts remain prepared.
                 await self.receipts.stop_sequence(parent.operation_id, "CancelledError")
-                if args.get("emoji"):
+                if args.get("sticker"):
                     self.emoji_delivery.wake()
                 raise
         result = await self._sequence_result(parent, context)
@@ -984,8 +985,24 @@ class SocialService:
         context = replace(context, call_id=social_call_key(context.call_id))
         await self._validate_self_context(context)
         await self._validate_person_context(context)
+        selected = args.get("target") or {}
+        if len(selected) > 1:
+            raise SocialError("invalid_target")
+        space_id = selected.get("space_id")
+        if selected.get("binding_id") or selected.get("conversation_id"):
+            async with self.database.read_session() as session:
+                owner = (
+                    await session.get(SpaceBindingModel, selected["binding_id"])
+                    if selected.get("binding_id")
+                    else await session.get(CanonicalConversationModel, selected["conversation_id"])
+                )
+            space_id = owner.space_id if owner is not None else None
+            if not space_id:
+                raise SocialError("group_target_required")
+        elif selected and space_id is None:
+            raise SocialError("group_target_required")
         with model_detail("social_preparation"):
-            target = await self.target("space", args, context, validate=False)
+            target = await self.target("space", space_id, context, validate=False)
         return await self._group_directory(target, args, context)
 
     async def execute(
@@ -993,7 +1010,7 @@ class SocialService:
     ) -> dict[str, Any]:
         from yuki.social.source_keys import social_call_key
 
-        if name == "get_group_members":
+        if name == "get_members":
             return await self.group_members(args, context)
         context = replace(context, call_id=social_call_key(context.call_id))
         if name == "send":
@@ -1002,12 +1019,12 @@ class SocialService:
                 prior = await self.receipts.find(context.turn_id, context.call_id)
                 replay = await self._replay_receipt(args, context, prior)
                 if replay is not None:
-                    if message.emoji is not None:
+                    if message.sticker is not None:
                         illustration = await self._replay_emoji(args, context)
                         if illustration is not None:
                             replay["emoji"] = illustration
                     return replay
-                if message.emoji is not None:
+                if message.sticker is not None:
                     illustration = await self._replay_emoji(args, context)
                     if illustration is not None and not message.text.strip():
                         return {
@@ -1021,9 +1038,9 @@ class SocialService:
                 if choice is not None:
                     return choice
         await self._validate_self_context(context)
-        if name not in {"send", "query_chat_history", "find_conversations"}:
+        if name not in {"send", "read_chat"}:
             await self._validate_person_context(context)
-        if name == "query_chat_history":
+        if name == "read_chat":
             from yuki.social.history import read_history
 
             return await read_history(self.database, args, context)
@@ -1031,34 +1048,20 @@ class SocialService:
             from yuki.social.contacts import read_contacts
 
             return await read_contacts(self, args, context)
-        if name == "find_conversations":
-            from yuki.social.contacts import read_conversations
-
-            return await read_conversations(self, args, context)
-        if name == "recall_own_message":
+        if name == "recall_message":
             return await self._recall(args, context)
-        if name == "send":
-            selected = args.get("target") or {}
-            if not isinstance(selected, dict):
-                raise SocialError("invalid_message_arguments")
-            kind = selected.get("kind") or ("space" if context.space_id else "person")
-            if kind not in {"person", "space"}:
-                raise SocialError("invalid_target_kind")
-            if set(selected) - {"kind", "target_id", "binding_id", "conversation_id"}:
-                raise SocialError("invalid_message_arguments")
-            if args.get("target") and not selected.get("target_id"):
-                raise SocialError("target_selector_conflict")
-            target_args = selected
-        else:
+        if name != "send":
             raise SocialError("unknown_tool")
+        selected = args.get("target") or {}
+        if not isinstance(selected, dict):
+            raise SocialError("invalid_target")
         with model_detail("social_preparation"):
-            target = await self.target(kind, target_args, context, validate=False)
+            target, selected_entry, selected_binding = await self.send_target(selected, context)
         with model_detail("social_preparation"):
             known_event_id = await self.check_target(target)
             original_route = (
                 prior.prepared.get("route") if prior is not None and prior.prepared else None
             )
-            selected_entry = (args.get("target") or {}).get("conversation_id")
             if original_route is not None:
                 route = await self._stored_route(target, original_route)
             elif selected_entry:
@@ -1082,9 +1085,7 @@ class SocialService:
                     if not belongs:
                         raise SocialError("target_entry_mismatch")
             else:
-                route = await self.send_route(
-                    target, context, (args.get("target") or {}).get("binding_id")
-                )
+                route = await self.send_route(target, context, selected_binding)
             operations = self.router.operations(route)
             if prior is not None and prior.prepared is not None:
                 from yuki.social.content import PreparedContent
@@ -1110,7 +1111,7 @@ class SocialService:
                         operations=operations,
                     )
             mentions = prepared.message.mentions
-            deferred_only = message.emoji is not None and not prepared.message.text.strip()
+            deferred_only = message.sticker is not None and not prepared.message.text.strip()
             ledger: list[dict[str, Any]] = []
             for mention in mentions:
                 data = asdict(mention)
@@ -1120,10 +1121,8 @@ class SocialService:
                 }
                 ledger.append({"type": "mention", "data": data})
             reference = None
-            if args.get("reply_to_event_id") is not None:
-                reference = await self.reply_reference(
-                    args["reply_to_event_id"], target, route, context
-                )
+            if args.get("reply_to") is not None:
+                reference = await self.reply_reference(args["reply_to"], target, route, context)
             if message.text:
                 ledger.append({"type": "text", "data": {"text": prepared.message.text}})
             media = None
@@ -1136,7 +1135,7 @@ class SocialService:
                 except Exception as exc:
                     emoji_error = str(exc) if isinstance(exc, SocialError) else type(exc).__name__
                 if emoji_source is not None:
-                    emoji_source["reply_to_event_id"] = args.get("reply_to_event_id")
+                    emoji_source["reply_to_event_id"] = args.get("reply_to")
                 illustration = await self._admit_emoji(
                     args, context, target, emoji_source, emoji_error
                 )
@@ -1146,7 +1145,8 @@ class SocialService:
                     else "failed",
                     "emoji": illustration,
                 }
-            if message.path is not None:
+            artifact_id = message.file.artifact_id if message.file is not None else None
+            if message.file is not None and message.file.path is not None:
                 published = await self._path_artifact(message, args, context, target, prior)
                 if published.get("error"):
                     return {
@@ -1154,15 +1154,25 @@ class SocialService:
                         "status": "uncertain" if published.get("uncertain") else "failed",
                         "target": target.model_dump(mode="json"),
                     }
-                message = message.model_copy(update={"artifact_id": UUID(published["artifact_id"])})
-            if message.artifact_id is not None:
+                artifact_id = UUID(published["artifact_id"])
+            if artifact_id is not None:
+                from yuki.services.native_media import image_extension
+
                 metadata, artifact_bytes = await asyncio.to_thread(
-                    self.workspace_service.store.read_bytes, str(message.artifact_id)
+                    self.workspace_service.store.read_bytes, str(artifact_id)
                 )
                 if not metadata["immutable"]:
                     raise SocialError("artifact_not_immutable")
+                # A selected sticker is always shown as one; otherwise real image
+                # bytes display as an image unless the model asked for a file.
+                attachment_kind = (
+                    "image"
+                    if context.deferred_emoji_id is not None
+                    or (not message.as_file and image_extension(artifact_bytes[:16]) is not None)
+                    else "file"
+                )
                 media = TransportMedia(
-                    message.attachment_kind or "file",
+                    attachment_kind,
                     artifact_bytes,
                     metadata["name"],
                     (context.media_metadata or {}).get("mime_type")
@@ -1172,9 +1182,9 @@ class SocialService:
                 )
                 ledger.append(
                     {
-                        "type": message.attachment_kind,
+                        "type": attachment_kind,
                         "data": {
-                            "artifact_id": str(message.artifact_id),
+                            "artifact_id": str(artifact_id),
                             "name": metadata["name"],
                             "filename": metadata["name"],
                             "version": metadata["sha256"],
@@ -1202,7 +1212,7 @@ class SocialService:
         )
         if prepared.unresolved:
             receipt["unresolved_mentions"] = list(prepared.unresolved)
-        if message.emoji is not None:
+        if message.sticker is not None:
             receipt.setdefault(
                 "emoji", {"status": "not_accepted", "error": "emoji_delivery_unavailable"}
             )
@@ -1468,7 +1478,7 @@ class SocialService:
                                 event_ids=(
                                     context.trigger_event_id,
                                     context.caused_by_event_id,
-                                    args.get("reply_to_event_id"),
+                                    args.get("reply_to"),
                                 ),
                                 person_id=getattr(context.actor, "person_id", None),
                             )
@@ -1483,7 +1493,7 @@ class SocialService:
                                 content=content or "",
                                 segments=ledger_segments or (),
                                 reference=None,
-                                reply_to_event_id=args.get("reply_to_event_id"),
+                                reply_to_event_id=args.get("reply_to"),
                                 prepared=prepared_append,
                             )
                             settlement = await self.receipts.finish(
@@ -1546,7 +1556,7 @@ class SocialService:
                 context=context,
                 content=content,
                 ledger_segments=ledger_segments,
-                reply_to_event_id=args.get("reply_to_event_id") if action == "send" else None,
+                reply_to_event_id=args.get("reply_to") if action == "send" else None,
                 destination_kind=target.kind,
             )
         finally:

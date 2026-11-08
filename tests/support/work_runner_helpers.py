@@ -117,3 +117,39 @@ async def run(test_case):
     return await test_case.runner.run(
         (ChatMessage("user", "请修复并报告"),), test_case.runtime, test_case.backend
     )
+
+
+async def derive_business_child(repository, lease, parent_work_id, key, goal):
+    """A historical business child Work (no worker brief) under ``parent_work_id``.
+
+    The model-facing derive action is retired; existing databases still hold
+    such children, so settlement and purge tests keep creating them directly.
+    """
+    from sqlalchemy import select
+
+    from yuki.runtime.work_repository import encode_json
+    from yuki.runtime.work_schema_v1 import work
+
+    async with repository.database.read_session() as reader:
+        parent_source = (
+            await reader.execute(
+                select(work.c.source_json).where(
+                    work.c.id == parent_work_id,
+                    work.c.conversation_id == lease.conversation_id,
+                    work.c.generation == lease.generation,
+                )
+            )
+        ).scalar_one()
+    source = json.loads(parent_source)
+    async with repository.database.immediate_session() as session:
+        await repository._assert_lease(session, lease)
+        return await repository.accept_in_session(
+            session,
+            lease,
+            source_key=key,
+            source=source,
+            prepared_source_json=encode_json(source),
+            goal=goal,
+            parent_work_id=parent_work_id,
+            initial_state="queued",
+        )

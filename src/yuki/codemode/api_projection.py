@@ -139,17 +139,22 @@ def receipt_view(
     except ValueError:
         value = {"ok": False, "error": "tool_result_not_json"}
     if not isinstance(value, dict):
-        value = {"ok": True, "data": value}
+        value = {"result": value}
     ok = evidence.get("ok") is True
     uncertain = evidence.get("uncertain") is True
-    data = value.get("data")
+    truncated = bool(value.get("truncated")) or bool(value.get("result_unavailable"))
+    # A full success result is the business data itself; a truncated one carries
+    # its preview under ``data``; a failure keeps its remaining facts.
+    data = value.get("data") if truncated else value if ok else None
     pending = evidence.get("pending") is True
     error_code = evidence.get("error_code")
     error = None
     if not ok:
         error = {
             "code": str(error_code or "tool_failed"),
-            "message": str(value.get("public_message") or value.get("detail") or "")[:1000],
+            "message": str(
+                value.get("message") or value.get("public_message") or value.get("detail") or ""
+            )[:1000],
             "retry": "same_id_query" if uncertain else "never",
         }
     if uncertain:
@@ -162,7 +167,6 @@ def receipt_view(
         status = "not_executed"
     else:
         status = "failed"
-    truncated = bool(value.get("truncated")) or bool(value.get("result_unavailable"))
     return ToolReceiptView(
         status=status,
         ok=ok,
@@ -187,6 +191,7 @@ _ENVELOPE = frozenset(
         "ok",
         "error",
         "error_code",
+        "message",
         "public_message",
         "detail",
         "executed",

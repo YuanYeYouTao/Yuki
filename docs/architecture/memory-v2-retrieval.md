@@ -7,7 +7,8 @@
 
 真实请求者和目标选择器交给 `MemoryReadScopeResolver`。没有 target 时，在数据库层筛选本次主体
 有权读取的 Person、PersonGroup、Group 和当前可见 SELF。历史 owner 没有活跃平台 Binding 仍可检索。
-人物、群名片、subject_ref 和群选择器不承担授权证明。多个冲突人物选择器明确拒绝。
+模型工具的 target 只接受单键 `{person_id}`、`{space_id}` 或 `{"self": true}`，按内部 ID 查找，
+不承担授权证明；名称选择器已从模型工具删除。`since`／`until` 须带时区，until 不含。
 原始私聊、完整 evidence、他人的 private SELF 继续使用各自真实权限边界。
 已知主体沿调用链传内部 Person/Space；账号换绑不改写原事实与历史 membership 的 owner。
 同一人归并集合用于本人、subject、private SELF 和共同群 SQL 判断，无 Binding 的来源人物也纳入；

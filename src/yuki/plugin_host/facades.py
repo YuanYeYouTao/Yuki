@@ -153,7 +153,6 @@ from yuki.persistence.scoped_event_uow import prepare_append
 from yuki.plugin_host.main_turn import close_plugin_main_tasks
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
-from yuki.services.history_query import HistoryQuery
 from yuki.social.confirmed_content import content_sources_retained
 from yuki.social.service import SocialContext
 from yuki_plugin_sdk.results import PluginResult
@@ -982,10 +981,8 @@ class _MessageFacade:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-
-        request = HistoryQuery(
-            keyword=query, limit=limit, cursor=cursor, match=match, exclude=exclude
-        )
+        if limit <= 0 or (cursor is not None and cursor <= 0):
+            raise ValueError("history limit and cursor must be positive")
 
         async with ledger._database.read_session() as session:
             await session.execute(text("BEGIN"))
@@ -995,11 +992,11 @@ class _MessageFacade:
             page = await ledger.query_history(
                 session=session,
                 conversation_id=conversation.id,
-                limit=request.limit or 20,
-                cursor=request.cursor,
-                keyword=request.keyword,
-                match=request.match,
-                exclude=request.exclude,
+                limit=limit,
+                cursor=cursor,
+                keyword=query,
+                match=match,
+                exclude=exclude,
                 predicates=await _conversation_delivery_predicates(session, conversation),
             )
         return tuple(_record_message(row) for row in reversed(page.events))
@@ -1169,7 +1166,7 @@ class _GroupFacade:
         actor = _invocation_actor(invocation)
 
         result = await social.group_members(
-            {"target_id": target, "limit": _bounded_limit(limit, maximum=100)},
+            {"target": {"space_id": target}, "limit": _bounded_limit(limit, maximum=100)},
             SocialContext(
                 f"plugin:{self._host.plugin_id}",
                 "members",
@@ -2497,13 +2494,11 @@ async def _send_social(
         result = None
         current_target = invocation.space_id if target_type == "group" else invocation.person_id
         if target_id != current_target:
-            args["target"] = {
-                "kind": "space" if target_type == "group" else "person",
-                "target_id": target_id,
-            }
+            args["target"] = {"space_id" if target_type == "group" else "person_id": target_id}
         if media_reference is not None:
             artifact_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{state.identity}:{call_id}:media"))
-            args.update(artifact_id=artifact_id, attachment_kind="image")
+            # Plugin media is shown as an image; real image bytes keep that default.
+            args["file"] = {"artifact_id": artifact_id}
 
             store = social.workspace_service.store
             prior = await social.receipts.find(state.identity, call_id)

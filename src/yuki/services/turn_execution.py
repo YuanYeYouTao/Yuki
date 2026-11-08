@@ -231,14 +231,14 @@ class _PrimaryDispatch:
 
 
 def _needs_neutral_foreground(call: ToolCall) -> bool:
-    """The model's own accept/resume use the original control path, not a Host Work."""
-    if call.function.name != "task_control":
+    """The model's own start/resume use the original control path, not a Host Work."""
+    if call.function.name != "manage_task":
         return False
     try:
         arguments = json.loads(call.function.arguments)
     except ValueError:
         return False
-    return isinstance(arguments, dict) and arguments.get("action") in {"accept", "resume"}
+    return isinstance(arguments, dict) and arguments.get("action") in {"start", "resume"}
 
 
 class TurnExecution:

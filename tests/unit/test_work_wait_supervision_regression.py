@@ -14,15 +14,13 @@ from yuki.runtime.work_wait import WorkWaitRepository
 async def test_auxiliary_activation_cannot_turn_original_wait_into_quiet_completion(
     database, tmp_path
 ):
-    wait = {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 1800}]}
+    wait = {"for": [{"seconds": 1800}]}
     probe = await case(
         database,
         tmp_path,
         [
-            ChatResponse("", 0, tool_calls=(tool("task_control", wait, "original-wait"),)),
-            ChatResponse(
-                "", 0, tool_calls=(tool("task_control", wait, "new-wait-after-stray-wake"),)
-            ),
+            ChatResponse("", 0, tool_calls=(tool("wait", wait, "original-wait"),)),
+            ChatResponse("", 0, tool_calls=(tool("wait", wait, "new-wait-after-stray-wake"),)),
             ChatResponse("", 0),
         ],
     )

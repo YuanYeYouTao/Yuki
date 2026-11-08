@@ -58,22 +58,18 @@ async def test_main_argument_errors_can_be_corrected_without_duplicate_native_di
     async def invoke(arguments, invocation_key):
         token = current_invocation.set(ToolInvocationContext(runtime, invocation_key))
         try:
-            return await tools.execute("external_agent", json.dumps(arguments), runtime)
+            name = "use_coding_agent" if "action" in arguments else "get_coding_agents"
+            return await tools.execute(name, json.dumps(arguments), runtime)
         finally:
             current_invocation.reset(token)
 
     computer = await NativeComputer(bridge).start()
     try:
-        instance, session = await directory(bridge)
-        prompt = {
-            "action": "prompt",
-            "instance_id": instance,
-            "session_id": session,
-            "prompt": "test",
-        }
+        _instance, session = await directory(bridge)
+        prompt = {"action": "prompt", "target": {"session_id": session}, "prompt": "test"}
         denied = await invoke(prompt, "original-prompt")
         assert denied.error_code == "accept_work_before_execution"
-        assert "task_control(action=accept)" in denied.public_message
+        assert "manage_task(action=start)" in denied.public_message
         assert not any(command["action"] == "prompt" for command in computer.commands)
         async with accepted_work(bridge):
             original = await invoke(prompt, "original-prompt")
@@ -87,21 +83,21 @@ async def test_main_argument_errors_can_be_corrected_without_duplicate_native_di
                 {"native_request_id": 0, "connection_id": "original-native-connection"},
             )
             observed = await invoke(
-                {"action": "get", "operation_id": receipt["operation_id"]}, "read-original"
+                {"target": {"operation_id": receipt["operation_id"]}}, "read-original"
             )
             permission = observed.data["events"][0]["permission_id"]
             response = {
-                "action": "respond",
-                "instance_id": instance,
-                "execution_id": receipt["execution_id"],
-                "permission_id": permission,
-                "option_id": "accept",
+                "action": "answer",
+                "target": {"execution_id": receipt["execution_id"]},
+                "question": permission,
+                "answer": "accept",
             }
             missing = await invoke(response, "original-response")
             assert missing.error_code == "operation_id_required"
-            assert "operation_id" in missing.public_message and "run_id" in missing.public_message
+            assert "operation_id" in missing.public_message
             assert not any(command["action"] == "respond" for command in computer.commands)
-            response[reference] = receipt[reference]
+            # The original supervision run ID also names the original operation.
+            response["target"] = {"operation_id": receipt[reference]}
             answered = await invoke(response, "original-response")
             assert answered.ok
             repeated = await invoke(response, "original-response")

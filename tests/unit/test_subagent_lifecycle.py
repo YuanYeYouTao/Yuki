@@ -11,7 +11,7 @@ from tests.support.work_runner_helpers import case, run, tool
 from yuki.domain.messages import ChatResponse
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.subagent_schema import children
-from yuki.runtime.subagent_tools import execute_subagent
+from yuki.runtime.subagent_tools import manage_subtask, message_task, start_subtask
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkConflict
@@ -28,14 +28,12 @@ async def worker_case(database, tmp_path, calls, *, close_parent=False, wait_par
         parent.lease, parent.current["id"], "original-worker", {"goal": "original child goal"}
     )
     if close_parent:
-        await parent.execute("task_control", {"action": "complete"}, "parent-complete")
+        await parent.execute("manage_task", {"action": "finish"}, "parent-complete")
         await parent.settle(pending_inputs=False)
         assert parent.current["state"] == "completed"
     if wait_parent:
-        waited = json.loads(
-            await parent.execute("task_control", {"action": "wait", "run_id": identity}, "wait")
-        )
-        assert waited["ok"], waited
+        waited = json.loads(await parent.execute("wait", {"for": [{"run": identity}]}, "wait"))
+        assert waited.get("ok") is not False, waited
         await parent.settle(pending_inputs=False)
         assert parent.current["state"] == "waiting_external"
     lease = await workers.acquire(identity)
@@ -136,16 +134,15 @@ async def test_work_control_keeps_an_actual_unknown_commit_ack(database, tmp_pat
             fault.setattr(AsyncSession, "commit", lose_ack)
             result = json.loads(
                 await probe.control.execute(
-                    "task_control",
+                    "manage_task",
                     {"action": "update", "goal": "actual committed goal"},
                     "original-update",
                 )
             )
     finally:
         current_result_capture.reset(token)
-    assert result["ok"] is False and result["uncertain"] is True
-    assert result.get("mutation_committed") is None and result["retryable"] is False
-    assert result["metadata"]["database_write_phase"] == "commit"
+    assert result["ok"] is False and result["status"] == "unknown"
+    assert result["error"] == "database_failure"
     assert capture.outcome.uncertain and capture.outcome.mutation_committed is None
     assert commits == 1
     stored = await probe.repository.get(probe.control.current["id"])
@@ -158,14 +155,9 @@ async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_chi
     probe, parent, workers, identity = await worker_case(database, tmp_path, ())
     database.subagents_enabled = False
     direct = json.loads(
-        await probe.control.execute("subagent_start", {"goal": "new child"}, "disabled-start")
+        await probe.control.execute("start_subtask", {"goal": "new child"}, "disabled-start")
     )
-    derived = json.loads(
-        await probe.control.execute(
-            "task_control", {"action": "derive", "goal": "new child"}, "disabled-derive"
-        )
-    )
-    assert direct == derived == {"ok": False, "error": "subagent_admission_disabled"}
+    assert direct["ok"] is False and direct["error"] == "subagent_admission_disabled"
     async with database.read_session() as reader:
         assert list(await reader.scalars(select(children.c.work_id))) == [identity]
     # The original accepted call keeps its identity after new admission closes.
@@ -191,21 +183,15 @@ async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_chi
     )
     completed = json.loads(
         await resumed.execute(
-            "task_control", {"action": "complete", "result": "original result"}, "complete"
+            "manage_task", {"action": "finish", "result": "original result"}, "complete"
         )
     )
-    assert completed["ok"], completed
+    assert completed.get("ok") is not False, completed
     await resumed.settle(pending_inputs=False)
     await workers.finish(lease)
     result = await workers.related(parent.current["id"], identity, include_checkpoint=True)
     assert json.loads(result["result_json"])["text"] == "original result"
     assert len(await parent.pending()) == 1
-    ordinary = await probe.repository.derive(
-        parent.lease, parent.current["id"], "ordinary-subgoal", "continue the business goal"
-    )
-    assert ordinary["parent_work_id"] == parent.current["id"]
-    async with database.read_session() as reader:
-        assert list(await reader.scalars(select(children.c.work_id))) == [identity]
     await probe.repository.release(lease)
     await probe.repository.release(parent.lease)
 
@@ -213,15 +199,16 @@ async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_chi
 async def test_parent_complete_still_dispatches_original_child(database, tmp_path):
     database.subagents_enabled = True
     calls = (
-        tool("task_control", {"action": "complete"}, "complete-parent"),
-        tool("subagent_start", {"goal": "dispatch original child"}, "spawn-child"),
+        tool("manage_task", {"action": "finish"}, "complete-parent"),
+        tool("start_subtask", {"goal": "dispatch original child"}, "spawn-child"),
     )
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     await run(probe)
     spawned = receipts(probe.control)["spawn-child"]
-    assert spawned["ok"], spawned
+    assert spawned.get("ok") is not False, spawned
     await probe.control.settle(pending_inputs=False)
-    child = await probe.repository.get(spawned["child_id"])
+    assert spawned["status"] == "running"
+    child = await probe.repository.get(spawned["id"])
     assert child["state"] == "queued" and child["parent_work_id"] == probe.control.current["id"]
     assert probe.control.current["state"] == "completed"
     lease = await SubagentRepository(probe.repository).acquire(child["id"])
@@ -234,21 +221,17 @@ async def test_worker_complete_keeps_mail_delivery_grandchild_and_finish_receipt
     database, tmp_path
 ):
     calls = (
-        tool("task_control", {"action": "complete", "result": "actual child result"}, "complete"),
-        tool(
-            "subagent_control",
-            {"action": "message", "text": "detailed parent report"},
-            "report",
-        ),
-        tool("subagent_start", {"goal": "independent nested step"}, "spawn-grandchild"),
+        tool("manage_task", {"action": "finish", "result": "actual child result"}, "complete"),
+        tool("message_task", {"text": "detailed parent report"}, "report"),
+        tool("start_subtask", {"goal": "independent nested step"}, "spawn-grandchild"),
         tool("send", {"text": "group deliverable"}, "delivery"),
     )
     probe, parent, workers, identity = await worker_case(database, tmp_path, calls)
     await run(probe)
     paired = receipts(probe.control)
-    assert all(paired[call.id]["ok"] for call in calls)
+    assert all(paired[call.id].get("ok") is not False for call in calls)
     assert probe.observed == ["send"]
-    nested = await probe.repository.get(paired["spawn-grandchild"]["child_id"])
+    nested = await probe.repository.get(paired["spawn-grandchild"]["id"])
     assert nested["parent_work_id"] == identity and nested["state"] == "queued"
     await probe.control.settle(pending_inputs=False)
     await workers.finish(probe.control.lease)
@@ -272,24 +255,20 @@ async def test_child_question_keeps_its_remaining_calls_and_retires_parent_compl
     database, tmp_path
 ):
     calls = (
-        tool(
-            "subagent_control",
-            {"action": "message", "text": "which artifact?", "ask": True},
-            "question",
-        ),
+        tool("message_task", {"text": "which artifact?", "ask": True}, "question"),
         tool("write_fixture", {}, "save"),
-        tool("subagent_start", {"goal": "independent nested step"}, "spawn"),
+        tool("start_subtask", {"goal": "independent nested step"}, "spawn"),
     )
     probe, parent, workers, identity = await worker_case(database, tmp_path, calls)
     result = await run(probe)
     assert result.work_state == "waiting_user"
-    assert all(receipts(probe.control)[call.id]["ok"] for call in calls)
+    assert all(receipts(probe.control)[call.id].get("ok") is not False for call in calls)
     assert probe.observed == ["write_fixture"]
     assert await parent.has_pending_business_inputs()
     await probe.control.settle(pending_inputs=False)
     await workers.finish(probe.control.lease)
     await probe.repository.release(probe.control.lease)
-    await parent.execute("task_control", {"action": "complete"}, "unobserved-complete")
+    await parent.execute("manage_task", {"action": "finish"}, "unobserved-complete")
     await parent.settle(pending_inputs=True)
     assert (await probe.repository.get(parent.current["id"]))["state"] == "queued"
     assert (await probe.repository.get(identity))["state"] == "waiting_user"
@@ -299,13 +278,9 @@ async def test_child_question_keeps_its_remaining_calls_and_retires_parent_compl
 
 async def test_question_to_completed_parent_is_saved_without_pausing_child(database, tmp_path):
     calls = (
-        tool(
-            "subagent_control",
-            {"action": "message", "text": "which artifact?", "ask": True},
-            "question",
-        ),
+        tool("message_task", {"text": "which artifact?", "ask": True}, "question"),
         tool("write_fixture", {}, "save"),
-        tool("task_control", {"action": "complete", "result": "available work done"}, "complete"),
+        tool("manage_task", {"action": "finish", "result": "available work done"}, "complete"),
     )
     probe, parent, workers, identity = await worker_case(
         database, tmp_path, calls, close_parent=True
@@ -313,7 +288,7 @@ async def test_question_to_completed_parent_is_saved_without_pausing_child(datab
     parent_before = await probe.repository.get(parent.current["id"])
     await run(probe)
     paired = receipts(probe.control)
-    assert paired["question"]["ok"] and paired["question"]["waiting_parent"] is False
+    assert paired["question"].get("ok") is not False and "status" not in paired["question"]
     assert probe.observed == ["write_fixture"]
     await probe.control.settle(pending_inputs=False)
     await workers.finish(probe.control.lease)
@@ -329,12 +304,8 @@ async def test_complete_then_question_accepts_only_a_consumable_parent_wait(
     database, tmp_path, close_parent
 ):
     calls = (
-        tool("task_control", {"action": "complete", "result": "earlier result"}, "complete"),
-        tool(
-            "subagent_control",
-            {"action": "message", "text": "need your choice", "ask": True},
-            "ask-after-complete",
-        ),
+        tool("manage_task", {"action": "finish", "result": "earlier result"}, "complete"),
+        tool("message_task", {"text": "need your choice", "ask": True}, "ask-after-complete"),
         tool("write_fixture", {}, "save-after-question"),
     )
     probe, parent, workers, identity = await worker_case(
@@ -342,8 +313,9 @@ async def test_complete_then_question_accepts_only_a_consumable_parent_wait(
     )
     await run(probe)
     paired = receipts(probe.control)
-    assert paired["ask-after-complete"]["waiting_parent"] is not close_parent
-    assert paired["save-after-question"]["ok"] and probe.observed == ["write_fixture"]
+    assert (paired["ask-after-complete"].get("status") == "waiting_parent") is not close_parent
+    assert paired["save-after-question"].get("ok") is not False
+    assert probe.observed == ["write_fixture"]
     assert probe.control.accepted["action"] == ("complete" if close_parent else "need_input")
     await probe.control.settle(pending_inputs=False)
     await workers.finish(probe.control.lease)
@@ -359,13 +331,10 @@ async def test_saved_child_question_wait_survives_activation_failure_or_restart(
     database, tmp_path, restart
 ):
     probe, parent, workers, identity = await worker_case(database, tmp_path, ())
-    receipt = await execute_subagent(
-        probe.control,
-        "subagent_control",
-        {"action": "message", "text": "need your choice", "ask": True},
-        "question",
+    receipt = await message_task(
+        probe.control, {"text": "need your choice", "ask": True}, "question"
     )
-    assert receipt["waiting_parent"] is True
+    assert receipt["status"] == "waiting_parent"
     original = await probe.repository.get(identity)
     accepted = json.loads(original["checkpoint_json"])["accepted_control"]
     assert accepted == {
@@ -403,13 +372,7 @@ async def test_saved_child_question_wait_survives_activation_failure_or_restart(
 async def test_child_question_wakes_parent_from_owned_wait_then_answer_resumes_original_child(
     database, tmp_path
 ):
-    calls = (
-        tool(
-            "subagent_control",
-            {"action": "message", "text": "which result?", "ask": True},
-            "question",
-        ),
-    )
+    calls = (tool("message_task", {"text": "which result?", "ask": True}, "question"),)
     probe, parent, workers, identity = await worker_case(
         database, tmp_path, calls, wait_parent=True
     )
@@ -426,12 +389,10 @@ async def test_child_question_wakes_parent_from_owned_wait_then_answer_resumes_o
     await parent.confirm_inputs()
     answer = json.loads(
         await parent.execute(
-            "subagent_control",
-            {"action": "message", "child_id": identity, "text": "publish the first result"},
-            "answer",
+            "message_task", {"id": identity, "text": "publish the first result"}, "answer"
         )
     )
-    assert answer["ok"] and answer["waiting_parent"] is False
+    assert answer.get("ok") is not False and "status" not in answer
     row = await probe.repository.get(identity)
     assert row["state"] == "queued" and row["parent_work_id"] == parent.current["id"]
     resumed = await workers.acquire(identity)
@@ -478,32 +439,19 @@ async def test_foreground_manages_original_child_without_accepting_another_work(
             .one()
         )
         original_work_ids = set(await reader.scalars(select(work.c.id)))
-    for action in ("list", "status", "result"):
-        result = await execute_subagent(
-            parent, "subagent_control", {"action": action, "child_id": identity}, action
-        )
-        assert result["ok"] and result["children"][0]["child_id"] == identity
-    await execute_subagent(
-        parent, "subagent_control", {"action": "resume", "child_id": identity}, "resume"
+    listed = json.loads(
+        await parent.execute("get_tasks", {"parent": original_parent["id"]}, "list")
     )
-    await execute_subagent(
-        parent,
-        "subagent_control",
-        {"action": "message", "child_id": identity, "text": "continue original task"},
-        "update",
-    )
+    assert [task["id"] for task in listed["tasks"]] == [identity]
+    viewed = json.loads(await parent.execute("get_tasks", {"id": identity}, "status"))
+    assert viewed["id"] == identity and viewed["status"] == "waiting_parent"
+    await manage_subtask(parent, "resume", identity, "resume", None)
+    await message_task(parent, {"id": identity, "text": "continue original task"}, "update")
     resumed = await workers.acquire(identity)
     assert resumed is not None
     with pytest.raises(WorkConflict, match="work_activation_obsolete"):
-        await execute_subagent(
-            probe.control,
-            "subagent_control",
-            {"action": "message", "text": "obsolete lease"},
-            "obsolete",
-        )
-    await execute_subagent(
-        parent, "subagent_control", {"action": "cancel", "child_id": identity}, "cancel-original"
-    )
+        await message_task(probe.control, {"text": "obsolete lease"}, "obsolete")
+    await manage_subtask(parent, "cancel", identity, "cancel-original", None)
     assert not await probe.repository.valid(resumed)
     after = await probe.repository.get(identity)
     assert after["state"] == "cancelled"
@@ -530,22 +478,23 @@ async def test_foreground_manages_original_child_without_accepting_another_work(
     await probe.repository.release(parent.lease)
 
 
-@pytest.mark.parametrize("action", ["list", "status", "result", "cancel", "resume", "message"])
+@pytest.mark.parametrize("action", ["get", "cancel", "resume", "message"])
 async def test_foreground_subagent_tools_retain_real_actor_scope(database, tmp_path, action):
     probe, parent, _workers, identity = await worker_case(database, tmp_path, (), close_parent=True)
     await probe.repository.release(probe.control.lease)
     before = await probe.repository.get(identity)
     parent.current = None
     parent.source = {**parent.source, "actor_person_id": "different-actual-person"}
-    if action == "list":
-        result = await execute_subagent(parent, "subagent_control", {"action": "list"}, "list")
-        assert result["children"] == []
+    if action == "get":
+        # The directory row is visible; private progress and the child result are not.
+        result = json.loads(await parent.execute("get_tasks", {"id": identity}, "get"))
+        assert result["progress_available"] is False and "result" not in result
+    elif action == "message":
+        with pytest.raises(ValueError, match="subtask_not_owned"):
+            await message_task(parent, {"id": identity, "text": "borrowed"}, action)
     else:
-        name = "subagent_control"
-        with pytest.raises(ValueError, match="subagent_not_owned"):
-            await execute_subagent(
-                parent, name, {"action": action, "child_id": identity, "text": "borrowed"}, action
-            )
+        with pytest.raises(ValueError, match="subtask_not_owned"):
+            await manage_subtask(parent, action, identity, action, "borrowed")
     assert await probe.repository.get(identity) == before
     await probe.repository.release(parent.lease)
 
@@ -556,13 +505,8 @@ async def test_question_does_not_resume_an_independently_suspended_parent(databa
     suspended = await probe.repository.transition(
         parent.lease, current["id"], current["revision"], "suspended", reason="context_capacity"
     )
-    response = await execute_subagent(
-        probe.control,
-        "subagent_control",
-        {"action": "message", "text": "need your choice", "ask": True},
-        "ask",
-    )
-    assert response["waiting_parent"] is True
+    response = await message_task(probe.control, {"text": "need your choice", "ask": True}, "ask")
+    assert response["status"] == "waiting_parent"
     assert await probe.repository.get(parent.current["id"]) == suspended
     assert await parent.has_pending_business_inputs()
     await probe.repository.release(probe.control.lease)
@@ -573,8 +517,8 @@ async def test_new_child_still_requires_an_actual_work_owner(database, tmp_path)
     probe = await case(database, tmp_path, [])
     database.subagents_enabled = True
     probe.control.current = None
-    with pytest.raises(ValueError, match="accept_work_before_execution"):
-        await execute_subagent(probe.control, "subagent_start", {"goal": "no owner"}, "start")
+    with pytest.raises(ValueError, match="subtask_requires_current_task"):
+        await start_subtask(probe.control, {"goal": "no owner"}, "start")
     async with database.read_session() as reader:
         assert list(await reader.scalars(select(children.c.work_id))) == []
     await probe.repository.release(probe.control.lease)
@@ -585,7 +529,7 @@ async def test_question_and_completion_writer_order_preserves_truth(
     database, tmp_path, question_first
 ):
     probe, parent, workers, identity = await worker_case(database, tmp_path, ())
-    await parent.execute("task_control", {"action": "complete"}, "parent-complete")
+    await parent.execute("manage_task", {"action": "finish"}, "parent-complete")
     # Release the active worker lease so the parent is not merely draining an
     # active child; the question owns the continuation in this race.
     await probe.repository.release(probe.control.lease)
@@ -610,11 +554,7 @@ async def test_question_and_completion_writer_order_preserves_truth(
             current=row,
         )
         receipt = json.loads(
-            await control.execute(
-                "subagent_control",
-                {"action": "message", "text": "need decision", "ask": True},
-                "ask",
-            )
+            await control.execute("message_task", {"text": "need decision", "ask": True}, "ask")
         )
         allowed.set()
         await probe.repository.release(lease)
@@ -627,7 +567,8 @@ async def test_question_and_completion_writer_order_preserves_truth(
         finished.set()
 
     receipt, _ = await asyncio.gather(question(), complete())
-    assert receipt["ok"] and receipt["waiting_parent"] is question_first
+    assert receipt.get("ok") is not False
+    assert (receipt.get("status") == "waiting_parent") is question_first
     row = await probe.repository.get(parent.current["id"])
     assert row["state"] == ("queued" if question_first else "completed")
     async with database.read_session() as reader:

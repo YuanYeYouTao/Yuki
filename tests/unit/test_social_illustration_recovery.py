@@ -45,7 +45,7 @@ from yuki.social.db_models import SocialEmojiIntentModel
 from yuki.social.emoji_intents import EmojiIntentRepository, derived_call_id
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
 
-ARGS = {"text": "正文", "emoji": {"goal": "开心"}}
+ARGS = {"text": "正文", "sticker": {"goal": "开心"}}
 
 
 @pytest.mark.parametrize("phase", ["selection", "claim"])
@@ -138,7 +138,9 @@ async def test_emoji_admission_and_dispatch_keep_original_codecs_outside_writer(
     monkeypatch.setattr(
         EmojiIntentRepository, "record", staticmethod(checked(EmojiIntentRepository.record))
     )
-    result = await env.service.execute("send", {"text": text, "emoji": ARGS["emoji"]}, env.context)
+    result = await env.service.execute(
+        "send", {"text": text, "sticker": ARGS["sticker"]}, env.context
+    )
     assert result["status"] == ("succeeded" if text else "accepted")
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     await delivery._deliver(intent)
@@ -168,7 +170,7 @@ async def test_emoji_only_admission_preserves_unknown_commit_and_original_intent
             yield writer
 
     monkeypatch.setattr(database, "immediate_session", lose_acknowledgement)
-    arguments = {"emoji": {"goal": "开心"}}
+    arguments = {"sticker": {"goal": "开心"}}
     result = await env.service.execute("send", arguments, env.context)
     assert result["status"] == "unknown"
     assert result["emoji"] == {
@@ -279,7 +281,7 @@ async def test_slow_illustration_does_not_block_another_intent(database, tmp_pat
         await asyncio.wait_for(entered.wait(), 3)
         fast_context = replace(env.context, call_id="independent-fast")
         fast = await env.service.execute(
-            "send", {"text": "第二条正文", "emoji": {"goal": "另一张"}}, fast_context
+            "send", {"text": "第二条正文", "sticker": {"goal": "另一张"}}, fast_context
         )
         assert fast["status"] == "succeeded"
         assert (await settle(delivery, fast_context))["status"] == "succeeded"
@@ -294,7 +296,7 @@ async def test_slow_illustration_does_not_block_another_intent(database, tmp_pat
 async def test_pending_discovery_crosses_a_page_of_active_intents(database, tmp_path):
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
-    await env.service.execute("send", {"emoji": {"goal": "blocked"}}, env.context)
+    await env.service.execute("send", {"sticker": {"goal": "blocked"}}, env.context)
     original = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     async with database.immediate_session() as session:
         row = await session.get(SocialEmojiIntentModel, original.id)
@@ -328,7 +330,7 @@ async def test_pending_discovery_crosses_a_page_of_active_intents(database, tmp_
     await delivery.start()
     try:
         fast_context = replace(env.context, call_id="page-101")
-        await env.service.execute("send", {"emoji": {"goal": "fast"}}, fast_context)
+        await env.service.execute("send", {"sticker": {"goal": "fast"}}, fast_context)
         async with asyncio.timeout(10):
             while True:
                 intent = await delivery.intents.find(fast_context.turn_id, fast_context.call_id)
@@ -390,9 +392,9 @@ async def test_pure_illustration_keeps_internal_reply_and_mention_without_foregr
     result = await env.service.execute(
         "send",
         {
-            "emoji": {"goal": "开心"},
+            "sticker": {"goal": "开心"},
             "text": f"@{{account:{env.account}}}",
-            "reply_to_event_id": event.id,
+            "reply_to": event.id,
         },
         context,
     )
@@ -419,9 +421,7 @@ async def test_same_binding_uses_original_presence_among_two_connected_accounts(
         )
     env.registry.connect(other, provider_id="snowluma", presence_id=presence.id)
     delivery, _ = make_delivery(env)
-    await env.service.execute(
-        "send", {**ARGS, "target": {"kind": "person", "target_id": env.person}}, env.context
-    )
+    await env.service.execute("send", {**ARGS, "target": {"person_id": env.person}}, env.context)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     await delivery._deliver(intent)
     assert (await delivery.project(env.context))["status"] == "succeeded"
@@ -468,9 +468,7 @@ async def test_self_source_presence_is_independent_of_its_actual_private_target(
         env.context, actor=actor, presence_id=env.presence, initiative_run_id=accepted.run.run_id
     )
     delivery, _ = make_delivery(env)
-    text = await env.service.execute(
-        "send", {**ARGS, "target": {"kind": "person", "target_id": env.person}}, context
-    )
+    text = await env.service.execute("send", {**ARGS, "target": {"person_id": env.person}}, context)
     assert text["status"] == "succeeded"
     intent = await delivery.intents.find(context.turn_id, context.call_id)
     assert intent.source["context"]["presence_id"] == env.presence
@@ -486,7 +484,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
     assert await env.router.cas_takeover_person(env.person) == "taken"
     arguments = {
         "text": "same original request",
-        "target": {"kind": "person", "target_id": env.person},
+        "target": {"person_id": env.person},
     }
     target = SocialTarget(kind="person", id=UUID(env.person))
     route = await env.service.send_route(target, env.context)
@@ -656,8 +654,8 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
         result = await env.service.execute(
             "send",
             {
-                "emoji": {"goal": "开心"},
-                "target": {"kind": "space", "target_id": space_binding.space_id},
+                "sticker": {"goal": "开心"},
+                "target": {"space_id": space_binding.space_id},
                 "text": f"@{{account:{person_binding.account_id}}}",
             },
             env.context,
@@ -736,7 +734,7 @@ async def test_admission_commit_acknowledgement_loss_wakes_an_already_sleeping_o
 
     monkeypatch.setattr(delivery.intents, "pending", discover)
     monkeypatch.setattr(delivery.intents, "admit", lose_ack)
-    arguments = {"emoji": ARGS["emoji"]}
+    arguments = {"sticker": ARGS["sticker"]}
     await delivery.start()
     try:
         await asyncio.wait_for(discovered.wait(), 3)
@@ -789,10 +787,10 @@ async def test_account_transfer_does_not_retarget_a_pending_illustration(
 ):
     env = await social_env(database, tmp_path)
     delivery, _ = make_delivery(env)
-    arguments = {"emoji": {"goal": "开心"}}
+    arguments = {"sticker": {"goal": "开心"}}
     if private_target:
         assert await env.router.cas_takeover_person(env.person) == "taken"
-        arguments.update(text="原正文", target={"kind": "person", "target_id": env.person})
+        arguments.update(text="原正文", target={"person_id": env.person})
     else:
         arguments["text"] = f"@{{account:{env.account}}}"
     original = await env.service.execute("send", arguments, env.context)

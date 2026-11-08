@@ -73,16 +73,16 @@ asyncio.run(main())
 """
 
 
-@pytest.mark.parametrize("stop_tool", ["task_control", "lookup"])
+@pytest.mark.parametrize("stop_tool", ["wait", "lookup"])
 async def test_host_death_after_accepted_receipt_restores_original_boundary(
     database, tmp_path, stop_tool
 ):
     env = await environment(database, tmp_path)
     env.audit_native = True
     code = (
-        "await yuki_task_control({'action':'need_input','reason':'Which file?'})\n"
+        "await yuki_wait({'for':[{'message':True}]})\n"
         "await yuki_workspace_write({'path':'after-control'})"
-        if stop_tool == "task_control"
+        if stop_tool == "wait"
         else "print('DURABLE_STDOUT_ONCE')\nawait yuki_lookup({'q':1})\nawait yuki_lookup({'q':2})"
     )
     outer = outer_call(env, code)
@@ -110,7 +110,7 @@ async def test_host_death_after_accepted_receipt_restores_original_boundary(
     env = await recreate(env, outer)
     outer = env.outer
     body = json.loads(await CodeModeDriver(env.host, outer).resume())
-    if stop_tool == "task_control":
+    if stop_tool == "wait":
         assert env.domain.log == [("workspace_write", {"path": "after-control"})]
         assert len(log) == 1
         assert env.control.ending == "waiting_user" and body["status"] == "completed"

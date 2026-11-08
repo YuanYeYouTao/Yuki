@@ -697,7 +697,7 @@ async def test_merged_family_text_query_keeps_original_authors_and_separate_conv
     [
         ("2026-10-21T23:30:00.123456-05:00", "2026-10-22T04:30:00.123458Z"),
         ("2026-10-22T04:30:00.123456Z", "2026-10-22T12:30:00.123458+08:00"),
-        ("2026-10-22T12:30:00.123456", "2026-10-22T12:30:00.123458"),
+        ("2026-10-22T12:30:00.123456+08:00", "2026-10-22T12:30:00.123458+08:00"),
     ],
 )
 async def test_date_offsets_preserve_microseconds_and_half_open_interval(database, start, end):
@@ -713,13 +713,13 @@ async def test_date_offsets_preserve_microseconds_and_half_open_interval(databas
         )
         for offset in (-1, 0, 1, 2)
     ]
-    request = HistoryQuery.model_validate({"start_at": start, "end_at": end})
-    assert request.start_at == beginning
-    assert request.end_at == beginning + timedelta(microseconds=2)
+    request = HistoryQuery.model_validate({"since": start, "until": end})
+    assert request.since == beginning
+    assert request.until == beginning + timedelta(microseconds=2)
     page = await ledger.query_history(
         conversation_id=rows[0].canonical_conversation_id,
-        start_at=request.start_at,
-        end_at=request.end_at,
+        start_at=request.since,
+        end_at=request.until,
         order="oldest",
     )
     assert [row.id for row in page.events] == [rows[1].id, rows[2].id]

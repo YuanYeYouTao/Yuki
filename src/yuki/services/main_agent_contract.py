@@ -114,7 +114,8 @@ class MainAgentContract:
                         # 32: local-device file/system operations with original domain receipts.
                         # 33: retire local_device; native Agent connections use external_agent.
                         # 34: original terminal/file tools explicitly select a personal computer.
-                        "version": 34,
+                        # 35: one-shot tool surface (27 tools, single target, plain results).
+                        "version": 35,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

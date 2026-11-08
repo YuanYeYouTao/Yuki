@@ -41,5 +41,5 @@ async def test_original_unknown_effect_is_never_replayed_and_reads_do_not_own_mu
         independent = await invoke_tool(
             owner, ToolCall("new-write", call.function), invoke, side_effecting=True
         )
-        assert json.loads(independent)["error_code"] == "response_lost"
+        assert json.loads(independent)["error"] == "response_lost"
         assert len(external.read_text().splitlines()) == 2

@@ -3,11 +3,12 @@
 异常、分段、交付与检查点容量遵循 [主 Agent 执行与恢复合同](main-agent-runtime.md)。
 不再维护子 Agent 独有的 SQLite BUSY 重试或旧沙箱进度预算。
 
-主 Yuki 用 `subagent_start` 登记并派出子任务，继续处理聊天；通过
-`subagent_control(action=message)` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
-派生本身已经登记工作，工作者无需再次 `task_control.accept`。
-原目标需要子结果时，将返回的 `child_id` 作为 `task_control.wait` 的 `run_id`；
-同时等会话输入的 `any` 组合和一次命中后的剩余依赖接续见[主 Agent 等待合同](main-agent-runtime.md#预算等待与异常)。
+主 Yuki 用 `start_subtask(goal, context?, acceptance?, files?)` 登记并派出子任务，继续处理聊天；
+通过 `message_task(id, text)` 补充要求，通过 `get_tasks(id=…)` 查询状态与结果（`result`），用
+`manage_task(action=cancel|resume, id)` 取消或恢复同一目标（resume 可在 `text` 附新要求）。子任务就是子 Work，
+返回的 `id` 即 Work ID。派生本身已经登记工作，工作者无需再次 `manage_task(action=start)`。
+原目标需要子结果时用 `wait(for=[{"run": id}])`；
+同时等会话输入的组合和一次命中后的剩余依赖接续见[主 Agent 等待合同](main-agent-runtime.md#预算等待与异常)。
 
 工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
 原入口的 ScriptApi 和 `MainAgentBackend`。App 子任务保留 App 的工具合同，平台子任务保留平台入口的合同；不会把 App 请求换成 QQ 声明。`lookup_tools` 查询同一已提交目录，不维护独立工具
@@ -15,7 +16,7 @@
 通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不以新脚本重做已提交子调用。
 
 用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send`；
-`task_control.answer` 不在公开 action 中。Agent 提交结束决定后，原 writer 只收拢真正活动的所属执行；没有活动执行的暂停/等待子目标保留自身状态，不否决父目标完成。fail/cancel 直接复用指定子树撤权，无需先逐一取消后代或等待远端全部确认。
+模型侧没有单独的回答动作。Agent 提交结束决定后，原 writer 只收拢真正活动的所属执行；没有活动执行的暂停/等待子目标保留自身状态，不否决父目标完成。fail/cancel 直接复用指定子树撤权，无需先逐一取消后代或等待远端全部确认。
 
 只有 Database 确认未提交的 SQLite BUSY，才在同 activation 持有原响应时重备原纯数据库
 发布，沿原租约与取消退出；已 durable response/paired 按原 ID 恢复，未持久且进程退出的响应
@@ -35,7 +36,7 @@ JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(r
 沿当前部署与 Profile 的实际声明，不在 worker 路径额外裁剪。工具执行按 child Work 保存
 原 invocation、调用键、结果和来源；direct 与 Code 路径共用原执行后端。
 
-`workspace_inspect` 读取获准工作文件或不可变 artifact，图片及视频帧交原工作者模型，
+`view_file` 读取获准工作文件、聊天附件或不可变 artifact，图片及视频帧交原工作者模型，
 不另调视觉 Provider。媒体读取最多 20 MiB，主请求仍计入根预算；更大视频可先通过
 终端提取帧或生成较小文件。来源和版本规则见[聊天媒体](chat-media-workspace.md)。
 
@@ -43,7 +44,7 @@ JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(r
 自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
 目标、能力批准和权限。固定 Main 合同不再声明 raw OneBot 管理入口；独立批准的插件 QQ 扩展只在真实 QQ 传输边界执行。
 主、子 Agent 在同一会话交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
-子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台。
+子任务的最终正文和 `manage_task(action=finish, result=...)` 是回给父任务的内部结果，不会自动发到聊天平台。
 父任务按原目标整合成果与交付；需要对外交付时仍显式调用 `send`，已由子任务确认送达的结果不重复发送。
 
 后台执行沿原内部 Conversation、Person/Space、Presence、event/run 和 Work 租约核验。
@@ -52,12 +53,12 @@ JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(r
 迁移前私聊曾由两个 QQ Bot 共用 Conversation 的真实旧执行，只能用原内部事件、原
 Presence 与旧持久 alias 证明其入口；新的私聊按 Binding + Presence 分开，不借旧 alias 合并。
 
-子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_control(action=message)` 指定 child_id 时联系
-自己的子任务；省略时联系自己的父任务。实际提问保存后，只有父任务仍非终态时才接纳 `waiting_parent=true` 并提议子任务等待；父已经终态时仍保存问题，返回 `waiting_parent=false`，不暂停子任务或复活父任务。同一原批次、程序中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验
+子 Agent 用自己的 Work 作为嵌套子任务的父节点。`message_task` 指定 id 时联系
+自己的子任务；省略时联系自己的父任务（`ask=true` 表示提问并等待回答，`reply_to` 填所回答问题的 message_id）。实际提问保存后，只有父任务仍非终态时才接纳等待并返回 `status: "waiting_parent"`；父已经终态时仍保存问题，不暂停子任务或复活父任务。同一原批次、程序中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验
 真实方向与树关系。只读 Work 目录使用 Main 的同一范围，目录信息不授予修改或取消权限。
 工作者默认跟随 Main 模型；Provider/合同变化沿原合法边界恢复，不暗换协议。
 
-工作者也可用 `task_control.wait(conditions)` 等待时间、当前会话、获准插件事件或自己的 run；信号仍投递到原 child Work，由现有调度器恢复，不另建任务。
+工作者也可用 `wait(for=[…])` 等待时间、当前会话、获准插件事件或自己的 run；信号仍投递到原 child Work，由现有调度器恢复，不另建任务。
 
 ## 生命周期
 
@@ -111,7 +112,7 @@ writer 后只重读当前仍合法的候选；其他页继续扫描，没有总�
 
 固定提示词、完整工具顺序/schema 和 Provider 设置在资料包之前。
 工作者的固定提示词包含与主 Agent 相同的 Memory 使用规则，新的记忆查询回执不重复附带该规则。
-普通聊天表达、任务进展反馈与公开资料查证沿同一固定合同；已有 child Work 无需再次 accept。子任务的 `need_input(reason=问题)` 会沿父子通信向父任务提问，并按原回执决定是否等待，无需再调用一次 message。
+普通聊天表达、任务进展反馈与公开资料查证沿同一固定合同；已有 child Work 无需再次 start。子任务用 `message_task(ask=true, text=问题)` 沿父子通信向父任务提问，并按原回执决定是否等待。
 工作者按 Main 的方式准备当前运行资料；既有私有协议不被新 short_state 或目录改写。
 每条链保存实际协议 continuation；普通唤醒只追加，合同或 Provider 改变时建立新链。
 图片按内容哈希单独保存，恢复时还原原始协议内容，不能因内联图片丢掉整条链。
@@ -141,7 +142,7 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 ## 配置、验证与回退
 
 `SUBAGENTS_ENABLED` 默认关闭，由 `SubagentRepository.start` 统一控制新工作者登记；
-`subagent_start` 和工作者的 `task_control(derive)` 使用同一入口。关闭后原调用重放仍返回
+`start_subtask` 是唯一的派生入口（原 `task_control(derive)` 已删除）。关闭后原调用重放仍返回
 原 child ID，已接纳任务继续执行、恢复并提交回执；普通业务子 Work 不受工作者开关影响。
 `AGENT_MAX_MODEL_REQUESTS`、`AGENT_MAX_TOOL_CALLS` 及热配置 `agent.max_model_requests`、
 `agent.max_tool_calls` 已删除；部署时从环境中移除，残留值被忽略。

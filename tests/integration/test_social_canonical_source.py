@@ -55,7 +55,7 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
         space_id=env.space,
     )
     runtime = ToolRuntime(inbound=inbound, visible_event_ids=frozenset({original.id}))
-    arguments = {"text": "reply delivered", "reply_to_event_id": original.id}
+    arguments = {"text": "reply delivered", "reply_to": original.id}
     token = current_invocation.set(
         ToolInvocationContext(runtime, invocation_key="ordinary-reply-send")
     )

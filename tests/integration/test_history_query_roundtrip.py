@@ -112,24 +112,21 @@ async def test_qq_discovers_telegram_group_reads_all_authors_and_replies_to_orig
         )
         env.bot.calls.clear()
         directory = await env.service.execute(
-            "find_conversations",
-            {
-                "source": {"platform": "telegram", "scope": "group"},
-                "display_name": "雷达讨论",
-            },
+            "find_contacts",
+            {"type": "group", "platform": "telegram", "name": "雷达讨论"},
             replace(context, call_id="discover-tg"),
         )
         assert len(directory["items"]) == 1
-        entry = directory["items"][0]
+        (entry,) = directory["items"][0]["conversations"]
         assert entry["conversation_id"] == originals[0].canonical_conversation_id
         assert entry["conversation_id"] != env.context.conversation_id
         history = await env.service.execute(
-            "query_chat_history",
+            "read_chat",
             {
-                "view": "search",
                 "target": {"conversation_id": entry["conversation_id"]},
-                "source": {"platform": "telegram", "scope": "group"},
-                "keyword": "雷达站",
+                "platform": "telegram",
+                "scope": "group",
+                "query": "雷达站",
             },
             replace(context, call_id="read-tg"),
         )
@@ -138,11 +135,10 @@ async def test_qq_discovers_telegram_group_reads_all_authors_and_replies_to_orig
             person.person_id for person in people
         }
         assert set(history.source_event_ids) == {row.id for row in originals}
-        assert all(
-            row["platform"] == "telegram" and row["scope"] == "group" and row["thread_id"] == "17"
-            for row in history["events"]
-        )
-        assert history["sources"][0]["conversation_name"] == "雷达讨论"
+        (source,) = history["sources"]
+        assert source["platform"] == "telegram" and source["scope"] == "group"
+        assert source["thread_id"] == "17" and source["name"] == "雷达讨论"
+        assert all("conversation_id" not in row for row in history["events"])
         assert env.bot.calls == [] and wire == []
         text = "TG记录：" + "；".join(row["content"] for row in history["events"])
         receipt = await env.service.execute(

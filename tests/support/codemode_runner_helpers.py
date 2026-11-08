@@ -105,4 +105,4 @@ async def runner_env(database, tmp_path, responses):
     return chat, provider, control, runtime, repo
 
 
-ACCEPT = {"action": "accept", "goal": "compose"}
+ACCEPT = {"action": "start", "goal": "compose"}

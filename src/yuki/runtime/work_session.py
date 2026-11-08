@@ -632,9 +632,10 @@ class WorkSession:
                         "instruction": (
                             "继续原目标，按回执接续；原文按需回读。业务续跑只保留当前聊天、"
                             "这份工作材料和上一段尚未观察的回执，不恢复此前整段工具往返。"
-                            "按需用 task_control(update, context_note) 保存必要发现和下一步，"
-                            "沿原来源 refs 留下资料。目标仍需跟进时登记 wait，"
-                            "确需真人补充时用 need_input；整个目标结束才 complete。"
+                            "按需用 manage_task(action=update, note=…) 保存必要发现和下一步，"
+                            "沿原来源 refs 留下资料。目标仍需跟进时用 wait 登记等待，"
+                            "确需真人补充时先 send 提问再 wait 新消息；"
+                            "整个目标结束才 manage_task(action=finish)。"
                             "没有新变化或无需发言，不等于持续目标已经结束。"
                         ),
                     },

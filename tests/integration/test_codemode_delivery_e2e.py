@@ -72,7 +72,7 @@ async def test_native_child_keeps_readable_preview_and_exact_read_parameters(
         content=original,
     )
     code = """
-r = await yuki_query_chat_history({'view': 'search', 'keyword': 'CODE_CHILD_BODY'})
+r = await yuki_read_chat({'query': 'CODE_CHILD_BODY'})
 p = r.get('preview')
 text = p['value'].get('content', '') if p else ''
 {'complete': r['complete'], 'empty_events': r['data']['events'] == [],
@@ -82,7 +82,7 @@ text = p['value'].get('content', '') if p else ''
 """
     if overflow_vm_bytes:
         code = """
-r = await yuki_query_chat_history({'view': 'search', 'keyword': 'CODE_CHILD_BODY'})
+r = await yuki_read_chat({'query': 'CODE_CHILD_BODY'})
 {'complete': r['complete'], 'data_omitted': r['data'] is None,
  'has_preview': 'preview' in r, 'has_read_more': 'read_more' in r,
  'operation_id': r['operation_id'], 'child_ref': r['result_ref']}
@@ -113,28 +113,24 @@ r = await yuki_query_chat_history({'view': 'search', 'keyword': 'CODE_CHILD_BODY
             elif (message.tool_call_id or "").startswith("child-page-"):
                 body = json.loads(message.content)
                 pages.append(body)
-                assert body["ok"], body
-                page = body["data"]
-                assert page["offset"] == pending["offset"]
-                parts.append(page["value"])
+                assert body.get("ok") is not False, body
+                parts.append(body["value"])
                 pending = (
                     None
-                    if page["next_offset"] is None
-                    else {**pending, "offset": page["next_offset"]}
+                    if "next_cursor" not in body
+                    else {**pending, "cursor": body["next_cursor"]}
                 )
         if stage == 0:
             stage = 1
             return _child_response(
-                "task_control", {"action": "accept", "goal": "child preview"}, "accept"
+                "manage_task", {"action": "start", "goal": "child preview"}, "accept"
             )
         if stage == 1:
             stage = 2
             return _child_response("execute_code", {"code": code}, "native-preview")
         if pending is not None:
-            return _child_response("read_tool_artifact", pending, f"child-page-{len(pages)}")
-        return _child_response(
-            "task_control", {"action": "complete", "result": "checked"}, "finish"
-        )
+            return _child_response("read_result", pending, f"child-page-{len(pages)}")
+        return _child_response("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     case.provider._responder = respond
     evidence.update(
@@ -253,8 +249,8 @@ async def test_main_code_delivers_program_value_and_reads_its_original_parent(
         content=source_text,
     )
     script = (
-        "r = await yuki_query_chat_history({'view': 'search', "
-        "'keyword': 'code-delivery-source'})\n"
+        "r = await yuki_read_chat({"
+        "'query': 'code-delivery-source'})\n"
         f"{{'source': r['data']['events'][0]['content'], "
         f"'content': '中\\n' * {repetitions} + 'PROGRAM_VALUE_TAIL'}}"
     )
@@ -285,16 +281,14 @@ async def test_main_code_delivers_program_value_and_reads_its_original_parent(
             elif (message.tool_call_id or "").startswith("program-page-"):
                 decoded = json.loads(message.content)
                 pages.append(decoded)
-                assert decoded["ok"], decoded
-                page = decoded["data"]
-                assert page["offset"] == next_offset
-                parts.append(page["value"])
-                next_offset = page["next_offset"]
+                assert decoded.get("ok") is not False, decoded
+                parts.append(decoded["value"])
+                next_offset = int(decoded["next_cursor"]) if "next_cursor" in decoded else None
         if stage == 0:
             stage = 1
             return response(
-                "task_control",
-                {"action": "accept", "goal": "Code delivery"},
+                "manage_task",
+                {"action": "start", "goal": "Code delivery"},
                 "accept-code-delivery",
             )
         if stage == 1:
@@ -303,17 +297,16 @@ async def test_main_code_delivers_program_value_and_reads_its_original_parent(
         assert code_result is not None
         if oversized and original_available and next_offset is not None:
             return response(
-                "read_tool_artifact",
+                "read_result",
                 {
                     "handle": code_result["result_ref"],
-                    "operation": "get",
                     "path": [*code_result["result_path"], "content"],
-                    "offset": next_offset,
+                    "cursor": str(next_offset),
                 },
                 f"program-page-{len(pages)}",
             )
         return response(
-            "task_control", {"action": "complete", "result": "checked"}, "complete-code-delivery"
+            "manage_task", {"action": "finish", "result": "checked"}, "complete-code-delivery"
         )
 
     case.provider._responder = respond
@@ -374,8 +367,7 @@ async def test_main_code_delivers_program_value_and_reads_its_original_parent(
         children = [
             row
             for row in rows
-            if json.loads(row["receipt_json"]).get("outcome", {}).get("tool")
-            == "query_chat_history"
+            if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "read_chat"
         ]
         assert len(children) == 1
         restored = await control.session.journal.effect_result(parent["effect_key"])

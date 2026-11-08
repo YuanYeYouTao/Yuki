@@ -77,7 +77,8 @@ class RuntimeEffectQueries:
             original = await AgentRepository(self._database).work_operation(
                 hashlib.sha256(operation_key.encode()).hexdigest(),
                 work_id=work_id,
-                action=action,
+                # The service stores today's ``answer`` under its original action.
+                action="respond" if action == "answer" else action,
                 actor_person_id=actor,
                 session=reader,
             )
@@ -94,7 +95,7 @@ class RuntimeEffectQueries:
         )
         evidence = execution_evidence(
             outcome,
-            tool="external_agent",
+            tool="use_coding_agent",
             side_effecting=True,
             arguments=json.dumps({"action": action}),
         )

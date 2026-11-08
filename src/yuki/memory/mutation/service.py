@@ -2654,7 +2654,6 @@ class MemoryMutationService:
         candidates = tuple(
             MemoryMutationCandidate(
                 fact_id=fact.id,
-                memory_ref=f"M{fact.id}",
                 memory_key=fact.memory_key,
                 category=fact.category,
                 kind=fact.kind,

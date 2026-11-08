@@ -430,7 +430,7 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
     result = await env.service.execute(
         "send",
         {
-            "target": {"kind": "person", "target_id": env.person},
+            "target": {"person_id": env.person},
             "text": "dispatched for original owner",
         },
         env.context,

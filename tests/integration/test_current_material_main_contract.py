@@ -476,22 +476,19 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
                     for group in body["tools"]
                     for item in group.get("functionDeclarations", [])
                 }
-                properties = declared["task_control"]["parametersJsonSchema"]["properties"]
+                wait_items = declared["wait"]["parametersJsonSchema"]["properties"]["for"]
                 system_text = "\n".join(
                     part.get("text", "") for part in body["systemInstruction"]["parts"]
                 )
                 guidance_checks.append(
                     {
-                        "child_wait_guidance": all(
-                            text in declared["subagent_start"]["description"]
-                            for text in ("child_id", "wait")
-                        ),
-                        "child_run_id_guidance": "child_id"
-                        in properties["run_id"].get("description", ""),
-                        "wait_conditions_guidance": all(
-                            text in properties["conditions"].get("description", "")
-                            for text in ("owned_run", "conversation")
-                        ),
+                        "child_id_guidance": "id" in declared["start_subtask"]["description"],
+                        "wait_signals": sorted(
+                            key
+                            for item in wait_items["items"]["oneOf"]
+                            for key in item["properties"]
+                        )
+                        == ["at", "message", "plugin_event", "run", "seconds"],
                         "original_goal_and_delivery_guidance": all(
                             text in system_text for text in ("原目标", "交付")
                         ),
@@ -528,12 +525,12 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             full = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
             assert SANDBOX_TOOLS | WORKSPACE_TOOLS <= full.keys()
             assert {
-                "automation_manage",
-                "task_control",
-                "update_short_state",
+                "manage_schedule",
+                "manage_task",
+                "set_short_note",
                 "send",
             } <= full.keys()
-            schema = full["automation_manage"].parameters
+            schema = full["manage_schedule"].parameters
             assert "steps" not in json.dumps(schema) and "goal" in json.dumps(schema)
             async with database.read_session() as reader:
                 public = "\n".join(
@@ -581,8 +578,8 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
                 {
                     "functionCall": {
                         "id": "original-accept",
-                        "name": "task_control",
-                        "args": {"action": "accept", "goal": "完成原始任务"},
+                        "name": "manage_task",
+                        "args": {"action": "start", "goal": "完成原始任务"},
                     },
                     "thoughtSignature": "original-paid-accept-signature",
                 },
@@ -598,7 +595,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
         elif len(wire) == 2:
             parts = [
                 {
-                    "functionCall": {"id": "original-read", "name": "time_get_current", "args": {}},
+                    "functionCall": {"id": "original-read", "name": "get_schedules", "args": {}},
                     "thoughtSignature": "original-paid-private-read-signature",
                 }
             ]
@@ -607,8 +604,8 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
                 {
                     "functionCall": {
                         "id": "renamed-complete",
-                        "name": "task_control",
-                        "args": {"action": "complete"},
+                        "name": "manage_task",
+                        "args": {"action": "finish"},
                     }
                 }
             ]
@@ -719,9 +716,9 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
                 part["functionResponse"] for part in resumed_parts if "functionResponse" in part
             ]
             assert [(call["id"], call["name"]) for call in calls] == [
-                ("original-accept", "task_control"),
+                ("original-accept", "manage_task"),
                 ("original-send", "send"),
-                ("original-read", "time_get_current"),
+                ("original-read", "get_schedules"),
             ]
             assert [(response["id"], response["name"]) for response in responses] == [
                 (call["id"], call["name"]) for call in calls
@@ -837,7 +834,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
         ),
     )
     provider._responder = lambda request: _tool(
-        "task_control", {"action": "complete", "result": "SDK original result"}, "complete-sdk"
+        "manage_task", {"action": "finish", "result": "SDK original result"}, "complete-sdk"
     )
     if evicted:
         await chat.runtime.main_turns._projections.invalidate_view(

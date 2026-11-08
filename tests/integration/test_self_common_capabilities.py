@@ -96,21 +96,21 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
     receipt = await env.service.receipts.get(operation)
     assert receipt.event_id is not None
     await env.service.execute(
-        "query_chat_history",
-        {"view": "recent", "event_kind": "all", "target": {"operation_id": operation}},
+        "read_chat",
+        {"target": {"operation_id": operation}},
         replace(context, call_id="history"),
     )
     await env.service.execute(
-        "find_contacts", {"kind": "person"}, replace(context, call_id="contacts")
+        "find_contacts", {"type": "person"}, replace(context, call_id="contacts")
     )
     recalled = await env.service.execute(
-        "recall_own_message", {"event_id": receipt.event_id}, replace(context, call_id="recall")
+        "recall_message", {"event_id": receipt.event_id}, replace(context, call_id="recall")
     )
     assert recalled["status"] == "succeeded"
     assert await env.router.cas_takeover_person(env.person) == "taken"
     private = await env.service.execute(
         "send",
-        {"target": {"kind": "person", "target_id": env.person}, "text": "explicit target"},
+        {"target": {"person_id": env.person}, "text": "explicit target"},
         replace(context, call_id="explicit-private"),
     )
     assert private["status"] == "succeeded" and private["target"]["kind"] == "person"
@@ -233,8 +233,8 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
     provider = FakeLLMProvider()
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
     provider._responder = lambda _: _tool(
-        "task_control",
-        {"action": "complete", "result": f"SDK result {len(provider.requests)}"},
+        "manage_task",
+        {"action": "finish", "result": f"SDK result {len(provider.requests)}"},
         "finish",
     )
     host = HostPluginContext(
@@ -299,7 +299,7 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
     from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
     provider = FakeLLMProvider(
-        responder=lambda _: _tool("task_control", {"action": "complete", "result": "done"}, "done")
+        responder=lambda _: _tool("manage_task", {"action": "finish", "result": "done"}, "done")
     )
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
     host = HostPluginContext(
@@ -367,8 +367,8 @@ async def test_self_sdk_main_resume_keeps_original_actor_source_and_work(databas
 
     provider = FakeLLMProvider(
         responder=lambda _: _tool(
-            "task_control",
-            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 1}]},
+            "wait",
+            {"for": [{"seconds": 1}]},
             "wait",
         )
     )
@@ -395,7 +395,7 @@ async def test_self_sdk_main_resume_keeps_original_actor_source_and_work(databas
     wait = await waits.describe(row["id"])
     assert await waits.deliver_due(now=wait["registered_at"] + 2) == 1
     provider._responder = lambda _: _tool(
-        "task_control", {"action": "complete", "result": "same original work"}, "complete"
+        "manage_task", {"action": "finish", "result": "same original work"}, "complete"
     )
     await resume_plugin_work(lambda _: host, harness.ledger, await repository.get(row["id"]), saved)
     final = await repository.get(row["id"])

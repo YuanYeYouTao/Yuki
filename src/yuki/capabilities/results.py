@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from yuki.capabilities.media import MediaResultText, result_images
@@ -33,8 +33,10 @@ class ToolExecutionResult:
     """Provider-neutral result returned by every ToolBinding."""
 
     ok: bool
+    # Typed domain data: Host readers (Work journal, effect evidence, Client API)
+    # use it. ``view``, when set, is what the model reads instead.
     data: Any = None
-    content: tuple[dict[str, Any], ...] = ()
+    view: Any = None
     error_code: str | None = None
     public_message: str | None = None
     retryable: bool = False
@@ -47,8 +49,6 @@ class ToolExecutionResult:
     provider_id: str = ""
     tool_name: str = ""
     metadata: dict[str, Any] | None = None
-    evidence_state: dict[str, Any] | None = None
-    memory_grounding_policy: str | None = None
     source_event_ids: tuple[int, ...] = ()
     source_privacy_generation: int | None = None
     images: tuple[ChatImage, ...] = field(default=(), repr=False)
@@ -67,22 +67,48 @@ class ToolExecutionResult:
                 raise TypeError(f"{name} must be a bool or None")
 
     def model_payload(self) -> dict[str, Any]:
-        # Do not even copy pixels while building a public textual projection.
-        payload = {
-            f.name: getattr(self, f.name)
-            for f in fields(self)
-            if f.name not in {"images", "source_event_ids", "source_privacy_generation"}
-        }
-        if not self.uncertain:
-            payload.pop("uncertain")
-        if isinstance(self.data, dict) and isinstance(self.data.get("executed"), bool):
-            # The coordinator consumes this same fact on short and archived
-            # paths. A typed pre-dispatch refusal is not an executed tool.
-            payload["executed"] = self.data["executed"]
+        """What the model reads: business data on success, one shape on failure.
+
+        Execution facts (commit state, provider, tool name) stay typed on this
+        object and in the original receipt; they are not repeated to the model.
+        """
+        data = self.data if self.view is None else self.view
+        if self.ok:
+            if isinstance(data, dict):
+                payload = {key: value for key, value in data.items() if value is not None}
+            else:
+                payload = {} if data in (None, "") else {"result": data}
+            if not payload:
+                payload = {"ok": True}
+            if self.uncertain:
+                payload["status"] = "unknown"
+        else:
+            payload = {
+                "ok": False,
+                "error": self.error_code or "tool_failed",
+                "message": self.public_message or "工具执行失败",
+            }
+            if self.uncertain:
+                payload["status"] = "unknown"
+            if isinstance(data, dict):
+                payload.update(
+                    {
+                        key: value
+                        for key, value in data.items()
+                        if key not in payload and value is not None
+                    }
+                )
+            elif data not in (None, ""):
+                payload["result"] = data
+        # Provider adapters mark a failed observed process from this one fact.
         process = process_receipt(self)
-        if process:
-            payload["process"] = process
-        return {key: value for key, value in payload.items() if value not in (None, (), "")}
+        if "succeeded" in process:
+            payload["process"] = {"succeeded": process["succeeded"]}
+        media = self.metadata or {}
+        for key in ("media_read", "media_error"):
+            if key in media:
+                payload[key] = media[key]
+        return payload
 
 
 class ToolArtifactWriter(Protocol):
@@ -166,7 +192,7 @@ class ToolResultBudgeter:
         archive_images = getattr(self._artifacts, "write_media_artifact", None)
         local_media = (
             result.provider_id == "core"
-            and result.tool_name == "workspace_inspect"
+            and result.tool_name == "view_file"
             and isinstance(result.data, dict)
             and bool(result.data.get("device_id"))
         )
@@ -217,13 +243,12 @@ class ToolResultBudgeter:
         if media_handle:
             payload["media_artifact_handle"] = media_handle
         text = json.dumps(payload, ensure_ascii=False, default=str)
-        artifact_page = (
-            result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
-        )
+        artifact_page = result.provider_id == "artifacts" and result.tool_name == "read_result"
         item_overflow = (
             not artifact_page
             and self._item_limit is not None
-            and _largest_collection(result.data) > self._item_limit
+            and _largest_collection(result.data if result.view is None else result.view)
+            > self._item_limit
         )
         character_overflow = self._max_characters is not None and len(text) > self._max_characters
         # External research is an immutable source, not permanent prompt
@@ -242,7 +267,7 @@ class ToolResultBudgeter:
             )
         artifact_id: str | None = None
         recursive_artifact_read = (
-            result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
+            result.provider_id == "artifacts" and result.tool_name == "read_result"
         )
         if self._artifacts is not None and not recursive_artifact_read:
             # Short receipts need no archive identity; resolve it only before a write.
@@ -274,7 +299,7 @@ class ToolResultBudgeter:
             if capture is not None:
                 capture.artifact_handle = artifact_id
         # Archiving research does not hide a result which already fits. Keep
-        # its original evidence_state and the separately persisted source.
+        # its projection and the separately persisted source.
         if not item_overflow and not character_overflow:
             rendered = json.dumps(payload, ensure_ascii=False, default=str)
             if self._max_characters is None or len(rendered) <= self._max_characters:
@@ -313,29 +338,26 @@ def _preview_result(
         json_string_prefix,
     )
 
-    base = {
-        key: value
-        for key, value in payload.items()
-        if key not in {"data", "content", "metadata", "evidence_state", "memory_grounding_policy"}
-    }
-    base.update(
-        _execution_envelope(result), truncated=True, original_characters=original_characters
-    )
+    base = _execution_envelope(result)
+    base.update(truncated=True, original_characters=original_characters)
     if artifact_id is not None:
         base["artifact_handle"] = artifact_id
     progress = _workspace_progress(result)
     if progress:
         base["progress"] = progress
-    root = payload.get("data", payload)
-    base["logical_root"] = "data" if "data" in payload else "$"
+    # The archived value is the projected result itself; read_more paths start there.
+    # A failed archive has no handle or paths; its error is a top-level fact.
+    root = {key: value for key, value in payload.items() if key != "artifact_error"}
+    if "artifact_error" in payload:
+        base["artifact_error"] = payload["artifact_error"]
     # Necessary execution facts are a soft target, just as on the original
     # minimal-result path. Spend only the remainder on optional prose/content.
-    message = base.pop("public_message", None)
+    message = base.pop("message", None)
     budget = max_characters if max_characters is not None else original_characters
     if message is not None:
-        fixed = json_character_count({**base, "public_message": ""})
+        fixed = json_character_count({**base, "message": ""})
         available = max(0, budget - (fixed or 0))
-        base["public_message"] = message[: json_string_prefix(message, available)]
+        base["message"] = message[: json_string_prefix(message, available)]
     fixed = json_character_count({**base, "data": {}}) or 0
     available = max(0, budget - fixed)
     cache: dict[int, tuple[object, int, bool]] = {}
@@ -371,7 +393,7 @@ def _preview_result(
             break
         if artifact_id is not None and pending:
             summary["read_more"] = [
-                {"handle": artifact_id, "operation": "get", "path": path, "offset": offset}
+                {"handle": artifact_id, "path": path, "cursor": str(offset)}
                 for path, offset in pending
             ]
         size = json_character_count(summary) or 0
@@ -461,7 +483,11 @@ def _preview_json(
 
 
 def artifact_page_size(value: object, limit: int | None = None) -> int | None:
-    """Count the actual success or error envelope of the Artifact binding."""
+    """Count the projected success or error result of the Artifact reader.
+
+    A successful page is projected as itself; its explicit nulls are counted,
+    so callers measuring a reference page with a null cursor stay an upper bound.
+    """
     from yuki.tool_results.json_length import json_character_count
 
     if isinstance(value, dict) and isinstance(value.get("error_code"), str):
@@ -472,17 +498,12 @@ def artifact_page_size(value: object, limit: int | None = None) -> int | None:
             error_code=value["error_code"],
             public_message=str(value.get("detail") or "Artifact 读取失败"),
             provider_id="artifacts",
-            tool_name="read_tool_artifact",
+            tool_name="read_result",
         )
-    else:
-        result = ToolExecutionResult(
-            ok=True,
-            data=value,
-            mutation_committed=False,
-            provider_id="artifacts",
-            tool_name="read_tool_artifact",
-        )
-    return json_character_count(result.model_payload(), limit=limit)
+        return json_character_count(result.model_payload(), limit=limit)
+    return json_character_count(
+        value if isinstance(value, dict) else {"result": value}, limit=limit
+    )
 
 
 def artifact_page_fits(value: object, max_characters: int) -> bool:
@@ -492,15 +513,26 @@ def artifact_page_fits(value: object, max_characters: int) -> bool:
 
 def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:
     """A successful status read does not mean the observed process succeeded."""
+    from yuki.runtime.effect_outcomes import recorded_tool
+
+    # Historical receipts arrive under their original names.
+    tool = recorded_tool(result.tool_name)
     if (
-        result.provider_id != "core"
-        or result.tool_name
-        not in {"run_python", "get_code_run", "terminal_exec", "terminal_read", "external_agent"}
+        result.provider_id not in {"core", "historical"}
+        or tool
+        not in {
+            "run_python",
+            "get_code_run",
+            "run_command",
+            "read_command",
+            "use_coding_agent",
+            "get_coding_agents",
+        }
         or not isinstance(result.data, dict)
     ):
         return {}
     body = result.data
-    if result.tool_name == "external_agent" and body.get("kind") not in {
+    if tool in {"use_coding_agent", "get_coding_agents"} and body.get("kind") not in {
         "external_agent",
         "acp_prompt",
     }:
@@ -550,7 +582,9 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
     if (
         result.provider_id not in {"core", "work_control"}
         or result.tool_name
-        not in SANDBOX_TOOLS | WORKSPACE_TOOLS | {"external_agent", "task_control"}
+        not in SANDBOX_TOOLS
+        | WORKSPACE_TOOLS
+        | {"use_coding_agent", "get_coding_agents", "manage_task", "get_tasks", "wait"}
         or not isinstance(result.data, dict)
     ):
         return {}
@@ -639,11 +673,20 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
                 progress[key].update(
                     content_preview=preview[:1000], preview_truncated=len(preview) > 1000
                 )
-    if isinstance(data.get("work"), dict):
-        work = data["work"]
+    # get_tasks(id) returns the task itself; historical task_control reads nested it.
+    work = (
+        data["work"]
+        if isinstance(data.get("work"), dict)
+        else data
+        if result.tool_name == "get_tasks" and "steps" in data
+        else None
+    )
+    if work is not None:
         progress["work"] = {
             key: work[key]
             for key in (
+                "id",
+                "status",
                 "work_id",
                 "state",
                 "progress_available",
@@ -658,7 +701,7 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
             )
             if key in work
         }
-        details = {key: work[key] for key in ("steps", "context_note") if key in work}
+        details = {key: work[key] for key in ("steps", "note", "context_note") if key in work}
         if details:
             preview = json.dumps(details, ensure_ascii=False, default=str)
             progress["work"].update(
@@ -674,77 +717,45 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
 
 
 def _execution_envelope(result: ToolExecutionResult) -> dict[str, Any]:
-    """Execution state survives every model projection, including minimal output."""
+    """Execution facts that survive a truncated projection."""
     body = result.data if isinstance(result.data, dict) else {}
-    envelope: dict[str, Any] = {
-        "ok": result.ok,
-        "uncertain": result.uncertain or bool(body.get("uncertain")),
-        "retryable": result.retryable,
-    }
-    for key, value in (
-        ("error_code", result.error_code),
-        ("mutation_committed", result.mutation_committed),
-        ("finalize_after_commit", result.finalize_after_commit),
-        *(
-            (key, body.get(key))
-            for key in (
-                "status",
-                "run_id",
-                "operation_id",
-                "execution_id",
-                "session_id",
-                "event_id",
-                "original_event_id",
-                "snapshot_id",
-                "artifact_id",
-                "pending",
-                "executed",
-            )
-        ),
+    envelope: dict[str, Any] = {}
+    if not result.ok:
+        envelope.update(
+            ok=False,
+            error=result.error_code or "tool_failed",
+            message=result.public_message or "工具执行失败",
+        )
+    if result.uncertain or body.get("uncertain"):
+        envelope["status"] = "unknown"
+    for key in (
+        "status",
+        "id",
+        "run_id",
+        "operation_id",
+        "execution_id",
+        "session_id",
+        "event_id",
+        "artifact_id",
+        "pending",
+        "executed",
     ):
-        if value is not None:
-            envelope[key] = value
+        if key not in envelope and body.get(key) is not None:
+            envelope[key] = body[key]
     process = process_receipt(result)
-    if process:
-        envelope["process"] = process
-    if result.tool_name == "send" and isinstance(result.data, dict):
-        # These are the original Social receipts, not inferred from arguments
-        # or the survival of message text. Long delivered/prepared bodies stay
-        # in the immutable original while every part keeps its real identity.
-        def delivery(item: dict[str, Any]) -> dict[str, Any]:
-            facts = {
-                key: item[key]
-                for key in (
-                    "operation_id",
-                    "status",
-                    "target",
-                    "event_id",
-                    "original_event_id",
-                    "original_conversation_id",
-                    "error_category",
-                    "artifact_id",
-                    "snapshot_id",
-                    "uncertain",
-                    "pending",
-                    "text_planned",
-                    "planned_messages",
-                    "sent_messages",
-                )
-                if key in item
-            }
-            for field in ("file", "caption"):
-                if isinstance(item.get(field), dict):
-                    facts[field] = delivery(item[field])
-            if isinstance(item.get("parts"), list):
-                facts["parts"] = [delivery(part) for part in item["parts"]]
-            return facts
-
-        envelope["delivery"] = delivery(result.data)
+    if "succeeded" in process:
+        envelope["process"] = {"succeeded": process["succeeded"]}
+    if result.tool_name == "send" and isinstance(body.get("parts"), list):
+        # Each delivered part keeps its real identity even when bodies are cut.
+        envelope["parts"] = [
+            {key: part[key] for key in ("status", "event_id", "error") if key in part}
+            for part in body["parts"]
+            if isinstance(part, dict)
+        ]
     media = result.metadata or {}
-    if "media_read" in media:
-        envelope["media_read"] = media["media_read"]
-    if "media_error" in media:
-        envelope["media_error"] = media["media_error"]
+    for key in ("media_read", "media_error"):
+        if key in media:
+            envelope[key] = media[key]
     return envelope
 
 
@@ -785,36 +796,16 @@ def normalize_legacy_result(
         finalize_after_commit = None if finalize_value is None else bool(finalize_value)
         retryable = bool(raw.pop("retryable", False))
         uncertain = bool(raw.pop("uncertain", False))
-        evidence = raw.pop("evidence_state", None)
-        grounding = raw.pop("memory_grounding_policy", None)
-        trusted_grounding = (
-            grounding
-            if provider_id == "core"
-            and tool_name
-            in {
-                "search_memory",
-                "get_memory_fact",
-                "read_memory",
-                "get_memory_evidence",
-            }
-            and isinstance(grounding, str)
-            else None
-        )
-        trusted_evidence = (
-            evidence
-            if provider_id == "core"
-            and tool_name
-            in {
-                "search_memory",
-                "get_memory_fact",
-                "read_memory",
-                "get_memory_evidence",
-                "web_search",
-                "read_webpage",
-            }
-            and isinstance(evidence, dict)
-            else None
-        )
+        # Retired display-only fields of the old envelope; never business data.
+        raw.pop("evidence_state", None)
+        raw.pop("memory_grounding_policy", None)
+        for key in ("provider_id", "tool_name", "process"):
+            raw.pop(key, None)
+        if not ok and public is None:
+            # Current failure shape: {"ok": false, "error", "message", "status"?}.
+            public = raw.pop("message", None)
+            if raw.get("status") == "unknown":
+                uncertain = True
         data = raw.pop("data", raw if raw else None)
         return ToolExecutionResult(
             ok=ok,
@@ -828,8 +819,6 @@ def normalize_legacy_result(
             finalize_after_commit=finalize_after_commit if ok else None,
             provider_id=provider_id,
             tool_name=tool_name,
-            evidence_state=trusted_evidence,
-            memory_grounding_policy=trusted_grounding,
         )
     return ToolExecutionResult(
         ok=True,

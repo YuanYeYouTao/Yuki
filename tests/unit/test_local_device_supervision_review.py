@@ -49,12 +49,13 @@ async def test_local_terminal_completion_reaches_original_owned_wait(database, t
     )
     wait = json.loads(
         await control.execute(
-            "task_control",
-            {"action": "wait", "conditions": [{"kind": "owned_run", "run_id": started["run_id"]}]},
+            "wait",
+            {"for": [{"run": started["run_id"]}]},
             "wait-local-job",
         )
     )
-    assert wait["ok"]
+    assert wait.get("ok") is not False
+    registered = await WorkWaitRepository(repository).describe(original_work)
     await control.settle(pending_inputs=False)
     completion = {
         "request_id": "original-local-job",
@@ -71,9 +72,9 @@ async def test_local_terminal_completion_reaches_original_owned_wait(database, t
     assert await WorkWaitRepository(repository).deliver_due() == 1
     current = await repository.get(original_work)
     assert current["state"] == "queued"
-    assert (await WorkWaitRepository(repository).describe(original_work))["wait_id"] == wait[
-        "wait_id"
-    ]
+    assert (await WorkWaitRepository(repository).describe(original_work))["wait_id"] == (
+        registered["wait_id"]
+    )
     await c.local.receive(c.device_id, completion)
     await SandboxContinuationWorker(repository).drain_once()
     assert await WorkWaitRepository(repository).deliver_due() == 0
@@ -84,6 +85,6 @@ async def test_local_terminal_completion_reaches_original_owned_wait(database, t
             )
         )
     assert facts.count("completion:original-local-job") == 1
-    assert facts.count(f"wait:{wait['wait_id']}") == 1
+    assert facts.count(f"wait:{registered['wait_id']}") == 1
     assert c.connection.request.call_count == 1
     await c.service.close()

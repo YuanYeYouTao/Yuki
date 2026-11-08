@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from yuki.client_api.agent_target import stored_target
+from yuki.client_api.agent_target import stored_target, tool_arguments
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.persistence.models import ChatEventModel
@@ -86,8 +86,9 @@ class DesktopNativeWorkScenario:
             if target.intent == "respond" and target.operation_id == self.operation_id:
                 if original.id not in self.responded:
                     self.responded.add(original.id)
-                    arguments = target.model_dump(exclude_none=True, exclude={"intent"})
-                    return call("external_agent", {"action": "respond", **arguments})
+                    arguments = tool_arguments(target)
+                    arguments.pop("device", None)
+                    return call("use_coding_agent", arguments)
                 if control.current is None:
                     return ChatResponse(content="原問題回覆已提交。", latency_seconds=0)
             elif self.marker not in text or target.intent != "prompt":
@@ -97,7 +98,7 @@ class DesktopNativeWorkScenario:
                     self.event_id = original.id
                 assert original.id == self.event_id
                 if control.current is None:
-                    return call("task_control", {"action": "accept", "goal": self.marker})
+                    return call("manage_task", {"action": "start", "goal": self.marker})
                 self.work_id = control.current["id"]
                 operation = (
                     await reader.scalars(
@@ -108,24 +109,22 @@ class DesktopNativeWorkScenario:
                     )
                 ).one_or_none()
                 if operation is None:
-                    arguments = target.model_dump(exclude_none=True, exclude={"intent"})
-                    return call("external_agent", {"action": "prompt", **arguments, "prompt": text})
+                    arguments = tool_arguments(target)
+                    arguments.pop("device", None)
+                    return call("use_coding_agent", {**arguments, "prompt": text})
                 self.operation_id = operation.id
             assert operation is not None and operation.run_id is not None
             task = await reader.get(SandboxTaskRunModel, operation.id)
             assert task is not None
             if task.status != "completed":
                 return call(
-                    "task_control",
-                    {
-                        "action": "wait",
-                        "conditions": [{"kind": "owned_run", "run_id": task.run_id}],
-                    },
+                    "wait",
+                    {"for": [{"run": task.run_id}]},
                 )
             completion = json.loads(task.completion_json)
         self.finish_phase += 1
         if self.finish_phase == 1:
-            return call("external_agent", {"action": "get", "operation_id": operation.id})
+            return call("get_coding_agents", {"target": {"operation_id": operation.id}})
         if self.finish_phase == 2:
             assert operation.id in request.messages[-1].content
             return call(
@@ -141,7 +140,7 @@ class DesktopNativeWorkScenario:
                 },
             )
         if self.finish_phase == 3:
-            return call("task_control", {"action": "complete", "result": completion["status"]})
+            return call("manage_task", {"action": "finish", "result": completion["status"]})
         return ChatResponse(content="原生任務回執已結算。", latency_seconds=0)
 
     def attach(self, app):

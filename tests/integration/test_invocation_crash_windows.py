@@ -112,7 +112,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
     database, tmp_path, monkeypatch
 ):
     provider = FakeLLMProvider(
-        lambda _: _tool("task_control", {"action": "accept", "goal": "send once"}, "accept")
+        lambda _: _tool("manage_task", {"action": "start", "goal": "send once"}, "accept")
     )
     env, harness, _chat, _state, message = await _scene(database, tmp_path, provider, yield_after=1)
     await harness.processor.handle(message, MemorySender())
@@ -166,7 +166,7 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
         dispatched.append(key)
         sent = await env.service.execute(
             "send",
-            {"target": {"kind": "space", "target_id": env.space}, "text": "hello"},
+            {"target": {"space_id": env.space}, "text": "hello"},
             replace(env.context, call_id=key),
         )
         assert sent["status"] == "succeeded"

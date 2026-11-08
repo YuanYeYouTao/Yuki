@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import func, select
 from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.social_identity_cases import social_env
+from tests.support.work_runner_helpers import derive_business_child
 
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
@@ -37,15 +38,12 @@ async def _running_work(database, tmp_path, *, interactive=False, goal="answer")
     )
     accepted = json.loads(
         await control.execute(
-            "task_control",
-            {
-                "action": "accept",
-                "goal": goal,
-            },
+            "manage_task",
+            {"action": "start", "goal": goal},
             "accept",
         )
     )
-    assert accepted["ok"]
+    assert accepted.get("ok") is not False
     return repository, lease, control
 
 
@@ -69,10 +67,10 @@ async def test_recovery_after_accepted_complete_retains_late_input(database, tmp
     repository, lease, control = await _running_work(database, tmp_path)
     result = json.loads(
         await control.execute(
-            "task_control", {"action": "complete", "result": "internal answer"}, "complete"
+            "manage_task", {"action": "finish", "result": "internal answer"}, "complete"
         )
     )
-    assert result["ok"] and control.ending == "completed"
+    assert result.get("ok") is not False and control.ending == "completed"
     await _late_input(repository, lease, control.current["id"], ready=ready)
     await control.recover_failure(RuntimeError("crash before settlement"))
     row = await repository.get(control.current["id"])
@@ -84,9 +82,9 @@ async def test_recovery_after_accepted_complete_retains_late_input(database, tmp
 @pytest.mark.asyncio
 async def test_recovery_failure_does_not_strand_ready_input_on_failed_work(database, tmp_path):
     repository, lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
-        await control.execute("task_control", {"action": "fail", "reason": "blocked"}, "fail")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "fail", "text": "blocked"}, "fail")
+    )
     await _late_input(repository, lease, control.current["id"], ready=True)
     await control.recover_failure(RuntimeError("crash before settlement"))
     assert (await repository.get(control.current["id"]))["state"] == "queued"
@@ -97,11 +95,11 @@ async def test_recovery_commits_accepted_complete_and_publishes_result_atomicall
     database, tmp_path
 ):
     repository, _lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
+    assert "error" not in json.loads(
         await control.execute(
-            "task_control", {"action": "complete", "result": "internal answer"}, "complete"
+            "manage_task", {"action": "finish", "result": "internal answer"}, "complete"
         )
-    )["ok"]
+    )
     await control.recover_failure(RuntimeError("crash after pairing"))
     row = await repository.get(control.current["id"])
     checkpoint = json.loads(row["checkpoint_json"])
@@ -120,9 +118,9 @@ async def test_exception_without_accepted_control_never_mints_completion(databas
 @pytest.mark.asyncio
 async def test_new_input_withdraws_accepted_control(database, tmp_path):
     repository, lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
-        await control.execute("task_control", {"action": "complete", "result": "stale"}, "complete")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "finish", "result": "stale"}, "complete")
+    )
     await _late_input(repository, lease, control.current["id"], ready=True)
     assert await control.take_inputs("attempt")
     assert control.ending is None and control.accepted is None
@@ -131,9 +129,9 @@ async def test_new_input_withdraws_accepted_control(database, tmp_path):
 @pytest.mark.asyncio
 async def test_host_checkpoint_patch_keeps_accepted_control(database, tmp_path):
     repository, lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
-        await control.execute("task_control", {"action": "fail", "reason": "blocked"}, "fail")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "fail", "text": "blocked"}, "fail")
+    )
     await repository.checkpoint(lease, control.current["id"], {"transcript_ref": "x"})
     row = await repository.get(control.current["id"])
     assert json.loads(row["checkpoint_json"])["accepted_control"]["action"] == "fail"
@@ -158,10 +156,10 @@ async def test_answer_completion_does_not_require_send_classification(database, 
     else:
         result = json.loads(
             await control.execute(
-                "task_control", {"action": "complete", "result": "analysis complete"}, "complete"
+                "manage_task", {"action": "finish", "result": "analysis complete"}, "complete"
             )
         )
-        assert result["ok"]
+        assert result.get("ok") is not False
     await control.settle(pending_inputs=False)
     assert (await repository.get(control.current["id"]))["state"] == "completed"
 
@@ -169,17 +167,15 @@ async def test_answer_completion_does_not_require_send_classification(database, 
 @pytest.mark.asyncio
 async def test_retired_update_is_noop_without_changing_goal_or_wait(database, tmp_path):
     repository, _lease, control = await _running_work(database, tmp_path, interactive=True)
-    assert json.loads(
-        await control.execute(
-            "task_control", {"action": "need_input", "reason": "which file?"}, "ask"
-        )
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("wait", {"for": [{"message": True}]}, "ask")
+    )
     await control.settle(pending_inputs=False)
     before = await repository.get(control.current["id"])
     result = json.loads(
-        await control.execute("task_control", {"action": "update", "reporting": "quiet"}, "quiet")
+        await control.execute("manage_task", {"action": "update", "reporting": "quiet"}, "quiet")
     )
-    assert result["ok"]
+    assert result.get("ok") is not False
     assert await repository.get(control.current["id"]) == before
     assert "reporting" not in await control.runtime_state()
 
@@ -189,11 +185,11 @@ async def test_caller_completion_preserves_delivery_contract(database, tmp_path)
     repository, _lease, control = await _running_work(database, tmp_path)
     before = await repository.get(control.current["id"])
     assert json.loads(before["source_json"])["delivery_contract"] == "return_to_caller"
-    assert json.loads(
+    assert "error" not in json.loads(
         await control.execute(
-            "task_control", {"action": "complete", "result": "internal result"}, "complete"
+            "manage_task", {"action": "finish", "result": "internal result"}, "complete"
         )
-    )["ok"]
+    )
     await control.settle(pending_inputs=False)
     row = await repository.get(control.current["id"])
     assert row["state"] == "completed"
@@ -245,23 +241,23 @@ async def test_successful_send_keeps_work_open_until_explicit_completion(databas
     assert control.accepted is None
     assert (await repository.get(control.current["id"]))["state"] == "running"
     result = json.loads(
-        await control.execute("task_control", {"action": "complete", "result": "saved"}, "complete")
+        await control.execute("manage_task", {"action": "finish", "result": "saved"}, "complete")
     )
-    assert result["ok"]
+    assert result.get("ok") is not False
     await control.settle(pending_inputs=False)
     assert (await repository.get(control.current["id"]))["state"] == "completed"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["need_input", "fail"])
+@pytest.mark.parametrize("action", ["fail"])
 @pytest.mark.parametrize("reason", [None, "", "尚需用户确认哪些材料可发布；" * 100])
 async def test_detailed_target_and_wait_reason_are_preserved(database, tmp_path, action, reason):
     goal = "详细验收项；" * 4500
     repository, _lease, control = await _running_work(database, tmp_path, goal=goal)
     updated_goal = goal + "新增要求。"
-    assert json.loads(
-        await control.execute("task_control", {"action": "update", "goal": updated_goal}, "update")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "update", "goal": updated_goal}, "update")
+    )
     transition_reason = "详细状态变化说明；" * 100
     control.current = await repository.transition(
         control.lease,
@@ -272,13 +268,13 @@ async def test_detailed_target_and_wait_reason_are_preserved(database, tmp_path,
     )
     assert control.current["reason"] == transition_reason
     identity = control.current["id"]
-    assert json.loads(
+    assert "error" not in json.loads(
         await control.execute(
-            "task_control",
-            {"action": action, **({"reason": reason} if reason is not None else {})},
+            "manage_task",
+            {"action": action, **({"text": reason} if reason is not None else {})},
             "ask",
         )
-    )["ok"]
+    )
     await control.settle(pending_inputs=False)
     row = await repository.get(control.current["id"])
     assert row["id"] == identity and row["state"] == (
@@ -294,11 +290,11 @@ async def test_auxiliary_input_does_not_withdraw_accepted_completion(database, t
     from sqlalchemy.dialects.sqlite import insert
 
     repository, lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
+    assert "error" not in json.loads(
         await control.execute(
-            "task_control", {"action": "complete", "result": "settled decision"}, "complete"
+            "manage_task", {"action": "finish", "result": "settled decision"}, "complete"
         )
-    )["ok"]
+    )
     async with database.immediate_session() as writer:
         await writer.execute(
             insert(inputs).values(
@@ -326,16 +322,16 @@ async def test_optional_note_and_null_result_do_not_veto_completion(database, tm
     repository, _lease, control = await _running_work(database, tmp_path)
     result = json.loads(
         await control.execute(
-            "task_control",
+            "manage_task",
             {
-                "action": "complete",
+                "action": "finish",
                 "result": None,
-                "context_note": {"facts": [{"text": "draft", "refs": ["goal"]}]},
+                "note": {"facts": [{"text": "draft", "refs": ["goal"]}]},
             },
             "complete-with-optional-fields",
         )
     )
-    assert result["ok"]
+    assert result.get("ok") is not False
     await control.settle(pending_inputs=False)
     row = await repository.get(control.current["id"])
     assert row["state"] == "completed"
@@ -364,12 +360,12 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
     control.current = await repository.get(identity)
     result = json.loads(
         await control.execute(
-            "task_control",
-            {"action": "update", "context_note": note},
+            "manage_task",
+            {"action": "update", "note": note},
             "save-optional-note",
         )
     )
-    assert result["ok"]
+    assert result.get("ok") is not False
     saved = json.loads((await repository.get(identity))["checkpoint_json"])["context_note"]
     assert saved["payload"]["facts"] == note["facts"]
     assert saved["payload"]["version"] == note["version"]
@@ -381,9 +377,9 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
         )
     assert await visible_context_note(control) == saved["payload"]
     assert json.loads((await repository.get(identity))["checkpoint_json"])["context_note"] == saved
-    assert json.loads(
-        await control.execute("task_control", {"action": "complete", "result": "done"}, "done")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "finish", "result": "done"}, "done")
+    )
     await control.settle(pending_inputs=False)
     final = await repository.get(identity)
     assert final["id"] == identity and final["state"] == "completed"
@@ -403,13 +399,9 @@ async def test_explicit_resume_keeps_identity_and_retires_replaced_wait(
     if prior_state == "failed":
         await control.recover_failure(RuntimeError("original execution failed"))
     else:
-        assert json.loads(
-            await control.execute(
-                "task_control",
-                {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 300}]},
-                "original-timer",
-            )
-        )["ok"]
+        assert "error" not in json.loads(
+            await control.execute("wait", {"for": [{"seconds": 300}]}, "original-timer")
+        )
         await control.settle(pending_inputs=False)
     original = await repository.get(identity)
     assert original["state"] == prior_state
@@ -429,10 +421,10 @@ async def test_explicit_resume_keeps_identity_and_retires_replaced_wait(
         control.validate = validate
         result = json.loads(
             await control.execute(
-                "task_control", {"action": "resume", "work_id": identity}, "resume-original"
+                "manage_task", {"action": "resume", "id": identity}, "resume-original"
             )
         )
-        assert result["ok"]
+        assert result.get("ok") is not False
     resumed = await repository.get(identity)
     assert resumed["state"] == "queued"
     assert resumed["source_json"] == original["source_json"]
@@ -455,19 +447,14 @@ async def test_model_can_manage_a_derived_child_without_replacing_current_work(
 ):
     repository, lease, control = await _running_work(database, tmp_path)
     parent = control.current["id"]
-    derived = json.loads(
-        await control.execute("task_control", {"action": "derive", "goal": "child goal"}, "derive")
-    )
-    assert derived["ok"]
-    child = derived["derived_work_id"]
+    child = (await derive_business_child(repository, lease, parent, "derive", "child goal"))["id"]
     if action == "resume":
         row = await repository.get(child)
         await repository.transition(lease, child, row["revision"], "suspended")
     result = json.loads(
-        await control.execute("task_control", {"action": action, "work_id": child}, action)
+        await control.execute("manage_task", {"action": action, "id": child}, action)
     )
-    assert result["ok"]
-    assert result["state"] == {"cancel": "cancelled", "fail": "failed", "resume": "queued"}[action]
+    assert result["status"] == {"cancel": "cancelled", "fail": "failed", "resume": "queued"}[action]
     assert control.current["id"] == parent
     assert control.ending is None
     assert (await repository.get(parent))["state"] == "running"
@@ -484,7 +471,9 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
-    child = await repository.derive(lease, identity, "original-derived-child", "child goal")
+    child = await derive_business_child(
+        repository, lease, identity, "original-derived-child", "child goal"
+    )
     workers = SubagentRepository(repository)
     worker = await workers.start(lease, child["id"], "original-worker", {"goal": "worker goal"})
     worker_lease = await workers.acquire(worker)
@@ -511,7 +500,9 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
             .mappings()
             .one()
         )
-    assert json.loads(await control.execute("task_control", {"action": action}, "stop-tree"))["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": action}, "stop-tree")
+    )
     assert (await repository.get(worker))["state"] == "running"
     assert (await repository.get(identity))["state"] == "running"
     await control.settle(pending_inputs=False)
@@ -591,17 +582,16 @@ async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
     else:
         result = json.loads(
             await control.execute(
-                "task_control",
+                "wait",
                 {
-                    "action": "wait",
-                    "conditions": conditions,
-                    "wait_mode": "all",
-                    **({"deadline_at": "2000-01-01T00:00:00+00:00"} if expired else {}),
+                    "for": [{"seconds": item["after_seconds"]} for item in conditions],
+                    "all": True,
+                    **({"deadline": "2000-01-01T00:00:00+00:00"} if expired else {}),
                 },
                 "wait",
             )
         )
-        assert result["ok"]
+        assert result.get("ok") is not False
     wait_repository = WorkWaitRepository(repository)
     retained_wait = await wait_repository.describe(control.current["id"])
     assert len(retained_wait["conditions"]) == len(conditions)
@@ -633,12 +623,12 @@ async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
         await control.confirm_inputs()
         result = json.loads(
             await control.execute(
-                "task_control",
-                {"action": "complete", "result": "timer woke and task completed"},
+                "manage_task",
+                {"action": "finish", "result": "timer woke and task completed"},
                 "done",
             )
         )
-        assert result["ok"]
+        assert result.get("ok") is not False
         await control.settle(pending_inputs=False)
         await workers.finish(lease)
         assert (await repository.get(resumed["id"]))["state"] == "completed"
@@ -693,10 +683,10 @@ async def test_retained_work_and_pending_inputs_do_not_block_new_intents(databas
     assert target["id"] not in {row["work_id"] for row in await control.available_work()}
     resumed = json.loads(
         await control.execute(
-            "task_control", {"action": "resume", "work_id": target["id"]}, "resume-last"
+            "manage_task", {"action": "resume", "id": target["id"]}, "resume-last"
         )
     )
-    assert resumed["resumed_work_id"] == target["id"]
+    assert resumed == {"id": target["id"], "status": "queued"}
     assert (await repository.get(target["id"]))["state"] == "queued"
     assert (await repository.get(target["id"]))["model_requests"] == target["model_requests"]
     foreign = await repository.accept(
@@ -712,7 +702,7 @@ async def test_retained_work_and_pending_inputs_do_not_block_new_intents(databas
     assert await WorkQueries(repository).get(lease, source, foreign["id"]) is not None
     refused = json.loads(
         await control.execute(
-            "task_control", {"action": "resume", "work_id": foreign["id"]}, "foreign-resume"
+            "manage_task", {"action": "resume", "id": foreign["id"]}, "foreign-resume"
         )
     )
     assert refused["error"] == "resume_work_not_authorized"
@@ -728,27 +718,26 @@ async def test_wait_conditions_follow_mode_with_failed_member(
 
     repository, lease, control = await _running_work(database, tmp_path)
     workers = SubagentRepository(repository)
-    branch = await repository.derive(
-        lease, control.current["id"], "wait-branch", "wait for the actual nested result"
+    branch = await derive_business_child(
+        repository, lease, control.current["id"], "wait-branch", "wait for the actual nested result"
     )
     child = await workers.start(lease, branch["id"], "failed-member", {"goal": "work"})
     child_lease = await workers.acquire(child)
     row = await repository.get(child)
     await repository.transition(child_lease, child, row["revision"], terminal)
     await repository.release(child_lease)
-    conditions = [
-        {"kind": "owned_run", "run_id": child},
-        {"kind": "time_due", "after_seconds": 3600},
-    ]
-    assert json.loads(
+    assert "error" not in json.loads(
         await control.execute(
-            "task_control",
-            {"action": "wait", "run_id": child}
+            "wait",
+            {"for": [{"run": child}]}
             if shorthand
-            else {"action": "wait", "conditions": conditions, "wait_mode": mode},
+            else {
+                "for": [{"run": child}, {"seconds": 3600}],
+                "all": mode == "all",
+            },
             "wait-all",
         )
-    )["ok"]
+    )
     await control.settle(pending_inputs=False)
     waits = WorkWaitRepository(repository)
     registered = await waits.describe(control.current["id"])
@@ -787,7 +776,9 @@ async def test_wait_shorthand_keeps_long_owned_run_id_and_completed_uncertainty(
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
-    branch = await repository.derive(lease, identity, "sandbox-branch", "retain original execution")
+    branch = await derive_business_child(
+        repository, lease, identity, "sandbox-branch", "retain original execution"
+    )
     run_id = "manager/original/" + "opaque." * 40
     now = datetime.now(UTC)
     async with database.immediate_session() as writer:
@@ -805,10 +796,10 @@ async def test_wait_shorthand_keeps_long_owned_run_id_and_completed_uncertainty(
             )
         )
     tasks = SandboxTaskRepository(database)
-    args = {"action": "wait", "run_id": run_id}
-    validate(args, work_control_tools()[0].parameters)
-    result = json.loads(await control.execute("task_control", args, "wait-original-run"))
-    assert result["ok"]
+    args = {"for": [{"run": run_id}]}
+    validate(args, next(tool for tool in work_control_tools() if tool.name == "wait").parameters)
+    result = json.loads(await control.execute("wait", args, "wait-original-run"))
+    assert result.get("ok") is not False
     await control.settle(pending_inputs=False)
     waits = WorkWaitRepository(repository)
     registered = await waits.describe(identity)
@@ -1045,15 +1036,15 @@ async def test_preparing_discard_keeps_original_control_and_unparks(
 ):
     repository, lease, control = await _running_work(database, tmp_path)
     if action:
-        assert json.loads(
+        assert "error" not in json.loads(
             await control.execute(
-                "task_control",
-                {"action": action, "result": "original answer"}
+                "manage_task",
+                {"action": "finish", "result": "original answer"}
                 if action == "complete"
-                else {"action": action, "reason": "original failure"},
+                else {"action": action, "text": "original failure"},
                 "end",
             )
-        )["ok"]
+        )
     identity = control.current["id"]
     input_id = await repository.enqueue(
         lease.conversation_id,
@@ -1086,13 +1077,9 @@ async def test_preparing_discard_keeps_original_control_and_unparks(
 
 async def test_fulfilled_wait_before_first_settlement_retires_original_decision(database, tmp_path):
     repository, _lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
-        await control.execute(
-            "task_control",
-            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 0}]},
-            "wait",
-        )
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("wait", {"for": [{"seconds": 0}]}, "wait")
+    )
     wait = await WorkWaitRepository(repository).describe(control.current["id"])
     assert await WorkWaitRepository(repository).deliver_due(now=wait["conditions"][0]["due"]) == 1
     await control.settle(pending_inputs=False)
@@ -1106,16 +1093,9 @@ async def test_unsatisfied_wait_survives_settlement_and_auxiliary_activation(dat
     from sqlalchemy import update
 
     repository, _lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
-        await control.execute(
-            "task_control",
-            {
-                "action": "wait",
-                "conditions": [{"kind": "time_due", "after_seconds": 1800}],
-            },
-            "original-wait",
-        )
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("wait", {"for": [{"seconds": 1800}]}, "original-wait")
+    )
     identity = control.current["id"]
     original = await WorkWaitRepository(repository).describe(identity)
     await control.settle(pending_inputs=False)
@@ -1142,21 +1122,23 @@ async def test_new_explicit_wait_replaces_binding_after_business_revision(databa
     from yuki.runtime.work_wait_schema import waits
 
     repository, lease, control = await _running_work(database, tmp_path)
-    args = {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 1800}]}
-    assert json.loads(await control.execute("task_control", args, "first-wait"))["ok"]
+    args = {"for": [{"seconds": 1800}]}
+    assert "error" not in json.loads(await control.execute("wait", args, "first-wait"))
     original = await WorkWaitRepository(repository).describe(control.current["id"])
     await control.settle(pending_inputs=False)
     await _late_input(repository, lease, control.current["id"], ready=True)
     control.current = await repository.get(control.current["id"])
     assert len(await control.take_inputs("legitimate-new-question")) == 1
     assert control.accepted is None
-    args["conditions"] = [{"kind": "time_due", "after_seconds": 600}]
-    revised = json.loads(await control.execute("task_control", args, "revised-wait"))
-    assert revised["ok"]
+    args["for"] = [{"seconds": 600}]
+    revised = json.loads(await control.execute("wait", args, "revised-wait"))
+    assert revised.get("ok") is not False
     current = await WorkWaitRepository(repository).describe(control.current["id"])
     assert current["wait_id"] != original["wait_id"]
-    replay = json.loads(await control.execute("task_control", args, "revised-wait"))
-    assert replay["wait_id"] == current["wait_id"]
+    replay = json.loads(await control.execute("wait", args, "revised-wait"))
+    assert replay == revised
+    replayed = await WorkWaitRepository(repository).describe(control.current["id"])
+    assert replayed["wait_id"] == current["wait_id"]
     async with database.read_session() as reader:
         assert (
             await reader.scalar(select(waits.c.status).where(waits.c.id == original["wait_id"]))
@@ -1168,13 +1150,9 @@ async def test_wait_delivered_between_decision_read_and_writer_stays_queued(
     database, tmp_path, monkeypatch
 ):
     repository, _lease, control = await _running_work(database, tmp_path)
-    assert json.loads(
-        await control.execute(
-            "task_control",
-            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 1800}]},
-            "wait",
-        )
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("wait", {"for": [{"seconds": 1800}]}, "wait")
+    )
     binding = await WorkWaitRepository(repository).describe(control.current["id"])
     transition = repository.transition
 

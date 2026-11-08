@@ -14,16 +14,17 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 actor、Conversation、设备来源及委托在执行处核验，不为选择声明查询入口或建立个人工具副本。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
-部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
-生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
-`lookup_tools`；服务管理、自动化和管理等其余能力经脚本调用。包安装直接在同一终端执行。两个模式分别
+部署内冻结的完整工具清单（内置 27 项，2026-11-07 一次切换，见下文“工具面”），不加载 Code 引擎。
+显式启用 Code 时才使用 `DIRECT_TOOL_NAMES` 固定直调集合：聊天、工作与子任务、记忆与历史、
+看文件与读结果、命令与环境、联网、编码 Agent、`execute_code` 和 `lookup_tools`；安排、撤回、
+复制文件和插件工具经脚本调用。包安装直接在同一终端执行。两个模式分别
 冻结声明；普通聊天、主动触发、自动化、插件主调用和持久续跑共用本部署合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
-`query_chat_history(view=around)` 以内部 `event_id` 定位实际目标会话账本；原 operation 目标未传
-event_id 时使用原回执锚点，其他目标需明确内部编号。声明变更随部署生成新的合同 revision，不沿用旧请求链。
+`read_chat(around=…)` 以内部事件 ID 定位实际目标会话账本；`target.operation_id` 未给 around
+时使用原回执锚点，其他目标需明确内部编号。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
-长期记忆的主 Agent 声明是统一 `search_memory`，详情统一为 `read_memory(view=fact/evidence)`，证据读取不记作已读事实；旧三个
-`get_*_memories` 执行入口已退出；已存回执只按原 call_id 读取，未知调用不取得重跑资格。插件只获 Person 或 Group 读权限时
+长期记忆的主 Agent 读取声明是统一 `search_memory`，按 `fact_id` 读取单条事实（原 `read_memory` 已并入，evidence 视图已删除）；
+写入为 `save_memory` 与 `edit_memory(action=correct|invalidate)`。旧三个 `get_*_memories` 执行入口已退出；已存回执只按原 call_id 读取，未知调用不取得重跑资格。插件只获 Person 或 Group 读权限时
 仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 
 `lookup_tools(query=...)` 搜索名称/说明或分页列出简短目录；`name` 精确读取单项原参数
@@ -43,7 +44,7 @@ Runner 请求只使用固定合同；后端刷新执行目录，不再生成按�
 本地 `$ref` 按 schema 自身资源作用域解析，标准本地 Registry 不提供远程检索。
 `examples`、`const` 等普通 JSON 资料不被当作 schema 或提升成根 `$defs`。
 
-`send` schema 5 的正文在原位置写 `@名字`，也可在 `@` 后留横向空白。
+`send` 的正文在原位置写 `@名字`，也可在 `@` 后留横向空白。
 名称取最长实际命中，同一 Account 的历史观察只算一个收件账号。真同名默认选择目标
 Conversation 中最近真实发言的账号，按原消息时间及内部事件 ID 排序；均无记录时按
 Account ID 稳定选择。指定账号可使用目录提供的 `@{account:UUID}`，不另传提及数组。
@@ -65,7 +66,7 @@ Main、SDK 消息与通知沿同一准备边界，先解析账号与原生布局
 撤权立即生效。同合同重启不改变指纹，目录刷新不替换已提交的 Provider 声明。
 
 执行时由后端依据真实 actor、来源、当前权限、委托、工具状态与工作预算核验。
-`update_short_state` 与绑定工具共用执行前的来源、租约和新输入复核及效果闸门；
+`set_short_note` 与绑定工具共用执行前的来源、租约和新输入复核及效果闸门；
 工具关闭时不写短记录。
 目录可见或 schema 已声明不等于可以执行；插件批准和工具运行状态仍可阻止调用，
 不需要为了拒绝执行而修改模型已提交的前缀。
@@ -92,8 +93,10 @@ flowchart LR
 Work 预算中明确写入的有限额度在每次请求和 T2 处执行，重启不重新发放。模型最终正文
 不自动投递，发送走 `send`。
 
-结果预算器保留必要 ID、URL、状态与错误，较大的完整结果可保存为 artifact。
-`mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
+模型看到的成功结果直接是业务数据，失败为 `{"ok": false, "error", "message"}`，可能已产生效果时
+另带 `"status": "unknown"`（见[结果预算与 Artifact](tool-results.md)）。结果预算器保留必要 ID、URL、
+状态与错误，较大的完整结果可保存为 artifact。typed outcome 中的 `mutation_committed` 与投递成功、
+失败、未知状态按真实回执解释；它们不是自然语言
 “已经完成”的替代品。工作区、工具结果等 artifact 的保留期由各自存储合同决定。
 
 ## 可选代码组合 `execute_code`
@@ -101,8 +104,8 @@ Work 预算中明确写入的有限额度在每次请求和 T2 处执行，重�
 默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用部署内固定完整工具清单。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
 Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v2`）。
-`terminal_exec`、`terminal_read`、`terminal_control`、`environment_status`、`external_agent` 常驻固定直调视图；
-服务登记经 Code Mode；安装和普通文件读写直接走同一管理员终端。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
+`run_command`、`read_command`、`control_command`、`get_environment`、`get_coding_agents`、`use_coding_agent` 常驻固定直调视图；
+环境服务不再是模型工具（Manager 的服务登记与恢复照常）；安装和普通文件读写直接走同一管理员终端。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
 原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
@@ -120,7 +123,7 @@ Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki
 WorkSession T2/T3 → `MainAgentBackend.execute_call`，拒绝理由与直接调用逐字一致；
 VM 只收到已保存的原回执视图（`ToolReceiptView`）。
 
-`read_tool_artifact` 在直调与子调用中均不扣业务工具次数，但照常提交 T2 的
+`read_result` 在直调与子调用中均不扣业务工具次数，但照常提交 T2 的
 `dispatch_started=true` 与 T3 原回执，`budget_admitted=false` 表示免扣费而非未执行。
 Code Mode 的累计 suspension、内存、并发、快照和时间限制继续生效且不因恢复重置。
 已删除每段业务次数配置，Code Mode 不再按段额度让出；根预算仍累计并在子调用 T2
@@ -166,7 +169,7 @@ Code 子调用在 T2 后恢复时认实际回执：已确认结果继续原程�
 
 
 宿主而非脚本决定并发：只读子调用受 `max_parallel_calls` 约束，发送、修改、记忆写和控制为
-屏障；同一响应的 `execute_code` 和直接调用沿原顺序执行。普通 complete、wait、need_input 与交接返回原控制回执，程序继续执行仍获准的语句，原批次和程序收拢后由共同 writer 结算；取消另一个目标不停止当前程序。
+屏障；同一响应的 `execute_code` 和直接调用沿原顺序执行。普通 finish、fail、cancel、wait 与交接返回原控制回执，程序继续执行仍获准的语句，原批次和程序收拢后由共同 writer 结算；取消另一个目标不停止当前程序。
 记忆写不强制停止脚本，历史未知不阻止新的独立调用。原调用本身处于未知时继续保留恢复边界。
 单项能力不允许或不再授权时，该项如实拒绝，程序可处理其回执，后续独立调用各自核验；不把单项拒绝扩大为整个 Work 撤权。真实当前目标取消/失败、全局来源或租约失效、工具关闭与资源拒绝仍按原事实停止旧来源的新效果，脚本不能通过 `try/except` 取得失效授权。段工具额度用尽且程序仍未结束时外层 call 保持未配对，下一段由原 Work 从同一快照续跑；
 已配对的 partial 永不恢复 VM。程序完整结果超出预算时保存为授权 artifact，模型只得预览。
@@ -174,22 +177,23 @@ Code 子调用在 T2 后恢复时认实际回执：已确认结果继续原程�
 程序恰好在段末结束（或报错）时，外层结果已配对，但模型尚未看到。新业务激活保留
 这一轮原调用 ID、effect key 和详细回执，作为 `work_unobserved_tool_round` 工作证据，
 与当前聊天一起呈现；不复制旧聊天、Provider 签名或 reasoning。直接工具同样适用。
-已观察的旧工具往返可退出，必要累积发现与中间值由有来源的 context_note 接续。
+已观察的旧工具往返可退出，必要累积发现与中间值由有来源的 note（`manage_task(action=update, note=…)`）接续。
 
-wrapper 返回字典，用 `r['ok']`/`r['data']`，不用 `r.ok`。并发前先 `import asyncio`；
+wrapper 返回 `ToolReceiptView` 字典，用 `r['ok']`/`r['data']`，不用 `r.ok`；成功时 `data`
+就是工具的业务数据。并发前先 `import asyncio`；
 Monty 内置模块（例如 asyncio、math）可用，宿主 Python 包、文件系统、网络及环境变量
 不开放。固定声明说明与原生 worker 能力一致，不因任务切换工具 schema。
 
 等待队列超限以 `code_limit_wait_queue` 配对代码结果，丢弃该 VM；模型可根据回执改为
 较小的分批程序。已执行子调用仍按原身份保留回执，未派发子调用结算为未执行，不能把
-资源拒绝变成整个 Work 的裸异常暂停。`task_control` 只读查询可与业务工具同批；
+资源拒绝变成整个 Work 的裸异常暂停。`get_tasks` 只读查询可与业务工具同批；
 会改变生命周期的控制按原执行顺序和控制屏障处理。
 
 工具图片通过 Host 私有 `ToolExecutionResult.images` 交给 Runner，文字 `model_payload()`
 不复制像素。预算后的 `MediaResultText` 携带图片而仍以字符串保存公开回执。历史/工作区
 来源由真实事件或冻结文件版本授权；工具图片先归档到原执行有权读取的私有工具 artifact，
-归档失败报告图片未读，不能抹去已经发生的外部修改。`read_tool_artifact` 的 `image` 操作
-仅在原 handle 的读取授权内返回像素，通用文字/JSON 操作不开放原始 Base64。
+归档失败报告图片未读，不能抹去已经发生的外部修改。`read_result` 对图片 Artifact
+仅在原 handle 的读取授权内返回像素，通用文字/JSON 读取不开放原始 Base64。
 
 Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原生媒体观察；并行完成先后
 不改变输入顺序。同批别名、缓存命中与 Work 断点恢复保留原媒体，而不是共享图片队列。
@@ -231,13 +235,17 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 
 ## 代码定位
 
-参数拒绝从本次冻结 schema 提供实际字段路径、校验类别和期望摘要，多余字段指出实际字段名，
-不回显参数值或原异常正文；保持原严格校验。确定派发前拒绝标记 `executed=false`、
+参数拒绝从本次冻结 schema 用一句中文说明哪个参数、期望什么（缺少的必填参数、类型、取值、
+单键对象应给的键、多余参数名），不回显参数值或原异常正文；保持原严格校验。未声明的名字
+（包括已改名的旧工具名）返回 `tool_not_declared`／`unknown_capability` 并说明只调用当前声明的工具，
+不经历史映射改派。领域未分类的异常返回 `tool_failed`（被新输入接替为 `superseded`），说明是否可能
+已产生效果，不再把异常类名当错误码。确定派发前拒绝在 typed outcome 中标记 `executed=false`、
 `mutation_committed=false`，实际执行次数与原 admission/已付尝试预算分别计量，不笼统退款。
 这些反馈在本次调用内生成，不为格式化结果重新查来源、取得 writer 或写错误账本。
 
-终端结果的顶层 `ok` 表示调用/查询成功，`process` 保留原进程状态、退出码、pending 和
-已知成功/失败；短结果、artifact/最小摘要和原持久效果回执保持同一事实。工具成功取得
+命令结果的模型投影为 `{id, status, output, exit_code, next_cursor}` 等实际字段，读取成功本身
+不加 `ok`；观察到的进程成败另以 `process.succeeded` 表示，typed 数据保留原 run_id、request_id、
+completion 与 pending。短结果、artifact/最小摘要和原持久效果回执保持同一事实。工具成功取得
 失败进程的结果不证明任务成功；非零退出也不证明此前没有写文件或其他局部效果。
 未知和运行中不猜成功，成功探测不代替实际测试验收。
 
@@ -277,15 +285,15 @@ WorkspaceStore 在 owner 打开时原子升级独立 manifest，永久保留不�
 
 ## 共同账本历史与原生平台操作
 
-统一 `query_chat_history(view=recent/search/around)` 读取 Yuki 实际参与并已入账、当前来源获准读取的
-跨平台 canonical 原账本。内部目标只选择真实查询范围，不猜主动路由；每条结果标明原 Conversation、平台和作者。
-  recent 默认当前 Conversation，显式 source 时浏览该来源集合；search 未给 target 时检索所有当前获准的已入账 Conversation。
-  source 的平台与 private/group 条件可选，与内部 target 取交集，无交集为空，不强制逐级发现。
-  find_contacts 定位人物／群主体；find_conversations 按真实 Conversation 平铺来源、话题和原阶段状态，
-  沿同一读取范围分页，不继承当前发送资格。两份完整 schema 仍在部署时一次冻结，旧 accepted 回执不改名重派。
-Person、Space 或 Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原会话。
-sources 提供可读会话名与目录，每条事件保 conversation_id、platform、scope、thread_id，不合并自动上下文。
-`event_id` 定位实际范围内原事件；`operation_id` 沿原发送回执定位真实出站会话及原锚点。
+统一 `read_chat` 读取 Yuki 实际参与并已入账、当前来源获准读取的跨平台 canonical 原账本。
+内部目标只选择真实查询范围，不猜主动路由；每条结果标明原 Conversation、平台和作者。
+  不带 target 与筛选时浏览当前 Conversation；带 query、author、has、platform、scope、since 或 until
+  时检索所有当前获准的已入账 Conversation，条件与内部 target 取交集，无交集为空，不强制逐级发现。
+  `find_contacts` 一并定位人物／群主体、当前可联系入口与真实历史 Conversation（原 find_conversations 已并入），
+  沿同一读取范围分页，不继承当前发送资格。旧 accepted 回执不改名重派。
+Person、Space 或 Binding 对应多个入口时直接合查，`around` 按内部事件 ID 定位原会话，`context` 给邻文条数。
+sources 提供可读会话名与目录，结果跨多个会话时事件才带 conversation_id，不合并自动上下文。
+`target.operation_id` 沿原发送回执定位真实出站会话及原锚点。
 委托 `read_target_id` 核原 owner，执行继续核 actor、委托、插件批准、keeper 与隐私。
 `/ai new` 的 starts_after 只限制自动上下文，不限制显式查找永久原记录；原 generation 失效仍停止旧执行。
 结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
@@ -302,44 +310,60 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 
 ## 跨入口读取与发送
 
-`query_chat_history` 的 Binding、Person、Space 和 Conversation 选择共用真实读取授权，
+`read_chat` 的 Binding、Person、Space 和 Conversation 选择共用真实读取授权，
 不按当前入口为 App/ACP、QQ 或其他平台另设全历史资格。读取保原入口来源，不修改公共历史、
 generation、FrozenFragments 或 Main session；平台离线、旧路由与上下文重置不代替授权拒绝读取。
 分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
 
-send 的 person target 可带 conversation_id 或 binding_id 明确入口，同时提供时 Conversation 优先。
-从 App/ACP 显式指定 person 目标缺少明确入口时返回原 binding_required 与可选绑定；
+send 的 `target` 只给一个内部 ID：person_id、space_id，或用 conversation_id／binding_id 明确入口。
+从 App/ACP 只给 person_id 时返回原 binding_required 与可选绑定；
 省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
 在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
 SocialOperation 的 source_conversation_id 仍是原主会话。明确发往另一 Conversation 不冒用本入口回复证明；
 本入口原回复及其冷恢复继续核原入站事件。文件说明沿同一绑定投递。
+
+## 工具面（2026-11-07 一次切换，合同版本 35）
+
+内置 27 个模型工具：会话 `send`、`recall_message`、`read_chat`、`find_contacts`、`get_members`；
+记忆 `search_memory`、`save_memory`、`edit_memory`、`set_short_note`；网络 `web_search`、`read_webpage`；
+文件 `view_file`、`copy_file`、`read_result`；电脑 `run_command`、`read_command`、`control_command`、
+`get_environment`；工作 `get_tasks`、`manage_task`、`start_subtask`、`message_task`、`wait`；安排
+`get_schedules`、`manage_schedule`；编码 Agent `get_coding_agents`、`use_coding_agent`。共同约定：
+`target` 为恰含一个内部 ID 的对象（记忆另允许 `{"self": true}`），分页为 `limit` + 不透明 `cursor`
+与结果 `next_cursor`，时间为带时区的 `since`／`until`（until 不含），`device` 一律表示源电脑。
+旧名不并行保留；联网工具随部署的 web 配置声明。`environment_service`、`get_my_capabilities`、
+`time_get_current` 已不再提供给模型（环境服务 RPC 与权限目录本身保留；当前时间见运行资料）。
+
+工具的能力 namespace 与 effect 写在声明本身（`ChatTool.namespace`／`effect`），Core 与自动化
+provider 直接读取，不另设按名字的元数据表；插件领域授权（`_require_plugin_domain`）按这些
+namespace 与原参数语义判断，切换未收紧也未放宽权限。
 
 ## 精简后的领域入口
 
 Main 固定合同保持每项固定名称、schema和顺序，各入口共用一份冻结声明及 Code 投影。
 direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入同一合同；工具数量不作运行准入条件。
 
-- `terminal_exec/read/control` 共用原 run/回执；exec 可选 device_id 选择本人电脑，省略继续使用 Manager。后续 read/control 认原目标，不因当前目录或实例变化切换设备。普通本机 Shell 不要求 Work；完整访问仅由本机开关授予。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
-- `external_agent(action=list/get/watch/prompt/steer/queue/respond/cancel/detach)` 调用本人已授权设备上的原生 Agent。list／get 查询目录、原操作、状态和必要历史，无需 Work；prompt／queue 沿原 Work 登记新操作，watch 只登记监督。steer 追加到指定活跃执行；respond 回答原问题，cancel 精确取消原操作，detach 仅结束监督，不关闭用户会话或 daemon。cancel 接纳不等于执行已取消；原 cancel 仍待确认时，读取同 instance/session/native execution 已持久的原执行或监督终态，保留原控制操作 ID。detached 不是原执行终态；自然完成仍报告完成，不改称取消。新调用无 close、peer_id 或服务器 agent_id 别名，不让模型拼接启动程序、环境或 owner endpoint。
+- `run_command`／`read_command`／`control_command` 共用原 run/回执；run_command 可选 `device` 选择本人电脑，省略继续使用 Manager。read/control 以 `id`（run_command 返回的 id）认原目标，不因当前目录或实例变化切换设备。模型参数在工具边界翻成 Manager wire 参数（device→device_id、id→run_id、cursor 字符串→整数），RPC 方法与任务行不变。普通本机 Shell 不要求 Work；完整访问仅由本机开关授予。control 的 input 发送原样 text；read 的 wait_seconds 只观察，默认不等待，原终态 completion 与游标同时保留。环境默认无强制期限，显式期限按事实执行。`get_environment(device?)` 查看环境或本机状态。
+- `get_coding_agents(device?, target?, history?, cursor?)` 查询本人已授权设备上的原生 Agent 目录、会话、执行、原操作、状态和必要历史，无需 Work；`use_coding_agent(action=prompt/queue/steer/watch/answer/cancel/detach, target, …)` 调用它们：prompt／queue 沿原 Work 登记新操作，watch 只登记监督。steer 追加到指定活跃执行；answer 回答原权限请求或提问（question 为事件 ID，answer 为选项 ID 或原生回答对象），cancel 精确取消原操作，detach 仅结束监督，不关闭用户会话或 daemon。`target` 是单键对象（instance_id／session_id／execution_id／operation_id）。cancel 接纳不等于执行已取消；原 cancel 仍待确认时，读取同 instance/session/native execution 已持久的原执行或监督终态，保留原控制操作 ID。detached 不是原执行终态；自然完成仍报告完成，不改称取消。新调用无 close、peer_id 或服务器 agent_id 别名，不让模型拼接启动程序、环境或 owner endpoint。
 
-公开 device_id／instance_id／session_id／execution_id／operation_id／run_id 均为内部 ID；native ID 仅是适配器引用，不用于重建人物归属。run_id 认 Work 等待，execution_id 认原生执行映射。确认丢失保持原关联，不以 resume、fork 或新 prompt 冒充恢复；原生能力缺失照实返回，不隐式取消重启。原问题回答、纠偏和管理操作记录本次真实 actor 与独立稳定调用键，不复用原 prompt 键。
+公开 device／instance_id／session_id／execution_id／operation_id 均为内部 ID；native ID 仅是适配器引用，不用于重建人物归属。run_id 认 Work 等待，execution_id 认原生执行映射。确认丢失保持原关联，不以 resume、fork 或新 prompt 冒充恢复；原生能力缺失照实返回，不隐式取消重启。原问题回答、纠偏和管理操作记录本次真实 actor 与独立稳定调用键，不复用原 prompt 键。
 
-`prompt/queue/watch` 先由 `task_control(action=accept)` 接纳 Work。`respond/detach` 必须引用原 `operation_id` 或其 `run_id`；`execution_id` 只定位原生执行，不能替代监督操作。`respond.permission_id` 使用服务器 `permission/question` 事件顶层 ID，选项与回答沿原问题。`request_id` 参数仅保留 `get` 查证的兼容别名，新写调用身份仍由 Host 生成。已知缺参或前置 Work 未接纳通过原工具结果返回明确领域错误与修正说明，不泛化为无信息的 `ValueError`，也不把任意底层异常原样公开。固定声明及字段说明变化由现有完整声明哈希自然产生新 manifest revision，不放宽旧链恢复合同。
+`prompt/queue/watch` 须在已登记的工作中调用（私聊由 Host 接纳，其他场景用 `manage_task(action=start)`）。`answer/detach` 以原 `operation_id` 为 target；`execution_id` 只定位原生执行，不能替代监督操作。answer 的 question 使用服务器 `permission/question` 事件顶层 ID，选项与回答沿原问题；服务内部仍以原 `respond` 动作执行，历史记录的 `respond` 与新 `answer` 同样恢复。旧 `request_id`、`outcome`、`run_id` 别名和 `native_cursor` 已删除，翻页统一用 `cursor`，新写调用身份仍由 Host 生成。已知缺参或前置 Work 未接纳通过原工具结果返回明确领域错误与修正说明，不泛化为无信息的 `ValueError`，也不把任意底层异常原样公开。固定声明及字段说明变化由现有完整声明哈希自然产生新 manifest revision，不放宽旧链恢复合同。
 
 声明、说明和顺序在部署冻结，direct／Code Mode／Script API 共用；设备目录和实际能力变化只影响查询结果。执行处核当前 Person 与设备授予；operator、平台超管和聊天 token 不自动获得电脑控制权。重要问题和进度沿原 Work 私有输入，交付仍走 send／Social。旧 ACP close／peer／prompt 回执按原事实读取，不接收新调用别名。
 
-- `workspace_inspect`、`send(path)` 和附件保存可选 device_id，共用原设备文件桥（前两者指源电脑，附件保存指目标电脑，可复制附件、环境 path 或不可变 artifact_id；工具面切换后改名 `copy_file`，源为 `device`、目标为 `to_device`）；inspect 是私有观察，send 内部 publish 才冻结不可变交付。普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
-- `automation_query(view=list/get/history)` 提供全局安全摘要与获准的完整定义/发生历史；list 支持真实生命周期/all，list/history 使用实际 limit 和数字 offset cursor。get/history 按真实 owner/超管授权。`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原 owner、版本、创建键与调度回执；完整 task 仅 goal/trigger 必填、name 可选，max_runs 缺省/null/整数按创建与更新合同贯通。
-- `query_chat_history(view=recent/search/around)` 读取真实获准的原账本集合；recent 默认当前入口，search 默认全部获准入口，around 按内部 event_id 定位原会话。search 使用 start_at/end_at，around 使用 before/after 条数；内部目标解析与共享读取内核统一，入口授权认各自真实来源。
-- `read_memory(view=fact/evidence)` 保原scope与观察事实；`subagent_control(action=message)` 保原父子ID、ask/reply_to、运行中补充和resume区别。
+- `view_file`、`send(file)` 与 `copy_file` 共用原设备文件桥：`device` 一律指源电脑，`copy_file` 的目标电脑为 `to_device`（来源三选一：path、artifact_id、event_id+attachment；本期源 `device` 返回 `source_not_supported_for_destination`）；view_file 是私有观察，send 内部 publish 才冻结不可变交付。普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
+- `get_schedules(id?, history?, limit?, cursor?)` 提供全局安全摘要（列出全部状态）与获准的完整定义/发生历史；get/history 按真实 owner/超管授权。`manage_schedule(action=create/update/pause/resume/cancel/run_now, id?, goal?, trigger?, name?, max_runs?)` 沿原 owner、版本、创建键与调度回执；name 与 max_runs 缺省保留、null 清除，创建回执带 `confirmation=persisted` 与真实 `id`。
+- `read_chat` 读取真实获准的原账本集合；无筛选默认当前入口，有筛选默认全部获准入口，around 按内部事件 ID 定位原会话。时间用 since/until（带时区，until 不含），邻文用 context；内部目标解析与共享读取内核统一，入口授权认各自真实来源。
+- `search_memory(fact_id=…)` 保原 scope 与观察事实；`message_task` 保原父子 ID、ask/reply_to、运行中补充，`manage_task(action=resume, text=…)` 恢复子任务时可附新要求。
 
 退役名称不接收新调用，也不注册新执行别名；旧已接受call/result_ref、参数hash、原ID、预算、unknown及原Provider输入继续只读恢复。工具声明变化只在合法新链生效。
 
-按工具名读取原回执与历史（效果证据、Work 步骤投影、owned run 归类）统一经 `runtime/effect_outcomes.py` 的只读 `RECORDED_TOOL_NAMES` 解析：原记录名映射到语义相同的现役工具，原记录保留原名，新调用不经它解析。没有后继的退役名（如 `local_device`、`run_python`）不是别名，按各自原事实读取。终端与环境工具经 `sandbox/client.py` 的 `MODEL_TOOL_RPC_METHODS` 得到 Manager RPC 方法；RPC 方法名与任务行 `{"tool": method}` 是 Manager wire 合同，不随模型工具改名。
+按工具名读取原回执与历史（效果证据、Work 步骤投影、owned run 归类、`process_receipt`、SELF 自省输入）统一经 `runtime/effect_outcomes.py` 的只读 `RECORDED_TOOL_NAMES` 解析：2026-11-07 切换前的旧名（如 `task_control → manage_task`、`external_agent → use_coding_agent`、`query_chat_history → read_chat`、`terminal_exec → run_command`）映射到承接其语义的现役工具；拆分的工具映射到承载 action 的那个，读取处仍按原 action 区分。原记录保留原名，新调用不经它解析，旧名调用按未声明工具拒绝、不改派。没有后继的退役名（`local_device`、`run_python`、`environment_service`、`get_my_capabilities`、`time_get_current`）不是别名，按各自原事实读取。终端与环境工具经 `sandbox/client.py` 的 `MODEL_TOOL_RPC_METHODS` 得到 Manager RPC 方法；RPC 方法名与任务行 `{"tool": method}` 是 Manager wire 合同，不随模型工具改名。
 
 Host 自身不经模型工具名调用核心工具：插件主调用与持久 Host 调用接纳自己的目标时调用
-`WorkControl.admit_goal`，与模型 `task_control(accept)` 共用同一 writer、预算计费与来源核验，
+`WorkControl.admit_goal`，与模型 `manage_task(action=start)` 共用同一 writer、预算计费与来源核验，
 但不产生模型结果文本或 effect 回执；接纳失败（来源失效、目标为空、写入失败）按原异常抛给
 Host 调用方。插件 `group.list_members` 调用 `SocialService.group_members`，与模型
-`get_group_members` 共用同一 Space 目录读取，权限与群范围仍在插件门面核验。
+`get_members` 共用同一 Space 目录读取，权限与群范围仍在插件门面核验。
 Host 内部依据读 typed outcome 而非模型结果文本，见[结果预算与 Artifact](tool-results.md#模型可见文本与内部读取)。

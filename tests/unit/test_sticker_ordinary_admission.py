@@ -85,7 +85,7 @@ async def test_ordinary_main_admits_and_delivers_without_registering_a_work(
     env = await social_env(database, tmp_path)
     delivery, library = make_delivery(env)
     control = await activation(env)
-    arguments = {"text": text, "emoji": {"goal": "开心"}}
+    arguments = {"text": text, "sticker": {"goal": "开心"}}
     result, context, captures = await call_through_main(env, control, arguments)
     await control.repository.release(control.lease)
     assert captures == [""]  # The actual coordinator/InvocationService ordinary route.

@@ -246,7 +246,7 @@ class ClientPrompts:
                 if not captured.cancelling():
                     captured.cancel()
                 await asyncio.gather(captured, return_exceptions=True)
-            # Joining the original task closes the race with task_control.accept.
+            # Joining the original task closes the race with manage_task(start).
             async with self.identity.database.immediate_session() as writer:
                 current = await self.identity.require_principal(writer, principal)
                 original = await requests.message(writer, current, request_id)

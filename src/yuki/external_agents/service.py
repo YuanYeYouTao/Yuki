@@ -330,7 +330,7 @@ class ExternalAgentService:
         if not isinstance(session_id, str):
             raise ExternalAgentArgumentError(
                 "external_agent_resource_required",
-                "get 需要 operation_id/run_id 或 session_id/execution_id；设备/实例用 list。",
+                "target 给 operation_id、session_id 或 execution_id；查看设备与实例时省略 target。",
             )
         resource = await self.repository.native_session(session_id, actor)
         if args.get("instance_id") not in (None, resource.instance_id):
@@ -455,8 +455,8 @@ class ExternalAgentService:
             if control is None or control.current is None:
                 raise ExternalAgentArgumentError(
                     "accept_work_before_execution",
-                    "先用 task_control(action=accept) 接纳 Work，"
-                    "再调用 prompt/queue/watch。本次未派发。",
+                    "先用 manage_task(action=start) 登记工作，"
+                    "再调用 prompt、queue 或 watch。本次未派发。",
                 )
             trusted = {
                 **trusted,
@@ -498,18 +498,18 @@ class ExternalAgentService:
         if not isinstance(instance_id, str):
             raise ExternalAgentArgumentError(
                 "instance_id_required",
-                "提供目录返回的 instance_id，或能定位实例的原操作/会话引用。",
+                "target 给目录中的 instance_id，或能定位实例的会话、执行或原操作 ID。",
             )
         instance = await self._instance(instance_id, actor, args.get("device_id"))
         if action in {"steer", "cancel"} and owned is None and execution is None:
             raise ExternalAgentArgumentError(
                 "operation_id_or_execution_id_required",
-                "steer/cancel 须提供原 operation_id（或 run_id），或目录返回的 execution_id。",
+                "steer、cancel 的 target 用原 operation_id 或目录中的 execution_id。",
             )
         if action in {"detach", "respond"} and owned is None:
             raise ExternalAgentArgumentError(
                 "operation_id_required",
-                "respond/detach 需要原 operation_id 或 run_id；execution_id 不能替代。",
+                "answer、detach 的 target 用原 operation_id；execution_id 不能替代。",
             )
         original_control = owned is not None and action in {"detach", "cancel", "steer", "respond"}
         try:
@@ -524,7 +524,7 @@ class ExternalAgentService:
             if len(matches) > 1:
                 raise ExternalAgentArgumentError(
                     "external_agent_execution_ambiguous",
-                    "该 execution_id 对应多个原操作，请提供 operation_id 或 run_id。",
+                    "该 execution_id 对应多个原操作，target 改用 operation_id。",
                 )
             target = matches[0] if matches else None
         arguments = {
@@ -562,20 +562,21 @@ class ExternalAgentService:
             except (KeyError, ValueError, TypeError) as error:
                 raise ExternalAgentArgumentError(
                     "permission_id_required",
-                    "respond 须使用服务器事件顶层 permission_id，不使用原生请求 ID。",
+                    "question 用原操作事件中的 permission_id，不用 Agent 自己的请求 ID。",
                 ) from error
             async with self.database.read_session() as session:
                 event = await session.get(AgentEventModel, permission_key)
                 if owned is None or event is None or event.operation_id != owned.id:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
-                        "get 原 operation_id 的 permission/question 事件，使用顶层 permission_id。",
+                        "先查看原 operation_id 的事件，"
+                        "question 用其中权限请求或提问的 permission_id。",
                     )
                 event_data = json.loads(event.payload_json)
                 if event.kind not in {"permission", "question"}:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
-                        "permission_id 必须指向原 operation_id 的 permission/question 事件。",
+                        "question 必须是原 operation_id 下的权限请求或提问事件。",
                     )
                 native_question = event_data["payload"]["native_request_id"]
                 question_execution = event_data.get("execution_id")

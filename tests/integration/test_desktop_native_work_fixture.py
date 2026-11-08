@@ -85,12 +85,12 @@ async def native_app(tmp_path, monkeypatch):
 async def permission_gate(native_app, permission, monkeypatch):
     committed, release = asyncio.Event(), asyncio.Event()
     gate = SimpleNamespace(committed=committed, release=release, control=None, response=None)
-    original = WorkControl._control
+    original = WorkControl._wait
     original_response = DesktopNativeWorkScenario.respond
 
-    async def accept(control, args, call_key, **payload):
-        result = await original(control, args, call_key, **payload)
-        if permission and args.get("action") == "wait" and gate.control is None:
+    async def accept(control, args, call_key):
+        result = await original(control, args, call_key)
+        if permission and gate.control is None:
             gate.control = control
             committed.set()
             await release.wait()
@@ -100,7 +100,7 @@ async def permission_gate(native_app, permission, monkeypatch):
         result = await original_response(scenario, request)
         if result is not None and result.tool_calls:
             tool = result.tool_calls[0].function
-            if tool.name == "external_agent" and json.loads(tool.arguments)["action"] == "respond":
+            if tool.name == "use_coding_agent" and json.loads(tool.arguments)["action"] == "answer":
                 control = current_work_control.get()
                 gate.response = SimpleNamespace(
                     trigger_event_id=control.source["trigger_event_id"],
@@ -109,7 +109,7 @@ async def permission_gate(native_app, permission, monkeypatch):
                 )
         return result
 
-    monkeypatch.setattr(WorkControl, "_control", accept)
+    monkeypatch.setattr(WorkControl, "_wait", accept)
     monkeypatch.setattr(DesktopNativeWorkScenario, "respond", observe)
     try:
         yield gate

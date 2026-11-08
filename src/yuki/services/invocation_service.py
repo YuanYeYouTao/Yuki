@@ -305,7 +305,7 @@ class InvocationService:
         if (
             capture.outcome.provider_id == "core"
             and call.function.name
-            in {"get_code_run", "terminal_read", "cancel_code_run", "terminal_control"}
+            in {"get_code_run", "read_command", "cancel_code_run", "control_command"}
             and isinstance(evidence.get("run_id"), str)
             and execution_finished(evidence)
         ):

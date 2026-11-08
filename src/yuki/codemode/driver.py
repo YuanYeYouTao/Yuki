@@ -944,12 +944,7 @@ class CodeModeDriver:
             if "summary_ref" in body:
                 body.update(result_ref=body["summary_ref"], result_path=["result"])
                 body["read_more"] = [
-                    {
-                        "handle": body["summary_ref"],
-                        "operation": "get",
-                        "path": ["result"],
-                        "offset": 0,
-                    }
+                    {"handle": body["summary_ref"], "path": ["result"], "cursor": "0"}
                 ]
         # Shrink text only when it actually exists and is removed. JSON escaping
         # is included in every measurement; an empty stdout is not truncated.

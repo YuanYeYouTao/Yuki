@@ -1,6 +1,6 @@
 # 主 Agent 执行与恢复合同
 
-个人明确授权的本机 Codex、Claude 沿现有 NativeConnector 和固定 `external_agent` 工具执行。桌面建立连接不要求选择项目；原生会话、任务目录与真实授权仍各认原事实。`local_device` 工具和活执行协议已退出；旧 Work 保留原表、内部 ID 与效果键的只读回执查询，pending/unknown 不转成已完成，不重派，也不转换为 Native 操作。远程电脑的有头界面继续沿现役终端/Manager 能力，不复制 Main。
+个人明确授权的本机 Codex、Claude 沿现有 NativeConnector 和固定的 `get_coding_agents`／`use_coding_agent` 工具执行。桌面建立连接不要求选择项目；原生会话、任务目录与真实授权仍各认原事实。`local_device` 工具和活执行协议已退出；旧 Work 保留原表、内部 ID 与效果键的只读回执查询，pending/unknown 不转成已完成，不重派，也不转换为 Native 操作。远程电脑的有头界面继续沿现役终端/Manager 能力，不复制 Main。
 
 本文定义当前执行合同；实际部署版本以运行镜像和提交记录为准。
 
@@ -58,10 +58,10 @@ delivered），不含调用参数原文。这用于识别已有工作与已发�
 摘录不完整，不能代替原目标。读取使用有界 SQL 最小投影，不逐项预载完整等待 JSON。
 续接目标或等待内容不清楚时先用 `get` 读取完整 goal 与 wait，活动 Work 原目标不截断。
 目录中的 revision、owner/Conversation/generation、来源与审计时间等详情不常驻 Prompt，
-需要核实再调用既有 `task_control(action=get/list)`；get 同时提供存在的完整等待登记。
+需要核实再调用 `get_tasks`（给 `id` 读单项，省略列出）；单项读取同时提供存在的完整等待登记。
 get 的全局安全元数据不授予私有步骤读取。原 actor、Conversation、generation 和执行树范围
-获准时，直接读取原 effects 的最近一页、真实结果及原 context_note；`limit/cursor` 续读更早
-记录，`history_order=desc`，不聚合完整 journal，也不另存进度摘要。范围不符时明确
+获准时，直接读取原 effects 的最近一页、真实结果及原 note；`limit/cursor` 续读更早
+记录（新到旧），不聚合完整 journal，也不另存进度摘要。范围不符时明确
 `progress_available=false`，不把缺失步骤当作没有行动。`observed_at` 是查询时间，步骤的
 created_at/updated_at 是原回执时间，生命周期和计数本身不能证明业务已做完。
 后端身份、权限和恢复事实仍保持完整。
@@ -86,7 +86,7 @@ Main 的系统约束、
 提醒；原事件类型、来源、内部身份及 `<runtime_context>` 的程序资料标签仍按原载体保留。
 工具执行继续由后端核验真实授权，已有付费请求、工具声明和冻结历史不追溯改写。
 
-当前时间与历史显示统一默认 UTC+8，个人与 SELF 时区偏好、读取/设置工具和存储已退出。每次准备运行资料（`<runtime_context>`）都带 `current_time`，如 `2026-11-07 21:30:05 星期六 (UTC+8)`，取准备该资料时的系统时钟，不保存首份或最后展示值。每次激活（用户消息、Work 等待唤醒后的恢复、自动化到期、SELF）的首个新请求都准备一次；同一激活后续请求只在程序追加新的运行资料（如参与资料）时随之刷新，工具往返和 HTTP 重试保留已提交原件，不改写旧请求的时间。长 Work 中途需要新的时间时调用 `time_get_current`；精确恢复原已付请求时不另加新资料。
+当前时间与历史显示统一默认 UTC+8，个人与 SELF 时区偏好、读取/设置工具和存储已退出。每次准备运行资料（`<runtime_context>`）都带 `current_time`，如 `2026-11-07 21:30:05 星期六 (UTC+8)`，取准备该资料时的系统时钟，不保存首份或最后展示值。每次激活（用户消息、Work 等待唤醒后的恢复、自动化到期、SELF）的首个新请求都准备一次；同一激活后续请求只在程序追加新的运行资料（如参与资料）时随之刷新，工具往返和 HTTP 重试保留已提交原件，不改写旧请求的时间。`time_get_current` 工具已删除：长 Work 等待唤醒后的新激活会重新给出 current_time；同一激活中途需要精确时间时可用 `run_command` 运行 `date`。精确恢复原已付请求时不另加新资料。
 明确指定的安排时区仍属于任务本身，真实时间按 UTC 保存；原付费请求中的时间原件不重写。
 本轮资料每次准备当前有效值，放在当前触发消息的正文前面；首次激活新建的 Work 运行状态块同样前置，以 `<runtime_context>` / `</runtime_context>` 包裹，固定系统约束说明其中是程序提供的本轮系统运行资料、不是任何人的发言，并保留前后双换行，当前正文在最后。标签只说明资料来源，消息角色仍为 user。资料包含本轮 Work 状态、可见工作线索，以及原入场或 Work 场景绑定的局部参与反馈；为空无标签。它不进入公共 FrozenFragments、自动 dynamic_snapshot、观察或摘要，不再保存首份、变化差量、移除流水和最后展示值。一个 Conversation 的公共投影只冻结实际采用的原事件渲染，保名字、引用、AT与附件事实；当前说话人、入口和个人偏好不建立另一份公共历史。
 
@@ -101,22 +101,22 @@ scheduled_for，与同块 `current_time` 一起明确当前目标已经到期，
 有 Work 和无 Work 的 Main 均在本来需要的下一次正常请求前，经 `AgentToolBackend.participation_context(runtime)` 读取相关参与事实：`participation` 下的原讨论和对象、自身意愿、语义判断及原来源顺序。只投影已有 SelfReport、UnitSemanticReview 和未释放的相关 Boundary，不复制概率、队列、人物列表或新建第三份刹车状态。反馈沿原有序输入尾部追加；已付请求、冻结前缀和初始运行块不改写。原生 pause 或 opaque 精确续接不能插入时，留待下个合法业务请求。反馈不进入业务 mailbox，不单独唤醒 Main 或购买确认请求，也不否决发送、已接纳输入或原任务；后端收起尚未选择的普通机会，本体结合当前交流决定是否继续闲聊。
 文件、终端、完整自动化目录和长期记忆均使用已有工具按需查询。
 
-主 Agent 的 `task_control(action=get, work_id=...)` 按原内部 Work ID 只读查询全局安全目录，
-与 Automation 目录读取一致，不按创建者、当前会话或 generation 过滤；
-`task_control(action=list)` 有界分页列出同一目录，`status` 默认 `active`，
-查已完成、失败或取消的工作用 `terminal`，同时看活动与终态用 `all`。
+主 Agent 的 `get_tasks(id=...)` 按原内部 Work ID 只读查询全局安全目录，
+与安排目录读取一致，不按创建者、当前会话或 generation 过滤；
+不给 `id` 时有界分页列出同一目录，`status` 默认 `active`，
+查已完成、失败或取消的工作用 `done`，同时看活动与终态用 `all`。时间以带 +08:00 的 ISO 字符串展示。
 `limit` 默认 8、允许 1–50，`cursor` 用于续页，不把这个简表宣称为完整任务存档。
 全局投影只提供安全任务元数据和创建者标识，不提供 journal、工具正文或跨会话聊天内容。
-子 Agent 使用 Main 的固定完整工具合同，其 `get` / `list` 查看自身及实际后代的安全事实；指定节点
-管理也限于该子树，原祖先和兄弟不因此开放。`parent_work_id` 可分页查询直接子目标。
+子 Agent 使用 Main 的固定完整工具合同，其 `get_tasks` 查看自身及实际后代的安全事实；指定节点
+管理也限于该子树，原祖先和兄弟不因此开放。`parent` 可分页查询直接子目标。
 两个查询不要求先接纳 Work，不获取执行租约，不追加输入、恢复工作或发放预算。
-进度、用途、结束时间和已有结果的追问先查询原 Work，不因此另行 `accept`。
+进度、用途、结束时间和已有结果的追问先查询原 Work，不因此另行 `start`。
 终态查询不会复活旧任务；真实独立新请求仍可接纳新 Work。
 持久状态是查询时刻的生命周期证据，具体执行与交付仍由原回执证明；
 查询不扩大修改权限、不授予原未知调用的重派资格，也不把口头承诺当作已执行事实。
 
 当前群的 active 自动化目录不再预取进每轮主 Agent 上下文。明确涉及自动化的当前请求由
-`automation_query(view=list)` / `automation_query(view=get)` 按需核实；读取目录不授予修改权限。普通聊天、SELF
+`get_schedules` 按需核实；读取目录不授予修改权限。普通聊天、SELF
 自主轮、插件唤醒和定时 Agent 不因群里存在任务而自动收到任务清单。
 
 定时使用固定主 Agent 工具声明，TaskSpec 不选择工具名单。执行时依据原永久创建者或
@@ -152,7 +152,7 @@ Conversation、Space、Presence 和群绑定；每次新到期发生使用该会
 完全不发送；模型最终正文交回原调用方，不会自动作为平台聊天消息发送。`report_progress` 和本轮最终回复
 效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
 固定媒体提示将表情作为聊天语气，按当前话题和任务需要选读附件；讨论图片本身时仍可具体查看与说明。
-自然配图通过 `send.emoji.goal` 表达情绪或含义，正文先发、后台选图；纯表情可省略 `text`，不要求模型等图或逐张复述标签。
+自然配图通过 `send.sticker.goal` 表达情绪或含义，正文先发、后台选图；纯表情可省略 `text`，不要求模型等图或逐张复述标签。
 有前台文字（包括只写 `@名字`）时，提及和引用随前台原位发送一次，后台只追加图片。配图意图与首个正文发送 claim 在同一短事务保存原来源，并关联原文本回执；
 后台沿原分段计划等待文字派发结束，失败或未知同样保留原配图意图，不要求正文全部成功。
 正文前不单独补查配图来源，正文后不另开接纳写事务；来源查询与必要复核复用原 claim。
@@ -190,7 +190,7 @@ cancel/detach 按原动作语义解释。Main、Code child、worker 复用这条
 单次 `send` 的纯文本复用原回复分条规则（换行、结构与字数上限），
 逐条持久化发送回执；模型主动多次调用仍是独立的发送。部分发送未知时停止后续
 分条，重入只读取已有回执，不盲目重发。文字、原位提及、引用与媒体先形成共同内容，再由适配器纯 `plan_send` 布局成实际派发。
-`send` 是显式会话交付，不要求先 `task_control.accept`；它仍被视为真实副作用，
+`send` 是显式会话交付，不要求先登记工作；它仍被视为真实副作用，
 目标权限、路由、mutation 围栏和投递回执均在执行处核验。普通写操作沿原领域授权和回执执行，不强制先接纳 Work。社交工具不再对发消息或戳一戳施加额外的每目标/全局分钟频率上限。
 已接纳 Work 也不额外施加发送次数或 16 条/60 秒窗口；投递意图只负责身份、内容冲突和
 回执防重放，不是频率配额。已有明确未派发的 blocked 意图可按原身份恢复；accepted、
@@ -232,7 +232,7 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 实际 Work 的等待和恢复，暂停或取消未来安排不停止已经接纳的 Work。
 
 定时入口不强制 Host accept，也不为工具、沙箱或环境增加先登记 Work 的门槛。
-真正需要持久工作时由 Main 沿普通 task_control 接纳；已接纳工作按原 Work ID、私有
+真正需要持久工作时由 Main 用 `manage_task(action=start)` 接纳；已接纳工作按原 Work ID、私有
 检查点、真实预算和效果回执接续。模型最终文字只作内部结束，QQ 可见内容必须显式发送。
 首次到期正文是接纳版本的完整 goal，不再给模型一份自动化配置 JSON。
 已有 Work 的当前目标认 Work.goal，复用当前运行状态投影；原安排以 version/run 引用溯源，
@@ -240,17 +240,18 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 target/binding，省略 target 仍是当前源会话；明确指定其他人的入口时使用已查明的稳定目标。
 内部任务和提醒共用同一 Main，不裁剪工具、不强制发送，也不禁止合法安排独立后续事项。
 
-`task_control(complete)` 可在同一次调用中携带真实内部 `result`。工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
-`accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
-绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason 和 context_note 是可选资料，不作为结束审批。
+`manage_task(action=finish)` 可在同一次调用中携带真实内部 `result`。工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
+`accepted_control`（complete/fail/need_input/wait 各一份，wait 与原 wait 绑定同事务；模型侧
+finish 记为 complete，只等 `{"message": true}` 的根任务 wait 记为 need_input 即 waiting_user）。普通结束、
+wait 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。fail/cancel 的 `text` 和 note 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
 原 wait 绑定仍 active 时，普通结算保留其 accepted_control；无新业务或匹配信号的辅助
 激活沿原等待收拢，不重购模型或改原截止时间。原 wait 在结算前兑现时，writer 认同一
 wait ID 的 delivered/expired 及尚待处理的原 signal，将 Work 续回 queued，避免用旧等待
 覆盖已经到达的信号。合法新输入仍可退休原决定；显式新 wait 在同一事务中取消原 active
 绑定并登记新绑定，保旧取消事实，同 call key 不续期，已兑现的旧 wait 不复活。
-主任务的 `need_input.reason` 是内部等待资料，不会自动变成平台提问；需要用户补充时，先用 `send` 交付问题，再登记等待。
-子任务直接 `need_input(reason=问题)`，Host 会通过父子通信发送问题并按原回执决定是否等待，无需再单独提问；底层等价方式是 `subagent_control(action=message, ask=true)`。
+主任务需要用户补充时，先用 `send` 交付问题，再 `wait(for=[{"message": true}])`；该等待记为 waiting_user，
+任何下一条消息都会唤醒。子任务用 `message_task(ask=true, text=问题)` 通过父子通信提问并等待父任务回答（状态 waiting_parent），无需再单独提问。
 恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。
 已有 Work 的 direct 控制使用原 InvocationService 的 T1/T2/T3 保存调用与回执，不扣业务工具预算。原响应中明确未派发的尾部沿原调用键接续；已派发未知调用、旧未执行终结回执与已关闭程序不因升级取得重派资格。合同变更在合法新链应用，旧已付请求、公共历史和固定前缀原件保持不变。
 
@@ -266,9 +267,9 @@ Social 回执来源键保留旧键；较长的完整内部身份沿共同 SHA256
 自动化意图和自然语言时间由主 Agent 根据真实请求与上下文解释；歧义由 Agent 澄清。
 后端不使用关键词或正则判断是否应创建任务、不重新解析原话中的时间，也不按成功措辞拦截正文。
 后端继续校验结构化 trigger、时区、当前主体权限、目标来源及幂等；Agent 以持久化回执和真实 ID 报告结果。
-`automation_query(view=list)` 提供不按当前发言人过滤的全局安全简表，默认只列 active，按 status 查询其他
-真实生命周期或 all，并返回创建者的稳定身份。未命名任务用中性 ID 标签，不从私有 goal 生成标题。
-`automation_query(view=get/history)` 按原创建者或当前超管资格返回完整定义、原版本和发生结果。
+`get_schedules` 不给 `id` 时提供不按当前发言人过滤的全局安全简表，列出全部生命周期状态，
+并返回创建者的稳定身份。未命名任务用中性 ID 标签，不从私有 goal 生成标题。
+`get_schedules(id=…)` 与 `history=true` 按原创建者或当前超管资格返回完整定义、原版本和发生结果。
 读取目录不授予私有正文读取或修改权限，
 更新、暂停、恢复、取消、立即运行和执行历史按真实 actor 授权：普通用户只能管理自己的任务，
 超级管理员可以管理全部任务。管理员更新不改变 canonical 创建者，后续执行仍按原创建者的当前权限
@@ -295,7 +296,7 @@ WorkScheduler 的监督任务拥有候选恢复循环和独立时间维护循环
 它们使用的依赖。
 Host 同步主调用的持久接纳由 `DurableInvocations` 管理，沿原 invocation boundary 查询和
 接纳 Work 后进入已准备的执行路径，不递归调用主入口，也不重置原身份、历史和预算。
-接纳直接调用 `WorkControl.admit_goal`，不经 `task_control` 工具；接纳失败按原异常抛出。
+接纳直接调用 `WorkControl.admit_goal`，不经 `manage_task` 工具；接纳失败按原异常抛出。
 根 Work、自动化和子任务共用 `bind_work_activation` 的 ContextVar、续租、计量、恢复和
 释放边界；来源核验和所属执行的结算仍使用各自原有合同。
 整理来源能完整容纳时直接沿原完整来源处理；真实超容量才分页，分页让出执行机会，避免饿死心跳和消息处理。
@@ -466,7 +467,7 @@ prompt／queue 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操�
 
 重要进度、权限和用户问题先进入原 Work 私有输入与原回执，再确认设备事件。沿原等待／恢复链接入，不逐 token 激活 Main，不复活终态或已撤权 Work。回答绑定原问题和原执行，普通已授权操作不一律升级为人工批准。跨入口查询认原 Person 授权，不拼接 Conversation 历史。外部输出是待核对材料，交付继续通过 send／Social。
 
-每次 external_agent 调用计入原 Work 工具预算；prompt／queue 登记新输入操作，steer 和查询不冒充新模型执行。原生内部轮数、usage、cache 只记实际报告字段，缺失保持未知。原生完整上下文和工具留在原生 Agent，Yuki 只接收必要进度、问题与结果引用。
+每次 `use_coding_agent`／`get_coding_agents` 调用计入原 Work 工具预算；prompt／queue 登记新输入操作，steer 和查询不冒充新模型执行。原生内部轮数、usage、cache 只记实际报告字段，缺失保持未知。原生完整上下文和工具留在原生 Agent，Yuki 只接收必要进度、问题与结果引用。
 
 旧服务器 ACP 不再接纳新 peer 或 prompt；legacy reader 仅保原 request／run／peer／cursor／permission／completion 的查询、原活动精准取消和结算，不作为后备设备 runtime。确认丢失查原 ID，unknown 不重发；历史回执不改名、不清空，也不声称擦除供应商或用户电脑上的资料。
 
@@ -516,15 +517,15 @@ Executor 不在同一物理 attempt 前重复调用它。原 Work source guard �
 版本有效时，以预生成的 Work ID 在同一 writer 中提交接纳、接纳前已付模型计量与首份
 `phase=response` journal，然后才为整批绑定调用身份。goal 只引用原触发事件，模型可用
 update 改写。版本已失效则按下述抢占处理，不接纳。只由 `send` 与 Work 控制
-（`task_control`、`subagent_*`）组成的批次、无工具的轮次和群聊不接纳；批次中有模型自己的
-accept 或 resume 时同样不接纳，让 resume 沿中性前台把用户消息交回原 Work 原链。
+（`get_tasks`、`manage_task`、`start_subtask`、`message_task`、`wait`）组成的批次、无工具的轮次和群聊不接纳；
+批次中有模型自己的 `manage_task` start 或 resume 时同样不接纳，让 resume 沿中性前台把用户消息交回原 Work 原链。
 接纳后新消息经 `preserve_active` 进入该 Work：同批尚未执行的副作用调用返回
 `new_input_before_execution`，下一次请求前接入新输入，收尾回复遇新输入重做，不另开 Main。
 版本核对与接纳提交之间到达的新输入已推进版本，但不取消已受保护的旧轮，它在旧轮结束后
 作为独立 Main 处理。插话只在激活期间进入同一执行：Work 处于 queued、waiting_external
 或 suspended 时，新消息另起 Main，经 `recent_work` 看到原 Work。接纳后可重试失败按
 2/10/30 秒自动重排，未作决定即退出记为 suspended 或 waiting_external；私聊此前失败即
-静默，现在由 WorkScheduler 后台沿原 journal 继续。接纳后再 accept 会得到
+静默，现在由 WorkScheduler 后台沿原 journal 继续。接纳后再 `manage_task(action=start)` 会得到
 `work_already_active_use_update`，有新输入时才另排独立 Work。
 
 普通私聊的新用户输入可抢占尚未接纳 Work、尚未开始本地效果且尚未派发原生工具的旧轮。
@@ -576,33 +577,34 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 给未知调用重新派发资格。原 Work effect 与 Social 操作之间的真实归属继续核验。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
-任务的沟通要求沿原 goal、用户追加输入与 context_note 保留，不另外保存汇报模式。
+任务的沟通要求沿原 goal、用户追加输入与 note 保留，不另外保存汇报模式。
 用户要求安静、SELF 自主工作和后台维护按原指令安静处理，新追问照常响应；用户委托的工作在后台运行仍按原反馈约定处理。
 
 沟通由 Agent 在原循环决定，send 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
 同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送或脚本停止。
-`task_control.derive` 沿已有 Work 派生普通业务子目标；get/list 可查父子与祖先，指定 work_id 的 cancel/fail/resume 使用原管理 writer。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
+子目标只由 `start_subtask` 派生（原 derive 已删除）；`get_tasks` 可查父子与祖先，指定 id 的 cancel/fail/resume 使用原管理 writer（子任务的 cancel/resume 走子任务路径，resume 可带新要求 `text`）。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
 
-`task_control.wait(run_id)` 是已有 `owned_run` conditions 的简写。等待子任务时，`run_id` 使用原 `subagent_start` 回执返回的 `child_id`；已结束或未知的执行也可提供真实完成信号。也可登记一次性 `conditions`：
-`time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
-同时接收会话输入与子结果时，用 `any` 组合 `conversation` 和 `owned_run`，后者的 `run_id` 仍填原 `child_id`；只等子任务可直接使用上述简写。
+`wait(for=[…], all?, deadline?)` 的每项恰含一个键：`{"run": id}`（子任务或命令的 id，即 `owned_run`）、
+`{"message": true}`（当前 canonical Conversation 的下一条消息）、`{"seconds": n}` 或 `{"at": 带时区时间}`（`time_due`）、
+`{"plugin_event": {plugin_id, event_type, source?}}`（获准插件发布的事件）；存储仍是原条件种类。已结束或未知的执行也可提供真实完成信号。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
+同时接收会话输入与子结果时，在 `for` 中同时列 `message` 与 `run`（默认任一命中即唤醒）。
 等待是一次性的。`any` 任一命中后，处理当前输入并继续可执行工作；仍依赖未完成子任务且当前没有可执行步骤时，按原 ID 等待剩余结果，不重新派生。
-`all` 等全部条件满足，局部命中留在原绑定中。集合可选 `deadline_at`，没有隐式 90 秒有效期。绑定持久化在
+`all=true` 等全部条件满足，局部命中留在原绑定中。集合可选 `deadline`，没有隐式 90 秒有效期。绑定持久化在
 `runtime_work_waits`，带 Work ID、generation、主体、事件水位和唯一调用键。消息入口、
 插件发布事务与 WorkScheduler 的时钟分别交付信号；命中时同事务登记原 Work 输入并入队，
 不创建第二项 Agent 工作。超时向原 Work 交付明确结果，
 不视作同意。插件必须显式设置 SDK 的 `resume_waiting_work`，否则维持原通知和新轮行为；
 命中原 Work 的事件不会同时启动独立的插件 Agent 轮。等待命中与输入只保存事件引用和匹配元数据；构造请求时按当前 canonical Conversation、generation 和可见性读取原账本正文，历史 matched.text 不再采用。
-只登记 `conversation` 不会因普通子任务完成通知而唤醒。完成结果持久化、父 Work 入队、模型实际观察和用户交付是分别发生的事实；普通完成通知不撤销已接纳结束决定，恢复仍可按原 complete 直接收尾。用户交付以显式 `send` 的真实回执为准，完成通知不提供新授权。
+只等 `message` 不会因普通子任务完成通知而唤醒。完成结果持久化、父 Work 入队、模型实际观察和用户交付是分别发生的事实；普通完成通知不撤销已接纳结束决定，恢复仍可按原 complete 直接收尾。用户交付以显式 `send` 的真实回执为准，完成通知不提供新授权。
 AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果。实际 Work 的等待
 和信号由 WorkWaitRepository 与 WorkScheduler 沿原 Work ID 处理，不唤醒第二个步骤机，
 也不因停放或迟到信号创建另一份 run。
 信号到达不解锁 `suspended`：容量和来源失效等独立暂停原因不被信号覆盖，信号作为待处理
-输入保留在原邮箱。控制面的原 Work 详情与等待详情（`wait_status` 的 `work`）
+输入保留在原邮箱。控制面的原 Work 详情与等待详情
 同时给出暂停原因、已到达信号及其输入状态、可用的原 resume/cancel 动作；显式 resume 消费原信号，
 不创建新事件或新状态。
 明确 resume 或修改目标在同一 writer 撤销被替代的一次性等待，旧 timer 不再唤醒新执行。
-`task_control.wait_status` 查看原 Work 的绑定及未满足条件，`cancel_wait` 撤销它；
+`get_tasks(id=…)` 的 `wait` 给出原 Work 的绑定及条件；模型不再单独撤销等待（原 wait_status／cancel_wait 已删除），新的 wait、resume 或目标修改会替换它；
 `waiting_user` 只由原提问内部发送事件所收到的同一 Person 回复自动恢复，普通群消息仍按新输入处理。
 
 时钟轮询先分页只读观察等待条件、原 Work 终态及 Conversation/Work generation，

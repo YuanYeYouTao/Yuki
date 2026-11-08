@@ -160,7 +160,7 @@ async def test_nonwork_storage_fallback_cannot_publish_invalidated_original_sour
 
         async def late_render(budgeter, result):
             rendered = await original_render(budgeter, result)
-            if result.tool_name == "query_chat_history":
+            if result.tool_name == "read_chat":
                 attempts.append(
                     {
                         "source_event_ids": result.source_event_ids,
@@ -180,8 +180,8 @@ async def test_nonwork_storage_fallback_cannot_publish_invalidated_original_sour
     def respond(request):
         if len(case.provider.requests) == 1:
             return _response(
-                "query_chat_history",
-                {"view": "search", "keyword": marker.strip()},
+                "read_chat",
+                {"query": marker.strip()},
                 "original-invalidated-read",
             )
         observed.extend(
@@ -288,7 +288,7 @@ async def test_main_keeps_bounded_content_and_original_effect_at_result_boundari
         nonlocal control
         count = len(case.provider.requests)
         if count == 1:
-            return _response("task_control", {"action": "accept", "goal": boundary}, "accept")
+            return _response("manage_task", {"action": "start", "goal": boundary}, "accept")
         if count == 2:
             return _response("boundary_result", {}, "original-boundary-call")
         message = next(m for m in request.messages if m.tool_call_id == "original-boundary-call")
@@ -300,7 +300,7 @@ async def test_main_keeps_bounded_content_and_original_effect_at_result_boundari
                 followup = next(
                     item for item in view["read_more"] if item["path"] == ["1", 0, "body"]
                 )
-                return _response("read_tool_artifact", followup, "normalized-key-read")
+                return _response("read_result", followup, "normalized-key-read")
             read_pages.append(
                 json.loads(
                     next(
@@ -310,7 +310,7 @@ async def test_main_keeps_bounded_content_and_original_effect_at_result_boundari
                     )
                 )
             )
-        return _response("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _response("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     case.provider._responder = respond
     evidence.update(
@@ -328,7 +328,7 @@ async def test_main_keeps_bounded_content_and_original_effect_at_result_boundari
         evidence["run_status"] = run.status.value
         assert observed, run
         view = json.loads(observed[0])
-        assert view["ok"] is True and view["truncated"] is True
+        assert "error" not in view and view["truncated"] is True
         assert len(observed[0]) <= budget
         if boundary == "numeric_leaf":
             assert view.get("data") != data
@@ -336,19 +336,20 @@ async def test_main_keeps_bounded_content_and_original_effect_at_result_boundari
         elif boundary == "nested_item_limit":
             # Main data contains only complete array items. A separately marked
             # readable child preview must not pretend that this item fit.
-            assert view["data"] == []
+            # A non-object result is projected as {"result": [...]}.
+            assert view["data"] == {"result": []}
             assert view.get("preview"), view
-            assert any(part["path"][:1] == [0] for part in view["read_more"])
+            assert any(part["path"][:2] == ["result", 0] for part in view["read_more"])
         elif boundary == "json_key":
             assert view["preview"]["path"] == ["1", 0]
             assert view["preview"]["value"]["body"]
-            assert read_pages[0]["ok"] is True
-            assert read_pages[0]["data"]["path"] == ["1", 0, "body"]
-            assert read_pages[0]["data"]["value"]
-            assert set(read_pages[0]["data"]["value"]) == {"x"}
+            assert "error" not in read_pages[0]
+            assert read_pages[0]["path"] == ["1", 0, "body"]
+            assert set(read_pages[0]["value"]) == {"x"}
         else:
             assert "KNOWN-CAPACITY-BODY" in observed[0]
-            assert view["mutation_committed"] is True
+            # Commit state stays in the typed receipt; the model sees the facts.
+            assert "mutation_committed" not in view
             assert view["operation_id"] == "original-boundary-effect"
             assert not view.get("result_unavailable") and not view.get("artifact_handle")
             if boundary == "capacity":
@@ -399,9 +400,7 @@ async def test_main_send_preview_keeps_each_real_part_identity_and_status(
         nonlocal control
         count = len(case.provider.requests)
         if count == 1:
-            return _response(
-                "task_control", {"action": "accept", "goal": "original parts"}, "accept"
-            )
+            return _response("manage_task", {"action": "start", "goal": "original parts"}, "accept")
         if count == 2:
             return _response(
                 "send", {"text": "FIRST " + "a" * 1500 + "\nSECOND " + "b" * 1500}, "original-send"
@@ -409,7 +408,7 @@ async def test_main_send_preview_keeps_each_real_part_identity_and_status(
         message = next(m for m in request.messages if m.tool_call_id == "original-send")
         observed.append(message.content)
         control = current_work_control.get()
-        return _response("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _response("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     case.provider._responder = respond
     evidence.update(
@@ -426,7 +425,8 @@ async def test_main_send_preview_keeps_each_real_part_identity_and_status(
         evidence["run_status"] = run.status.value
         assert observed, run
         view = json.loads(observed[0])
-        assert view["truncated"] is True
+        # Without echoed bodies the receipt fits; every real part keeps its identity.
+        assert "truncated" not in view and "FIRST" not in observed[0]
         async with database.read_session() as reader:
             parts = list(
                 (
@@ -438,7 +438,14 @@ async def test_main_send_preview_keeps_each_real_part_identity_and_status(
                 ).all()
             )
         expected = [
-            {"operation_id": part.id, "status": part.status, "event_id": part.event_id}
+            {
+                key: value
+                for key, value in {
+                    "status": "unknown" if part.status == "uncertain" else part.status,
+                    "event_id": part.event_id,
+                }.items()
+                if value is not None
+            }
             for part in parts
         ]
         evidence["actual_parts"] = expected
@@ -447,12 +454,11 @@ async def test_main_send_preview_keeps_each_real_part_identity_and_status(
             1 if lose_second_confirmation else 2
         )
         if lose_second_confirmation:
-            assert view["uncertain"] is True
-        objects = list(_objects(view))
-        for fact in expected:
-            assert any(
-                all(item.get(key) == value for key, value in fact.items()) for item in objects
-            ), (fact, view)
+            assert view["ok"] is False and view["status"] == "unknown"
+        assert [
+            {key: part[key] for key in ("status", "event_id") if key in part}
+            for part in view["parts"]
+        ] == expected, view
         evidence["original_receipt"] = await _original_receipt(
             database, control, "send", observed[0]
         )

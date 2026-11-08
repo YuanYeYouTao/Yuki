@@ -471,8 +471,7 @@ async def test_current_root_can_read_original_file_but_foreign_person_cannot(app
     receipt = await env.social.execute(
         "send",
         {
-            "artifact_id": snapshot["artifact_id"],
-            "attachment_kind": "file",
+            "file": {"artifact_id": snapshot["artifact_id"]},
             "text": "original result",
         },
         context,

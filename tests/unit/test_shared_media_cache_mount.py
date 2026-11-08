@@ -57,7 +57,7 @@ async def test_cache_reads_copy_and_publication_reuse_safe_fd_without_writing_ca
         workspace.sandbox = SimpleNamespace(execute=owner.file_request)
         workspace.visual_inspector = WorkspaceInspector(owner.store, ImagePreprocessor())
         viewed = await workspace.execute(
-            "workspace_inspect", {"path": path, "expected_version": version, "question": "查看缓存"}
+            "view_file", {"path": path, "expected_version": version, "question": "查看缓存"}
         )
         assert viewed.images[0].workspace_path == path
         await workspace.validate_images(viewed.images)

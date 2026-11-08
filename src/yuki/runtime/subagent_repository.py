@@ -762,8 +762,7 @@ def _prepare_result(row: RowMapping) -> tuple[str, str]:
                     **receipt,
                     "detail": (
                         "这是该子任务的结果，结合原父目标继续处理或按约定交付。"
-                        "需要明细时再用 subagent_control(action=result, child_id=原ID) "
-                        "查询原结果与执行回执。"
+                        "需要明细时再用 get_tasks(id=原ID) 查询原结果与执行回执。"
                     ),
                 }
             )

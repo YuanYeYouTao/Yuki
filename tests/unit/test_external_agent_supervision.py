@@ -326,15 +326,12 @@ async def test_native_gap_and_recovery_reach_original_main_across_owned_wait(
     async def wait():
         result = json.loads(
             await control.execute(
-                "task_control",
-                {
-                    "action": "wait",
-                    "conditions": [{"kind": "owned_run", "run_id": operation.run_id}],
-                },
+                "wait",
+                {"for": [{"run": operation.run_id}]},
                 "wait-original-operation",
             )
         )
-        assert result["ok"] is True
+        assert result.get("ok") is not False
         await control.settle(pending_inputs=False)
 
     if arrival == "after":

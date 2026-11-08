@@ -100,10 +100,8 @@ async def test_memory_original_commit_and_current_fact_are_separate(database, tm
     await database.engine.dispose()
     before = await read_result(database, control, key)
     result, evidence, _ = before
-    assert result["data"]["mutation_id"] == committed.mutation_id
-    assert result["data"]["new_fact_id"] == committed.new_fact_id
-    assert result["data"]["outcome"] == "committed"
-    assert result["mutation_committed"] is True
+    assert result["fact_id"] == committed.new_fact_id
+    assert result["outcome"] == "committed"
     assert evidence["ok"] and evidence["executed"] and evidence["mutation_committed"]
     assert not evidence["pending"] and not evidence["uncertain"]
     assert await read_result(database, control, key) == before
@@ -151,25 +149,26 @@ async def test_native_control_original_result_without_run(
         "work_id": control.current["id"],
         "conversation_id": control.lease.conversation_id,
     }
-    arguments = {"action": action}
-    key = await admitted(control, "external_agent", arguments)
+    # The model calls ``answer``; the service keeps its original ``respond`` action.
+    called = {"action": "answer" if action == "respond" else action}
+    key = await admitted(control, "use_coding_agent", called)
     request_id = sha256(key.encode()).hexdigest()
+    arguments = {"action": action}
     await prepare(
         native, identity=request_id, action=action, arguments=arguments, lease=control.lease
     )
     await native.repository.response(request_id, response)
     await case.db.engine.dispose()
     result, evidence, counters = await read_result(case.db, control, key)
-    assert result["data"]["operation_id"] == request_id
-    assert result["data"]["action"] == action
+    assert result["operation_id"] == request_id
+    assert result["action"] == action
     assert evidence["status"] == expected_status
     assert execution_finished(evidence) is finished
     assert evidence["executed"] is response.get("executed", True)
     assert evidence["uncertain"] is (expected_status == "unknown")
     assert evidence["pending"] is (bool(response.get("pending")) and expected_status != "admitted")
     if expected_status == "admitted":
-        assert result["ok"] and not result.get("uncertain", False)
-        assert result["mutation_committed"] is True
+        assert result["admitted"] is True and "error" not in result
     assert (await read_result(case.db, control, key))[2] == counters
     async with case.db.read_session() as reader:
         assert await reader.get(SandboxTaskRunModel, request_id) is None
@@ -277,8 +276,7 @@ async def test_memory_receipt_outcomes_and_missing_relationship(database, tmp_pa
     known = outcome not in {"processing", "missing", "wrong_ref"}
     assert evidence["uncertain"] is not known
     if known:
-        assert result["data"]["outcome"] == outcome
-        assert result["mutation_committed"] is (outcome == "committed_as_contested")
+        assert result["outcome"] == outcome
         assert evidence["mutation_committed"] is (outcome == "committed_as_contested")
         assert evidence["executed"]
     else:
@@ -295,5 +293,6 @@ async def test_memory_receipt_outcomes_and_missing_relationship(database, tmp_pa
             accepted = json.loads(await WorkJournal(control.repository).effect_result(key))
         finally:
             current_result_capture.reset(token)
-        assert accepted["data"] == result["data"]
+        # Only the reader's own state differs; the original receipt is the same.
+        assert {**accepted, "work_effect_state": None} == {**result, "work_effect_state": None}
         assert capture.evidence == evidence

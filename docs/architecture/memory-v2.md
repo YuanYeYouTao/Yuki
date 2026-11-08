@@ -87,7 +87,7 @@ G(X) 为数据库记录的 X 整个 Person 归并集合的历史 canonical membe
 依据剩余数据库记录重新判断，不缓存永久许可。当前在群 G，也可查历史共同群 H。
 模型使用后端提供的内部主体引用；名称只是查找线索，不承担授权证明。
 
-`search_memory` 和 fact detail 复用相同政策；旧的“只凭当前群 evidence
+`search_memory` 和按 `fact_id` 读取单条事实复用相同政策（原 `read_memory` 已并入；evidence 视图已删除）；旧的“只凭当前群 evidence
 投影 Person”授权路径已经删除。evidence 仍走本人/显式管理授权边界。
 无真实用户主体的 Plugin、Automation、System 使用既有受控目标；不能伪造 actor 自行扩权。
 Control Plane 仍要求 capability。

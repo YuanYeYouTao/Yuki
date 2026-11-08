@@ -57,9 +57,7 @@ async def test_status_spans_the_actual_main_loop_and_closes_on_failure(database,
             return ChatResponse(
                 "",
                 0,
-                tool_calls=(
-                    ToolCall("read", ToolFunction("query_chat_history", '{"view":"recent"}')),
-                ),
+                tool_calls=(ToolCall("read", ToolFunction("read_chat", "{}")),),
             )
         assert any(message.role == "tool" for message in request.messages)
         return "NO_REPLY"

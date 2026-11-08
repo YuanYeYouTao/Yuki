@@ -42,6 +42,7 @@ def test_original_file_and_caption_evidence_survives_tool_rename(caption_readabl
         normalize_legacy_result(result, provider_id="core", tool_name="send_message"),
         tool="send_message",
         side_effecting=True,
+        # The original recorded send_message arguments, read in their original shape.
         arguments=json.dumps(
             {"artifact_id": "original-file", "attachment_kind": "file", "text": "original caption"}
         ),
@@ -88,7 +89,7 @@ async def test_single_path_send_work_recovery_keeps_confirmed_delivery(database,
     env = await social_env(database, tmp_path)
     manager = attach_manager(env, tmp_path)
     (manager.files.root / "result.txt").write_bytes(b"original result")
-    args = {"path": "/workspace/result.txt", "attachment_kind": kind}
+    args = {"file": {"path": "/workspace/result.txt"}}
     control, capture, context = await prepare_paid_send(env, args)
     work_token = current_work_control.set(control)
     capture_token = current_result_capture.set(capture)
@@ -145,7 +146,7 @@ async def test_path_send_freezes_once_and_replays_after_source_deleted(
     manager = attach_manager(env, tmp_path)
     path = manager.files.root / "selected.txt"
     path.write_bytes(b"selected original bytes")
-    args = {"path": "/workspace/selected.txt", "attachment_kind": kind}
+    args = {"file": {"path": "/workspace/selected.txt"}}
     try:
         result = await env.service.execute("send", args, env.context)
         assert result["status"] == "succeeded"
@@ -179,7 +180,7 @@ async def test_restart_between_freeze_and_social_uses_original_snapshot(
     manager = attach_manager(env, tmp_path)
     source = manager.files.root / "report.txt"
     source.write_bytes(b"original report")
-    args = {"path": "/workspace/report.txt", "attachment_kind": "file", "text": "report"}
+    args = {"file": {"path": "/workspace/report.txt"}, "text": "report"}
     send = env.service._send_message_sequence
 
     async def crash_after_snapshot(*args, **kwargs):
@@ -209,7 +210,9 @@ async def test_restart_between_freeze_and_social_uses_original_snapshot(
         assert result["artifact_id"] == original[0]
         assert env.store.read_bytes(result["artifact_id"])[1] == b"original report"
         with pytest.raises(SocialError, match="idempotency_conflict"):
-            await env.service.execute("send", args | {"path": "/workspace/other.txt"}, env.context)
+            await env.service.execute(
+                "send", args | {"file": {"path": "/workspace/other.txt"}}, env.context
+            )
         assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
     finally:
         await manager.close()
@@ -230,7 +233,7 @@ async def test_unconfirmed_publication_remains_unknown_without_platform_send(
         raise asyncio.CancelledError("manager interrupted after snapshot publication")
 
     monkeypatch.setattr(manager, "file_operation", interrupted)
-    args = {"path": "/workspace/report.txt", "attachment_kind": "file"}
+    args = {"file": {"path": "/workspace/report.txt"}}
     try:
         with pytest.raises(asyncio.CancelledError):
             await env.service.execute("send", args, env.context)
@@ -270,7 +273,7 @@ async def test_feishu_text_first_plan_cannot_report_failed_file_as_delivered(
         return await original_call(action, **params)
 
     monkeypatch.setattr(env.bot, "call_api", reject_upload)
-    args = {"artifact_id": artifact["artifact_id"], "attachment_kind": "file", "text": "报告"}
+    args = {"file": {"artifact_id": artifact["artifact_id"]}, "text": "报告"}
     result = await env.service.execute("send", args, env.context)
     assert [part["status"] for part in result["parts"]] == ["succeeded", "failed"]
     assert "artifact_id" not in result["parts"][0]
@@ -299,7 +302,7 @@ async def test_app_path_send_exposes_exact_snapshot_to_original_person(app_env, 
     try:
         result = await env.social.execute(
             "send",
-            {"path": "/workspace/report.txt", "attachment_kind": "file", "text": "result"},
+            {"file": {"path": "/workspace/report.txt"}, "text": "result"},
             context,
         )
         assert result["status"] == "succeeded"

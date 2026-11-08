@@ -191,10 +191,10 @@ async def test_confirmed_send_native_empty_tail_stops_without_failure_or_paid_re
                     "type": "function_call",
                     "id": "fc-accept",
                     "call_id": "accept",
-                    "name": "task_control",
+                    "name": "manage_task",
                     "arguments": json.dumps(
                         {
-                            "action": "accept",
+                            "action": "start",
                             "goal": "finish later",
                         }
                     ),
@@ -323,8 +323,8 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
                 "type": "function_call",
                 "id": "fc-accept",
                 "call_id": "accept-work",
-                "name": "task_control",
-                "arguments": json.dumps({"action": "accept", "goal": "finish original task"}),
+                "name": "manage_task",
+                "arguments": json.dumps({"action": "start", "goal": "finish original task"}),
             },
             *CONFIRMED_SEND["output"],
         ),
@@ -438,8 +438,8 @@ async def test_caller_send_then_complete_result_ends_without_third_request(
                 "type": "function_call",
                 "id": "fc-accept",
                 "call_id": "accept-work",
-                "name": "task_control",
-                "arguments": json.dumps({"action": "accept", "goal": "finish original task"}),
+                "name": "manage_task",
+                "arguments": json.dumps({"action": "start", "goal": "finish original task"}),
             },
             *CONFIRMED_SEND["output"],
         ),
@@ -448,9 +448,9 @@ async def test_caller_send_then_complete_result_ends_without_third_request(
                 "type": "function_call",
                 "id": "fc-complete",
                 "call_id": "completion",
-                "name": "task_control",
+                "name": "manage_task",
                 "arguments": json.dumps(
-                    {"action": "complete", "result": "内部结果不外发"}, ensure_ascii=False
+                    {"action": "finish", "result": "内部结果不外发"}, ensure_ascii=False
                 ),
             }
         ),

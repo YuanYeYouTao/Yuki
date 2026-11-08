@@ -241,7 +241,7 @@ async def test_incident_private_execution_beyond_24_requests_completes_in_host_w
     def respond(request):
         number = len(provider.requests)
         if number <= steps:
-            return _call("update_short_state", {"slot": 1, "text": f"step-{number}"}, f"s{number}")
+            return _call("set_short_note", {"slot": 1, "text": f"step-{number}"}, f"s{number}")
         if number == steps + 1:
             return _call("send", {"text": "报告已经传到电脑上了"}, "deliver")
         return "执行完成"
@@ -294,7 +294,7 @@ async def test_work_disabled_private_execution_is_not_truncated_and_creates_no_w
     def respond(request):
         number = len(provider.requests)
         if number <= 26:
-            return _call("update_short_state", {"slot": 1, "text": f"step-{number}"}, f"s{number}")
+            return _call("set_short_note", {"slot": 1, "text": f"step-{number}"}, f"s{number}")
         if number == 27:
             return _call("send", {"text": "完成"}, "deliver")
         return "done"
@@ -320,7 +320,7 @@ async def test_group_direct_turn_is_not_admitted_and_runs_beyond_24(database, tm
     def respond(request):
         number = len(provider.requests)
         if number <= 26:
-            return _call("update_short_state", {"slot": 1, "text": f"step-{number}"}, f"s{number}")
+            return _call("set_short_note", {"slot": 1, "text": f"step-{number}"}, f"s{number}")
         if number == 27:
             return _call("send", {"text": "完成"}, "deliver")
         return "done"
@@ -343,12 +343,12 @@ async def test_explicit_accept_after_host_admission_does_not_create_second_work(
     def respond(request):
         number = len(provider.requests)
         if number == 1:
-            return _call("update_short_state", {"slot": 1, "text": "first"}, "first")
+            return _call("set_short_note", {"slot": 1, "text": "first"}, "first")
         if number == 2:
-            return _call("task_control", {"action": "accept", "goal": "模型自己的目标"}, "late")
+            return _call("manage_task", {"action": "start", "goal": "模型自己的目标"}, "late")
         if number == 3:
             return _call(
-                "task_control", {"action": "update", "goal": "传输报告到本人电脑"}, "rename"
+                "manage_task", {"action": "update", "goal": "传输报告到本人电脑"}, "rename"
             )
         return "done"
 
@@ -376,8 +376,8 @@ async def test_parallel_batch_and_execute_code_share_the_admitted_work(database,
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("read-a", ToolFunction("query_chat_history", '{"view":"recent"}')),
-                    ToolCall("read-b", ToolFunction("query_chat_history", '{"view":"recent"}')),
+                    ToolCall("read-a", ToolFunction("read_chat", "{}")),
+                    ToolCall("read-b", ToolFunction("read_chat", "{}")),
                     ToolCall(
                         "code",
                         ToolFunction(EXECUTE_CODE_NAME, json.dumps({"code": "result = 1"})),
@@ -423,24 +423,22 @@ async def test_private_resume_continues_original_chain_and_queries_admit_nothing
         number = len(provider.requests)
         if phase["name"] == "first":
             if number == 1:
-                return _call("update_short_state", {"slot": 1, "text": "half"}, "half")
-            return _call("task_control", {"action": "fail", "reason": "Mac 写入失败"}, "stop")
+                return _call("set_short_note", {"slot": 1, "text": "half"}, "half")
+            return _call("manage_task", {"action": "fail", "text": "Mac 写入失败"}, "stop")
         if phase["name"] == "resume":
-            return _call(
-                "task_control", {"action": "resume", "work_id": phase["work_id"]}, "resume"
-            )
+            return _call("manage_task", {"action": "resume", "id": phase["work_id"]}, "resume")
         if phase["name"] == "resumed":
             if phase.setdefault("resumed_first", number) == number:
                 phase["resumed_context"] = _plain(request)
-                return _call("update_short_state", {"slot": 1, "text": "done"}, "finish")
+                return _call("set_short_note", {"slot": 1, "text": "done"}, "finish")
             return "完成原工作"
         if phase.setdefault("query_first", number) == number:
             return ChatResponse(
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("lookup", ToolFunction("task_control", json.dumps(phase["lookup"]))),
-                    ToolCall("listing", ToolFunction("task_control", '{"action":"list"}')),
+                    ToolCall("lookup", ToolFunction("get_tasks", json.dumps(phase["lookup"]))),
+                    ToolCall("listing", ToolFunction("get_tasks", "{}")),
                 ),
             )
         return "查询完毕"
@@ -482,7 +480,7 @@ async def test_private_resume_continues_original_chain_and_queries_admit_nothing
     assert final["state"] == "completed"
     assert "改用 Documents 目录" in phase["resumed_context"]
 
-    phase.update(name="query", lookup={"action": "get", "work_id": original["id"]})
+    phase.update(name="query", lookup={"id": original["id"]})
     query = await harness.processor.handle(_private(env, "查一下进度", "resume-3"), MemorySender())
     after_query = await _rows(database, work)
     assert query.reason == "chat"
@@ -598,9 +596,9 @@ async def test_interjection_joins_admitted_execution_without_second_main(databas
     def respond(request):
         number = len(provider.requests)
         if number == 1:
-            return _call("update_short_state", {"slot": 1, "text": "base64-read"}, "read")
+            return _call("set_short_note", {"slot": 1, "text": "base64-read"}, "read")
         if number == 2:
-            return _call("update_short_state", {"slot": 1, "text": "mac-write"}, "write")
+            return _call("set_short_note", {"slot": 1, "text": "mac-write"}, "write")
         if number == 3:
             return _call("send", {"text": "已按补充改用正确路径"}, "deliver")
         return "done"
@@ -626,8 +624,8 @@ async def test_interjection_joins_admitted_execution_without_second_main(databas
     assert len(works) == 1 and works[0]["state"] == "completed"
     assert len(provider.requests) == 4
     assert "放到 Documents 目录" in _plain(provider.requests[2])
-    assert refused["error_code"] == "new_input_before_execution"
-    assert refused["executed"] is False and refused["mutation_committed"] is False
+    assert refused["error"] == "new_input_before_execution"
+    assert refused["executed"] is False
     assert len(_private_sends(env)) == 1
     RESULTS["interjection_joins_admitted_execution"] = {
         "first_reason": result.reason,
@@ -644,7 +642,7 @@ async def test_input_before_admission_keeps_the_version_fence(database, tmp_path
     def respond(request):
         number = len(provider.entered)
         if number == 1:
-            return _call("update_short_state", {"slot": 1, "text": "stale"}, "stale")
+            return _call("set_short_note", {"slot": 1, "text": "stale"}, "stale")
         if number == 2:
             return _call("send", {"text": "按新消息处理"}, "deliver")
         return "done"
@@ -719,14 +717,12 @@ async def _create_reminder(env, harness, key: str) -> None:
 
 def _automation_create(identity: str) -> ChatResponse:
     return _call(
-        "automation_manage",
+        "manage_schedule",
         {
             "action": "create",
-            "task": {
-                "name": "提醒",
-                "goal": "提醒本人检查报告",
-                "trigger": {"type": "after", "seconds": 1},
-            },
+            "name": "提醒",
+            "goal": "提醒本人检查报告",
+            "trigger": {"type": "after", "seconds": 1},
         },
         identity,
     )
@@ -746,7 +742,7 @@ async def test_automation_sees_previous_private_execution_and_user_message_queue
             return "automation done"
         if phase["name"] == "private":
             if number == 1:
-                return _call("update_short_state", {"slot": 1, "text": "copied"}, "copy")
+                return _call("set_short_note", {"slot": 1, "text": "copied"}, "copy")
             if number == 2:
                 return _automation_create("remind")
             if number == 3:
@@ -788,8 +784,8 @@ async def test_automation_sees_previous_private_execution_and_user_message_queue
     assert user_result.reason == "chat", user_result
     assert automation_recent["work_id"] == previous["id"]
     assert {step["tool"] for step in automation_recent["recent_steps"]} >= {
-        "update_short_state",
-        "automation_manage",
+        "set_short_note",
+        "manage_schedule",
         "send",
     }
     # The queued Main starts only after the occurrence's two requests.
@@ -820,7 +816,7 @@ async def test_automation_exception_records_actual_llm_calls(database, tmp_path)
                 return _call("send", {"text": "好的"}, "deliver")
             return "done"
         if number == phase["start"] + 1:
-            return _call("update_short_state", {"slot": 1, "text": "checked"}, "check")
+            return _call("set_short_note", {"slot": 1, "text": "checked"}, "check")
         raise LLMUnavailableError("synthetic provider outage after a paid request")
 
     provider = ScriptedProvider(respond)
@@ -850,14 +846,14 @@ async def test_next_private_turn_reads_previous_execution_facts(database, tmp_pa
         number = len(provider.requests)
         if phase["name"] == "first":
             if number == 1:
-                return _call("update_short_state", {"slot": 1, "text": "copied"}, "copy")
+                return _call("set_short_note", {"slot": 1, "text": "copied"}, "copy")
             if number == 2:
                 return _call("send", {"text": "好了"}, "deliver")
             return "done"
         if number == phase["start"] + 1:
             phase["context"] = _runtime_context(request)
             work_id = phase["context"]["recent_work"]["work_id"]
-            return _call("task_control", {"action": "get", "work_id": work_id}, "lookup")
+            return _call("get_tasks", {"id": work_id}, "lookup")
         if number == phase["start"] + 2:
             return _call("send", {"text": "刚才写入了一次状态并回复了你"}, "answer")
         return "done"
@@ -871,17 +867,17 @@ async def test_next_private_turn_reads_previous_execution_facts(database, tmp_pa
         _private(env, "刚才做了什么", "facts-second"), MemorySender()
     )
     lookup = _tool_results(provider.requests[phase["start"] + 1])["lookup"]
-    tools = [step.get("tool") for step in lookup["work"]["steps"]]
+    tools = [step.get("tool") for step in lookup["steps"]]
     assert result.reason == "chat"
     recent = phase["context"]["recent_work"]
     assert recent["work_id"] == previous["id"]
-    assert {step["tool"] for step in recent["recent_steps"]} >= {"update_short_state", "send"}
-    assert lookup["ok"] is True and lookup["work"]["work_id"] == previous["id"]
-    assert "update_short_state" in tools and "send" in tools
+    assert {step["tool"] for step in recent["recent_steps"]} >= {"set_short_note", "send"}
+    assert lookup.get("ok") is not False and lookup["id"] == previous["id"]
+    assert "set_short_note" in tools and "send" in tools
     RESULTS["next_private_turn_reads_previous_facts"] = {
         "previous_work_id": previous["id"],
         "recent_work_in_first_request": recent,
-        "task_control_get_tools": tools,
+        "get_tasks_tools": tools,
     }
 
 
@@ -890,7 +886,7 @@ async def test_plugin_explicit_limit_is_written_to_root_work_budget(database, tm
 
     from yuki.runtime.work_repository import WorkRepository
 
-    provider = FakeLLMProvider(lambda _: _call("environment_status", {}, "status"))
+    provider = FakeLLMProvider(lambda _: _call("get_environment", {}, "status"))
     _, _, chat, source, host = await source_host(database, tmp_path, provider, ())
     try:
         from types import SimpleNamespace
@@ -938,8 +934,8 @@ async def test_plugin_tool_limits_refuse_overflow_and_zero_declares_no_tools(dat
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("first", ToolFunction("environment_status", "{}")),
-                    ToolCall("second", ToolFunction("environment_status", "{}")),
+                    ToolCall("first", ToolFunction("get_environment", "{}")),
+                    ToolCall("second", ToolFunction("get_environment", "{}")),
                 ),
             )
         return "done"

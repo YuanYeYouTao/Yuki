@@ -26,7 +26,7 @@ from yuki.tool_results.artifacts import ToolArtifactRepository
 def test_original_history_sources_are_evidence_not_model_or_activation_input():
     outcome = ToolExecutionResult(
         ok=True,
-        tool_name="query_chat_history",
+        tool_name="read_chat",
         data={"events": [{"event_id": 17, "content": "original"}]},
         source_event_ids=(17,),
         source_privacy_generation=3,
@@ -64,7 +64,7 @@ async def test_erased_text_cannot_enter_journal_or_reexecute_but_sent_receipt_su
     from yuki.runtime.work_repository import WorkConflict
 
     control, session, _store = await owned_session(database, tmp_path)
-    call = ToolCall("history", ToolFunction("query_chat_history", "{}"))
+    call = ToolCall("history", ToolFunction("read_chat", "{}"))
     source_id = control.current["id"]
     sent = f"sent:{source_id}"
     now = time.time()
@@ -120,7 +120,7 @@ async def test_accepted_child_history_replay_keeps_sources_for_parent(database, 
     from yuki.domain.messages import ToolCall, ToolFunction
 
     _control, session, _store = await owned_session(database, tmp_path)
-    call = ToolCall("history", ToolFunction("query_chat_history", "{}"))
+    call = ToolCall("history", ToolFunction("read_chat", "{}"))
 
     async def initial():
         rendered = await ToolResultBudgeter(max_characters=None).render(
@@ -178,7 +178,7 @@ async def test_fresh_read_does_not_replace_original_audit_privacy(database, tmp_
     with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
         await ToolReceiptRepository(database).record_receipt(
             provider_id="core",
-            tool_name="query_chat_history",
+            tool_name="read_chat",
             success=True,
             error_category=None,
             trigger_event_id=runtime.effective_trigger_event_id,
@@ -200,7 +200,7 @@ async def test_archive_page_retains_sources_and_refuses_pre_erasure_late_publica
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=600)
     handle = await store.write_artifact(
         provider_id="core",
-        tool_name="query_chat_history",
+        tool_name="read_chat",
         content=json.dumps({"ok": True, "data": {"events": [{"event_id": 17}]}}),
         media_type="application/json",
         access=access,
@@ -216,7 +216,7 @@ async def test_archive_page_retains_sources_and_refuses_pre_erasure_late_publica
     with pytest.raises(ValueError, match="artifact_source_changed"):
         await store.write_artifact(
             provider_id="core",
-            tool_name="query_chat_history",
+            tool_name="read_chat",
             content="old body",
             media_type="application/json",
             access=access,
@@ -263,7 +263,7 @@ async def test_forget_follows_copied_history_sources_across_conversations(databa
                 receipt_json=json.dumps(
                     {
                         "result": event.content,
-                        "outcome": {"tool": "query_chat_history", "source_event_ids": [event.id]},
+                        "outcome": {"tool": "read_chat", "source_event_ids": [event.id]},
                     }
                 ),
                 created=now,
@@ -294,7 +294,7 @@ async def test_forget_follows_copied_history_sources_across_conversations(databa
             bot_user_id="80001",
             canonical_person_id=env.person,
             provider_id="core",
-            tool_name="query_chat_history",
+            tool_name="read_chat",
             success=True,
             result_excerpt=event.content,
             result_characters=len(event.content),
@@ -308,7 +308,7 @@ async def test_forget_follows_copied_history_sources_across_conversations(databa
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=600)
     handle = await store.write_artifact(
         provider_id="core",
-        tool_name="query_chat_history",
+        tool_name="read_chat",
         content=event.content,
         media_type="text/plain",
         work_id=identity,

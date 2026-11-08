@@ -16,6 +16,7 @@ from yuki.sandbox.client import SandboxClient
 from yuki.services.native_media import MAX_IMAGE_BYTES
 from yuki.workspace.inspect import WorkspaceInspector
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
+from yuki.workspace.tools import file_source
 from yuki.workspace.tools import workspace_tools as workspace_tools
 
 
@@ -94,97 +95,80 @@ class WorkspaceService:
                 if invocation
                 else str(uuid4())
             )
-        if name == "workspace_inspect":
-            if bool(args.get("artifact_id")) == bool(args.get("path")):
-                raise WorkspaceError("choose_path_or_artifact_id")
-            vision = (
-                runtime.runtime_config.vision
-                if runtime is not None and runtime.runtime_config
-                else None
-            )
-            if args.get("artifact_id"):
-                return await self.visual_inspector(
-                    str(args["artifact_id"]), str(args["question"]), runtime=vision
-                )
-            if "device_id" in args:
-                device_id = args["device_id"]
-                devices = self.sandbox.local_devices
-                assert devices is not None
-                async with devices.download(
-                    str(device_id),
-                    devices.actor(source),
-                    str(args["path"]),
-                    request_id=request_id,
-                    expected_version=args.get("expected_version"),
-                    max_bytes=MAX_IMAGE_BYTES,
-                ) as (path, metadata):
-                    data = await asyncio.to_thread(path.read_bytes)
-                    prepared = await self.visual_inspector(
-                        None,
-                        str(args["question"]),
-                        runtime=vision,
-                        file_metadata={
-                            **metadata,
-                            "path": str(args["path"]),
-                            "version": metadata["sha256"],
-                        },
-                        data=data,
-                    )
-                    prepared["device_id"] = str(device_id)
-                    return prepared
-            metadata = await self.sandbox.execute(
-                "workspace_media_read",
-                {
-                    "path": str(args["path"]),
-                    "expected_version": args.get("expected_version"),
-                },
-                request_id=request_id or str(uuid4()),
-            )
-            if metadata.get("error"):
-                raise WorkspaceError(str(metadata["error"]))
-            encoded = metadata.pop("base64", "")
-            if not isinstance(encoded, str) or len(encoded) > (20 * 1024 * 1024 + 2) // 3 * 4:
-                raise WorkspaceError("workspace_media_too_large")
-            try:
-                data = base64.b64decode(encoded, validate=True)
-            except ValueError as exc:
-                raise WorkspaceError("workspace_media_invalid") from exc
-            return await self.visual_inspector(
-                None, str(args["question"]), runtime=vision, file_metadata=metadata, data=data
-            )
-        if name == "save_conversation_attachment_to_workspace":
-            # The tool-surface switch renames this declaration to copy_file
-            # (device -> source computer, to_device -> target computer).
+        if name == "copy_file":
+            chosen = file_source(args)
             return await self.copy_file(
                 destination=str(args["destination"]),
                 request_id=request_id,
                 source=source,
-                path=args.get("path"),
-                artifact_id=args.get("artifact_id"),
-                event_id=args.get("event_id"),
-                attachment_index=args.get("attachment_index"),
-                to_device=args.get("device_id"),
+                path=chosen.get("path"),
+                artifact_id=chosen.get("artifact_id"),
+                event_id=chosen.get("event_id"),
+                attachment_index=chosen.get("attachment"),
+                device=chosen.get("device"),
+                to_device=args.get("to_device"),
             )
-        if name == "inspect_conversation_attachment":
+        if name != "view_file":
+            raise WorkspaceError("unknown_tool")
+        chosen = file_source(args)
+        question = str(args.get("question") or "查看画面")
+        vision = (
+            runtime.runtime_config.vision
+            if runtime is not None and runtime.runtime_config
+            else None
+        )
+        if "event_id" in chosen:
             media = self.conversation_media
             try:
-                item, path = await media.authorized_path(
-                    event_id=int(args["event_id"]),
-                    attachment_index=int(args["attachment_index"]),
+                item, cached = await media.authorized_path(
+                    event_id=int(chosen["event_id"]),
+                    attachment_index=int(chosen["attachment"]),
                 )
-                return await media.inspect(
-                    item,
-                    path,
-                    str(args["question"]),
-                    runtime=(
-                        runtime.runtime_config.vision
-                        if runtime is not None and runtime.runtime_config
-                        else None
-                    ),
-                )
+                return await media.inspect(item, cached, question, runtime=vision)
             except ConversationMediaError as exc:
                 raise WorkspaceError(str(exc)) from exc
-        raise WorkspaceError("unknown_tool")
+        if "artifact_id" in chosen:
+            return await self.visual_inspector(str(chosen["artifact_id"]), question, runtime=vision)
+        path = str(chosen["path"])
+        if "device" in chosen:
+            device_id = str(chosen["device"])
+            devices = self.sandbox.local_devices
+            assert devices is not None
+            async with devices.download(
+                device_id,
+                devices.actor(source),
+                path,
+                request_id=request_id,
+                expected_version=None,
+                max_bytes=MAX_IMAGE_BYTES,
+            ) as (local, metadata):
+                data = await asyncio.to_thread(local.read_bytes)
+                prepared = await self.visual_inspector(
+                    None,
+                    question,
+                    runtime=vision,
+                    file_metadata={**metadata, "path": path, "version": metadata["sha256"]},
+                    data=data,
+                )
+                prepared["device_id"] = device_id
+                return prepared
+        metadata = await self.sandbox.execute(
+            "workspace_media_read",
+            {"path": path, "expected_version": None},
+            request_id=request_id or str(uuid4()),
+        )
+        if metadata.get("error"):
+            raise WorkspaceError(str(metadata["error"]))
+        encoded = metadata.pop("base64", "")
+        if not isinstance(encoded, str) or len(encoded) > (20 * 1024 * 1024 + 2) // 3 * 4:
+            raise WorkspaceError("workspace_media_too_large")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except ValueError as exc:
+            raise WorkspaceError("workspace_media_invalid") from exc
+        return await self.visual_inspector(
+            None, question, runtime=vision, file_metadata=metadata, data=data
+        )
 
     async def copy_file(
         self,

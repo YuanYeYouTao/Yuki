@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from sqlalchemy import select, text
 
 from yuki.capabilities.invocation import current_invocation
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
-from yuki.identity.person_identity import current_person_id
 from yuki.persistence.database import Database
 from yuki.persistence.event_view import event_view
 from yuki.persistence.models import ChatEventModel
@@ -73,14 +73,11 @@ async def read_history(
                 else "unavailable"
             )
 
-        source_selected = request.source is not None and bool(
-            request.source.model_dump(exclude_none=True)
-        )
-        event_id = request.event_id or original_event_id
+        source_selected = request.source is not None
+        around = request.around is not None
+        event_id = request.around
         center_conversation_id = None
-        if request.view == "around":
-            if event_id is None:
-                raise ValueError("around requires event_id")
+        if around:
             if operation is not None and event_id == original_event_id:
                 center_conversation_id = original_conversation_id
             else:
@@ -92,7 +89,7 @@ async def read_history(
             conversation_id = center_conversation_id or ""
         elif operation is not None:
             conversation_id = original_conversation_id or ""
-        elif request.target is not None or request.view == "search" or source_selected:
+        elif request.target is not None or request.filtered:
             conversation_id = None
         else:
             conversation_id = context.conversation_id
@@ -115,7 +112,7 @@ async def read_history(
             )
         ).all()
         conversation_ids = tuple(row.conversation_id for row in entries)
-        if not entries and operation is None and not source_selected and request.view != "around":
+        if not entries and operation is None and not source_selected and not around:
             if getattr(runtime, "read_target_id", None) is not None or (
                 runtime is not None and getattr(runtime, "origin", None) == "plugin_background"
             ):
@@ -128,14 +125,13 @@ async def read_history(
         common: dict[str, Any] = dict(
             session=session,
             conversation_id=conversation_ids,
-            event_kind=request.event_kind,
             predicates=predicates,
         )
         records: tuple[EventRecord, ...]
         neighbours: tuple[EventRecord, ...] = ()
         matched_fields: dict[int, tuple[str, ...]] = {}
         payload: dict[str, Any]
-        if request.view == "around":
+        if around:
             earlier: tuple[EventRecord, ...]
             later: tuple[EventRecord, ...]
             if center_conversation_id not in conversation_ids or (
@@ -146,19 +142,13 @@ async def read_history(
                 center, earlier, later = await ledger.history_around(
                     **{**common, "conversation_id": center_conversation_id},
                     event_id=cast(int, event_id),
-                    before=request.before or 0,
-                    after=request.after or 0,
+                    before=request.context or 0,
+                    after=request.context or 0,
                 )
             records = (*earlier, *((center,) if center else ()), *later)
-            payload = dict(
-                center_event_id=center.id if center else event_id,
-                before=len(earlier),
-                after=len(later),
-                has_more=False,
-                center_status="available" if center is not None else "unavailable",
-            )
+            payload = {}
             if center is None:
-                payload["anchor_status"] = "unavailable"
+                payload["around_status"] = "unavailable"
                 if (
                     operation is not None
                     and event_id == original_event_id
@@ -170,23 +160,25 @@ async def read_history(
                 **common,
                 order=request.order,
                 limit=request.limit or 20,
-                cursor=request.cursor,
-                person_id=str(request.person_id) if request.person_id else None,
-                author_kind=request.author_kind,
-                start_at=request.start_at,
-                end_at=request.end_at,
+                cursor=int(request.cursor) if request.cursor is not None else None,
+                person_id=str(request.author) if isinstance(request.author, UUID) else None,
+                author_kind="yuki" if request.author == "yuki" else None,
+                start_at=request.since,
+                end_at=request.until,
                 has=request.has,
-                keyword=request.keyword,
-                match=request.match,
-                exclude=request.exclude,
-                context_before=request.context_before,
-                context_after=request.context_after,
+                keyword=request.query,
+                context_before=request.context or 0,
+                context_after=request.context or 0,
             )
             records, neighbours, matched_fields = page.events, page.context, page.matched_fields
-            payload = dict(has_more=page.has_more, next_cursor=page.next_cursor)
+            payload = (
+                {"next_cursor": str(page.next_cursor)}
+                if page.has_more and page.next_cursor is not None
+                else {}
+            )
         else:
             records = ()
-            payload = dict(has_more=False, next_cursor=None)
+            payload = {}
 
         source_records = (*records, *neighbours)
         receipt_record = None
@@ -206,13 +198,11 @@ async def read_history(
         returned_ids = tuple(
             dict.fromkeys(str(row.canonical_conversation_id) for row in source_records)
         )
-        single_id = conversation_ids[0] if len(conversation_ids) == 1 else None
-        metadata_ids = (*returned_ids, *((single_id,) if single_id is not None else ()))
         sources: dict[str, dict[str, Any]] = {}
-        if metadata_ids:
+        if returned_ids:
             metadata = (
                 await session.execute(
-                    statement.where(CanonicalConversationModel.id.in_(metadata_ids))
+                    statement.where(CanonicalConversationModel.id.in_(returned_ids))
                 )
             ).mappings()
             for row in metadata:
@@ -221,68 +211,51 @@ async def read_history(
                     "platform": row["platform"],
                     "scope": "private" if row["conversation_kind"] == "private" else "group",
                     "conversation_name": row["conversation_name"] or "",
-                    "binding_id": row["binding_id"],
-                    "presence_id": row["presence_id"],
                     "thread_id": row["thread_id"],
                     "person_id": row["person_id"],
                     "space_id": row["space_id"],
-                    "generation": row["generation"],
                 }
 
-        def render(row: EventRecord) -> dict[str, Any]:
-            source = sources[str(row.canonical_conversation_id)]
-            return {
-                **event_view(row),
-                "platform": source["platform"],
-                "conversation_name": source["conversation_name"],
-                "thread_id": source["thread_id"],
-            }
+        several = len(returned_ids) > 1
 
-        result = HistoryResult(
-            source="canonical_ledger",
-            coverage="observed",
-            conversation_id=single_id,
-            events=[render(row) for row in records],
-            returned_count=len(records),
-            order="oldest" if request.view == "around" else request.order,
-            matched_fields={str(key): list(value) for key, value in matched_fields.items()},
-            context=[render(row) for row in neighbours],
-            **payload,
-        )
-        if request.view != "around":
-            result.update(
-                start_at=request.start_at.isoformat() if request.start_at else None,
-                end_at=request.end_at.isoformat() if request.end_at else None,
-            )
-        if single_id is not None:
-            selected_source = sources[single_id]
-            result.update(
-                platform=selected_source["platform"],
-                binding_id=selected_source["binding_id"],
-                target_id=await current_person_id(session, selected_source["person_id"])
-                if selected_source["person_id"]
-                else selected_source["space_id"],
-                generation=selected_source["generation"],
-                kind="person" if selected_source["scope"] == "private" else "space",
-            )
+        def render(row: EventRecord) -> dict[str, Any]:
+            return chat_event(row, with_conversation=several)
+
+        result = HistoryResult(events=[render(row) for row in records], **payload)
+        if neighbours:
+            result["context"] = [render(row) for row in neighbours]
+        if matched_fields:
+            result["matched_fields"] = {
+                str(key): list(value) for key, value in matched_fields.items()
+            }
         if operation is not None:
-            result.update(
-                operation_id=operation.id,
-                receipt_status=operation.status,
-                event_id=original_event_id,
-                original_conversation_id=original_conversation_id,
-                anchor_status=receipt_anchor_status,
-                receipt_anchor={
-                    "event_id": original_event_id,
-                    "conversation_id": original_conversation_id,
-                    "status": receipt_anchor_status,
-                },
-            )
+            receipt_view: dict[str, Any] = {
+                "operation_id": operation.id,
+                "receipt_status": operation.status,
+                "event_id": original_event_id,
+                "anchor_status": receipt_anchor_status,
+            }
             if receipt_record is not None and receipt_record.id not in {
                 row.id for row in (*records, *neighbours)
             }:
-                result["receipt_anchor"]["event"] = render(receipt_record)
-        result["sources"] = [sources[identity] for identity in returned_ids]
+                receipt_view["event"] = render(receipt_record)
+            result["receipt"] = {key: value for key, value in receipt_view.items() if value}
+        result["sources"] = [
+            {
+                key: value
+                for key, value in {
+                    "conversation_id": source["conversation_id"],
+                    "platform": source["platform"],
+                    "scope": source["scope"],
+                    "name": source["conversation_name"],
+                    "thread_id": source["thread_id"],
+                    "person_id": source["person_id"],
+                    "space_id": source["space_id"],
+                }.items()
+                if value
+            }
+            for source in (sources[identity] for identity in returned_ids)
+        ]
         result.source_event_ids = tuple(dict.fromkeys(row.id for row in source_records))
         result.source_privacy_generation = (
             await session.scalar(
@@ -293,3 +266,42 @@ async def read_history(
             or 0
         )
         return result
+
+
+def chat_event(row: EventRecord, *, with_conversation: bool = False) -> dict[str, Any]:
+    """Model view of one ledger event: one name per fact, no nulls or empty lists."""
+    view = event_view(row)
+    value: dict[str, Any] = {
+        "event_id": view["id"],
+        "author_kind": view["author_kind"],
+        "person_id": view["author_person_id"],
+        "account_id": view["author_account_id"],
+        "author_name": view["sender_group_card"]
+        or view["sender_display_name"]
+        or view["sender_nickname"],
+        "content": view["content"],
+        "mentions": view["mentions"],
+        "asr": view["asr"],
+        "reply_to": view["reply_to_event_id"],
+        # Same key as view_file/copy_file's ``attachment`` parameter.
+        "attachments": [
+            {
+                "attachment" if key == "attachment_index" else key: value
+                for key, value in item.items()
+            }
+            for item in view["attachments"]
+        ],
+        "occurred_at": view["occurred_at"],
+    }
+    if view["observed_at"] != view["occurred_at"]:
+        value["observed_at"] = view["observed_at"]
+    if view["event_kind"] != "message":
+        value.update(
+            event_kind=view["event_kind"],
+            plugin_id=view["source_plugin_id"],
+            external_source=view["external_source"],
+            external_event_type=view["external_event_type"],
+        )
+    if with_conversation:
+        value["conversation_id"] = view["conversation_id"]
+    return {key: item for key, item in value.items() if item not in (None, "", [])}

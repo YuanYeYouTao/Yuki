@@ -444,62 +444,6 @@ class WorkRepository:
             )
         return dict(row)
 
-    async def derive(
-        self, lease: WorkLease, parent_work_id: str, key: str, goal: str
-    ) -> dict[str, Any]:
-        """Create a business child with the original source and call identity."""
-        async with self.database.read_session() as reader:
-            brief = await reader.scalar(
-                select(children.c.brief_json).where(children.c.work_id == parent_work_id)
-            )
-            parent_source = (
-                await reader.execute(
-                    select(work.c.source_json).where(
-                        work.c.id == parent_work_id,
-                        work.c.conversation_id == lease.conversation_id,
-                        work.c.generation == lease.generation,
-                    )
-                )
-            ).scalar_one()
-        if brief is not None:
-            from yuki.runtime.subagent_repository import SubagentRepository
-
-            child = await SubagentRepository(self).start(
-                lease, parent_work_id, key, {**json.loads(brief), "goal": goal}
-            )
-            created = await self.get(child)
-            assert created is not None
-            return created
-        source = json.loads(parent_source)
-        source_json = encode_json(source)
-        async with self.database.immediate_session() as session:
-            await self._assert_lease(session, lease)
-            parent = (
-                (
-                    await session.execute(
-                        select(work).where(
-                            work.c.id == parent_work_id,
-                            work.c.conversation_id == lease.conversation_id,
-                            work.c.generation == lease.generation,
-                        )
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            if parent["source_json"] != parent_source:
-                raise WorkConflict("work_parent_source_invalid")
-            return await self.accept_in_session(
-                session,
-                lease,
-                source_key=key,
-                source=source,
-                prepared_source_json=source_json,
-                goal=goal,
-                parent_work_id=parent_work_id,
-                initial_state="queued",
-            )
-
     async def by_source(self, source_key: str) -> dict[str, Any] | None:
         async with self.database.read_session() as session:
             row = (
@@ -706,17 +650,20 @@ class WorkRepository:
                 )
                 if exit_reason is not None:
                     exit_reason = "waiting_external"
-        if values["state"] == "waiting_external" and not business_arrived and goal is None:
+        if (
+            values["state"] in {"waiting_external", "waiting_user"}
+            and not business_arrived
+            and goal is None
+        ):
             matched_signal = await session.scalar(
                 select(inputs.c.id)
                 .join(waits, inputs.c.source_key == "wait:" + waits.c.id)
                 .join(work, work.c.id == waits.c.work_id)
                 .where(
                     work.c.id == identity,
+                    # A message-only wait of a root task is accepted as need_input.
                     waits.c.id
                     == func.json_extract(work.c.checkpoint_json, "$.accepted_control.wait_id"),
-                    func.json_extract(work.c.checkpoint_json, "$.accepted_control.action")
-                    == "wait",
                     waits.c.status.in_(("delivered", "expired")),
                     inputs.c.work_id == identity,
                     inputs.c.state.in_(("pending", "staged")),
@@ -764,7 +711,11 @@ class WorkRepository:
                     ),
                     else_=checkpoint,
                 )
-            if values["state"] == "waiting_external" and not business_arrived and goal is None:
+            if (
+                values["state"] in {"waiting_external", "waiting_user"}
+                and not business_arrived
+                and goal is None
+            ):
                 checkpoint = case(
                     (
                         select(waits.c.id)
@@ -2713,7 +2664,7 @@ class WorkRepository:
                         continue
                     if not execution and name not in {
                         "terminal_write",
-                        "terminal_control",
+                        "control_command",
                         "cancel_code_run",
                     }:
                         continue

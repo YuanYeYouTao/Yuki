@@ -126,7 +126,7 @@ async def test_private_send_receipt_and_recall_preserve_original_entry_after_mer
     assert delivered["target"]["id"] == str(UUID(root))
     assert delivered["delivered_text_available"] and delivered["delivered_text"] == "same human"
     recalled = await env.service.execute(
-        "recall_own_message",
+        "recall_message",
         {"event_id": original["event_id"]},
         replace(context, call_id="recall-original"),
     )

@@ -48,7 +48,7 @@ async def test_main_rename_keeps_the_active_prefix_and_frozen_tool_contract(
             # A real dispatch has already captured its prefix. A role edit must
             # not alter the subsequent model/tool round inside that activation.
             activate(settings, path, name="Aurora", soul=soul, revision=2)
-            return _tool("get_my_capabilities", {}, "original-read")
+            return _tool("get_environment", {}, "original-read")
         return "内部结束"
 
     provider._responder = respond

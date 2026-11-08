@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.service_dependencies import workspace_service
+from tests.support.work_runner_helpers import derive_business_child
 
 from yuki.automation.models import RunStatus
 from yuki.conversation.autonomy_repository import AutonomyRepository
@@ -106,27 +107,24 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
     case.chat._tool_receipts = ToolReceiptRepository(database)
     calls = []
     if accept_work:
-        calls.append(("task_control", {"action": "accept", "goal": "记录真实工具经历"}))
+        calls.append(("manage_task", {"action": "start", "goal": "记录真实工具经历"}))
     calls.extend(
         [
-            ("get_group_members", {"limit": 10}),
+            ("get_members", {"limit": 10}),
             (
-                "memory_change",
+                "save_memory",
                 {
-                    "operation": "create",
-                    "target": {"subject_ref": "self", "scope_type": "self"},
-                    "new_content": "我实际查询了当前群成员列表，确认了 test-10001 的成员资料。",
-                    "memory_key": "self_episode:scheduled",
-                    "category": "self_episode",
+                    "target": {"self": True},
+                    "content": "我实际查询了当前群成员列表，确认了 test-10001 的成员资料。",
                     "kind": "episode",
-                    "evidence_quote": "test-10001",
+                    "quote": "test-10001",
                 },
             ),
-            ("read_memory", None),
+            ("search_memory", None),
         ]
     )
     if accept_work:
-        calls.append(("task_control", {"action": "complete", "result": "已保存真实记忆"}))
+        calls.append(("manage_task", {"action": "finish", "result": "已保存真实记忆"}))
     responses = {}
 
     def respond(request):
@@ -135,15 +133,12 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
             result = json.loads(request.messages[-1].content)
             previous = calls[index - 1][0]
             responses[previous] = result
-            assert result["ok"], result
+            assert result.get("ok", True), result
         if index >= len(calls):
             return "NO_REPLY"
         name, arguments = calls[index]
-        if name == "read_memory":
-            arguments = {
-                "view": "fact",
-                "fact_id": responses["memory_change"]["data"]["new_fact_id"],
-            }
+        if name == "search_memory":
+            arguments = {"fact_id": responses["save_memory"]["fact_id"]}
         return ChatResponse(
             "",
             0,
@@ -156,17 +151,15 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED, responses
-    assert responses["memory_change"]["data"]["ok"]
+    assert responses["save_memory"]["outcome"] == "committed"
     assert (
-        responses["read_memory"]["data"]["memory"]["content"]
-        == calls[1 + int(accept_work)][1]["new_content"]
+        responses["search_memory"]["memories"][0]["content"]
+        == calls[1 + int(accept_work)][1]["content"]
     )
     async with database.read_session() as session:
         mutation = await session.scalar(select(MemoryMutationReceiptModel))
         receipt = await session.scalar(
-            select(MemoryToolReceiptModel).where(
-                MemoryToolReceiptModel.tool_name == "get_group_members"
-            )
+            select(MemoryToolReceiptModel).where(MemoryToolReceiptModel.tool_name == "get_members")
         )
         actual_work = (await session.execute(select(work))).mappings().one_or_none()
         assert mutation.trigger_source_type == "execution"
@@ -272,8 +265,8 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("sdk-approved-read", ToolFunction("environment_status", "{}")),
-                    ToolCall("sdk-not-granted", ToolFunction("memory_change", "{}")),
+                    ToolCall("sdk-approved-read", ToolFunction("get_environment", "{}")),
+                    ToolCall("sdk-not-granted", ToolFunction("save_memory", "{}")),
                 ),
             )
         replies = {
@@ -281,7 +274,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             for message in request.messages
             if message.role == "tool"
         }
-        assert replies["sdk-approved-read"]["ok"], replies
+        assert "error" not in replies["sdk-approved-read"], replies
         assert replies["sdk-not-granted"]["error"] == "tool_not_declared", replies
         if work_enabled:
             return ChatResponse(
@@ -291,7 +284,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
                     ToolCall(
                         "sdk-finish",
                         ToolFunction(
-                            "task_control", '{"action":"complete","result":"SDK read complete"}'
+                            "manage_task", '{"action":"finish","result":"SDK read complete"}'
                         ),
                     ),
                 ),
@@ -316,7 +309,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             receipts = list(
                 await session.scalars(
                     select(MemoryToolReceiptModel).where(
-                        MemoryToolReceiptModel.tool_name == "environment_status"
+                        MemoryToolReceiptModel.tool_name == "get_environment"
                     )
                 )
             )
@@ -370,7 +363,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             assert (
                 await session.scalar(
                     select(func.count(MemoryToolReceiptModel.id)).where(
-                        MemoryToolReceiptModel.tool_name == "environment_status"
+                        MemoryToolReceiptModel.tool_name == "get_environment"
                     )
                 )
                 == 1
@@ -397,38 +390,36 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     mutations, facts, _, _ = _service(database, self_memory_enabled=True)
     case.chat._tools._memory_mutations = mutations
     case.chat._tool_receipts = ToolReceiptRepository(database)
-
     def parent_response(request):
         calls = (
-            (
-                ToolCall(
-                    "accept-original",
-                    ToolFunction("task_control", '{"action":"accept","goal":"原任务"}'),
-                ),
-                ToolCall(
-                    "derive-original",
-                    ToolFunction(
-                        "task_control", '{"action":"derive","goal":"沿真实工具写入自己的记忆"}'
-                    ),
-                ),
+            ToolCall(
+                "accept-original",
+                ToolFunction("manage_task", '{"action":"start","goal":"原任务"}'),
             )
             if len(case.provider.requests) == 1
-            else (
-                ToolCall(
-                    "complete-original",
-                    ToolFunction("task_control", '{"action":"complete","result":"已派发原任务"}'),
-                ),
+            else ToolCall(
+                "wait-original",
+                ToolFunction("wait", '{"for":[{"seconds":3600}]}'),
             )
         )
-        return ChatResponse("", 0, tool_calls=calls)
+        return ChatResponse("", 0, tool_calls=(calls,))
 
     case.provider._responder = parent_response
     case.clock.advance(61)
     original_run = await case.dispatch()
-    assert original_run.status is RunStatus.SUCCEEDED
+    # The occurrence stays with its waiting parent task.
+    assert original_run.status is RunStatus.RUNNING
     async with database.read_session() as session:
-        rows = [dict(row) for row in (await session.execute(select(work))).mappings()]
-    child = next(row for row in rows if row["parent_work_id"] is not None)
+        parent = dict((await session.execute(select(work))).mappings().one())
+    assert parent["state"] == "waiting_external"
+    # A historical business child (the model derive action is retired) keeps
+    # the original automation source of its parent.
+    lease = await case.works.acquire(parent["conversation_id"], parent["generation"])
+    assert lease is not None
+    child = await derive_business_child(
+        case.works, lease, parent["id"], "derive-original", "沿真实工具写入自己的记忆"
+    )
+    await case.works.release(lease)
     source = json.loads(child["source_json"])
     assert source["automation_run_id"] == original_run.id
     updated = await case.service.update_task(
@@ -445,19 +436,16 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     child_turns = 0
     responses = {}
     write = {
-        "operation": "create",
-        "target": {"subject_ref": "self", "scope_type": "self"},
-        "new_content": "我在原定时任务的派生工作中查询了 test-10001 的真实成员资料。",
-        "memory_key": "self_episode:original-work",
-        "category": "self_episode",
+        "target": {"self": True},
+        "content": "我在原定时任务的派生工作中查询了 test-10001 的真实成员资料。",
         "kind": "episode",
-        "evidence_quote": "test-10001",
+        "quote": "test-10001",
     }
     calls = (
-        ("get_group_members", {}),
-        ("memory_change", write),
-        ("read_memory", None),
-        ("task_control", {"action": "complete", "result": "原工作已写入记忆"}),
+        ("get_members", {}),
+        ("save_memory", write),
+        ("search_memory", None),
+        ("manage_task", {"action": "finish", "result": "原工作已写入记忆"}),
     )
 
     def child_response(request):
@@ -467,15 +455,12 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
         if index:
             result = json.loads(request.messages[-1].content)
             responses[calls[index - 1][0]] = result
-            assert result["ok"], result
+            assert result.get("ok", True), result
         if index >= len(calls):
             return "NO_REPLY"
         name, arguments = calls[index]
-        if name == "read_memory":
-            arguments = {
-                "view": "fact",
-                "fact_id": responses["memory_change"]["data"]["new_fact_id"],
-            }
+        if name == "search_memory":
+            arguments = {"fact_id": responses["save_memory"]["fact_id"]}
         return ChatResponse(
             "",
             0,
@@ -511,13 +496,11 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     assert actor.execution_id == child["id"] and actor.automation_run_id == original_run.id
     assert actor.principal_kind == "self" and actor.initiative_run_id is None
     assert actor.person_id is None and actor.event_id is None and actor.user_id == ""
-    assert responses["memory_change"]["data"]["ok"]
-    assert responses["read_memory"]["data"]["memory"]["content"] == write["new_content"]
+    assert responses["save_memory"]["outcome"] == "committed"
+    assert responses["search_memory"]["memories"][0]["content"] == write["content"]
     async with database.read_session() as session:
         receipt = await session.scalar(
-            select(MemoryToolReceiptModel).where(
-                MemoryToolReceiptModel.tool_name == "get_group_members"
-            )
+            select(MemoryToolReceiptModel).where(MemoryToolReceiptModel.tool_name == "get_members")
         )
         mutation = await session.scalar(select(MemoryMutationReceiptModel))
         assert receipt.execution_id == mutation.decision_actor_id == child["id"]

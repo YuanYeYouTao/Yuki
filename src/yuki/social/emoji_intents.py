@@ -193,7 +193,7 @@ class EmojiIntentRepository:
             payload_hash("send_message", target, arguments, conversation_id),
             source,
             encode(source),
-            encode(arguments["emoji"]),
+            encode(arguments["sticker"]),
             bool(arguments.get("text", "").strip()),
         )
 

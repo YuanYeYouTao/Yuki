@@ -235,20 +235,20 @@ async def test_operation_anchor_and_permanent_history_survive_new_context_window
     async with database.immediate_session() as writer:
         conversation = await writer.get(CanonicalConversationModel, env.context.conversation_id)
         conversation.starts_after_event_id = second["event_id"]
-    request = {"view": "recent", "target": {"operation_id": first["operation_id"]}}
-    original = await env.service.execute("query_chat_history", request, env.context)
+    request = {"target": {"operation_id": first["operation_id"]}}
+    original = await env.service.execute("read_chat", request, env.context)
     assert [row["event_id"] for row in original["events"]][:2] == [
         second["event_id"],
         first["event_id"],
     ]
-    assert original["receipt_anchor"]["event_id"] == first["event_id"]
+    assert original["receipt"]["event_id"] == first["event_id"]
     around = await env.service.execute(
-        "query_chat_history",
-        {**request, "view": "around", "event_id": second["event_id"]},
+        "read_chat",
+        {**request, "around": second["event_id"]},
         env.context,
     )
     assert [row["event_id"] for row in around["events"]] == [second["event_id"]]
-    assert around["center_status"] == "available"
+    assert "around_status" not in around
     assert {first["event_id"], second["event_id"]} <= set(original.source_event_ids)
 
 
@@ -288,27 +288,38 @@ async def test_sdk_fake_preserves_literal_all_any_phrase_exclude_and_cursor():
     assert not await fake.search_history("ab cd", match="phrase")
 
 
-def test_query_selector_is_mutually_exclusive_and_dates_are_utc_eight():
-    from uuid import uuid4
+def test_read_chat_query_rejects_ambiguous_targets_naive_times_and_filtered_around():
+    from pydantic import ValidationError
 
-    with pytest.raises(ValueError):
-        HistoryQuery.model_validate(
-            {"target": {"person_id": str(uuid4()), "space_id": str(uuid4())}}
-        )
+    for value in (
+        {"target": {"person_id": str(uuid4()), "space_id": str(uuid4())}},
+        {"since": "2026-10-22T00:00:00"},
+        {"around": 5, "query": "x"},
+        {"around": 5, "limit": 3},
+        {"around": 5, "order": "oldest"},
+        {"cursor": "abc"},
+        {"author": "someone"},
+        {"view": "search"},
+        {"keyword": "x"},
+        {"event_kind": "all"},
+    ):
+        with pytest.raises(ValidationError):
+            HistoryQuery.model_validate(value)
     query = HistoryQuery.model_validate(
         {
-            "view": "search",
-            "start_at": "2026-10-22T00:00:00",
-            "end_at": "2026-10-22T00:00:00Z",
+            "since": "2026-10-22T00:00:00+08:00",
+            "until": "2026-10-22T00:00:00Z",
             "limit": 1001,
+            "author": "yuki",
         }
     )
-    assert query.start_at == datetime(2026, 10, 21, 16, tzinfo=UTC)
-    assert query.end_at == datetime(2026, 10, 22, tzinfo=UTC)
-    assert query.limit == 1001
+    assert query.since == datetime(2026, 10, 21, 16, tzinfo=UTC)
+    assert query.until == datetime(2026, 10, 22, tzinfo=UTC)
+    assert query.limit == 1001 and query.filtered
+    assert HistoryQuery.model_validate({"around": 5, "context": 2}).filtered is False
 
 
-async def test_explicit_event_kind_preserves_external_source_without_payload_search(
+async def test_external_events_are_not_chat_messages_and_payload_is_not_searchable(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -326,23 +337,9 @@ async def test_explicit_event_kind_preserves_external_source_without_payload_sea
         content="published original",
         occurred_at=datetime.now(UTC),
     )
-    page = await env.service.execute(
-        "query_chat_history",
-        {"view": "search", "event_kind": "external_event", "keyword": "original"},
-        env.context,
-    )
-    assert [item["id"] for item in page["events"]] == [added.event.id]
-    assert page["events"][0]["external_source"] == "subscription"
-    assert page["events"][0]["external_event_type"] == "item.created"
-    assert "external_payload" not in page["events"][0]
-    messages = await env.service.execute("query_chat_history", {"view": "recent"}, env.context)
-    assert added.event.id not in {item["id"] for item in messages["events"]}
-    unmatched = await env.service.execute(
-        "query_chat_history",
-        {"view": "search", "event_kind": "all", "keyword": "never-index-json-key"},
-        env.context,
-    )
-    assert not unmatched["events"]
+    for arguments in ({}, {"query": "original"}, {"query": "never-index-json-key"}):
+        page = await env.service.execute("read_chat", arguments, env.context)
+        assert added.event.id not in {item["event_id"] for item in page["events"]}
 
 
 async def test_deleted_receipt_anchor_returns_original_identity_and_allows_only_normal_new_anchor(
@@ -360,14 +357,12 @@ async def test_deleted_receipt_anchor_returns_original_identity_and_allows_only_
         assert receipt.original_event_id == sent["event_id"]
         assert receipt.original_conversation_id == original_conversation
     target = {"operation_id": sent["operation_id"]}
-    missing = await env.service.execute(
-        "query_chat_history", {"view": "recent", "target": target}, env.context
-    )
-    assert missing["event_id"] == sent["event_id"]
-    assert missing["anchor_status"] == "missing" and sent["event_id"] not in {
-        row["id"] for row in missing["events"]
+    missing = await env.service.execute("read_chat", {"target": target}, env.context)
+    assert missing["receipt"]["event_id"] == sent["event_id"]
+    assert missing["receipt"]["anchor_status"] == "missing" and sent["event_id"] not in {
+        row["event_id"] for row in missing["events"]
     }
-    assert missing["receipt_status"] == "succeeded"
+    assert missing["receipt"]["receipt_status"] == "succeeded"
     newer = (
         await seed_scoped_event(
             env.service.writer,
@@ -379,12 +374,13 @@ async def test_deleted_receipt_anchor_returns_original_identity_and_allows_only_
         )
     ).event
     visible = await env.service.execute(
-        "query_chat_history",
-        {"view": "around", "target": target, "event_id": newer.id},
+        "read_chat",
+        {"target": target, "around": newer.id},
         env.context,
     )
-    assert visible["center_event_id"] == newer.id
-    assert visible["event_id"] == sent["event_id"] and visible["anchor_status"] == "missing"
+    assert "around_status" not in visible
+    assert visible["receipt"]["event_id"] == sent["event_id"]
+    assert visible["receipt"]["anchor_status"] == "missing"
     assert [row["content"] for row in visible["events"]] == ["current approved fact"]
     assert visible.source_event_ids == (newer.id,)
 
@@ -399,22 +395,20 @@ async def test_operation_search_and_paging_keep_query_semantics_separate_from_re
     )
     target = {"operation_id": first["operation_id"]}
     empty = await env.service.execute(
-        "query_chat_history",
-        {"view": "search", "target": target, "keyword": "not-present"},
+        "read_chat",
+        {"target": target, "query": "not-present"},
         env.context,
     )
     assert not empty["events"]
-    assert empty["receipt_anchor"]["event"]["content"] == "original anchor"
-    newest = await env.service.execute(
-        "query_chat_history", {"view": "recent", "target": target, "limit": 1}, env.context
-    )
-    assert [row["id"] for row in newest["events"]] == [second["event_id"]]
-    assert newest["has_more"] and newest["receipt_anchor"]["event"]["id"] == first["event_id"]
+    assert empty["receipt"]["event"]["content"] == "original anchor"
+    newest = await env.service.execute("read_chat", {"target": target, "limit": 1}, env.context)
+    assert [row["event_id"] for row in newest["events"]] == [second["event_id"]]
+    assert newest["next_cursor"] and newest["receipt"]["event"]["event_id"] == first["event_id"]
     next_page = await env.service.execute(
-        "query_chat_history",
-        {"view": "recent", "target": target, "limit": 1, "cursor": newest["next_cursor"]},
+        "read_chat",
+        {"target": target, "limit": 1, "cursor": newest["next_cursor"]},
         env.context,
     )
-    assert [row["id"] for row in next_page["events"]] == [first["event_id"]]
-    assert "event" not in next_page["receipt_anchor"]
+    assert [row["event_id"] for row in next_page["events"]] == [first["event_id"]]
+    assert "event" not in next_page["receipt"]
     assert next_page.source_event_ids == (first["event_id"],)

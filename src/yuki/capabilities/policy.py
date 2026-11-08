@@ -49,7 +49,7 @@ class CapabilityPolicyEngine:
                 continue
             if descriptor.namespace_id in hidden_namespaces:
                 continue
-            if descriptor.model_name == "read_tool_artifact" and not context.artifact_available:
+            if descriptor.model_name == "read_result" and not context.artifact_available:
                 continue
             visible.append(descriptor)
         return tuple(visible)

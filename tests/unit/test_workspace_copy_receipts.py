@@ -84,8 +84,8 @@ async def save_tool_result(database, workspace, request_id):
     token = current_invocation.set(ToolInvocationContext(runtime, request_id))
     try:
         return await tools.execute(
-            "save_conversation_attachment_to_workspace",
-            json.dumps({"event_id": 101, "attachment_index": 0, "destination": "target.txt"}),
+            "copy_file",
+            json.dumps({"event_id": 101, "attachment": 0, "destination": "target.txt"}),
             runtime,
         )
     finally:

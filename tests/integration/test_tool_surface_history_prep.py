@@ -210,12 +210,24 @@ HISTORY = [
     ),
 ]
 
+# (model tool, model arguments, Manager RPC method, wire arguments): the model
+# surface was renamed at the cutover; the wire and its task rows were not.
 RPC_CALLS = [
-    ("terminal_exec", {"command": "true"}),
-    ("terminal_read", {"run_id": "run-1"}),
-    ("terminal_control", {"run_id": "run-1", "action": "interrupt"}),
-    ("environment_status", {}),
-    ("environment_service", {"action": "status", "name": "svc"}),
+    ("run_command", {"command": "true"}, "terminal_exec", {"command": "true"}),
+    ("read_command", {"id": "run-1"}, "terminal_read", {"run_id": "run-1"}),
+    (
+        "read_command",
+        {"id": "run-1", "cursor": "12"},
+        "terminal_read",
+        {"run_id": "run-1", "cursor": 12},
+    ),
+    (
+        "control_command",
+        {"id": "run-1", "action": "interrupt"},
+        "terminal_control",
+        {"run_id": "run-1", "action": "interrupt"},
+    ),
+    ("get_environment", {}, "environment_status", {}),
 ]
 
 
@@ -289,8 +301,8 @@ async def test_model_environment_tools_keep_manager_rpc_wire_names(database):
     )
     declared = {tool.name for tool in sandbox_tools()}
     try:
-        for name, arguments in RPC_CALLS:
-            token = current_invocation.set(ToolInvocationContext(runtime, f"call-{name}"))
+        for index, (name, arguments, _, _) in enumerate(RPC_CALLS):
+            token = current_invocation.set(ToolInvocationContext(runtime, f"call-{index}"))
             try:
                 result = await tools.execute(name, json.dumps(arguments), runtime)
             finally:
@@ -307,16 +319,16 @@ async def test_model_environment_tools_keep_manager_rpc_wire_names(database):
         {
             "declared_environment_tools": sorted(declared),
             "wire": [
-                {"tool": name, "method": method}
-                for (name, _), (method, _) in zip(RPC_CALLS, wire, strict=True)
+                {"tool": name, "method": method, "args": args}
+                for (name, *_), (method, args) in zip(RPC_CALLS, wire, strict=True)
             ],
             "task_rows": recorded.prepared,
         },
     )
     # F1: every declared environment tool reaches the Manager under its original method.
-    assert {name for name, _ in RPC_CALLS} == declared
-    assert [method for method, _ in wire] == [name for name, _ in RPC_CALLS]
-    assert [args for _, args in wire] == [arguments for _, arguments in RPC_CALLS]
+    assert {name for name, *_ in RPC_CALLS} == declared
+    assert [method for method, _ in wire] == [method for _, _, method, _ in RPC_CALLS]
+    assert [args for _, args in wire] == [arguments for *_, arguments in RPC_CALLS]
     # F2: the task row payload keeps the original method name.
     assert recorded.prepared == [{"tool": "terminal_exec", "arguments": {"command": "true"}}]
 
@@ -485,8 +497,19 @@ def test_code_mode_wrappers_and_declarations_keep_current_names():
     assert wrappers == sorted((f"yuki_{tool.name}", tool.name) for tool in declared)
     # F9: the history map only reads originals; none of its names is declared.
     from yuki.external_agents.tools import external_agent_tools
-    from yuki.social.tools import social_tool_definitions
 
-    every = {tool.name for tool in (*declared, *external_agent_tools(), *social_tool_definitions())}
+    every = {tool.name for tool in (*declared, *external_agent_tools())}
     assert not set(RECORDED_TOOL_NAMES) & every
-    assert dict(RECORDED_TOOL_NAMES) == {"send_message": "send", "web_read": "read_webpage"}
+    # Each original name of these tools reads as a declared successor.
+    for original in (
+        "terminal_exec",
+        "terminal_read",
+        "terminal_control",
+        "environment_status",
+        "workspace_inspect",
+        "inspect_conversation_attachment",
+        "save_conversation_attachment_to_workspace",
+        "external_agent",
+    ):
+        assert RECORDED_TOOL_NAMES[original] in every
+    assert "environment_service" not in {*RECORDED_TOOL_NAMES, *every}

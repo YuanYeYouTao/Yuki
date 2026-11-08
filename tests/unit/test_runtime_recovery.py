@@ -228,8 +228,9 @@ async def test_artifact_publication_failure_preserves_typed_effect_without_repla
     if failure != "cancel":
         result = await invoke_tool(session, call, business)
         assert json.loads(result)["artifact_error"] == "tool_artifact_capacity"
-        assert json.loads(result)["mutation_committed"] is True
-        assert json.loads(result).get("uncertain", False) is (failure == "uncertain")
+        # The commit state stays typed; an uncertain effect is shown as unknown.
+        assert "mutation_committed" not in json.loads(result)
+        assert (json.loads(result).get("status") == "unknown") is (failure == "uncertain")
         # Optional storage loss now returns the actual bounded result. Reuse
         # that original accepted response even when the effect is uncertain.
         assert await invoke_tool(session, call, business) == result
@@ -314,7 +315,7 @@ async def test_source_change_after_accepted_automation_preserves_receipt_without
     control = await setup(database, tmp_path)
     assert control.session is not None and control.current is not None
     original_id = control.current["id"]
-    call = ToolCall("create-once", ToolFunction("automation_manage", '{"action": "create"}'))
+    call = ToolCall("create-once", ToolFunction("manage_schedule", '{"action": "create"}'))
     control.session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
     await control.session.save("response", (call,))
     invoke = AsyncMock(return_value='{"ok":true,"automation_id":93}')

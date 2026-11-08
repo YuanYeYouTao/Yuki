@@ -262,7 +262,7 @@ async def test_local_artifact_pins_original_snapshot_and_download_authorization(
     )
     result = await env.social.execute(
         "send",
-        {"artifact_id": original["artifact_id"], "attachment_kind": "file", "text": "result"},
+        {"file": {"artifact_id": original["artifact_id"]}, "text": "result"},
         context,
     )
     assert result["status"] == "succeeded" and "platform_reference" not in result

@@ -55,7 +55,7 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         delivery_task = app.emoji_delivery._task
         platform = await app.main_agent_contract.definitions()
         names = {tool.name for tool in platform}
-        assert {"send", "query_chat_history"} <= names
+        assert {"send", "read_chat"} <= names
         assert ("execute_code" in names) == code_enabled
         assert "send" in {tool.name for tool in await app.main_agent_contract.model_definitions()}
         payload = await build_health_payload(app)

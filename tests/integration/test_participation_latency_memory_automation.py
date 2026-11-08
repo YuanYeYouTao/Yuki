@@ -61,9 +61,7 @@ async def test_automation_memory_original_source_uses_bounded_plan(
         await seed_direct(database, tmp_path, False)
     async with database.read_session() as reader:
         receipt = await reader.scalar(
-            select(MemoryToolReceiptModel).where(
-                MemoryToolReceiptModel.tool_name == "get_group_members"
-            )
+            select(MemoryToolReceiptModel).where(MemoryToolReceiptModel.tool_name == "get_members")
         )
         mutation = await reader.scalar(select(MemoryMutationReceiptModel))
         conversation = await reader.scalar(
@@ -169,9 +167,7 @@ async def test_automation_memory_basis_writer_uses_original_source_keys(
     async with database.read_session() as reader:
         mutation = await reader.scalar(select(MemoryMutationReceiptModel))
         receipt = await reader.scalar(
-            select(MemoryToolReceiptModel).where(
-                MemoryToolReceiptModel.tool_name == "get_group_members"
-            )
+            select(MemoryToolReceiptModel).where(MemoryToolReceiptModel.tool_name == "get_members")
         )
     fact_id = mutation.new_fact_id
     if shape == "plugin_wrapper":
@@ -213,21 +209,18 @@ async def _two_automation_evidence_inputs(database, tmp_path):
     case.chat._tools._memory_mutations = mutations
     case.chat._tool_receipts = ToolReceiptRepository(database)
     requests = [
-        ("get_group_members", {"limit": 10}),
+        ("get_members", {"limit": 10}),
         (
-            "memory_change",
+            "save_memory",
             {
-                "operation": "create",
-                "target": {"subject_ref": "self", "scope_type": "self"},
-                "new_content": "我实际查询了当前群成员列表，确认了 test-10001 的成员资料。",
-                "memory_key": "self_episode:replacement",
-                "category": "self_episode",
+                "target": {"self": True},
+                "content": "我实际查询了当前群成员列表，确认了 test-10001 的成员资料。",
                 "kind": "episode",
-                "evidence_quote": "test-10001",
+                "quote": "test-10001",
             },
         ),
         None,
-        ("get_group_members", {"limit": 10}),
+        ("get_members", {"limit": 10}),
         None,
     ]
 
@@ -261,7 +254,7 @@ async def _two_automation_evidence_inputs(database, tmp_path):
         receipts = list(
             await reader.scalars(
                 select(MemoryToolReceiptModel)
-                .where(MemoryToolReceiptModel.tool_name == "get_group_members")
+                .where(MemoryToolReceiptModel.tool_name == "get_members")
                 .order_by(MemoryToolReceiptModel.id)
             )
         )

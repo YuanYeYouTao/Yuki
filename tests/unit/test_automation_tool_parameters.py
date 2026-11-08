@@ -32,20 +32,17 @@ def record():
 
 
 @pytest.mark.parametrize(
-    "view,extras",
+    "arguments",
     [
-        ("get", {"limit": 2}),
-        ("list", {"automation_id": 1}),
-        ("history", {"status": "all"}),
-        ("list", {"match_task": {}}),
+        {"view": "get", "id": 1},
+        {"automation_id": 1},
+        {"id": 1, "history": True, "status": "all"},
+        {"match_task": {}},
     ],
 )
-async def test_query_no_longer_silently_ignores_inactive_fields(view, extras):
-    arguments = {"view": view, **extras}
-    if view != "list":
-        arguments["automation_id"] = 1
+async def test_query_no_longer_silently_ignores_inactive_fields(arguments):
     tools = AutomationToolService(SimpleNamespace())
-    result = await tools.execute("automation_query", json.dumps(arguments), fixture_runtime())
+    result = await tools.execute("get_schedules", json.dumps(arguments), fixture_runtime())
     assert not result.ok and result.error_code == "invalid_arguments"
 
 
@@ -72,12 +69,12 @@ async def test_history_pages_actual_rows_and_preserves_delivery_unknown():
 
     service = SimpleNamespace(history=AsyncMock(side_effect=fetch))
     result = await AutomationToolService(service).execute(
-        "automation_query",
-        '{"view":"history","automation_id":1,"limit":2,"cursor":"1"}',
+        "get_schedules",
+        '{"id":1,"limit":2,"cursor":"1","history":true}',
         fixture_runtime(),
     )
     assert result.ok
-    assert [item["id"] for item in result.data["runs"]] == [2, 3]
+    assert [item["run_id"] for item in result.data["runs"]] == [2, 3]
     assert result.data["next_cursor"] == "3"
     assert result.data["runs"][0]["definition"] == {
         "goal": "ORIGINAL_REQUEST",

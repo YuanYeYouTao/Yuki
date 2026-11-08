@@ -127,12 +127,12 @@ async def test_runner_does_not_reuse_a_different_read_call(database, tmp_path, s
         assert contract.revision == frozen
         if same_response:
             assert len(executed) == 2 and len(returned) == 2
-            assert all(item["ok"] for item in returned)
+            assert all("error" not in item for item in returned)
         else:
             assert len(executed) == 1 and len(returned) == 2
-            assert returned[0]["ok"]
-            assert not returned[-1]["ok"]
-            assert returned[-1]["error_code"] in {
+            assert "error" not in returned[0]
+            assert returned[-1]["ok"] is False
+            assert returned[-1]["error"] in {
                 "plugin_tool_contract_changed",
                 "plugin_tool_denied",
             }

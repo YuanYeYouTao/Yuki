@@ -69,20 +69,18 @@ async def memory_scene(
 
 
 @pytest.mark.parametrize(
-    ("initial", "live", "view", "allowed"),
+    ("initial", "live", "allowed"),
     [
-        ("none", "none", "evidence", False),
-        ("person", "none", "fact", False),
-        ("person", "group", "fact", False),
-        ("person", "group", "evidence", False),
-        ("group", "group", "evidence", False),
-        ("person", "person", "evidence", True),
-        ("none", "person", "fact", True),
-        ("none", "person", "evidence", True),
+        ("none", "none", False),
+        ("person", "none", False),
+        ("person", "group", False),
+        ("group", "group", False),
+        ("person", "person", True),
+        ("none", "person", True),
     ],
 )
-async def test_person_fact_and_evidence_follow_live_plugin_read_scope(
-    database, tmp_path, initial, live, view, allowed
+async def test_person_fact_follows_live_plugin_read_scope(
+    database, tmp_path, initial, live, allowed
 ):
     provider = FakeLLMProvider()
     _, source, host, person, _ = await memory_scene(database, tmp_path, provider, initial)
@@ -91,18 +89,18 @@ async def test_person_fact_and_evidence_follow_live_plugin_read_scope(
     def respond(request):
         if len(provider.requests) == 1:
             host._approved_permissions = frozenset({PluginPermission.AGENT_RUN, *grants(live)})
-            return _tool("read_memory", {"view": view, "fact_id": person.id}, "original-memory")
+            return _tool("search_memory", {"fact_id": person.id}, "original-memory")
         replies.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     try:
         with host.invocation_scope(host.plugin_id, source):
             result = await host.agent.run("Use only the current approved Memory scope")
         assert result.ok and result.data["state"] == "completed"
-        assert replies[0]["ok"] is allowed, replies
+        assert replies[0].get("ok", True) is allowed, replies
         if not allowed:
-            assert replies[0]["error_code"] in {"permission_denied", "memory_not_found"}
+            assert replies[0]["error"] in {"permission_denied", "memory_not_found"}
             assert "Original personal fact" not in json.dumps(replies)
     finally:
         await host.close_host_resources()
@@ -121,7 +119,7 @@ async def test_memory_search_uses_only_current_plugin_scope(database, tmp_path, 
             host._approved_permissions = frozenset({PluginPermission.AGENT_RUN, *grants(live)})
             return _tool("search_memory", {"query": "Original"}, "search-current-memory")
         replies.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     try:
@@ -129,10 +127,10 @@ async def test_memory_search_uses_only_current_plugin_scope(database, tmp_path, 
             result = await host.agent.run("Search only the current approved Memory scope")
         assert result.ok
         if live == "none":
-            assert replies[0]["error_code"] == "permission_denied", replies
+            assert replies[0]["error"] == "permission_denied", replies
         else:
-            assert replies[0]["ok"], replies
-            assert {row["fact_id"] for row in replies[0]["data"]["memories"]} == {
+            assert "ok" not in replies[0], replies
+            assert {row["fact_id"] for row in replies[0]["memories"]} == {
                 group.id if live == "group" else person.id
             }
     finally:
@@ -163,27 +161,23 @@ async def test_parallel_memory_reads_keep_local_runtime_scopes(database, tmp_pat
                 tool_calls=tuple(
                     ToolCall(
                         key,
-                        ToolFunction("read_memory", json.dumps({"view": view, "fact_id": fact_id})),
+                        ToolFunction("search_memory", json.dumps({"fact_id": fact_id})),
                     )
-                    for key, view, fact_id in (
-                        ("group", "fact", group.id),
-                        ("person", "fact", person.id),
-                        ("evidence", "evidence", person.id),
-                    )
+                    for key, fact_id in (("group", group.id), ("person", person.id))
                 ),
             )
         replies.update(
             {m.tool_call_id: json.loads(m.content) for m in request.messages if m.role == "tool"}
         )
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     try:
         with host.invocation_scope(host.plugin_id, source):
             result = await host.agent.run("Read actual Memory scopes in parallel")
         assert result.ok
-        assert replies["group"]["ok"], replies
-        assert not replies["person"]["ok"] and not replies["evidence"]["ok"], replies
+        assert "ok" not in replies["group"], replies
+        assert replies["person"]["ok"] is False, replies
         assert backends[0]._runtime.memory_allowed_scopes == (
             MemoryScopeType.PERSON,
             MemoryScopeType.PERSON_GROUP,
@@ -228,23 +222,20 @@ async def test_memory_live_scope_does_not_change_original_result_artifact_proof(
         count = len(provider.requests)
         if count == 1:
             host._approved_permissions = frozenset({PluginPermission.AGENT_RUN, *grants("person")})
-            return _tool(
-                "read_memory", {"view": "fact", "fact_id": person.id}, "original-full-fact"
-            )
+            return _tool("search_memory", {"fact_id": person.id}, "original-full-fact")
         replies.append(json.loads(request.messages[-1].content))
         if count == 2:
             return _tool(
-                "read_tool_artifact",
+                "read_result",
                 {
                     "handle": replies[-1]["artifact_handle"],
-                    "operation": "get",
-                    "path": ["memory", "content"],
-                    "offset": 0,
+                    "path": ["memories", 0, "content"],
+                    "cursor": "0",
                     "limit": 100,
                 },
                 "read-original-artifact",
             )
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     try:
@@ -254,7 +245,7 @@ async def test_memory_live_scope_does_not_change_original_result_artifact_proof(
             )
         assert result.ok
         assert "artifact_handle" in replies[0], replies
-        assert replies[1]["ok"], replies
+        assert "error" not in replies[1], replies
         assert "Original personal fact" in json.dumps(replies[1])
     finally:
         await host.close_host_resources()

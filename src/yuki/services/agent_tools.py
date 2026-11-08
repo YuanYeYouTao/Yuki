@@ -4,20 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Set
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from datetime import date, datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
@@ -25,21 +24,29 @@ from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatTool, InboundMessage
 from yuki.domain.tool_actor import ToolActor
 from yuki.external_agents.errors import ExternalAgentArgumentError
+from yuki.external_agents.tools import (
+    EXTERNAL_AGENT_TOOLS,
+    coding_agent_arguments,
+    coding_agent_view,
+)
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
+    MemoryKind,
     MemoryScopeType,
     MemoryTargetRole,
     SelfMemoryVisibility,
 )
 from yuki.memory.errors import MemoryRetrievalError
 from yuki.memory.fts import SQLiteMemoryFTSIndex
-from yuki.memory.models import MemoryEntityTarget, MemoryQueryIntent
+from yuki.memory.models import MemoryEntityTarget
 from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationContext,
+    MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationResult,
+    MemoryMutationTarget,
 )
 from yuki.memory.mutation.service import MemoryMutationService
 from yuki.memory.query import MemoryQueryBuilder
@@ -54,7 +61,7 @@ from yuki.memory.runtime.query_plane import (
 from yuki.memory.service import MemoryFactService
 from yuki.memory.subjects import ResolvedSubject
 from yuki.memory.targets import MemoryTargetResolver
-from yuki.memory.tool_intent import effective_query_summary, parse_memory_tool_intent
+from yuki.memory.tool_intent import parse_memory_tool_intent
 from yuki.persistence.models import MembershipModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.repositories import (
@@ -62,11 +69,9 @@ from yuki.persistence.repositories import (
 )
 from yuki.runtime.errors import InvalidTurnContextError
 from yuki.runtime.origin import TurnOrigin
-from yuki.sandbox.environment_tools import SANDBOX_TOOLS
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS, command_arguments, command_view
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
-from yuki.services.evidence_state import evidence_state
-from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, history_schema
 
 if TYPE_CHECKING:
     from yuki.external_agents.service import ExternalAgentService
@@ -92,41 +97,30 @@ _MEMORY_CHANGE_ORIGINS = frozenset(
         TurnOrigin.SELF_INITIATIVE,
     }
 )
-_MEMORY_INTENT_PROPERTIES = {
-    "purpose": {
-        "type": "string",
-        "enum": ["background", "continuation", "recall", "verify", "correct"],
+_MEMORY_TARGET: dict[str, object] = {
+    "type": "object",
+    "description": "恰含一个键：人物 person_id、群 space_id，或自己 self=true",
+    "properties": {
+        "person_id": {"type": "string", "minLength": 1},
+        "space_id": {"type": "string", "minLength": 1},
+        "self": {"const": True},
     },
-    "start_at": {
-        "type": "string",
-        "description": (
-            "带时区 ISO-8601 起点（包含）。当地某一天从当地00:00开始；"
-            "转换为 UTC 后不要保留原时区偏移。今天/昨天按当前时间上下文换算。"
-        ),
-    },
-    "end_at": {"type": "string", "description": "带时区 ISO-8601 终点（不包含），例如次日零点"},
-    "temporal_constraint": {
-        "type": "string",
-        "enum": ["strict", "soft"],
-        "description": (
-            "有时间边界默认 strict；明确日期必须严格，不混入旧经历或时间未知项。"
-            "soft 仅用于宽泛偏好，空结果不得自动放宽。"
-        ),
-    },
+    "oneOf": [{"required": ["person_id"]}, {"required": ["space_id"]}, {"required": ["self"]}],
+    "additionalProperties": False,
+}
+_MEMORY_EVIDENCE: dict[str, object] = {
+    "type": ["integer", "string"],
+    "description": "证据：真实事件 ID，或本轮工具结果 tool_N；省略为当前消息",
 }
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
 )
 _MEMORY_READ_TOOL: ContextVar[str] = ContextVar("memory_read_tool", default="")
-_OBSERVED_MEMORY_READS = frozenset(
-    {
-        "search_memory",
-        "read_memory",
-    }
-)
+_OBSERVED_MEMORY_READS = frozenset({"search_memory"})
 
 logger = logging.getLogger(__name__)
+_CODE = re.compile(r"[a-z][a-z0-9_]{2,80}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,18 +355,29 @@ class ToolRuntime:
 
 
 @dataclass(frozen=True, slots=True)
-class _PersonMemorySelection:
-    user_id: str
-    targets: tuple[MemoryEntityTarget, ...]
-    resolved_by: str
-    subject_ref: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class _ToolFailure:
     code: str
     detail: str
-    data: Any = None
+
+
+# Real causes of common memory-write rejections, said the way the model can act on.
+_MEMORY_REJECTIONS = {
+    "self_memory_requires_self_subject_ref": (
+        'SELF 自主工作只能写自己的记忆：target 用 {"self": true}'
+    ),
+    "evidence_quote_not_in_tool_receipt": "quote 必须逐字出自本轮工具结果原文",
+    "initiative_tool_evidence_required": "SELF 写记忆须给出本轮工具结果中的 quote，不能用事件 ID",
+    "evidence_quote_not_in_current_event": "quote 必须逐字出自证据消息原文",
+    "unsupported_evidence_reference": "有当前消息时 evidence 用事件 ID，不用 tool_N",
+    "private_self_fact_cannot_be_global": (
+        "私聊中的经历不能设为 global；只有偏好（kind=preference）可以"
+    ),
+    "operation_not_allowed_for_target": "不能对他人的个人记忆执行该操作",
+    "fact_id_required": "没有这条记忆；先用 search_memory 找到 fact_id",
+    "fact_target_mismatch": "该 fact_id 不属于可编辑的记忆",
+    "self_memory_disabled": "自我记忆功能未启用",
+    "memory_operation_payload_conflict": "同一调用已以不同内容执行过，不会重复写入",
+}
 
 
 def _object_schema(
@@ -428,7 +433,6 @@ class AgentToolService:
         memory_mutations: MemoryMutationService | None = None,
         web_provider: WebSearchProvider | None = None,
         runtime_config: RuntimeConfigService | None = None,
-        permission_catalog: PermissionCatalogService | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -451,9 +455,6 @@ class AgentToolService:
             settings=settings,
             database=ledger._database,
         )
-        self._permission_catalog = permission_catalog or PermissionCatalogService(
-            config_registry=self._runtime_config.registry,
-        )
         self.social_service = social_service
         self.workspace_service = workspace_service
         self.sandbox_client = sandbox_client
@@ -469,250 +470,93 @@ class AgentToolService:
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         tools = [
             ChatTool(
-                name="get_my_capabilities",
-                description=(
-                    "给当前模型轮内部查询原执行主体能够修改、管理和读取的权限。"
-                    "用于查询可修改的配置、管理操作及读取范围；"
-                    "按问题整理返回内容；"
-                    "默认 summary，具体问题用 focused+category/query，需要完整目录用 full。"
-                    "不能查询他人，也不能用权限目录代替工具执行回执。"
-                ),
-                parameters=_object_schema(
-                    {
-                        "mode": {
-                            "type": "string",
-                            "enum": ["summary", "focused", "full"],
-                        },
-                        "category": {"type": "string"},
-                        "query": {"type": "string", "maxLength": 64},
-                    }
-                ),
-            ),
-            ChatTool(
-                name="query_chat_history",
-                result_cacheable=False,
-                description=HISTORY_TOOL_DESCRIPTION,
-                parameters=history_schema(),
-                schema_version="2",
-            ),
-            ChatTool(
                 name="search_memory",
+                namespace="memory.search",
+                effect="read_state",
                 description=(
-                    "按自然语言搜索有来源的长期记忆。无 target 时搜索本次主体有权读取的全部历史"
-                    "人物、人物群、群及可见 SELF；当前群或提及不自动缩小范围。"
-                    "仅明确限定目标时填写 target，姓名和群名须精确；歧义先澄清，拒绝不换范围重试。"
-                    "结果有界且可能非穷尽，缺证据可改用不同查询补查。"
-                    "原始聊天用 query_chat_history(view=search)。"
+                    "搜索有来源的长期记忆，或用 fact_id 读取一条。省略 target 时搜索你有权读取的"
+                    "全部人物、群与自己的记忆，当前群或提及不会自动缩小范围。结果有界、可能不全，"
+                    "缺证据时换个说法再查；原始聊天用 read_chat。"
                 ),
                 parameters=_object_schema(
                     {
                         "query": {"type": "string", "minLength": 1},
-                        "target": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "scope": {"type": "string", "enum": ["person", "group", "self"]},
-                                "subject_ref": {
-                                    "type": "string",
-                                    "description": (
-                                        "本轮事件人物引用：current_speaker、"
-                                        "member_{person_id} 或 replied_message_author"
-                                    ),
-                                },
-                                "display_name": {"type": "string"},
-                                "person_id": {"type": "string"},
-                                "space_id": {"type": "string"},
-                                "space_name": {"type": "string"},
-                            },
-                            "required": ["scope"],
-                        },
+                        "target": _MEMORY_TARGET,
+                        "since": {"type": "string", "description": "带时区 ISO-8601 起点（含）"},
+                        "until": {"type": "string", "description": "带时区 ISO-8601 终点（不含）"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                        **_MEMORY_INTENT_PROPERTIES,
-                    },
-                    required=("query",),
-                ),
-            ),
-            ChatTool(
-                name="read_memory",
-                description=(
-                    "按内部 fact_id 读取记忆。view=fact 返回有权查看的事实；"
-                    "view=evidence 只返回本人记忆的有界证据摘要，"
-                    "不暴露他人来源身份，也不记作已读事实。"
-                ),
-                parameters=_object_schema(
-                    {
-                        "view": {"type": "string", "enum": ["fact", "evidence"]},
                         "fact_id": {"type": "integer", "minimum": 1},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-                    },
-                    required=("view", "fact_id"),
+                    }
                 ),
             ),
         ]
         if self._memory_mutations is not None:
-            tools.append(
-                ChatTool(
-                    name="memory_change",
-                    description=(
-                        "依据真实入站证据或 SELF 原执行本轮工具回执，创建、纠正、撤销、恢复、"
-                        "争议、合并、改归属或更新长期记忆。SELF 只能写自己的记忆；"
-                        "不能把自己的输出当证据，也不能编造真人事件。"
-                        "target.subject_ref 可使用 current_speaker、current_group、"
-                        "member_{person_id} 等本轮可验证成员引用，或"
-                        "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
-                        " subject_name；自我记忆使用 self + self。"
-                        "自我记忆仅在功能开启时，依据本轮真实用户消息或 SELF 工具回执，"
-                        "记录自己的判断和经历。SELF 的 visibility"
-                        "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
-                        "私聊原始经历只能保存为当前私聊可见，不能提升为 global。"
-                        "工具回执中的 applied_operation 和 outcome"
-                        "才是真实结果，回复用户时必须以回执为准；被降级为 contest 或 noop"
-                        "时不得声称已经覆盖、删除或纠正成功。create 必须提供 target、"
-                        "new_content、memory_key 和 category；correct 可通过 fact_id 继承目标、"
-                        "memory_key 和 category；invalidate、restore、contest、merge 和"
-                        "update_metadata 可通过 fact_id 直接定位，不必重复 target。"
-                        "fact_id 缺失时，除 reassign 外可提供 target 和 selector，由后端在当前合法"
-                        "作用域内定位；只有唯一精确命中才执行，否则按候选或未找到结果处理。"
-                        "但 SELF 不支持 reassign 或 update_metadata。reassign 仍必须提供新 target。"
-                        "invalidate 成功表示事实保留审计记录但不再作为有效记忆；"
-                        "只能称为已撤回、已失效或不再记住，不得声称数据库记录已物理删除。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "operation": {
-                                "type": "string",
-                                "enum": [
-                                    "create",
-                                    "correct",
-                                    "invalidate",
-                                    "restore",
-                                    "contest",
-                                    "merge",
-                                    "reassign",
-                                    "update_metadata",
-                                ],
-                            },
-                            "fact_id": {"type": "integer", "minimum": 1},
-                            "merge_fact_id": {"type": "integer", "minimum": 1},
-                            "selector": _object_schema(
-                                {
-                                    "memory_key": {"type": "string"},
-                                    "old_content": {"type": "string"},
-                                    "category": {"type": "string"},
-                                }
-                            )
-                            | {
-                                "description": (
-                                    "没有 fact_id 时使用；至少提供 memory_key 或 old_content，"
-                                    "并同时提供合法 target。memory_key 是内部稳定键；不知道时"
-                                    "不要根据用户说法自行编造，应把用户可见标签或原陈述放入"
-                                    "old_content。仅唯一精确命中时执行；返回候选后使用其 fact_id"
-                                    "重试。"
-                                )
-                            },
-                            "merge_selector": _object_schema(
-                                {
-                                    "memory_key": {"type": "string"},
-                                    "old_content": {"type": "string"},
-                                    "category": {"type": "string"},
-                                }
-                            )
-                            | {
-                                "description": (
-                                    "merge 没有 merge_fact_id 时使用；"
-                                    "至少提供 memory_key 或 old_content。"
-                                )
-                            },
-                            "target": _object_schema(
-                                {
-                                    "subject_ref": {
-                                        "type": "string",
-                                        "description": (
-                                            "本轮提供的主体引用，如 current_speaker、"
-                                            "member_{person_id}、replied_message_author、"
-                                            "named_member、self 或 current_group"
-                                        ),
-                                    },
-                                    "scope_type": {
-                                        "type": "string",
-                                        "enum": ["person", "person_group", "group", "self"],
-                                    },
-                                    "subject_name": {
-                                        "type": "string",
-                                        "description": "subject_ref=named_member 时填写当前群姓名",
-                                    },
-                                    "candidate_ref": {
-                                        "type": "string",
-                                        "description": "姓名歧义后从工具返回候选中选择",
-                                    },
+            tools.extend(
+                (
+                    ChatTool(
+                        name="save_memory",
+                        namespace="memory.state.write",
+                        effect="write_state",
+                        description=(
+                            "保存一条长期记忆到 target 指定的人物、群或自己。证据须是真实消息或"
+                            "本轮工具结果，不能用自己的输出或编造事件；SELF 自主工作只能写自己的"
+                            "记忆并给出 quote。以结果中的 applied 与 outcome 为准，"
+                            "未写入不要说已记住。"
+                        ),
+                        parameters=_object_schema(
+                            {
+                                "content": {"type": "string", "minLength": 1},
+                                "target": _MEMORY_TARGET,
+                                "group": {
+                                    "type": "string",
+                                    "description": "与人物 target 同给时，记为此人在该群的记忆",
                                 },
-                                required=("subject_ref", "scope_type"),
-                            ),
-                            "visibility": {
-                                "type": "string",
-                                "enum": ["current_scope", "global"],
-                                "description": (
-                                    "仅 target.scope_type=self 时生效；其他目标误填合法值会被"
-                                    "后端忽略。current_scope 表示当前私聊或群，global 仅适合"
-                                    "抽象偏好、反思和原则。"
-                                ),
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["fact", "preference", "episode"],
+                                },
+                                "importance": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 5,
+                                    "description": (
+                                        "1–2 临时琐事，3 有用事实或经历，4–5 重要变化或承诺"
+                                    ),
+                                },
+                                "evidence": _MEMORY_EVIDENCE,
+                                "quote": {
+                                    "type": "string",
+                                    "description": "证据原文片段；SELF 必填，须出自本轮工具结果",
+                                },
+                                "visibility": {
+                                    "type": "string",
+                                    "enum": ["current_scope", "global"],
+                                    "description": "仅 target 为自己时有效；global 只适合抽象偏好",
+                                },
                             },
-                            "request_basis": {
-                                "type": "string",
-                                "enum": ["user_requested", "agent_initiated"],
-                                "description": (
-                                    "用户要求变更时用 user_requested；自主决定时用 agent_initiated"
-                                ),
+                            required=("content", "target"),
+                        ),
+                    ),
+                    ChatTool(
+                        name="edit_memory",
+                        namespace="memory.state.write",
+                        effect="write_state",
+                        description=(
+                            "按 fact_id 纠正或撤销一条记忆。correct 用 content 写入新内容；"
+                            "invalidate 让它不再作为有效记忆，但记录仍保留，只能说已撤回，"
+                            "不能说已物理删除。证据规则同 save_memory。"
+                        ),
+                        parameters=_object_schema(
+                            {
+                                "fact_id": {"type": "integer", "minimum": 1},
+                                "action": {"type": "string", "enum": ["correct", "invalidate"]},
+                                "content": {"type": "string", "minLength": 1},
+                                "reason": {"type": "string"},
+                                "evidence": _MEMORY_EVIDENCE,
+                                "quote": {"type": "string"},
                             },
-                            "new_content": {"type": "string"},
-                            "memory_key": {"type": "string"},
-                            "category": {"type": "string"},
-                            "kind": {
-                                "type": "string",
-                                "enum": ["fact", "preference", "episode"],
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "简述记忆变更理由，不写思考过程。",
-                            },
-                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                            "importance": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 5,
-                                "description": (
-                                    "1–2 是临时琐事，3 是未来有用的"
-                                    "事实或有意义的单次经历，4–5 是重要变化/承诺/里程碑。"
-                                ),
-                            },
-                            "evidence_event_id": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "description": (
-                                    "真实内部证据事件 ID。无入站消息时，"
-                                    "先查询创建者在当前会话的原始记录；"
-                                    "省略使用当前入站事件，不可编造。"
-                                ),
-                            },
-                            "evidence_refs": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "minItems": 1,
-                                "description": (
-                                    "入站轮使用 current_event。主动 SELF 可省略，"
-                                    "由 evidence_quote 定位本轮最近匹配的真实工具回执，"
-                                    "或使用已有工具回执 tool_N；不可编造事件。"
-                                ),
-                            },
-                            "evidence_quote": {"type": "string"},
-                            "expected_fact_state": {
-                                "type": "string",
-                                "enum": ["active", "contested", "superseded", "invalidated"],
-                            },
-                            "valid_from": {"type": "string"},
-                            "valid_until": {"type": "string"},
-                        },
-                        required=("operation",),
+                            required=("fact_id", "action"),
+                        ),
                     ),
                 )
             )
@@ -721,34 +565,29 @@ class AgentToolService:
                 (
                     ChatTool(
                         name="web_search",
+                        namespace="web.search",
+                        effect="external_read",
                         description=(
-                            "受控联网搜索。最新新闻、当前人物职务、价格、软件版本、政策、"
-                            "比赛结果等时效内容应使用此工具确认；闲聊中遇到不熟悉的公开事实"
-                            "也可查证。复杂问题可重新组织搜索词再次搜索。搜索词只"
-                            "包含回答当前问题所需的信息，禁止放入完整聊天记录、人物记忆或"
-                            "系统提示词。搜索与网页提取沿本次明确请求执行。"
+                            "联网搜索公开信息。新闻、职务、价格、版本、政策、比赛结果等可能变化的"
+                            "内容先搜索确认；query 只写回答问题所需的词，不放聊天记录、记忆或"
+                            "系统提示。结果的 sources 是真实来源；provider_summary 是上游模型"
+                            "的总结，其中的 URL 不能当作来源。需要正文时用 read_webpage。"
                         ),
                         parameters=_object_schema(
                             {
-                                "query": {
-                                    "type": "string",
-                                    "description": "必填，回答当前问题所需的搜索词",
-                                },
-                                "topic": {
-                                    "type": "string",
-                                    "enum": ["general", "news"],
-                                },
-                                "time_range": {
+                                "query": {"type": "string", "minLength": 1},
+                                "recency": {
                                     "type": "string",
                                     "enum": ["day", "week", "month", "year"],
                                 },
-                                "start_date": {
+                                "news": {"type": "boolean", "description": "只搜新闻"},
+                                "since": {
                                     "type": "string",
-                                    "description": "YYYY-MM-DD",
+                                    "description": "带时区 ISO-8601 起点（含）",
                                 },
-                                "end_date": {
+                                "until": {
                                     "type": "string",
-                                    "description": "YYYY-MM-DD",
+                                    "description": "带时区 ISO-8601 终点（不含）",
                                 },
                             },
                             required=("query",),
@@ -756,17 +595,13 @@ class AgentToolService:
                     ),
                     ChatTool(
                         name="read_webpage",
-                        description=(
-                            "读取一个明确的公开网页 URL，可来自本轮或历史。question 指定所需内容；"
-                            "搜索不自动下载页面，需正文时显式调用此工具。"
-                        ),
+                        namespace="web.read",
+                        effect="external_read",
+                        description=("读取一个公开网页 URL 的正文；question 说明想从中了解什么。"),
                         parameters=_object_schema(
                             {
                                 "url": {"type": "string"},
-                                "question": {
-                                    "type": "string",
-                                    "description": "用户希望从网页了解的问题，可省略",
-                                },
+                                "question": {"type": "string"},
                             },
                             required=("url",),
                         ),
@@ -817,7 +652,7 @@ class AgentToolService:
             try:
                 from yuki.social.tools import SOCIAL_TOOL_NAMES
 
-                if name in SANDBOX_TOOLS or name == "external_agent":
+                if name in SANDBOX_TOOLS or name in EXTERNAL_AGENT_TOOLS:
                     from yuki.capabilities.invocation import current_invocation
 
                     invocation = current_invocation.get()
@@ -826,7 +661,7 @@ class AgentToolService:
                     if invocation is None:
                         return self._result(
                             error="external_agent_unavailable"
-                            if name == "external_agent"
+                            if name in EXTERNAL_AGENT_TOOLS
                             else "sandbox_unavailable",
                             detail="执行服务未连接",
                         )
@@ -864,29 +699,49 @@ class AgentToolService:
                         }
                     )
                     source["actor_person_id"] = runtime.actor_person_id
-                    if name == "external_agent":
-                        execution_result = await self.external_agent_service.execute(
-                            arguments, request_id=request_id, source=source
-                        )
-                    else:
-                        from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
+                    view: Callable[[dict[str, Any]], dict[str, Any]] | None
+                    try:
+                        if name in EXTERNAL_AGENT_TOOLS:
+                            execution_result = await self.external_agent_service.execute(
+                                coding_agent_arguments(name, arguments),
+                                request_id=request_id,
+                                source=source,
+                            )
+                            view = coding_agent_view
+                        else:
+                            from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
 
-                        execution_result = await self.sandbox_client.execute(
-                            MODEL_TOOL_RPC_METHODS[name],
-                            arguments,
-                            request_id=request_id,
-                            source=source,
-                        )
-                    if execution_result.get("error"):
+                            execution_result = await self.sandbox_client.execute(
+                                MODEL_TOOL_RPC_METHODS[name],
+                                command_arguments(name, arguments),
+                                request_id=request_id,
+                                source=source,
+                            )
+                            view = None if name == "get_environment" else command_view
+                    except ExternalAgentArgumentError:
+                        raise
+                    except ValueError as exc:
+                        from yuki.persistence.database import write_failure_phase
+
+                        if write_failure_phase(exc) is not None or not _CODE.fullmatch(str(exc)):
+                            raise
+                        # Pre-dispatch refusals of the service name the failing argument.
                         return self._result(
+                            error=str(exc), detail="目标或参数无效，检查 target、id 与 device"
+                        )
+                    uncertain = bool(execution_result.get("uncertain"))
+                    shown = view(execution_result) if view is not None else None
+                    if execution_result.get("error"):
+                        failed = self._result(
                             data=execution_result,
                             error=str(execution_result["error"]),
-                            detail="操作结果未确认；核对原执行回执，不能重新提交。"
-                            if execution_result.get("uncertain")
-                            else "执行操作未完成",
-                            uncertain=bool(execution_result.get("uncertain")),
+                            detail="结果未知，不要重新提交；按 id 或 operation_id 查询原执行。"
+                            if uncertain
+                            else "执行没有完成",
+                            uncertain=uncertain,
                         )
-                    return self._result(data=execution_result)
+                        return replace(failed, view=shown)
+                    return replace(self._result(data=execution_result), view=shown)
 
                 if name in WORKSPACE_TOOLS:
                     from yuki.workspace.store import WorkspaceError
@@ -910,9 +765,13 @@ class AgentToolService:
                         )
                         return self._result(
                             data=workspace_result,
+                            # An unconfirmed copy is reported as unknown, never as done.
                             error=str(workspace_result["error"])
                             if workspace_result.get("error")
+                            else "copy_unconfirmed"
+                            if workspace_result.get("uncertain")
                             else None,
+                            detail=str(workspace_result.get("message") or ""),
                             uncertain=bool(workspace_result.get("uncertain")),
                         )
                     except (WorkspaceError, ValueError, OSError) as exc:
@@ -923,50 +782,31 @@ class AgentToolService:
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
                         )
-                        detail = (
-                            "所选消息没有这个附件。先查询当前会话历史，使用真实 event_id"
-                            " 和从 0 开始的"
-                            " attachment_index 导入；新收到的附件不会自动加入已开始的一轮。"
-                            if category == "attachment_not_found"
-                            else "工作区操作未完成"
-                        )
+                        detail = {
+                            "attachment_not_found": "这条消息没有该附件；先读聊天记录，"
+                            "用真实 event_id 与从 0 开始的 attachment",
+                            "choose_one_source": "来源三选一：path（可带 device）、"
+                            "artifact_id，或 event_id 加 attachment",
+                            "source_not_supported_for_destination": "暂不支持从本人电脑复制，"
+                            "也不支持把 artifact_id 复制进 Yuki 环境",
+                        }.get(category, "文件操作没有完成")
                         return self._result(error=category, detail=detail)
 
+                if name == "read_chat":
+                    return await self._query_history(arguments, runtime)
                 if name in SOCIAL_TOOL_NAMES:
-                    from yuki.social.agent_adapter import invoke_social
+                    from yuki.social.agent_adapter import (
+                        SOCIAL_ERROR_MESSAGES,
+                        invoke_social,
+                        members_view,
+                        receipt_view,
+                    )
                     from yuki.social.models import SocialError
 
                     try:
                         social_result = await invoke_social(
                             self.social_service, name, arguments, runtime
                         )
-                        if social_result.get("error") or social_result.get("status") in {
-                            "failed",
-                            "uncertain",
-                        }:
-                            uncertain = social_result.get("status") == "uncertain"
-                            sent_parts = int(social_result.get("sent_messages") or 0)
-                            return self._result(
-                                error=str(
-                                    social_result.get("error")
-                                    or ("delivery_uncertain" if uncertain else "delivery_failed")
-                                ),
-                                detail=(
-                                    "用 conversation_id 或从 bindings 选择 binding_id "
-                                    "明确入口后再调用；未派发消息"
-                                    if social_result.get("error") == "binding_required"
-                                    else "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
-                                    if social_result.get("error") == "presence_ambiguous"
-                                    else "部分分条已确认发送；不要重发已成功的分条"
-                                    if sent_parts
-                                    else "发送结果未知，不要重发；请根据回执说明情况"
-                                    if uncertain
-                                    else "发送前或发送时明确失败，未确认有消息送达"
-                                ),
-                                data=social_result,
-                                uncertain=uncertain,
-                            )
-                        return self._result(data=social_result)
                     except SocialError as exc:
                         from yuki.persistence.database import (
                             write_failure_committed,
@@ -978,69 +818,60 @@ class AgentToolService:
                             and write_failure_committed(exc) is not False
                         ):
                             return await self._database_failure(exc, name=name, runtime=runtime)
-                        detail = {
-                            "history_receipt_unavailable": (
-                                "该回执不属于当前来源会话，或回执已不存在"
+                        return self._result(
+                            error=str(exc),
+                            detail=SOCIAL_ERROR_MESSAGES.get(
+                                str(exc), "操作未执行；检查参数后再决定是否调用"
                             ),
-                            "history_source_changed": (
-                                "来源授权、代次或隐私状态已变化，未发布旧读取正文"
+                        )
+                    social_view = (
+                        receipt_view(social_result)
+                        if name in {"send", "recall_message"}
+                        else members_view(social_result)
+                        if name == "get_members"
+                        else None
+                    )
+                    if social_result.get("error") or social_result.get("status") in {
+                        "failed",
+                        "uncertain",
+                    }:
+                        uncertain = social_result.get("status") == "uncertain"
+                        sent_parts = int(social_result.get("sent_messages") or 0)
+                        error = str(
+                            social_result.get("error")
+                            or ("delivery_uncertain" if uncertain else "delivery_failed")
+                        )
+                        return replace(
+                            self._result(
+                                error=error,
+                                detail=SOCIAL_ERROR_MESSAGES.get(error)
+                                or (
+                                    "部分分条已发送；不要重发已成功的分条"
+                                    if sent_parts
+                                    else "发送结果未知，不要重发；按 event_id 查证后再说明"
+                                    if uncertain
+                                    else "发送前或发送时明确失败，没有消息送达"
+                                ),
+                                data=social_result,
+                                uncertain=uncertain,
                             ),
-                            "invalid_target_id": (
-                                "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
-                            ),
-                            "invalid_message_arguments": (
-                                "检查 text、path 或 artifact_id，以及 attachment_kind；"
-                                "文件必须指定 file 类型。"
-                                "已生成的工作区文件仍保留"
-                            ),
-                            "route_paused": "该操作所需路由已暂停，未执行；不会自动换路或解暂停",
-                            "binding_ambiguous": (
-                                "目标有多个有效平台 Binding；查询联系人后明确指定 Binding，未执行"
-                            ),
-                            "binding_unavailable": "指定的平台 Binding 无效或不属于目标，未执行",
-                            "original_presence_unavailable": "原消息发送账号当前不可用，未撤回",
-                            "group_unavailable": "当前没有可访问该群的连接，未执行",
-                            "group_target_required": (
-                                "请选择群的内部目标；当前群可省略。提及在正文原位置写 @名字"
-                            ),
-                            "subject_ref_unavailable": (
-                                "该人物引用不在当前事件中；当前发言人用 current_speaker，"
-                                "其他人物先 find_contacts，不要猜测引用或映射故障"
-                            ),
-                            "target_not_found": (
-                                "名称未精确匹配；先 find_contacts。群发送顶层是群目标，"
-                                "提及在正文写 @名字；未找到不代表账号映射损坏"
-                            ),
-                            "invalid_space_id": ("space_id 必须是内部 Space 编号；当前空间可省略"),
-                        }.get(str(exc), "社交操作未执行或结果不确定，请勿盲重试")
-                        return self._result(error=str(exc), detail=detail)
-                if name in {
-                    "search_memory",
-                }:
-                    self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
-                if name == "get_my_capabilities":
-                    return self._my_capabilities(arguments, runtime)
-                if name == "query_chat_history":
-                    return await self._query_history(arguments, runtime)
+                            view=social_view,
+                        )
+                    return replace(self._result(data=social_result), view=social_view)
                 if name == "search_memory":
                     result = await self._search_memory(arguments, runtime)
                     return await self._capture_memory_tool_result(result, runtime)
-                if name == "read_memory":
-                    if arguments.get("view") == "fact":
-                        result = await self._memory_fact(arguments, runtime)
-                        return await self._capture_memory_tool_result(result, runtime)
-                    if arguments.get("view") == "evidence":
-                        return await self._memory_evidence(arguments, runtime)
-                    return self._result(error="invalid_arguments", detail="未知 memory view")
-                if name == "memory_change":
-                    return await self._memory_change(arguments, runtime)
+                if name == "save_memory":
+                    return await self._save_memory(arguments, runtime)
+                if name == "edit_memory":
+                    return await self._edit_memory(arguments, runtime)
                 if name == "web_search":
                     return await self._web_search(arguments, runtime)
                 if name == "read_webpage":
                     return await self._read_webpage(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
-                return self._web_result(error=exc.code, detail=exc.detail)
+                return self._result(error=exc.code, detail=exc.detail)
             except MemoryRetrievalError as exc:
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
@@ -1057,11 +888,7 @@ class AgentToolService:
                 ):
                     return await self._database_failure(exc, name=name, runtime=runtime)
                 if name in _OBSERVED_MEMORY_READS:
-                    return self._result(
-                        error="invalid_arguments",
-                        detail="记忆查询参数无效，请检查枚举及带时区日期区间",
-                        retryable=False,
-                    )
+                    return self._result(error="invalid_arguments", detail=str(exc))
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
             except (OSError, RuntimeError) as exc:
                 from yuki.persistence.database import write_failure_phase
@@ -1084,79 +911,22 @@ class AgentToolService:
         await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
         return database_failure_result(error)
 
-    def _my_capabilities(
-        self, arguments: dict[str, Any], runtime: ToolRuntime
-    ) -> ToolExecutionResult:
-        """Return only the report derived from this authoritative inbound event."""
-
-        try:
-            mode, category, query = self._capability_options(arguments)
-            report = self._capability_report(runtime, category=category, query=query)
-        except PermissionError:
-            return self._result(
-                error="permission_context_mismatch",
-                detail="权限查询没有绑定到当前真实消息发送者",
-            )
-        except ValueError as exc:
-            return self._result(error="invalid_arguments", detail=str(exc))
-        return self._result(data=report.to_model_dict(mode))
-
-    @staticmethod
-    def _capability_options(
-        arguments: dict[str, Any],
-    ) -> tuple[Literal["summary", "focused", "full"], str | None, str | None]:
-        extra = set(arguments) - {"mode", "category", "query"}
-        if extra:
-            raise ValueError("权限查询只接受 mode、category、query")
-        raw_mode = arguments.get("mode", "summary")
-        if raw_mode not in {"summary", "focused", "full"}:
-            raise ValueError("mode 必须是 summary、focused 或 full")
-        category = arguments.get("category")
-        query = arguments.get("query")
-        if category is not None and not isinstance(category, str):
-            raise ValueError("category 必须是字符串")
-        if query is not None and not isinstance(query, str):
-            raise ValueError("query 必须是字符串")
-        if raw_mode == "focused" and not (category or query):
-            raise ValueError("focused 模式必须提供 category 或 query")
-        return cast(Literal["summary", "focused", "full"], raw_mode), category, query
-
-    def _capability_report(
-        self,
-        runtime: ToolRuntime,
-        *,
-        category: str | None = None,
-        query: str | None = None,
-    ) -> CapabilityReport:
-        """Resolve the current sender after validating all event-bound fields."""
-
-        actor = runtime.require_actor()
-        return self._permission_catalog.report_for_actor(
-            actor,
-            category=category,
-            query=query,
-            actor_is_superuser=runtime.actor_is_superuser,
-        )
-
     async def _query_history(
         self, arguments: dict[str, Any], runtime: ToolRuntime
     ) -> ToolExecutionResult:
-        from yuki.social.agent_adapter import invoke_social
+        from pydantic import ValidationError
+
+        from yuki.social.agent_adapter import SOCIAL_ERROR_MESSAGES, invoke_social, validation_code
         from yuki.social.models import SocialError
 
-        defaults = {
-            "limit": self._settings.recent_history_tool_limit,
-            "before": self._settings.conversation_history_around_before,
-            "after": self._settings.conversation_history_around_after,
-        }
-        selected = {key: value for key, value in arguments.items() if value is not None}
-        for key, value in defaults.items():
-            selected.setdefault(key, value)
+        selected = dict(arguments)
+        if "around" in selected:
+            selected.setdefault("context", self._settings.conversation_history_around_context)
+        else:
+            selected.setdefault("limit", self._settings.recent_history_tool_limit)
         try:
             if runtime.origin is not TurnOrigin.PLUGIN_BACKGROUND:
-                data = await invoke_social(
-                    self.social_service, "query_chat_history", selected, runtime
-                )
+                data = await invoke_social(self.social_service, "read_chat", selected, runtime)
             else:
                 from yuki.social.history import read_history
                 from yuki.social.service import SocialContext
@@ -1169,42 +939,72 @@ class AgentToolService:
                     space_id=runtime.space_id,
                     origin=runtime.origin.value,
                 )
-                data = await read_history(
-                    self._ledger._database, selected, context, runtime=runtime
-                )
+                try:
+                    data = await read_history(
+                        self._ledger._database, selected, context, runtime=runtime
+                    )
+                except ValidationError as exc:
+                    raise SocialError(validation_code(exc)) from None
         except SocialError as exc:
-            return self._result(error=str(exc), detail="无法读取所选历史范围")
+            return self._result(
+                error=str(exc),
+                detail=SOCIAL_ERROR_MESSAGES.get(str(exc), "无法读取所选聊天范围"),
+            )
         return replace(
-            self._result(data=data, error=data.get("error")),
+            self._result(data=data),
             source_event_ids=getattr(data, "source_event_ids", ()),
             source_privacy_generation=getattr(data, "source_privacy_generation", None),
         )
+
+    @staticmethod
+    def _memory_target(value: Any) -> tuple[str, str] | _ToolFailure | None:
+        """One internal selector: ("person_id"|"space_id", ID) or ("self", "")."""
+        if value is None:
+            return None
+        if not isinstance(value, dict) or len(value) != 1:
+            return _ToolFailure(
+                "invalid_target", "target 恰含一个键：person_id、space_id 或 self=true"
+            )
+        ((key, item),) = value.items()
+        if key == "self" and item is True:
+            return "self", ""
+        if key in {"person_id", "space_id"} and isinstance(item, str) and item.strip():
+            return key, item.strip()
+        return _ToolFailure("invalid_target", "target 恰含一个键：person_id、space_id 或 self=true")
 
     async def _search_memory(
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> ToolExecutionResult:
+        unknown = set(arguments) - {"query", "target", "since", "until", "limit", "fact_id"}
+        if unknown:
+            return self._result(
+                error="invalid_arguments",
+                detail=f"search_memory 不接受参数：{', '.join(sorted(unknown))}",
+            )
         query = arguments.get("query")
+        if "fact_id" in arguments:
+            if set(arguments) != {"fact_id"}:
+                return self._result(
+                    error="invalid_arguments",
+                    detail="fact_id 读取单条记忆时不要再给 query、target 或时间范围",
+                )
+            return await self._memory_fact(arguments, runtime)
         if not isinstance(query, str) or not query.strip():
-            raise ValueError("query 必须是非空字符串")
-        allowed_arguments = {
-            "query",
-            "target",
-            "limit",
-            "purpose",
-            "start_at",
-            "end_at",
-            "temporal_constraint",
-        }
-        if set(arguments) - allowed_arguments:
-            raise ValueError("search_memory 包含未知字段")
-        target = arguments.get("target")
-        if target is not None and not isinstance(target, dict):
-            raise ValueError("target 必须是对象")
+            return self._result(
+                error="invalid_arguments", detail="提供非空 query 搜索，或用 fact_id 读取一条记忆"
+            )
+        selected = self._memory_target(arguments.get("target"))
+        if isinstance(selected, _ToolFailure):
+            return self._result(error=selected.code, detail=selected.detail)
+        try:
+            intent = parse_memory_tool_intent(arguments)
+        except ValueError as exc:
+            return self._result(error="invalid_time", detail=str(exc))
         scope: ResolvedReadScope
         authorized_scope: AuthorizedMemoryScope | None = None
-        if target is None:
+        if selected is None:
             requester = self._social_requester(runtime)
             if requester is None:
                 try:
@@ -1217,75 +1017,38 @@ class AgentToolService:
                 # human identity or an arbitrary historical social scope.
                 if actor.principal_kind != "self":
                     return self._result(error="permission_denied", detail="无法确定记忆读取主体")
-            allowed_scopes = runtime.memory_allowed_scopes
-            if allowed_scopes is None:
-                allowed_scopes = (
-                    MemoryScopeType.PERSON,
-                    MemoryScopeType.PERSON_GROUP,
-                    MemoryScopeType.GROUP,
-                    MemoryScopeType.SELF,
-                )
-            if not self._settings.self_memory_enabled:
-                allowed_scopes = tuple(
-                    item for item in allowed_scopes if item is not MemoryScopeType.SELF
-                )
             authorized_scope = await self._memory_reads.authorized(
                 requester,
                 current_space_id=self._runtime_space_id(runtime),
                 private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
                 self_actor=requester is None,
-                allowed_scopes=allowed_scopes,
+                allowed_scopes=self._readable_scopes(runtime),
             )
             scope = ResolvedReadScope(targets=())
         else:
-            if not isinstance(target.get("scope"), str):
-                raise ValueError("target.scope 必须是 person、group 或 self")
-            kind = target["scope"]
-            allowed = {
-                "person": {
-                    "scope",
-                    "subject_ref",
-                    "display_name",
-                    "person_id",
-                    "space_id",
-                    "space_name",
-                },
-                "group": {"scope", "space_id", "space_name"},
-                "self": {"scope"},
-            }.get(kind)
-            if allowed is None or set(target) - allowed:
-                raise ValueError("target 字段与范围不匹配")
+            kind, identity = selected
             if runtime.memory_allowed_scopes is not None:
                 requested_scope = {
-                    "person": MemoryScopeType.PERSON,
-                    "group": MemoryScopeType.GROUP,
+                    "person_id": MemoryScopeType.PERSON,
+                    "space_id": MemoryScopeType.GROUP,
                     "self": MemoryScopeType.SELF,
                 }[kind]
                 if requested_scope not in runtime.memory_allowed_scopes:
                     return self._result(
                         error="permission_denied", detail="插件未获该记忆范围读取权限"
                     )
-            if kind == "person":
-                selection = await self._resolve_person_memory_selection(target, runtime)
+            if kind == "person_id":
+                selection = await self._person_memory_selection(identity, runtime)
                 if isinstance(selection, _ToolFailure):
-                    return self._result(
-                        error=selection.code, detail=selection.detail, data=selection.data
-                    )
-                scope = ResolvedReadScope(targets=selection.targets)
-            elif kind == "group":
-                group_id = await self._read_group_selector(target, runtime, default_current=False)
-                if isinstance(group_id, _ToolFailure):
-                    return self._result(
-                        error=group_id.code, detail=group_id.detail, data=group_id.data
-                    )
-                if group_id is None:
-                    raise ValueError("指定 group 范围须提供 space_id 或 space_name")
+                    return self._result(error=selection.code, detail=selection.detail)
+                scope = ResolvedReadScope(targets=selection)
+            elif kind == "space_id":
                 requester = self._social_requester(runtime)
                 if requester is not None:
-                    targets = (await self._memory_reads.group(requester, group_id)).targets
+                    targets = (await self._memory_reads.group(requester, identity)).targets
                 elif (
                     runtime.effective_scope_type is ScopeType.GROUP
-                    and self._runtime_space_id(runtime) == group_id
+                    and self._runtime_space_id(runtime) == identity
                     and runtime.actor_context is not None
                     and runtime.require_actor().principal_kind == "self"
                 ):
@@ -1293,14 +1056,14 @@ class AgentToolService:
                         MemoryEntityTarget(
                             role=MemoryTargetRole.CURRENT_GROUP,
                             scope_type=MemoryScopeType.GROUP,
-                            canonical_subject_space_id=group_id,
+                            canonical_subject_space_id=identity,
                             block_id="current_group",
                         ),
                     )
                 else:
                     targets = ()
                 if not targets:
-                    return self._result(error="permission_denied", detail="没有该群的读取授权")
+                    return self._result(error="permission_denied", detail="没有该群记忆的读取授权")
                 scope = ResolvedReadScope(targets=targets)
             else:
                 if not self._settings.self_memory_enabled:
@@ -1313,165 +1076,75 @@ class AgentToolService:
                         error="self_memory_unavailable", detail="当前会话不能读取自我记忆"
                     )
                 scope = ResolvedReadScope(targets=(self_target,))
-        if target is not None and self._social_requester(runtime) is not None:
-            authorized_scope = await self._memory_reads.authorized(
-                self._social_requester(runtime),
-                current_space_id=self._runtime_space_id(runtime),
-                private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
-                allowed_scopes=(
-                    tuple(MemoryScopeType)
-                    if runtime.memory_allowed_scopes is None
-                    else runtime.memory_allowed_scopes
-                ),
-            )
-            authorized_scope = authorized_scope.model_copy(
-                update={"resolved_targets": scope.targets}
-            )
-        result = await self._read_memories(
-            arguments,
-            runtime=runtime,
-            text=query.strip(),
-            targets=scope.targets,
-            authorized_scope=authorized_scope,
-            requested_limit=self._memory_requested_limit(arguments),
-        )
-        return self._memory_list_result(
-            data={
-                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
-                "semantic_status": result.semantic_status,
-                "semantic_degraded": result.semantic_degraded,
-                "semantic_approximate": result.semantic_approximate,
-                "candidate_count": result.candidate_count,
-                "target_count": len({hit.target.block_id for hit in result.hits}),
-                "result_scope": "authorized_maximum" if target is None else "explicit_targets",
-                "exhaustive": result.exhaustive,
-                "truncated": result.truncated,
-                "partial_failure": result.partial_failure,
-                "partial_reason": result.partial_reason,
-                "memories": [
-                    {
-                        **(
-                            self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason)
-                            if hit.fact.scope_type is MemoryScopeType.SELF
-                            else self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
-                        ),
-                    }
-                    for hit in result.hits
-                ],
-            }
-        )
-
-    async def _resolve_person_memory_selection(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-    ) -> _PersonMemorySelection | _ToolFailure:
-        selectors = [
-            key
-            for key in ("subject_ref", "display_name", "person_id")
-            if arguments.get(key) is not None
-        ]
-        if len(selectors) != 1:
-            return _ToolFailure(
-                "invalid_person_selector", "subject_ref、display_name、person_id 必须且只能提供一个"
-            )
-        space_id = await self._read_group_selector(arguments, runtime, default_current=False)
-        if isinstance(space_id, _ToolFailure):
-            return space_id
-        key = selectors[0]
-        value = arguments[key]
-        if not isinstance(value, str) or not value.strip():
-            return _ToolFailure("invalid_person_selector", "人物目标必须是非空字符串")
-        value = value.strip()
-        if key == "subject_ref":
-            person_id = await self._person_id_for_subject_ref(value, runtime)
-            if isinstance(person_id, _ToolFailure):
-                return person_id
-        elif key == "display_name":
             requester = self._social_requester(runtime)
             if requester is not None:
-                matches = await self._memory_reads.people_named(requester, value)
-            elif self._runtime_space_id(runtime) is not None:
-                actor = runtime.require_actor()
-                matches = tuple(
-                    item.person_id
-                    for item in await self._people.search_group_member_names(
-                        value,
-                        runtime.current_group_id or "",
-                        platform=actor.platform,
-                        space_id=self._runtime_space_id(runtime),
-                    )
-                    if item.exact and item.person_id is not None
+                authorized_scope = await self._memory_reads.authorized(
+                    requester,
+                    current_space_id=self._runtime_space_id(runtime),
+                    private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
+                    allowed_scopes=(
+                        tuple(MemoryScopeType)
+                        if runtime.memory_allowed_scopes is None
+                        else runtime.memory_allowed_scopes
+                    ),
                 )
-            else:
-                matches = ()
-            if not matches:
-                return _ToolFailure("person_not_found", "授权范围内没有精确匹配的昵称或别名")
-            if len(matches) > 1:
-                return _ToolFailure(
-                    "ambiguous_person",
-                    "存在多个同名人物，请澄清目标或提供内部 Person 编号",
-                    {"candidates": [{"person_id": item} for item in matches], "has_more": False},
+                authorized_scope = authorized_scope.model_copy(
+                    update={"resolved_targets": scope.targets}
                 )
-            person_id = matches[0]
-        else:
-            person_id = value
-        return await self._person_memory_selection(
-            person_id,
-            runtime,
-            resolved_by=key,
-            subject_ref=value if key == "subject_ref" else None,
-            selected_space_id=space_id,
+        limit = arguments.get("limit")
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100
+        ):
+            return self._result(error="invalid_arguments", detail="limit 必须是 1～100 的整数")
+        result = await MemoryQueryPlane(self._memory_context).read(
+            MemoryReadConsumer.AGENT_TOOL,
+            MemoryReadRequest(
+                text=query.strip(),
+                intent=intent,
+                requested_limit=limit,
+                resolved_scope=scope,
+                authorized_scope=authorized_scope,
+            ),
+            runtime=self._runtime(),
         )
+        data: dict[str, Any] = {
+            "memories": [self._memory_json(hit.fact) for hit in result.hits],
+            # Bounded retrieval: say whether this page is everything that matched.
+            "exhaustive": result.exhaustive,
+        }
+        if result.truncated:
+            data["truncated"] = True
+        if result.partial_failure:
+            data["partial_failure"] = result.partial_reason or True
+        if result.semantic_degraded:
+            data["semantic_degraded"] = True
+        return self._result(data=data)
 
-    async def _person_id_for_subject_ref(
-        self, subject_ref: str, runtime: ToolRuntime
-    ) -> str | _ToolFailure:
-        if subject_ref == "current_speaker":
-            person_id = self._social_requester(runtime)
-            if person_id is not None:
-                return person_id
-        inbound = runtime.inbound
-        if inbound is not None:
-            if subject_ref == "replied_message_author" and inbound.reply_to_event_id is not None:
-                reply = await self._ledger.get_event(inbound.reply_to_event_id)
-                if reply is not None and reply.author_person_id is not None:
-                    return reply.author_person_id
-            if subject_ref.startswith("member_"):
-                person_id = subject_ref.removeprefix("member_")
-                if person_id in inbound.mentioned_person_ids:
-                    return person_id
-        return _ToolFailure("subject_not_found", "该人物引用在本轮真实事件中不存在")
+    def _readable_scopes(self, runtime: ToolRuntime) -> tuple[MemoryScopeType, ...]:
+        allowed = runtime.memory_allowed_scopes
+        if allowed is None:
+            allowed = (
+                MemoryScopeType.PERSON,
+                MemoryScopeType.PERSON_GROUP,
+                MemoryScopeType.GROUP,
+                MemoryScopeType.SELF,
+            )
+        if not self._settings.self_memory_enabled:
+            allowed = tuple(item for item in allowed if item is not MemoryScopeType.SELF)
+        return allowed
 
     async def _person_memory_selection(
-        self,
-        person_id: str,
-        runtime: ToolRuntime,
-        *,
-        resolved_by: str,
-        subject_ref: str | None = None,
-        selected_space_id: str | None = None,
-    ) -> _PersonMemorySelection | _ToolFailure:
+        self, person_id: str, runtime: ToolRuntime
+    ) -> tuple[MemoryEntityTarget, ...] | _ToolFailure:
         requester = self._social_requester(runtime)
         if requester is not None:
-            scope = await self._memory_reads.person(
-                requester, person_id, group_id=selected_space_id
-            )
+            scope = await self._memory_reads.person(requester, person_id, group_id=None)
             if scope.targets:
-                return _PersonMemorySelection(
-                    user_id=person_id,
-                    targets=scope.targets,
-                    resolved_by=resolved_by,
-                    subject_ref=subject_ref,
-                )
+                return scope.targets
             return _ToolFailure("permission_denied", "没有本人或历史共同空间关系授权")
         actor = runtime.require_actor()
         space_id = self._runtime_space_id(runtime)
-        if (
-            actor.principal_kind != "self"
-            or space_id is None
-            or (selected_space_id is not None and selected_space_id != space_id)
-        ):
+        if actor.principal_kind != "self" or space_id is None:
             return _ToolFailure("permission_denied", "当前执行没有该人物的读取授权")
         from yuki.identity.person_identity import same_person_condition
 
@@ -1484,52 +1157,15 @@ class AgentToolService:
             )
         if membership is None:
             return _ToolFailure("permission_denied", "只能读取当前空间真实成员在本空间的记忆")
-        return _PersonMemorySelection(
-            user_id=person_id,
-            targets=(
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
-                    scope_type=MemoryScopeType.PERSON_GROUP,
-                    canonical_subject_person_id=person_id,
-                    canonical_subject_space_id=space_id,
-                    block_id=f"tool_person_group:{person_id}:{space_id}",
-                ),
+        return (
+            MemoryEntityTarget(
+                role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
+                scope_type=MemoryScopeType.PERSON_GROUP,
+                canonical_subject_person_id=person_id,
+                canonical_subject_space_id=space_id,
+                block_id=f"tool_person_group:{person_id}:{space_id}",
             ),
-            resolved_by=resolved_by,
-            subject_ref=subject_ref,
         )
-
-    async def _read_group_selector(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
-        *,
-        default_current: bool,
-    ) -> str | None | _ToolFailure:
-        selectors = [key for key in ("space_id", "space_name") if arguments.get(key) is not None]
-        if not selectors:
-            return self._runtime_space_id(runtime) if default_current else None
-        if len(selectors) != 1:
-            return _ToolFailure("invalid_group_selector", "space_id 与 space_name 只能提供一个")
-        key = selectors[0]
-        value = arguments[key]
-        if not isinstance(value, str) or not value.strip():
-            return _ToolFailure("invalid_group_selector", "空间目标必须是非空字符串")
-        if key == "space_id":
-            return value.strip()
-        requester = self._social_requester(runtime)
-        if requester is None:
-            return _ToolFailure("permission_denied", "历史空间名查询需要真实用户主体")
-        matches = await self._memory_reads.groups_named(requester, value)
-        if not matches:
-            return _ToolFailure("group_not_found", "授权历史空间中没有精确匹配的名称")
-        if len(matches) > 1:
-            return _ToolFailure(
-                "ambiguous_group",
-                "存在多个同名空间，请澄清目标",
-                {"candidates": [{"space_id": item} for item in matches], "has_more": False},
-            )
-        return matches[0]
 
     @staticmethod
     def _runtime_space_id(runtime: ToolRuntime) -> str | None:
@@ -1561,171 +1197,207 @@ class AgentToolService:
             )
         return None
 
-    def _memory_list_result(self, *, data: dict[str, Any]) -> ToolExecutionResult:
-        """Keep the selected facts intact for common result delivery and capture."""
-        return self._result(
-            data={
-                **data,
-                "returned_count": len(data["memories"]),
-                "result_scope": data.get("result_scope", "bounded_query"),
-                "exhaustive": data.get("exhaustive", False),
-            }
-        )
-
-    @staticmethod
-    def _memory_requested_limit(arguments: dict[str, Any]) -> int | None:
-        if "limit" not in arguments or arguments.get("limit") is None:
-            return None
-        value = arguments.get("limit")
-        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
-            raise ValueError("limit 必须是 1～100 的整数")
-        return int(value)
-
-    async def _read_memories(
-        self,
-        arguments: dict[str, Any],
-        *,
-        runtime: ToolRuntime,
-        text: str,
-        targets: tuple[MemoryEntityTarget, ...],
-        authorized_scope: AuthorizedMemoryScope | None = None,
-        requested_limit: int | None,
-        default_overview: bool = False,
-    ) -> Any:
-        intent = self._memory_tool_intent(arguments, default_overview=default_overview)
-        request = MemoryReadRequest(
-            text=text,
-            intent=intent,
-            requested_limit=requested_limit,
-            resolved_scope=ResolvedReadScope(targets=targets),
-            authorized_scope=authorized_scope,
-        )
-        runtime_config = self._runtime()
-        return await MemoryQueryPlane(self._memory_context).read(
-            MemoryReadConsumer.AGENT_TOOL,
-            request,
-            runtime=runtime_config,
-        )
-
-    @staticmethod
-    def _log_memory_read_intent(arguments: dict[str, Any], intent: MemoryQueryIntent) -> None:
-        from yuki.runtime.observability import current_runtime_turn_correlation
-
-        correlation = current_runtime_turn_correlation()
-        logger.info(
-            "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
-            "explicit_fields=%s temporal_constraint=%s",
-            correlation.turn_id if correlation else "unbound",
-            _MEMORY_READ_TOOL.get(),
-            intent.mode.value,
-            intent.purpose.value,
-            ",".join(
-                name
-                for name in (
-                    "query",
-                    "mode",
-                    "purpose",
-                    "start_at",
-                    "end_at",
-                    "temporal_constraint",
-                    "target",
-                    "subject_ref",
-                    "display_name",
-                    "user_id",
-                    "group_id",
-                    "group_name",
-                )
-                if name in arguments
-            ),
-            intent.temporal.constraint.value,
-        )
-
-    @staticmethod
-    def _memory_tool_intent(
-        arguments: dict[str, Any],
-        *,
-        default_overview: bool = False,
-    ) -> MemoryQueryIntent:
-        del default_overview
-        return parse_memory_tool_intent(arguments)
-
     async def _memory_fact(
         self, arguments: dict[str, Any], runtime: ToolRuntime
     ) -> ToolExecutionResult:
         fact_id = arguments.get("fact_id")
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
-            raise ValueError("fact_id 必须是正整数")
+            return self._result(error="invalid_arguments", detail="fact_id 必须是正整数")
         fact = await self._authorized_memory_fact(fact_id, runtime)
         if fact is None:
-            return self._result(error="memory_not_found", detail="没有找到可查看的事实")
-        projection = (
-            self._self_memory_json(fact, retrieval_reason="fact_id")
-            if fact.scope_type is MemoryScopeType.SELF
-            else self._memory_json(fact, retrieval_reason="fact_id")
-        )
-        return self._result(data={"memory": projection})
+            return self._result(error="memory_not_found", detail="没有这条记忆，或你无权读取它")
+        return self._result(data={"memories": [self._memory_json(fact)]})
 
-    async def _memory_evidence(
+    @staticmethod
+    def _memory_evidence(arguments: dict[str, Any]) -> dict[str, Any] | _ToolFailure:
+        """Map the model's evidence/quote onto the mutation request's source fields."""
+        fields: dict[str, Any] = {}
+        evidence = arguments.get("evidence")
+        if isinstance(evidence, int) and not isinstance(evidence, bool) and evidence > 0:
+            fields["evidence_event_id"] = evidence
+        elif (
+            isinstance(evidence, str)
+            and evidence.startswith("tool_")
+            and evidence[5:].isdigit()
+            and int(evidence[5:]) > 0
+        ):
+            fields["evidence_refs"] = (evidence,)
+        elif evidence is not None:
+            return _ToolFailure(
+                "invalid_evidence", "evidence 必须是真实事件 ID（正整数）或本轮工具结果 tool_N"
+            )
+        quote = arguments.get("quote")
+        if quote is not None:
+            if not isinstance(quote, str) or not quote.strip():
+                return _ToolFailure("invalid_quote", "quote 必须是非空的证据原文片段")
+            fields["evidence_quote"] = quote
+        return fields
+
+    async def _save_memory(
         self, arguments: dict[str, Any], runtime: ToolRuntime
     ) -> ToolExecutionResult:
-        fact_id = arguments.get("fact_id")
-        limit = arguments.get("limit", 10)
-        if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
-            raise ValueError("fact_id 必须是正整数")
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
-            raise ValueError("limit 必须是 1～20 的整数")
-        if (
-            runtime.memory_allowed_scopes is not None
-            and MemoryScopeType.PERSON not in runtime.memory_allowed_scopes
+        unknown = set(arguments) - {
+            "content",
+            "target",
+            "group",
+            "kind",
+            "importance",
+            "evidence",
+            "quote",
+            "visibility",
+        }
+        if unknown:
+            return self._result(
+                error="invalid_arguments",
+                detail=f"save_memory 不接受参数：{', '.join(sorted(unknown))}",
+            )
+        content = arguments.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return self._result(error="invalid_arguments", detail="content 必须是非空字符串")
+        selected = self._memory_target(arguments.get("target"))
+        if selected is None:
+            return self._result(error="invalid_target", detail="save_memory 必须提供 target")
+        if isinstance(selected, _ToolFailure):
+            return self._result(error=selected.code, detail=selected.detail)
+        kind_value = arguments.get("kind", "fact")
+        if kind_value not in {"fact", "preference", "episode"}:
+            return self._result(
+                error="invalid_arguments", detail="kind 必须是 fact、preference 或 episode"
+            )
+        importance = arguments.get("importance")
+        if importance is not None and (
+            isinstance(importance, bool)
+            or not isinstance(importance, int)
+            or not 1 <= importance <= 5
         ):
-            return self._result(error="memory_not_found", detail="没有找到可查看的本人事实")
-        fact = await self._memories.get_fact(fact_id)
-        if fact is None or not await self._can_read_own_person_fact(fact, runtime):
-            return self._result(error="memory_not_found", detail="没有找到可查看的本人事实")
-        rows = await self._memories.list_evidence(fact_id, limit=limit)
-        return self._result(
-            data={
-                "fact_id": fact_id,
-                "evidence": [
-                    {
-                        "relation": row.relation.value,
-                        "confidence": row.confidence,
-                        "authority": row.authority.value,
-                        "created_at": row.created_at.isoformat(),
-                    }
-                    for row in rows
-                ],
-            }
+            return self._result(error="invalid_arguments", detail="importance 必须是 1～5 的整数")
+        visibility = arguments.get("visibility")
+        if visibility not in {None, "current_scope", "global"}:
+            return self._result(
+                error="invalid_arguments", detail="visibility 必须是 current_scope 或 global"
+            )
+        group = arguments.get("group")
+        if group is not None and (
+            selected[0] != "person_id" or not isinstance(group, str) or not group.strip()
+        ):
+            return self._result(
+                error="invalid_arguments", detail="group 只能与人物 target 同给，值为群的 space_id"
+            )
+        evidence = self._memory_evidence(arguments)
+        if isinstance(evidence, _ToolFailure):
+            return self._result(error=evidence.code, detail=evidence.detail)
+        kind, identity = selected
+        scope_type = (
+            MemoryScopeType.SELF
+            if kind == "self"
+            else MemoryScopeType.GROUP
+            if kind == "space_id"
+            else MemoryScopeType.PERSON_GROUP
+            if group is not None
+            else MemoryScopeType.PERSON
         )
+        override: ResolvedSubject | None = None
+        if kind != "self":
+            person_id = identity if kind == "person_id" else None
+            space_id = identity if kind == "space_id" else group.strip() if group else None
+            missing = await self._missing_memory_owner(person_id, space_id)
+            if missing is not None:
+                return self._result(error="target_not_found", detail=missing)
+            override = ResolvedSubject(
+                scope_type,
+                None,
+                None,
+                canonical_subject_person_id=person_id,
+                canonical_subject_space_id=space_id,
+            )
+        # The fact label is the kind; SELF labels keep the self_ prefix that
+        # decides which SELF facts may be global.
+        label = f"self_{kind_value}" if kind == "self" else str(kind_value)
+        request = MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="self" if kind == "self" else kind, scope_type=scope_type
+            ),
+            visibility=visibility,
+            new_content=content.strip(),
+            memory_key=label,
+            category=label,
+            kind=MemoryKind(kind_value),
+            importance=importance,
+            **evidence,
+        )
+        return await self._mutate_memory(request, runtime, target=override)
 
-    async def _memory_change(
+    async def _missing_memory_owner(
+        self, person_id: str | None, space_id: str | None
+    ) -> str | None:
+        """An internal ID must name a real Person/Space; this is not an authorization gate."""
+        from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
+
+        async with self._people.database.read_session() as session:
+            if person_id is not None and await session.get(CanonicalPersonModel, person_id) is None:
+                return "没有这个 person_id；用 find_contacts 查询人物的内部 ID"
+            if space_id is not None and await session.get(CanonicalSpaceModel, space_id) is None:
+                return "没有这个群 space_id；用 find_contacts 查询群的内部 ID"
+        return None
+
+    async def _edit_memory(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
+    ) -> ToolExecutionResult:
+        unknown = set(arguments) - {"fact_id", "action", "content", "reason", "evidence", "quote"}
+        if unknown:
+            return self._result(
+                error="invalid_arguments",
+                detail=f"edit_memory 不接受参数：{', '.join(sorted(unknown))}",
+            )
+        fact_id = arguments.get("fact_id")
+        if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
+            return self._result(error="invalid_arguments", detail="fact_id 必须是正整数")
+        action = arguments.get("action")
+        content = arguments.get("content")
+        if action == "correct":
+            if not isinstance(content, str) or not content.strip():
+                return self._result(
+                    error="invalid_arguments", detail="correct 需要非空 content 作为新内容"
+                )
+        elif action == "invalidate":
+            if content is not None:
+                return self._result(error="invalid_arguments", detail="invalidate 不接受 content")
+        else:
+            return self._result(
+                error="invalid_arguments", detail="action 必须是 correct 或 invalidate"
+            )
+        reason = arguments.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            return self._result(error="invalid_arguments", detail="reason 必须是字符串")
+        evidence = self._memory_evidence(arguments)
+        if isinstance(evidence, _ToolFailure):
+            return self._result(error=evidence.code, detail=evidence.detail)
+        request = MemoryMutationRequest(
+            operation=MemoryMutationOperation(action),
+            fact_id=fact_id,
+            new_content=content.strip() if isinstance(content, str) else None,
+            **({"reason": reason} if reason else {}),
+            **evidence,
+        )
+        return await self._mutate_memory(request, runtime, target=None)
+
+    async def _mutate_memory(
         self,
-        arguments: dict[str, Any],
+        request: MemoryMutationRequest,
         runtime: ToolRuntime,
+        *,
+        target: ResolvedSubject | None,
     ) -> ToolExecutionResult:
         service = self._memory_mutations
         if service is None:
             return self._result(error="memory_change_unavailable", detail="当前轮不能变更记忆")
-        normalized_arguments = {key: value for key, value in arguments.items() if value is not None}
-        try:
-            request = MemoryMutationRequest.model_validate(normalized_arguments)
-        except ValidationError as exc:
-            first = exc.errors(include_url=False)[0]
-            location = ".".join(str(item) for item in first.get("loc", ())) or "request"
-            logger.warning(
-                "memory_change_validation_failed location=%s error_type=%s",
-                location,
-                first.get("type", "validation_error"),
-            )
-            return self._result(
-                error="invalid_memory_change",
-                detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
-            )
         actor = runtime.require_actor()
         from yuki.capabilities.invocation import current_invocation
 
         invocation = current_invocation.get()
         if actor.principal_kind == "self":
+            # SELF writes only its own memories, sourced from this round's tool results.
             context = MemoryMutationContext(
                 event=None,
                 conversation_key=runtime.conversation_key,
@@ -1740,15 +1412,17 @@ class AgentToolService:
                 operation_id=invocation.invocation_key if invocation is not None else None,
                 actor_person_id=None,
             )
-            result = await service.mutate(request, context)
-            return self._memory_change_result(result)
+            return self._memory_change_result(await service.mutate(request, context))
         trigger_event_id = request.evidence_event_id or runtime.effective_trigger_event_id
         event = await self._ledger.get_event(trigger_event_id) if trigger_event_id else None
         if event is None:
             return self._result(
-                error="trigger_event_not_found",
-                detail="无法从永久账本核验当前入站消息",
+                error="evidence_event_not_found",
+                detail="evidence 不是真实事件 ID；省略它即以当前消息为证据"
+                if request.evidence_event_id is not None
+                else "当前没有可作证据的入站消息；用 evidence 指定真实事件 ID",
             )
+        # The evidence is a real inbound message of this actor in this conversation.
         if (
             event.author_person_id is None
             or event.author_person_id != actor.person_id
@@ -1766,8 +1440,8 @@ class AgentToolService:
             )
         ):
             return self._result(
-                error="untrusted_trigger_event",
-                detail="工具运行时与真实入站消息不一致",
+                error="untrusted_evidence_event",
+                detail="evidence 须是当前发言人在本会话发来的真实消息",
             )
         context = MemoryMutationContext(
             event=event,
@@ -1782,104 +1456,23 @@ class AgentToolService:
             operation_id=invocation.invocation_key if invocation is not None else None,
             actor_person_id=event.author_person_id,
         )
-        named_target: ResolvedSubject | None = None
-        if request.target is not None and request.target.subject_ref == "named_member":
-            group_id = event.group_id
-            subject_name = request.target.subject_name or ""
-            if group_id is None:
-                return self._result(
-                    error="named_subject_requires_group",
-                    detail="普通姓名只能在当前群成员中解析",
-                )
-            matches = await self._people.search_group_member_names(
-                subject_name,
-                group_id,
-                platform=actor.platform,
-                space_id=self._runtime_space_id(runtime),
-            )
-            exact = tuple(item for item in matches if item.exact)
-            chosen = exact[0] if len(exact) == 1 and request.target.candidate_ref is None else None
-            if request.target.candidate_ref is not None:
-                position = int(request.target.candidate_ref.removeprefix("member_candidate_")) - 1
-                if 0 <= position < len(matches):
-                    chosen = matches[position]
-            if chosen is None:
-                candidates = [
-                    {
-                        "candidate_ref": f"member_candidate_{index}",
-                        "display_name": item.display_name,
-                        "nickname": item.nickname,
-                        "group_card": item.group_card,
-                        "matched_alias": item.matched_alias,
-                        "person_id": item.person_id,
-                        "similarity": round(item.score, 4),
-                        "exact": item.exact,
-                    }
-                    for index, item in enumerate(matches, start=1)
-                ]
-                return self._result(
-                    data={
-                        "reason_code": "subject_resolution_required",
-                        "subject_name": subject_name,
-                        "candidates": candidates,
-                        "requires_user_decision": True,
-                    },
-                    error="subject_resolution_required",
-                    detail=(
-                        "当前群姓名不能唯一确定；可以选择 candidate_ref 重试，也可以自行询问用户"
-                    ),
-                    retryable=True,
-                )
-            named_target = ResolvedSubject(
-                MemoryScopeType.PERSON_GROUP,
-                chosen.user_id,
-                group_id,
-                canonical_subject_person_id=chosen.person_id,
-                canonical_subject_space_id=self._runtime_space_id(runtime),
-            )
-        if named_target is None:
+        if target is None:
             result = await service.mutate(request, context)
         else:
-            result = await service.mutate_resolved(request, context, target=named_target)
+            result = await service.mutate_resolved(request, context, target=target)
         return self._memory_change_result(result)
 
     def _memory_change_result(self, result: MemoryMutationResult) -> ToolExecutionResult:
         payload = result.tool_payload()
         if not result.ok:
-            retryable = result.reason_code in {
-                "memory_candidate_ambiguous",
-                "memory_candidate_not_found",
-            }
             return self._result(
                 data=payload,
                 error=result.reason_code or "memory_change_rejected",
-                detail=(
-                    "记忆定位未唯一命中；请选择候选 fact_id，或按需请求记忆读取工具后重试"
-                    if retryable
-                    else "记忆变更未执行，请根据 reason_code 调整请求"
+                detail=_MEMORY_REJECTIONS.get(
+                    result.reason_code, "记忆未写入；按 error 调整请求，或如实说明未能记住"
                 ),
-                retryable=retryable,
             )
         return self._result(data=payload)
-
-    async def _can_read_own_person_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
-        from yuki.memory.partition import canonical_fact_owner_complete
-
-        owners = await self._runtime_canonical_owners(runtime)
-        person_id = owners[0]
-        if person_id is None or not canonical_fact_owner_complete(fact):
-            return False
-        from yuki.identity.person_identity import same_person_id
-
-        if fact.canonical_subject_person_id is None:
-            return False
-        async with self._people.database.read_session() as session:
-            return await same_person_id(session, fact.canonical_subject_person_id, person_id)
-
-    async def _runtime_canonical_owners(
-        self, runtime: ToolRuntime
-    ) -> tuple[str | None, str | None]:
-        return self._social_requester(runtime), self._runtime_space_id(runtime)
 
     @staticmethod
     def _social_requester(runtime: ToolRuntime) -> str | None:
@@ -1909,74 +1502,44 @@ class AgentToolService:
                     return None
             except PermissionError:
                 return None
-        allowed_scopes = runtime.memory_allowed_scopes
-        if allowed_scopes is None:
-            allowed_scopes = (
-                MemoryScopeType.PERSON,
-                MemoryScopeType.PERSON_GROUP,
-                MemoryScopeType.GROUP,
-                MemoryScopeType.SELF,
-            )
-        if not self._settings.self_memory_enabled:
-            allowed_scopes = tuple(
-                item for item in allowed_scopes if item is not MemoryScopeType.SELF
-            )
         scope = await self._memory_reads.authorized(
             requester,
             current_space_id=self._runtime_space_id(runtime),
             private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
             self_actor=requester is None,
-            allowed_scopes=allowed_scopes,
+            allowed_scopes=self._readable_scopes(runtime),
         )
         facts = await self._memories.repository.get_active_authorized(scope, (fact_id,))
         return facts[0] if facts else None
 
     @staticmethod
-    def _memory_json(
-        row: Any,
-        *,
-        retrieval_reason: str,
-    ) -> dict[str, Any]:
-        payload = {
+    def _memory_json(row: Any) -> dict[str, Any]:
+        """One fact as the model reads it: no aliases, internals or null fields."""
+        payload: dict[str, Any] = {
             "fact_id": row.id,
-            "memory_ref": f"M{row.id}",
             "scope": row.scope_type.value,
-            "subject": {
-                "person_id": row.canonical_subject_person_id,
-                "space_id": row.canonical_subject_space_id,
-            },
             "kind": row.kind.value,
-            "category": row.category,
             "content": row.content,
             "importance": row.importance,
             "confidence": row.confidence,
-            "source_type": row.source_type.value,
             "status": row.status.value,
-            "authority": row.authority.value,
-            "conflict_state": row.conflict_state.value,
-            "evidence_count": row.evidence_count,
             "last_confirmed_at": row.last_confirmed_at.isoformat(),
-            "retrieval_reason": retrieval_reason,
         }
-        payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
-        return payload
-
-    @staticmethod
-    def _self_memory_json(row: Any, *, retrieval_reason: str) -> dict[str, Any]:
-        """Project SELF facts without visibility identities or evidence internals."""
-
-        payload = {
-            "fact_id": row.id,
-            "memory_ref": f"M{row.id}",
-            "kind": row.kind.value,
-            "category": row.category,
-            "content": row.content,
-            "importance": row.importance,
-            "confidence": row.confidence,
-            "status": row.status.value,
-            "retrieval_reason": retrieval_reason,
-        }
-        payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
+        if row.scope_type is not MemoryScopeType.SELF:
+            payload.update(
+                {
+                    key: value
+                    for key, value in (
+                        ("person_id", row.canonical_subject_person_id),
+                        ("space_id", row.canonical_subject_space_id),
+                    )
+                    if value is not None
+                }
+            )
+        if row.valid_from is not None:
+            payload["occurred_at"] = row.valid_from.isoformat()
+        if row.conflict_state.value != "clear":
+            payload["conflict"] = row.conflict_state.value
         return payload
 
     async def _capture_memory_tool_result(
@@ -1984,46 +1547,16 @@ class AgentToolService:
         result: ToolExecutionResult,
         runtime: ToolRuntime,
     ) -> ToolExecutionResult:
-        payload = result.model_payload()
-        fact_ids: list[int] = []
-
-        def visit(value: object) -> None:
-            if isinstance(value, dict):
-                ref = value.get("memory_ref")
-                if (
-                    isinstance(ref, str)
-                    and ref.startswith("M")
-                    and len(ref) <= 20
-                    and ref[1:].isdigit()
-                    and int(ref[1:]) > 0
-                ):
-                    fact_ids.append(int(ref[1:]))
-                for child in value.values():
-                    visit(child)
-            elif isinstance(value, list):
-                for child in value:
-                    visit(child)
-
-        visit(payload)
-        unique_ids = tuple(dict.fromkeys(fact_ids))
-        if payload.get("ok"):
-            outcome = "success" if unique_ids else "empty"
-        elif payload.get("error_code") in {
-            "ambiguous_person",
-            "ambiguous_subject",
-            "ambiguous_group",
-        }:
-            outcome = "ambiguous"
-        elif payload.get("error_code") == "permission_denied":
+        memories = result.data.get("memories") if isinstance(result.data, dict) else None
+        count = len(memories) if isinstance(memories, list) else 0
+        if result.ok:
+            outcome = "success" if count else "empty"
+        elif result.error_code == "permission_denied":
             outcome = "permission_denied"
         else:
             outcome = "unavailable"
-        payload["evidence_state"] = evidence_state(payload, "memory_tool")
-        await self._record_memory_tool_outcome(runtime, outcome, result_count=len(unique_ids))
-        return replace(
-            result,
-            evidence_state=payload["evidence_state"],
-        )
+        await self._record_memory_tool_outcome(runtime, outcome, result_count=count)
+        return result
 
     async def _record_memory_tool_outcome(
         self, runtime: ToolRuntime, outcome: str, *, result_count: int = 0
@@ -2047,28 +1580,24 @@ class AgentToolService:
         provider = self._web_dependencies()
         query = arguments.get("query")
         if not isinstance(query, str):
-            return self._web_result(error="invalid_query", detail="query 必须是字符串")
+            return self._result(error="invalid_query", detail="query 必须是字符串")
         query = " ".join(query.split())
         if not query:
-            return self._web_result(
-                error="invalid_query",
-                detail="query 不能为空",
-            )
-        topic_value = arguments.get("topic", "general")
-        if topic_value not in {"general", "news"}:
-            return self._web_result(error="invalid_topic", detail="topic 必须是 general 或 news")
-        topic = cast(WebSearchTopic, topic_value)
-        time_range_value = arguments.get("time_range")
+            return self._result(error="invalid_query", detail="query 不能为空")
+        news = arguments.get("news", False)
+        if type(news) is not bool:
+            return self._result(error="invalid_arguments", detail="news 必须是布尔值")
+        topic: WebSearchTopic = "news" if news else "general"
+        time_range_value = arguments.get("recency")
         if time_range_value not in {None, "day", "week", "month", "year"}:
-            return self._web_result(error="invalid_time_range", detail="time_range 无效")
-        time_range = cast(WebSearchTimeRange | None, time_range_value)
-        start_date = self._parse_date(arguments.get("start_date"), "start_date")
-        end_date = self._parse_date(arguments.get("end_date"), "end_date")
-        if start_date is not None and end_date is not None and start_date > end_date:
-            return self._web_result(
-                error="invalid_date_range",
-                detail="start_date 不能晚于 end_date",
+            return self._result(
+                error="invalid_arguments", detail="recency 必须是 day、week、month 或 year"
             )
+        time_range = cast(WebSearchTimeRange | None, time_range_value)
+        start_date = self._search_day(arguments.get("since"), "since", end=False)
+        end_date = self._search_day(arguments.get("until"), "until", end=True)
+        if start_date is not None and end_date is not None and start_date > end_date:
+            return self._result(error="invalid_time_range", detail="since 必须早于 until")
         response = await provider.search(
             WebSearchRequest(
                 query=query,
@@ -2079,7 +1608,7 @@ class AgentToolService:
                 max_results=self._runtime().web.search_max_results,
             )
         )
-        return self._web_result(data=self._web_response_json(response))
+        return self._result(data=self._web_response_json(response))
 
     async def _read_webpage(
         self, arguments: dict[str, Any], runtime: ToolRuntime
@@ -2087,17 +1616,14 @@ class AgentToolService:
         provider = self._web_dependencies()
         raw_url = arguments.get("url")
         if not isinstance(raw_url, str):
-            return self._web_result(error="invalid_url", detail="url 必须是字符串")
+            return self._result(error="invalid_url", detail="url 必须是字符串")
         normalized = normalize_public_url(raw_url)
         question_value = arguments.get("question")
         if question_value is not None and not isinstance(question_value, str):
-            return self._web_result(error="invalid_question", detail="question 必须是字符串")
+            return self._result(error="invalid_question", detail="question 必须是字符串")
         question = " ".join((question_value or "读取用户指定的网页").split())
         if not question:
-            return self._web_result(
-                error="invalid_question",
-                detail="question 不能为空",
-            )
+            return self._result(error="invalid_question", detail="question 不能为空")
         source = await provider.extract(normalized, question)
         response = WebSearchResponse(
             query=question,
@@ -2107,7 +1633,7 @@ class AgentToolService:
             partial_failure=False,
             provider=source.provider,
         )
-        return self._web_result(data=self._web_response_json(response))
+        return self._result(data=self._web_response_json(response))
 
     def pin_web_provider(self) -> AbstractContextManager[None]:
         """Hold the web backend chosen when a model/tool Runner starts."""
@@ -2141,51 +1667,49 @@ class AgentToolService:
 
     @staticmethod
     def _web_response_json(response: WebSearchResponse) -> dict[str, Any]:
-        result = {
+        result: dict[str, Any] = {
             "query": response.query,
-            "partial_failure": response.partial_failure,
             "sources": [
                 {
-                    "source_id": source.source_id,
-                    "title": source.title,
-                    "url": source.url,
-                    "domain": source.domain,
-                    "snippet": source.snippet,
-                    "relevant_content": source.relevant_content,
-                    "published_at": (
-                        source.published_at.isoformat() if source.published_at else None
-                    ),
-                    "provider_score": source.provider_score,
+                    key: value
+                    for key, value in {
+                        "source_id": source.source_id,
+                        "title": source.title,
+                        "url": source.url,
+                        "snippet": source.snippet,
+                        "relevant_content": source.relevant_content,
+                        "published_at": (
+                            source.published_at.isoformat() if source.published_at else None
+                        ),
+                    }.items()
+                    if value not in (None, "")
                 }
                 for source in response.sources
             ],
         }
+        if response.partial_failure:
+            result["partial_failure"] = True
         if response.provider_summary:
             result["provider_summary"] = response.provider_summary
-            result["provider_summary_instruction"] = (
-                "provider_summary 是上游模型生成的总结，不是网页原文或逐来源摘录。"
-                "总结中的 URL 不证明来源，只有 sources 中的真实搜索来源可作为证据。"
-            )
         return result
 
     @staticmethod
-    def _parse_date(value: Any, name: str) -> date | None:
-        if value in {None, ""}:
+    def _search_day(value: Any, name: str, *, end: bool) -> date | None:
+        """A timezone-qualified boundary as the provider's UTC+8 search day."""
+        if value is None:
             return None
+        message = f"{name} 必须是带时区的 ISO-8601 时间"
         if not isinstance(value, str):
-            raise WebSearchError("invalid_date", f"{name} 必须是 YYYY-MM-DD")
+            raise WebSearchError("invalid_time", message)
         try:
-            return date.fromisoformat(value)
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise WebSearchError("invalid_date", f"{name} 必须是 YYYY-MM-DD") from exc
-
-    @staticmethod
-    def _parse_time(value: Any) -> datetime | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("time must be an ISO string")
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            raise WebSearchError("invalid_time", message) from exc
+        if moment.tzinfo is None:
+            raise WebSearchError("invalid_time", message)
+        local = moment.astimezone(timezone(timedelta(hours=8)))
+        # until is exclusive; the provider's end date is inclusive.
+        return (local - timedelta(microseconds=1)).date() if end else local.date()
 
     @staticmethod
     def _optional_string(value: Any) -> str | None:
@@ -2194,14 +1718,6 @@ class AgentToolService:
         if isinstance(value, int) and not isinstance(value, bool):
             return str(value)
         return None
-
-    @staticmethod
-    def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
-        if value is None:
-            return default
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("limit must be an integer")
-        return max(1, min(int(value), maximum))
 
     def _result(
         self,
@@ -2231,16 +1747,6 @@ class AgentToolService:
             metadata=metadata,
             images=result_images(data) if error is None else (),
         )
-
-    def _web_result(
-        self,
-        *,
-        data: Any = None,
-        error: str | None = None,
-        detail: str = "",
-    ) -> ToolExecutionResult:
-        result = self._result(data=data, error=error, detail=detail)
-        return replace(result, evidence_state=evidence_state(result.model_payload(), "web_tool"))
 
     @staticmethod
     def _runtime() -> RuntimeConfigSnapshot:

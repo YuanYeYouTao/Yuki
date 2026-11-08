@@ -23,10 +23,15 @@ if TYPE_CHECKING:
     from yuki.runtime.work_session import WorkSession
 
 
-WORK_CONTROL_NAMES = frozenset({"task_control", "subagent_start", "subagent_control"})
+WORK_CONTROL_NAMES = frozenset(
+    {"get_tasks", "manage_task", "start_subtask", "message_task", "wait"}
+)
+# Lifecycle controls that only read Work facts.
+READ_ONLY_CONTROLS = frozenset({"get_tasks"})
 
 
 # Accepted lifecycle actions and the Work state each one proposes to the writer.
+# These are the durable checkpoint names (accepted_control.action), not tool actions.
 ACCEPTED_ENDINGS = {
     "complete": "completed",
     "fail": "failed",
@@ -35,10 +40,171 @@ ACCEPTED_ENDINGS = {
     "wait": "waiting_external",
 }
 
+_ERROR_MESSAGES = {
+    "no_active_work": "当前没有任务；先用 manage_task(action=start, goal=…) 登记。",
+    "task_id_required": "id 必须是已有任务的 id。",
+    "work_not_found_or_not_authorized": "id 对应的任务不存在或无权操作；先用 get_tasks 查看。",
+    "work_goal_required": "goal 不能为空。",
+    "task_action_invalid": "action 必须是 start、update、finish、fail、cancel 或 resume。",
+    "worker_already_registered": "子任务已经登记，直接推进；修改目标用 update。",
+    "resume_requires_neutral_foreground": "当前已有任务；恢复另一项任务请在没有当前任务时调用。",
+    "resume_work_not_authorized": "该任务已结束或无权恢复。",
+    "work_already_active_use_update": "当前已有任务；同一目标用 update 修改，不重复 start。",
+    "independent_work_requires_new_user_input": "只有新的用户消息才能另起一项独立任务。",
+    "independent_work_source_invalid": "找不到能另起任务的新用户消息。",
+    "waiting_requires_owned_execution": "for 中的 run 必须是自己的子任务或自己运行的命令 id。",
+    "wait_for_invalid": (
+        "for 是非空数组，每项恰含一个键：run、message、seconds、at 或 plugin_event。"
+    ),
+    "wait_time_requires_timezone": "at 和 deadline 必须是带时区的 ISO-8601 时间。",
+    "invalid_wait_time": "at 和 deadline 必须是带时区的 ISO-8601 时间。",
+    "invalid_wait_delay": "seconds 必须是有限数字。",
+    "invalid_wait_plugin_filter": (
+        "plugin_event 需要 plugin_id 与 event_type（各 1–128 字），source 可选。"
+    ),
+    "invalid_wait_run": "run 必须是子任务或命令的 id。",
+    "subtask_requires_current_task": (
+        "start_subtask 需要当前任务；先用 manage_task(action=start) 登记。"
+    ),
+    "subtask_parent_unavailable": "当前不是子任务，没有父任务可联系；给子任务发消息请填 id。",
+    "subtask_not_owned": "id 不是当前任务的子任务。",
+    "subagent_not_owned": "id 不是当前任务的子任务。",
+    "subagent_archived": "该子任务已归档，不能再发送或恢复。",
+    "subagent_not_resumable": "该子任务已取消，不能恢复。",
+    "subagent_message_target_terminal": "该子任务已取消，不能再发消息。",
+    "message_text_required": "text 不能为空。",
+    "invalid_note": "note 的 facts、unresolved、next_steps 每项须含 text 与非空 refs。",
+    "invalid_task_query": (
+        "limit 为 1–50，status 为 active、done 或 all，cursor 用上次返回的 next_cursor。"
+    ),
+    "invalid_work_query_cursor": "cursor 只能使用上次返回的 next_cursor。",
+    "invalid_work_progress_cursor": "cursor 只能使用上次返回的 next_cursor。",
+    "work_activation_obsolete": "本次执行已失效，操作未执行。",
+}
+
+
+def control_failure_message(code: str) -> str:
+    return _ERROR_MESSAGES.get(code, f"任务操作未完成（{code}）；检查参数后再试。")
+
 
 def control_result_payload(data: dict[str, Any]) -> dict[str, Any]:
     """Model projection of an accepted lifecycle control; its receipt stores the same text."""
-    return {"ok": True, **data}
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def _iso(stamp: Any) -> str | None:
+    from datetime import datetime, timedelta, timezone
+
+    if not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
+        return None
+    return datetime.fromtimestamp(stamp, timezone(timedelta(hours=8))).isoformat(timespec="seconds")
+
+
+def task_view(row: dict[str, Any]) -> dict[str, Any]:
+    """Model view of one Work row: no platform accounts, generations or epoch floats."""
+    view: dict[str, Any] = {
+        "id": row["work_id"],
+        "goal": row["goal"],
+        "status": "waiting_parent"
+        if row["state"] == "waiting_user" and row.get("parent_work_id")
+        else row["state"],
+        "parent": row.get("parent_work_id"),
+        "reason": row.get("reason") or None,
+        "creator": row.get("creator_display_name"),
+        "creator_person_id": row.get("creator_person_id"),
+        "created_at": _iso(row.get("created_at")),
+        "updated_at": _iso(row.get("updated_at")),
+    }
+    if row.get("model_requests") or row.get("tool_calls"):
+        view["usage"] = {
+            "model_requests": row.get("model_requests", 0),
+            "tool_calls": row.get("tool_calls", 0),
+        }
+    if row.get("progress_available") is False:
+        view["progress_available"] = False
+    if isinstance(row.get("steps"), list):
+        view["steps"] = [
+            {
+                key: value
+                for key, value in {
+                    **{
+                        name: step.get(name)
+                        for name in (
+                            "effect_key",
+                            "tool",
+                            "action",
+                            "ok",
+                            "status",
+                            "pending",
+                            "uncertain",
+                            "run_id",
+                            "error_code",
+                            "artifacts",
+                        )
+                    },
+                    "at": _iso(step.get("updated_at")),
+                    "result": step.get("result"),
+                }.items()
+                if value not in (None, [], False) or key == "ok"
+            }
+            for step in row["steps"]
+        ]
+    note = row.get("context_note")
+    if isinstance(note, dict) and isinstance(note.get("payload"), dict):
+        view["note"] = {
+            key: note["payload"][key]
+            for key in ("facts", "unresolved", "next_steps")
+            if note["payload"].get(key)
+        }
+    wait = row.get("wait")
+    if isinstance(wait, dict):
+        view["wait"] = {
+            "status": wait.get("status"),
+            "all": wait.get("mode") == "all",
+            "since": _iso(wait.get("registered_at")),
+            "deadline": _iso(wait.get("deadline")),
+            "for": wait.get("conditions"),
+        }
+    if row.get("next_cursor"):
+        view["next_cursor"] = row["next_cursor"]
+    return {key: value for key, value in view.items() if value is not None}
+
+
+def _wait_conditions(raw: Any) -> list[dict[str, Any]]:
+    """Translate the model's single-key ``for`` items into stored wait conditions."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("wait_for_invalid")
+    conditions: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict) or len(item) != 1:
+            raise ValueError("wait_for_invalid")
+        ((key, value),) = item.items()
+        if key == "run":
+            conditions.append({"kind": "owned_run", "run_id": value})
+        elif key == "message":
+            if value is not True:
+                raise ValueError("wait_for_invalid")
+            conditions.append({"kind": "conversation"})
+        elif key == "seconds":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("invalid_wait_delay")
+            conditions.append({"kind": "time_due", "after_seconds": value})
+        elif key == "at":
+            conditions.append({"kind": "time_due", "at": value})
+        elif key == "plugin_event":
+            if not isinstance(value, dict) or set(value) - {"plugin_id", "event_type", "source"}:
+                raise ValueError("invalid_wait_plugin_filter")
+            condition = {
+                "kind": "plugin_event",
+                "plugin_id": value.get("plugin_id"),
+                "event_type": value.get("event_type"),
+            }
+            if "source" in value:
+                condition["external_source"] = value["source"]
+            conditions.append(condition)
+        else:
+            raise ValueError("wait_for_invalid")
+    return conditions
 
 
 class WorkInputsPreparing(RuntimeError):
@@ -50,47 +216,41 @@ def work_control_tools() -> tuple[ChatTool, ...]:
 
     note_schema = ContextNote.model_json_schema()
     note_definitions = note_schema.pop("$defs", {})
+    # ``version`` is an internal storage field, never model input.
+    note_schema["properties"].pop("version", None)
+    note_schema.update(additionalProperties=False)
+    note_schema.pop("title", None)
+    string = {"type": "string"}
+    timestamp = {"type": "string", "description": "带时区 ISO-8601 时间"}
     return (
         ChatTool(
-            name="task_control",
+            name="get_tasks",
             result_cacheable=False,
             description=(
-                "管理持久工作。get 用原 work_id 查看状态、完整 goal 和等待条件；"
-                "原私有来源获准时附最近执行与真实结果，limit/cursor 翻更早页。"
-                "按 history_order 和发生时间读进展；状态和查询时间不代表刚完成了目标。"
-                "list 默认 active，终态用 status=terminal，全部用 all。"
-                "私聊里调用 send 以外的工具时，Host 已自动登记当前工作；"
-                "已在工作中时用 update 改写目标、反馈约定或保存 context_note，不再 accept。"
-                "其他场景的持续目标（含定期复查、持续跟进）用 accept(goal) 登记，"
-                "写清目标与反馈约定；普通聊天无需登记，发言用 send。"
-                "当前工作直接继续或 update；恢复已有工作用原 work_id 调用 resume，不重复 accept。"
-                "恢复另一项工作是将它交回原执行链，不会替换当前工作；以回执为准。"
-                "独立新工作用 accept 排队，update 只修正当前目标。"
-                "derive(goal) 为当前或指定 parent_work_id 登记实际子目标，继承原来源。"
-                "update 也可仅保存 context_note：facts/unresolved/next_steps "
-                "每项含 text 和 refs（goal、input:ID、event:ID、effect:原键、"
-                "artifact:handle、child:ID）；线索不改变执行状态，研究原文按 artifact 回读。"
-                "按需要保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
-                "不会自动恢复此前整段工具往返。"
-                "持续目标本轮暂无变化时，保存必要进展后用 wait 等待，不要 complete。"
-                "wait conditions 每项用 kind：time_due(after_seconds 或含时区 at)、conversation、"
-                "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
-                "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
-                "conversation 只等当前会话下一条输入，没有人物、主题筛选；"
-                "只登记它不会因普通子任务完成通知而唤醒。"
-                "既要接收会话输入又要处理子结果时，用 any 组合 conversation 与 "
-                "owned_run(run_id=child_id)；all 等全部条件满足。"
-                "任一信号唤醒后，处理当前输入并继续可执行工作；"
-                "仍依赖未完成子任务且当前无可执行步骤时，按原 ID 等待剩余结果，不重新派生。"
-                "定期查证用 time_due。"
-                "wait_status 查询，cancel_wait 撤销。主任务需要用户补充时，"
-                "先用 send 提出问题，"
-                "再用 need_input(reason) 登记等待；子任务的 need_input 会直接向父任务提问，"
-                "按回执等待回答。"
-                "complete 提交结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
-                "不会自动外发）；fail/cancel 终止指定工作及其所属执行。"
-                "complete/wait/need_input 不截断本批后续获准调用；"
-                "原批次或程序收拢后结算。get/list/wait_status 是只读查询。"
+                "查看任务和子任务。给 id 读取该任务的完整目标、状态、等待条件、最近步骤与结果；"
+                "不给 id 列出任务，status 默认 active，parent 列出某任务的子任务。"
+                "状态只说明生命周期，成果以步骤结果和交付回执为准。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "maxLength": 36},
+                    "status": {"type": "string", "enum": ["active", "done", "all"]},
+                    "parent": {"type": "string", "maxLength": 36},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "cursor": string,
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ChatTool(
+            name="manage_task",
+            result_cacheable=False,
+            description=(
+                "登记或推进需要跨轮持续的任务。start 登记新目标；update 修改目标或保存 note；"
+                "finish 结束并可在 result 给出内部结果；fail、cancel 终止 id 指定的任务"
+                "（默认当前任务，text 写原因）；"
+                "resume 恢复 id 指定的任务，子任务可在 text 附新要求。"
             ),
             parameters={
                 "type": "object",
@@ -98,63 +258,88 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": [
-                            "get",
-                            "list",
-                            "accept",
-                            "derive",
-                            "resume",
-                            "update",
-                            "wait",
-                            "wait_status",
-                            "cancel_wait",
-                            "need_input",
-                            "complete",
-                            "fail",
-                            "cancel",
-                        ],
+                        "enum": ["start", "update", "finish", "fail", "cancel", "resume"],
                     },
-                    "goal": {"type": "string"},
-                    "context_note": note_schema,
-                    "work_id": {
-                        "type": "string",
-                        "maxLength": 36,
-                        "description": "get 查询或 resume/cancel/fail 操作指定原工作的内部 ID。",
-                    },
-                    "parent_work_id": {
-                        "type": "string",
+                    "id": {"type": "string", "maxLength": 36},
+                    "goal": string,
+                    "note": {
+                        **note_schema,
                         "description": (
-                            "derive 的直属父工作，默认当前工作；list 可按此列出直属子工作。"
+                            "跨轮线索：facts、unresolved、next_steps 每项含 text 与 refs"
+                            "（goal、input:ID、event:ID、effect:键、artifact:handle、child:ID）"
                         ),
                     },
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                    "status": {"type": "string", "enum": ["active", "terminal", "all"]},
-                    "cursor": {"type": "string"},
-                    "result": {
-                        "type": ["string", "null"],
-                        "description": "complete 的内部结果；按实际工作需要填写。",
-                    },
-                    "reason": {"type": "string"},
-                    "run_id": {
-                        "type": "string",
-                        "description": (
-                            "wait 的简写参数：所属执行的原 run_id 或子 Work 的 child_id；"
-                            "与 conditions 二选一。"
-                        ),
-                    },
-                    "wait_mode": {"type": "string", "enum": ["any", "all"]},
-                    "conditions": {
-                        "type": "array",
-                        "description": (
-                            "一次性等待条件。等子任务时 kind 填 owned_run、run_id 填原 child_id；"
-                            "同时等会话输入时追加 kind=conversation，并用 wait_mode=any。"
-                        ),
-                        "minItems": 1,
-                        "items": {"type": "object", "additionalProperties": True},
-                    },
-                    "deadline_at": {"type": "string", "maxLength": 40},
+                    "result": string,
+                    "text": string,
                 },
                 "required": ["action"],
+                "additionalProperties": False,
+            },
+        ),
+        ChatTool(
+            name="wait",
+            result_cacheable=False,
+            description=(
+                "暂停当前任务，直到 for 中的信号到达再继续：run 等子任务或命令结束，"
+                "message 等当前会话的新消息，seconds 或 at 等到时间，plugin_event 等插件事件。"
+                "默认任一信号即唤醒，all=true 等全部；deadline 为最晚唤醒时间。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "for": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {"run": {"type": "string", "minLength": 1}},
+                                    "required": ["run"],
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {"message": {"const": True}},
+                                    "required": ["message"],
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {"seconds": {"type": "number"}},
+                                    "required": ["seconds"],
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {"at": timestamp},
+                                    "required": ["at"],
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "plugin_event": {
+                                            "type": "object",
+                                            "properties": {
+                                                "plugin_id": string,
+                                                "event_type": string,
+                                                "source": string,
+                                            },
+                                            "required": ["plugin_id", "event_type"],
+                                            "additionalProperties": False,
+                                        }
+                                    },
+                                    "required": ["plugin_event"],
+                                    "additionalProperties": False,
+                                },
+                            ]
+                        },
+                    },
+                    "all": {"type": "boolean"},
+                    "deadline": timestamp,
+                },
+                "required": ["for"],
                 "additionalProperties": False,
             },
         ),
@@ -264,7 +449,7 @@ class WorkControl:
 
     async def retire_fulfilled_wait(self) -> bool:
         accepted = self.accepted
-        if accepted is None or accepted.get("action") != "wait":
+        if accepted is None or "wait_id" not in accepted:
             return False
         from sqlalchemy import select
 
@@ -327,7 +512,7 @@ class WorkControl:
         # checkpoint into a second authority list.
         from yuki.capabilities.executions import is_execution
         from yuki.capabilities.results import normalize_legacy_result
-        from yuki.runtime.effect_outcomes import execution_evidence
+        from yuki.runtime.effect_outcomes import execution_evidence, recorded_tool
 
         evidence = await self.repository.effect_evidence(
             self.lease,
@@ -337,9 +522,10 @@ class WorkControl:
         owners: dict[str, list[str]] = {}
         requests: dict[str, dict[str, str]] = {}
         for effect in evidence:
-            name = effect.get("tool", "")
+            # Effects keep their recorded name; read it through the history map.
+            name = recorded_tool(effect.get("tool", ""))
             execution = is_execution(name, {"action": effect.get("action")})
-            if name == "external_agent" and not execution:
+            if name in {"use_coding_agent", "get_coding_agents"} and not execution:
                 continue
             identity = effect.get("run_id")
             if isinstance(identity, str) and (effect.get("pending") or effect.get("uncertain")):
@@ -597,7 +783,11 @@ class WorkControl:
 
     def observe_evidence(self, evidence: dict[str, Any]) -> None:
         """Bounded view of already accepted typed facts, never a result-text decoder."""
-        if evidence.get("tool") in WORK_CONTROL_NAMES or not evidence.get("executed"):
+        from yuki.runtime.effect_outcomes import recorded_tool
+
+        if recorded_tool(str(evidence.get("tool", ""))) in WORK_CONTROL_NAMES or not evidence.get(
+            "executed"
+        ):
             return
         entry = dict(evidence)
         side_effecting = entry.get("side_effecting") is True
@@ -628,18 +818,32 @@ class WorkControl:
             await self.validate()
             if not await self.repository.valid(self.lease):
                 raise WorkConflict("work_activation_obsolete")
-            if name == "task_control":
-                result = await self._control(args, call_key, invocation=invocation)
-            elif name.startswith("subagent_"):
-                from yuki.runtime.subagent_tools import execute_subagent
+            if name == "get_tasks":
+                result = await self._get_tasks(args)
+            elif name == "manage_task":
+                result = await self._manage(args, call_key, invocation=invocation)
+            elif name == "wait":
+                result = await self._wait(args, call_key)
+            elif name == "start_subtask":
+                from yuki.runtime.subagent_tools import start_subtask
 
-                result = await execute_subagent(self, name, args, call_key)
+                result = await start_subtask(self, args, call_key)
+            elif name == "message_task":
+                from yuki.runtime.subagent_tools import message_task
+
+                result = await message_task(self, args, call_key)
             else:
                 raise ValueError("unknown_work_control")
             payload = control_result_payload(result)
+            # The receipt evidence reads ``status`` as an execution status; a
+            # lifecycle state is not one. A started subtask stays pending as before.
+            typed = {"state" if key == "status" else key: value for key, value in result.items()}
+            if name == "start_subtask":
+                typed["pending"] = True
             outcome = ToolExecutionResult(
-                ok=payload["ok"] is True,
-                data=result,
+                ok=True,
+                data=typed,
+                view=payload,
                 tool_name=name,
                 provider_id="work_control",
             )
@@ -664,13 +868,17 @@ class WorkControl:
                 )
                 payload = outcome.model_payload()
             elif isinstance(exc, (ValueError, WorkConflict)):
-                payload = {"ok": False, "error": str(exc)}
+                from pydantic import ValidationError
+
+                code = "invalid_note" if isinstance(exc, ValidationError) else str(exc)
                 outcome = ToolExecutionResult(
                     ok=False,
-                    error_code=str(exc),
+                    error_code=code,
+                    public_message=control_failure_message(code),
                     tool_name=name,
                     provider_id="work_control",
                 )
+                payload = outcome.model_payload()
             else:
                 raise
         capture = current_result_capture.get()
@@ -723,52 +931,88 @@ class WorkControl:
                 self.lease, refreshed["id"], expected, note
             )
 
-    async def _control(
+    async def _get_tasks(self, args: dict[str, Any]) -> dict[str, Any]:
+        from yuki.runtime.work_queries import WorkQueries
+
+        queries = WorkQueries(self.repository)
+        limit = args.get("limit", 8)
+        cursor = args.get("cursor")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+            or (cursor is not None and (not isinstance(cursor, str) or not cursor))
+        ):
+            raise ValueError("invalid_task_query")
+        identity = args.get("id")
+        if identity is not None:
+            if not isinstance(identity, str) or not identity.strip() or len(identity) > 36:
+                raise ValueError("task_id_required")
+            row = await queries.get(
+                self.lease,
+                self.source,
+                identity,
+                include_progress=True,
+                limit=limit,
+                cursor=cursor,
+            )
+            if row is None:
+                raise ValueError("work_not_found_or_not_authorized")
+            view = task_view(row)
+            if row["parent_work_id"] is not None:
+                from yuki.runtime.subagent_tools import subtask_result
+
+                result = await subtask_result(self, identity)
+                if result is not None:
+                    view["result"] = result
+            return view
+        status = {"active": "active", "done": "terminal", "all": "all"}.get(
+            args.get("status", "active")
+        )
+        parent = args.get("parent")
+        if status is None or (parent is not None and not isinstance(parent, str)):
+            raise ValueError("invalid_task_query")
+        page = await queries.list(
+            self.lease,
+            self.source,
+            limit=limit,
+            status=status,
+            cursor=cursor,
+            parent_work_id=parent,
+        )
+        return {
+            "tasks": [task_view(row) for row in page["works"]],
+            "next_cursor": page["next_cursor"],
+        }
+
+    async def _manage(
         self, args: dict[str, Any], call_key: str, *, invocation: Invocation | None = None
     ) -> dict[str, Any]:
         action = args.get("action")
-        if not isinstance(action, str):
-            raise ValueError("work_action_required")
-        if action in {"get", "list"}:
+        if action not in {"start", "update", "finish", "fail", "cancel", "resume"}:
+            raise ValueError("task_action_invalid")
+        target = args.get("id")
+        if target is not None and (not isinstance(target, str) or not target):
+            raise ValueError("task_id_required")
+        text = args.get("text")
+        if text is not None and not isinstance(text, str):
+            raise ValueError("invalid_task_text")
+        if (
+            action in {"cancel", "resume"}
+            and target is not None
+            and (self.current is None or target != self.current["id"])
+        ):
             from yuki.runtime.work_queries import WorkQueries
 
-            queries = WorkQueries(self.repository)
-            if action == "get":
-                identity = args.get("work_id")
-                if not isinstance(identity, str) or not identity.strip() or len(identity) > 36:
-                    raise ValueError("work_id_required")
-                row = await queries.get(
-                    self.lease,
-                    self.source,
-                    identity,
-                    include_progress=True,
-                    limit=args.get("limit", 8),
-                    cursor=args.get("cursor"),
-                )
-                if row is None:
-                    raise ValueError("work_not_found_or_not_authorized")
-                return {"work": row}
-            limit = args.get("limit", 8)
-            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
-                raise ValueError("work_list_limit_invalid")
-            status = args.get("status", "active")
-            if not isinstance(status, str) or status not in {"active", "terminal", "all"}:
-                raise ValueError("work_list_status_invalid")
-            cursor = args.get("cursor")
-            if cursor is not None and (not isinstance(cursor, str) or not cursor):
-                raise ValueError("work_list_cursor_invalid")
-            return await queries.list(
-                self.lease,
-                self.source,
-                limit=limit,
-                status=status,
-                cursor=cursor,
-                parent_work_id=args.get("parent_work_id"),
+            candidate = await WorkQueries(self.repository).get(
+                self.lease, self.source, target, local=True
             )
-        target = args.get("work_id")
+            if candidate is not None and await self._is_subtask(target):
+                # A subtask is a child Work: cancel it, or resume it with new requirements.
+                from yuki.runtime.subagent_tools import manage_subtask
+
+                return await manage_subtask(self, action, target, call_key, text)
         if action in {"cancel", "fail", "resume"} and target is not None:
-            if not isinstance(target, str) or not target:
-                raise ValueError("work_id_required")
             if (
                 action in {"cancel", "fail"}
                 and (self.current is None or target != self.current["id"])
@@ -784,47 +1028,26 @@ class WorkControl:
                 try:
                     async with self.repository.database.immediate_session() as writer:
                         await self.repository._assert_lease(writer, self.lease)
-                        revision, state = await manage_work(
+                        _revision, state = await manage_work(
                             writer,
                             target,
                             candidate["revision"],
                             action,
-                            reason=args.get("reason"),
+                            reason=text,
                         )
                 except WorkManagementError as exc:
                     raise ValueError(exc.code) from exc
-                return {"work_id": target, "state": state, "revision": revision}
-        if self.lease.work_id:
-            if action == "accept":
-                raise ValueError("worker_already_registered")
-            if (
-                action in {"answer", "need_input"}
-                and self.current is not None
-                and self.current["parent_work_id"] is not None
-            ):
-                from yuki.runtime.subagent_tools import execute_subagent
-
-                return await execute_subagent(
-                    self,
-                    "subagent_control",
-                    {
-                        "action": "message",
-                        "text": args.get("text") if action == "answer" else args.get("reason"),
-                        "ask": action == "need_input",
-                    },
-                    call_key,
-                )
+                return {"id": target, "status": state}
+        if self.lease.work_id and action == "start":
+            raise ValueError("worker_already_registered")
         if action == "resume":
             if self.current is not None or self.lease.work_id:
                 raise ValueError("resume_requires_neutral_foreground")
-            identity = args.get("work_id")
             from yuki.runtime.work_queries import WorkQueries
 
             candidate = (
-                await WorkQueries(self.repository).get(
-                    self.lease, self.source, identity, local=True
-                )
-                if isinstance(identity, str)
+                await WorkQueries(self.repository).get(self.lease, self.source, target, local=True)
+                if isinstance(target, str)
                 else None
             )
             if candidate is None or candidate["state"] in {"completed", "cancelled"}:
@@ -835,7 +1058,7 @@ class WorkControl:
                 self.source_key,
                 kind="message",
                 event_id=self.source.get("trigger_event_id"),
-                work_id=identity,
+                work_id=target,
                 ready=True,
                 resume=(
                     self.lease,
@@ -846,59 +1069,22 @@ class WorkControl:
                     },
                 ),
             )
-            self.handoff_work_id = identity
-            return {"resumed_work_id": identity, "state": "queued", "continue_original_chain": True}
-        if action == "derive":
-            from yuki.runtime.work_queries import WorkQueries
-
-            if self.current is None:
-                raise ValueError("no_active_work")
-            parent = args.get("parent_work_id", self.current["id"])
-            goal = args.get("goal")
-            if not isinstance(goal, str) or not goal.strip():
-                raise ValueError("work_goal_required")
-            candidate = (
-                await WorkQueries(self.repository).get(self.lease, self.source, parent, local=True)
-                if isinstance(parent, str)
-                else None
-            )
-            if candidate is None:
-                raise ValueError("derive_parent_not_authorized")
-            derived = await self.repository.derive(self.lease, parent, call_key, goal)
-            return {
-                "derived_work_id": derived["id"],
-                "parent_work_id": parent,
-                "state": derived["state"],
-            }
-        if action == "accept":
+            self.handoff_work_id = target
+            # The original execution chain continues it after this round.
+            return {"id": target, "status": "queued"}
+        if action == "start":
             if self.current is not None:
                 return await self._queue_work(args)
             self.current = await self._admit_goal(args.get("goal"), call_key, invocation)
         elif self.current is None:
             raise ValueError("no_active_work")
-        elif action == "wait_status":
-            from yuki.runtime.work_wait import WorkWaitRepository
-
-            return {
-                "work_id": self.current["id"],
-                "wait": await WorkWaitRepository(self.repository).describe(self.current["id"]),
-            }
-        elif action == "cancel_wait":
-            from yuki.runtime.work_wait import WorkWaitRepository
-
-            cancelled = await WorkWaitRepository(self.repository).cancel(
-                self.lease, self.current["id"]
-            )
-            if cancelled:
-                await self.retire_accepted()
-            return {"work_id": self.current["id"], "wait_cancelled": cancelled}
         elif action == "update":
             goal = args.get("goal")
             note_plan = None
-            if "context_note" in args:
+            if "note" in args:
                 from yuki.runtime.work_context_note import validate_note
 
-                note_plan = await validate_note(self, args["context_note"])
+                note_plan = await validate_note(self, args["note"])
             if goal is not None:
                 if not isinstance(goal, str) or not goal.strip():
                     raise ValueError("work_goal_required")
@@ -910,100 +1096,109 @@ class WorkControl:
                     goal=goal,
                 )
                 await self.retire_accepted()
-            if "context_note" in args:
-                await self.update_context_note(args["context_note"], call_key, note_plan)
-        elif action == "wait":
-            from yuki.runtime.work_wait import WorkWaitRepository, normalize_conditions
-
-            conditions = args.get("conditions", [])
-            if args.get("run_id") is not None:
-                if args.get("conditions") is not None:
-                    raise ValueError("wait_requires_run_or_conditions")
-                conditions = [{"kind": "owned_run", "run_id": args["run_id"]}]
-            normalized = normalize_conditions(conditions, time.time())
-            for condition in normalized:
-                if condition["kind"] != "owned_run":
-                    continue
-                identity = condition["run_id"]
-                owned = (
-                    self.resolve_child is not None
-                    and await self.resolve_child(identity) is not None
-                )
-                if not owned:
-                    from sqlalchemy import func, or_, select
-
-                    from yuki.runtime.work_schema_v1 import work
-                    from yuki.runtime.work_tree import descendants
-                    from yuki.sandbox.db_models import SandboxTaskRunModel
-
-                    owned_work = descendants(self.current["id"])
-                    async with self.repository.database.read_session() as reader:
-                        owned = bool(
-                            await reader.scalar(
-                                select(
-                                    or_(
-                                        select(work.c.id)
-                                        .where(
-                                            work.c.id == identity,
-                                            work.c.id.in_(owned_work),
-                                        )
-                                        .exists(),
-                                        select(SandboxTaskRunModel.request_id)
-                                        .where(
-                                            SandboxTaskRunModel.run_id == identity,
-                                            or_(
-                                                func.json_extract(
-                                                    SandboxTaskRunModel.source_json, "$.work_id"
-                                                )
-                                                == self.current["id"],
-                                                func.json_extract(
-                                                    SandboxTaskRunModel.source_json, "$.work_id"
-                                                ).in_(owned_work),
-                                            ),
-                                        )
-                                        .exists(),
-                                    )
-                                )
-                            )
-                        )
-                if not owned:
-                    raise ValueError("waiting_requires_owned_execution")
-            wait = await WorkWaitRepository(self.repository).register(
-                self.lease,
-                work_id=self.current["id"],
-                source=self.source,
-                call_key=f"wait:{self.current['id']}:{hashlib.sha256(call_key.encode()).hexdigest()}",
-                mode=args.get("wait_mode", "any"),
-                conditions=conditions,
-                deadline_at=args.get("deadline_at"),
-                accepted={"action": "wait", "call_key": call_key},
-            )
-            self.current = await self.repository.get(self.current["id"]) or self.current
-            self.ending = "waiting_external"
-            return {
-                "work_id": self.current["id"],
-                "wait_id": wait["id"],
-                "ending_proposed": self.ending,
-                "mode": wait["mode"],
-            }
-        elif action in {"need_input", "fail", "cancel"}:
-            reason = args.get("reason")
-            if reason is not None and not isinstance(reason, str):
-                raise ValueError("work_reason_invalid")
-            await self._accept(action, call_key, reason=reason)
-        elif action == "complete":
+            if "note" in args:
+                await self.update_context_note(args["note"], call_key, note_plan)
+        elif action in {"fail", "cancel"}:
+            await self._accept(action, call_key, reason=text)
+        else:
             result = args.get("result")
             if result is not None and not isinstance(result, str):
                 raise ValueError("work_result_invalid")
             await self._accept("complete", call_key, result=result or "")
-        else:
-            raise ValueError("invalid_work_action")
         return {
-            "work_id": self.current["id"],
-            "state": self.current["state"],
-            "revision": self.current["revision"],
-            "ending_proposed": self.ending,
+            "id": self.current["id"],
+            "status": self.current["state"],
+            "ending": self.ending,
         }
+
+    async def _is_subtask(self, identity: str) -> bool:
+        from sqlalchemy import select
+
+        from yuki.runtime.subagent_schema import children
+
+        async with self.repository.database.read_session() as reader:
+            found = await reader.scalar(
+                select(children.c.work_id).where(children.c.work_id == identity)
+            )
+        return found is not None
+
+    async def _wait(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
+        from yuki.runtime.work_wait import WorkWaitRepository, normalize_conditions
+
+        if self.current is None:
+            raise ValueError("no_active_work")
+        every = args.get("all", False)
+        deadline = args.get("deadline")
+        if type(every) is not bool or (deadline is not None and not isinstance(deadline, str)):
+            raise ValueError("wait_for_invalid")
+        conditions = _wait_conditions(args.get("for"))
+        normalized = normalize_conditions(conditions, time.time())
+        for condition in normalized:
+            if condition["kind"] != "owned_run":
+                continue
+            identity = condition["run_id"]
+            owned = (
+                self.resolve_child is not None and await self.resolve_child(identity) is not None
+            )
+            if not owned:
+                from sqlalchemy import func, or_, select
+
+                from yuki.runtime.work_schema_v1 import work
+                from yuki.runtime.work_tree import descendants
+                from yuki.sandbox.db_models import SandboxTaskRunModel
+
+                owned_work = descendants(self.current["id"])
+                async with self.repository.database.read_session() as reader:
+                    owned = bool(
+                        await reader.scalar(
+                            select(
+                                or_(
+                                    select(work.c.id)
+                                    .where(
+                                        work.c.id == identity,
+                                        work.c.id.in_(owned_work),
+                                    )
+                                    .exists(),
+                                    select(SandboxTaskRunModel.request_id)
+                                    .where(
+                                        SandboxTaskRunModel.run_id == identity,
+                                        or_(
+                                            func.json_extract(
+                                                SandboxTaskRunModel.source_json, "$.work_id"
+                                            )
+                                            == self.current["id"],
+                                            func.json_extract(
+                                                SandboxTaskRunModel.source_json, "$.work_id"
+                                            ).in_(owned_work),
+                                        ),
+                                    )
+                                    .exists(),
+                                )
+                            )
+                        )
+                    )
+            if not owned:
+                raise ValueError("waiting_requires_owned_execution")
+        # A root task waiting only for the next message is waiting for its user:
+        # entries that end a turn on a question (ACP, Client) read waiting_user.
+        action = (
+            "need_input"
+            if conditions == [{"kind": "conversation"}] and self.current["parent_work_id"] is None
+            else "wait"
+        )
+        await WorkWaitRepository(self.repository).register(
+            self.lease,
+            work_id=self.current["id"],
+            source=self.source,
+            call_key=f"wait:{self.current['id']}:{hashlib.sha256(call_key.encode()).hexdigest()}",
+            mode="all" if every else "any",
+            conditions=conditions,
+            deadline_at=deadline,
+            accepted={"action": action, "call_key": call_key},
+        )
+        self.current = await self.repository.get(self.current["id"]) or self.current
+        self.ending = ACCEPTED_ENDINGS[action]
+        return {"id": self.current["id"], "status": "waiting"}
 
     async def admit_goal(self, goal: str) -> None:
         """Host admission of an invocation's own goal, without a model control call.
@@ -1033,15 +1228,14 @@ class WorkControl:
             admitted = await self._admit_in_session(writer, goal, source_json)
             if invocation is not None:
                 admission_result = {
-                    "work_id": admitted["id"],
-                    "state": admitted["state"],
-                    "revision": admitted["revision"],
-                    "ending_proposed": self.ending,
+                    "id": admitted["id"],
+                    "status": admitted["state"],
+                    "ending": self.ending,
                 }
                 outcome = ToolExecutionResult(
                     ok=True,
-                    data=admission_result,
-                    tool_name="task_control",
+                    data={"id": admitted["id"], "state": admitted["state"]},
+                    tool_name="manage_task",
                     provider_id="work_control",
                 )
                 await writer.execute(
@@ -1059,7 +1253,7 @@ class WorkControl:
                                 ),
                                 "outcome": effect_evidence(
                                     outcome,
-                                    tool="task_control",
+                                    tool="manage_task",
                                     side_effecting=True,
                                     arguments="{}",
                                 ),
@@ -1184,13 +1378,10 @@ class WorkControl:
         )
         self.handoff_work_id = queued["id"]
         return {
-            "queued_work_id": queued["id"],
-            "state": queued["state"],
-            "current_work_id": self.current["id"],
-            "instruction": (
-                "新工作已交给 queued_work_id，原批次或程序收拢后让出执行位置。"
-                "后续由新工作的原始请求开始执行和交付；当前工作不得代做、代发。"
-            ),
+            "id": queued["id"],
+            "status": queued["state"],
+            "current_task": self.current["id"],
+            "note": "新任务从它自己的原始请求开始执行和交付；当前任务不要代做或代发。",
         }
 
     async def runtime_state(self) -> dict[str, Any]:

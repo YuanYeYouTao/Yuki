@@ -39,10 +39,11 @@ async def test_history_uses_original_send_receipt_without_changing_lifecycle(
 async def test_history_preserves_unknown_work_reservation_and_root_budget(database, tmp_path):
     case = await setup_run(database, tmp_path, mode="silent")
     case.provider._responder = lambda _: calls(
-        ("accept-work", {"action": "accept", "goal": "继续原工作"}),
+        ("accept-work", "manage_task", {"action": "start", "goal": "继续原工作"}),
         (
             "wait-work",
-            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 600}]},
+            "wait",
+            {"for": [{"seconds": 600}]},
         ),
     )
     case.clock.advance(2)
@@ -116,10 +117,11 @@ async def test_legacy_cursor_and_step_receipts_keep_exact_original_ownership(
 ):
     case = await setup_run(database, tmp_path, mode="silent")
     case.provider._responder = lambda _: calls(
-        ("accept-original-work", {"action": "accept", "goal": "原付费工作"}),
+        ("accept-original-work", "manage_task", {"action": "start", "goal": "原付费工作"}),
         (
             "wait-original-work",
-            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 600}]},
+            "wait",
+            {"for": [{"seconds": 600}]},
         ),
     )
     case.clock.advance(2)

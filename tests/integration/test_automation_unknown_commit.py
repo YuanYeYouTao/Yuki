@@ -52,10 +52,10 @@ async def test_automation_commit_ack_loss_survives_the_real_main_binding(
     backend.refresh_catalog(agent)
     arguments = {"action": action}
     if action == "create":
-        arguments["task"] = {**case.row.script, "name": "original unknown-ACK creation"}
+        arguments.update({**case.row.script, "name": "original unknown-ACK creation"})
     else:
-        arguments["automation_id"] = case.row.id
-    call = ToolCall("original-call", ToolFunction("automation_manage", json.dumps(arguments)))
+        arguments["id"] = case.row.id
+    call = ToolCall("original-call", ToolFunction("manage_schedule", json.dumps(arguments)))
     invocation = direct_invocations((call,), agent)[0]
     commit = AsyncSession.commit
     commits = 0
@@ -69,11 +69,8 @@ async def test_automation_commit_ack_loss_survives_the_real_main_binding(
     with monkeypatch.context() as fault:
         fault.setattr(AsyncSession, "commit", lost_ack)
         payload = json.loads(await backend.execute_call(invocation))
-    assert payload["ok"] is False
-    assert payload["uncertain"] is True
-    assert payload.get("mutation_committed") is None
-    assert payload["retryable"] is False
-    assert payload["metadata"]["database_write_phase"] == "commit"
+    assert payload["ok"] is False and payload["error"] == "database_failure"
+    assert payload["status"] == "unknown"
     assert commits == 1  # No failed-creation audit or original operation replay.
     if action == "create":
         async with database.read_session() as reader:

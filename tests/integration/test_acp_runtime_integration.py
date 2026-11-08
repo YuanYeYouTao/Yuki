@@ -226,7 +226,7 @@ async def test_two_sessions_share_original_person_and_fixed_tools_without_sharin
     requests = env.provider.requests
     assert len(requests) == 4
     assert requests[0].tools == requests[2].tools
-    assert "query_chat_history" in {tool.name for tool in requests[0].tools}
+    assert "read_chat" in {tool.name for tool in requests[0].tools}
     assert "read_personal_entry" not in {tool.name for tool in requests[0].tools}
     assert "FIRST_SESSION_ONLY" not in str(requests[2].messages)
     assert "SECOND_SESSION_ONLY" not in str(requests[0].messages)
@@ -369,9 +369,9 @@ async def test_original_work_waits_and_resumes_with_confirmed_delivery_in_same_s
 
     env.provider._responder = calls(
         [
-            ("task_control", {"action": "accept", "goal": "Keep this original ACP Work"}),
+            ("manage_task", {"action": "start", "goal": "Keep this original ACP Work"}),
             ("send", {"text": "Which city should I use?"}),
-            ("task_control", {"action": "need_input", "reason": "The city is still missing"}),
+            ("wait", {"for": [{"message": True}]}),
         ]
     )
     session = await new_session(env)
@@ -398,7 +398,7 @@ async def test_original_work_waits_and_resumes_with_confirmed_delivery_in_same_s
     env.provider._responder = calls(
         [
             ("send", {"text": "Taipei result from the original ACP Work"}),
-            ("task_control", {"action": "complete", "result": "Original work is complete"}),
+            ("manage_task", {"action": "finish", "result": "Original work is complete"}),
         ]
     )
     await env.app.work_resumer.resume(queued)
@@ -421,17 +421,18 @@ async def test_two_sessions_keep_same_uuid_work_inputs_in_their_original_mailbox
     env = acp_runtime
 
     def respond(request):
-        arguments = (
-            {"action": "need_input", "reason": "Wait for this session's city"}
+        name, arguments = (
+            ("wait", {"for": [{"message": True}]})
             if request.messages[-1].role == "tool"
-            else {"action": "accept", "goal": "Keep this ACP session's original Work"}
+            else (
+                "manage_task",
+                {"action": "start", "goal": "Keep this ACP session's original Work"},
+            )
         )
         return ChatResponse(
             content="",
             latency_seconds=0,
-            tool_calls=(
-                ToolCall(str(uuid4()), ToolFunction("task_control", json.dumps(arguments))),
-            ),
+            tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),),
         )
 
     env.provider._responder = respond
@@ -514,7 +515,7 @@ async def test_cancel_rechecks_work_committed_before_the_original_main_returns(
     scripted_calls = iter(
         [
             ("send", {"text": "Confirmed before Work acceptance"}),
-            ("task_control", {"action": "accept", "goal": "Cancel this newly admitted Work"}),
+            ("manage_task", {"action": "start", "goal": "Cancel this newly admitted Work"}),
         ]
     )
 
@@ -533,8 +534,8 @@ async def test_cancel_rechecks_work_committed_before_the_original_main_returns(
 
     async def after_committed(control, name, arguments, call_key, **kwargs):
         result = await original_execute(control, name, arguments, call_key, **kwargs)
-        if name == "task_control" and arguments.get("action") == "accept":
-            assert json.loads(result)["ok"]
+        if name == "manage_task" and arguments.get("action") == "start":
+            assert "error" not in json.loads(result)
             admitted.append(control.current["id"])
             accepted.set()
             await release_accept.wait()
@@ -702,8 +703,8 @@ async def test_acp_history_requires_confirmed_outbound_and_keeps_deleted_keyset_
         platform="acp",
     )
     history = await env.app.social_service.execute(
-        "query_chat_history",
-        {"view": "recent", "order": "oldest", "limit": 100},
+        "read_chat",
+        {"order": "oldest", "limit": 100},
         SocialContext("acp-history", "query", principal.conversation_id, actor=actor),
     )
     assert [item["event_id"] for item in history["events"]] == visible_ids

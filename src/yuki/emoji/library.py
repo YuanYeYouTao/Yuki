@@ -282,9 +282,7 @@ class EmojiLibrary:
             if source_path is None:
                 return asset
             try:
-                content = await _media_io(
-                    _read_original, source_path, expected_sha or asset.sha256
-                )
+                content = await _media_io(_read_original, source_path, expected_sha or asset.sha256)
             except (OSError, ValueError):
                 return asset
         if content is None:

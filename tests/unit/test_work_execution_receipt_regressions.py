@@ -45,10 +45,10 @@ async def ready(database, tmp_path):
 
 
 async def complete(control):
-    return json.loads(await control.execute("task_control", {"action": "complete"}, "complete"))
+    return json.loads(await control.execute("manage_task", {"action": "finish"}, "complete"))
 
 
-async def launch(session, store, *, tool_name="terminal_exec"):
+async def launch(session, store, *, tool_name="run_command"):
     await execute(
         session,
         store,
@@ -94,7 +94,7 @@ async def original_launch(database, session):
     return json.loads(receipt)["outcome"]
 
 
-@pytest.mark.parametrize("tool", ["get_code_run", "terminal_read"])
+@pytest.mark.parametrize("tool", ["get_code_run", "read_command"])
 @pytest.mark.parametrize("status", ["running", "unknown"])
 async def test_external_read_preserves_observation_without_owning_execution(
     database, tmp_path, tool, status
@@ -121,7 +121,7 @@ async def test_external_read_preserves_observation_without_owning_execution(
     await control.reconcile_completed_children()
     resumed = WorkControl(control.repository, control.lease, "result-test", {}, control.validate)
     resumed.current = await control.repository.get(control.current["id"])
-    assert (await complete(resumed))["ok"] is True
+    assert "error" not in await complete(resumed)
 
 
 async def test_reading_own_running_execution_does_not_remove_original_dependency(
@@ -143,7 +143,7 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
         side_effecting=False,
     )
     assert (await original_launch(database, session))["pending"] is True
-    assert (await complete(control))["ok"] is True
+    assert "error" not in await complete(control)
     await control.settle(pending_inputs=False)
     assert control.current["state"] == "waiting_external"
     assert control.accepted["action"] == "complete"
@@ -241,14 +241,14 @@ async def test_reconnecting_control_cannot_settle_a_still_running_execution(
             error_code=response["error"],
             mutation_committed=False,
             provider_id="core",
-            tool_name="terminal_control",
+            tool_name="control_command",
         ),
         side_effecting=True,
     )
     after = await original_launch(database, session)
     assert after["status"] == "running" and after["pending"] is True
     assert after["mutation_committed"] is True
-    assert (await complete(control))["ok"] is True
+    assert "error" not in await complete(control)
     await control.settle(pending_inputs=False)
     assert control.current["state"] == "waiting_external"
     assert control.accepted["action"] == "complete"
@@ -396,9 +396,9 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 os.kill(started["pid"], 0)
                 assert executions.read_text() == "once"
                 cancelled = json.loads(
-                    await control.execute("task_control", {"action": "cancel"}, "cancel-owned")
+                    await control.execute("manage_task", {"action": "cancel"}, "cancel-owned")
                 )
-                assert cancelled["ok"]
+                assert cancelled.get("ok") is not False
                 await control.settle(pending_inputs=False)
                 assert control.current["state"] == "cancelled"
 
@@ -481,8 +481,8 @@ async def test_interrupted_read_is_visible_but_not_an_unknown_mutation(database,
         ToolExecutionResult(ok=True, mutation_committed=True, tool_name="business_write"),
         side_effecting=True,
     )
-    assert json.loads(following)["ok"] is True
-    assert (await complete(control))["ok"] is True
+    assert json.loads(following).get("ok") is not False
+    assert "error" not in await complete(control)
 
 
 @pytest.mark.parametrize("status,exit_code", [("succeeded", 0), ("failed", 1), ("cancelled", 1)])
@@ -500,12 +500,12 @@ async def test_terminal_receipt_preserves_original_committed_operation(
             data={"run_id": OWNED, "pending": False, "status": status, "exit_code": exit_code},
             mutation_committed=False,
             provider_id="core",
-            tool_name="terminal_read",
+            tool_name="read_command",
         ),
         side_effecting=False,
     )
     after = await original_launch(database, session)
-    assert after["side_effecting"] is True and after["tool"] == "terminal_exec"
+    assert after["side_effecting"] is True and after["tool"] == "run_command"
     assert after["mutation_committed"] is True and after["pending"] is False
     assert after["ok"] is (status == "succeeded")
 
@@ -536,8 +536,8 @@ async def test_unknown_mutation_remains_unknown_without_vetoing_new_call_or_comp
     following = await execute(
         session, store, "following", ToolExecutionResult(ok=True, tool_name="write")
     )
-    assert json.loads(following)["ok"] is True
-    assert (await complete(control))["ok"] is True
+    assert json.loads(following).get("ok") is not False
+    assert "error" not in await complete(control)
     await control.settle(pending_inputs=False)
     assert control.current["state"] == "completed"
     async with database.read_session() as reader:
@@ -575,22 +575,20 @@ async def test_external_running_read_through_real_kernel_does_not_block_completi
         work,
         backend,
         runtime,
-        ToolCall("owned-completed", ToolFunction("terminal_exec", '{"command":"printf offline"}')),
+        ToolCall("owned-completed", ToolFunction("run_command", '{"command":"printf offline"}')),
     )
     result = await invoke(
         work,
         backend,
         runtime,
-        ToolCall(
-            "external-status", ToolFunction("terminal_read", json.dumps({"run_id": EXTERNAL}))
-        ),
+        ToolCall("external-status", ToolFunction("read_command", json.dumps({"id": EXTERNAL}))),
     )
     public = json.loads(result.calls[0][1])
-    assert public["ok"] is True and public["process"]["pending"] is True
-    assert public["mutation_committed"] is False
+    # The model reads the observed process itself, not an execution envelope.
+    assert public == {"id": EXTERNAL, "status": "running"}
     assert [item["method"] for item in wire] == ["terminal_exec", "terminal_read"]
     # The read does not create an owned SandboxTask for the observed run.
     assert await tasks.get(wire[1]["request_id"]) is None
-    assert (await complete(work.control))["ok"] is True
+    assert "error" not in await complete(work.control)
     await work.control.settle(pending_inputs=False)
     assert work.control.current["state"] == "completed"

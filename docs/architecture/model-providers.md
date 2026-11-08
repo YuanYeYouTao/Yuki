@@ -56,7 +56,7 @@ Gemini、Claude 原生协议的连接品牌名只作展示；修订按实际原�
 这里的支持指适配器与 Yuki 执行合同通过离线协议回放，不代表任意同名模型都支持这些功能，
 也不代表各家服务已完成真实 API 或 QQ 验收。Profile 的能力声明必须符合实际模型。
 
-主 Agent 当前/引用图片、历史 `inspect_conversation_attachment`、工作区 `workspace_inspect`
+主 Agent 当前/引用图片、`view_file`（历史附件、工作区或本人电脑文件）
 和获准工具图片共用原主模型图片输入。历史/工作区工具只准备像素，不再调用独立
 Qwen；DeepSeek 使用这些工具也走自身已声明的 `image_input`，并非固定先读取视觉摘要。
 本次采用各协议已有的用户图片编码：整批文字工具回执配对后追加 Host 媒体观察，保留原

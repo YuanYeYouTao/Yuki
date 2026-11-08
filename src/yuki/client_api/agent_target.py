@@ -32,13 +32,36 @@ def target_data(target: AgentTarget | None) -> dict[str, Any] | None:
     return target.model_dump(exclude_none=True) if target is not None else None
 
 
+def tool_arguments(target: AgentTarget) -> dict[str, Any]:
+    """The App's selection in coding-Agent tool terms; the App payload is unchanged."""
+    data = target.model_dump(exclude_none=True)
+    arguments: dict[str, Any] = {}
+    if "intent" in data:
+        arguments["action"] = "answer" if data["intent"] == "respond" else data["intent"]
+    # The most specific selected resource; the service resolves the rest from it.
+    for key in ("operation_id", "execution_id", "session_id", "instance_id"):
+        if key in data:
+            arguments["target"] = {key: data[key]}
+            break
+    if "device_id" in data:
+        arguments["device"] = data["device_id"]
+    for key in ("cwd",):
+        if key in data:
+            arguments[key] = data[key]
+    if "permission_id" in data:
+        arguments["question"] = data["permission_id"]
+    if "option_id" in data or "response" in data:
+        arguments["answer"] = data.get("option_id", data.get("response"))
+    return arguments
+
+
 def input_content(body: str, target: AgentTarget | None) -> str:
     if target is None:
         return body
     return (
         body
         + "\n[用户明确选择的本机 Agent 目标与操作]\n"
-        + json.dumps(target_data(target), ensure_ascii=False, sort_keys=True)
+        + json.dumps(tool_arguments(target), ensure_ascii=False, sort_keys=True)
     )
 
 

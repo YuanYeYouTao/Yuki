@@ -141,13 +141,13 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
         number = len(provider.requests)
         if number == 1:
             return _tool(
-                "task_control",
-                {"action": "accept", "goal": "保存工作结果"},
+                "manage_task",
+                {"action": "start", "goal": "保存工作结果"},
                 "accept",
             )
         if number == 2:
             return _tool(
-                "update_short_state",
+                "set_short_note",
                 {"slot": 1, "text": "private-work-result"},
                 "update",
             )
@@ -156,20 +156,18 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
                 "",
                 0,
                 tool_calls=(
-                    ToolCall(
-                        "resumed-history", ToolFunction("query_chat_history", '{"view": "recent"}')
-                    ),
+                    ToolCall("resumed-history", ToolFunction("read_chat", "{}")),
                     ToolCall(
                         "resumed-write",
                         ToolFunction(
-                            "update_short_state",
+                            "set_short_note",
                             json.dumps({"slot": 1, "text": "resumed-work-result"}),
                         ),
                     ),
                 ),
             )
         if number == 4:
-            return _tool("task_control", {"action": "complete"}, "complete")
+            return _tool("manage_task", {"action": "finish"}, "complete")
         raise AssertionError("unexpected model replay")
 
     provider._responder = respond
@@ -280,7 +278,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     async with database.read_session() as reader:
         receipts = (await reader.scalars(select(effects.c.receipt_json))).all()
     assert any(
-        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "query_chat_history"
+        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "read_chat"
         and outcome.get("ok")
         for receipt in receipts
     )
@@ -488,13 +486,11 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
         ToolInvocationContext(runtime=runtime, invocation_key=owner.call_key("recent-history"))
     )
     try:
-        result = (
-            await chat._tools.execute("query_chat_history", '{"view": "recent"}', runtime)
-        ).model_payload()
+        result = (await chat._tools.execute("read_chat", "{}", runtime)).model_payload()
     finally:
         current_invocation.reset(token)
-    assert result["ok"], result
-    rows = result["data"]["events"]
+    assert "ok" not in result, result
+    rows = result["events"]
     assert len(rows) == 25
     assert {row["content"] for row in rows} == {f"source {index}" for index in range(5, 30)}
     await owner.control.repository.release(owner.control.lease)

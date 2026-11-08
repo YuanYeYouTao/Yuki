@@ -78,55 +78,48 @@ async def test_app_memory_write_search_detail_and_correction_keep_original_perso
     )
     created = (
         await tools.execute(
-            "memory_change",
+            "save_memory",
             json.dumps(
                 {
-                    "operation": "create",
-                    "target": {"subject_ref": "current_speaker", "scope_type": "person"},
-                    "new_content": "喜欢喝茶",
-                    "memory_key": "drink",
-                    "category": "preference",
-                    "evidence_quote": "我喜欢喝茶",
+                    "target": {"person_id": person},
+                    "content": "喜欢喝茶",
+                    "kind": "preference",
+                    "quote": "我喜欢喝茶",
                 }
             ),
             runtime,
         )
     ).model_payload()
-    assert created["ok"], created
-    fact_id = created["data"]["new_fact_id"]
+    assert created["outcome"] == "committed", created
+    fact_id = created["fact_id"]
     fact = await facts.get_fact(fact_id)
     assert fact.canonical_subject_person_id == person
     assert [row.id for row in await facts.list_person(person_id=person)] == [fact_id]
     found = (await tools.execute("search_memory", '{"query":"喝茶"}', runtime)).model_payload()
-    assert [row["fact_id"] for row in found["data"]["memories"]] == [fact_id]
-    assert found["data"]["memories"][0]["subject"] == {"person_id": person, "space_id": None}
+    assert [row["fact_id"] for row in found["memories"]] == [fact_id]
+    assert found["memories"][0]["person_id"] == person
+    assert "space_id" not in found["memories"][0]
     detail = (
-        await tools.execute(
-            "read_memory", json.dumps({"view": "fact", "fact_id": fact_id}), runtime
-        )
+        await tools.execute("search_memory", json.dumps({"fact_id": fact_id}), runtime)
     ).model_payload()
-    evidence = (
-        await tools.execute(
-            "read_memory", json.dumps({"view": "evidence", "fact_id": fact_id}), runtime
-        )
-    ).model_payload()
-    assert detail["ok"] and evidence["ok"] and evidence["data"]["evidence"]
+    assert detail == {"memories": found["memories"]}
     corrected = (
         await tools.execute(
-            "memory_change",
+            "edit_memory",
             json.dumps(
                 {
-                    "operation": "correct",
                     "fact_id": fact_id,
-                    "new_content": "喜欢咖啡",
-                    "evidence_quote": "喜欢咖啡",
+                    "action": "correct",
+                    "content": "喜欢咖啡",
+                    "quote": "喜欢咖啡",
                 }
             ),
             runtime,
         )
     ).model_payload()
-    assert corrected["ok"], corrected
-    replacement = await facts.get_fact(corrected["data"]["new_fact_id"])
+    assert corrected["applied"] == "correct", corrected
+    assert corrected["replaced_fact_id"] == fact_id
+    replacement = await facts.get_fact(corrected["fact_id"])
     assert (
         replacement.canonical_subject_person_id == person and replacement.supersedes_id == fact_id
     )

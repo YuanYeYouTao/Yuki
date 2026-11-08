@@ -55,8 +55,8 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     database, tmp_path, monkeypatch, new_trigger
 ):
     calls = (
-        tool("task_control", {"action": "accept", "goal": "original new goal"}, "first-accept"),
-        tool("task_control", {"action": "complete"}, "complete"),
+        tool("manage_task", {"action": "start", "goal": "original new goal"}, "first-accept"),
+        tool("manage_task", {"action": "finish"}, "complete"),
         tool("send", {"text": "original tail"}, "send"),
     )
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
@@ -95,7 +95,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
         before = set(await reader.scalars(select(work.c.id)))
     result, recovered = await _restore(probe, source=source)
     receipt = json.loads(await recovered.session.journal.effect_result(original_key))
-    assert receipt["ok"] and receipt["work_id"] == probe.control.current["id"]
+    assert receipt.get("ok") is not False and receipt["id"] == probe.control.current["id"]
     assert result.work_state == "completed"
     assert recovered.handoff_work_id is None
     assert probe.observed == ["send"]
@@ -130,7 +130,7 @@ async def test_registration_and_original_receipt_roll_back_as_one_writer(
     response = ChatResponse(
         "",
         0,
-        tool_calls=(tool("task_control", {"action": "accept", "goal": "new goal"}, "accept"),),
+        tool_calls=(tool("manage_task", {"action": "start", "goal": "new goal"}, "accept"),),
     )
     probe = await case(database, tmp_path, [response])
     probe.control.current = None
@@ -173,7 +173,7 @@ async def test_registration_commit_retains_original_paid_model_usage_before_next
     response = ChatResponse(
         "",
         0,
-        tool_calls=(tool("task_control", {"action": "accept", "goal": "new goal"}, "accept"),),
+        tool_calls=(tool("manage_task", {"action": "start", "goal": "new goal"}, "accept"),),
     )
     probe = await case(database, tmp_path, [response])
     probe.control.current = None
@@ -237,7 +237,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
         "",
         0,
         tool_calls=(
-            tool("task_control", {"action": "complete"}, "complete"),
+            tool("manage_task", {"action": "finish"}, "complete"),
             tool("write_fixture", {"step": 2}, "same-id"),
             tool("send", {"text": "original tail"}, "send"),
         ),
@@ -278,7 +278,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
 
 async def _media_recovery_case(database, tmp_path, monkeypatch, *, new_image=False, code=False):
     calls = (
-        tool("task_control", {"action": "update", "goal": "original child goal"}, "update"),
+        tool("manage_task", {"action": "update", "goal": "original child goal"}, "update"),
         tool("write_fixture", {}, "prefix-image"),
         *((tool("write_fixture", {}, "new-image"),) if new_image else ()),
         *((tool("execute_code", {"code": "1"}, "code"),) if code else ()),

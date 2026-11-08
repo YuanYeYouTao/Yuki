@@ -26,40 +26,46 @@ class SocialTarget(BaseModel):
     id: UUID
 
 
-class SocialEmoji(BaseModel):
+class SocialSticker(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     goal: str
     emotion: str = ""
 
 
+class SocialFile(BaseModel):
+    """One original file: a path (optionally on a personal computer) or a snapshot."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str | None = None
+    artifact_id: UUID | None = None
+    device: str | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def one_source(self) -> "SocialFile":
+        if (self.path is None) == (self.artifact_id is None):
+            raise ValueError("choose_one_source")
+        if self.device is not None and self.path is None:
+            raise ValueError("device_requires_path")
+        return self
+
+
 class SocialMessage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str = Field(default="", repr=False)
-    artifact_id: UUID | None = None
-    path: str | None = None
-    device_id: str | None = None
-    name: str | None = None
-    expected_version: str | None = None
-    attachment_kind: Literal["image", "file"] | None = None
-    emoji: SocialEmoji | None = None
+    file: SocialFile | None = None
+    # Images display as chat images unless sent as a file; other files are files.
+    as_file: bool = False
+    sticker: SocialSticker | None = None
 
     @model_validator(mode="after")
     def validate_content(self) -> "SocialMessage":
-        if (
-            not self.text.strip()
-            and self.artifact_id is None
-            and self.path is None
-            and self.emoji is None
-        ):
+        if not self.text.strip() and self.file is None and self.sticker is None:
             raise ValueError("message_empty")
-        if self.artifact_id is not None and self.path is not None:
-            raise ValueError("choose_path_or_artifact_id")
-        has_attachment = self.artifact_id is not None or self.path is not None
-        if has_attachment != (self.attachment_kind is not None):
-            raise ValueError("attachment_kind_required")
-        if has_attachment and self.emoji is not None:
+        if self.file is not None and self.sticker is not None:
             raise ValueError("message_media_conflict")
         return self
 

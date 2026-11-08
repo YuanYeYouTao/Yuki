@@ -442,7 +442,10 @@ class ChatTool:
     name: str
     description: str
     parameters: dict[str, object]
+    # Host policy carried by the declaration itself: capability namespace and
+    # effect (a CapabilityEffect value). Core tools need both to be bound.
     namespace: str = ""
+    effect: str = ""
     aliases: tuple[str, ...] = ()
     use_when: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()

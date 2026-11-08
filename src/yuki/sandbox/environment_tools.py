@@ -10,17 +10,8 @@ if TYPE_CHECKING:
 # Manager RPC methods and job kinds of submitted executions, imported by the
 # Manager (persistent.py). Wire protocol: it does not follow model tool names.
 EXECUTION_TOOLS = frozenset({"terminal_exec"})
-READ_TOOLS = frozenset({"terminal_read", "environment_status"})
-ENVIRONMENT_TOOLS = frozenset(
-    {
-        "terminal_exec",
-        "terminal_read",
-        "terminal_control",
-        "environment_status",
-        "environment_service",
-    }
-)
-SANDBOX_TOOLS = ENVIRONMENT_TOOLS
+# Model tools served by the persistent environment or a personal computer.
+SANDBOX_TOOLS = frozenset({"run_command", "read_command", "control_command", "get_environment"})
 
 
 def tool(
@@ -29,12 +20,15 @@ def tool(
     fields: dict[str, Any],
     required: tuple[str, ...] = (),
     *,
+    namespace: str = "",
     read: bool = False,
 ) -> ChatTool:
     from yuki.domain.messages import ChatTool
 
     return ChatTool(
         name=name,
+        namespace=namespace or ("sandbox.read" if read else "sandbox.run"),
+        effect="read_state" if read else "write_state",
         description=description,
         result_cacheable=False,
         parameters={
@@ -48,22 +42,23 @@ def tool(
 
 def environment_tools() -> tuple[ChatTool, ...]:
     text = {"type": "string"}
-    run = {"run_id": text}
-    cursor = {"cursor": {"type": "integer", "minimum": 0}}
+    device = {
+        "device": {
+            "type": "string",
+            "description": "本人电脑的设备 ID；省略时在 Yuki 自己的 Linux 环境执行。",
+        }
+    }
+    identity = {"id": {"type": "string", "description": "run_command 返回的 id"}}
     return (
         tool(
-            "terminal_exec",
-            "默认以管理员身份操作自己的持久 Linux 环境，HOME=/home/yuki，"
-            "可用浏览器模式见 environment_status。装有浏览器时，可运行 yuki-computer wake、"
-            "browser 或 screenshot。文件在 /workspace；"
-            "可直接使用 Bash、Python、Node、apt、pip/npm 和公网。"
-            "默认持续运行，约5秒返回原 run_id；pending 后用 terminal_read 查询，勿重提命令。"
-            "tty=true 支持交互，terminal_control(action=input) 发送输入。"
-            "指定 device_id 则操作该已授权本机的实际系统 Shell；使用其操作系统路径，"
-            "原生管道交互支持 stdin，不承诺完整 PTY。可调用该电脑上的 OpenCLI 或其他工具。",
+            "run_command",
+            "运行一条 Shell 命令。默认在 Yuki 自己的持久 Linux 环境（HOME=/home/yuki，"
+            "文件在 /workspace，可用 Bash、Python、Node、apt、pip/npm 与公网；装有浏览器时"
+            "可用 yuki-computer）；给 device 则在该本人电脑的系统 Shell 执行。约 5 秒后返回，"
+            "仍在运行时用 read_command 按 id 继续读，不要重新提交；tty=true 支持交互输入。",
             {
                 "command": text,
-                "device_id": text,
+                **device,
                 "cwd": text,
                 "tty": {"type": "boolean"},
                 "timeout_seconds": {"type": "integer", "minimum": 0},
@@ -71,47 +66,100 @@ def environment_tools() -> tuple[ChatTool, ...]:
             ("command",),
         ),
         tool(
-            "terminal_read",
-            "按原 run_id 读取增量输出、状态、退出码及终态 completion/artifact；"
-            "也可查旧安装或代码任务。"
-            "wait_seconds 只等待观察，不停止进程；next_cursor 续读，"
-            "轮转丢失会标记，空输出不代表完成。",
-            {**run, **cursor, "wait_seconds": {"type": "number", "minimum": 0}},
-            ("run_id",),
+            "read_command",
+            "按 id 读取命令的新输出、状态和退出码。wait_seconds 只等待观察，不停止命令；"
+            "用结果的 next_cursor 继续读；空输出不代表已经结束。",
+            {
+                **identity,
+                "wait_seconds": {"type": "number", "minimum": 0},
+                "cursor": text,
+            },
+            ("id",),
             read=True,
         ),
         tool(
-            "terminal_control",
-            "控制原终端：input 发送原样 text（回车显式写换行），interrupt 相当于 Ctrl+C，"
-            "cancel 停止原任务，close 关闭会话。已写文件保留，不创建第二个命令。",
+            "control_command",
+            "控制运行中的命令：input 发送 text 原文（回车需写换行），interrupt 相当于 Ctrl+C，"
+            "cancel 停止命令，close 关闭终端。已写出的文件保留。",
             {
-                **run,
+                **identity,
                 "action": {"type": "string", "enum": ["input", "interrupt", "cancel", "close"]},
                 "text": text,
             },
-            ("run_id", "action"),
+            ("id", "action"),
         ),
         tool(
-            "environment_status",
-            "默认查看自己的持久环境、容量和服务；指定 device_id 查看本机实际授权、系统和 Shell。",
-            {"device_id": text},
+            "get_environment",
+            "查看 Yuki 自己环境的容量、后台服务和浏览器模式；给 device 则查看该本人电脑的"
+            "系统、Shell 与授权。",
+            {**device},
             read=True,
         ),
-        tool(
-            "environment_service",
-            "管理环境内部后台服务；登记后可跨服务器重启恢复。"
-            "环境内服务可通过 localhost 访问；按 restart 策略恢复，显式停止后不自动重启。",
-            {
-                "action": {
-                    "type": "string",
-                    "enum": ["register", "start", "stop", "delete", "status", "logs"],
-                },
-                "name": text,
-                "command": text,
-                "cwd": text,
-                "restart": {"type": "string", "enum": ["on-failure", "always", "never"]},
-                **cursor,
-            },
-            ("action", "name"),
-        ),
     )
+
+
+def _cursor(value: object, name: str = "cursor") -> int:
+    """An opaque cursor string issued by a previous result: its byte offset."""
+    from yuki.external_agents.errors import ExternalAgentArgumentError
+
+    if not isinstance(value, str) or not value.isdigit():
+        raise ExternalAgentArgumentError(
+            "invalid_cursor", f"{name} 使用上一次结果返回的 next_cursor 原值"
+        )
+    return int(value)
+
+
+def command_arguments(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Translate a model call into the unchanged Manager/Connector wire arguments.
+
+    The wire arguments are also the original task-row payload, so equal calls
+    keep the same request fingerprint as before the tool rename.
+    """
+    wire: dict[str, Any] = {}
+    for key, value in args.items():
+        if key == "device":
+            wire["device_id"] = value
+        elif key == "id":
+            wire["run_id"] = value
+        elif key == "cursor":
+            wire["cursor"] = _cursor(value)
+        else:
+            wire[key] = value
+    return wire
+
+
+# Wire and receipt bookkeeping kept in typed data, never shown to the model.
+_COMMAND_INTERNAL = frozenset(
+    {
+        "run_id",
+        "request_id",
+        "state_sequence",
+        "admitted",
+        "cursor",
+        "output_offset",
+        "completion",
+        "retryable",
+        "uncertain",
+        "pending",
+        "error",
+    }
+)
+
+
+def command_view(data: dict[str, Any]) -> dict[str, Any]:
+    """Model view of a command receipt: ``id`` plus the observed facts."""
+    view: dict[str, Any] = {}
+    if isinstance(data.get("run_id"), str):
+        view["id"] = data["run_id"]
+    view.update(
+        {
+            key: value
+            for key, value in data.items()
+            if key not in _COMMAND_INTERNAL and value is not None
+        }
+    )
+    if "status" not in view and data.get("pending") is True:
+        view["status"] = "running"
+    if isinstance(data.get("next_cursor"), int) and not isinstance(data["next_cursor"], bool):
+        view["next_cursor"] = str(data["next_cursor"])
+    return view

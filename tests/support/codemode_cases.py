@@ -48,8 +48,10 @@ WRITES = ("workspace_write",)
 TOOLS = (
     *(ChatTool(name, name, {"type": "object"}) for name in (*READS, *WRITES)),
     ChatTool("send", "send", {"type": "object"}),
-    ChatTool("memory_change", "memory", {"type": "object"}),
-    ChatTool("task_control", "control", {"type": "object"}),
+    ChatTool("save_memory", "memory", {"type": "object"}),
+    ChatTool("manage_task", "control", {"type": "object"}),
+    ChatTool("wait", "control", {"type": "object"}),
+    ChatTool("get_tasks", "control", {"type": "object"}),
     EXECUTE_CODE_TOOL,
 )
 LIMITS = CodeModeLimits(
@@ -104,9 +106,9 @@ class FakeDomain:
 
 def classify(call: ToolCall) -> ChildClass:
     name = call.function.name
-    if name == "task_control":
+    if name in {"manage_task", "wait", "get_tasks"}:
         return ChildClass("control", False, False)
-    if name == "memory_change":
+    if name == "save_memory":
         return ChildClass("memory_write", False, True)
     if name == "send":
         return ChildClass("send", False, True)

@@ -102,7 +102,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         assert context is not None
         result = await env.service.execute(
             "send",
-            {"target": {"kind": "space", "target_id": env.space}, "text": "same"},
+            {"target": {"space_id": env.space}, "text": "same"},
             replace(
                 env.context,
                 call_id=context.invocation_key,
@@ -116,7 +116,15 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         InProcessToolProvider(
             provider_id="core",
             source=CapabilityTrustSource.CORE,
-            definitions=lambda _: (ChatTool("send", "send", {"type": "object"}),),
+            definitions=lambda _: (
+                ChatTool(
+                    "send",
+                    "send",
+                    {"type": "object"},
+                    namespace="social.send",
+                    effect="platform_send",
+                ),
+            ),
             execute=dispatch,
         )
     )
@@ -149,7 +157,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         )
 
     first = await batch(calls)
-    assert all(json.loads(value)["data"]["status"] == "succeeded" for _, value, _ in first.calls)
+    assert all(json.loads(value)["status"] == "succeeded" for _, value, _ in first.calls)
     await batch(calls)  # Reentry queries both original receipts.
     owner.sequence += 1
     await batch(calls[:1])  # Same Provider ID in a later model response.

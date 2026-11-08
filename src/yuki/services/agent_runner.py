@@ -48,7 +48,7 @@ from yuki.runtime.effect_outcomes import (
 )
 from yuki.runtime.execution_receipts import ExecutionReceipts, current_receipts
 from yuki.runtime.origin import TurnOrigin
-from yuki.runtime.work_control import WORK_CONTROL_NAMES, WorkControl
+from yuki.runtime.work_control import READ_ONLY_CONTROLS, WORK_CONTROL_NAMES, WorkControl
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.context_boundary import ContextBoundaryReader
@@ -74,17 +74,35 @@ CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
 
 def _unexecuted_tool_result(name: str, error: str) -> str:
     """Publish a pre-dispatch refusal before formatting its public result."""
+    outcome = ToolExecutionResult(
+        ok=False,
+        error_code=error,
+        public_message=(
+            f"没有名为 {name} 的工具；只调用当前声明的工具。"
+            if error == "tool_not_declared"
+            else "调用没有执行。"
+        ),
+        data={"executed": False},
+        mutation_committed=False,
+        provider_id="runtime",
+        tool_name=name,
+    )
     capture = current_result_capture.get()
     if capture is not None:
-        capture.outcome = ToolExecutionResult(
-            ok=False,
-            error_code=error,
-            data={"executed": False},
-            mutation_committed=False,
-            provider_id="runtime",
-            tool_name=name,
-        )
-    return json.dumps({"ok": False, "executed": False, "error": error})
+        capture.outcome = outcome
+    return json.dumps(outcome.model_payload(), ensure_ascii=False)
+
+
+def _undeclared(name: str) -> str:
+    """A name outside this request's manifest; never resolved through history."""
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "tool_not_declared",
+            "message": f"没有名为 {name} 的工具；只调用当前声明的工具。",
+        },
+        ensure_ascii=False,
+    )
 
 
 class _RequestNotStarted(Exception):
@@ -170,7 +188,7 @@ class AgentToolBackend(CoordinatedToolBackend, Protocol):
     def work_control_allowed(self, name: str) -> bool:
         return False
 
-    def work_query_allowed(self, action: str) -> bool:
+    def work_query_allowed(self, name: str) -> bool:
         return False
 
     async def archive_code_result(self, text: str) -> str | None:
@@ -589,7 +607,7 @@ class AgentRunner:
 
         control = runtime.work_control
         if call.function.name not in declared_names:
-            return json.dumps({"ok": False, "executed": False, "error": "tool_not_declared"})
+            return _undeclared(call.function.name)
         if control is None or control.current is None or control.session is None:
             # Short chat and single sends stay direct; code needs an admitted Work.
             return json.dumps(
@@ -733,12 +751,8 @@ class AgentRunner:
                 raise ValueError("arguments must be an object")
         except (ValueError, TypeError):
             return _unexecuted_tool_result(call.function.name, "invalid_work_arguments"), False
-        action = arguments.get("action")
-        if (
-            call.function.name == "task_control"
-            and isinstance(action, str)
-            and action in {"get", "list"}
-            and not tools.work_query_allowed(action)
+        if call.function.name in READ_ONLY_CONTROLS and not tools.work_query_allowed(
+            call.function.name
         ):
             return _unexecuted_tool_result(call.function.name, "work_query_not_authorized"), False
 
@@ -842,7 +856,7 @@ class AgentRunner:
         if calls and all(call.function.name == TOOL_LOOKUP_NAME for call in calls):
             await save_response()
             if calls[0].function.name not in declared_names:
-                result = json.dumps({"ok": False, "error": "tool_not_declared"})
+                result = _undeclared(calls[0].function.name)
             else:
                 api = runtime.script_api
                 if api is None and self.main_contract is not None:
@@ -882,17 +896,7 @@ class AgentRunner:
             return CoordinatedToolResult(((call, result, True),), 0)
 
         def readonly_control(call: ToolCall) -> bool:
-            if call.function.name != "task_control":
-                return False
-            try:
-                arguments = json.loads(call.function.arguments)
-            except ValueError:
-                return False
-            return isinstance(arguments, dict) and arguments.get("action") in {
-                "get",
-                "list",
-                "wait_status",
-            }
+            return call.function.name in READ_ONLY_CONTROLS
 
         control_calls = [
             call
@@ -996,13 +1000,7 @@ class AgentRunner:
             if call.id in metadata_results:
                 continue
             if call.function.name not in declared_names:
-                rejected_by_id[call.id] = json.dumps(
-                    {
-                        "ok": False,
-                        "error": "tool_not_declared",
-                        "detail": "Tool is not part of this request's declared manifest.",
-                    }
-                )
+                rejected_by_id[call.id] = _undeclared(call.function.name)
                 continue
             unique_calls.append(call)
 

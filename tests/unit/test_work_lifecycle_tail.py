@@ -24,31 +24,23 @@ def pairs(control):
 
 
 @pytest.mark.parametrize(
-    "ending,arguments",
+    "ending,name,arguments",
     [
-        ("completed", {"action": "complete", "result": "original internal result"}),
-        ("waiting_user", {"action": "need_input"}),
-        (
-            "waiting_external",
-            {
-                "action": "wait",
-                "run_id": None,
-                "conditions": [{"kind": "time_due", "after_seconds": 120}],
-            },
-        ),
+        ("completed", "manage_task", {"action": "finish", "result": "original internal result"}),
+        ("waiting_external", "wait", {"for": [{"seconds": 120}]}),
     ],
 )
 async def test_normal_decision_preserves_all_authorized_original_calls(
-    database, tmp_path, ending, arguments
+    database, tmp_path, ending, name, arguments
 ):
     probe = await case(database, tmp_path, [])
     calls = (
-        tool("task_control", arguments, "decision"),
+        tool(name, arguments, "decision"),
         tool("read_fixture", {}, "read"),
         tool("write_fixture", {}, "write"),
         tool("send", {"text": "prepared report"}, "send"),
-        tool("task_control", {"action": "get", "work_id": probe.control.current["id"]}, "get"),
-        tool("subagent_control", {"action": "list"}, "children"),
+        tool("get_tasks", {"id": probe.control.current["id"]}, "get"),
+        tool("get_tasks", {}, "children"),
     )
     probe.provider._responder = lambda _: ChatResponse("", 0, tool_calls=calls)
     result = await run(probe)
@@ -57,7 +49,7 @@ async def test_normal_decision_preserves_all_authorized_original_calls(
     assert probe.observed == ["read_fixture", "write_fixture", "send"]
     receipts = pairs(probe.control)
     assert list(receipts) == [call.id for call in calls]
-    assert all(receipt["ok"] for receipt in receipts.values())
+    assert all(receipt.get("ok") is not False for receipt in receipts.values())
     await probe.control.settle(pending_inputs=False)
     persisted = await probe.repository.get(probe.control.current["id"])
     assert persisted["state"] == ending
@@ -67,8 +59,8 @@ async def test_normal_decision_preserves_all_authorized_original_calls(
 @pytest.mark.parametrize("action", ["cancel", "fail"])
 async def test_true_current_revocation_stops_remaining_calls(database, tmp_path, action):
     calls = (
-        tool("task_control", {"action": "complete"}, "ordinary-decision"),
-        tool("task_control", {"action": action}, "revoke-current"),
+        tool("manage_task", {"action": "finish"}, "ordinary-decision"),
+        tool("manage_task", {"action": action}, "revoke-current"),
         tool("send", {"text": "revoked source"}, "not-sent"),
     )
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
@@ -95,7 +87,7 @@ async def test_complete_then_send_keeps_real_social_receipt_without_recovery_res
                 "",
                 0,
                 tool_calls=(
-                    tool("task_control", {"action": "complete", "result": "report sent"}, "done"),
+                    tool("manage_task", {"action": "finish", "result": "report sent"}, "done"),
                     tool("send", {"text": "actual original report"}, "report"),
                 ),
             )
@@ -121,9 +113,7 @@ async def test_complete_then_send_keeps_real_social_receipt_without_recovery_res
     probe.backend.execute_call = execute
     result = await run(probe)
     assert result.work_state == "completed" and result.text == "report sent"
-    fact = next(
-        fact for fact in await probe.control.effect_evidence() if fact["tool"] == "send"
-    )
+    fact = next(fact for fact in await probe.control.effect_evidence() if fact["tool"] == "send")
     assert fact["executed"] is True and fact["uncertain"] is False
     recovered = WorkControl(
         probe.repository,
@@ -149,7 +139,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
     database, tmp_path, monkeypatch, boundary
 ):
     calls = (
-        tool("task_control", {"action": "complete", "result": "retained result"}, "complete"),
+        tool("manage_task", {"action": "finish", "result": "retained result"}, "complete"),
         tool("write_fixture", {"step": 1}, "first-tail"),
         tool("send", {"text": "original tail report"}, "last-tail"),
     )
@@ -228,7 +218,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
     assert probe.observed.count("write_fixture") == (boundary != "after_t2")
     first_result = json.loads(await recovered.session.journal.effect_result(original_key))
     assert first_result.get("uncertain", False) == (boundary == "after_t2")
-    assert json.loads(await recovered.session.journal.effect_result(last_key))["ok"]
+    assert "error" not in json.loads(await recovered.session.journal.effect_result(last_key))
     async with database.read_session() as reader:
         first = (
             (await reader.execute(select(effects).where(effects.c.effect_key == original_key)))

@@ -61,7 +61,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 `send` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。
 
-`query_chat_history` 读取当前获准的已入账永久账本，不受 `/ai new` 上下文起点或 App/ACP 来源门槛限制。recent 默认当前 Conversation，search 未给 target 时检索所有获准入口；Person/Space/Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原 Conversation。结果保每条 conversation_id/platform/scope/thread_id，并给可读会话名的 sources 目录，不拼接自动上下文。原 operation 可读取其真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_group_members` 返回已观察人物，`coverage=observed` 不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
+`read_chat` 读取当前获准的已入账永久账本，不受 `/ai new` 上下文起点或 App/ACP 来源门槛限制。不带 target 与筛选时读当前 Conversation，带筛选未给 target 时检索所有获准入口；Person/Space/Binding 对应多个入口时直接合查，around 按内部事件 ID 定位原 Conversation。结果给可读会话名的 sources 目录，跨会话时逐条带 conversation_id，不拼接自动上下文。`target.operation_id` 可读取原发送的真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_members` 返回已观察的成员账号，不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
 
 默认模型的任意 OneBot action、戳一戳和远端/raw 历史入口已退役。独立批准的 QQ SDK 传输扩展保留明确的 QQ 边界，不能替代通用发送出口。历史已执行工具和回执继续可读。
 
@@ -79,18 +79,18 @@ Bot 必须具备实际群权限及所需可见性。未收到的消息不属于�
 
 ### 固定工具的 Telegram 适配范围
 
-TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整装配时为 30 项，不含批准插件；联网等功能的装配条件会影响实际数量，以部署冻结清单为准。不按当前平台动态增删声明。
+TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整装配时为 27 项，不含批准插件；联网等功能的装配条件会影响实际数量，以部署冻结清单为准。不按当前平台动态增删声明。
 
 | 工具 | Telegram 路径与范围 |
 | --- | --- |
 | `send` | 原生文字、图片和文件；真实提及、内部事件引用、topic 与 caption 由适配器转换，每次派发保原回执。 |
-| `recall_own_message` | 内部出站事件定位原发送 Presence，再执行 `deleteMessage`，当前主动账号不能替代原账号。 |
-| `query_chat_history` | 授权内部事件账本；已观察范围，不查询 Telegram 服务器完整历史。 |
-| `find_contacts` / `get_group_members` | 内部人物、群与已观察成员目录；不冒充 TG 完整成员列表。 |
-| `inspect_conversation_attachment` / `save_conversation_attachment_to_workspace` | 原事件附件与真实接收账号；命中缓存可离线使用，原生文件未缓存时才经原账号 `getFile` 下载字节。 |
+| `recall_message` | 内部出站事件定位原发送 Presence，再执行 `deleteMessage`，当前主动账号不能替代原账号。 |
+| `read_chat` | 授权内部事件账本；已观察范围，不查询 Telegram 服务器完整历史。 |
+| `find_contacts` / `get_members` | 内部人物、群与已观察成员目录；不冒充 TG 完整成员列表。 |
+| `view_file` / `copy_file`（聊天附件来源） | 原事件附件与真实接收账号；命中缓存可离线使用，原生文件未缓存时才经原账号 `getFile` 下载字节。 |
 | 记忆、终端、工作区、搜索、任务、子 Agent 与自动化 | 共用领域服务、内部执行和来源，不复制 TG 专属工具；仍需各功能正常配置与真实权限。 |
 
-`get_my_capabilities` 查询当前主体的权限和配置能力，不代表 Telegram 机器人管理员权限探测。原生协议离线回归不等于已有真实 TG 账号收发验收；Token、实际网络、群权限与自然运行分别核对。
+原生协议离线回归不等于已有真实 TG 账号收发验收；Token、实际网络、群权限与自然运行分别核对。
 
 ## 飞书与 Lark 接入
 

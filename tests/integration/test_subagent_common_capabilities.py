@@ -12,7 +12,7 @@ from tests.unit.test_plugin_native_media import environment
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.subagent_repository import SubagentRepository
-from yuki.runtime.subagent_tools import execute_subagent
+from yuki.runtime.subagent_tools import manage_subtask, message_task, start_subtask
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import effects, inputs, work
@@ -65,32 +65,20 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
     )
     calls = [
         ("send", {"text": "local child delivery"}),
+        ("save_memory", {"content": "hello", "target": {"person_id": case.env.person}}),
+        ("set_short_note", {"slot": 1, "text": "child updated shared state"}),
         (
-            "memory_change",
-            {
-                "operation": "create",
-                "target": {"subject_ref": "current_speaker", "scope_type": "person"},
-                "new_content": "hello",
-                "memory_key": "episode:child-source",
-                "category": "episode",
-                "reason": "保存原用户消息",
-            },
-        ),
-        ("update_short_state", {"slot": 1, "text": "child updated shared state"}),
-        (
-            "automation_manage",
+            "manage_schedule",
             {
                 "action": "create",
-                "task": {
-                    "name": "child reminder",
-                    "goal": "check later",
-                    "trigger": {"type": "after", "seconds": 3600},
-                },
+                "name": "child reminder",
+                "goal": "check later",
+                "trigger": {"type": "after", "seconds": 3600},
             },
         ),
         (plugin.name, {}),
         ("call_onebot_api", {"action": "get_status", "params": {}}),
-        ("task_control", {"action": "complete", "result": "checked"}),
+        ("manage_task", {"action": "finish", "result": "checked"}),
     ]
     observed = {}
 
@@ -118,7 +106,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         assert await executor.run(child) is None
         assert (await repository.get(child))["state"] == "completed"
         for name, _ in calls[:-2]:
-            assert observed[name]["ok"], (name, observed[name])
+            assert observed[name].get("ok", True), (name, observed[name])
         assert not observed["call_onebot_api"]["ok"]
         assert observed["call_onebot_api"]["error"] == "tool_not_declared"
         assert not any(action == "get_status" for action, _ in case.env.bot.calls)
@@ -161,10 +149,10 @@ async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
         await repository.release(lease)
     parent_before = await repository.get(parent["id"])
     calls = (
-        ("task_control", {"action": "complete", "result": "verified child result"}),
+        ("manage_task", {"action": "finish", "result": "verified child result"}),
         ("send", {"text": "actual tail delivery"}),
-        ("subagent_control", {"action": "message", "text": "original detailed report"}),
-        ("subagent_start", {"goal": "independent nested step"}),
+        ("message_task", {"text": "original detailed report"}),
+        ("start_subtask", {"goal": "independent nested step"}),
     )
     response = ChatResponse(
         "",
@@ -233,20 +221,12 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         validate_child,
         current=child_row,
     )
-    spawned = await execute_subagent(
-        control, "subagent_start", {"goal": "grandchild"}, "spawn-grandchild"
-    )
-    grandchild = spawned["child_id"]
+    spawned = await start_subtask(control, {"goal": "grandchild"}, "spawn-grandchild")
+    grandchild = spawned["id"]
     assert (await repository.get(grandchild))["parent_work_id"] == child
-    assert (await execute_subagent(control, "subagent_control", {"action": "list"}, "list"))[
-        "children"
-    ][0]["child_id"] == grandchild
-    await execute_subagent(
-        control,
-        "subagent_control",
-        {"action": "message", "child_id": grandchild, "text": "check fact"},
-        "to-grandchild",
-    )
+    listed = json.loads(await control.execute("get_tasks", {"parent": child}, "list"))
+    assert listed["tasks"][0]["id"] == grandchild
+    await message_task(control, {"id": grandchild, "text": "check fact"}, "to-grandchild")
     grand_lease = await workers.acquire(grandchild)
     grand_row = await repository.get(grandchild)
 
@@ -261,13 +241,8 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         validate_grandchild,
         current=grand_row,
     )
-    result = await execute_subagent(
-        grand_control,
-        "subagent_control",
-        {"action": "message", "text": "which fact?", "ask": True},
-        "to-child",
-    )
-    assert result["waiting_parent"] and grand_control.ending == "waiting_user"
+    result = await message_task(grand_control, {"text": "which fact?", "ask": True}, "to-child")
+    assert result["status"] == "waiting_parent" and grand_control.ending == "waiting_user"
     async with database.read_session() as reader:
         messages = {
             row["source_key"]: row["work_id"]
@@ -275,16 +250,9 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         }
     assert messages["to-grandchild"] == grandchild and messages["to-child"] == child
     sibling = await workers.start(root_lease, root["id"], "sibling", {"goal": "other target"})
-    with pytest.raises(ValueError, match="subagent_not_owned"):
-        await execute_subagent(
-            control, "subagent_control", {"action": "cancel", "child_id": sibling}, "unowned-cancel"
-        )
-    await execute_subagent(
-        control,
-        "subagent_control",
-        {"action": "cancel", "child_id": grandchild},
-        "cancel-grandchild",
-    )
+    with pytest.raises(ValueError, match="subtask_not_owned"):
+        await manage_subtask(control, "cancel", sibling, "unowned-cancel", None)
+    await manage_subtask(control, "cancel", grandchild, "cancel-grandchild", None)
     assert (await repository.get(grandchild))["state"] == "cancelled"
     assert not await repository.valid(grand_lease)
     assert (await repository.get(sibling))["state"] == "queued"

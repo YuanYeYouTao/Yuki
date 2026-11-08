@@ -121,22 +121,21 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
     steps = iter(
         [
             call(
-                "task_control",
-                {"action": "accept", "goal": "make exam"},
+                "manage_task",
+                {"action": "start", "goal": "make exam"},
                 "accept",
             ),
             call(
                 "send",
                 {
-                    "artifact_id": artifact["artifact_id"],
-                    "attachment_kind": "file",
+                    "file": {"artifact_id": artifact["artifact_id"]},
                     "text": "答案已整理好",
                 },
                 "send",
             ),
             call(
-                "task_control",
-                {"action": "complete"},
+                "manage_task",
+                {"action": "finish"},
                 "complete",
             ),
         ]
@@ -223,22 +222,21 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         steps = iter(
             [
                 call(
-                    "task_control",
-                    {"action": "accept", "goal": "resend document"},
+                    "manage_task",
+                    {"action": "start", "goal": "resend document"},
                     "resend-accept",
                 ),
                 call(
                     "send",
                     {
-                        "artifact_id": artifact["artifact_id"],
-                        "attachment_kind": "file",
+                        "file": {"artifact_id": artifact["artifact_id"]},
                         "text": "再发一次",
                     },
                     "resend",
                 ),
                 call(
-                    "task_control",
-                    {"action": "complete"},
+                    "manage_task",
+                    {"action": "finish"},
                     "resend-done",
                 ),
             ]
@@ -364,13 +362,13 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
         assert control.current["id"] == old["id"]
         response = json.loads(
             await control.execute(
-                "task_control",
-                {"action": "accept", "goal": "independent"},
+                "manage_task",
+                {"action": "start", "goal": "independent"},
                 "new-binding",
             )
         )
-        assert response["ok"], response
-        queued = await repo.get(response["queued_work_id"])
+        assert response.get("ok") is not False, response
+        queued = await repo.get(response["id"])
         saved = json.loads(queued["source_json"])
         assert saved["actor_person_id"] == env.person
         assert saved["actor_user_id"] == "11099"
@@ -441,11 +439,11 @@ async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_o
         assert control.source == source
         response = json.loads(
             await control.execute(
-                "task_control", {"action": "accept", "goal": "independent second goal"}, "next"
+                "manage_task", {"action": "start", "goal": "independent second goal"}, "next"
             )
         )
-    assert response["ok"], response
-    queued = await repository.get(response["queued_work_id"])
+    assert response.get("ok") is not False, response
+    queued = await repository.get(response["id"])
     saved = json.loads(queued["source_json"])
     assert saved["actor_person_id"] == event.author_person_id == current
     assert saved["actor_user_id"] == event.sender_user_id == "10002"
@@ -469,7 +467,7 @@ async def test_retired_work_report_is_rejected_without_new_social_effect(databas
         "text": "原调用已发送",
         "work_report": {"kind": "retired", "reply_to_event_ids": [999999]},
     }
-    with pytest.raises(SocialError, match="invalid_message_arguments"):
+    with pytest.raises(SocialError, match="invalid_arguments"):
         await env.service.execute("send", original, env.context)
     assert env.bot.calls == original_calls
     async with database.read_session() as reader:
@@ -523,8 +521,7 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
                     tool(
                         "send",
                         {
-                            "artifact_id": artifact["artifact_id"],
-                            "attachment_kind": "file",
+                            "file": {"artifact_id": artifact["artifact_id"]},
                             "text": "文件附言",
                         },
                         "file",
@@ -536,7 +533,7 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
                 0,
                 tool_calls=(
                     tool("send", {"text": "文件已送达，原附言尚未确认。"}, "explanation"),
-                    tool("task_control", {"action": "complete"}, "complete"),
+                    tool("manage_task", {"action": "finish"}, "complete"),
                 ),
             ),
         ]
@@ -571,7 +568,7 @@ async def test_direct_send_then_complete_executes_remaining_original_calls(
 ):
     calls = (
         tool("send", {"text": "原调用说明"}, "send"),
-        tool("task_control", {"action": "complete", "result": "部分成果保留"}, "complete"),
+        tool("manage_task", {"action": "finish", "result": "部分成果保留"}, "complete"),
         tool("write_fixture", {}, "after-complete"),
     )
     test_case = await case(
@@ -591,7 +588,7 @@ async def test_direct_send_then_complete_executes_remaining_original_calls(
         if message.role == "tool"
     }
     assert set(pairs) == {call.id for call in calls}
-    assert pairs["after-complete"]["ok"] is True
+    assert pairs["after-complete"].get("ok") is not False
     facts = await test_case.control.effect_evidence()
     send_fact = next(fact for fact in facts if fact["tool"] == "send")
     assert send_fact["uncertain"] is (send_status == "uncertain")
@@ -602,7 +599,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
     database, tmp_path, mode
 ):
     calls = (
-        tool("memory_change", {}, "remember"),
+        tool("save_memory", {}, "remember"),
         tool("send", {"text": "执行后说明"}, "send"),
     )
     test_case = await case(
@@ -613,7 +610,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
         fixed_tools=(
             *work_control_tools(),
             *social_tool_definitions(),
-            ChatTool("memory_change", "remember", {"type": "object"}),
+            ChatTool("save_memory", "remember", {"type": "object"}),
         ),
     )
     if mode == "neutral":
@@ -623,7 +620,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
     elif mode == "disabled":
         test_case.runtime = replace(test_case.runtime, work_control=None)
     result = await run(test_case)
-    assert test_case.observed == ["memory_change", "send"]
+    assert test_case.observed == ["save_memory", "send"]
     assert result.text == "" and len(test_case.provider.requests) == 2
 
 

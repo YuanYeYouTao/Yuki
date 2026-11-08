@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select, update
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.runtime_execution import make_child_executor
+from tests.support.work_runner_helpers import derive_business_child
 
 from yuki.automation.models import RunStatus
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -63,13 +64,8 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                         ToolCall(
                             "revise-original-brief",
                             ToolFunction(
-                                "task_control",
-                                json.dumps(
-                                    {
-                                        "action": "update",
-                                        "goal": UPDATED_GOAL,
-                                    }
-                                ),
+                                "manage_task",
+                                json.dumps({"action": "update", "goal": UPDATED_GOAL}),
                             ),
                         ),
                     ),
@@ -81,7 +77,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                     tool_calls=(
                         ToolCall(
                             "read-original-history",
-                            ToolFunction("query_chat_history", '{"view": "recent"}'),
+                            ToolFunction("read_chat", "{}"),
                         ),
                     ),
                 )
@@ -97,7 +93,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             call = ToolCall(
                 "spawn-original",
                 ToolFunction(
-                    "subagent_start",
+                    "start_subtask",
                     json.dumps(
                         {
                             "goal": "Check the scheduled task",
@@ -115,13 +111,8 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             call = ToolCall(
                 "wait-original",
                 ToolFunction(
-                    "task_control",
-                    json.dumps(
-                        {
-                            "action": "wait",
-                            "conditions": [{"kind": "owned_run", "run_id": result["child_id"]}],
-                        }
-                    ),
+                    "wait",
+                    json.dumps({"for": [{"run": result["id"]}]}),
                 ),
             )
         else:
@@ -129,7 +120,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
         accept = ToolCall(
             "accept-original",
             ToolFunction(
-                "task_control", '{"action":"accept","goal":"Check the original scheduled task"}'
+                "manage_task", '{"action":"start","goal":"Check the original scheduled task"}'
             ),
         )
         return ChatResponse("", 0, tool_calls=(accept, call) if parent_requests == 1 else (call,))
@@ -269,7 +260,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
         )
     finally:
         await scheduler.close()
-    assert worker_results[0]["ok"], worker_results[0]
+    assert worker_results[0].get("ok") is not False, worker_results[0]
     completed = await repository.get(child["id"])
     assert completed["state"] == "completed" and completed["model_requests"] == 3
     assert completed["goal"] == UPDATED_GOAL
@@ -340,8 +331,8 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
                     ToolCall(
                         "derive-original-worker",
                         ToolFunction(
-                            "task_control",
-                            json.dumps({"action": "derive", "goal": "check the nested SELF fact"}),
+                            "start_subtask",
+                            json.dumps({"goal": "check the nested SELF fact"}),
                         ),
                     ),
                 ),
@@ -404,7 +395,7 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
     assert (await repository.get(nested["id"]))["model_requests"] == 1
     worker_tools = {tool.name for tool in provider.requests[0].tools}
     assert worker_tools == {tool.name for tool in provider.requests[2].tools}
-    assert {"task_control", "subagent_start", "send"} <= worker_tools
+    assert {"manage_task", "start_subtask", "send"} <= worker_tools
     assert provider.requests[0].tools == await chat.runtime.runner.main_contract.model_definitions()
     assert provider.requests[0].messages[0] == chat._prompt_composer.static_messages()[0]
     lease = await repository.acquire(source["conversation_id"], source["generation"])
@@ -553,7 +544,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
         )
 
 
-@pytest.mark.parametrize("tool_name", ["query_chat_history", "update_short_state"])
+@pytest.mark.parametrize("tool_name", ["read_chat", "set_short_note"])
 async def test_actual_worker_tool_continues_after_nested_result_arrives(
     database, tmp_path, tool_name
 ):
@@ -578,8 +569,8 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     assert nested_lease is not None
     args = (
         {"slot": 1, "text": "Checked original nested result."}
-        if tool_name == "update_short_state"
-        else {"view": "recent"}
+        if tool_name == "set_short_note"
+        else {}
     )
     observed = []
 
@@ -635,11 +626,11 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
         load_tools=chat.runtime.runner.main_contract.definitions,
     )
     assert await executor.run(identity) is None
-    assert observed[0]["ok"], observed[0]
+    assert observed[0].get("ok") is not False, observed[0]
     assert len(provider.requests) == 2
     assert (await repository.get(identity))["state"] == "completed"
     assert (await repository.get(nested))["state"] == "completed"
-    if tool_name == "update_short_state":
+    if tool_name == "set_short_note":
         state = chat.runtime.runner.main_contract.state.snapshot()
         assert state[0]["text"] == "Checked original nested result."
 
@@ -669,24 +660,18 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
                     ToolCall(
                         "accept",
                         ToolFunction(
-                            "task_control", '{"action":"accept","goal":"Original delegated work"}'
-                        ),
-                    ),
-                    ToolCall(
-                        "derive",
-                        ToolFunction(
-                            "task_control", '{"action":"derive","goal":"original delegated child"}'
+                            "manage_task", '{"action":"start","goal":"Original delegated work"}'
                         ),
                     ),
                 ),
             )
         elif len(case.provider.requests) == 3:
             name, args = (
-                "update_short_state",
+                "set_short_note",
                 {"slot": 1, "text": "this original authority was revoked in flight"},
             )
         else:
-            name, args = "task_control", {"action": "complete", "result": "checked"}
+            name, args = "wait", {"for": [{"seconds": 3600}]}
         return ChatResponse(
             "",
             0,
@@ -716,14 +701,19 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     monkeypatch.setattr(case.provider, "complete", complete)
     case.clock.advance(2)
     first = await case.dispatch()
-    assert first.status is RunStatus.SUCCEEDED
+    assert first.status is RunStatus.RUNNING
     assert len(case.provider.requests) == 2
-    assert "update_short_state" in {tool.name for tool in case.provider.requests[0].tools}
+    assert "set_short_note" in {tool.name for tool in case.provider.requests[0].tools}
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         rows = list((await reader.execute(select(work))).mappings())
     parent = next(dict(row) for row in rows if row["parent_work_id"] is None)
-    child = next(dict(row) for row in rows if row["parent_work_id"] == parent["id"])
+    # A historical business child (the retired derive action) of the original Work.
+    lease = await repository.acquire(parent["conversation_id"], parent["generation"])
+    child = await derive_business_child(
+        repository, lease, parent["id"], "derive", "original delegated child"
+    )
+    await repository.release(lease)
     resumed_runtime = []
 
     async def capture_main(**kwargs):
@@ -761,7 +751,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     assert len(case.provider.requests) == 3
     assert final["source_json"] == child["source_json"]
     original_parent = await repository.get(parent["id"])
-    assert original_parent["state"] == "completed" and original_parent["model_requests"] == 2
+    assert original_parent["state"] == "waiting_external" and original_parent["model_requests"] == 2
     async with database.read_session() as reader:
         account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
         assert account == "" and permission is PermissionLevel.USER

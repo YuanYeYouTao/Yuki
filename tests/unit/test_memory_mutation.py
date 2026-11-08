@@ -800,38 +800,28 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
         trigger_event_id=event.id if has_event_id else None,
         origin=TurnOrigin.USER_MESSAGE,
     )
-    assert "memory_change" in {tool.name for tool in tools.definitions(runtime)}
+    assert "save_memory" in {tool.name for tool in tools.definitions(runtime)}
     response = (
         await tools.execute(
-            "memory_change",
+            "save_memory",
             json.dumps(
-                {
-                    "operation": "create",
-                    "target": {
-                        "subject_ref": "current_speaker",
-                        "scope_type": "person",
-                    },
-                    "new_content": "现在住在上海",
-                    "memory_key": "location:home",
-                    "category": "location",
-                    "reason": "当前消息明确要求记忆",
-                    "confidence": 0.96,
-                },
+                {"content": "现在住在上海", "target": {"person_id": event.author_person_id}},
                 ensure_ascii=False,
             ),
             runtime,
         )
     ).model_payload()
     if not has_event_id:
-        assert response["error_code"] == "trigger_event_not_found"
+        assert response["ok"] is False
+        assert response["error"] == "evidence_event_not_found"
         async with database.read_session() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
                 == 0
             )
         return
-    assert response["ok"]
-    assert response["data"]["outcome"] == "committed"
+    assert "ok" not in response
+    assert response["outcome"] == "committed"
 
     claim = MemoryClaim(
         operation=MemoryClaimOperation.ASSERT,
@@ -860,7 +850,7 @@ async def test_agent_tool_and_worker_keep_independent_operation_receipts(
 
     assert worker_result.ok
     assert not worker_result.deduplicated
-    assert worker_result.mutation_id != response["data"]["mutation_id"]
+    assert worker_result.new_fact_id != response["fact_id"]
     assert len(await facts.list_person("1001", limit=20)) == 2
     replay = await service.mutate_validated_claim(
         validated, MemoryProcessingContext(event=event), conversation_key="private:1001", job=job
@@ -1573,51 +1563,44 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     }
     definition = next(tool for tool in definitions if tool.name == "search_memory")
     properties = definition.parameters["properties"]
-    assert definition.parameters["required"] == ["query"]
-    assert set(properties) >= {"query", "target", "purpose"}
+    assert definition.parameters["required"] == []
+    assert set(properties) == {"query", "target", "since", "until", "limit", "fact_id"}
     assert not {"entities", "preferred_kinds"} & set(properties)  # type: ignore[arg-type]
 
     global_search = (
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), runtime)
     ).model_payload()
-    assert global_search["ok"], global_search
-    assert "memory_grounding_policy" not in global_search
-    assert global_search["evidence_state"]
-    assert global_search["data"]["result_scope"] == "authorized_maximum"
-    assert global_search["data"]["partial_reason"] == "semantic_not_configured"
+    assert "ok" not in global_search, global_search
+    assert global_search["partial_failure"] == "semantic_not_configured"
     explicit_missing = (
         await tools.execute(
             "search_memory",
             json.dumps(
                 {
                     "query": "zzzznonexistentmemoryzzzz",
-                    "target": {"scope": "person", "subject_ref": "current_speaker"},
+                    "target": {"person_id": people_ids["1001"]},
                 }
             ),
             runtime,
         )
     ).model_payload()
-    assert explicit_missing["ok"]
-    assert explicit_missing["data"]["result_scope"] == "explicit_targets"
-    assert explicit_missing["data"]["returned_count"] == 0
-    assert explicit_missing["data"]["truncated"] is False
-    assert explicit_missing["data"]["exhaustive"] is False
-    assert explicit_missing["data"]["partial_reason"] == "semantic_not_configured"
-    assert projected_fact.id in {row["fact_id"] for row in global_search["data"]["memories"]}
+    assert explicit_missing["memories"] == []
+    assert "truncated" not in explicit_missing
+    assert explicit_missing["exhaustive"] is False
+    assert explicit_missing["partial_failure"] == "semantic_not_configured"
+    assert projected_fact.id in {row["fact_id"] for row in global_search["memories"]}
     top_one = (
         await tools.execute(
             "search_memory", json.dumps({"query": "旧群友喜欢天文", "limit": 1}), runtime
         )
     ).model_payload()
-    assert [row["fact_id"] for row in top_one["data"]["memories"]] == [late_high_rank_fact.id]
-    assert "memory_grounding_policy" not in top_one
+    assert [row["fact_id"] for row in top_one["memories"]] == [late_high_rank_fact.id]
     historical_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
     ).model_payload()
-    historical_ids = {row["fact_id"] for row in historical_search["data"]["memories"]}
+    historical_ids = {row["fact_id"] for row in historical_search["memories"]}
     assert historical_fact.id in historical_ids
     assert inaccessible_fact.id not in historical_ids
-    assert "memory_grounding_policy" not in historical_search
     # A historical canonical owner remains searchable after its transport Binding ends.
     from yuki.identity.db_models import IdentityBindingModel
 
@@ -1630,8 +1613,8 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     unbound_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
     ).model_payload()
-    assert unbound_search["ok"], unbound_search
-    assert historical_fact.id in {row["fact_id"] for row in unbound_search["data"]["memories"]}
+    assert "ok" not in unbound_search, unbound_search
+    assert historical_fact.id in {row["fact_id"] for row in unbound_search["memories"]}
     person_only = replace(
         runtime,
         origin=TurnOrigin.PLUGIN_SESSION,
@@ -1647,31 +1630,33 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     person_result = (
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), person_only)
     ).model_payload()
-    assert projected_fact.id in {row["fact_id"] for row in person_result["data"]["memories"]}
-    assert group_only_fact.id not in {row["fact_id"] for row in person_result["data"]["memories"]}
+    assert projected_fact.id in {row["fact_id"] for row in person_result["memories"]}
+    assert group_only_fact.id not in {row["fact_id"] for row in person_result["memories"]}
     group_result = (
         await tools.execute("search_memory", json.dumps({"query": "群活动远足"}), group_only)
     ).model_payload()
-    assert group_only_fact.id in {row["fact_id"] for row in group_result["data"]["memories"]}
+    assert group_only_fact.id in {row["fact_id"] for row in group_result["memories"]}
     assert (
-        await tools.execute(
-            "read_memory", json.dumps({"view": "fact", "fact_id": group_fact.id}), group_only
-        )
-    ).model_payload()["error_code"] == "memory_not_found"
+        await tools.execute("search_memory", json.dumps({"fact_id": group_fact.id}), group_only)
+    ).model_payload()["error"] == "memory_not_found"
     assert (
-        await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": group_only_fact.id}),
-            group_only,
+        (
+            await tools.execute(
+                "search_memory",
+                json.dumps({"fact_id": group_only_fact.id}),
+                group_only,
+            )
         )
-    ).model_payload()["ok"]
+        .model_payload()
+        .get("ok", True)
+    )
     strict_person_only = replace(person_only, memory_allowed_scopes=(MemoryScopeType.PERSON,))
     strict_person_result = (
         await tools.execute(
             "search_memory", json.dumps({"query": "在本群负责摄影"}), strict_person_only
         )
     ).model_payload()
-    assert group_fact.id not in {row["fact_id"] for row in strict_person_result["data"]["memories"]}
+    assert group_fact.id not in {row["fact_id"] for row in strict_person_result["memories"]}
     self_actor = ToolActor(
         user_id="",
         bot_user_id="8000",
@@ -1698,89 +1683,90 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     self_search = (
         await tools.execute("search_memory", json.dumps({"query": "在本群负责摄影"}), self_runtime)
     ).model_payload()
-    assert group_fact.id not in {row["fact_id"] for row in self_search["data"]["memories"]}
+    assert group_fact.id not in {row["fact_id"] for row in self_search["memories"]}
     assert (
         await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": group_fact.id}),
+            "search_memory",
+            json.dumps({"fact_id": group_fact.id}),
             self_runtime,
         )
-    ).model_payload()["error_code"] == "memory_not_found"
+    ).model_payload()["error"] == "memory_not_found"
     assert (
         await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            "search_memory",
+            json.dumps({"fact_id": global_fact.id}),
             self_runtime,
         )
-    ).model_payload()["error_code"] == "memory_not_found"
+    ).model_payload()["error"] == "memory_not_found"
     assert (
-        await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": group_only_fact.id}),
-            self_runtime,
+        (
+            await tools.execute(
+                "search_memory",
+                json.dumps({"fact_id": group_only_fact.id}),
+                self_runtime,
+            )
         )
-    ).model_payload()["ok"]
+        .model_payload()
+        .get("ok", True)
+    )
     assert (
         await tools.execute(
             "search_memory",
             json.dumps(
                 {
                     "query": "喜欢天文",
-                    "target": {"scope": "person", "person_id": people_ids["2002"]},
+                    "target": {"person_id": people_ids["2002"]},
                 }
             ),
             group_only,
         )
-    ).model_payload()["error_code"] == "permission_denied"
+    ).model_payload()["error"] == "permission_denied"
     scoped_search = (
         await tools.execute(
             "search_memory",
             json.dumps(
                 {
                     "query": "喜欢天文",
-                    "target": {"scope": "person", "subject_ref": f"member_{people_ids['2002']}"},
+                    "target": {"person_id": people_ids["2002"]},
                 }
             ),
             runtime,
         )
     ).model_payload()
-    assert scoped_search["ok"]
-    assert scoped_search["data"]["result_scope"] == "explicit_targets"
+    assert projected_fact.id in {row["fact_id"] for row in scoped_search["memories"]}
     denied_search = (
         await tools.execute(
             "search_memory",
-            json.dumps(
-                {"query": "喜欢围棋", "target": {"scope": "group", "space_id": space_ids["3002"]}}
-            ),
+            json.dumps({"query": "喜欢围棋", "target": {"space_id": space_ids["3002"]}}),
             runtime,
         )
     ).model_payload()
-    assert denied_search["error_code"] == "permission_denied"
+    assert denied_search["error"] == "permission_denied"
 
     group_lookup = (
         await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": group_fact.id}),
+            "search_memory",
+            json.dumps({"fact_id": group_fact.id}),
             runtime,
         )
     ).model_payload()
     global_lookup = (
         await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            "search_memory",
+            json.dumps({"fact_id": global_fact.id}),
             runtime,
         )
     ).model_payload()
     projected_lookup = (
         await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": projected_fact.id}),
+            "search_memory",
+            json.dumps({"fact_id": projected_fact.id}),
             runtime,
         )
     ).model_payload()
-    assert group_lookup["ok"]
-    assert global_lookup["ok"]
-    assert projected_lookup["ok"]
+    assert group_lookup["memories"][0]["fact_id"] == group_fact.id
+    assert global_lookup["memories"][0]["fact_id"] == global_fact.id
+    assert projected_lookup["memories"][0]["fact_id"] == projected_fact.id
 
     # The same direct historical relation works privately and from another group,
     # even after a Presence change. It never grants evidence or transitive access.
@@ -1791,26 +1777,16 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         ),
         actor_context=None,
     )
-    evidence = (
-        await tools.execute(
-            "read_memory",
-            json.dumps({"view": "evidence", "fact_id": projected_fact.id}),
-            private_runtime,
-        )
-    ).model_payload()
-    assert not evidence["ok"]
     background = (
         await tools.execute(
             "search_memory",
-            json.dumps(
-                {"query": "天文", "target": {"scope": "person", "person_id": people_ids["2002"]}}
-            ),
+            json.dumps({"query": "天文", "target": {"person_id": people_ids["2002"]}}),
             replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND, actor_context=None),
         )
     ).model_payload()
     # Origin labels do not revoke a retained real actor; the common query plane
     # still applies the same person and scope read authorization.
-    assert background["ok"]
+    assert "ok" not in background, background
     await apply_observations(
         database, profile_message(user_id="2003", nickname="间接关系", group_id="3002")
     )
@@ -1818,34 +1794,28 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     indirect = (
         await tools.execute(
             "search_memory",
-            json.dumps(
-                {"query": "天文", "target": {"scope": "person", "person_id": people_ids["2003"]}}
-            ),
+            json.dumps({"query": "天文", "target": {"person_id": people_ids["2003"]}}),
             private_runtime,
         )
     ).model_payload()
-    assert not indirect["ok"] and indirect["retryable"] is False
+    assert indirect["ok"] is False and indirect["error"] == "permission_denied"
     unrelated_group = (
         await tools.execute(
             "search_memory",
-            json.dumps(
-                {"query": "群活动", "target": {"scope": "group", "space_id": space_ids["3002"]}}
-            ),
+            json.dumps({"query": "群活动", "target": {"space_id": space_ids["3002"]}}),
             private_runtime,
         )
     ).model_payload()
-    assert not unrelated_group["ok"]
+    assert unrelated_group["ok"] is False
     historical_group = (
         await tools.execute(
             "search_memory",
-            json.dumps(
-                {"query": "群活动", "target": {"scope": "group", "space_id": space_ids["3001"]}}
-            ),
+            json.dumps({"query": "群活动", "target": {"space_id": space_ids["3001"]}}),
             private_runtime,
         )
     ).model_payload()
-    assert historical_group["ok"]
-    assert {row["fact_id"] for row in historical_group["data"]["memories"]} == {group_only_fact.id}
+    assert "ok" not in historical_group
+    assert {row["fact_id"] for row in historical_group["memories"]} == {group_only_fact.id}
 
     async with database.immediate_session() as session:
         old_space = (await find_space_binding(session, "3001")).space_id
@@ -1857,18 +1827,17 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     complete_search = (
         await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), private_runtime)
     ).model_payload()
-    assert complete_search["data"]["partial_reason"] == "semantic_not_configured"
-    assert complete_search["data"]["partial_reason"] != "owner_projection_unavailable"
+    assert complete_search["partial_failure"] == "semantic_not_configured"
     cross_group = replace(
         runtime,
         inbound=replace(inbound, group_id="3002", space_id=space_ids["3002"]),
         actor_context=None,
     )
     assert (
-        await tools.execute(
-            "read_memory", json.dumps({"view": "fact", "fact_id": group_fact.id}), cross_group
-        )
-    ).model_payload()["ok"]
+        (await tools.execute("search_memory", json.dumps({"fact_id": group_fact.id}), cross_group))
+        .model_payload()
+        .get("ok", True)
+    )
     private_runtime = replace(
         private_runtime,
         runtime_config=await tools._runtime_config.snapshot(
@@ -1878,9 +1847,113 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert await people.delete_person("1001")
     forgotten = (
         await tools.execute(
-            "read_memory",
-            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            "search_memory",
+            json.dumps({"fact_id": global_fact.id}),
             private_runtime,
         )
     ).model_payload()
-    assert not forgotten["ok"]
+    assert forgotten["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_save_memory_takes_internal_ids_and_keeps_real_evidence(database: Database) -> None:
+    """Covers the memory cutover failure cases listed before the code (S1-S7, E1-E3, R2)."""
+    service, facts, ledger, _ = _service(database)
+    event = await _event(
+        ledger, message_id="save-any-person", sender_user_id="1001", content="记住小红喜欢画画"
+    )
+    other = await _event(
+        ledger, message_id="someone-else", sender_user_id="2002", content="我喜欢画画"
+    )
+    async with database.immediate_session() as session:
+        # A person who neither speaks, is mentioned nor replied to in this turn.
+        absent = await ensure_person(session, "3003")
+        space = await ensure_space(session, "4004")
+    tools = AgentToolService(
+        settings=make_settings("sqlite+aiosqlite:///:memory:"),
+        ledger=ledger,
+        memories=facts,
+        memory_mutations=service,
+        **tool_dependencies(database, make_settings(database.url)),
+    )
+    runtime = ToolRuntime(
+        inbound=InboundMessage(
+            ingress_key=event.origin_key,
+            native_message_id=event.origin_key,
+            event_type="message",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id=event.sender_user_id),
+            text=event.content,
+            bot_user_id=event.bot_user_id,
+            person_id=event.author_person_id,
+            conversation_id=event.canonical_conversation_id,
+            presence_id=event.ingress_presence_id,
+        ),
+        conversation_key="private:1001",
+        trigger_event_id=event.id,
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+
+    async def call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        result = await tools.execute(name, json.dumps(arguments, ensure_ascii=False), runtime)
+        return result.model_payload()
+
+    async def receipts() -> int:
+        async with database.read_session() as session:
+            return int(
+                await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
+                or 0
+            )
+
+    declared = {tool.name for tool in tools.definitions(runtime)}
+    assert {"search_memory", "save_memory", "edit_memory"} <= declared
+    assert not {"memory_change", "read_memory"} & declared
+    # S1: any real Person ID is a valid subject; no current-turn selector gate.
+    saved = await call("save_memory", {"content": "小红喜欢画画", "target": {"person_id": absent}})
+    assert saved["outcome"] == "committed" and "ok" not in saved, saved
+    fact = await facts.get_fact(saved["fact_id"])
+    assert fact.scope_type is MemoryScopeType.PERSON
+    assert fact.canonical_subject_person_id == absent and fact.content == "小红喜欢画画"
+    # S3: a person target with group is that person's memory in that group.
+    grouped = await call(
+        "save_memory",
+        {"content": "在该群负责画海报", "target": {"person_id": absent}, "group": space},
+    )
+    grouped_fact = await facts.get_fact(grouped["fact_id"])
+    assert grouped_fact.scope_type is MemoryScopeType.PERSON_GROUP
+    assert grouped_fact.canonical_subject_person_id == absent
+    assert grouped_fact.canonical_subject_space_id == space
+    before = await receipts()
+    # S2, S4-S7: wrong IDs and forged or foreign evidence write nothing.
+    target = {"person_id": absent}
+    for arguments, error in (
+        ({"content": "x", "target": {"person_id": "no-such-person"}}, "target_not_found"),
+        ({"content": "x", "target": {"person_id": absent, "space_id": space}}, "invalid_target"),
+        ({"content": "x", "target": {"space_id": space}, "group": space}, "invalid_arguments"),
+        ({"content": "x", "target": target, "evidence": other.id}, "untrusted_evidence_event"),
+        ({"content": "x", "target": target, "evidence": 999999}, "evidence_event_not_found"),
+        (
+            {"content": "x", "target": target, "evidence": "tool_1"},
+            "unsupported_evidence_reference",
+        ),
+        (
+            {"content": "x", "target": target, "quote": "不在消息里"},
+            "evidence_quote_not_in_current_event",
+        ),
+    ):
+        refused = await call("save_memory", arguments)
+        assert refused["ok"] is False and refused["error"] == error, (arguments, refused)
+        assert refused["message"], refused
+    assert await receipts() == before
+    # E1/E3: correcting a third party's fact is allowed; invalidating it stays refused.
+    corrected = await call(
+        "edit_memory", {"fact_id": fact.id, "action": "correct", "content": "小红喜欢水彩画"}
+    )
+    assert corrected["applied"] == "correct" and corrected["replaced_fact_id"] == fact.id
+    refused = await call("edit_memory", {"fact_id": corrected["fact_id"], "action": "invalidate"})
+    assert refused["error"] == "operation_not_allowed_for_target", refused
+    missing = await call("edit_memory", {"fact_id": fact.id, "action": "correct"})
+    assert missing["error"] == "invalid_arguments", missing
+    # R2: a retired name is not resolved to its successor.
+    retired = await call("memory_change", {"operation": "create"})
+    assert retired["error"] == "unknown_tool", retired

@@ -15,10 +15,8 @@ from yuki.codemode.api_projection import project
 from yuki.codemode.driver import CodeModeDriver
 from yuki.codemode.driver_types import EngineOutcome
 from yuki.domain.conversations import ConversationScope
-from yuki.domain.messages import ChatTool
 from yuki.persistence.models import ToolArtifactModel
 from yuki.runtime.effect_outcomes import current_result_capture
-from yuki.services.history_query import history_schema
 from yuki.services.invocation_service import InvocationService
 from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.social.tools import social_tool_definitions
@@ -59,8 +57,11 @@ async def source_environment(database, tmp_path, native):
     env.host.api = project(
         (
             *TOOLS,
-            next(tool for tool in social_tool_definitions() if tool.name == "find_conversations"),
-            ChatTool("query_chat_history", "history", history_schema()),
+            *(
+                tool
+                for tool in social_tool_definitions()
+                if tool.name in {"find_contacts", "read_chat"}
+            ),
         ),
         "manifest-test",
     )
@@ -108,14 +109,11 @@ async def source_environment(database, tmp_path, native):
     env.host.execute_business = business
     if not native:
         env.host.worker = SimpleNamespace(execution_digest=lambda: "fake-history-engine")
-        calls = [
-            ("yuki_query_chat_history", {"view": "search", "keyword": name})
-            for name in ("source-alpha", "source-beta")
-        ]
+        calls = [("yuki_read_chat", {"query": name}) for name in ("source-alpha", "source-beta")]
         env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)
     code = """
-a = await yuki_query_chat_history({'view': 'search', 'keyword': 'source-alpha'})
-b = await yuki_query_chat_history({'view': 'search', 'keyword': 'source-beta'})
+a = await yuki_read_chat({'query': 'source-alpha'})
+b = await yuki_read_chat({'query': 'source-beta'})
 {'copied': [a['data']['events'][0]['content'], b['data']['events'][0]['content']],
  'padding': 'x' * 3000}
 """
@@ -130,51 +128,45 @@ async def test_code_discovers_entries_and_queries_same_source_with_projected_sch
 ):
     env, sources, _store, dispatched, _code = await source_environment(database, tmp_path, native)
     social = env.test_case.env
-    source = {"platform": "qq", "scope": "group"}
-    directory_args = {
-        "source": source,
-        "target": {"space_id": social.space},
-        "limit": 1,
-    }
+    directory_args = {"platform": "qq", "target": {"space_id": social.space}}
     history_args = {
-        "view": "search",
-        "source": source,
+        "platform": "qq",
+        "scope": "group",
         "target": {"conversation_id": social.context.conversation_id},
-        "keyword": "source-alpha source-beta",
-        "match": "any",
+        "query": "source",
     }
     business = env.host.execute_business
     observed = []
 
     async def observe(invocation, side_effecting):
         raw = await business(invocation, side_effecting)
-        observed.append((invocation.call.function.name, json.loads(raw)["data"]))
+        observed.append((invocation.call.function.name, json.loads(raw)))
         return raw
 
     env.host.execute_business = observe
     if not native:
         calls = [
-            ("yuki_find_conversations", directory_args),
-            ("yuki_query_chat_history", history_args),
+            ("yuki_find_contacts", directory_args),
+            ("yuki_read_chat", history_args),
         ]
         env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)
     code = f"""
-directory = await yuki_find_conversations({directory_args!r})
-entry = directory['data']['items'][0]
-history = await yuki_query_chat_history({{
-    'view': 'search', 'source': {source!r},
+directory = await yuki_find_contacts({directory_args!r})
+entry = directory['data']['items'][0]['conversations'][0]
+history = await yuki_read_chat({{
+    'platform': 'qq', 'scope': 'group',
     'target': {{'conversation_id': entry['conversation_id']}},
-    'keyword': 'source-alpha source-beta', 'match': 'any'
+    'query': 'source'
 }})
 {{'copied': [row['content'] for row in history['data']['events']], 'padding': 'x' * 3000}}
 """
     outer = outer_call(env, code)
     result = json.loads(await CodeModeDriver(env.host, outer).run())
     assert result["status"] == "completed" and len(dispatched) == 2
-    assert [name for name, _ in observed] == ["find_conversations", "query_chat_history"]
+    assert [name for name, _ in observed] == ["find_contacts", "read_chat"]
     directory, history = (data for _, data in observed)
     assert len(directory["items"]) == 1
-    entry = directory["items"][0]
+    (entry,) = directory["items"][0]["conversations"]
     assert entry["conversation_id"] == social.context.conversation_id
     assert entry["platform"] == "qq" and entry["scope"] == "group"
     assert {row["event_id"] for row in history["events"]} == set(sources)
@@ -268,7 +260,7 @@ async def test_empty_history_page_does_not_age_later_code_sources(database, tmp_
         result = await business(invocation, side_effecting)
         reads += 1
         if reads == 1:
-            assert json.loads(result)["data"]["events"] == []
+            assert json.loads(result)["events"] == []
             async with database.immediate_session() as writer:
                 writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
         return result
@@ -276,13 +268,12 @@ async def test_empty_history_page_does_not_age_later_code_sources(database, tmp_
     env.host.execute_business = erase_between_reads
     if not native:
         calls = [
-            ("yuki_query_chat_history", {"view": "search", "keyword": keyword})
-            for keyword in ("absent-source", "source-alpha")
+            ("yuki_read_chat", {"query": keyword}) for keyword in ("absent-source", "source-alpha")
         ]
         env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)
     code = """
-empty = await yuki_query_chat_history({'view': 'search', 'keyword': 'absent-source'})
-current = await yuki_query_chat_history({'view': 'search', 'keyword': 'source-alpha'})
+empty = await yuki_read_chat({'query': 'absent-source'})
+current = await yuki_read_chat({'query': 'source-alpha'})
 {'copied': current['data']['events'][0]['content'], 'padding': 'x' * 3000}
 """
     outer = outer_call(env, code)
@@ -308,8 +299,8 @@ async def test_old_code_body_cannot_publish_after_privacy_change_but_real_send_s
 
     env, _sources, _store, dispatched, code = await source_environment(database, tmp_path, False)
     calls = [
-        ("yuki_query_chat_history", {"view": "search", "keyword": "source-alpha"}),
-        ("yuki_query_chat_history", {"view": "search", "keyword": "source-beta"}),
+        ("yuki_read_chat", {"query": "source-alpha"}),
+        ("yuki_read_chat", {"query": "source-beta"}),
         ("yuki_send", {"text": "already delivered"}),
     ]
     env.host.engine_factory = lambda *_args: HistoryEngine(calls=calls)

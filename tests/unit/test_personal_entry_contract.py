@@ -21,7 +21,6 @@ from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import PresenceModel
-from yuki.identity.routing import RouteSendError
 from yuki.persistence.models import ChatEventModel
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.history import read_history
@@ -35,7 +34,7 @@ app_env = app_fixture
 async def read_personal_history(database, runtime, args):
     return await read_history(
         database,
-        {"view": "recent", "event_kind": "all", "target": args},
+        {"target": args},
         SocialContext(
             "personal-read",
             "personal-read",
@@ -69,8 +68,8 @@ async def test_app_model_reads_own_other_entry_without_rewriting_work(app_env, d
                 ToolCall(
                     "read-entry",
                     ToolFunction(
-                        "query_chat_history",
-                        json.dumps({"view": "recent", "target": {"binding_id": binding.id}}),
+                        "read_chat",
+                        json.dumps({"target": {"binding_id": binding.id}}),
                     ),
                 ),
             ),
@@ -84,7 +83,7 @@ async def test_app_model_reads_own_other_entry_without_rewriting_work(app_env, d
     )
     assert response.status_code == 200, response.text
     await drain(env)
-    assert any(tool.name == "query_chat_history" for tool in captured[0].tools)
+    assert any(tool.name == "read_chat" for tool in captured[0].tools)
     reply = next(
         message
         for request in captured[1:]
@@ -92,9 +91,9 @@ async def test_app_model_reads_own_other_entry_without_rewriting_work(app_env, d
         if message.role == "tool" and message.tool_call_id == "read-entry"
     )
     data = json.loads(reply.content)
-    assert data["ok"] and data["data"]["events"][0]["event_id"] == original.event.id
+    assert "ok" not in data and data["events"][0]["event_id"] == original.event.id
     assert (
-        data["data"]["conversation_id"] == original.row["conversation_id"]
+        data["sources"][0]["conversation_id"] == original.row["conversation_id"]
         and person == principal.person_id
     )
     async with database.read_session() as session:
@@ -123,11 +122,11 @@ async def test_app_and_qq_sources_select_the_same_stored_binding_history(app_env
     result = await read_personal_history(
         database, runtime, {"conversation_id": principal.conversation_id}
     )
-    assert result["conversation_id"] == principal.conversation_id
+    assert result["events"] == [] and result["sources"] == []
     async with database.read_session() as session:
         other_binding = await find_identity_binding(session, "1002")
     app_result = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
-    assert app_result["conversation_id"] == other.row["conversation_id"]
+    assert app_result["sources"][0]["conversation_id"] == other.row["conversation_id"]
     assert [event["event_id"] for event in app_result["events"]] == [other.event.id]
     runtime.effective_conversation_id = own.row["conversation_id"]
     qq_result = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
@@ -136,14 +135,14 @@ async def test_app_and_qq_sources_select_the_same_stored_binding_history(app_env
 
 
 @pytest.mark.parametrize("receipt", [{"message_id": "confirmed"}, {}])
-@pytest.mark.parametrize("entry", ["binding", "conversation", "both"])
+@pytest.mark.parametrize("entry", ["binding", "conversation"])
 async def test_app_to_qq_uses_explicit_entry_original_source_and_receipt(
     app_env, database, receipt, entry, tool_delivery_evidence
 ):
-    """Either explicit entry works; Conversation wins and replay never sends again."""
+    """Either explicit entry works and replay never sends again."""
     _, evidence = tool_delivery_evidence
     env = app_env
-    device, person = await owner(env, database)
+    device, _ = await owner(env, database)
     context = await app_context(env, device)
     original = await seed_scoped_event(
         env.social.writer,
@@ -162,11 +161,11 @@ async def test_app_to_qq_uses_explicit_entry_original_source_and_receipt(
         )
     bot = SimpleNamespace(self_id="8000", call_api=AsyncMock(return_value=receipt))
     env.gateway.registry.connect(bot, provider_id="snowluma", presence_id=presence.id)
-    target = {"kind": "person", "target_id": person}
-    if entry in {"binding", "both"}:
-        target["binding_id"] = binding.id if entry == "binding" else str(uuid4())
-    if entry in {"conversation", "both"}:
-        target["conversation_id"] = original.event.canonical_conversation_id
+    target = (
+        {"binding_id": binding.id}
+        if entry == "binding"
+        else {"conversation_id": original.event.canonical_conversation_id}
+    )
     args = {
         "target": target,
         "text": "explicit other entry",
@@ -200,21 +199,13 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
         own = await find_identity_binding(session, "1001")
     refused = await env.social.execute(
         "send",
-        {"target": {"kind": "person", "target_id": other.person_id}, "text": "do not guess route"},
+        {"target": {"person_id": other.person_id}, "text": "do not guess route"},
         context,
     )
     assert refused["error"] == "binding_required" and {
         item["binding_id"] for item in refused["bindings"]
     } == {other.id}
-    with pytest.raises(RouteSendError, match="binding_unavailable"):
-        await env.social.execute(
-            "send",
-            {
-                "target": {"kind": "person", "target_id": other.person_id, "binding_id": own.id},
-                "text": "wrong owner",
-            },
-            replace(context, call_id="wrong"),
-        )
+    assert own.person_id != other.person_id
 
 
 async def test_app_input_preserves_original_qq_work_recovery_contract(app_env, database):
@@ -237,7 +228,7 @@ async def test_cross_entry_file_caption_retains_selected_binding(app_env, databa
     from tests.support.workspace_snapshots import snapshot_bytes
 
     env = app_env
-    device, person = await owner(env, database)
+    device, _ = await owner(env, database)
     context = await app_context(env, device)
     async with database.read_session() as session:
         binding = await find_identity_binding(session, "1001")
@@ -254,9 +245,8 @@ async def test_cross_entry_file_caption_retains_selected_binding(app_env, databa
     result = await env.social.execute(
         "send",
         {
-            "target": {"kind": "person", "target_id": person, "binding_id": binding.id},
-            "artifact_id": snapshot["artifact_id"],
-            "attachment_kind": "file",
+            "target": {"binding_id": binding.id},
+            "file": {"artifact_id": snapshot["artifact_id"]},
             "text": "caption for original file",
         },
         context,
@@ -288,7 +278,7 @@ async def test_explicit_self_target_from_app_requires_binding_and_lists_candidat
     before = len(env.calls)
     refused = await env.social.execute(
         "send",
-        {"target": {"kind": "person", "target_id": person}, "text": "choose my other entry"},
+        {"target": {"person_id": person}, "text": "choose my other entry"},
         context,
     )
     assert refused["error"] == "binding_required" and {
@@ -357,7 +347,7 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
         require_actor=lambda: SimpleNamespace(person_id=person),
     )
     result = await read_personal_history(database, runtime, {"binding_id": binding.id})
-    assert result["platform"] == "telegram"
+    assert result["sources"][0]["platform"] == "telegram"
     assert result["events"][0]["event_id"] == event.id
     assert not env.calls
 

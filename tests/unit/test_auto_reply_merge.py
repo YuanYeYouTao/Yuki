@@ -359,9 +359,9 @@ async def test_open_floor_input_reaches_original_wait_without_waiting_window(dat
 
     source = {"actor_person_id": env.person, "principal_kind": "person", "origin": "user_message"}
     control = WorkControl(repository, lease, "open-floor-wait", source, validate)
-    assert json.loads(
-        await control.execute("task_control", {"action": "accept", "goal": "等回复"}, "accept")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "start", "goal": "等回复"}, "accept")
+    )
     work_id = control.current["id"]
     await WorkWaitRepository(repository).register(
         lease,
@@ -417,9 +417,9 @@ async def _original_wait(database, env, *, conditions=None, mode="any"):
         {"actor_person_id": env.person, "principal_kind": "person", "origin": "user_message"},
         validate,
     )
-    assert json.loads(
-        await control.execute("task_control", {"action": "accept", "goal": "等待原消息"}, "accept")
-    )["ok"]
+    assert "error" not in json.loads(
+        await control.execute("manage_task", {"action": "start", "goal": "等待原消息"}, "accept")
+    )
     registered = await WorkWaitRepository(repository).register(
         lease,
         work_id=control.current["id"],

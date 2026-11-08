@@ -138,7 +138,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
             route.presence_id = second
     env.registry.connect(other, provider_id="snowluma", presence_id=second)
     result = await env.service.execute(
-        "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="recall")
+        "recall_message", {"event_id": event_id}, replace(env.context, call_id="recall")
     )
     assert result["status"] == "succeeded"
     assert env.bot.calls[-1] == ("delete_msg", {"message_id": event.origin_key})
@@ -146,7 +146,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
     env.registry.disconnect(env.bot)
     with pytest.raises(RouteSendError, match="original_presence_unavailable"):
         await env.service.execute(
-            "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="offline")
+            "recall_message", {"event_id": event_id}, replace(env.context, call_id="offline")
         )
     assert other.calls == []
 
@@ -158,7 +158,7 @@ async def test_members_ignore_send_pause_and_try_accessible_connections(social_e
         route.paused = True
         generation = route.route_generation
     env.bot.calls.clear()
-    result = await env.service.execute("get_group_members", {}, env.context)
+    result = await env.service.execute("get_members", {}, env.context)
     assert result["coverage"] == "observed" and result["items"][0]["account_id"] == env.account
     assert result["items"][0]["reference"] == f"@{{account:{env.account}}}"
     assert env.bot.calls == []
@@ -175,7 +175,7 @@ async def test_multiple_space_bindings_require_explicit_selection(social_env):
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == other)
         )
         binding.space_id = env.space
-    observed = await env.service.execute("get_group_members", {}, env.context)
+    observed = await env.service.execute("get_members", {}, env.context)
     assert observed["coverage"] == "observed"
     assert [item["person_id"] for item in observed["items"]] == [env.person]
 
@@ -198,7 +198,7 @@ async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
     monkeypatch.setattr(env.service.receipts, "prepare", disconnect_before_claim)
     with pytest.raises(RouteSendError, match="disconnected"):
         await env.service.execute(
-            "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="recall")
+            "recall_message", {"event_id": event_id}, replace(env.context, call_id="recall")
         )
     assert not any(action == "delete_msg" for action, _ in env.bot.calls)
     receipt = await env.service.receipts.find("turn", "recall")
@@ -212,7 +212,7 @@ async def test_disabled_presence_cannot_read_or_recall(social_env):
         presence.enabled = False
     with pytest.raises(RouteSendError, match="original_presence_unavailable"):
         await env.router.resolve_presence(env.presence)
-    observed = await env.service.execute("get_group_members", {}, env.context)
+    observed = await env.service.execute("get_members", {}, env.context)
     assert observed["coverage"] == "observed"
 
 
@@ -233,23 +233,17 @@ async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(so
     assert await env.router.cas_takeover_person(env.person) == "taken"
     second = await add_second_account(env)
     contacts = await env.service.execute(
-        "find_contacts",
-        {
-            "kind": "person",
-            "target_id": env.person,
-        },
-        env.context,
+        "find_contacts", {"target": {"person_id": env.person}}, env.context
     )
-    assert len(contacts["bindings"]) == 2
-    assert all(
-        binding["platform"] == "qq" and "user_id" not in binding for binding in contacts["bindings"]
-    )
-    with pytest.raises(RouteSendError, match="binding_unavailable"):
+    (person,) = contacts["items"]
+    assert len(person["entries"]) == 2
+    assert all(entry["platform"] == "qq" and "user_id" not in entry for entry in person["entries"])
+    with pytest.raises(SocialError, match="binding_unavailable"):
         await env.service.execute(
             "send",
             {
                 "text": "private report",
-                "target": {"kind": "person", "target_id": env.person, "binding_id": str(uuid4())},
+                "target": {"binding_id": str(uuid4())},
             },
             env.context,
         )
@@ -257,7 +251,7 @@ async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(so
         "send",
         {
             "text": "private report",
-            "target": {"kind": "person", "target_id": env.person, "binding_id": second},
+            "target": {"binding_id": second},
         },
         env.context,
     )
@@ -275,7 +269,7 @@ async def test_group_mention_resolves_binding_without_first_item(social_env, sel
         second = await session.get(IdentityBindingModel, other)
         account_id = second.account_id
     if selector == "subject":
-        with pytest.raises(SocialError, match="invalid_message_arguments"):
+        with pytest.raises(SocialError, match="invalid_arguments"):
             await env.service.execute(
                 "send",
                 {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]},
@@ -298,8 +292,10 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
     env = social_env
     args = {"text": f"前@{{account:{env.account}}}后"}
     if attachment:
-        artifact = snapshot_bytes(env.store, "hello.txt", b"hello")
-        args.update(artifact_id=artifact["artifact_id"], attachment_kind=attachment)
+        # Real image bytes display as an image; other bytes are always a file.
+        content = b"\x89PNG\r\n\x1a\n" + b"\0" * 16 if attachment == "image" else b"hello"
+        artifact = snapshot_bytes(env.store, f"hello.{attachment}", content)
+        args["file"] = {"artifact_id": artifact["artifact_id"]}
     result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded"
     messages = [params["message"] for action, params in env.bot.calls if action == "send_group_msg"]

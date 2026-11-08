@@ -425,17 +425,13 @@ async def test_repeated_collection_reuses_original_catalog_before_reloading_cach
 async def test_completed_save_replays_before_source_and_preserves_later_user_edit(admitted_media):
     env = admitted_media
     env.release.set()
-    args = {"event_id": env.event.id, "attachment_index": 0, "destination": "selected.png"}
-    first = await env.workspace.execute(
-        "save_conversation_attachment_to_workspace", args, request_id="original-save"
-    )
+    args = {"event_id": env.event.id, "attachment": 0, "destination": "selected.png"}
+    first = await env.workspace.execute("copy_file", args, request_id="original-save")
     _item, original = await env.media.authorized_path(event_id=env.event.id, attachment_index=0)
     original.unlink()
     selected = env.files / "selected.png"
     selected.write_bytes(b"edited later")
-    second = await env.workspace.execute(
-        "save_conversation_attachment_to_workspace", args, request_id="original-save"
-    )
+    second = await env.workspace.execute("copy_file", args, request_id="original-save")
     assert second == first and selected.read_bytes() == b"edited later"
     assert artifact_ids(env.store) == [] and len(env.calls) == 1
 
@@ -444,14 +440,10 @@ async def test_completed_save_replays_before_source_and_preserves_later_user_edi
 async def test_original_save_request_cannot_be_reused_for_a_different_copy(admitted_media, field):
     env = admitted_media
     env.release.set()
-    args = {"event_id": env.event.id, "attachment_index": 0, "destination": "selected.png"}
-    await env.workspace.execute(
-        "save_conversation_attachment_to_workspace", args, request_id="original-save"
-    )
+    args = {"event_id": env.event.id, "attachment": 0, "destination": "selected.png"}
+    await env.workspace.execute("copy_file", args, request_id="original-save")
     changed = {**args, field: env.event.id + 1 if field == "event_id" else "another.png"}
-    result = await env.workspace.execute(
-        "save_conversation_attachment_to_workspace", changed, request_id="original-save"
-    )
+    result = await env.workspace.execute("copy_file", changed, request_id="original-save")
     assert result["error"] == "idempotency_conflict"
     assert (env.files / "selected.png").read_bytes() == env.data
     assert not (env.files / "another.png").exists() and len(env.calls) == 1

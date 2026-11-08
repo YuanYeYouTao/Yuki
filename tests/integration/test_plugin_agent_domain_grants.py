@@ -85,7 +85,7 @@ async def test_main_web_search_and_page_read_keep_separate_live_grants(
             replies["search"] = json.loads(request.messages[-1].content)
             return _tool("read_webpage", {"url": page.url}, "page")
         replies["page"] = json.loads(request.messages[-1].content)
-        return _tool("task_control", {"action": "complete", "result": "done"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "done"}, "finish")
 
     provider._responder = respond
     try:
@@ -94,8 +94,8 @@ async def test_main_web_search_and_page_read_keep_separate_live_grants(
         assert result.ok and result.data["state"] == "completed"
         allowed = "search" if permission is PluginPermission.WEB_SEARCH else "page"
         denied = "page" if allowed == "search" else "search"
-        assert replies[allowed]["ok"], replies
-        assert replies[denied]["error_code"] == "permission_denied", replies
+        assert "error" not in replies[allowed], replies
+        assert replies[denied]["error"] == "permission_denied", replies
         assert web.search.await_count == int(allowed == "search")
         assert web.extract.await_count == int(allowed == "page")
         row = await WorkRepository(database).get(result.data["work_id"])
@@ -119,7 +119,7 @@ async def test_main_approved_send_uses_original_receipt_and_live_revocation(data
             host._approved_permissions = frozenset({PluginPermission.AGENT_RUN})
             return _tool("send", {"text": "revoked message"}, "revoked")
         receipts.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "done"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "done"}, "finish")
 
     provider._responder = respond
     try:
@@ -128,9 +128,9 @@ async def test_main_approved_send_uses_original_receipt_and_live_revocation(data
             original = await WorkRepository(database).get(result.data["work_id"])
             restored = await host.agent.result(result.data["work_id"])
         assert result.ok and restored.data["text"] == result.data["text"] == "done"
-        assert receipts[0]["ok"], receipts
-        assert receipts[0]["data"]["status"] == "succeeded", receipts
-        assert receipts[1]["error_code"] == "permission_denied", receipts
+        assert "error" not in receipts[0], receipts
+        assert receipts[0]["status"] == "succeeded", receipts
+        assert receipts[1]["error"] == "permission_denied", receipts
         assert [name for name, _ in env.bot.calls].count("send_group_msg") == 1
         assert await WorkRepository(database).get(result.data["work_id"]) == original
         assert len(provider.requests) == 3
@@ -147,9 +147,7 @@ async def test_path_send_uses_existing_live_media_grant(database, tmp_path, appr
         PluginPermission.MESSAGE_MEDIA_SEND if approved else PluginPermission.MESSAGE_GROUP_SEND
     )
     provider = FakeLLMProvider()
-    env, _, chat, source, host = await source_host(
-        database, tmp_path, provider, (permission,)
-    )
+    env, _, chat, source, host = await source_host(database, tmp_path, provider, (permission,))
     backend = MainAgentBackend(chat, source, plugin_host=host)
     descriptor = next(
         item
@@ -158,7 +156,7 @@ async def test_path_send_uses_existing_live_media_grant(database, tmp_path, appr
         ).descriptors()
         if item.model_name == "send"
     )
-    arguments = {"path": "/workspace/report.pdf", "attachment_kind": "file"}
+    arguments = {"file": {"path": "/workspace/report.pdf"}}
     platform_calls = list(env.bot.calls)
     try:
         if approved:
@@ -181,11 +179,9 @@ async def test_cold_retry_keeps_original_work_after_retired_name_subset_is_remov
     sandbox = SimpleNamespace(execute=AsyncMock(return_value={"ready": True}))
     chat._tools.sandbox_client = sandbox
     provider._responder = lambda _: (
-        _tool("environment_status", {}, "original-status")
+        _tool("get_environment", {}, "original-status")
         if len(provider.requests) == 1
-        else _tool(
-            "task_control", {"action": "complete", "result": "original paid result"}, "finish"
-        )
+        else _tool("manage_task", {"action": "finish", "result": "original paid result"}, "finish")
     )
     with host.invocation_scope(host.plugin_id, source):
         first = await host.agent.run("Inspect the original environment")
@@ -296,11 +292,11 @@ async def test_notification_entry_keeps_its_own_approval_and_environment_needs_a
 
     def respond(request):
         if len(provider.requests) == 1:
-            return _tool("environment_status", {}, "environment")
+            return _tool("get_environment", {}, "environment")
         replies.append(json.loads(request.messages[-1].content))
         if len(provider.requests) == 2:
             return _tool("read_webpage", {"url": page.url}, "page")
-        return _tool("task_control", {"action": "complete", "result": "notified"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "notified"}, "finish")
 
     provider._responder = respond
     try:
@@ -317,63 +313,10 @@ async def test_notification_entry_keeps_its_own_approval_and_environment_needs_a
                 permission=PluginPermission.NOTIFICATION_AGENT,
             )
         assert result.text == "notified" and result.work_state == "completed"
-        assert replies[0]["error_code"] == "permission_denied", replies
-        assert replies[1]["ok"], replies
+        assert replies[0]["error"] == "permission_denied", replies
+        assert "error" not in replies[1], replies
         sandbox.execute.assert_not_awaited()
         web.extract.assert_awaited_once()
-    finally:
-        await host.close_host_resources()
-
-
-@pytest.mark.parametrize(
-    "permission", [PluginPermission.AGENT_RUN, PluginPermission.NOTIFICATION_AGENT]
-)
-async def test_main_clock_does_not_require_automation_approval(database, tmp_path, permission):
-    from yuki.automation.repository import AutomationRepository
-    from yuki.automation.service import AutomationService
-    from yuki.automation.tools import AutomationToolService
-    from yuki.plugin_host.facades import _agent_dependencies
-    from yuki.plugin_host.main_turn import run_plugin_main_turn
-    from yuki.time.service import TimeContextService
-
-    provider = FakeLLMProvider()
-    _, harness, chat, source, host = await source_host(database, tmp_path, provider, ())
-    host._approved_permissions = frozenset({permission})
-    harness.settings.automation_enabled = True
-    chat.set_automation_tools(
-        AutomationToolService(
-            AutomationService(
-                settings=harness.settings,
-                repository=AutomationRepository(database),
-                time_service=TimeContextService(),
-            )
-        )
-    )
-    replies = []
-
-    def respond(request):
-        if len(provider.requests) == 1:
-            return _tool("time_get_current", {}, "original-time")
-        replies.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "time read"}, "finish")
-
-    provider._responder = respond
-    try:
-        with host.invocation_scope(host.plugin_id, source):
-            invocation = host._invocation()
-            _, runtime = await _agent_dependencies(host, invocation)
-            result = await run_plugin_main_turn(
-                host,
-                invocation,
-                instruction="Read the real current time",
-                context_data="",
-                runtime=runtime,
-                tools=None,
-                permission=permission,
-            )
-        assert result.text == "time read" and result.work_state == "completed"
-        assert replies[0]["ok"], replies
-        assert replies[0]["data"]["timezone"] == "Asia/Shanghai"
     finally:
         await host.close_host_resources()
 
@@ -419,51 +362,49 @@ async def test_self_main_memory_write_and_delete_keep_existing_sdk_approvals(
         nonlocal created
         count = len(provider.requests)
         if count == 1:
-            return _tool("get_group_members", {}, "original-evidence")
+            return _tool("get_members", {}, "original-evidence")
         replies.append(json.loads(request.messages[-1].content))
         if count == 2:
             return _tool(
-                "memory_change",
+                "save_memory",
                 {
-                    "operation": "create",
-                    "target": {"subject_ref": "self", "scope_type": "self"},
-                    "new_content": "我在真实工具调用中查询了 member 的群成员资料。",
-                    "memory_key": "self_episode:plugin-domain",
-                    "category": "self_episode",
+                    "target": {"self": True},
+                    "content": "我在真实工具调用中查询了 test-10001 的群成员资料。",
                     "kind": "episode",
-                    "evidence_quote": "member",
+                    "quote": "test-10001",
                 },
                 "write",
             )
         if write_approved and count == 3:
-            assert replies[-1]["ok"], replies
-            created = replies[-1]["data"]["new_fact_id"]
+            assert replies[-1]["outcome"] == "committed", replies
+            created = replies[-1]["fact_id"]
             return _tool(
-                "memory_change",
-                {"operation": "invalidate", "fact_id": created, "evidence_quote": "member"},
+                "edit_memory",
+                {"fact_id": created, "action": "invalidate", "quote": "test-10001"},
                 "delete-denied",
             )
         if write_approved and count == 4:
-            assert replies[-1]["error_code"] == "permission_denied", replies
+            assert replies[-1]["error"] == "permission_denied", replies
             host._approved_permissions |= {PluginPermission.MEMORY_DELETE}
             return _tool(
-                "memory_change",
-                {"operation": "invalidate", "fact_id": created, "evidence_quote": "member"},
+                "edit_memory",
+                {"fact_id": created, "action": "invalidate", "quote": "test-10001"},
                 "delete-approved",
             )
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     try:
         with host.invocation_scope(host.plugin_id, source):
             result = await host.agent.run("Keep actual Memory write and delete approvals")
         assert result.ok and result.data["state"] == "completed"
-        assert replies[0]["ok"], replies
+        assert replies[0].get("ok", True), replies
         if write_approved:
-            assert replies[1]["ok"] and replies[3]["ok"], replies
+            assert replies[1]["outcome"] == "committed", replies
+            assert replies[3]["applied"] == "invalidate", replies
             assert (await facts.get_fact(created)).status.value == "invalidated"
         else:
-            assert replies[1]["error_code"] == "permission_denied", replies
+            assert replies[1]["error"] == "permission_denied", replies
             assert created is None
     finally:
         await host.close_host_resources()
@@ -476,17 +417,15 @@ async def test_main_recall_needs_existing_send_approval_and_original_social_rece
     provider = FakeLLMProvider()
     permissions = (PluginPermission.MESSAGE_GROUP_SEND,) if send_approved else ()
     env, _, _, source, host = await source_host(database, tmp_path, provider, permissions)
-    original = await env.service.execute(
-        "send", {"text": "One real original message"}, env.context
-    )
+    original = await env.service.execute("send", {"text": "One real original message"}, env.context)
     assert original["status"] == "succeeded"
     replies = []
 
     def respond(request):
         if len(provider.requests) == 1:
-            return _tool("recall_own_message", {"event_id": original["event_id"]}, "recall")
+            return _tool("recall_message", {"event_id": original["event_id"]}, "recall")
         replies.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     try:
@@ -495,9 +434,9 @@ async def test_main_recall_needs_existing_send_approval_and_original_social_rece
             repeated = await host.agent.result(result.data["work_id"])
         assert result.ok and repeated.data["text"] == "checked"
         if send_approved:
-            assert replies[0]["ok"] and replies[0]["data"]["status"] == "succeeded", replies
+            assert "error" not in replies[0] and replies[0]["status"] == "succeeded", replies
         else:
-            assert replies[0]["error_code"] == "permission_denied", replies
+            assert replies[0]["error"] == "permission_denied", replies
         assert [name for name, _ in env.bot.calls].count("delete_msg") == int(send_approved)
         assert len(provider.requests) == 2
     finally:
@@ -523,7 +462,7 @@ async def test_domain_revocation_during_effect_wait_stops_actual_dispatch(
         if len(provider.requests) == 1:
             return _tool("read_webpage", {"url": page.url}, "original-read")
         replies.append(json.loads(request.messages[-1].content))
-        return _tool("task_control", {"action": "complete", "result": "checked"}, "finish")
+        return _tool("manage_task", {"action": "finish", "result": "checked"}, "finish")
 
     provider._responder = respond
     waiting, release = asyncio.Event(), asyncio.Event()
@@ -544,7 +483,7 @@ async def test_domain_revocation_during_effect_wait_stops_actual_dispatch(
             release.set()
             result = await task
         assert result.ok
-        assert replies[0]["error_code"] == "permission_denied", replies
+        assert replies[0]["error"] == "permission_denied", replies
         web.extract.assert_not_awaited()
     finally:
         release.set()

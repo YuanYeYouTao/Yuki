@@ -79,7 +79,7 @@ async def test_short_state_cannot_write_under_obsolete_or_closed_execution(
     monkeypatch.setattr(control_type, "has_pending_business_inputs", pending_then_expire)
     call = ToolCall(
         "short-state",
-        ToolFunction("update_short_state", json.dumps({"slot": 1, "text": "actual write"})),
+        ToolFunction("set_short_note", json.dumps({"slot": 1, "text": "actual write"})),
     )
     invocation = direct_invocations((call,), runtime, manifest_revision=owner.contract)[0]
     token = current_work_control.set(owner.control)
@@ -95,7 +95,7 @@ async def test_short_state_cannot_write_under_obsolete_or_closed_execution(
         except (WorkConflict, TurnSupersededError):
             assert scenario in {"expired_after_preflight", "generation_changed"}
         else:
-            assert json.loads(result)["ok"] is (scenario == "valid")
+            assert json.loads(result).get("ok", True) is (scenario == "valid")
         assert [row["text"] for row in contract.state.snapshot()] == (
             ["actual write"] if scenario == "valid" else []
         )

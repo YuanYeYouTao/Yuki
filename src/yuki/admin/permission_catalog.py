@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from typing import Literal
 
 from yuki.admin.config_registry import ConfigRegistry
 from yuki.admin.models import ConfigSpec
@@ -172,75 +171,6 @@ class CapabilityReport:
             ],
         }
 
-    def to_model_dict(
-        self,
-        mode: Literal["summary", "focused", "full"] = "summary",
-    ) -> dict[str, object]:
-        """Return a transient model view sized for the requested discovery task."""
-
-        full = self.to_dict()
-        base: dict[str, object] = {
-            "transient_internal_reference": True,
-            "do_not_copy_verbatim_to_user": True,
-            "permission_level": full["permission_level"],
-            "permission_source": full["permission_source"],
-            "counts": full["counts"],
-        }
-        category_counts: dict[str, dict[str, int]] = {}
-        for descriptor in self.capabilities:
-            counts = category_counts.setdefault(
-                descriptor.category,
-                {
-                    "total": 0,
-                    "commands": 0,
-                    "configurations": 0,
-                    "mutating": 0,
-                },
-            )
-            counts["total"] += 1
-            counts[
-                {
-                    CapabilityKind.COMMAND: "commands",
-                    CapabilityKind.CONFIGURATION: "configurations",
-                }[descriptor.kind]
-            ] += 1
-            if descriptor.mutating:
-                counts["mutating"] += 1
-        base["categories"] = category_counts
-        if mode == "summary":
-            return base
-        if mode == "full":
-            base.pop("categories", None)
-            grouped_ids: dict[str, dict[str, list[str]]] = {}
-            for descriptor in self.capabilities:
-                grouped_ids.setdefault(descriptor.category, {}).setdefault(
-                    descriptor.kind.value,
-                    [],
-                ).append(descriptor.id)
-            base["capability_ids"] = grouped_ids
-            base["available_scopes"] = full["available_scopes"]
-            base["available_apply_modes"] = full["available_apply_modes"]
-            return base
-        base["capabilities"] = [
-            {
-                "id": descriptor.id,
-                "kind": descriptor.kind.value,
-                "category": descriptor.category,
-                "name": descriptor.display_name,
-                "description": descriptor.description,
-                "mutating": descriptor.mutating,
-                "scopes": list(descriptor.target_scopes),
-                "apply_mode": descriptor.apply_mode,
-                "value_type": descriptor.value_type,
-                "minimum": descriptor.minimum,
-                "maximum": descriptor.maximum,
-                "choices": list(descriptor.choices),
-                "aliases": list(descriptor.search_terms),
-            }
-            for descriptor in self.capabilities
-        ]
-        return base
-
     def render_text(self) -> str:
         """Render the complete report without asking an LLM to summarize it."""
 
@@ -396,7 +326,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         category="automation",
         display_name="创建本人自动化",
         description=(
-            "通过 automation_manage(action=create) 提交 TaskSpec，持久化完整任务安排，"
+            "通过 manage_schedule(action=create) 提交目标与时间安排，持久化完整任务安排，"
             "到点激活主 Agent。"
         ),
         minimum_level=PermissionLevel.USER,
@@ -435,7 +365,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         category="automation",
         display_name="查看自动化",
         description=(
-            "automation_query(view=get) 和 /ai automation show 按稳定 ID 读取完整任务定义；"
+            "get_schedules(id=…) 和 /ai automation show 按稳定 ID 读取完整任务定义；"
             "普通用户读取本人任务，超级管理员可以读取全部任务。"
         ),
         minimum_level=PermissionLevel.USER,
@@ -447,7 +377,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="更新本人自动化",
-        description="通过 automation_manage(action=update) 发布 TaskSpec 的新任务版本。",
+        description="通过 manage_schedule(action=update) 发布任务安排的新版本。",
         minimum_level=PermissionLevel.USER,
         mutating=True,
         target_scopes=("self", "current_group"),

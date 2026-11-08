@@ -62,8 +62,8 @@ async def dispatch(workspace, tool_runtime, transcript, conversation_id, provide
 
 async def selected(case):
     return await case.workspace.execute(
-        "inspect_conversation_attachment",
-        {"event_id": case.source.id, "attachment_index": 0, "question": "read this image"},
+        "view_file",
+        {"event_id": case.source.id, "attachment": 0, "question": "read this image"},
         runtime=case.runtime,
         request_id="select-original",
     )
