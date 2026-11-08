@@ -28,6 +28,7 @@ from sqlalchemy import (
     true,
     update,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
@@ -47,6 +48,7 @@ from yuki.conversation.canonical_db_models import (
 from yuki.domain.audio import parse_transcripts, serialize_transcripts
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.profiles import UserProfileSnapshot
+from yuki.execution_trace.db_models import ExecutionTraceEntryModel, ExecutionTraceStateModel
 from yuki.identity.canonical_repository import (
     external_id,
     find_identity_binding,
@@ -99,6 +101,7 @@ from yuki.persistence.repository_records import (
     GroupSetting,
     PrivateUserSetting,
 )
+from yuki.persistence.unit_of_work import optional_session
 from yuki.plugin_host.db_models import (
     PluginAgentMessageModel,
     PluginAgentSessionModel,
@@ -108,6 +111,8 @@ from yuki.plugin_host.db_models import (
     PluginNotificationOutboxModel,
     PluginStateModel,
 )
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, work
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
 from yuki.social.db_models import SocialEmojiIntentModel
@@ -431,8 +436,6 @@ class PeopleRepository:
         *,
         memory_rebuilds: MemoryRebuildRepository | None = None,
     ) -> None:
-        from yuki.memory.rebuild.repository import MemoryRebuildRepository
-
         self._database = database
         self._memory_rebuilds = memory_rebuilds or MemoryRebuildRepository(database)
 
@@ -818,8 +821,6 @@ class PeopleRepository:
         marker: str = "[已删除用户]",
         closed_resources: PersonForgetPreparation | None = None,
     ) -> PersonForgetPreparation | None:
-        from yuki.persistence.unit_of_work import optional_session
-
         async with optional_session(self._database, session, write=False) as reader:
             if await reader.get(CanonicalPersonModel, person_id) is None:
                 return None
@@ -857,7 +858,6 @@ class PeopleRepository:
             owned = _privacy_owned_events(person_ids, private_ids, ownership)
             mentions = _privacy_mentions(person_ids, ownership)
             erased_events = select(ChatEventModel.id).where(or_(owned, mentions))
-            from yuki.runtime.work_schema_v1 import effects, work
 
             copied_events = func.json_each(
                 effects.c.receipt_json, "$.outcome.source_event_ids"
@@ -1383,7 +1383,6 @@ class PeopleRepository:
                 )
             )
         )
-        from yuki.runtime.work_repository import WorkRepository
 
         now = datetime.now(UTC)
         for conversation_id in prepared.affected_ids:
@@ -1732,12 +1731,6 @@ class PeopleRepository:
             web_match.append(WebSearchRunModel.conversation_key.in_(alias_keys))
         # Prompts and tool results can mention a Person in any conversation.
         # Disposable diagnostics must not retain content after privacy deletion.
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
-        from yuki.execution_trace.db_models import (
-            ExecutionTraceEntryModel,
-            ExecutionTraceStateModel,
-        )
 
         await session.execute(
             sqlite_insert(ExecutionTraceStateModel)

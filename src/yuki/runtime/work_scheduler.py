@@ -11,7 +11,10 @@ from typing import Any
 
 from sqlalchemy import RowMapping, func, or_, select, text
 
+from yuki.automation.repository import AutomationRepository
 from yuki.persistence.sqlite_diagnostics import TimingSummary
+from yuki.runtime.execution_receipts import PROCESS_ID
+from yuki.runtime.protocol_store import ProtocolStore
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_recovery_schema import recovery
 from yuki.runtime.work_repository import WorkRepository
@@ -83,7 +86,6 @@ class WorkScheduler:
         # SELF always uses durable Work, including the legacy participation proposer.
         if self._worker is None:
             self._accepting = True
-            from yuki.runtime.execution_receipts import PROCESS_ID
 
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
             self._worker = asyncio.create_task(self._loop(), name="runtime-work-scheduler")
@@ -213,13 +215,10 @@ class WorkScheduler:
 
     async def dispatch_once(self) -> list[asyncio.Task[None]]:
         """Maintain, select and dispatch without waiting for any resume to finish."""
-        from yuki.runtime.execution_receipts import PROCESS_ID
 
         with self._timed("repair_inputs"):
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
         if time.monotonic() - self._last_reclaim > 600:
-            from yuki.runtime.protocol_store import ProtocolStore
-
             self._last_reclaim = time.monotonic()
             self._last_maintenance_error = None
             for phase, maintain in (
@@ -236,7 +235,6 @@ class WorkScheduler:
                         phase,
                         self._last_maintenance_error,
                     )
-        from yuki.automation.repository import AutomationRepository
 
         try:
             with self._timed("settle_schedules"):

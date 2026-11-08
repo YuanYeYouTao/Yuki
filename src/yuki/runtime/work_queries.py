@@ -13,6 +13,7 @@ from sqlalchemy import Select, case, func, literal_column, or_, select, text, tu
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import person_root_id, same_person_condition
+from yuki.runtime.effect_outcomes import historical_evidence
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_query_schema import (
     SOURCE_SCOPE_FIELDS,
@@ -22,6 +23,7 @@ from yuki.runtime.work_query_schema import (
 from yuki.runtime.work_repository import WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import effects, work
 from yuki.runtime.work_tree import ancestor_work_ids, budget_root_id, descendants
+from yuki.runtime.work_wait import WorkWaitRepository
 from yuki.runtime.work_wait_schema import waits
 
 PROMPT_GOAL_CHARACTERS = 160
@@ -187,7 +189,6 @@ class WorkQueries:
                             .mappings()
                             .all()
                         )
-                        from yuki.runtime.effect_outcomes import historical_evidence
 
                         steps = []
                         for step in page[:limit]:
@@ -219,8 +220,6 @@ class WorkQueries:
                             else None,
                         )
         if result is not None:
-            from yuki.runtime.work_wait import WorkWaitRepository
-
             waiting = await WorkWaitRepository(self.repository).describe(work_id)
             if waiting is not None:
                 result["wait"] = waiting
@@ -274,7 +273,6 @@ class WorkQueries:
         query = query.with_only_columns(
             columns.work_id, columns.goal_excerpt, columns.goal_complete, columns.state
         )
-        from yuki.runtime.effect_outcomes import historical_evidence
 
         async with self.repository.database.read_session() as session:
             row = (

@@ -25,6 +25,7 @@ from yuki.admin.models import (
 )
 from yuki.asr.service import ASRService, AudioInput
 from yuki.config import Settings
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.media_index import indexed_media_segments, observed_reply_media_segments
 from yuki.conversation.media_service import ConversationMediaService
@@ -39,6 +40,7 @@ from yuki.conversation.ordinary_admission import (
 from yuki.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.memory_config import MemoryConfigScope
 from yuki.domain.messages import (
     InboundMessage,
     LocalDeliveryReceipt,
@@ -50,7 +52,9 @@ from yuki.emoji.library import EmojiLibrary
 from yuki.execution_trace.phases import turn_detail
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.gateway.media import PlatformMediaGateway
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.db_models import CanonicalSpaceModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.ingress import CanonicalIngressResolver, IngressPreAdmit
 from yuki.identity.readers import canonical_group_policy, canonical_private_policy
@@ -350,8 +354,6 @@ class MessageProcessor:
     """Admission → dedup → identity → ledger → memory → reply."""
 
     async def _person_is_superuser(self, person_id: str | None) -> bool:
-        from yuki.identity.authority import person_is_superuser
-
         async with self._ledger._database.read_session() as session:
             return await person_is_superuser(session, person_id)
 
@@ -1037,9 +1039,6 @@ class MessageProcessor:
     ) -> bool:
         if reason not in {"group_open", "semantic_invitation", "continuation"}:
             return True
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
-        from yuki.domain.memory_config import MemoryConfigScope
-        from yuki.identity.db_models import CanonicalSpaceModel
 
         conversation = await session.get(
             CanonicalConversationModel, prepared.admission.conversation_id

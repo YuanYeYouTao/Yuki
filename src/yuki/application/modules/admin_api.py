@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import text
+
 from yuki.admin.authority.operators import ControlOperatorAccess
 from yuki.admin.operations import AdminOperations
 from yuki.admin.queries import AdminQueries
@@ -62,8 +64,6 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
         }
     )
     try:
-        from sqlalchemy import text
-
         async with app.database.read_session() as session:
             await session.execute(text("SELECT 1"))
         database_healthy = True

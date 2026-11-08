@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import cast
 
 from sqlalchemy import select
@@ -14,6 +14,7 @@ from yuki.domain.conversations import ConversationScope
 from yuki.identity.db_models import AccountAssignmentModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.models import ChatEventModel
+from yuki.time.formatting import utc_iso
 
 _KEEPER_STATUS = "keeper"
 
@@ -56,10 +57,7 @@ def normalize_live_json(value: object) -> str:
 def occurred_at_token(value: datetime | None) -> str:
     """Cutover duplicate classifier compares platform occurred_at as a stable token."""
 
-    if value is None:
-        return ""
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    return aware.astimezone(UTC).isoformat()
+    return "" if value is None else utc_iso(value)
 
 
 def transport_namespace(scope: ConversationScope) -> str:

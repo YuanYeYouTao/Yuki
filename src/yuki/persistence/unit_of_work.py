@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.persistence.database import Database
+from yuki.time.formatting import stored_utc
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -30,7 +31,7 @@ def next_updated_at(previous: datetime | None, now: datetime | None = None) -> d
 def state_revision(updated_at: datetime) -> int:
     """Lossless microsecond token. Distinct ``updated_at`` values never collide."""
 
-    stamp = _aware(updated_at).astimezone(UTC)
+    stamp = stored_utc(updated_at)
     delta = stamp - _EPOCH
     return max(1, delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds)
 

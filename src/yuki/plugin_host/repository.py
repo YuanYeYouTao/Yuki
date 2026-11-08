@@ -15,6 +15,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.identity.person_identity import current_person_ids, same_person_id
 from yuki.persistence.database import Database
 from yuki.persistence.unit_of_work import next_updated_at, optional_session
 from yuki.plugin_host.db_models import (
@@ -23,6 +24,16 @@ from yuki.plugin_host.db_models import (
     PluginInstallationModel,
     PluginStateModel,
 )
+from yuki.plugin_host.ownership import (
+    CANONICAL_OWNER_MISMATCH,
+    STATE_MISMATCH,
+    PluginOwnershipError,
+    find_config_lineage,
+    resolve_config_owners,
+    resolve_human_person_id,
+    resolve_state_owner,
+)
+from yuki.time.formatting import stored_utc
 
 _VALID_SCOPES = frozenset({"global", "group", "user"})
 _AUDIT_SECRET_KEYS = (
@@ -131,7 +142,7 @@ class PluginInstallationRepository:
     ) -> PluginInstallationRecord:
         """Record a manifest and revoke stale approval when its identity changes."""
 
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         requested = _permissions(requested_permissions)
         requested_json = _json(list(requested))
         async with self._database.immediate_session() as session:
@@ -205,7 +216,7 @@ class PluginInstallationRepository:
         now: datetime | None = None,
         session: AsyncSession | None = None,
     ) -> PluginInstallationRecord | None:
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with optional_session(self._database, session, write=True) as active:
             row = await active.get(PluginInstallationModel, plugin_id)
             if row is None:
@@ -229,7 +240,7 @@ class PluginInstallationRepository:
         now: datetime | None = None,
         session: AsyncSession | None = None,
     ) -> PluginInstallationRecord | None:
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with optional_session(self._database, session, write=True) as active:
             row = await active.get(PluginInstallationModel, plugin_id)
             if row is None:
@@ -250,7 +261,7 @@ class PluginInstallationRepository:
         error_category: str | None = None,
         now: datetime | None = None,
     ) -> PluginInstallationRecord | None:
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with self._database.immediate_session() as session:
             row = await session.get(PluginInstallationModel, plugin_id)
             if row is None:
@@ -272,7 +283,7 @@ class PluginInstallationRepository:
         disable_threshold: int,
         now: datetime | None = None,
     ) -> PluginInstallationRecord | None:
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with self._database.immediate_session() as session:
             row = await session.get(PluginInstallationModel, plugin_id)
             if row is None:
@@ -294,8 +305,6 @@ class PluginConfigRepository:
         self._database = database
 
     async def same_person_scope(self, left: str, right: str) -> bool:
-        from yuki.identity.person_identity import same_person_id
-
         async with self._database.read_session() as session:
             return await same_person_id(session, left, right)
 
@@ -305,11 +314,6 @@ class PluginConfigRepository:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
         async with self._database.read_session() as session:
-            from yuki.plugin_host.ownership import (
-                find_config_lineage,
-                resolve_config_owners,
-            )
-
             person_id, space_id = await resolve_config_owners(
                 session, scope_type=scope_type, scope_id=scope_id
             )
@@ -343,7 +347,7 @@ class PluginConfigRepository:
             raise ValueError("expected_version must be non-negative")
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         value_json = _json(value)
         async with self._database.immediate_session() as session:
             row = await self._compare_and_set_canonical(
@@ -372,13 +376,6 @@ class PluginConfigRepository:
         value_json: str,
         timestamp: datetime,
     ) -> PluginConfigValueModel:
-        from yuki.plugin_host.ownership import (
-            STATE_MISMATCH,
-            PluginOwnershipError,
-            find_config_lineage,
-            resolve_config_owners,
-        )
-
         person_id, space_id = await resolve_config_owners(
             session,
             scope_type=scope_type,
@@ -452,11 +449,6 @@ class PluginConfigRepository:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
         async with self._database.immediate_session() as session:
-            from yuki.plugin_host.ownership import (
-                find_config_lineage,
-                resolve_config_owners,
-            )
-
             person_id, space_id = await resolve_config_owners(
                 session, scope_type=scope_type, scope_id=scope_id
             )
@@ -509,7 +501,7 @@ class PluginStateRepository:
     ) -> PluginStateRecord | None:
         namespace = _storage_key(namespace, label="state namespace")
         key = _storage_key(key, label="state key")
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with self._database.read_session() as session:
             row = await session.scalar(
                 select(PluginStateModel).where(
@@ -524,9 +516,6 @@ class PluginStateRepository:
             )
             if row is None:
                 return None
-            from yuki.plugin_host.ownership import (
-                resolve_human_person_id,
-            )
 
             subject = (
                 await resolve_human_person_id(session, row.canonical_person_id)
@@ -546,7 +535,7 @@ class PluginStateRepository:
         """List one namespace, failing closed when any canonical owner is invalid."""
 
         namespace = _storage_key(namespace, label="state namespace")
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with self._database.read_session() as session:
             rows = (
                 await session.scalars(
@@ -563,7 +552,6 @@ class PluginStateRepository:
                     .limit(max(1, min(limit, 1_000)))
                 )
             ).all()
-            from yuki.identity.person_identity import current_person_ids
 
             subjects = await current_person_ids(
                 session, (row.canonical_person_id for row in rows if row.canonical_person_id)
@@ -586,7 +574,7 @@ class PluginStateRepository:
     ) -> int:
         """Return the UTF-8 JSON payload size for one plugin's live state."""
 
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         async with self._database.read_session() as session:
             usage = await session.scalar(
                 select(
@@ -620,15 +608,10 @@ class PluginStateRepository:
             raise ValueError("expected_version must be non-negative")
         namespace = _storage_key(namespace, label="state namespace")
         key = _storage_key(key, label="state key")
-        expiry = _aware_utc(expires_at) if expires_at is not None else None
+        expiry = stored_utc(expires_at) if expires_at is not None else None
         value_json = _json(value)
         async with self._database.immediate_session() as session:
-            timestamp = _aware_utc(now or datetime.now(UTC))
-            from yuki.plugin_host.ownership import (
-                CANONICAL_OWNER_MISMATCH,
-                PluginOwnershipError,
-                resolve_state_owner,
-            )
+            timestamp = stored_utc(now or datetime.now(UTC))
 
             owner_id = await resolve_state_owner(session, subject_user_id)
             projected_subject = owner_id
@@ -667,8 +650,6 @@ class PluginStateRepository:
                     )
                 )
                 if existing is not None and existing.canonical_person_id != owner_id:
-                    from yuki.identity.person_identity import same_person_id
-
                     if (
                         not existing.canonical_person_id
                         or not owner_id
@@ -728,7 +709,7 @@ class PluginStateRepository:
         return deleted
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
-        timestamp = _aware_utc(now or datetime.now(UTC))
+        timestamp = stored_utc(now or datetime.now(UTC))
         eligible = (
             PluginStateModel.expires_at.is_not(None),
             PluginStateModel.expires_at <= timestamp,
@@ -777,7 +758,7 @@ class PluginAuditRepository:
             success=success,
             error_category=_optional(error_category, 64),
             detail_json=_json(_redact_audit(detail or {})),
-            created_at=_aware_utc(now or datetime.now(UTC)),
+            created_at=stored_utc(now or datetime.now(UTC)),
         )
         async with self._database.immediate_session() as session:
             session.add(row)
@@ -819,10 +800,10 @@ def _installation_record(row: PluginInstallationModel) -> PluginInstallationReco
         requested_permissions=_decode_permissions(row.requested_permissions_json),
         failure_count=row.failure_count,
         last_error_category=row.last_error_category,
-        discovered_at=_aware_utc(row.discovered_at),
-        approved_at=_aware_utc(row.approved_at) if row.approved_at else None,
-        started_at=_aware_utc(row.started_at) if row.started_at else None,
-        updated_at=_aware_utc(row.updated_at),
+        discovered_at=stored_utc(row.discovered_at),
+        approved_at=stored_utc(row.approved_at) if row.approved_at else None,
+        started_at=stored_utc(row.started_at) if row.started_at else None,
+        updated_at=stored_utc(row.updated_at),
     )
 
 
@@ -839,7 +820,7 @@ def _config_record(
         key=row.key,
         value=_decode(row.value_json),
         version=row.version,
-        updated_at=_aware_utc(row.updated_at),
+        updated_at=stored_utc(row.updated_at),
         canonical_person_id=row.canonical_person_id,
         canonical_space_id=row.canonical_space_id,
     )
@@ -856,8 +837,8 @@ def _state_record(
         value=_decode(row.value_json),
         version=row.version,
         subject_user_id=subject_user_id,
-        expires_at=_aware_utc(row.expires_at) if row.expires_at else None,
-        updated_at=_aware_utc(row.updated_at),
+        expires_at=stored_utc(row.expires_at) if row.expires_at else None,
+        updated_at=stored_utc(row.updated_at),
         canonical_person_id=row.canonical_person_id,
     )
 
@@ -872,7 +853,7 @@ def _audit_record(row: PluginAuditEventModel) -> PluginAuditEventRecord:
         success=row.success,
         error_category=row.error_category,
         detail=_decode(row.detail_json),
-        created_at=_aware_utc(row.created_at),
+        created_at=stored_utc(row.created_at),
     )
 
 
@@ -935,9 +916,3 @@ def _redact_audit(value: object, *, key: str = "") -> object:
     if value is None or isinstance(value, bool | int | float):
         return value
     return str(value)[:512]
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)

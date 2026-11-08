@@ -19,6 +19,7 @@ from yuki.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
+from yuki.conversation.hydrate import require_primary_alias_for_conversation
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.identity import AuthorKind
 from yuki.identity.db_models import (
@@ -35,7 +36,8 @@ from yuki.persistence.repository_helpers import (
     keeper_event_clause,
     suppression_is_canonical_live,
 )
-from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork, prepare_append
+from yuki.persistence.unit_of_work import optional_session
 from yuki.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginBackgroundTurnJobModel,
@@ -70,6 +72,7 @@ from yuki.plugin_host.ownership import (
     resolve_human_person_id,
     stamp_grant_owners,
 )
+from yuki.runtime.work_management import stop_owned_execution
 from yuki.runtime.work_recovery_schema import recovery
 from yuki.runtime.work_repository import (
     TERMINAL,
@@ -79,8 +82,10 @@ from yuki.runtime.work_repository import (
     encode_json,
 )
 from yuki.runtime.work_schema_v1 import scope, work
+from yuki.runtime.work_tree import descendants
 from yuki.runtime.work_wait import WorkWaitRepository
 from yuki.runtime.work_wait_schema import waits
+from yuki.time.formatting import stored_utc
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import (
     BackgroundTargetGrantView,
@@ -532,8 +537,6 @@ class PluginNotificationRepository:
                     else None
                 )
 
-            from yuki.persistence.scoped_event_uow import prepare_append
-
             prepared_append = await prepare_append(
                 request.summary,
                 segments=({"type": "yuki_context", "data": source_data},),
@@ -601,7 +604,7 @@ class PluginNotificationRepository:
                         external_target_id=target.target_id,
                         content=request.summary,
                         prepared=prepared_append,
-                        occurred_at=_aware(request.occurred_at),
+                        occurred_at=stored_utc(request.occurred_at),
                         session=session,
                     )
                 except CanonicalIdentityError as exc:
@@ -843,8 +846,6 @@ class PluginNotificationRepository:
         error_category: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
-        from yuki.persistence.unit_of_work import optional_session
-
         async with optional_session(self._database, session, write=True) as session:
             now = datetime.now(UTC)
             row = await session.get(PluginNotificationOutboxModel, item_id)
@@ -1290,8 +1291,6 @@ class PluginNotificationRepository:
     async def require_agent_reply_ready(self, item: OutboxRecord) -> str:
         """Return the frozen effect-gate key after an exact delivery-time fence."""
 
-        from yuki.conversation.hydrate import require_primary_alias_for_conversation
-
         category: str | None = None
         primary_alias: str | None = None
         async with self._database.immediate_session() as session:
@@ -1369,8 +1368,6 @@ class PluginNotificationRepository:
     ) -> str | None:
         """Read a grant by persisted Person XOR Space. No raw QQ/group key."""
 
-        from yuki.persistence.unit_of_work import optional_session
-
         async with optional_session(self._database, session, write=False) as session:
             try:
                 grant = await _canonical_enabled_grant(
@@ -1394,18 +1391,12 @@ class PluginNotificationRepository:
     ) -> QueuedCanonicalContext:
         """Read the original scene under its Job attempt or retained Work ownership."""
 
-        from yuki.conversation.hydrate import (
-            require_primary_alias_for_conversation,
-        )
-
         category: str | None = None
         result: QueuedCanonicalContext | None = None
         async with self._database.read_session() as session:
             await session.execute(text("BEGIN"))
             stored = await session.get(PluginBackgroundTurnJobModel, job.id)
             if work_id is not None:
-                from yuki.runtime.work_tree import descendants
-
                 if stored is None or stored.work_id is None:
                     raise WorkConflict("plugin_turn_work_source_mismatch")
                 retained = await session.scalar(
@@ -1637,8 +1628,6 @@ async def _close_linked_work(
     session: AsyncSession, identity: str, *, state: str, reason: str
 ) -> None:
     """Close the original Work tree with the Job; confirmed effects stay intact."""
-
-    from yuki.runtime.work_management import stop_owned_execution
 
     await stop_owned_execution(session, identity, reason)
     await session.execute(
@@ -1964,7 +1953,7 @@ async def _resolve_request_media(
         if (
             artifact is None
             or artifact.plugin_id != plugin_id
-            or _aware(artifact.expires_at) <= now
+            or stored_utc(artifact.expires_at) <= now
             or not is_sha256_digest(artifact.sha256)
         ):
             raise PluginPermissionError("media handle is invalid, expired, or foreign")
@@ -2340,7 +2329,3 @@ def _turn_record(
 def _notification_id(plugin_id: str, event_key: str, target_type: str, target_id: str) -> str:
     raw = f"{plugin_id}\0{event_key}\0{target_type}\0{target_id}".encode()
     return hashlib.sha256(raw).hexdigest()
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

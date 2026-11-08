@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from pydantic import TypeAdapter
-from sqlalchemy import and_, func, or_, select, text, true, update
+from sqlalchemy import and_, delete, func, or_, select, text, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
+from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.memory.extraction import source_event_fingerprint
 from yuki.memory.partition import (
     MemoryPartitionResolutionError,
@@ -31,6 +32,8 @@ from yuki.memory.projections import (
     project_active_space_external_id,
 )
 from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel as Window
+from yuki.memory.self_reflection.initiative import advance_cursor, claim_initiative
 from yuki.memory.self_reflection.models import (
     SelfReflectionBatch,
     SelfReflectionState,
@@ -48,6 +51,7 @@ from yuki.persistence.models import (
 )
 from yuki.persistence.repository_helpers import _event_record, keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
+from yuki.time.formatting import stored_utc
 
 _CHECKPOINT_EVENTS = TypeAdapter(dict[str, EventRecord])
 _CHECKPOINT_TOOLS = TypeAdapter(dict[str, StoredToolReceipt])
@@ -627,9 +631,6 @@ class SelfReflectionRepository:
         cycle_id: str | None = None,
         timezone: str = "Asia/Shanghai",
     ) -> tuple[SelfReflectionBatch, ...]:
-        from yuki.event_prompt import ChatEventPromptRenderer
-        from yuki.memory.self_reflection.initiative import claim_initiative
-
         initiatives = await claim_initiative(
             self._database, max_characters=max_characters, cycle_id=cycle_id
         )
@@ -682,7 +683,7 @@ class SelfReflectionRepository:
                             if r.status == "failed"
                             and r.retry_state != "isolated"
                             and (cycle_id is None or r.cycle_id != cycle_id)
-                            and (r.next_attempt_at is None or _utc(r.next_attempt_at) <= now)
+                            and (r.next_attempt_at is None or stored_utc(r.next_attempt_at) <= now)
                         ),
                         None,
                     )
@@ -970,7 +971,7 @@ class SelfReflectionRepository:
                     row.result_excerpt,
                     row.initiative_run_id,
                     row.bot_user_id,
-                    _utc(row.created_at),
+                    stored_utc(row.created_at),
                 )
                 for row in rows
             )
@@ -1002,7 +1003,7 @@ class SelfReflectionRepository:
                 tool_name=row.tool_name,
                 success=row.success,
                 result_excerpt=row.result_excerpt,
-                occurred_at=_utc(row.created_at),
+                occurred_at=stored_utc(row.created_at),
             )
             for row in rows
         )
@@ -1040,8 +1041,6 @@ class SelfReflectionRepository:
         initiative_run_id: str | None = None,
         error_category: str = "",
     ) -> dict[int, str]:
-        from yuki.memory.self_reflection.initiative import advance_cursor
-
         query = select(MemorySelfReflectionRunModel).where(
             MemorySelfReflectionRunModel.status == "processing"
         )
@@ -1335,7 +1334,8 @@ class SelfReflectionRepository:
                             )
                             or (
                                 tool_source.occurred_at is not None
-                                and _utc(tool_source.occurred_at) != _utc(receipt.created_at)
+                                and stored_utc(tool_source.occurred_at)
+                                != stored_utc(receipt.created_at)
                             )
                         ):
                             raise MemoryPartitionResolutionError("checkpoint_source_changed")
@@ -1419,12 +1419,6 @@ class SelfReflectionRepository:
             return {(r.result_kind, r.result_index) for r in rows}
 
     async def cleanup_receipts(self, *, limit: int = 500) -> int:
-        from sqlalchemy import delete
-
-        from yuki.memory.self_reflection.db_models import (
-            InitiativeReflectionWindowModel as Window,
-        )
-
         # Discovery never acquires the writer. Reuse the complete eligibility
         # predicate in DELETE so a new evidence/window/expiry change wins.
         conditions = (
@@ -1505,13 +1499,9 @@ class SelfReflectionRepository:
         )
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 def _checkpoint_event_source(event: EventRecord) -> tuple[object, ...]:
     return (
-        source_event_fingerprint(replace(event, occurred_at=_utc(event.occurred_at))),
+        source_event_fingerprint(replace(event, occurred_at=stored_utc(event.occurred_at))),
         event.canonical_conversation_id,
         event.canonical_event_id,
         event.author_kind,

@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from yuki.capabilities.invocation import direct_operation_id
+from yuki.runtime.work_journal import WorkJournal
+from yuki.runtime.work_repository import WorkConflict
 from yuki.runtime.work_schema_v1 import effects
+from yuki.runtime.work_source_guard import WorkSourceGuard
 
 if TYPE_CHECKING:
     from yuki.runtime.work_control import WorkControl
@@ -31,9 +34,6 @@ async def select_protocol_recovery(
     """Choose exact private recovery before any fresh chat/material selection."""
     if control is None or control.current is None or contract is None:
         return None
-    from yuki.runtime.work_journal import WorkJournal
-    from yuki.runtime.work_repository import WorkConflict
-    from yuki.runtime.work_source_guard import WorkSourceGuard
 
     snapshot = await WorkJournal(control.repository).load(
         control.lease, control.current["id"], contract, source_control=control

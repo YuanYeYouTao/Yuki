@@ -10,10 +10,15 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from yuki.conversation.canonical_schema import ASSIGNMENT_ROLE_TRIGGER_SQL, C3_TRIGGER_SQL
 from yuki.conversation.projection_identity_schema import (
     PROJECTION_TRIGGERS_CURRENT,
 )
 from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
+from yuki.persistence.database import _complete
+from yuki.persistence.history_search_index import DELETE_HISTORY_TRIGGER
+from yuki.persistence.vec1 import delete_trigger, load_vec1, vector_table
+from yuki.runtime.protocol_schema import QUOTA_SQL
 
 
 def canonical_schema_revision(root: Path | None = None) -> str:
@@ -297,7 +302,6 @@ class CanonicalSchemaError(RuntimeError):
 
 async def require_canonical_schema(database_url: str) -> None:
     """Validate the bundled version and metadata without scanning business data."""
-    from yuki.persistence.database import _complete
 
     _, cancellation = await _complete(_check_canonical_schema(database_url))
     if cancellation is not None:
@@ -311,7 +315,6 @@ async def _check_canonical_schema(database_url: str) -> None:
 
     expected_revision = canonical_schema_revision()
     engine = create_async_engine(database_url, poolclass=NullPool)
-    from yuki.persistence.vec1 import delete_trigger, load_vec1, vector_table
 
     event.listen(
         engine.sync_engine,
@@ -370,15 +373,12 @@ async def _check_canonical_schema(database_url: str) -> None:
                 if name not in tables:
                     raise CanonicalSchemaError("database vector storage is incomplete")
                 vector_triggers[f"{name}_delete"] = delete_trigger(profile_id)
-            from yuki.runtime.protocol_schema import QUOTA_SQL
 
             protocol_triggers = {
                 statement.split()[5]: statement
                 for statement in QUOTA_SQL
                 if statement.startswith("CREATE TRIGGER")
             }
-
-            from yuki.persistence.history_search_index import DELETE_HISTORY_TRIGGER
 
             for name, expected in {
                 "chat_history_fts_ad": DELETE_HISTORY_TRIGGER,
@@ -399,6 +399,4 @@ async def _check_canonical_schema(database_url: str) -> None:
 
 
 def _identity_triggers() -> dict[str, str]:
-    from yuki.conversation.canonical_schema import ASSIGNMENT_ROLE_TRIGGER_SQL, C3_TRIGGER_SQL
-
     return {sql.split()[2]: sql for sql in (*C3_TRIGGER_SQL, *ASSIGNMENT_ROLE_TRIGGER_SQL)}

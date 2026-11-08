@@ -13,8 +13,9 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from yuki import __version__
+from yuki.admin.config_files import ConfigFileService
 from yuki.admin.config_service import RuntimeConfigService
-from yuki.admin.models import RuntimeConfigSnapshot
+from yuki.admin.models import RuntimeConfigSnapshot, VisionRuntimeConfig
 from yuki.admin.permission_catalog import PermissionCatalogService
 from yuki.application.lifecycle import LifecycleRegistry
 from yuki.application.modules import (
@@ -27,14 +28,36 @@ from yuki.application.modules import (
     PluginModule,
     WebModule,
 )
+from yuki.application.modules.admin_api import build_admin_api
+from yuki.application.modules.asr import build_asr
+from yuki.character.avatar import AvatarStore, CharacterAvatars
+from yuki.character.repository import CharacterRepository
+from yuki.character.soul import CharacterSoul
+from yuki.client_api.automations import ClientAutomations
+from yuki.client_api.capabilities import ClientCapabilities
+from yuki.client_api.computer import ClientComputer
+from yuki.client_api.files import ClientFiles
+from yuki.client_api.http import ClientApi
+from yuki.client_api.identity import ClientIdentityService
+from yuki.client_api.memory import ClientMemory
+from yuki.client_api.messages import ClientMessages
+from yuki.client_api.prompts import ClientPrompts
+from yuki.client_api.views import ClientViews
+from yuki.client_api.works import ClientWorks
 from yuki.config import Settings
+from yuki.conversation.media_service import ConversationMediaService
+from yuki.conversation.uploads import ConversationUploads
 from yuki.domain.messages import InboundMessage
+from yuki.emoji.library import EmojiLibrary
+from yuki.external_agents.service import ExternalAgentService
 from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.app.ingress import AppGateway
 from yuki.gateway.registry import GatewayConnectionRegistry, configure_process_registry
 from yuki.identity.bootstrap import bootstrap_settings_identity
 from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
 from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter, RouteMonitor
+from yuki.identity.write_settings import configure_identity_write_settings
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
 from yuki.persistence.database import Database
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
@@ -47,6 +70,7 @@ from yuki.plugin_host.facades import (
     ToolRuntimeProjection,
 )
 from yuki.plugin_host.http_client import BoundHttpFacade
+from yuki.plugin_host.main_turn import resume_plugin_work
 from yuki.plugin_host.manifest import PluginManifest
 from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
 from yuki.plugin_host.notification_delivery import (
@@ -58,21 +82,38 @@ from yuki.plugin_host.secrets import BoundSecretsFacade
 from yuki.plugin_host.session_facade import BoundAgentSessionFacade
 from yuki.plugin_host.storage import BoundStorageFacade
 from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_scheduler import SubagentScheduler
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_scheduler import WorkScheduler
+from yuki.sandbox.client import SandboxClient
+from yuki.sandbox.completion_receiver import CompletionReceiver
+from yuki.sandbox.continuation_worker import SandboxContinuationWorker
+from yuki.sandbox.task_repository import SandboxTaskRepository
 from yuki.services.autonomous_groups import AutonomousGroupService
+from yuki.services.client_link import ClientLinkCommands
 from yuki.services.command_service import CommandService
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.effect_gate import ConversationEffectGate
 from yuki.services.group_recovery import NativeGroupRecovery
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.media_resolver import _media_io
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.plugin_events import publish_notification
 from yuki.services.processing_status import ProcessingStatusService
 from yuki.services.processor import MessageProcessor, ProcessResult
+from yuki.services.semantic_participation import SemanticParticipationService
+from yuki.services.subagent_execution import SubagentExecution, SubagentExecutionDependencies
 from yuki.services.turn_coordinator import ConversationTurnCoordinator
-from yuki.services.vision_service import VisionService
+from yuki.services.work_resume import WorkResumeDependencies, WorkResumer
+from yuki.social.service import SocialService
 from yuki.time.service import TimeContextService
 from yuki.tool_results.artifacts import ToolArtifactRepository
 from yuki.tool_results.recorder import ToolReceiptRepository
 from yuki.vision.base import VisionProvider
+from yuki.workspace.inspect import WorkspaceInspector
+from yuki.workspace.service import WorkspaceService
+from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -144,17 +185,10 @@ class ApplicationContainer:
         self.conversation_scopes = persistence.conversation_scopes
         self.scoped_events = persistence.scoped_events
         self.groups = persistence.groups
-        self.private_users = persistence.private_users
         self.people = persistence.people
         self.ledger = persistence.ledger
-        self.memories = persistence.memories
-        self.memory_context = persistence.memory_context
-        self.memory_index = persistence.memory_index
-        self.memory_jobs = persistence.memory_jobs
         self.memory_audit = persistence.memory_audit
         self.memory_metrics = persistence.memory_metrics
-        self.web_sources = persistence.web_sources
-        self.media_analyses = persistence.media_analyses
         self.time_context = TimeContextService(
             default_timezone=settings.default_timezone,
         )
@@ -178,51 +212,43 @@ class ApplicationContainer:
         self.memory_embeddings = MemoryEmbeddingRuntime(
             settings=settings,
             database=self.database,
-            facts=self.memories,
-            retriever=self.memory_context.retriever,
+            facts=persistence.memories,
+            retriever=persistence.memory_context.retriever,
             connection=embedding_connection,
             api_key=model_runtime.clients.api_key_for_alias(embedding_connection.api_key_env)
             if embedding_connection
             else "",
         )
-        self.model_clients = model_runtime.clients
         self.model_invocations = model_runtime.invocations
         self.models = model_runtime.executor
-        self.provider = model_runtime.chat_provider
-        self.web_module = WebModule(
+        web_module = WebModule(
             settings.web,
             lifecycle=self.lifecycle,
             catalog=self.model_profiles,
-            clients=self.model_clients,
+            clients=model_runtime.clients,
             invocations=self.model_invocations,
         )
-        self.web_bundle = self.web_module.build()
-        self.web_provider = self.web_bundle.provider
+        self.web_provider = web_module.build().provider
         media = MediaModule(
             settings=settings.vision,
-            analyses=self.media_analyses,
+            analyses=persistence.media_analyses,
             lifecycle=self.lifecycle,
             provider=vision_provider,
             connection=self.model_profiles.vision,
-            api_key=self.model_clients.api_key_for_alias(self.model_profiles.vision.api_key_env)
+            api_key=model_runtime.clients.api_key_for_alias(self.model_profiles.vision.api_key_env)
             if self.model_profiles.vision
             else "",
         ).build()
-        from yuki.application.modules.asr import build_asr
 
         self.asr = build_asr(
             settings,
             self.lifecycle,
             connection=self.model_profiles.asr,
-            api_key=self.model_clients.api_key_for_alias(self.model_profiles.asr.api_key_env)
+            api_key=model_runtime.clients.api_key_for_alias(self.model_profiles.asr.api_key_env)
             if self.model_profiles.asr
             else "",
         )
         self.media = media
-        self.vision_provider = media.provider
-        self.media_resolver = media.resolver
-        self.image_preprocessor = media.image_preprocessor
-        self.vision: VisionService | None = media.vision
         self.concurrency = ConcurrencyManager()
         self.turn_coordinator = ConversationTurnCoordinator(
             interrupt_autonomous_on_new_message=(
@@ -233,15 +259,6 @@ class ApplicationContainer:
         self.processing_status = ProcessingStatusService(
             self.presence_router, self.gateway_registry
         )
-        from yuki.client_api.identity import ClientIdentityService
-        from yuki.conversation.media_service import ConversationMediaService
-        from yuki.external_agents.service import ExternalAgentService
-        from yuki.sandbox.client import SandboxClient
-        from yuki.sandbox.completion_receiver import CompletionReceiver
-        from yuki.sandbox.task_repository import SandboxTaskRepository
-        from yuki.workspace.inspect import WorkspaceInspector
-        from yuki.workspace.service import WorkspaceService
-        from yuki.workspace.short_state import ShortState
 
         self.sandbox_tasks = SandboxTaskRepository(self.database)
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
@@ -254,8 +271,8 @@ class ApplicationContainer:
         self.conversation_media = ConversationMediaService(
             self.database,
             settings.conversation_media_cache_directory,
-            self.media_resolver,
-            self.image_preprocessor,
+            media.resolver,
+            media.image_preprocessor,
             gateway_registry=self.gateway_registry,
             max_prepared_bytes=settings.vision_max_prepared_bytes,
         )
@@ -265,21 +282,18 @@ class ApplicationContainer:
             conversation_media=self.conversation_media,
             visual_inspector=WorkspaceInspector(
                 store,
-                self.image_preprocessor,
+                media.image_preprocessor,
                 max_prepared_bytes=settings.vision_max_prepared_bytes,
             ),
         )
-        from yuki.admin.models import VisionRuntimeConfig
-        from yuki.emoji.library import EmojiLibrary
-        from yuki.social.service import SocialService
 
         async def sticker_vision_runtime() -> VisionRuntimeConfig:
             return (await self.runtime_config.snapshot()).vision
 
         self.emoji_library = EmojiLibrary(
             workspace=self.workspace_service,
-            preprocessor=self.image_preprocessor,
-            provider=self.vision_provider,
+            preprocessor=media.image_preprocessor,
+            provider=media.provider,
             vision_runtime=sticker_vision_runtime,
         )
         self.social_service = SocialService(
@@ -315,31 +329,15 @@ class ApplicationContainer:
         )
         conversation = self.conversation_module.build()
         self.conversation = conversation
-        self.prompt_registry = conversation.prompt_registry
-        self.admission_features = conversation.admission_features
-        self.rate_limiter = conversation.rate_limiter
         self.agent_tools = conversation.agent_tools
         self.chat = conversation.chat
         self.runtime = self.chat.runtime
         self.main_agent_contract = self.chat.main_contract
-        from yuki.runtime.subagent_repository import SubagentRepository
-        from yuki.runtime.subagent_scheduler import SubagentScheduler
-        from yuki.runtime.work_repository import WorkRepository
-        from yuki.runtime.work_scheduler import WorkScheduler
-        from yuki.sandbox.continuation_worker import SandboxContinuationWorker
-        from yuki.services.main_agent_backend import MainAgentBackend
-        from yuki.services.subagent_execution import (
-            SubagentExecution,
-            SubagentExecutionDependencies,
-        )
-        from yuki.services.work_resume import WorkResumeDependencies, WorkResumer
 
         works = WorkRepository(self.database)
         self.sandbox_continuations = SandboxContinuationWorker(works)
 
         async def resume_plugin(work: dict[str, object], source: dict[str, object]) -> None:
-            from yuki.plugin_host.main_turn import resume_plugin_work
-
             if source.get("owner") == "plugin_background":
                 await self.plugin_background_turns.resume_work(work, source)
             else:
@@ -401,9 +399,7 @@ class ApplicationContainer:
         self.runtime.register_worker("runtime_work", self.work_scheduler)
         self.runtime.register_worker("subagents", self.subagent_scheduler)
         self.memory_mutations = conversation.memory_mutations
-        self.memory_worker = conversation.memory_worker
         self.memory_rebuild_service = conversation.memory_rebuild_service
-        self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
         self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
         self.memory_dream_worker = conversation.memory_dream_worker
@@ -411,9 +407,9 @@ class ApplicationContainer:
             settings=settings,
             database=self.database,
             runtime_config=self.runtime_config,
-            memories=self.memories,
-            memory_context=self.memory_context,
-            memory_index=self.memory_index,
+            memories=persistence.memories,
+            memory_context=persistence.memory_context,
+            memory_index=persistence.memory_index,
             memory_embeddings=self.memory_embeddings,
             memory_audit=self.memory_audit,
             memory_maintenance=self.memory_maintenance_worker,
@@ -423,17 +419,14 @@ class ApplicationContainer:
             memory_dream=self.memory_dream_worker,
         ).build()
         self.admin = admin
-        self.admin_audit = admin.audit
         self.memory_admin = admin.memories
-        self.preference_admin = admin.preferences
-        self.config_admin = admin.config
         self.automation_module = AutomationModule(
             settings=settings,
             database=self.database,
             chat=self.chat,
             runtime_config=self.runtime_config,
             time_service=self.time_context,
-            admin_audit=self.admin_audit,
+            admin_audit=admin.audit,
             conversation_scopes=self.conversation_scopes,
             turns=self.turn_coordinator,
             concurrency=self.concurrency,
@@ -443,8 +436,7 @@ class ApplicationContainer:
         self.automation_bundle = automation
         self.automation_repository = automation.repository
         self.automation = automation.service
-        self.automation_tools = automation.tools
-        self.chat.set_automation_tools(self.automation_tools)
+        self.chat.set_automation_tools(automation.tools)
         self.automation_worker = automation.worker
         self.plugin_notification_repository = PluginNotificationRepository(
             self.database,
@@ -478,7 +470,7 @@ class ApplicationContainer:
             models=self.models,
             concurrency=self.concurrency,
             runtime_config=self.runtime_config,
-            prompt_registry=self.prompt_registry,
+            prompt_registry=conversation.prompt_registry,
             context_factory=self._create_plugin_context,
             plugin_invocation_scope=self._plugin_invocation_scope,
             signal_invocation_scope=self._plugin_signal_scope,
@@ -487,37 +479,20 @@ class ApplicationContainer:
         )
         plugins = self.plugin_module.build()
         self.plugins = plugins
-        self.plugin_config_values = plugins.config_values
-        self.plugin_state = plugins.state
-        self.plugin_audit = plugins.audit
-        self.plugin_session_repository = plugins.session_repository
-        self.plugin_sessions = plugins.sessions
-        self.plugin_http = plugins.http
         self.plugin_events = plugins.events
-        self.plugin_extensions = plugins.extensions
-        self.plugin_prompts = plugins.prompts
         self.plugin_manager = plugins.manager
-        self.plugin_tools = plugins.tools
-        self.plugin_direct_commands = plugins.direct_commands
-        self.plugin_commands = plugins.commands
-        self.plugin_admission_signals = plugins.admission_signals
-        from yuki.admin.config_files import ConfigFileService
 
         self.config_files = ConfigFileService(
             settings,
             self.model_profiles,
             model_executor=self.models,
-            web_module=self.web_module,
+            web_module=web_module,
         )
-        from yuki.application.modules.admin_api import build_admin_api
-        from yuki.character.repository import CharacterRepository
-        from yuki.character.soul import CharacterSoul
 
         self.character = CharacterRepository(self.client_identity, settings)
         self.soul = CharacterSoul(self.client_identity, settings)
-        from yuki.character.avatar import AvatarStore, CharacterAvatars
 
-        self.character_avatars = CharacterAvatars(
+        character_avatars = CharacterAvatars(
             self.character,
             AvatarStore(
                 (settings.sqlite_path.parent if settings.sqlite_path is not None else Path("data"))
@@ -526,14 +501,11 @@ class ApplicationContainer:
             ),
         )
         self.admin_api = build_admin_api(self)
-        from yuki.client_api.http import ClientApi
-        from yuki.services.client_link import ClientLinkCommands
 
-        self.client_links = ClientLinkCommands(
+        client_links = ClientLinkCommands(
             self.client_identity, self.gateway_registry, self.settings.client_public_url
         )
-        self.chat.set_plugin_tools(self.plugin_tools)
-        from yuki.services.semantic_participation import SemanticParticipationService
+        self.chat.set_plugin_tools(plugins.tools)
 
         self.semantic_participation = SemanticParticipationService(
             database=self.database,
@@ -548,9 +520,9 @@ class ApplicationContainer:
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
-            admission_features=self.admission_features,
+            admission_features=conversation.admission_features,
             turn_coordinator=self.turn_coordinator,
-            admission_signals=self.plugin_admission_signals,
+            admission_signals=plugins.admission_signals,
             participation=self.semantic_participation,
         )
         self.command_service = CommandService(
@@ -559,7 +531,7 @@ class ApplicationContainer:
             conversation_scopes=self.conversation_scopes,
             settings=settings,
             people=self.people,
-            memories=self.memories,
+            memories=persistence.memories,
             concurrency=self.concurrency,
             platform_connected=lambda scope: (
                 self.gateway_registry.snapshot_presence(
@@ -573,15 +545,15 @@ class ApplicationContainer:
             runtime_config=self.runtime_config,
             memory_admin=self.memory_admin,
             memory_rebuild=self.memory_rebuild_service,
-            preference_admin=self.preference_admin,
-            config_admin=self.config_admin,
+            preference_admin=admin.preferences,
+            config_admin=admin.config,
             permission_catalog=self.permission_catalog,
-            vision_service=self.vision,
+            vision_service=media.vision,
             automation_service=self.automation,
             automation_repository=self.automation_repository,
             automation_worker=self.automation_worker,
             turn_coordinator=self.turn_coordinator,
-            plugin_commands=self.plugin_commands,
+            plugin_commands=plugins.commands,
             model_invocations=self.model_invocations,
         )
         self.canonical_ingress = CanonicalIngressResolver(
@@ -601,39 +573,28 @@ class ApplicationContainer:
             conversation_scopes=self.conversation_scopes,
             effect_gate=self.conversation_effect_gate,
             groups=self.groups,
-            private_users=self.private_users,
+            private_users=persistence.private_users,
             chat=self.chat,
-            rate_limiter=self.rate_limiter,
+            rate_limiter=conversation.rate_limiter,
             concurrency=self.concurrency,
             canonical_ingress=self.canonical_ingress,
-            client_links=self.client_links,
+            client_links=client_links,
             group_recovery=NativeGroupRecovery(
                 settings, self.database, self.gateway_registry, self.presence_router
             ),
             canonical_uow=self.canonical_uow,
             people=self.people,
-            memory_worker=self.memory_worker,
+            memory_worker=conversation.memory_worker,
             autonomous_groups=self.autonomous_groups,
             runtime_config=self.runtime_config,
             command_service=self.command_service,
-            direct_plugin_commands=self.plugin_direct_commands,
-            admission_signals=self.plugin_admission_signals,
+            direct_plugin_commands=plugins.direct_commands,
+            admission_signals=plugins.admission_signals,
             turn_coordinator=self.turn_coordinator,
             event_publisher=self.plugin_events,
             emoji_library=self.emoji_library,
         )
         self.processor.set_participation(self.semantic_participation)
-        from yuki.client_api.automations import ClientAutomations
-        from yuki.client_api.capabilities import ClientCapabilities
-        from yuki.client_api.computer import ClientComputer
-        from yuki.client_api.files import ClientFiles
-        from yuki.client_api.memory import ClientMemory
-        from yuki.client_api.messages import ClientMessages
-        from yuki.client_api.prompts import ClientPrompts
-        from yuki.client_api.views import ClientViews
-        from yuki.client_api.works import ClientWorks
-        from yuki.conversation.uploads import ConversationUploads
-        from yuki.gateway.providers.app.ingress import AppGateway
 
         self.app_gateway = AppGateway(
             self.database, self.gateway_registry, self.processor, self.social_service
@@ -724,9 +685,9 @@ class ApplicationContainer:
             client_prompts,
             self.character,
             self.soul,
-            self.character_avatars,
+            character_avatars,
             memory=ClientMemory(
-                self.client_identity, self.memories, self.memory_mutations, self.app_gateway
+                self.client_identity, persistence.memories, self.memory_mutations, self.app_gateway
             ),
             automations=ClientAutomations(
                 self.client_identity, self.automation_repository, self.automation
@@ -760,7 +721,7 @@ class ApplicationContainer:
         manifest: PluginManifest,
         permissions: frozenset[PluginPermission],
     ) -> HostPluginContext:
-        schema_items = self.plugin_extensions.list(
+        schema_items = self.plugins.extensions.list(
             plugin_id=manifest.id,
             kind=ExtensionKind.CONFIG_SCHEMA,
         )
@@ -773,7 +734,7 @@ class ApplicationContainer:
             current_group_id: str | None,
         ) -> BoundConfigFacade:
             return BoundConfigFacade(
-                repository=self.plugin_config_values,
+                repository=self.plugins.config_values,
                 plugin_id=manifest.id,
                 approved_permissions=permissions,
                 schema=config_schema,
@@ -783,7 +744,7 @@ class ApplicationContainer:
 
         def session_factory(invocation: PluginInvocation) -> BoundAgentSessionFacade:
             return BoundAgentSessionFacade(
-                service=self.plugin_sessions,
+                service=self.plugins.sessions,
                 plugin_id=manifest.id,
                 actor_user_id=invocation.actor_person_id,
                 current_group_id=invocation.space_id,
@@ -808,16 +769,16 @@ class ApplicationContainer:
                 ledger=self.ledger,
                 people=self.people,
                 groups=self.groups,
-                memories=self.memories,
-                memory_context=self.memory_context,
+                memories=self.persistence.memories,
+                memory_context=self.persistence.memory_context,
                 memory_admin=self.memory_admin,
                 runtime_config=self.runtime_config,
                 agent_runner=self.runtime.runner,
                 web_provider=self.web_provider,
-                vision=self.vision,
+                vision=self.media.vision,
                 automation=self.automation,
                 storage=BoundStorageFacade(
-                    repository=self.plugin_state,
+                    repository=self.plugins.state,
                     plugin_id=manifest.id,
                     approved_permissions=permissions,
                     storage_mb=manifest.limits.storage_mb,
@@ -825,7 +786,7 @@ class ApplicationContainer:
                 config_factory=config_factory,
                 secrets=secrets,
                 http=BoundHttpFacade(
-                    client=self.plugin_http,
+                    client=self.plugins.http,
                     approved_permissions=permissions,
                     allowed_hosts=manifest.network.allowed_hosts,
                     secrets=secrets,
@@ -833,12 +794,12 @@ class ApplicationContainer:
                 ),
                 agent_sessions_factory=session_factory,
                 events=self.plugin_events,
-                audit=self.plugin_audit,
+                audit=self.plugins.audit,
                 notifications=self.plugin_notification_repository,
                 notification_wake=self._wake_plugin_notifications,
                 media_artifacts=self.plugin_media_artifacts,
                 native_media=NativeMediaPreparer(
-                    self.image_preprocessor,
+                    self.media.image_preprocessor,
                     max_bytes=self.settings.vision_max_prepared_bytes,
                 ),
                 media_storage_mb=manifest.limits.storage_mb,
@@ -882,17 +843,15 @@ class ApplicationContainer:
         )
 
     def _activate_plugin_extensions(self, manifest: PluginManifest) -> None:
-        self.plugin_prompts.activate(manifest.id)
+        self.plugins.prompts.activate(manifest.id)
 
     def _deactivate_plugin_extensions(self, plugin_id: str) -> None:
-        self.plugin_prompts.deactivate(plugin_id)
+        self.plugins.prompts.deactivate(plugin_id)
         self._plugin_contexts.pop(plugin_id, None)
 
     @classmethod
     async def create(cls, settings: Settings) -> ApplicationContainer:
         """Load restart overrides before constructing long-lived clients and limits."""
-
-        from yuki.identity.write_settings import configure_identity_write_settings
 
         database = Database(settings.database_url)
         configure_identity_write_settings(settings)
@@ -913,7 +872,6 @@ class ApplicationContainer:
             except ValidationError:
                 # Validation errors can retain credential-bearing input mappings.
                 raise ValueError("activated runtime settings failed validation") from None
-            from yuki.services.media_resolver import _media_io
 
             workspace_store = await _media_io(WorkspaceStore, active_settings.workspace_directory)
             return cls(
@@ -1066,15 +1024,15 @@ class ApplicationContainer:
         while not self._cleanup_stop.is_set():
             try:
                 runtime = await self.runtime_config.snapshot()
-                web_deleted = await self.web_sources.cleanup_expired(
+                web_deleted = await self.persistence.web_sources.cleanup_expired(
                     retention_days=runtime.web.source_retention_days
                 )
                 if web_deleted:
                     logger.info("web_source_runs_cleaned count=%d", web_deleted)
-                vision_deleted = await self.media_analyses.cleanup_expired()
+                vision_deleted = await self.persistence.media_analyses.cleanup_expired()
                 if vision_deleted:
                     logger.info("media_analyses_cleaned count=%d", vision_deleted)
-                plugin_state_deleted = await self.plugin_state.cleanup_expired()
+                plugin_state_deleted = await self.plugins.state.cleanup_expired()
                 await self.client_identity.cleanup_expired()
                 media_artifacts_deleted = await self.plugin_media_artifacts.cleanup()
                 if media_artifacts_deleted:
@@ -1087,7 +1045,7 @@ class ApplicationContainer:
                 artifact_deleted = await self.tool_artifacts.cleanup()
                 if artifact_deleted:
                     logger.info("tool_artifacts_cleaned count=%d", artifact_deleted)
-                plugin_sessions_expired = await self.plugin_session_repository.expire_due()
+                plugin_sessions_expired = await self.plugins.session_repository.expire_due()
                 if plugin_sessions_expired:
                     logger.info(
                         "plugin_sessions_expired count=%d",

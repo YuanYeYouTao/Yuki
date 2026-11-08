@@ -29,10 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.admin.models import WorkStorageRuntimeConfig
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatMessage, FunctionCallOutput
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.execution_trace.phases import timed_lock
 from yuki.persistence.database import Database
 from yuki.runtime.protocol_schema import objects, refs, usage
+from yuki.runtime.work_schema_v1 import work
 
 _SNAPSHOT_MAGIC = b"YUKI-CODE-SNAPSHOT\x00\x01"
 
@@ -263,9 +266,6 @@ class ProtocolStore:
 
     async def get_code_snapshot(self, digest: str, binding: CodeSnapshotBinding) -> bytes:
         """A public artifact/path or a mismatched runtime cannot supply a dump."""
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
-        from yuki.execution_trace.db_models import ExecutionTraceStateModel
-        from yuki.runtime.work_schema_v1 import work
 
         async with self.database.read_session() as reader:
             authority = await reader.scalar(

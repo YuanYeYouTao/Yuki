@@ -10,6 +10,7 @@ from typing import Any, cast
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 
 from yuki.adapters.onebot.media import OneBotMediaHandle, resolve_media_file
+from yuki.adapters.onebot.message_id import parse_message_id
 from yuki.domain.messages import AttachmentKind, OutboundMessage, OutboundSendReceipt
 from yuki.gateway.media import MediaKind, PlatformMediaFile
 
@@ -109,8 +110,6 @@ class OneBotSender:
                 return parse_onebot_send_receipt(result)
             payload = Message()
             if message.reply_to_message_id is not None:
-                from yuki.adapters.onebot.message_id import parse_message_id
-
                 payload += MessageSegment.reply(parse_message_id(message.reply_to_message_id))
             if message.text:
                 payload += MessageSegment.text(message.text)

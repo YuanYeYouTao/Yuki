@@ -43,6 +43,9 @@ from yuki.persistence.models import (
     AutomationVersionModel,
 )
 from yuki.persistence.unit_of_work import optional_session
+from yuki.runtime.work_recovery_schema import invocations
+from yuki.runtime.work_schema_v1 import work
+from yuki.time.formatting import stored_utc
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +101,7 @@ class AutomationRepository:
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
         authority = definition.authority
-        timestamp = _aware_utc(now)
+        timestamp = stored_utc(now)
         async with optional_session(self._database, session, write=True) as active:
             if creation_source_key is not None:
                 previous = await self.get_by_creation_key(
@@ -323,7 +326,7 @@ class AutomationRepository:
     ) -> bool:
         values: dict[str, Any] = {
             "status": status.value,
-            "updated_at": _aware_utc(now),
+            "updated_at": stored_utc(now),
         }
         if status in {AutomationStatus.CANCELLED, AutomationStatus.COMPLETED}:
             values["next_run_at"] = None
@@ -362,7 +365,7 @@ class AutomationRepository:
                 .values(
                     status=AutomationStatus.CANCELLED.value,
                     next_run_at=None,
-                    updated_at=_aware_utc(now),
+                    updated_at=stored_utc(now),
                 )
             )
             return cast(CursorResult[Any], result).rowcount == 1
@@ -392,8 +395,8 @@ class AutomationRepository:
                 )
                 .values(
                     status=AutomationStatus.ACTIVE.value,
-                    next_run_at=_aware_utc(next_run_at),
-                    updated_at=_aware_utc(now),
+                    next_run_at=stored_utc(next_run_at),
+                    updated_at=stored_utc(now),
                 )
             )
         return bool(cast(CursorResult[Any], result).rowcount)
@@ -406,7 +409,7 @@ class AutomationRepository:
         now: datetime,
         session: AsyncSession | None = None,
     ) -> bool:
-        timestamp = _aware_utc(now)
+        timestamp = stored_utc(now)
         async with optional_session(self._database, session, write=True) as active:
             result = await active.execute(
                 update(AutomationModel)
@@ -437,7 +440,7 @@ class AutomationRepository:
         max_runs_set: bool = False,
         session: AsyncSession | None = None,
     ) -> AutomationRecord | None:
-        timestamp = _aware_utc(now)
+        timestamp = stored_utc(now)
         async with optional_session(self._database, session, write=True) as active:
             row = await active.scalar(
                 select(AutomationModel).where(
@@ -494,7 +497,7 @@ class AutomationRepository:
         enabled: bool = True,
         clock: Callable[[], datetime] | None = None,
     ) -> AsyncIterator[AutomationRecord]:
-        timestamp = _aware_utc(now)
+        timestamp = stored_utc(now)
 
         def due_at(current: datetime) -> Any:
             return and_(
@@ -541,7 +544,7 @@ class AutomationRepository:
             after = page[-1].next_run_at, page[-1].id
             candidate_ids = [candidate.id for candidate in page]
             async with self._database.immediate_session() as session:
-                claimed_at = _aware_utc(clock() if clock is not None else datetime.now(UTC))
+                claimed_at = stored_utc(clock() if clock is not None else datetime.now(UTC))
                 rows = (
                     await session.scalars(
                         update(AutomationModel)
@@ -625,7 +628,7 @@ class AutomationRepository:
                     AutomationModel.claimed_by == worker_id,
                 )
             )
-        return _aware_utc(value).timestamp() if value is not None else None
+        return stored_utc(value).timestamp() if value is not None else None
 
     async def renew_claim(
         self,
@@ -636,7 +639,7 @@ class AutomationRepository:
         clock: Callable[[], datetime],
     ) -> bool:
         async with self._database.immediate_session() as session:
-            now = _aware_utc(clock())
+            now = stored_utc(clock())
             result = await session.execute(
                 update(AutomationModel)
                 .where(
@@ -658,8 +661,8 @@ class AutomationRepository:
         version_id: int | None = None,
     ) -> AutomationRunRecord | None:
 
-        scheduled = _aware_utc(scheduled_for)
-        started = _aware_utc(actual_started_at)
+        scheduled = stored_utc(scheduled_for)
+        started = stored_utc(actual_started_at)
         key = f"{automation_id}:{scheduled.isoformat()}"
         async with self._database.immediate_session() as session:
             owner = await session.get(AutomationModel, automation_id)
@@ -669,10 +672,10 @@ class AutomationRepository:
             if worker_id is not None and (
                 owner.claimed_by != worker_id
                 or owner.claimed_until is None
-                or _aware_utc(owner.claimed_until) <= datetime.now(UTC)
+                or stored_utc(owner.claimed_until) <= datetime.now(UTC)
                 or owner.status != AutomationStatus.ACTIVE.value
                 or owner.next_run_at is None
-                or _aware_utc(owner.next_run_at) != scheduled
+                or stored_utc(owner.next_run_at) != scheduled
                 or current_version != version_id
             ):
                 return None
@@ -686,7 +689,7 @@ class AutomationRepository:
                 if (
                     existing.status != RunStatus.RUNNING.value
                     and owner.next_run_at is not None
-                    and _aware_utc(owner.next_run_at) == scheduled
+                    and stored_utc(owner.next_run_at) == scheduled
                 ):
                     owner.next_run_at = None
                 return None
@@ -747,7 +750,6 @@ class AutomationRepository:
         ``llm_calls`` is the request count the failed activation actually paid;
         a lost process has none to report and keeps the recorded value.
         """
-        from yuki.runtime.work_schema_v1 import work
 
         async with self._database.read_session() as reader:
             owned = (
@@ -768,7 +770,7 @@ class AutomationRepository:
                         AutomationRunModel.id == run_id if run_id is not None else true(),
                         and_(
                             AutomationRunModel.automation_id == occurrence[0],
-                            AutomationRunModel.scheduled_for == _aware_utc(occurrence[1]),
+                            AutomationRunModel.scheduled_for == stored_utc(occurrence[1]),
                         )
                         if occurrence is not None
                         else true(),
@@ -789,8 +791,6 @@ class AutomationRepository:
 
     async def settle_work_occurrences(self) -> None:
         """Settle the original execution's root; recovery stays in WorkScheduler."""
-        from yuki.runtime.work_recovery_schema import invocations
-        from yuki.runtime.work_schema_v1 import work
 
         async with self._database.read_session() as reader:
             rows = (
@@ -881,7 +881,7 @@ class AutomationRepository:
     ) -> bool:
         from yuki.time.schedules import schedule_after_completion
 
-        timestamp = _aware_utc(finished_at)
+        timestamp = stored_utc(finished_at)
         summary_json = _redacted_json(summary)
         # Occurrences retain their immutable accepted version. Read only its
         # small schedule projection; task bodies and authority JSON stay out.
@@ -914,7 +914,7 @@ class AutomationRepository:
                 schedule_from_script(
                     {"trigger": json.loads(accepted.schedule), "timezone": accepted.timezone}
                 ),
-                _aware_utc(accepted.scheduled_for),
+                stored_utc(accepted.scheduled_for),
                 timestamp,
                 accepted.timezone,
             )
@@ -967,7 +967,7 @@ class AutomationRepository:
                 row.status = AutomationStatus.COMPLETED.value
                 row.next_run_at = None
                 return True
-            if row.next_run_at is not None and _aware_utc(row.next_run_at) == _aware_utc(
+            if row.next_run_at is not None and stored_utc(row.next_run_at) == stored_utc(
                 run.scheduled_for
             ):
                 row.next_run_at = next_scheduled
@@ -1099,13 +1099,13 @@ def _automation_record(
         schedule=definition.task.trigger if definition else schedule_from_script(script),
         script_hash=version.script_hash,
         authority_snapshot=scene,
-        next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
-        last_run_at=_aware_utc(row.last_run_at) if row.last_run_at else None,
+        next_run_at=stored_utc(row.next_run_at) if row.next_run_at else None,
+        last_run_at=stored_utc(row.last_run_at) if row.last_run_at else None,
         run_count=row.run_count,
         max_runs=row.max_runs,
         creation_max_runs=row.creation_max_runs,
-        created_at=_aware_utc(row.created_at),
-        updated_at=_aware_utc(row.updated_at),
+        created_at=stored_utc(row.created_at),
+        updated_at=stored_utc(row.updated_at),
         canonical_creator_person_id=row.canonical_creator_person_id,
         canonical_presence_id=version.canonical_presence_id,
         canonical_conversation_id=scene.get("canonical_conversation_id"),
@@ -1139,7 +1139,7 @@ def _automation_directory_entry(row: Any) -> AutomationDirectoryEntry:
         name=row.name or f"自动化 #{owner.id}",
         status=AutomationStatus(owner.status),
         timezone="Asia/Shanghai",
-        next_run_at=_aware_utc(owner.next_run_at) if owner.next_run_at else None,
+        next_run_at=stored_utc(owner.next_run_at) if owner.next_run_at else None,
     )
     return AutomationDirectoryEntry(
         record=record,
@@ -1159,9 +1159,9 @@ def _run_record(
         id=row.id,
         version_id=row.version_id,
         automation_id=row.automation_id,
-        scheduled_for=_aware_utc(row.scheduled_for),
-        actual_started_at=_aware_utc(row.actual_started_at),
-        finished_at=_aware_utc(row.finished_at) if row.finished_at else None,
+        scheduled_for=stored_utc(row.scheduled_for),
+        actual_started_at=stored_utc(row.actual_started_at),
+        finished_at=stored_utc(row.finished_at) if row.finished_at else None,
         status=RunStatus(row.status),
         steps_completed=row.steps_completed,
         llm_calls=row.llm_calls,
@@ -1171,12 +1171,6 @@ def _run_record(
         result_summary=json.loads(row.result_summary_json or "{}"),
         definition=definition,
     )
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def _redacted_json(value: dict[str, Any]) -> str:

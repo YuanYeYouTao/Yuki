@@ -28,6 +28,7 @@ from pydantic import AliasChoices, AliasPath, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from yuki import __version__
+from yuki.admin_api.client import admin_client, plugin_mutation, read
 from yuki.config import Settings
 from yuki.model_runtime import ModelCapability, ModelTask
 from yuki.model_runtime.models import ModelSearchMode
@@ -35,6 +36,7 @@ from yuki.model_runtime.profiles import parse_model_profile_catalog
 from yuki.model_runtime.search_defaults import normalize_model_search_document
 from yuki.model_runtime.secrets import read_model_secrets
 from yuki.persistence.database import Database
+from yuki.persistence.instance_lock import ApplicationAlreadyActiveError, SQLiteApplicationLock
 from yuki.plugin_host.discovery import PluginDiscovery
 from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.web.models import WebMode
@@ -594,12 +596,6 @@ def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
 
 
 async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
-    from yuki.admin_api.client import admin_client, plugin_mutation, read
-    from yuki.persistence.instance_lock import (
-        ApplicationAlreadyActiveError,
-        SQLiteApplicationLock,
-    )
-
     if not paths.pending.is_file():
         return 0
     lock = SQLiteApplicationLock(settings.sqlite_path)

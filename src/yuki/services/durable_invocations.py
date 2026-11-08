@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
+from sqlalchemy import select
+
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatMessage
 from yuki.persistence.database import Database
+from yuki.plugin_host.notification_repository import admit_background_turn_work
 from yuki.runtime.activation_tasks import ActivationTasks
+from yuki.runtime.work_activation import activate_work
+from yuki.runtime.work_recovery_schema import recovery
+from yuki.runtime.work_repository import TERMINAL, WorkConflict, WorkRepository
 from yuki.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 
 PreparedRun = Callable[
@@ -35,9 +43,6 @@ class DurableInvocations:
         with self.executions.track():
             if runtime.canonical_conversation_id is None:
                 raise ValueError("invocation_conversation_required")
-            from yuki.conversation.canonical_db_models import CanonicalConversationModel
-            from yuki.runtime.work_activation import activate_work
-            from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
             database = self.database
             async with database.read_session() as session:
@@ -96,10 +101,6 @@ class DurableInvocations:
                     and runtime.invocation_goal
                     and isinstance(plugin_turn, dict)
                 ):
-                    from yuki.plugin_host.notification_repository import (
-                        admit_background_turn_work,
-                    )
-
                     # The plugin Job owner admits and binds in one writer.
                     await validate()
                     bounded.current = await admit_background_turn_work(
@@ -131,12 +132,6 @@ class DurableInvocations:
         self, runtime: AgentRuntime, previous: dict[str, Any], generation: int
     ) -> AgentRunResult | None:
         """Read an existing invocation without preparing or activating its execution."""
-        import time
-
-        from sqlalchemy import select
-
-        from yuki.runtime.work_recovery_schema import recovery
-        from yuki.runtime.work_repository import WorkConflict
 
         if runtime.before_model_request is not None:
             await runtime.before_model_request()
@@ -203,13 +198,6 @@ class DurableInvocations:
         The capability-bound boundary hash is not recomputed, and no new Work is
         admitted: a changed capability set keeps the original identity.
         """
-        import time
-
-        from sqlalchemy import select
-
-        from yuki.runtime.work_activation import activate_work
-        from yuki.runtime.work_recovery_schema import recovery
-        from yuki.runtime.work_repository import TERMINAL, WorkConflict
 
         previous = await repository.get(identity)
         if previous is None:

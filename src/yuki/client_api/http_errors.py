@@ -3,6 +3,7 @@
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -40,7 +41,6 @@ async def client_error_response(_request: Any, exc: Any) -> JSONResponse:
 async def credential_safe_validation(request: Any, exc: Any) -> JSONResponse:
     if request.url.path.startswith(("/client/v1/", "/admin/v1/", "/agents/v1/")):
         return JSONResponse({"problem": {"code": "validation_error"}}, status_code=422)
-    from fastapi.exception_handlers import request_validation_exception_handler
 
     return await request_validation_exception_handler(request, exc)
 

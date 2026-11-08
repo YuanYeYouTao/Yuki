@@ -16,11 +16,12 @@ from pathlib import Path
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from yuki.persistence.database import Database
+from yuki.persistence.database import Database, write_failure_committed
 from yuki.plugin_host.db_models import (
     PluginMediaArtifactModel,
     PluginNotificationOutboxModel,
 )
+from yuki.time.formatting import stored_utc
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import MediaArtifactHandle
 
@@ -82,7 +83,7 @@ class PluginMediaArtifactStore:
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=ttl_seconds)
         if expires_at_cap is not None:
-            expires_at = min(expires_at, _aware(expires_at_cap))
+            expires_at = min(expires_at, stored_utc(expires_at_cap))
         if expires_at <= now:
             raise PluginPermissionError("media artifact has already expired")
         digest = hashlib.sha256(data).hexdigest()
@@ -126,8 +127,6 @@ class PluginMediaArtifactStore:
                     )
                 )
         except Exception as exc:
-            from yuki.persistence.database import write_failure_committed
-
             if write_failure_committed(exc) is False:
                 await asyncio.to_thread(destination.unlink, missing_ok=True)
             else:
@@ -147,7 +146,11 @@ class PluginMediaArtifactStore:
     async def resolve(self, *, plugin_id: str, handle_id: str) -> ResolvedMediaArtifact:
         async with self._database.read_session() as session:
             row = await session.get(PluginMediaArtifactModel, handle_id)
-        if row is None or row.plugin_id != plugin_id or _aware(row.expires_at) <= datetime.now(UTC):
+        if (
+            row is None
+            or row.plugin_id != plugin_id
+            or stored_utc(row.expires_at) <= datetime.now(UTC)
+        ):
             raise PluginPermissionError("media artifact is missing, expired, or foreign")
         path, expected_root, available = await asyncio.to_thread(
             _resolve_artifact_path,
@@ -315,10 +318,6 @@ def _resolve_artifact_path(value: str, expected_root: Path) -> tuple[Path, Path,
     path = Path(value).resolve(strict=False)
     root = expected_root.resolve(strict=False)
     return path, root, path.is_file()
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _read_verified(item: ResolvedMediaArtifact) -> bytes:

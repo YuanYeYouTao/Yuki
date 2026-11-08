@@ -35,6 +35,7 @@ from yuki.execution_trace.recorder import TraceRecorder, record_trace, trace_spa
 from yuki.llm.anthropic_messages import AnthropicMessagesProvider
 from yuki.llm.base import LLMError, LLMUnsupportedFeatureError
 from yuki.llm.gemini import GeminiProvider
+from yuki.llm.vendor_policy import supports_native_search, wire_options
 from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from yuki.model_runtime.models import (
     ModelCapability,
@@ -866,8 +867,6 @@ class TaskModelExecutor:
             item.value for item in route.required_capabilities
         )
         if profile.protocol is not ModelProtocol.RESPONSES:
-            from yuki.llm.vendor_policy import wire_options
-
             # Native serializers fix the wire dialect independently of the
             # connection label; Chat still uses its selected vendor preset.
             effective_wire_options = wire_options(wire_provider, profile.wire_options)
@@ -916,7 +915,6 @@ class TaskModelExecutor:
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         _route, profile = self._runtime()[0].route(task)
-        from yuki.llm.vendor_policy import supports_native_search
 
         if not supports_native_search(
             profile.provider.casefold(),

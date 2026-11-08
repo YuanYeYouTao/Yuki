@@ -12,7 +12,8 @@ from sqlalchemy import case, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 
-from yuki.identity.person_identity import current_person_ids, same_person_id
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.person_identity import current_person_id, current_person_ids, same_person_id
 from yuki.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
@@ -47,12 +48,9 @@ from yuki.memory.repository import (
 )
 from yuki.memory.validation import ValidatedMemoryClaim, normalize_memory_text
 from yuki.persistence.models import MemoryFactModel, MemoryFactRelationModel
+from yuki.time.formatting import stored_utc
 
 logger = logging.getLogger(__name__)
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class MemoryEmbeddingScheduler(Protocol):
@@ -148,9 +146,6 @@ class MemoryFactService:
                 return await self.resolve_person_id(user_id, session=owned, person_id=person_id)
         try:
             if person_id is not None:
-                from yuki.identity.errors import CanonicalIdentityError
-                from yuki.identity.person_identity import current_person_id
-
                 try:
                     return await current_person_id(session, person_id)
                 except CanonicalIdentityError:
@@ -1070,9 +1065,9 @@ class MemoryFactService:
         await self._refresh_evidence(
             target_fact_id,
             confirmed_at=max(
-                _as_utc(source.last_confirmed_at),
-                _as_utc(target.last_confirmed_at),
-                _as_utc(confirmed_at or target.last_confirmed_at),
+                stored_utc(source.last_confirmed_at),
+                stored_utc(target.last_confirmed_at),
+                stored_utc(confirmed_at or target.last_confirmed_at),
             ),
             session=session,
         )

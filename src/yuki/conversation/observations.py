@@ -9,6 +9,7 @@ from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.observation_models import ContextObservationModel
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
 
 
 def encode(value: object) -> str:
@@ -122,8 +123,6 @@ async def validate_observations(
 
 
 async def privacy_generation(session: AsyncSession) -> int:
-    from yuki.execution_trace.db_models import ExecutionTraceStateModel
-
     return int(
         await session.scalar(
             select(ExecutionTraceStateModel.privacy_generation).where(

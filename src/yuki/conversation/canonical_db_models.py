@@ -27,6 +27,7 @@ from sqlalchemy.schema import Table
 
 from yuki.conversation.canonical_schema import (
     ALIAS_PRIMARY_LOCK_TRIGGERS,
+    ASSIGNMENT_ROLE_TRIGGER_SQL,
     CONVERSATION_PRIMARY_POINTER_TRIGGERS,
     PARENT_ROUTE_GUARD_TRIGGERS,
     PERSON_ACTIVE_ROUTE_TRIGGERS,
@@ -720,7 +721,6 @@ class CanonicalEventReceiptModel(Base):
 @event.listens_for(Base.metadata, "after_create")
 def _install_assignment_roles(metadata: object, connection: Connection, **kwargs: object) -> None:
     """Fresh complete schemas enforce the same typed references as upgrades."""
-    from yuki.conversation.canonical_schema import ASSIGNMENT_ROLE_TRIGGER_SQL
 
     present = set(
         connection.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).scalars()

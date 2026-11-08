@@ -15,9 +15,11 @@ from yuki.automation.models import AutomationRecord, RunStatus
 from yuki.automation.repository import AutomationRepository
 from yuki.automation.task_spec import TaskSpec
 from yuki.config import Settings
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
+from yuki.identity.db_models import PresenceModel
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.activation_outcome import recorded_model_requests
 from yuki.runtime.lease_heartbeat import supervise_lease
@@ -151,8 +153,6 @@ class AutomationWorker:
         try:
             async with self._repository._database.read_session() as session:
                 key, conversation_id = await bind_automation_conversation(session, automation)
-                from yuki.conversation.canonical_db_models import CanonicalConversationModel
-                from yuki.identity.db_models import PresenceModel
 
                 conversation = await session.get(CanonicalConversationModel, conversation_id)
                 presence = await session.get(PresenceModel, automation.canonical_presence_id)

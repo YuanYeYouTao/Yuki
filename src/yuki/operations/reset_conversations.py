@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select, text
 
+from yuki.automation.repository import _latest_version_clause
 from yuki.config import Settings
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import bump_canonical_generation
@@ -80,7 +81,6 @@ async def reset_all(database: Database, batch_id: str, *, apply: bool) -> dict[s
             generation = await bump_canonical_generation(
                 session, conversation_id, event_id=floor, force=True
             )
-            from yuki.automation.repository import _latest_version_clause
 
             automations = (
                 await session.execute(

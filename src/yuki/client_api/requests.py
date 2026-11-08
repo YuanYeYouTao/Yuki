@@ -12,6 +12,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
+from yuki.client_api.prompts import message_payload
+from yuki.client_api.works import input_result, personal_work
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
@@ -20,7 +22,10 @@ from yuki.domain.conversations import ConversationScope
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.identity.receipt_compat import transport_receipt
-from yuki.persistence.models import ChatEventModel
+from yuki.persistence.models import AdminOperationEventModel, ChatEventModel
+from yuki.runtime.work_recovery_schema import deliveries
+from yuki.runtime.work_schema_v1 import effects
+from yuki.social.db_models import SocialOperationModel
 
 if TYPE_CHECKING:
     from yuki.client_api.prompts import ClientPrompts
@@ -132,8 +137,6 @@ class ClientRequests:
                     else None
                 )
                 if command.operation_kind in {"client.work_input", "client.work_cancel"}:
-                    from yuki.client_api.works import input_result, personal_work
-
                     assert command.operation_ref is not None
                     await personal_work(session, principal.person_id, command.operation_ref)
                     if command.operation_kind == "client.work_input" and result is not None:
@@ -147,8 +150,6 @@ class ClientRequests:
                         )
                 problem = None
                 if command.problem_code:
-                    from yuki.persistence.models import AdminOperationEventModel
-
                     audit = await session.get(AdminOperationEventModel, command.audit_id)
                     assert audit is not None
                     problem = {"code": command.problem_code, **json.loads(audit.after_json)}
@@ -171,8 +172,6 @@ class ClientRequests:
                 return {"found": False}
             if event.origin == "work_input":
                 raise ClientError("not_found")
-            from yuki.conversation.canonical_db_models import CanonicalConversationModel
-            from yuki.social.db_models import SocialOperationModel
 
             status = (
                 await self.prompts.projection(session, principal, event, command, running=running)
@@ -190,9 +189,6 @@ class ClientRequests:
                 )
             ]
             if status["work"] is not None:
-                from yuki.runtime.work_recovery_schema import deliveries
-                from yuki.runtime.work_schema_v1 import effects
-
                 work_id = status["work"]["work_id"]
                 sources.extend(
                     (
@@ -238,12 +234,9 @@ class ClientRequests:
                 )
                 .order_by(ChatEventModel.id)
             )
-            from yuki.client_api.prompts import message_payload
 
             problem = None
             if command is not None and command.problem_code:
-                from yuki.persistence.models import AdminOperationEventModel
-
                 audit = await session.get(AdminOperationEventModel, command.audit_id)
                 assert audit is not None
                 problem = {"code": command.problem_code, **json.loads(audit.after_json)}

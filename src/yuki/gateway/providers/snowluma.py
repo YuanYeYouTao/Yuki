@@ -7,6 +7,7 @@ from typing import Final, cast, final
 
 from yuki.adapters.onebot.activity import OneBotActivityHandle, OneBotTypingActivity
 from yuki.adapters.onebot.media import OneBotMediaAdapter, OneBotMediaHandle
+from yuki.adapters.onebot.normalizer import reproject_inbound_mentions
 from yuki.adapters.onebot.social import OneBotSocialOperations
 from yuki.domain.messages import InboundMessage
 from yuki.gateway.provider import GatewayConnectionProfile
@@ -44,8 +45,6 @@ class SnowLumaProvider:
         return OneBotTypingActivity(cast(OneBotActivityHandle, handle), target.external_id)
 
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
-        from yuki.adapters.onebot.normalizer import reproject_inbound_mentions
-
         return reproject_inbound_mentions(message, yuki_ids)
 
     @property

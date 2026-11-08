@@ -8,6 +8,7 @@ import json
 import marshal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import CodeType
 from typing import Protocol, cast
 
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 from yuki.automation.authority import _permission_level_allowed
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.messages import ChatImage, ChatTool
+from yuki.identity.authority import person_is_superuser
 from yuki.plugin_host.audit import PluginAuditService
 from yuki.plugin_host.extension_registry import (
     ExtensionKind,
@@ -293,9 +295,6 @@ class PluginCapabilityAdapter:
             return False
         if registration.metadata.permission is not PermissionLevel.SUPERUSER:
             return self._allowed_for_turn(registration, runtime)
-        from dataclasses import replace
-
-        from yuki.identity.authority import person_is_superuser
 
         async with self._installations._database.read_session() as session:
             current = replace(

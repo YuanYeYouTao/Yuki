@@ -34,8 +34,19 @@ from yuki.conversation.autonomy_db_models import (
     InitiativeRunModel,
 )
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.initiative_sources import (
+    EVENT_IDENTITY_REVISION_FIELDS,
+    EVENT_TEXT_REVISION_FIELDS,
+    MEMORY_REVISION_FIELDS,
+    MEMORY_TIME_REVISION_FIELDS,
+    event_mentions_expression,
+    memory_revision,
+    memory_revision_time_columns,
+    source_revision,
+)
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel
 from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel, MemoryFactModel
 from yuki.persistence.unit_of_work import optional_session
 
 _ACTIVE = ("accepted", "running")
@@ -245,18 +256,6 @@ class AutonomyRepository:
         expected_events, expected_memories = set(), set()
         prepared_sources_valid = True
         if source_guard:
-            from yuki.conversation.initiative_sources import (
-                EVENT_IDENTITY_REVISION_FIELDS,
-                EVENT_TEXT_REVISION_FIELDS,
-                MEMORY_REVISION_FIELDS,
-                MEMORY_TIME_REVISION_FIELDS,
-                event_mentions_expression,
-                memory_revision,
-                memory_revision_time_columns,
-                source_revision,
-            )
-            from yuki.persistence.models import ChatEventModel, MemoryFactModel
-
             async with self._database.read_session() as reader:
                 await reader.execute(text("BEGIN"))
                 event_ids = tuple(

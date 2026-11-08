@@ -16,6 +16,7 @@ from yuki.domain.messages import InboundMessage, mention_snapshots, snapshot_men
 from yuki.plugin_host.canonical_projection import projection_from_inbound
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki.runtime.origin import TurnOrigin
+from yuki.time.formatting import stored_utc
 from yuki_plugin_sdk.models import (
     AdmissionSignal as SdkAdmissionSignal,
 )
@@ -125,10 +126,8 @@ class PluginAdmissionSignalAdapter:
         if signal is None:
             return None
         expires = signal.expires_at
-        if expires is not None:
-            normalized = expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires
-            if normalized <= datetime.now(UTC):
-                return None
+        if expires is not None and stored_utc(expires) <= datetime.now(UTC):
+            return None
         return signal.model_copy(update={"source_plugin_id": plugin_id})
 
     @asynccontextmanager

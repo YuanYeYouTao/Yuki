@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.automation.control_context import resolve_execution_identity
+from yuki.automation.repository import AutomationRepository
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.self_initiative import validate_self_initiative
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
 from yuki.identity.db_models import (
@@ -23,8 +26,13 @@ from yuki.identity.db_models import (
 from yuki.identity.person_identity import current_person_id, same_person_id
 from yuki.persistence.database import Database
 from yuki.persistence.models import AutomationRunModel, ChatEventModel
+from yuki.plugin_host.db_models import PluginBackgroundTurnJobModel
+from yuki.plugin_host.notification_repository import PluginNotificationRepository, _turn_record
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.trigger import SelfInitiativeTrigger
+from yuki.runtime.work_schema_v1 import work
+from yuki.time.formatting import stored_utc
+from yuki_plugin_sdk.permissions import PluginPermission
 
 
 @dataclass(frozen=True)
@@ -247,12 +255,6 @@ async def _original_space_binding(
 async def recover_background_source(
     database: Database, conversation_id: str, source: dict[str, Any], *, request_id: str
 ) -> BackgroundTaskSource:
-    from yuki.plugin_host.db_models import PluginBackgroundTurnJobModel
-    from yuki.plugin_host.notification_repository import (
-        PluginNotificationRepository,
-        _turn_record,
-    )
-
     async with database.read_session() as session:
         job = await session.scalar(
             select(PluginBackgroundTurnJobModel).where(
@@ -304,9 +306,6 @@ async def recover_automation_source(
     *,
     request_id: str,
 ) -> AutomationTaskSource:
-    from yuki.automation.repository import AutomationRepository
-    from yuki.runtime.work_schema_v1 import work
-
     async with database.read_session() as session:
         run = await session.get(AutomationRunModel, source.get("automation_run_id"))
         owner = (
@@ -362,8 +361,6 @@ async def recover_automation_source(
             ):
                 raise ValueError("invalid_self_automation_source")
         else:
-            from yuki.automation.control_context import resolve_execution_identity
-
             assert actor_person is not None
             actor_user, permission = await resolve_execution_identity(
                 session,
@@ -403,11 +400,7 @@ async def recover_automation_source(
             actor_is_superuser=actor_is_superuser,
             automation_id=owner.id,
             automation_created_at=owner.created_at,
-            scheduled_for=(
-                run.scheduled_for.replace(tzinfo=UTC)
-                if run.scheduled_for.tzinfo is None
-                else run.scheduled_for.astimezone(UTC)
-            ),
+            scheduled_for=stored_utc(run.scheduled_for),
         )
 
 
@@ -481,7 +474,6 @@ async def recover_self_source(
             presence.platform,
             thread_id=conversation.thread_id,
         )
-    from yuki.conversation.self_initiative import validate_self_initiative
 
     try:
         await validate_self_initiative(
@@ -505,8 +497,6 @@ async def recover_execution_source(
     lookup_plugin_host: Callable[[str], Any] | None = None,
 ) -> MessageTaskSource | SelfTaskSource | AutomationTaskSource | BackgroundTaskSource:
     if source.get("owner") == "plugin_invocation":
-        from yuki_plugin_sdk.permissions import PluginPermission
-
         host = lookup_plugin_host(source["plugin_id"]) if lookup_plugin_host is not None else None
         if host is None or source.get("approval_revision") != host._services.approval_revision:
             raise ValueError("plugin_work_owner_changed")

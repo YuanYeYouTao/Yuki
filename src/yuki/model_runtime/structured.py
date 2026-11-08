@@ -22,6 +22,7 @@ from yuki.model_runtime.models import (
     ModelTask,
     StructuredOutputMode,
 )
+from yuki.runtime.work_activation import current_work_control
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -105,8 +106,6 @@ class StructuredTaskRunner:
         provider_session_id: str | None = None,
     ) -> tuple[OutputT, ChatResponse]:
         """Return validated data together with provider-safe usage metadata."""
-
-        from yuki.runtime.work_activation import current_work_control
 
         control = current_work_control.get()
         if control is not None:

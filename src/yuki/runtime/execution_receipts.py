@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from yuki.sandbox.continuations import SandboxContinuationRepository
+
 PROCESS_ID = str(uuid4())
 
 
@@ -15,8 +17,6 @@ class ExecutionReceipts:
     staged: dict[str, Any] = field(default_factory=dict)
 
     async def confirm(self) -> None:
-        from yuki.sandbox.continuations import SandboxContinuationRepository
-
         for request_id, repository in tuple(self.staged.items()):
             await SandboxContinuationRepository(repository.database).observed(request_id)
             self.staged.pop(request_id, None)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import String, case, func, select, type_coerce
@@ -14,6 +14,7 @@ from sqlalchemy.sql.selectable import ScalarSelect
 from yuki.domain.messages import MENTION_SNAPSHOT_FIELDS, mention_snapshots
 from yuki.persistence.models import ChatEventModel, MemoryFactModel
 from yuki.persistence.repository_records import EventRecord
+from yuki.time.formatting import utc_iso
 
 EVENT_TEXT_REVISION_FIELDS = ("content", "visual_summary", "audio_transcript")
 EVENT_IDENTITY_REVISION_FIELDS = (
@@ -103,9 +104,7 @@ def event_mentions_expression() -> ScalarSelect[str]:
 def memory_revision(fact: Any) -> str:
     def value(item: Any) -> Any:
         if isinstance(item, datetime):
-            return (
-                item.replace(tzinfo=UTC) if item.tzinfo is None else item.astimezone(UTC)
-            ).isoformat()
+            return utc_iso(item)
         return getattr(item, "value", item)
 
     payload = [value(getattr(fact, name)) for name in MEMORY_REVISION_FIELDS]

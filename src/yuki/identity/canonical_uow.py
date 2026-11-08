@@ -25,7 +25,7 @@ from yuki.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     touch_canonical_watermarks,
 )
-from yuki.conversation.media_index import reply_media_snapshots
+from yuki.conversation.media_index import index_event_media, reply_media_snapshots
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage, snapshot_mention_segments
@@ -564,8 +564,6 @@ class CanonicalIngressUnitOfWork:
                     event_id=row.id,
                 )
             if not new_generation:
-                from yuki.conversation.media_index import index_event_media
-
                 await index_event_media(
                     session,
                     event_id=row.id,

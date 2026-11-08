@@ -46,6 +46,7 @@ from yuki.memory.rebuild.models import MemoryRebuildRun
 from yuki.persistence.database import Database
 from yuki.persistence.models import AdminOperationEventModel
 from yuki.persistence.unit_of_work import next_updated_at
+from yuki.time.formatting import stored_utc
 
 
 def _now() -> datetime:
@@ -207,12 +208,8 @@ def run_operation(
     return _op_ref(
         f"{kind.value}:{public_id}",
         _rebuild_status(status) if kind is OperationKind.REBUILD else _dream_status(status),
-        created_at=created_at.replace(tzinfo=UTC)
-        if created_at.tzinfo is None
-        else created_at.astimezone(UTC),
-        updated_at=updated_at.replace(tzinfo=UTC)
-        if updated_at.tzinfo is None
-        else updated_at.astimezone(UTC),
+        created_at=stored_utc(created_at),
+        updated_at=stored_utc(updated_at),
         error_category=error_category
         or ("rebuild_failed" if kind is OperationKind.REBUILD else "partial_failed"),
     )

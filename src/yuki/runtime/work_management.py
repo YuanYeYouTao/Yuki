@@ -11,6 +11,7 @@ from sqlalchemy import func, literal, literal_column, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.conversation.autonomy_db_models import InitiativeRunModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_repository import TERMINAL, encode_json
@@ -98,8 +99,6 @@ async def resume_blocker(
         if not supported:
             return "operation_unavailable"
         if source.get("origin") == "self_initiative":
-            from yuki.conversation.autonomy_db_models import InitiativeRunModel
-
             # Continue the retained Work through its original run and scene;
             # run settlement does not erase the Work's recovery authority.
             original_run = await session.scalar(

@@ -30,6 +30,8 @@ from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import _event_record
 from yuki.persistence.repository_records import EventRecord
 from yuki.persistence.unit_of_work import optional_session
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import inputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,12 +369,6 @@ class OrdinaryAdmissionRepository:
         self, admission: PreparedOrdinaryAdmission
     ) -> Callable[[AsyncSession, int], Awaitable[None]]:
         async def publish(session: AsyncSession, input_id: int) -> None:
-            from yuki.conversation.ordinary_admission_db_models import (
-                OrdinaryTurnAdmissionModel,
-            )
-            from yuki.runtime.work_repository import WorkConflict
-            from yuki.runtime.work_schema_v1 import inputs
-
             existing = await session.get(OrdinaryTurnAdmissionModel, admission.event.id)
             source = (
                 await session.execute(

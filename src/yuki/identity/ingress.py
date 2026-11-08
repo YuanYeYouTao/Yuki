@@ -43,7 +43,7 @@ from yuki.identity.db_models import (
     PresenceModel,
 )
 from yuki.identity.errors import CanonicalIdentityError
-from yuki.identity.event_author import EventAuthorProjection
+from yuki.identity.event_author import EventAuthorProjection, project_event_author
 from yuki.identity.mentions import resolve_message_mentions
 from yuki.identity.person_identity import person_enabled_condition
 from yuki.identity.receipt_compat import (
@@ -54,6 +54,7 @@ from yuki.identity.receipt_compat import (
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.database import Database, write_failure_committed, write_failure_phase
 from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repository_helpers import _event_record
 
 _KEEPER_STATUS = "keeper"
 _AMBIGUOUS_REPLY_AUTHOR = "ambiguous"
@@ -226,8 +227,6 @@ class CanonicalIngressResolver:
             if isinstance(result, IngressPreAdmit) and not result.dropped:
                 reply_id = result.message.reply_to_event_id
                 if reply_id is not None:
-                    from yuki.persistence.repository_helpers import _event_record
-
                     async with self._database.read_session() as reader:
                         original = await reader.get(ChatEventModel, reply_id)
                         if (
@@ -560,8 +559,6 @@ class CanonicalIngressResolver:
             canonical_reply_author_kind=reply_author_kind,
         )
         if reply_event_id is not None and render_reply:
-            from yuki.persistence.repository_helpers import _event_record
-
             original_reply = await session.get(ChatEventModel, reply_event_id)
             assert original_reply is not None
             reply = _event_record(original_reply)
@@ -709,8 +706,6 @@ async def _author_for(
     *,
     platform: str,
 ) -> EventAuthorProjection:
-    from yuki.identity.event_author import project_event_author
-
     author = await project_event_author(
         session,
         sender_user_id=message.sender.user_id,

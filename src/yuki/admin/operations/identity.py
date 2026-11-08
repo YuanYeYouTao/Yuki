@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +29,14 @@ from yuki.identity.canonical_repository import (
     set_assignment_usage,
 )
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
-from yuki.identity.person_identity import current_person_id, same_person_id
+from yuki.identity.person_identity import (
+    PersonMergePreparationChanged,
+    current_person_id,
+    merge_persons,
+    prepare_person_merge,
+    rename_person,
+    same_person_id,
+)
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.command_receipts import (
     CommandSuccess,
@@ -144,13 +152,6 @@ class IdentityOperations:
         to_person: str | None = None,
         display_name: str | None = None,
     ) -> dict[str, Any]:
-        from yuki.identity.person_identity import (
-            PersonMergePreparationChanged,
-            merge_persons,
-            prepare_person_merge,
-            rename_person,
-        )
-
         operation = "identity.person.merge" if to_person is not None else "identity.person.rename"
         await authorize_current(self.database, principal, operation)
         bound = fingerprint(
@@ -217,8 +218,6 @@ class IdentityOperations:
     async def create_person(
         self, principal: ControlPrincipal, command: ControlCommand
     ) -> ControlResult:
-        from uuid import uuid4
-
         operation = CommandOperation.PERSON_CREATE.value
 
         async def mutate(session: AsyncSession) -> CommandSuccess:

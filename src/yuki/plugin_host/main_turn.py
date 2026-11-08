@@ -15,15 +15,28 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import func, select
 
 from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
+from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
+from yuki.identity.person_identity import current_person_id
 from yuki.llm.base import LLMInvalidRequestError
 from yuki.memory.enums import MemoryScopeType
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_outcome import ContextBoundaryChanged
 from yuki.runtime.context_preparation import prepare_context
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import activate_work, current_work_control
+from yuki.runtime.work_control import WorkInputsPreparing
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_schema_v1 import work
 from yuki.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from yuki.services.agent_tools import ToolRuntime
-from yuki.services.durable_invocations import project_committed_result
+from yuki.services.durable_invocations import invocation_boundary, project_committed_result
+from yuki.services.execution_sources import (
+    AutomationTaskSource,
+    SelfTaskSource,
+    recover_execution_source,
+)
 from yuki.services.invocation_context import InvocationContextFactory
 from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.main_agent_turns import MainAgentTurnService
@@ -54,8 +67,6 @@ async def _original_plugin_work(
     execution_id: str | None,
 ) -> dict[str, Any] | None:
     """Resolve the original durable invocation, independent of retired tool names."""
-    from yuki.runtime.work_repository import WorkConflict
-    from yuki.runtime.work_schema_v1 import work
 
     async with ledger._database.read_session() as session:
         originals = (
@@ -95,8 +106,6 @@ async def run_plugin_main_turn(
 ) -> AgentRunResult:
     """Bound the callback wait while the Host retains an accepted activation."""
     from yuki.plugin_host.facades import _invocation_actor
-    from yuki.runtime.work_activation import current_work_control
-    from yuki.services.durable_invocations import invocation_boundary
 
     anchor: int | str | None = invocation.source_event_id
     if anchor is None:
@@ -213,7 +222,6 @@ async def _execute_plugin_main_turn(
     tool_limit: int | None = None,
 ) -> AgentRunResult:
     """Keep SDK reads/effects narrow; never synthesize a user or transport target."""
-    from yuki.runtime.work_activation import current_work_control
 
     runner = host._services.agent_runner
     contract = runner.main_contract if runner is not None else None
@@ -269,11 +277,6 @@ async def _execute_plugin_main_turn(
             nonlocal activation_context
             if host._require(permission) is not invocation:
                 raise LLMInvalidRequestError("plugin invocation changed before model request")
-            from yuki.identity.db_models import (
-                CanonicalPersonModel,
-                PresenceModel,
-            )
-            from yuki.identity.person_identity import current_person_id
 
             async with ledger._database.read_session() as session:
                 person = (
@@ -319,12 +322,6 @@ async def _execute_plugin_main_turn(
                 ):
                     raise PluginPermissionError("plugin event source changed")
             elif execution_source is not None:
-                from yuki.services.execution_sources import (
-                    AutomationTaskSource,
-                    SelfTaskSource,
-                    recover_execution_source,
-                )
-
                 recovered = await recover_execution_source(
                     ledger._database,
                     cast(str, version.conversation_id),
@@ -366,10 +363,6 @@ async def _execute_plugin_main_turn(
         )
         if result is not None:
             return result
-
-        from yuki.runtime.work_activation import activate_work
-        from yuki.runtime.work_repository import WorkRepository
-        from yuki.services.durable_invocations import invocation_boundary
 
         invocation_source = {
             "owner": "plugin_invocation",
@@ -444,7 +437,6 @@ async def _execute_plugin_main_turn(
                 },
                 ensure_ascii=False,
             )
-            from yuki.runtime.work_control import WorkInputsPreparing
 
             try:
                 context = await prepare_context(
@@ -580,13 +572,8 @@ async def resume_plugin_work(
     source: dict[str, Any],
 ) -> None:
     """Host-owned continuation after the original SDK callback has returned."""
-    from dataclasses import replace
 
-    from yuki.domain.messages import InboundMessage, SenderIdentity
     from yuki.plugin_host.facades import PluginInvocation, _agent_dependencies
-    from yuki.runtime.origin import TurnOrigin
-    from yuki.runtime.work_activation import activate_work
-    from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
     host = lookup_host(str(source.get("plugin_id", "")))
     if host is None:
@@ -599,7 +586,6 @@ async def resume_plugin_work(
         event = await ledger.get_event(source["trigger_event_id"])
         if event is None or event.canonical_conversation_id != work["conversation_id"]:
             raise PluginPermissionError("plugin work source is unavailable")
-        from yuki.identity.db_models import PresenceModel
 
         async with ledger._database.read_session() as session:
             presence = await session.get(PresenceModel, event.ingress_presence_id)
@@ -653,12 +639,6 @@ async def resume_plugin_work(
         else None
     )
     if actor is not None and source.get("execution_source") is not None:
-        from yuki.services.execution_sources import (
-            AutomationTaskSource,
-            SelfTaskSource,
-            recover_execution_source,
-        )
-
         recovered = await recover_execution_source(
             ledger._database,
             work["conversation_id"],

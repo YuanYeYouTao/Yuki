@@ -16,6 +16,7 @@ from yuki.plugin_host.session_repository import (
     PluginAgentSessionRepository,
 )
 from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import current_work_control
 from yuki.services.agent_runner import AgentRunner, AgentRuntime
 from yuki.services.concurrency import ConcurrencyManager
 
@@ -159,7 +160,6 @@ class PluginAgentSessionService:
             messages = self._compose_messages(authority, session, history)
             # Isolated plugin Agent sessions have no Conversation column; never
             # fabricate one. Forward a Host-stamped id only when actually present.
-            from yuki.runtime.work_activation import current_work_control
 
             parent = current_work_control.get()
 

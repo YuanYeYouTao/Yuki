@@ -26,7 +26,8 @@ from yuki.memory.rebuild.models import (
     MemoryRebuildRun,
     MemoryRebuildSelection,
 )
-from yuki.memory.rebuild.privacy import PreparedRebuildForget
+from yuki.memory.rebuild.privacy import PreparedRebuildForget, apply_forget, prepare_forget
+from yuki.memory.rebuild.receipt_finalization import READY_STATUSES, complete_receipts
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
@@ -39,6 +40,7 @@ from yuki.persistence.models import (
 from yuki.persistence.repository_helpers import _event_record
 from yuki.persistence.repository_records import EventRecord
 from yuki.persistence.unit_of_work import optional_session
+from yuki.time.formatting import stored_utc
 
 TERMINAL_STATUSES = {
     MemoryRebuildRunStatus.COMPLETED.value,
@@ -315,10 +317,8 @@ class MemoryRebuildRepository:
             }:
                 return row.id, False, row.status
             retry_at = row.next_attempt_at
-            if retry_at is not None:
-                retry_at = retry_at.replace(tzinfo=UTC) if retry_at.tzinfo is None else retry_at
-                if retry_at > now:
-                    return row.id, False, row.status
+            if retry_at is not None and stored_utc(retry_at) > now:
+                return row.id, False, row.status
             row.status = MemoryRebuildItemStatus.EXTRACTING.value
             row.attempts += 1
             row.next_attempt_at = None
@@ -840,8 +840,6 @@ class MemoryRebuildRepository:
         item_ids: tuple[int, ...] | None = None,
         limit: int = 128,
     ) -> int:
-        from yuki.memory.rebuild.receipt_finalization import complete_receipts
-
         return await complete_receipts(
             self.database,
             public_id,
@@ -852,7 +850,6 @@ class MemoryRebuildRepository:
 
     async def remaining_item_receipt_count(self, public_id: str) -> int:
         """Keep the run active until all bounded receipt pages have settled."""
-        from yuki.memory.rebuild.receipt_finalization import READY_STATUSES
 
         async with self.database.read_session() as session:
             return int(
@@ -947,7 +944,6 @@ class MemoryRebuildRepository:
 
     async def finalize_commit(self, public_id: str) -> None:
         """Choose the terminal/paused state from current indexed absence under the writer."""
-        from yuki.memory.rebuild.receipt_finalization import READY_STATUSES
 
         async with self.database.immediate_session() as writer:
             run_id = await writer.scalar(
@@ -1045,11 +1041,7 @@ class MemoryRebuildRepository:
         ownership: tuple[BindingOwnership, ...] = (),
         person_id: str | None = None,
     ) -> PreparedRebuildForget:
-        from yuki.memory.rebuild.privacy import prepare_forget
-
         async with optional_session(self.database, session, write=False) as reader:
-            from sqlalchemy import text
-
             if session is None:
                 await reader.execute(text("BEGIN"))
             return await prepare_forget(reader, aliases, ownership, person_id=person_id)
@@ -1061,8 +1053,6 @@ class MemoryRebuildRepository:
         prepared: PreparedRebuildForget | None = None,
         session: AsyncSession | None = None,
     ) -> int:
-        from yuki.memory.rebuild.privacy import apply_forget
-
         if session is None:
             current = await self.prepare_forget_people(aliases)
             async with self.database.immediate_session() as writer:

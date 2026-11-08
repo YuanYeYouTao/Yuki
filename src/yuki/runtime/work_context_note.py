@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.identity.person_identity import same_person_id
+from yuki.persistence.models import ChatEventModel, ToolArtifactModel
+from yuki.runtime.work_schema_v1 import effects, inputs, work
+from yuki.tool_results.access import access_from_source
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 if TYPE_CHECKING:
     from yuki.runtime.work_control import WorkControl
@@ -36,12 +43,6 @@ async def validate_note(
             refs.update(fact["refs"])
     if control.current is None:
         raise ValueError("no_active_work")
-    from yuki.conversation.canonical_db_models import CanonicalConversationModel
-    from yuki.execution_trace.db_models import ExecutionTraceStateModel
-    from yuki.persistence.models import ChatEventModel, ToolArtifactModel
-    from yuki.runtime.work_schema_v1 import effects, inputs, work
-    from yuki.tool_results.access import access_from_source
-    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     identity = control.current["id"]
     source = json.loads(control.current["source_json"])
@@ -142,11 +143,6 @@ async def visible_context_note(control: WorkControl) -> dict[str, Any] | None:
     saved = json.loads(control.current["checkpoint_json"]).get("context_note")
     if not isinstance(saved, dict):
         return None
-    from dataclasses import asdict
-
-    from yuki.conversation.canonical_db_models import CanonicalConversationModel
-    from yuki.execution_trace.db_models import ExecutionTraceStateModel
-    from yuki.tool_results.access import access_from_source
 
     source = json.loads(control.current["source_json"])
     try:

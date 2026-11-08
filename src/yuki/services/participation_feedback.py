@@ -13,6 +13,7 @@ from sqlalchemy import func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 from yuki_participation.models import Effect, Feedback, Scope, SourceRef
+from yuki_participation.participation import ParticipationUnit, UnitBinding
 from yuki_participation.self_report import SelfReport
 
 from yuki.conversation.autonomy_binding import AcceptedInitiative, AutonomyOwner
@@ -21,7 +22,9 @@ from yuki.conversation.ordinary_admission import OrdinaryAdmission, OrdinaryAdmi
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
 from yuki.runtime.work_schema_v1 import journal, work
+from yuki.runtime.work_tree import ancestors, rooted_tree
 from yuki.social.db_models import SocialOperationModel
+from yuki.time.formatting import stored_utc
 
 if TYPE_CHECKING:
     from yuki_participation.participation import UnitBinding
@@ -51,7 +54,6 @@ def admission_continuation(admission: OrdinaryAdmission) -> bool | None:
 
 def admission_unit_binding(admission: OrdinaryAdmission) -> UnitBinding | None:
     """Convert only the unit/source mapping frozen by the original admission."""
-    from yuki_participation.participation import ParticipationUnit, UnitBinding
 
     binding = admission.binding
     if binding is None:
@@ -125,7 +127,7 @@ async def _ordinary_bindings(
 
 
 def _timestamp(value: datetime) -> float:
-    return value.replace(tzinfo=UTC).timestamp() if value.tzinfo is None else value.timestamp()
+    return stored_utc(value).timestamp()
 
 
 def _charged_ref(ref: str) -> bool:
@@ -510,7 +512,6 @@ async def _read_facts(
     for feedback_row in durable:
         durable_by_run.setdefault(feedback_row.run_id, []).append(feedback_row)
     task_ids = tuple(task["id"] for task in tasks if task["parent_work_id"] is None)
-    from yuki.runtime.work_tree import rooted_tree
 
     tree = rooted_tree(select(work.c.id).where(work.c.id.in_(task_ids)))
     charged = (
@@ -707,8 +708,6 @@ async def _feedback_current(
         if {identity: created for identity, created in rows} != tools:
             return False
     if models:
-        from yuki.runtime.work_tree import ancestors
-
         assert fact.task is not None
         requested = func.json_each(model_selection).table_valued("value")
         identities = select(func.json_extract(requested.c.value, "$.id").label("id")).cte(

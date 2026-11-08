@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable
@@ -306,8 +307,6 @@ class EmojiLibrary:
             )
 
             def prepare_frames() -> PreparedVisualInput:
-                import base64
-
                 prepared_frames = []
                 for index, frame in enumerate(frames):
                     data = base64.b64decode(frame.data_url.split(",", 1)[1])

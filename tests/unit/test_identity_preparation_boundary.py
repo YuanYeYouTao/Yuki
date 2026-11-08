@@ -124,7 +124,7 @@ async def test_cold_identity_writer_releases_before_decoding_original_reply(data
 
     monkeypatch.setattr(ingress, "_existing_hydrated", cold_once)
     monkeypatch.setattr(database, "immediate_session", writer)
-    monkeypatch.setattr(repository_helpers, "_event_record", outside_writer)
+    monkeypatch.setattr(ingress, "_event_record", outside_writer)
     admitted = await resolver.pre_admit(
         bot,
         _message(

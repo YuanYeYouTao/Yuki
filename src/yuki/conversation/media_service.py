@@ -23,6 +23,7 @@ from sqlalchemy import and_, func, or_, select, text, tuple_, update
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.conversation.media_index import (
     attachment_origin,
     attachment_source_version,
@@ -53,6 +54,7 @@ from yuki.services.native_media import (
 )
 from yuki.services.video_frames import is_video_header
 from yuki.services.vision_service import VisionProcessingError
+from yuki.time.formatting import stored_utc
 from yuki.vision.models import MediaReference
 
 _LIFETIME = timedelta(hours=24)
@@ -184,10 +186,6 @@ def _original_still_current(event: Any, live: Any, item: Any, data: dict[str, An
         return True
     current = live_media_data(event.segments_json, item.attachment_index)
     return current is not None and attachment_origin(current) == attachment_origin(data)
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,7 +696,7 @@ class ConversationMediaService:
                 if current.cache_status == "expired" or not original.is_file():
                     raise ConversationMediaError("attachment_expired")
                 assert current.cached_at is not None
-                created = _aware(current.cached_at).timestamp()
+                created = stored_utc(current.cached_at).timestamp()
                 await _media_io(os.utime, temporary, (created, created))
                 # utime changed the staging token; capture the actual publication fact.
                 facts = replace(facts, token=_file_token(await _media_io(temporary.lstat)))
@@ -727,7 +725,7 @@ class ConversationMediaService:
             if path.is_file() and not path.is_symlink():
                 return path
         if item.cache_status == "expired" or (
-            item.expires_at is not None and _aware(item.expires_at) <= datetime.now(UTC)
+            item.expires_at is not None and stored_utc(item.expires_at) <= datetime.now(UTC)
         ):
             raise ConversationMediaError("attachment_expired")
         directory = self.root / item.conversation_id / str(event_id)
@@ -775,7 +773,7 @@ class ConversationMediaService:
                         existing = self._path(live)
                         if existing.is_file():
                             return existing
-                        if live.expires_at and _aware(live.expires_at) <= datetime.now(UTC):
+                        if live.expires_at and stored_utc(live.expires_at) <= datetime.now(UTC):
                             raise ConversationMediaError("attachment_expired")
 
                 await _media_io(_publish_cache_file, temporary, final, facts)
@@ -968,7 +966,7 @@ class ConversationMediaService:
                 source_event_id=item.source_event_id,
                 attachment_index=item.attachment_index,
                 content_hash=digest,
-                expires_at=_aware(item.expires_at).isoformat() if item.expires_at else None,
+                expires_at=stored_utc(item.expires_at).isoformat() if item.expires_at else None,
                 version=attachment_source_version(source_data, item.source_snapshot_json)
                 if is_tgs
                 else None,
@@ -1181,7 +1179,6 @@ class ConversationMediaService:
                 and entry.path.suffix != ".part"
                 and entry.token[4] / 1_000_000_000 > now.timestamp() - _LIFETIME.total_seconds()
             )
-            from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 
             async with self.database.read_session() as reader:
                 hashes = await reader.scalars(

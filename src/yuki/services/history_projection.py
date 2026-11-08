@@ -18,6 +18,7 @@ from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.execution_trace.phases import collect_phase_metrics
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.services.context_assembler import AssembledContext
+from yuki.services.turn_coordinator import HistorySourceChangedError
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,6 @@ async def prepare_history(
             current_event_id=context.current_event_id,
         )
         if current_version != version:
-            from yuki.services.turn_coordinator import HistorySourceChangedError
-
             raise HistorySourceChangedError(version)
         renderer = ChatEventPromptRenderer(
             missing_rows,

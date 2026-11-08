@@ -8,6 +8,7 @@ from yuki.admin.models import AdminActor
 from yuki.domain.identity import PersonId
 from yuki.memory.rebuild.models import MemoryRebuildSelection
 from yuki.memory.rebuild.service import MemoryRebuildService
+from yuki.memory.self_reflection.reporting import format_report
 from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.commands.help import ADMIN_ACTIONS, ADMIN_SUBACTIONS
 
@@ -209,8 +210,6 @@ class MemoryCommands:
             if operation == "dream":
                 return await self._memory_dream_command(actor, parts)
             if operation == "self-reflection":
-                from yuki.memory.self_reflection.reporting import format_report
-
                 if parts == ["run"]:
                     return format_report(await self._memory_admin.self_reflection_run(actor))
                 if len(parts) == 2 and parts[0] == "retry" and parts[1].isdigit():

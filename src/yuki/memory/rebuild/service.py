@@ -15,6 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.config import Settings
 from yuki.identity.authority import person_is_superuser
+from yuki.identity.db_models import PresenceModel
+from yuki.identity.ownership_interval import historical_person_ids
+from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.memory.claim_processor import (
     MemoryClaimProcessor,
     MemoryClaimProcessResult,
@@ -39,6 +42,7 @@ from yuki.memory.extraction import (
     MemoryClaim,
     source_event_fingerprint,
 )
+from yuki.memory.partition import resolve_canonical_memory_partition_for_event
 from yuki.memory.rebuild.models import (
     MemoryRebuildPlanStatistics,
     MemoryRebuildReviewEntry,
@@ -50,12 +54,14 @@ from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.models import ModelTask
 from yuki.persistence.models import (
     ChatEventModel,
+    MembershipModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
 from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.repository_helpers import _event_record
 from yuki.persistence.unit_of_work import optional_session
 
 SUBJECT_RESOLVER_VERSION = "1"
@@ -835,7 +841,6 @@ class MemoryRebuildService:
                         name: getattr(item, name)
                         for name in ("id", "run_id", "event_id", "source_event_hash", "status")
                     }
-                from yuki.persistence.repository_helpers import _event_record
 
                 original_event = _event_record(stored_event)
                 recorded_people = bool(original_event.mentioned_person_ids) or any(
@@ -919,14 +924,6 @@ class MemoryRebuildService:
                         raise ValueError("rebuild_live_job_changed")
                     # A recorded/historical mention keeps the Person who owned it
                     # at ingress; today's membership or account owner cannot replace it.
-                    from yuki.identity.db_models import PresenceModel
-                    from yuki.identity.ownership_interval import historical_person_ids
-                    from yuki.identity.person_identity import (
-                        person_family_condition,
-                        same_person_id,
-                    )
-                    from yuki.memory.partition import resolve_canonical_memory_partition_for_event
-                    from yuki.persistence.models import MembershipModel
 
                     if event.mentioned_person_ids and not recorded_people:
                         presence = await owned.get(PresenceModel, event.ingress_presence_id)

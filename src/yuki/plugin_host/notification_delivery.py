@@ -24,8 +24,9 @@ from yuki.gateway.social import (
 from yuki.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import EventLedgerRepository
-from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork, prepare_append
 from yuki.persistence.worker_recovery import recover_database_loop
+from yuki.plugin_host.db_models import PluginNotificationOutboxModel
 from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
 from yuki.plugin_host.notification_repository import (
     BackgroundTurnFenceError,
@@ -39,6 +40,7 @@ from yuki.services.effect_gate import (
     EffectGateTimeoutError,
 )
 from yuki.services.media_resolver import _media_io
+from yuki.social.content import prepare_for_entry
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 from yuki_plugin_sdk.errors import PluginPermissionError
 
@@ -113,8 +115,6 @@ class PlatformNotificationTransport:
     async def prepare(
         self, item: OutboxRecord, message: TransportMessage
     ) -> tuple[dict[str, Any], ...]:
-        from yuki.social.content import prepare_for_entry
-
         if self._router is None or item.canonical_conversation_id is None:
             raise ProactiveGatewayError("none")
         try:
@@ -726,7 +726,6 @@ class PluginNotificationOutboxWorker:
                 conversation_id=item.canonical_conversation_id,
             )
         )
-        from yuki.persistence.scoped_event_uow import prepare_append
 
         prepared_append = await prepare_append(content, segments=segments)
         local = item.prepared.get("route", {}).get("local_ledger") is True
@@ -768,7 +767,6 @@ class PluginNotificationOutboxWorker:
                 and event.canonical_conversation_id != item.canonical_conversation_id
             ):
                 raise PluginPermanentDeliveryError("canonical_owner_mismatch")
-            from yuki.plugin_host.db_models import PluginNotificationOutboxModel
 
             row = await session.get(PluginNotificationOutboxModel, item.id)
             if row is not None:

@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from yuki.persistence.database import write_failure_phase
 from yuki.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
 from yuki.runtime.lease_heartbeat import supervise_lease
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
@@ -201,11 +202,6 @@ async def _recover_activation(control: WorkControl, exc: BaseException) -> None:
         except BaseException as cleanup:
             exc.add_note(f"work recovery deferred: {type(cleanup).__name__}")
     if control.current is not None and isinstance(exc, Exception):
-        from yuki.runtime.activation_outcome import (
-            WorkActivationHandled,
-            WorkRecoveryDeferred,
-        )
-
         if control.recovery_deferred:
             raise WorkRecoveryDeferred(
                 "owned_activation_recovery_deferred", lease=control.lease, work=control.current
