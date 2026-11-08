@@ -39,11 +39,12 @@ from yuki.identity.ingress import IngressPreAdmit
 from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.identity.person_state import ObservationChanged
 from yuki.persistence.database import write_failure_committed
+from yuki.persistence.history_search import prepare_terms
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_management import WorkManagementError, manage_work
 from yuki.runtime.work_recovery_schema import deliveries
-from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
+from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository, encode_json
 from yuki.runtime.work_schema_v1 import effects, inputs, work
 from yuki.social.db_models import SocialOperationModel
 
@@ -670,11 +671,7 @@ class ClientWorks:
                 if admitted.dropped:
                     raise ClientError("unauthenticated")
 
-                from yuki.persistence.history_search import prepare_terms
-
                 prepared_terms = await asyncio.to_thread(prepare_terms, admitted.message.text)
-
-                from yuki.runtime.work_repository import encode_json
 
                 input_payload = {
                     "text": body,

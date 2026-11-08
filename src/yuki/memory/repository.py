@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.identity import AuthorKind
+from yuki.identity.db_models import PresenceModel
+from yuki.identity.memory_guard import refuse_legacy_live_event
 from yuki.identity.person_identity import person_family_condition, same_person_condition
 from yuki.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from yuki.memory.eligibility import MemoryEventEligibilityPolicy
@@ -61,6 +63,7 @@ from yuki.memory.partition import (
     resolve_memory_partition_for_event,
 )
 from yuki.memory.projections import project_memory_fact_rows
+from yuki.memory.self_origin import sql_self_receipt_evidence_predicate
 from yuki.memory.temporal_filter import strict_time_conditions
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
@@ -236,9 +239,6 @@ def readable_evidence_predicate(
         .correlate(evidence_table, fact_table)
         .exists()
     )
-    from sqlalchemy import text
-
-    from yuki.memory.self_origin import sql_self_receipt_evidence_predicate
 
     initiative_source = (
         select(literal(1))
@@ -1787,7 +1787,6 @@ class MemoryJobRepository:
                     event_id,
                 )
                 return False, conversation_key[:255]
-            from yuki.identity.memory_guard import refuse_legacy_live_event
 
             if await refuse_legacy_live_event(session, event):
                 logger.info(
@@ -1803,8 +1802,6 @@ class MemoryJobRepository:
                     )
                     return False, conversation_key[:255]
                 try:
-                    from yuki.identity.db_models import PresenceModel
-
                     presence = (
                         await session.get(PresenceModel, event.ingress_presence_id)
                         if event.ingress_presence_id
@@ -2030,7 +2027,6 @@ class MemoryJobRepository:
                 )
             ).all()
             jobs: list[MemoryJob] = []
-            from yuki.identity.memory_guard import refuse_legacy_live_event
 
             for row in rows:
                 prior = (row.id, row.status, row.updated_at)
@@ -2211,7 +2207,6 @@ class MemoryJobRepository:
             ).all()
             jobs: list[MemoryJob] = []
             characters = 0
-            from yuki.identity.memory_guard import refuse_legacy_live_event
 
             for row in rows:
                 prior = (row.id, row.status, row.updated_at)

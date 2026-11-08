@@ -19,6 +19,7 @@ from yuki.domain.messages import (
 )
 from yuki.gateway.media import MediaKind, PlatformMediaFile
 from yuki.gateway.providers.telegram import TelegramClient
+from yuki.gateway.providers.telegram_social import TelegramSocialOperations
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.gateway.social import TransportMedia, TransportMessage, TransportTarget
 from yuki.identity.canonical_repository import (
@@ -285,8 +286,6 @@ class TelegramSender:
         return await self.bot.resolve_media_file(file, kind, max_download_bytes=max_download_bytes)
 
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
-        from yuki.gateway.providers.telegram_social import TelegramSocialOperations
-
         if len(message.media) > 1:
             raise ValueError("use_separate_delivery_operations")
         media = message.media[0] if message.media else None
@@ -463,8 +462,6 @@ class TelegramGateway:
             async with self.database.read_session() as session:
                 binding = await find_space_binding(session, message.group_id, platform="telegram")
             if binding is None:
-                from yuki.gateway.providers.telegram_social import TelegramSocialOperations
-
                 if not await TelegramSocialOperations().is_member(
                     self.client, message.group_id, self.client.self_id
                 ):

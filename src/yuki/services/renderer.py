@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from yuki_participation.self_report import extract_tail
+
 from yuki.llm.base import LLMEmptyResponseError
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -20,7 +22,6 @@ def sanitize_input(text: str) -> str:
 
 def sanitize_model_output(text: str, *, max_characters: int | None = None) -> str:
     """Remove the actual state tail and control characters, preserving body text."""
-    from yuki_participation.self_report import extract_tail
 
     text, _ = extract_tail(text)
     cleaned = sanitize_input(text)

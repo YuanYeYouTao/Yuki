@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from uuid import uuid4
 
 import httpx
 
+from yuki.client_api.openapi import export_openapi
 from yuki.client_sdk import ClientProblem, Outbox, PersonalClient
 
 
@@ -66,8 +68,6 @@ def add_client_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
 
 async def client_command(args: argparse.Namespace) -> int:
     if args.client_action == "openapi":
-        from yuki.client_api.openapi import export_openapi
-
         export_openapi(args.output)
         return 0
     async with httpx.AsyncClient(timeout=30, trust_env=False) as http:
@@ -115,7 +115,6 @@ async def client_command(args: argparse.Namespace) -> int:
             if response.is_error:
                 client.data(response)
             # The server already authorized the original snapshot; verify bytes before saving.
-            import hashlib
 
             if hashlib.sha256(response.content).hexdigest() != args.version:
                 raise ValueError("artifact_integrity_failed")

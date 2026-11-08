@@ -12,11 +12,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import Select, and_, func, select, text, update
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.observation_models import ContextSelectionModel
+from yuki.conversation.observations import privacy_generation
 from yuki.conversation.projection_models import PromptProjectionChunkModel, PromptProjectionModel
 from yuki.execution_trace.phases import collect_phase_metrics, model_detail
 from yuki.persistence.database import Database
@@ -298,7 +300,6 @@ class PromptProjectionRepository:
         collect_phase_metrics(item_count=count, payload_bytes=size)
         if size > self.view_bytes:
             raise ProjectionCapacityError("projection view budget exceeded")
-        from yuki.conversation.observations import privacy_generation
 
         prepared_sources = []
         with model_detail("projection_sources_read"):
@@ -560,8 +561,6 @@ class PromptProjectionRepository:
                     )
                 )
             if prepared_sources:
-                from sqlalchemy.dialects.sqlite import insert
-
                 try:
                     for offset in range(0, len(prepared_sources), 64):
                         await session.execute(

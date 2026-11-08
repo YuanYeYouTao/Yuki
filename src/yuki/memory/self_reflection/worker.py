@@ -16,6 +16,7 @@ from yuki.memory.self_reflection.control import (
     ReflectionDailyLimit,
 )
 from yuki.memory.self_reflection.models import SelfReflectionHealth
+from yuki.memory.self_reflection.reporting import deliver_report
 from yuki.memory.self_reflection.repository import SelfReflectionRepository
 from yuki.memory.self_reflection.service import (
     SelfReflectionMutationError,
@@ -205,8 +206,6 @@ class SelfReflectionWorker:
         )
 
     async def _deliver_reports(self) -> None:
-        from yuki.memory.self_reflection.reporting import deliver_report
-
         for cycle in await self.control.pending_reports():
             try:
                 receipt = await deliver_report(self.social, cycle)

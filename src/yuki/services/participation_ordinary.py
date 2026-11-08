@@ -58,6 +58,7 @@ from yuki.persistence.models import (
 )
 from yuki.persistence.repository_helpers import keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
+from yuki.runtime.work_schema_v1 import work
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.participation_feedback import (
     admission_continuation,
@@ -65,6 +66,7 @@ from yuki.services.participation_feedback import (
     sync_scope_effects,
 )
 from yuki.services.participation_identity import actor_identity
+from yuki.time.formatting import stored_utc
 
 if TYPE_CHECKING:
     from yuki.admin.models import RuntimeConfigSnapshot
@@ -418,7 +420,6 @@ def _automation_run_id(source: object) -> int | None:
 
 async def _automation_source_ids(session: AsyncSession, evidence_ids: tuple[int, ...]) -> str:
     """Prepare original automation run keys from this batch's own evidence receipts."""
-    from yuki.runtime.work_schema_v1 import work
 
     sources: set[str] = set()
     source_expression: ColumnElement[str | None] = literal_column(
@@ -617,9 +618,7 @@ async def _prepare_continuation(
         automation_ids_json = await _automation_source_ids(reader, tuple(evidence_ids.values()))
 
         def utc(value: datetime | None) -> datetime | None:
-            if value is None:
-                return None
-            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            return None if value is None else stored_utc(value)
 
         for ref, source in sources:
             identity = int(source.source_id)

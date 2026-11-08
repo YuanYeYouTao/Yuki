@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import sys
 import zlib
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
@@ -40,7 +41,6 @@ def freeze_payload(value: object, capacity: int) -> tuple[object, int]:
     The first pass creates no independent payload. The second pass only copies
     an admitted tree; immutable strings/bytes need not be duplicated.
     """
-    import sys
 
     used, nodes = 512 * 1024, 0
     ancestors: set[int] = set()

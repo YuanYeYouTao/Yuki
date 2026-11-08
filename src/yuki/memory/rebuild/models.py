@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -14,6 +14,7 @@ from yuki.memory.enums import (
     MemoryRebuildRunStatus,
     MemoryRebuildThirdPartyMode,
 )
+from yuki.time.formatting import stored_utc
 
 
 class _Model(BaseModel):
@@ -65,9 +66,7 @@ class MemoryRebuildSelection(_Model):
     @field_validator("after", "before", mode="after")
     @classmethod
     def _utc(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return None if value is None else stored_utc(value)
 
     @model_validator(mode="after")
     def _bounded(self) -> MemoryRebuildSelection:
@@ -145,9 +144,7 @@ class MemoryRebuildRun(_Model):
     )
     @classmethod
     def _normalize_run_time(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return None if value is None else stored_utc(value)
 
 
 class MemoryRebuildReviewEntry(_Model):

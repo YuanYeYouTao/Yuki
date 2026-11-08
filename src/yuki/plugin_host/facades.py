@@ -17,7 +17,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import UUID
@@ -95,6 +94,7 @@ from yuki.services.vision_service import VisionProcessingError, VisionService
 from yuki.social.history_sources import history_delivery_predicates
 from yuki.social.models import OperationStatus, SocialError, SocialReceipt
 from yuki.social.repository import SocialOperationRepository
+from yuki.time.formatting import stored_utc
 from yuki.vision.models import VisualObservation
 from yuki.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from yuki.web.models import WebSearchRequest
@@ -135,6 +135,27 @@ from yuki_plugin_sdk.permissions import PluginPermission
 
 if TYPE_CHECKING:
     from yuki.social.service import SocialService
+import tempfile
+
+from yuki.adapters.onebot.sender import OneBotRouteSender
+from yuki.capabilities.invocation import current_invocation
+from yuki.identity.authority import person_is_superuser
+from yuki.identity.canonical_repository import find_identity_binding, find_space_binding
+from yuki.identity.person_identity import same_person_id
+from yuki.memory.runtime.query_plane import (
+    MemoryQueryPlane,
+    MemoryReadConsumer,
+    MemoryReadRequest,
+    ResolvedReadScope,
+)
+from yuki.persistence.event_view import event_view
+from yuki.persistence.scoped_event_uow import prepare_append
+from yuki.plugin_host.main_turn import close_plugin_main_tasks
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.services.history_query import HistoryQuery
+from yuki.social.confirmed_content import content_sources_retained
+from yuki.social.service import SocialContext
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import (
     AgentSession,
@@ -616,7 +637,6 @@ class HostPluginContext:
         """Stop tasks created through the Host scheduler during plugin shutdown."""
 
         self._closed = True
-        from yuki.plugin_host.main_turn import close_plugin_main_tasks
 
         await close_plugin_main_tasks(self.plugin_id)
         await self._scheduler.stop()
@@ -679,7 +699,7 @@ class HostPluginContext:
                 original.sha256 != handle.sha256
                 or original.byte_size != handle.byte_size
                 or original.content_type != handle.content_type
-                or _aware_media(original.expires_at) != _aware_media(handle.expires_at)
+                or stored_utc(original.expires_at) != stored_utc(handle.expires_at)
             ):
                 raise PluginPermissionError("selected media artifact version does not match")
             prepared = await asyncio.to_thread(preparer.prepare_image, data, source="tool")
@@ -691,7 +711,7 @@ class HostPluginContext:
                     plugin_tool_name=tool_name,
                     plugin_approval_revision=self._services.approval_revision,
                     content_hash=original.sha256,
-                    expires_at=_aware_media(original.expires_at).isoformat(),
+                    expires_at=stored_utc(original.expires_at).isoformat(),
                 )
                 for image in prepared
             )
@@ -715,7 +735,7 @@ class HostPluginContext:
             original = versions[image.plugin_media_handle]
             if (
                 original.sha256 != image.content_hash
-                or _aware_media(original.expires_at).isoformat() != image.expires_at
+                or stored_utc(original.expires_at).isoformat() != image.expires_at
                 or image.plugin_approval_revision != self._services.approval_revision
             ):
                 raise PluginPermissionError("selected media artifact version does not match")
@@ -781,8 +801,6 @@ class HostPluginContext:
     async def _is_real_superuser(
         self, invocation: PluginInvocation, *, session: AsyncSession | None = None
     ) -> bool:
-        from yuki.identity.authority import person_is_superuser
-
         ledger = self._services.ledger
         if ledger is None:
             return False
@@ -814,8 +832,6 @@ class HostPluginContext:
         same_actor = normalized == invocation.actor_person_id
         same_mentioned = normalized in mentioned
         if ledger is not None and not same_actor and not same_mentioned:
-            from yuki.identity.person_identity import same_person_id
-
             async with optional_session(ledger._database, session, write=False) as reader:
                 same_actor = bool(
                     invocation.actor_person_id
@@ -966,7 +982,6 @@ class _MessageFacade:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-        from yuki.services.history_query import HistoryQuery
 
         request = HistoryQuery(
             keyword=query, limit=limit, cursor=cursor, match=match, exclude=exclude
@@ -1152,7 +1167,6 @@ class _GroupFacade:
         social = _require_service(self._host._services.social, "social")
         assert invocation.conversation_id is not None
         actor = _invocation_actor(invocation)
-        from yuki.social.service import SocialContext
 
         result = await social.group_members(
             {"target_id": target, "limit": _bounded_limit(limit, maximum=100)},
@@ -1226,8 +1240,6 @@ class _MemoryFacade:
         assert invocation is not None
         memories = _require_service(self._host._services.memories, "memory")
         async with memories.repository.database.read_session() as session:
-            from sqlalchemy import text
-
             await session.execute(text("BEGIN"))
             target = await self._host._require_user_scope(invocation, user_id, session=session)
             rows = await memories.list_person(
@@ -1244,8 +1256,6 @@ class _MemoryFacade:
         assert invocation is not None
         memories = _require_service(self._host._services.memories, "memory")
         async with memories.repository.database.read_session() as session:
-            from sqlalchemy import text
-
             await session.execute(text("BEGIN"))
             target = await self._host._require_group_scope(invocation, group_id, session=session)
             rows = await memories.list_group(
@@ -1283,12 +1293,6 @@ class _MemoryFacade:
         else:
             raise ValueError("memory search scope_type must be person or group")
         service = _require_service(self._host._services.memory_context, "memory retrieval")
-        from yuki.memory.runtime.query_plane import (
-            MemoryQueryPlane,
-            MemoryReadConsumer,
-            MemoryReadRequest,
-            ResolvedReadScope,
-        )
 
         result = await MemoryQueryPlane(service).read(
             MemoryReadConsumer.PLUGIN,
@@ -1456,7 +1460,6 @@ class _AgentFacade:
         """Read an owned durable result without keeping the old callback alive."""
         if self._host._closed:
             raise PluginPermissionError("plugin Host is closed")
-        from yuki.runtime.work_repository import WorkRepository
 
         ledger = _require_service(self._host._services.ledger, "event ledger")
         row = await WorkRepository(ledger._database).get(work_id)
@@ -1472,7 +1475,6 @@ class _AgentFacade:
             raise PluginPermissionError("plugin approved version changed")
         permission = PluginPermission(source["permission"])
         self._host._require(permission, require_invocation=False)
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
         async with ledger._database.read_session() as session:
             conversation = await session.get(CanonicalConversationModel, row["conversation_id"])
@@ -1500,7 +1502,6 @@ class _AgentFacade:
         if not text.strip() or len(text) > 12_000:
             raise ValueError("text must contain 1 to 12000 characters")
         request_id = _bounded_text(request_id, maximum=128, field_name="request_id")
-        from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
         ledger = _require_service(self._host._services.ledger, "event ledger")
         repository = WorkRepository(ledger._database)
@@ -2462,8 +2463,6 @@ async def _send_social(
     media_reference: str | None,
 ) -> PluginResult:
     """Use the shared Social effect with the original callback/call identity."""
-    from yuki.social.models import SocialError
-    from yuki.social.service import SocialContext
 
     social = _require_service(host._services.social, "social delivery")
     state = _CURRENT_DELIVERY.get()
@@ -2505,7 +2504,6 @@ async def _send_social(
         if media_reference is not None:
             artifact_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{state.identity}:{call_id}:media"))
             args.update(artifact_id=artifact_id, attachment_kind="image")
-            import tempfile
 
             store = social.workspace_service.store
             prior = await social.receipts.find(state.identity, call_id)
@@ -2617,7 +2615,6 @@ async def _send_onebot(
             return _delivery_result(receipt)
         assert receipt.prepared is not None
         entry_binding_id = receipt.prepared["binding_id"]
-        from yuki.persistence.scoped_event_uow import prepare_append
 
         prepared_append = await prepare_append(outbound.content, segments=outbound.segments)
         gateway = await _qq_gateway(host, invocation)
@@ -2676,8 +2673,6 @@ async def _send_onebot(
                 )
             )
             async with ledger._database.immediate_session() as session:
-                from yuki.social.confirmed_content import content_sources_retained
-
                 retained = await content_sources_retained(
                     session,
                     conversation_id=invocation.conversation_id,
@@ -2748,9 +2743,6 @@ async def _send_onebot(
 
 
 def _delivery_identity(host: HostPluginContext, invocation: PluginInvocation) -> str:
-    from yuki.capabilities.invocation import current_invocation
-    from yuki.runtime.work_activation import current_work_control
-
     identity = invocation.delivery_identity
     tool = current_invocation.get()
     if identity is None and tool is not None and tool.invocation_key:
@@ -2909,8 +2901,6 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
 
 
 def _record_message(record: Any) -> CurrentMessage:
-    from yuki.persistence.event_view import event_view
-
     facts = event_view(record)
     projection = projection_from_event(record)
     return CurrentMessage(
@@ -3085,7 +3075,6 @@ async def _require_qq_user_scope(
 ) -> str:
     if invocation.platform != "qq":
         raise PluginPermissionError("OneBot extensions require an original QQ entry")
-    from yuki.identity.canonical_repository import find_identity_binding
 
     ledger = _require_service(host._services.ledger, "ledger")
     async with ledger._database.read_session() as session:
@@ -3102,7 +3091,6 @@ async def _require_qq_group_scope(
 ) -> str:
     if invocation.platform != "qq":
         raise PluginPermissionError("OneBot extensions require an original QQ entry")
-    from yuki.identity.canonical_repository import find_space_binding
 
     ledger = _require_service(host._services.ledger, "ledger")
     async with ledger._database.read_session() as session:
@@ -3119,7 +3107,6 @@ async def _qq_gateway(host: HostPluginContext, invocation: PluginInvocation) -> 
         raise PluginPermissionError("OneBot extensions require an original QQ entry")
     if invocation.gateway is not None:
         return invocation.gateway
-    from yuki.adapters.onebot.sender import OneBotRouteSender
 
     social = _require_service(host._services.social, "social")
     if invocation.presence_id is None:
@@ -3253,10 +3240,6 @@ def _require_service[T](value: T | None, name: str) -> T:
     if value is None:
         raise FeatureUnavailableError(f"{name} service is unavailable")
     return value
-
-
-def _aware_media(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _assert_plugin_context_contract(context: HostPluginContext) -> PluginContext:

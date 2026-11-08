@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
+from yuki.time.formatting import utc_iso
 from yuki_plugin_sdk.models import PublishNotificationRequest
 
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -60,13 +60,6 @@ def canonical_json(value: object) -> str:
     )
 
 
-def canonical_occurred_at(value: datetime) -> str:
-    """Normalize request and stored timestamps to a UTC ISO-8601 token."""
-
-    aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-    return aware.isoformat()
-
-
 def is_sha256_digest(value: str) -> bool:
     return bool(_SHA256.fullmatch(value))
 
@@ -98,7 +91,7 @@ def manifest_from_request(
         event_type=request.event_type,
         target_type=request.target.target_type,
         target_id=request.target.target_id,
-        occurred_at=canonical_occurred_at(request.occurred_at),
+        occurred_at=utc_iso(request.occurred_at),
         payload_json=canonical_json(request.payload),
         summary=request.summary,
         text=request.text,

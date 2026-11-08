@@ -10,9 +10,17 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import AdminAuditService
+from yuki.admin.config_owners import resolve_space_owner
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import AdminActor
 from yuki.config import Settings
+from yuki.identity.authority import person_is_superuser
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.person_identity import (
+    current_person_id,
+    person_enabled_condition,
+    same_person_id,
+)
 from yuki.memory.audit import MemoryAuditService
 from yuki.memory.context import MemoryContextService
 from yuki.memory.dream.models import DreamClusterPreview, DreamRun, DreamRunPage
@@ -59,8 +67,10 @@ from yuki.memory.service import MemoryFactService
 from yuki.memory.subjects import ResolvedSubject
 from yuki.memory.targets import MemoryTargetResolver
 from yuki.memory.validation import normalize_memory_text
+from yuki.persistence.models import ChatEventModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.unit_of_work import optional_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,7 +402,6 @@ class MemoryAdminService:
     ) -> MemoryRetrievalResult:
         if not await self._is_superuser(actor):
             raise PermissionError("只有超级管理员可以诊断群记忆")
-        from yuki.admin.config_owners import resolve_space_owner
 
         async with self._database.read_session() as session:
             space_id = await resolve_space_owner(session, space_id or actor.space_id)
@@ -910,14 +919,6 @@ class MemoryAdminService:
         person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> str:
-        from yuki.identity.errors import CanonicalIdentityError
-        from yuki.identity.person_identity import (
-            current_person_id,
-            person_enabled_condition,
-            same_person_id,
-        )
-        from yuki.persistence.unit_of_work import optional_session
-
         async with optional_session(self._database, session, write=False) as reader:
             actor_person_id = await self._actor_person_id(actor, session=reader)
             if actor_person_id is not None and not await reader.scalar(
@@ -989,9 +990,6 @@ class MemoryAdminService:
     async def _is_superuser(
         self, actor: AdminActor | MemoryPreferenceTrigger, *, session: AsyncSession | None = None
     ) -> bool:
-        from yuki.identity.authority import person_is_superuser
-        from yuki.persistence.unit_of_work import optional_session
-
         async with optional_session(self._database, session, write=False) as reader:
             person_id = await self._actor_person_id(actor, session=reader)
             return await person_is_superuser(reader, person_id)
@@ -1005,9 +1003,6 @@ class MemoryAdminService:
         if actor.person_id is not None:
             return actor.person_id
         if self._ledger is not None and actor.trigger_event_id is not None:
-            from yuki.persistence.models import ChatEventModel
-            from yuki.persistence.unit_of_work import optional_session
-
             async with optional_session(self._database, session, write=False) as reader:
                 event = await reader.get(ChatEventModel, actor.trigger_event_id)
             if event is not None and event.sender_user_id == actor.user_id:

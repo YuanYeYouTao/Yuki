@@ -13,6 +13,8 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import load_only
 
 from yuki.config import Settings
+from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+from yuki.memory.self_reflection.initiative import initiative_backlog
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
@@ -30,14 +32,11 @@ from yuki.persistence.models import (
 from yuki.persistence.models import (
     MemorySelfReflectionStateModel as State,
 )
+from yuki.time.formatting import stored_utc
 
 
 class ReflectionDailyLimit(RuntimeError):
     pass
-
-
-def utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class ReflectionControlRepository:
@@ -100,7 +99,6 @@ class ReflectionControlRepository:
                 "processing",
             )
         }
-        from yuki.memory.self_reflection.initiative import initiative_backlog
 
         initiative_tools = await initiative_backlog(self.database)
         async with self.database.read_session() as session:
@@ -190,14 +188,14 @@ class ReflectionControlRepository:
                     else "isolated"
                     if r.retry_state == "isolated"
                     else "waiting_retry"
-                    if r.next_attempt_at and utc(r.next_attempt_at) > now
+                    if r.next_attempt_at and stored_utc(r.next_attempt_at) > now
                     else None
                 )
                 if category:
                     counts[category] += r.processed_events
             free = max(0, state.pending_events - sum(counts.values()))
             age = (
-                max(0.0, (now - utc(state.pending_since)).total_seconds())
+                max(0.0, (now - stored_utc(state.pending_since)).total_seconds())
                 if state.pending_since
                 else 0.0
             )
@@ -223,7 +221,7 @@ class ReflectionControlRepository:
         rate_window = 0.0
         ingress_rate = drain_rate = None
         if baseline is not None:
-            rate_window = max(0.0, (now - utc(baseline.created_at)).total_seconds())
+            rate_window = max(0.0, (now - stored_utc(baseline.created_at)).total_seconds())
             before = json.loads(baseline.report_json).get("before", {})
             if rate_window >= 60:
                 ingress_rate = (
@@ -325,9 +323,9 @@ class ReflectionControlRepository:
             "status": row.status,
             "source_event_id": row.source_event_id,
             "conversation_id": row.conversation_id,
-            "created_at": utc(row.created_at).isoformat(),
-            "started_at": utc(row.started_at).isoformat() if row.started_at else None,
-            "completed_at": utc(row.completed_at).isoformat() if row.completed_at else None,
+            "created_at": stored_utc(row.created_at).isoformat(),
+            "started_at": stored_utc(row.started_at).isoformat() if row.started_at else None,
+            "completed_at": stored_utc(row.completed_at).isoformat() if row.completed_at else None,
             "delivery_state": row.delivery_state,
             **json.loads(row.report_json),
         }
@@ -367,7 +365,7 @@ class ReflectionControlRepository:
             assert original is not None
             report_json = json.dumps({**json.loads(original.report_json), **report, "after": after})
             original_json = original.report_json
-            started_at = utc(original.started_at or original.created_at)
+            started_at = stored_utc(original.started_at or original.created_at)
         async with self.database.immediate_session() as writer:
             now = datetime.now(UTC)
             row = await writer.scalar(
@@ -394,8 +392,6 @@ class ReflectionControlRepository:
         return self.record(row)
 
     async def cycle_runs(self, cycle_id: str) -> list[dict[str, Any]]:
-        from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
-
         async with self.database.read_session() as session:
             rows = (await session.scalars(select(Run).where(Run.cycle_id == cycle_id))).all()
             windows = {
@@ -425,7 +421,7 @@ class ReflectionControlRepository:
                     "first_receipt_id": windows[r.id].first_receipt_id if r.id in windows else None,
                     "last_receipt_id": windows[r.id].last_receipt_id if r.id in windows else None,
                     "retry_state": r.retry_state,
-                    "next_attempt_at": utc(r.next_attempt_at).isoformat()
+                    "next_attempt_at": stored_utc(r.next_attempt_at).isoformat()
                     if r.next_attempt_at
                     else None,
                 }

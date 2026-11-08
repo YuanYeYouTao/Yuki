@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, PrivateAttr, SecretStr, field_validator, model_validator
@@ -72,8 +73,6 @@ class Settings(BaseSettings):
     @field_validator("client_public_url")
     @classmethod
     def validate_client_public_url(cls, value: str) -> str:
-        from urllib.parse import urlsplit
-
         value = value.strip().rstrip("/")
         if value:
             url = urlsplit(value)

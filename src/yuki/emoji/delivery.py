@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import time
 from dataclasses import asdict
@@ -22,10 +23,12 @@ from yuki.gateway.social import TransportMessage, prepared_transport, transport_
 from yuki.identity.person_identity import same_person_id
 from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.worker_recovery import recover_database_loop
+from yuki.runtime.effect_outcomes import current_result_capture
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.subagent_schema import children
+from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_schema_v1 import scope
-from yuki.social.db_models import SocialEmojiIntentModel
+from yuki.social.db_models import SocialEmojiIntentModel, SocialOperationModel
 from yuki.social.emoji_intents import (
     EmojiIntent,
     EmojiIntentRepository,
@@ -34,7 +37,9 @@ from yuki.social.emoji_intents import (
     validate_source,
 )
 from yuki.social.models import SocialError, SocialTarget
-from yuki.social.repository import payload_hash
+from yuki.social.repository import payload_hash, sequence_prefix
+from yuki.social.service import SocialContext
+from yuki.time.formatting import stored_utc
 from yuki.workspace.store import WorkspaceError
 
 if TYPE_CHECKING:
@@ -101,8 +106,6 @@ class EmojiDeliveryService:
         route: ResolvedSend,
     ) -> dict[str, Any]:
         """Capture real source facts before text dispatch, without retaining its runtime."""
-        from yuki.runtime.effect_outcomes import current_result_capture
-        from yuki.runtime.work_activation import current_work_control
 
         actor = asdict(context.actor) if context.actor is not None else None
         if actor is not None:
@@ -209,8 +212,6 @@ class EmojiDeliveryService:
         prepared: PreparedEmojiIntent,
         session: AsyncSession | None = None,
     ) -> dict[str, Any]:
-        from yuki.runtime.effect_outcomes import current_result_capture
-
         capture = current_result_capture.get()
         if capture is not None and not (capture.work_id and capture.effect_key):
             capture = None
@@ -345,8 +346,6 @@ class EmojiDeliveryService:
 
     @staticmethod
     def _send_input(intent: EmojiIntent, artifact_id: str) -> tuple[dict[str, Any], SocialContext]:
-        from yuki.social.service import SocialContext
-
         values = dict(intent.source["context"])
         actor = values.pop("actor")
         if actor is not None:
@@ -381,10 +380,6 @@ class EmojiDeliveryService:
 
     async def _committed_target_conversation(self, intent: EmojiIntent) -> str | None:
         """Use the conversation the original text send already committed."""
-        import json
-
-        from yuki.social.db_models import SocialOperationModel
-        from yuki.social.repository import sequence_prefix
 
         parent_id = intent.source.get("after_operation_id")
         if not parent_id:
@@ -417,11 +412,7 @@ class EmojiDeliveryService:
         phase_started = started
         phase = "source_validation"
         artifact_id = None
-        created = (
-            intent.created_at.replace(tzinfo=UTC)
-            if intent.created_at.tzinfo is None
-            else intent.created_at
-        )
+        created = stored_utc(intent.created_at)
         logger.info(
             "emoji_attempt intent_id=%s call_id=%s created_to_attempt_ms=%d",
             intent.id,

@@ -17,8 +17,11 @@ from sqlalchemy.orm import aliased
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import conversation_for_scope
+from yuki.conversation.observations import validate_observations
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.identity.db_models import CanonicalPersonModel
+from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
+from yuki.identity.ownership_interval import historical_person_ids
+from yuki.identity.person_identity import person_family_ids
 from yuki.memory.eligibility import MemoryEventEligibilityPolicy
 from yuki.memory.rebuild.models import (
     MemoryRebuildPlanStatistics,
@@ -45,6 +48,7 @@ from yuki.persistence.repository_records import (
     HistoryPage,
 )
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.unit_of_work import optional_session
 
 _HISTORY_FETCH_SIZE = 64
 
@@ -109,8 +113,6 @@ class EventLedgerRepository:
         self._writer = writer
 
     async def maximum_event_id(self, *, session: AsyncSession | None = None) -> int:
-        from yuki.persistence.unit_of_work import optional_session
-
         async with optional_session(self._database, session, write=False) as active:
             return int(await active.scalar(select(func.max(ChatEventModel.id))) or 0)
 
@@ -203,7 +205,6 @@ class EventLedgerRepository:
         if selection.maximum_events is not None:
             candidate = candidate.limit(selection.maximum_events)
         candidate_rows = candidate.subquery()
-        from yuki.persistence.unit_of_work import optional_session
 
         async with optional_session(self._database, session, write=False) as active:
             matched = int(
@@ -356,8 +357,6 @@ class EventLedgerRepository:
             ):
                 return False
             if version.observation_sources:
-                from yuki.conversation.observations import validate_observations
-
                 return await validate_observations(
                     session,
                     version.conversation_id or "",
@@ -560,8 +559,6 @@ class EventLedgerRepository:
         predicates: Collection[Any] = (),
     ) -> HistoryPage:
         """Read exact matches and neighbors in one snapshot; never acquire a writer."""
-        from yuki.identity.person_identity import person_family_ids
-        from yuki.persistence.unit_of_work import optional_session
 
         if order not in ("recent", "oldest"):
             raise ValueError("order must be recent or oldest")
@@ -766,7 +763,6 @@ class EventLedgerRepository:
         predicates: Collection[Any] = (),
     ) -> tuple[EventRecord | None, tuple[EventRecord, ...], tuple[EventRecord, ...]]:
         """Read one permanent anchor and its ID-adjacent events in the same conversation."""
-        from yuki.persistence.unit_of_work import optional_session
 
         if before < 0 or after < 0:
             raise ValueError("context counts must be nonnegative")
@@ -837,8 +833,6 @@ class EventLedgerRepository:
             return replace(
                 event, mentioned_user_ids=(), mentioned_person_ids=(), reply_sender_user_id=None
             )
-        from yuki.identity.db_models import PresenceModel
-        from yuki.identity.ownership_interval import historical_person_ids
 
         async with self._database.read_session() as session:
             presence = (

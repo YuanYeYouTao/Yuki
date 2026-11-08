@@ -52,6 +52,7 @@ from yuki.identity.person_identity import (
 )
 from yuki.persistence.command_receipts import CommandReceiptRepository
 from yuki.persistence.database import Database, write_failure_committed
+from yuki.persistence.models import AdminOperationEventModel
 
 if TYPE_CHECKING:
     from yuki.identity.routing import PresenceRouter
@@ -257,8 +258,6 @@ class ClientIdentityService:
         if row.payload_hash != bound:
             raise ClientError("request_conflict")
         if row.status == "failed":
-            from yuki.persistence.models import AdminOperationEventModel
-
             audit = await session.get(AdminOperationEventModel, row.audit_id)
             assert audit is not None and row.problem_code is not None
             raise ClientError(row.problem_code, details=json.loads(audit.after_json))

@@ -15,6 +15,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.identity.ownership import optional_dream_owner_from_facts
 from yuki.identity.person_identity import current_person_ids
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
@@ -52,6 +53,7 @@ from yuki.memory.embedding.models import EmbeddingVector
 from yuki.memory.embedding.text import EmbeddingDocumentBuilder
 from yuki.memory.enums import MemoryStatus
 from yuki.memory.models import MemoryFact
+from yuki.memory.partition import dream_canonical_owner_complete
 from yuki.memory.repository import MemoryFactRepository
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
@@ -78,7 +80,6 @@ class DreamCandidate:
     @property
     def partition_identity(self) -> tuple[object, ...]:
         fact = self.fact
-        from yuki.memory.partition import dream_canonical_owner_complete
 
         if not dream_canonical_owner_complete(fact):
             raise ValueError("incomplete_dream_owner")
@@ -236,7 +237,6 @@ class DreamRepository:
                         legacy_ids.add(fact_id)
                     if bot_id:
                         bots[fact_id].add(str(bot_id))
-                from yuki.memory.partition import dream_canonical_owner_complete
 
                 for row in rows:
                     fact = facts.get(int(row.id))
@@ -389,7 +389,6 @@ class DreamRepository:
             prepared = await self.prepare_clusters(cast(tuple[DreamClusterSpec, ...], clusters))
         else:
             prepared = cast(tuple[PreparedDreamCluster, ...], clusters)
-        from yuki.identity.ownership import optional_dream_owner_from_facts
 
         sources: dict[int, PreparedDreamFact] = {}
         for cluster in prepared:

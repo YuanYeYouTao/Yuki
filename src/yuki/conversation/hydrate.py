@@ -8,6 +8,7 @@ from typing import cast
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,7 @@ from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.identity.canonical_repository import find_identity_binding, find_presence
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.runtime.work_repository import WorkRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +332,6 @@ async def ensure_legacy_alias(
     if primary:
         raise CanonicalIdentityError("canonical_kind_mismatch")
     now = _utcnow()
-    from sqlalchemy.dialects.sqlite import insert
 
     await session.execute(
         insert(ConversationLegacyAliasModel)
@@ -376,7 +377,6 @@ async def bump_canonical_generation(
     row.last_event_id = max(int(row.last_event_id), event_id)
     row.revision += 1
     row.updated_at = now
-    from yuki.runtime.work_repository import WorkRepository
 
     await WorkRepository.cancel_in_session(session, conversation_id, generation=int(row.generation))
     await session.flush()

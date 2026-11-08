@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy.exc import OperationalError
 
 from yuki.persistence.database import write_failure_retryable
+from yuki.runtime.activation_outcome import record_model_requests, recorded_model_requests
 from yuki.runtime.work_repository import WorkConflict
 
 logger = logging.getLogger(__name__)
@@ -106,11 +107,6 @@ async def supervise_lease(
                 try:
                     await pulse
                 except BaseException as failure:
-                    from yuki.runtime.activation_outcome import (
-                        record_model_requests,
-                        recorded_model_requests,
-                    )
-
                     # The pulse failure replaces the interruption; keep the
                     # requests the interrupted activation actually paid.
                     count = recorded_model_requests(cancelled)

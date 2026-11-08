@@ -54,7 +54,10 @@ from yuki.client_api.models import (
     SoulSaveBody,
     character_changes,
 )
+from yuki.client_api.pagination import cursor as encode_cursor
+from yuki.client_api.pagination import decode_cursor
 from yuki.client_api.prompts import ClientPrompts
+from yuki.client_api.requests import ClientRequests
 from yuki.client_api.responses import (
     Activity,
     Events,
@@ -586,8 +589,6 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         response_model_exclude_unset=True,
     )
     async def original_request(request_id: UUID4, actor: Actor) -> Any:
-        from yuki.client_api.requests import ClientRequests
-
         return {
             "data": await ClientRequests(resolve().identity, prompts=resolve().prompts).get(
                 actor, str(request_id)
@@ -694,9 +695,6 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         cursor: str | None = None,
         limit: int = Query(50, ge=1),
     ) -> Any:
-        from yuki.client_api.pagination import cursor as encode_cursor
-        from yuki.client_api.pagination import decode_cursor
-
         after = None
         if cursor:
             value = decode_cursor(cursor)

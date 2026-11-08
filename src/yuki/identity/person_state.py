@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import func, select, text
@@ -33,12 +33,14 @@ from yuki.identity.db_models import (
     SpaceBindingModel,
 )
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.ownership_interval import assignments_at
 from yuki.identity.person_identity import (
     current_person_id,
     person_family_condition,
 )
 from yuki.persistence.models import MembershipModel, PersonAliasModel
 from yuki.persistence.repository_records import GroupSetting, PrivateUserSetting
+from yuki.time.formatting import stored_utc
 
 
 class ObservationChanged(CanonicalIdentityError):
@@ -69,7 +71,6 @@ async def prepare_message_account_observations(
     assignment_id: str | None = None,
 ) -> tuple[InboundMessage, PreparedPersonObservation]:
     """Prepare account/name facts without dirtying the admission read snapshot."""
-    from yuki.identity.ownership_interval import assignments_at
 
     natives = tuple(
         dict.fromkeys(
@@ -298,15 +299,15 @@ async def prepare_message_account_observations(
                         )
                     )
                 else:
-                    row.first_seen_at = min(_utc(row.first_seen_at), _utc(moment))
-                    row.last_seen_at = max(_utc(row.last_seen_at), _utc(moment))
+                    row.first_seen_at = min(stored_utc(row.first_seen_at), stored_utc(moment))
+                    row.last_seen_at = max(stored_utc(row.last_seen_at), stored_utc(moment))
             if sender_stage is None or sender_stage.status != "ended":
                 if (
                     message.sender.nickname_known
                     and message.sender.nickname
                     and (
                         not sender_account.display_name
-                        or _utc(moment) >= _utc(sender_account.updated_at)
+                        or stored_utc(moment) >= stored_utc(sender_account.updated_at)
                     )
                 ):
                     sender_account.display_name = sanitize_display_name(message.sender.nickname)
@@ -335,19 +336,19 @@ async def prepare_message_account_observations(
                             account.id == sender_account.id
                             and message.sender.group_card_known
                             and (sender_stage is None or sender_stage.status != "ended")
-                            and _utc(moment) >= _utc(profile.last_seen_at)
+                            and stored_utc(moment) >= stored_utc(profile.last_seen_at)
                         ):
                             profile.display_name = sanitize_display_name(message.sender.group_card)
-                        profile.first_seen_at = min(_utc(profile.first_seen_at), _utc(moment))
-                        profile.last_seen_at = max(_utc(profile.last_seen_at), _utc(moment))
+                        profile.first_seen_at = min(
+                            stored_utc(profile.first_seen_at), stored_utc(moment)
+                        )
+                        profile.last_seen_at = max(
+                            stored_utc(profile.last_seen_at), stored_utc(moment)
+                        )
 
         return apply
 
     return replace(message, mentions=tuple(mentions)), bind
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def prepare_canonical_person_observation(

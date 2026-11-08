@@ -19,8 +19,9 @@ from sqlalchemy import func, select, update
 
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
+from yuki.external_agents.transport import DeviceOffline
 from yuki.identity.credentials import require_person
-from yuki.identity.person_identity import same_person_id
+from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import canonical_json
 from yuki.workspace.store import WorkspaceError
@@ -153,8 +154,6 @@ class LocalDeviceService:
         request_id: str,
         source: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        from yuki.external_agents.transport import DeviceOffline
-
         actor = self.actor(source)
         command: dict[str, Any]
         if name == "environment_status":
@@ -320,8 +319,6 @@ class LocalDeviceService:
         cursor: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        from yuki.identity.person_identity import person_family_condition
-
         target = func.json_extract(SandboxTaskRunModel.source_json, "$.terminal_target.device_id")
         async with self.database.read_session() as reader:
             person = await require_person(reader, actor)
@@ -398,7 +395,6 @@ class LocalDeviceService:
         row = await self.original_run(run_id, actor)
         target = terminal_target(row)
         assert target is not None
-        from yuki.external_agents.transport import DeviceOffline
 
         try:
             connection = await self.connection(target["device_id"], actor)
@@ -450,8 +446,6 @@ class LocalDeviceService:
         *,
         identity: str,
     ) -> dict[str, Any]:
-        from yuki.external_agents.transport import DeviceOffline
-
         try:
             connection = await self.connection(device_id, actor)
             result = await connection.request(

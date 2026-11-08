@@ -12,11 +12,15 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.initiative_sources import MEMORY_REVISION_FIELDS, memory_revision
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
 )
+from yuki.memory.projections import project_memory_fact_rows
+from yuki.persistence.models import MemoryEvidenceModel as e
+from yuki.persistence.models import MemoryFactModel as f
 from yuki.persistence.unit_of_work import optional_session
 
 if TYPE_CHECKING:
@@ -258,7 +262,6 @@ def self_initiative_fact_visibility(
     space_id: str, now: datetime | ColumnElement[datetime]
 ) -> ColumnElement[bool]:
     """The existing SELF fact visibility and validity for a specific space."""
-    from yuki.persistence.models import MemoryFactModel as f
 
     current_group = and_(
         f.scope_type == "group",
@@ -293,8 +296,6 @@ def self_initiative_fact_condition(
 ) -> ColumnElement[bool]:
     """The existing SELF visibility and live-evidence test for a specific space."""
     from yuki.memory.repository import readable_evidence_predicate
-    from yuki.persistence.models import MemoryEvidenceModel as e
-    from yuki.persistence.models import MemoryFactModel as f
 
     evidence = (
         select(literal(1))
@@ -321,8 +322,6 @@ async def read_self_initiative_revisions(
     session: AsyncSession | None = None,
 ) -> dict[int, str]:
     """Read the original source digests without materializing Memory DTOs."""
-    from yuki.conversation.initiative_sources import MEMORY_REVISION_FIELDS, memory_revision
-    from yuki.persistence.models import MemoryFactModel as f
 
     if not fact_ids:
         return {}
@@ -356,9 +355,7 @@ async def read_self_initiative_facts(
     This reader verifies existing run/admission dependencies. It never scans for
     new initiative candidates or grants private Person access from a target.
     """
-    from yuki.memory.projections import project_memory_fact_rows
     from yuki.memory.repository import readable_evidence_count_expression
-    from yuki.persistence.models import MemoryFactModel as f
 
     if not fact_ids:
         return ()

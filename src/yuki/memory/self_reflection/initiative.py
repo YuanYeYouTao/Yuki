@@ -30,6 +30,7 @@ from yuki.memory.self_reflection.db_models import (
 from yuki.memory.self_reflection.models import SelfReflectionBatch, SelfReflectionState
 from yuki.persistence.database import Database
 from yuki.persistence.models import MemorySelfReflectionRunModel, MemoryToolReceiptModel
+from yuki.time.formatting import stored_utc
 
 
 async def advance_cursor(session: AsyncSession, window: Window) -> None:
@@ -222,13 +223,11 @@ async def claim_initiative(
                 retry = retries.get(window.reflection_run_id) if window else None
                 if retry is not None:
                     next_at = retry.next_attempt_at
-                    if next_at and next_at.tzinfo is None:
-                        next_at = next_at.replace(tzinfo=UTC)
                     if (
                         retry.status != "failed"
                         or retry.retry_state == "isolated"
                         or (cycle_id is not None and retry.cycle_id == cycle_id)
-                        or (next_at is not None and next_at > now)
+                        or (next_at is not None and stored_utc(next_at) > now)
                     ):
                         continue
                 scope = (
@@ -332,12 +331,7 @@ async def claim_initiative(
                 if actual_retry != retry_source:
                     continue
                 if retry.next_attempt_at is not None:
-                    next_at = (
-                        retry.next_attempt_at.replace(tzinfo=UTC)
-                        if (retry.next_attempt_at.tzinfo is None)
-                        else retry.next_attempt_at
-                    )
-                    if next_at > claimed_at:
+                    if stored_utc(retry.next_attempt_at) > claimed_at:
                         continue
             current_query = receipt_query
             if window is None:

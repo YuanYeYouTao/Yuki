@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -25,8 +26,6 @@ from yuki.services.media_resolver import _media_io
 
 
 async def owned_upload(session: AsyncSession, person_id: str, media_id: str) -> dict[str, Any]:
-    import json
-
     row = await session.scalar(
         select(ControlCommandReceiptModel)
         .join(ClientDeviceModel, ClientDeviceModel.id == ControlCommandReceiptModel.principal_id)

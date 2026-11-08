@@ -9,6 +9,7 @@ from collections.abc import Iterable, Iterator, Set
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from yuki.domain.audio import transcript_context
 from yuki.domain.messages import ChatMessage, sanitize_display_name
 from yuki.persistence.repository_records import EventRecord
 from yuki.time.formatting import local_datetime, local_iso, stored_utc
@@ -443,8 +444,6 @@ class ChatEventPromptRenderer:
             return marked("\n".join(parts).strip())
         base = row.content.strip()
         if row.audio_transcript:
-            from yuki.domain.audio import transcript_context
-
             base = f"{base}\n{transcript_context(row.audio_transcript)}".strip()
         if not row.visual_summary:
             return marked(base)

@@ -32,6 +32,7 @@ from yuki.memory.enums import (
     SelfMemoryVisibility,
 )
 from yuki.persistence.repository_records import EventRecord
+from yuki.time.formatting import stored_utc
 
 
 class _MemoryModel(BaseModel):
@@ -86,9 +87,7 @@ class MemoryFact(_MemoryModel):
     )
     @classmethod
     def _normalize_utc(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return None if value is None else stored_utc(value)
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> MemoryFact:
@@ -197,9 +196,7 @@ class MemoryFactCreate(_MemoryModel):
     @field_validator("valid_from", "valid_until", mode="after")
     @classmethod
     def _normalize_utc(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return None if value is None else stored_utc(value)
 
     @model_validator(mode="after")
     def _validate_scope(self) -> MemoryFactCreate:
@@ -410,9 +407,7 @@ class MemoryTemporalIntent(_MemoryModel):
     @field_validator("start_at", "end_at", mode="after")
     @classmethod
     def _normalize_utc(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return None if value is None else stored_utc(value)
 
     @model_validator(mode="after")
     def _validate_range(self) -> MemoryTemporalIntent:

@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from yuki.domain.audio import transcript_context
 from yuki.identity.sql_constraints import uuid4_text36_sql
 from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
 
@@ -253,8 +254,6 @@ class ChatEventModel(Base):
 
     @property
     def evidence_content(self) -> str:
-        from yuki.domain.audio import transcript_context
-
         if not self.audio_transcript:
             return self.content
         speech = transcript_context(self.audio_transcript, include_replies=False)

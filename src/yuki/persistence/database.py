@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import event, text
+from sqlalchemy import Index, event, func, literal_column, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -22,8 +22,15 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from yuki.persistence.commit_hints import CommitHints
+from yuki.persistence.history_search_index import CREATE_HISTORY_FTS, DELETE_HISTORY_TRIGGER
 from yuki.persistence.metadata import Base
 from yuki.persistence.sqlite_connection import SQLiteConnection
+from yuki.persistence.sqlite_diagnostics import install_sqlite_diagnostics
+from yuki.persistence.vec1 import load_vec1
+from yuki.runtime import work_schema_v1 as _work_schema
+from yuki.runtime.effect_schema import install_indexes
+from yuki.runtime.protocol_schema import install_quota as install_protocol_quota
+from yuki.runtime.work_budget_schema import create_current_budget_tables
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
@@ -130,7 +137,6 @@ class Database:
         self.sqlite_diagnostics: SQLiteDiagnostics | None = None
         if url.startswith("sqlite+aiosqlite:///"):
             event.listen(self.engine.sync_engine, "connect", self._configure_sqlite_connection)
-            from yuki.persistence.sqlite_diagnostics import install_sqlite_diagnostics
 
             self.sqlite_diagnostics = install_sqlite_diagnostics(self.engine.sync_engine)
         self.commit_hints = CommitHints()
@@ -147,7 +153,6 @@ class Database:
             _, cancellation = await _complete(driver)
             if cancellation is not None:
                 raise cancellation
-            from yuki.persistence.vec1 import load_vec1
 
             _, cancellation = await _complete(load_vec1(driver))
             if cancellation is not None:
@@ -254,10 +259,6 @@ class Database:
     async def create_schema(self) -> None:
         """Create all tables for tests; deployments use Alembic migrations."""
         # Declare current read indexes without changing the frozen 0056 schema.
-        from sqlalchemy import Index, func, literal_column
-
-        from yuki.runtime import work_recovery_schema as _recovery  # noqa: F401
-        from yuki.runtime import work_schema_v1 as _work_schema
 
         if not any(
             index.name == "ix_runtime_work_trigger_event" for index in _work_schema.work.indexes
@@ -289,17 +290,14 @@ class Database:
                     ],
                 )
             )
-            from yuki.runtime.work_budget_schema import create_current_budget_tables
 
             await connection.run_sync(create_current_budget_tables)
-            from yuki.runtime.effect_schema import install_indexes
 
             await connection.run_sync(install_indexes)
             await connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_runtime_media_refs_sha "
                 "ON runtime_work_media_refs(sha256)"
             )
-            from yuki.runtime.protocol_schema import install_quota as install_protocol_quota
 
             await connection.run_sync(install_protocol_quota)
             await self._create_fts_schema(connection)
@@ -307,8 +305,6 @@ class Database:
     @staticmethod
     async def _create_fts_schema(connection: Any) -> None:
         """Create the current history index and the independent Memory FTS."""
-
-        from yuki.persistence.history_search_index import CREATE_HISTORY_FTS, DELETE_HISTORY_TRIGGER
 
         statements = (
             CREATE_HISTORY_FTS,

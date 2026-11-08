@@ -15,12 +15,22 @@ from alembic import command
 from alembic.config import Config
 
 from yuki import __version__
+from yuki.acp_adapter.cli import add_acp_parser, run_acp_command
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
+from yuki.admin_api.cli import add_admin_parser, admin_command
+from yuki.admin_api.client import admin_client, mutate, plugin_mutation, read
+from yuki.character.repository import CharacterRepository
+from yuki.client_api.identity import ClientIdentityService
+from yuki.client_sdk.cli import add_client_parser, run_client_command
 from yuki.config import Settings
 from yuki.deployment_setup import add_setup_parser, run_setup_command
 from yuki.gateway.compatibility import provider_doctor_payload
+from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
+from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.http_environment import load_http_environment
+from yuki.identity.routing import PresenceRouter
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
 from yuki.memory.repository import MemoryJobRepository
@@ -30,6 +40,7 @@ from yuki.model_runtime import (
     ModelTask,
     load_model_profile_catalog,
 )
+from yuki.model_runtime.legacy_migration import run_migration_command
 from yuki.model_runtime.models import ModelStats
 from yuki.model_runtime.profiles import model_profile_environment
 from yuki.persistence.database import Database
@@ -45,12 +56,6 @@ def _init_database(settings: Settings) -> None:
 
 
 async def _initialize_character(settings: Settings, name: str) -> None:
-    from yuki.character.repository import CharacterRepository
-    from yuki.client_api.identity import ClientIdentityService
-    from yuki.gateway.providers import builtin_provider_catalog
-    from yuki.gateway.registry import GatewayConnectionRegistry
-    from yuki.identity.routing import PresenceRouter
-
     database = Database(settings.database_url)
     try:
         identity = ClientIdentityService(
@@ -239,8 +244,6 @@ async def _runtime_diagnostics(settings: Settings, args: argparse.Namespace) -> 
 
 
 async def _runtime_snapshot(settings: Settings, database: Database) -> RuntimeConfigSnapshot:
-    from yuki.admin.config_service import RuntimeConfigService
-
     runtime = RuntimeConfigService(settings=settings, database=database)
     await runtime.initialize()
     return await runtime.snapshot()
@@ -271,8 +274,6 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
         )
         print(target)
         return 0
-
-    from yuki.admin_api.client import admin_client, mutate, plugin_mutation, read
 
     async with admin_client(settings) as client:
         if action == "list":
@@ -393,23 +394,16 @@ def main() -> None:
     _add_plugin_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
     _add_memory_parser(subparsers)
-    from yuki.admin_api.cli import add_admin_parser
 
     add_admin_parser(subparsers)
-    from yuki.client_sdk.cli import add_client_parser
 
     add_client_parser(subparsers)
-    from yuki.acp_adapter.cli import add_acp_parser
 
     add_acp_parser(subparsers)
     args = parser.parse_args()
     if args.command == "acp":
-        from yuki.acp_adapter.cli import run_acp_command
-
         raise SystemExit(run_acp_command(args))
     if args.command == "client":
-        from yuki.client_sdk.cli import run_client_command
-
         raise SystemExit(run_client_command(args))
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
@@ -421,8 +415,6 @@ def main() -> None:
         and args.admin_command == "model"
         and args.model_action == "migrate-legacy"
     ):
-        from yuki.model_runtime.legacy_migration import run_migration_command
-
         raise SystemExit(asyncio.run(run_migration_command(args.revision)))
     load_http_environment()
     settings = Settings()
@@ -435,8 +427,6 @@ def main() -> None:
     elif args.command == "plugin":
         raise SystemExit(asyncio.run(_plugin_command(settings, args)))
     elif args.command == "admin":
-        from yuki.admin_api.cli import admin_command
-
         raise SystemExit(asyncio.run(admin_command(settings, args)))
     elif args.command == "model":
         if args.model_command == "stats":

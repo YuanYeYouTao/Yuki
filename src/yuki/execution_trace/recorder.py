@@ -30,7 +30,10 @@ from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, P
 from yuki.persistence.database import Database
 from yuki.persistence.diagnostic_writer import DiagnosticWrite, DiagnosticWriter
 from yuki.persistence.models import ChatEventModel
+from yuki.runtime.activation_outcome import classify_failure
 from yuki.runtime.observability import current_runtime_turn_correlation
+from yuki.runtime.work_activation import current_work_control
+from yuki.social.db_models import SocialOperationModel
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +175,6 @@ class TraceRecorder:
         *,
         delivery: tuple[str, int] | None = None,
     ) -> None:
-        from yuki.runtime.work_activation import current_work_control
-
         try:
             original_privacy_generation = scope.coverage.privacy_generation
             if original_privacy_generation is None:
@@ -355,8 +356,6 @@ class TraceRecorder:
             *_trace_source_guards(values["conversation_id"], values["source_event_id"])
         )
         if delivery is not None:
-            from yuki.social.db_models import SocialOperationModel
-
             guarded_values = guarded_values.where(
                 exists(
                     select(SocialOperationModel.id).where(
@@ -486,8 +485,6 @@ async def trace_span(
         try:
             yield span
         except (Exception, asyncio.CancelledError) as exc:
-            from yuki.runtime.activation_outcome import classify_failure
-
             await record_trace(
                 f"{family}_error",
                 {

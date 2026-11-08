@@ -16,8 +16,15 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.sql import ColumnElement
 from sqlalchemy.sql.selectable import ScalarSelect
 
+from yuki.admin.audit import redact_audit_value
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.models import (
+    AdminOperationEventModel,
+    PersonAliasModel,
+    RuntimeConfigOverrideModel,
+)
+from yuki.plugin_host.db_models import PluginConfigValueModel
 
 
 def person_root_id(value: Any) -> ScalarSelect[str]:
@@ -114,7 +121,6 @@ async def rename_person(
     session: AsyncSession, person_id: str, display_name: str, *, now: datetime
 ) -> CanonicalPersonModel:
     """Change the current Person name; account and event names are independent."""
-    from yuki.persistence.models import PersonAliasModel
 
     person = await session.get(CanonicalPersonModel, await current_person_id(session, person_id))
     assert person is not None
@@ -177,8 +183,6 @@ def _merge_config_selection(
     target_id: str,
     discarded_ids: tuple[int, ...],
 ) -> Select[Any]:
-    from yuki.persistence.models import RuntimeConfigOverrideModel
-
     keys = (
         (model.config_key,) if model is RuntimeConfigOverrideModel else (model.plugin_id, model.key)
     )
@@ -199,10 +203,6 @@ async def prepare_person_merge(
     source_person_id: str,
     target_person_id: str,
 ) -> PersonMergePreparation:
-    from yuki.admin.audit import redact_audit_value
-    from yuki.persistence.models import PersonAliasModel, RuntimeConfigOverrideModel
-    from yuki.plugin_host.db_models import PluginConfigValueModel
-
     roots = await current_person_ids(session, (source_person_id, target_person_id))
     if source_person_id not in roots or target_person_id not in roots:
         raise CanonicalIdentityError("missing_canonical_owner")
@@ -380,7 +380,6 @@ async def merge_persons(
     actor_id: str = "system",
 ) -> str:
     """Recheck the original family/configuration selection, then atomically apply it."""
-    from yuki.persistence.models import AdminOperationEventModel, PersonAliasModel
 
     roots = await current_person_ids(session, (source_person_id, target_person_id))
     if tuple(sorted(roots.items())) != prepared.roots:

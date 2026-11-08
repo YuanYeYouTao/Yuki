@@ -33,6 +33,7 @@ from yuki.persistence.unit_of_work import state_revision
 from yuki.plugin_host.configuration_service import PluginConfigurationService
 from yuki.plugin_host.manager import PluginManager
 from yuki.plugin_host.repository import PluginInstallationRecord
+from yuki.runtime.work_management import CLASSIFICATION_KEYS, management_view
 from yuki.runtime.work_schema_v1 import work
 
 
@@ -376,8 +377,6 @@ class AdminQueries:
 
     @staticmethod
     def _work_columns() -> tuple[Any, ...]:
-        from yuki.runtime.work_management import CLASSIFICATION_KEYS
-
         return tuple(
             work.c[name]
             for name in (
@@ -403,8 +402,6 @@ class AdminQueries:
 
     @staticmethod
     def _work_view(row: Any) -> dict[str, Any]:
-        from yuki.runtime.work_management import CLASSIFICATION_KEYS
-
         view = dict(row)
         view["source"] = {key: view.pop(key) for key in CLASSIFICATION_KEYS}
         return view
@@ -429,8 +426,6 @@ class AdminQueries:
         return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
 
     async def work(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
-        from yuki.runtime.work_management import management_view
-
         await authorize_current(self.database, principal, "control.work.read")
         async with self.database.read_session() as session:
             row = (

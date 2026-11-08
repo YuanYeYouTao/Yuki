@@ -11,16 +11,21 @@ from typing import Any
 from sqlalchemy import select
 
 from yuki.admin.config_service import RuntimeConfigService
+from yuki.automation.repository import AutomationRepository
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.identity.authority import person_is_superuser
 from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.trigger import WorkResumeTrigger
-from yuki.runtime.work_activation import activate_work
+from yuki.runtime.work_activation import activate_work, bind_work_activation
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import JournalUnavailable
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
 from yuki.runtime.work_schema_v1 import journal
 from yuki.sandbox.task_repository import SandboxTaskRepository
@@ -95,10 +100,6 @@ class WorkResumer:
                 raise
             return None
         except Exception as exc:
-            from yuki.runtime.activation_outcome import (
-                WorkActivationHandled,
-            )
-
             category = type(exc).__name__
             if isinstance(exc, WorkActivationHandled):
                 return category
@@ -117,10 +118,6 @@ class WorkResumer:
         *,
         orphan: bool = False,
     ) -> None:
-        from yuki.runtime.activation_outcome import WorkRecoveryDeferred
-        from yuki.runtime.work_activation import bind_work_activation
-        from yuki.runtime.work_control import WorkControl
-
         deferred = exc if isinstance(exc, WorkRecoveryDeferred) else None
         lease = await self.repository.acquire(item["conversation_id"], item["generation"])
         if lease is None:
@@ -170,8 +167,6 @@ class WorkResumer:
                             select(journal.c.phase).where(journal.c.work_id == item["id"])
                         )
                     if phase == "dispatched":
-                        from yuki.runtime.work_journal import JournalUnavailable
-
                         failure = JournalUnavailable("work_response_not_persisted")
                     else:
                         if await control.has_pending_business_inputs():
@@ -311,7 +306,6 @@ class WorkResumer:
                         activation_context=recovered.activation_context,
                     ),
                 )
-        from yuki.automation.repository import AutomationRepository
 
         await AutomationRepository(self.repository.database).settle_work_occurrences()
 
@@ -404,7 +398,6 @@ class WorkResumer:
                 runtime = await self.services.runtime_config.snapshot(
                     user_id=recovered.actor_person_id, group_id=recovered.target_space_id
                 )
-                from yuki.identity.authority import person_is_superuser
 
                 async with self.repository.database.read_session() as authority_session:
                     actor_is_superuser = await person_is_superuser(

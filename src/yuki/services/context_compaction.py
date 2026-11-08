@@ -10,12 +10,19 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.frozen_fragments import EventFragment, FrozenFragments
 from yuki.conversation.observation_models import ContextObservationModel
-from yuki.conversation.projections import PromptProjectionRepository
+from yuki.conversation.observations import privacy_generation
+from yuki.conversation.projections import (
+    SUMMARY_RENDERER_VERSION,
+    ProjectionConflict,
+    PromptProjectionRepository,
+)
 from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -28,7 +35,8 @@ from yuki.model_runtime.capacity import (
     message_token_cost,
 )
 from yuki.persistence.event_repository import ConversationReadVersion
-from yuki.runtime.work_repository import WorkCapacityError
+from yuki.runtime.work_journal import decode_transcript
+from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
 from yuki.services.turn_transcript import TurnTranscript, tool_result_evidence
 
 EXECUTION_COMPACT_INSTRUCTION = (
@@ -86,14 +94,6 @@ class CompactReceipt:
         self.actor_id = actor_id
 
     async def read(self) -> dict[str, Any] | None:
-        import json
-
-        from sqlalchemy import or_, select
-
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
-        from yuki.conversation.observations import privacy_generation
-        from yuki.runtime.work_repository import WorkConflict
-
         async with self.context.repository.database.read_session() as reader:
             row = await reader.scalar(
                 select(ContextObservationModel)
@@ -130,12 +130,6 @@ class CompactReceipt:
         *,
         publication: Callable[[AsyncSession], Awaitable[Any]] | None = None,
     ) -> None:
-        import json
-
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
-        from yuki.conversation.observations import privacy_generation
-        from yuki.runtime.work_repository import WorkConflict
-
         encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
         version = self.context.version
         async with self.context.repository.database.immediate_session() as writer:
@@ -205,8 +199,6 @@ async def current_public_compact(
                 (keys, value) for keys, value in context.individual if set(keys) <= set(fresh)
             )
             if {identity for keys, _ in selected for identity in keys} != set(fresh):
-                from yuki.conversation.projections import ProjectionConflict
-
                 raise ProjectionConflict("new event fragment coverage is incomplete")
             grouped.extend(selected)
     retained = retained.extend_history(tuple(grouped), context.individual)
@@ -218,8 +210,6 @@ async def public_compact_publication(
     public: dict[str, Any],
     summary: str,
 ) -> Callable[[AsyncSession], Awaitable[Any]]:
-    from yuki.conversation.projections import SUMMARY_RENDERER_VERSION
-
     previous = await repository.read(public["conversation_id"])
     reason = await repository.invalidation_reason(public["conversation_id"])
     return await repository.prepare_commit(
@@ -314,10 +304,6 @@ def public_compact_plan(
 
 
 def compacted_transcript(state: dict[str, Any]) -> TurnTranscript:
-    import json
-
-    from yuki.runtime.work_journal import decode_transcript
-
     prefix = decode_transcript(state["prefix"])
     public = state.get("public")
     if public is not None:

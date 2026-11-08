@@ -10,6 +10,7 @@ from sqlalchemy import select, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_repository import TERMINAL, WorkConflict, encode_json
 from yuki.runtime.work_schema_v1 import work
@@ -109,8 +110,6 @@ async def record(
     *,
     session: AsyncSession | None = None,
 ) -> None:
-    from yuki.persistence.unit_of_work import optional_session
-
     encoded_receipt = encode_json(receipt)
     async with optional_session(control.repository.database, session, write=True) as session:
         await session.execute(

@@ -11,12 +11,14 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     CanonicalEventReceiptModel,
 )
+from yuki.conversation.event_entry import event_entry_matches
 from yuki.conversation.hydrate import (
     HydratedConversation,
     ensure_canonical_conversation,
@@ -27,6 +29,7 @@ from yuki.conversation.hydrate import (
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.media_index import prepare_event_media, same_attachment_origin
 from yuki.conversation.scope_models import ConversationScopeState
+from yuki.domain.audio import parse_transcripts
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage, snapshot_mention_segments
@@ -472,7 +475,6 @@ class ScopedEventLedgerUnitOfWork:
     ) -> bool:
         """Save one bounded result only while its source generation is still live."""
         normalized = transcript.strip()
-        from yuki.domain.audio import parse_transcripts
 
         if not parse_transcripts(normalized):
             raise ValueError("audio transcript must not be empty")
@@ -686,8 +688,6 @@ class ScopedEventLedgerUnitOfWork:
         source_event_id: int | None,
         prepared_terms: tuple[str, ...],
     ) -> ScopedAppendResult:
-        from sqlalchemy.exc import IntegrityError
-
         presence = await session.get(PresenceModel, scope.presence_id)
         if presence is None:
             raise CanonicalIdentityError("no_presence")
@@ -697,7 +697,6 @@ class ScopedEventLedgerUnitOfWork:
                 raise CanonicalIdentityError("no_conversation")
             if original.kind == "private":
                 binding = await session.get(IdentityBindingModel, original.identity_binding_id)
-                from yuki.conversation.event_entry import event_entry_matches
 
                 original_entry = (
                     binding is not None

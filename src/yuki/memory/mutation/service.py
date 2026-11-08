@@ -91,6 +91,7 @@ from yuki.memory.partition import (
     resolve_canonical_memory_partition_for_event,
 )
 from yuki.memory.repository import PreparedMemoryEvidence
+from yuki.memory.self_origin import resolve_self_origin
 from yuki.memory.service import MemoryFactService
 from yuki.memory.subjects import (
     ResolvedSubject,
@@ -115,6 +116,10 @@ from yuki.persistence.models import (
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.persistence.repository_helpers import _event_record, keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_repository import WorkRepository
+from yuki.time.formatting import stored_utc
 
 logger = logging.getLogger(__name__)
 
@@ -1264,8 +1269,6 @@ class MemoryMutationService:
         context: MemoryMutationContext,
         target: ResolvedSubject | None,
     ) -> _PreparedMutation:
-        from yuki.memory.self_origin import resolve_self_origin
-
         main_self = bool(
             context.delegation_mode == "main_agent"
             and context.decision_actor_type is MemoryDecisionActorType.AGENT
@@ -1542,7 +1545,6 @@ class MemoryMutationService:
                     return self._rejected(
                         request.operation, "memory_operation_legacy_identity_unknown"
                     )
-            from yuki.runtime.effect_outcomes import current_result_capture
 
             capture = current_result_capture.get()
             if capture is not None and not (capture.work_id and capture.effect_key):
@@ -1641,9 +1643,6 @@ class MemoryMutationService:
                 session=session,
             )
             if capture is not None:
-                from yuki.runtime.work_activation import current_work_control
-                from yuki.runtime.work_repository import WorkRepository
-
                 control = current_work_control.get()
                 if control is not None:
                     await control.repository._assert_lease(session, control.lease)
@@ -1742,7 +1741,6 @@ class MemoryMutationService:
         session: AsyncSession,
     ) -> _MutationSourceProof:
         """Freeze the original source set before resolution; never rebase it on retry."""
-        from yuki.memory.self_origin import resolve_self_origin
 
         event_ids = {item.event_id for item in evidence if item.event_id is not None}
         if event is not None:
@@ -1789,13 +1787,7 @@ class MemoryMutationService:
             current = _event_record(row)
             current = replace(current, occurred_at=current.occurred_at.replace(tzinfo=UTC))
             if event is not None and event_id == event.id:
-                original_at = event.occurred_at
-                original_at = (
-                    original_at.replace(tzinfo=UTC)
-                    if original_at.tzinfo is None
-                    else original_at.astimezone(UTC)
-                )
-                if current != replace(event, occurred_at=original_at):
+                if current != replace(event, occurred_at=stored_utc(event.occurred_at)):
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed")
             events.append(
                 {column.key: getattr(row, column.key) for column in row.__table__.columns}
@@ -1827,7 +1819,6 @@ class MemoryMutationService:
         self, prepared: _MutationSourceProof, *, session: AsyncSession
     ) -> bool:
         """Compare original source values in SQL; body decoding was completed on the reader."""
-        from yuki.memory.self_origin import resolve_self_origin
 
         for model, values in (
             (ChatEventModel, prepared.events),

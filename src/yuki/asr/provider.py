@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any, Protocol
 
 import httpx
@@ -97,7 +98,6 @@ class HTTPASRProvider:
                     data.extend(chunk)
                     if len(data) > 131072:
                         raise ASRError("invalid_response")
-            import json
 
             payload = json.loads(data)
             if self._protocol == "audio_transcriptions":

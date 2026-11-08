@@ -23,6 +23,10 @@ from yuki.identity.db_models import (
     CanonicalSpaceModel,
     PresenceModel,
 )
+from yuki.identity.memory_guard import refuse_legacy_live_event
+from yuki.identity.person_identity import person_root_id
+from yuki.memory.partition import MemoryPartitionResolutionError, resolve_memory_partition_for_event
+from yuki.memory.self_origin import resolve_self_origin, self_execution_origin_sql
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
@@ -116,11 +120,6 @@ class ToolReceiptRepository:
             if source_event_ids and source_privacy_generation is not None:
                 privacy_generation = min(privacy_generation, source_privacy_generation)
             if initiative_run_id is not None or principal_kind == "self":
-                from yuki.memory.self_origin import (
-                    resolve_self_origin,
-                    self_execution_origin_sql,
-                )
-
                 source = await resolve_self_origin(
                     session,
                     initiative_run_id=initiative_run_id,
@@ -188,14 +187,8 @@ class ToolReceiptRepository:
                 )
                 if event is not None and event.canonical_conversation_id != proven_conversation:
                     await require_live_conversation(session, event.canonical_conversation_id)
-                from yuki.identity.memory_guard import refuse_legacy_live_event
 
                 if event is not None and not await refuse_legacy_live_event(session, event):
-                    from yuki.memory.partition import (
-                        MemoryPartitionResolutionError,
-                        resolve_memory_partition_for_event,
-                    )
-
                     partition = await resolve_memory_partition_for_event(session, event)
                     conversation = await session.get(
                         CanonicalConversationModel, event.canonical_conversation_id
@@ -272,8 +265,6 @@ class ToolReceiptRepository:
                         )
                     )
                     if partition.person_id:
-                        from yuki.identity.person_identity import person_root_id
-
                         guards.append(
                             select(CanonicalPersonModel.id)
                             .where(
@@ -348,7 +339,6 @@ class ToolReceiptRepository:
                         )
                     ):
                         return
-                    from yuki.memory.partition import MemoryPartitionResolutionError
 
                     raise MemoryPartitionResolutionError("tool_receipt_source_changed")
 

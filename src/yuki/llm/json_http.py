@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -32,7 +32,13 @@ from yuki.llm.base import (
 )
 from yuki.llm.http_errors import check_provider_response
 from yuki.llm.protocol_state import integer
-from yuki.model_runtime.request_accounting import current_provider_attempts
+from yuki.model_runtime.dispatch_guard import check_model_dispatch
+from yuki.model_runtime.request_accounting import (
+    after_provider_request,
+    before_provider_request,
+    current_provider_attempts,
+)
+from yuki.runtime.work_activation import current_work_control
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +111,6 @@ class JSONHTTPProvider(LLMProvider):
 
     async def list_models(self) -> list[ProviderModel]:
         """Read one upstream page using this adapter's existing auth and base path."""
-        from yuki.model_runtime.dispatch_guard import check_model_dispatch
 
         prepared = self._client.build_request(
             "GET", "models", headers=self._request_headers(), timeout=self._timeout
@@ -168,8 +173,6 @@ class JSONHTTPProvider(LLMProvider):
             return _PreparedHTTP(prepared, payload)
 
     async def _post(self, prepared: _PreparedHTTP) -> tuple[httpx.Response, Any]:
-        from yuki.model_runtime.dispatch_guard import check_model_dispatch
-
         async with trace_span(
             "provider",
             {"protocol": self.protocol, "body": prepared.payload, "dispatch": "prepared"},
@@ -177,10 +180,6 @@ class JSONHTTPProvider(LLMProvider):
             # Keep the real permission/budget fence immediately before HTTP dispatch.
             with model_detail("attempt_dispatch_preparation"):
                 await check_model_dispatch()
-            from yuki.model_runtime.request_accounting import (
-                after_provider_request,
-                before_provider_request,
-            )
 
             account, finish = before_provider_request.get(), after_provider_request.get()
             if account is not None:
@@ -231,10 +230,6 @@ class JSONHTTPProvider(LLMProvider):
         return response, body
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
-        from dataclasses import replace
-
-        from yuki.runtime.work_activation import current_work_control
-
         if not request.model or (self._api_key_env != "" and not self._api_key):
             raise LLMConfigurationError("LLM is not configured")
         started = time.perf_counter()

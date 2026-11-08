@@ -26,7 +26,7 @@ from yuki.memory.partition import (
     resolve_fact_canonical_owners,
 )
 from yuki.memory.query import normalize_query_text
-from yuki.memory.temporal_filter import strict_time_sql
+from yuki.memory.temporal_filter import strict_time_conditions, strict_time_sql
 from yuki.persistence.database import Database
 from yuki.persistence.models import MemoryFactModel
 
@@ -136,7 +136,6 @@ class SQLiteMemoryFTSIndex:
         ]
         if kinds:
             conditions.append(mf.kind.in_(kind.value for kind in kinds))
-        from yuki.memory.temporal_filter import strict_time_conditions
 
         conditions.extend(strict_time_conditions(temporal))
         fields = (mf.id, mf.memory_key, mf.category, mf.normalized_content)

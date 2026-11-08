@@ -27,6 +27,7 @@ from yuki.persistence.models import (
 )
 from yuki.persistence.unit_of_work import next_updated_at
 from yuki.persistence.vec1 import vector_table
+from yuki.time.formatting import stored_utc
 
 _EMBEDDABLE_STATUSES = ("active", "contested")
 
@@ -409,13 +410,11 @@ class MemoryEmbeddingJobRepository:
             ):
                 continue
             valid_until = row.valid_until if row is not None else None
-            if valid_until is not None and valid_until.tzinfo is None:
-                valid_until = valid_until.replace(tzinfo=UTC)
             eligible = (
                 row is not None
                 and row.status in _EMBEDDABLE_STATUSES
                 and row.review_state != "quarantined"
-                and (valid_until is None or valid_until > now)
+                and (valid_until is None or stored_utc(valid_until) > now)
             )
             digest = (
                 self.documents.content_hash_fields(

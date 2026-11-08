@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
+from yuki.gateway.registry import RegistryClosed
+from yuki.identity.routing import RouteSendError
 from yuki.llm.base import (
     LLMEmptyResponseError,
     LLMError,
@@ -21,6 +23,13 @@ from yuki.llm.base import (
     LLMTimeoutError,
     LLMUnavailableError,
 )
+from yuki.persistence.database import (
+    write_failure_committed,
+    write_failure_phase,
+    write_failure_retryable,
+)
+from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
+from yuki.services.concurrency import RequestCancelledError
 
 _JOURNAL_FAILURE_CODES = frozenset(
     {
@@ -102,13 +111,6 @@ class ActivationOutcome:
 
 
 def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFailure:
-    from yuki.persistence.database import (
-        write_failure_committed,
-        write_failure_phase,
-        write_failure_retryable,
-    )
-    from yuki.services.concurrency import RequestCancelledError
-
     if isinstance(exc, (asyncio.CancelledError, RequestCancelledError)):
         return RuntimeFailure(
             "activation_cancelled", "cleanup", True, diagnostics=getattr(exc, "diagnostics", {})
@@ -154,7 +156,6 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
     from yuki.runtime.work_journal import JournalUnavailable
-    from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
 
     if isinstance(exc, JournalUnavailable):
         code = str(exc)
@@ -190,8 +191,6 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     # An exact Presence lookup can fail before any gateway call when its live
     # connection drops. Restart the original activation after reconnection;
     # dispatching/unknown effects remain protected by their durable receipts.
-    from yuki.gateway.registry import RegistryClosed
-    from yuki.identity.routing import RouteSendError
 
     if (
         isinstance(exc, RouteSendError)

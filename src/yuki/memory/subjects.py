@@ -9,6 +9,7 @@ from sqlalchemy import select
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.identity.db_models import PresenceModel
+from yuki.identity.ownership_interval import historical_person_ids
 from yuki.identity.person_identity import current_person_ids, person_family_ids
 from yuki.memory.enums import MemoryScopeType, SelfMemoryVisibility
 from yuki.memory.extraction import AvailableSubject, ExtractionScope, MemoryClaim
@@ -212,7 +213,6 @@ class SubjectContextBuilder:
                     return event.author_person_id
                 if account is None or platform is None:
                     return None
-                from yuki.identity.ownership_interval import historical_person_ids
 
                 observed_at = await session.scalar(
                     select(ChatEventModel.observed_at).where(ChatEventModel.id == event.id)
@@ -262,8 +262,6 @@ class SubjectContextBuilder:
             async with self._database.read_session() as session:
                 presence = await session.get(PresenceModel, event.ingress_presence_id)
                 if presence is not None:
-                    from yuki.identity.ownership_interval import historical_person_ids
-
                     observed_at = await session.scalar(
                         select(ChatEventModel.observed_at).where(ChatEventModel.id == event.id)
                     )

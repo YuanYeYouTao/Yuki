@@ -16,6 +16,7 @@ from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_models import ConversationCoverageError
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
+from yuki.identity.db_models import PresenceModel
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.plugin_host.db_models import PluginBackgroundTurnJobModel
 from yuki.plugin_host.notification_repository import (
@@ -227,7 +228,6 @@ class PluginBackgroundTurnWorker:
                 error_category="source_event_invalid",
             )
             return
-        from yuki.identity.db_models import PresenceModel
 
         async with self._repository._database.read_session() as reader:
             presence = await reader.get(PresenceModel, context.provenance_presence_id)

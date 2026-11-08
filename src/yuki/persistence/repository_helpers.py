@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import or_
@@ -13,6 +13,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from yuki.domain.conversations import ScopeType
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_records import EventRecord
+from yuki.time.formatting import stored_utc
 
 CANONICAL_KEEPER_STATUS = "keeper"
 
@@ -98,9 +99,7 @@ def _event_record(
     if isinstance(observed, str):
         observed = datetime.fromisoformat(observed)
     if observed is not None:
-        observed = (
-            observed.replace(tzinfo=UTC) if observed.tzinfo is None else observed.astimezone(UTC)
-        )
+        observed = stored_utc(observed)
     scope_type = _row_value(row, "scope_type")
     return EventRecord(
         id=int(_row_value(row, "id")),

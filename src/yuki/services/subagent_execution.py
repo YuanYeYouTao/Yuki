@@ -23,8 +23,13 @@ from yuki.domain.messages import (
     ChatTool,
 )
 from yuki.external_agents.db_models import AgentOperationModel
+from yuki.identity.authority import person_is_superuser
+from yuki.memory.enums import MemoryScopeType
+from yuki.memory.runtime.resolver import resolve_memory_access
+from yuki.memory.runtime.turn_session import TurnMemorySession
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.observability import RuntimeTurnCorrelation, bind_runtime_turn
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.work_activation import bind_work_activation
@@ -32,6 +37,7 @@ from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
 from yuki.runtime.work_schema_v1 import work
 from yuki.sandbox.client import SandboxClient
+from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
 from yuki.services.agent_runner import AgentRunner, AgentToolBackend
 from yuki.services.agent_tools import ToolRuntime
@@ -43,6 +49,7 @@ from yuki.services.execution_sources import (
     recover_execution_source,
 )
 from yuki.services.invocation_context import InvocationContextFactory
+from yuki_plugin_sdk.permissions import PluginPermission
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +97,6 @@ class SubagentExecution:
 
     async def cancel_commands(self) -> None:
         """Reconcile cancellation outside the database transaction, by original run ID."""
-        from yuki.sandbox.db_models import SandboxTaskRunModel
 
         async with self.repository.database.read_session() as session:
             ids = list(
@@ -159,10 +165,6 @@ class SubagentExecution:
                         request_id=identity,
                         lookup_plugin_host=self.services.lookup_plugin_host,
                     )
-                    from yuki.runtime.observability import (
-                        RuntimeTurnCorrelation,
-                        bind_runtime_turn,
-                    )
 
                     bindings.enter_context(
                         bind_runtime_turn(
@@ -222,9 +224,6 @@ class SubagentExecution:
                     )
 
                     if isinstance(recovered, (AutomationTaskSource, BackgroundTaskSource)):
-                        from yuki.memory.runtime.resolver import resolve_memory_access
-                        from yuki.memory.runtime.turn_session import TurnMemorySession
-
                         memory = TurnMemorySession(
                             decision=resolve_memory_access(origin=TurnOrigin(recovered.origin)),
                         )
@@ -242,8 +241,6 @@ class SubagentExecution:
                     )
                     actor_is_superuser = getattr(recovered, "actor_is_superuser", False)
                     if isinstance(recovered, MessageTaskSource):
-                        from yuki.identity.authority import person_is_superuser
-
                         async with self.repository.database.read_session() as session:
                             actor_is_superuser = await person_is_superuser(
                                 session, recovered.actor_person_id
@@ -252,9 +249,6 @@ class SubagentExecution:
                     host: Any = None
                     memory_scopes = None
                     if delegated:
-                        from yuki.memory.enums import MemoryScopeType
-                        from yuki_plugin_sdk.permissions import PluginPermission
-
                         host = self.services.lookup_plugin_host(source["plugin_id"])
                         memory_scopes = (
                             (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)

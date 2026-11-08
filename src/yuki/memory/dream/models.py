@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from yuki.time.formatting import stored_utc
 
 
 class DreamRunMode(StrEnum):
@@ -201,9 +203,7 @@ class DreamRun(_DreamModel):
     )
     @classmethod
     def _utc(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return None if value is None else stored_utc(value)
 
 
 class DreamCluster(_DreamModel):

@@ -25,6 +25,7 @@ from yuki.domain.messages import (
     MessageMention,
     SenderIdentity,
 )
+from yuki.services.qq_face_resolver import QQFaceResolver
 from yuki.services.renderer import sanitize_input
 
 _ATTACHMENT_TYPES: dict[str, AttachmentKind] = {
@@ -63,8 +64,6 @@ class SegmentProjectionError(ValueError):
 
 @lru_cache(maxsize=1)
 def _default_face_resolver() -> FaceNameResolver:
-    from yuki.services.qq_face_resolver import QQFaceResolver
-
     return QQFaceResolver()
 
 

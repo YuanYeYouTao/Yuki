@@ -16,6 +16,7 @@ from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.policies import replies_to_bot
+from yuki.time.formatting import stored_utc
 
 _HISTORY_LIMIT = 10
 
@@ -85,14 +86,11 @@ class AdmissionFeatureBuilder:
         human = [row for row in rows if row[0] == "message" and row[1] == AuthorKind.PERSON]
         bot = [row for row in rows if row[0] == "message" and row[1] == AuthorKind.YUKI]
         messages = [row for row in rows if row[0] == "message"]
-        normalized_now = AdmissionFeatureBuilder._aware_utc(now)
+        normalized_now = stored_utc(now)
         intervals = [
             max(
                 0.0,
-                (
-                    AdmissionFeatureBuilder._aware_utc(right[2])
-                    - AdmissionFeatureBuilder._aware_utc(left[2])
-                ).total_seconds(),
+                (stored_utc(right[2]) - stored_utc(left[2])).total_seconds(),
             )
             for left, right in pairwise(human)
         ]
@@ -109,10 +107,8 @@ class AdmissionFeatureBuilder:
             for row in rows[last_bot_index + 1 :]
             if row[0] == "message" and row[1] == AuthorKind.PERSON
         )
-        last_time = (
-            AdmissionFeatureBuilder._aware_utc(messages[-1][2]) if messages else normalized_now
-        )
-        last_bot_time = AdmissionFeatureBuilder._aware_utc(bot[-1][2]) if bot else None
+        last_time = stored_utc(messages[-1][2]) if messages else normalized_now
+        last_bot_time = stored_utc(bot[-1][2]) if bot else None
         return _ConversationMetrics(
             pending=pending,
             bot_count=len(bot),
@@ -125,7 +121,3 @@ class AdmissionFeatureBuilder:
             ),
             last_was_bot=bool(messages and messages[-1][1] == AuthorKind.YUKI),
         )
-
-    @staticmethod
-    def _aware_utc(value: datetime) -> datetime:
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

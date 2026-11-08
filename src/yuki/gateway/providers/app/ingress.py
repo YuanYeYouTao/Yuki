@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from yuki.client_api.identity import request_message_key
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import (
@@ -142,8 +143,6 @@ class AppGateway:
         thread_id: str | None = None,
         conversation_id: str,
     ) -> InboundMessage:
-        from yuki.client_api.identity import request_message_key
-
         return InboundMessage(
             native_message_id=None,
             ingress_key=request_message_key(

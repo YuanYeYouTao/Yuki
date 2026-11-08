@@ -28,6 +28,7 @@ from yuki.model_runtime.repository import ModelInvocationRepository
 from yuki.persistence.repositories import PeopleRepository
 from yuki.plugin_host.command_adapter import PluginCommandAdapter
 from yuki.plugin_host.direct_command_router import DirectCommandMatch
+from yuki.runtime.work_repository import WorkRepository
 from yuki.services.admin.config_admin import ConfigAdminService
 from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.admin.preference_admin import PreferenceAdminService
@@ -178,8 +179,6 @@ class CommandService:
             text = await self._conversation.status(identity, conversation_key)
         elif command is CommandName.STOP:
             if message.conversation_id:
-                from yuki.runtime.work_repository import WorkRepository
-
                 await WorkRepository(self._people._database).cancel(message.conversation_id)
             cancelled = await self._concurrency.cancel(conversation_key)
             cancelled = (

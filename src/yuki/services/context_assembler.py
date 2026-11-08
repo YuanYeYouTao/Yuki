@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence, Set
 from dataclasses import dataclass, replace
-from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from yuki.admin.models import RuntimeConfigSnapshot
@@ -31,6 +30,9 @@ from yuki.runtime.trigger import (
     SandboxTaskTurnTrigger,
     WorkResumeTrigger,
 )
+from yuki.runtime.work_activation import current_work_control
+from yuki.services.turn_coordinator import HistorySourceChangedError
+from yuki.time.formatting import stored_utc
 
 if TYPE_CHECKING:
     from yuki.conversation.projections import ProjectionSnapshot
@@ -132,8 +134,6 @@ class ContextAssembler:
         if snapshot.read_version is not None and not await self._ledger.read_version_matches(
             snapshot.read_version
         ):
-            from yuki.services.turn_coordinator import HistorySourceChangedError
-
             raise HistorySourceChangedError(snapshot.read_version)
         return context
 
@@ -218,7 +218,6 @@ class ContextAssembler:
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical checkpoint/raw-tail projection within the plugin read grant."""
-        from yuki.runtime.work_activation import current_work_control
 
         control = current_work_control.get()
         recovery = control.protocol_recovery_preparation if control is not None else None
@@ -402,29 +401,13 @@ class ContextAssembler:
         if snapshot.read_version is None:
             return
         if not await self._ledger.read_version_matches(snapshot.read_version):
-            from yuki.services.turn_coordinator import HistorySourceChangedError
-
             raise HistorySourceChangedError(snapshot.read_version)
         current = snapshot.current_event
         # SQLite reloads UTC timestamps without tzinfo; compare their instants
         # without treating that storage representation as a source mutation.
         if current is not None:
-            current = replace(
-                current,
-                occurred_at=(
-                    current.occurred_at.replace(tzinfo=UTC)
-                    if current.occurred_at.tzinfo is None
-                    else current.occurred_at
-                ),
-            )
-        event = replace(
-            event,
-            occurred_at=(
-                event.occurred_at.replace(tzinfo=UTC)
-                if event.occurred_at.tzinfo is None
-                else event.occurred_at
-            ),
-        )
+            current = replace(current, occurred_at=stored_utc(current.occurred_at))
+        event = replace(event, occurred_at=stored_utc(event.occurred_at))
         if current != event:
             raise ConversationCoverageError("trigger event changed while assembling context")
 

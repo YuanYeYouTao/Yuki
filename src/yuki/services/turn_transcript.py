@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from yuki.capabilities.media import result_images
 from yuki.domain.messages import (
     ChatMessage,
     FunctionCallOutput,
@@ -194,7 +195,6 @@ class TurnTranscript:
         The user role transports pixels on existing protocols; it does not mint
         an inbound event, principal or new authorization.
         """
-        from yuki.capabilities.media import result_images
 
         seen = {
             image

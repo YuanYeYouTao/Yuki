@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import func, select, text
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.observations import validate_observations
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.execution_trace.phases import model_detail
@@ -19,6 +20,8 @@ from yuki.identity.person_identity import same_person_condition
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import inputs
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,8 +107,6 @@ class WorkSourceGuard:
 
     @staticmethod
     def _accepted_cross_query(work_id: str, actor: str, cross_ids: Set[int]) -> Any:
-        from yuki.runtime.work_schema_v1 import inputs
-
         return (
             select(ChatEventModel.id)
             .join(inputs, inputs.c.event_id == ChatEventModel.id)
@@ -134,7 +135,6 @@ class WorkSourceGuard:
         self, session: AsyncSession, *, work_id: str, actor_person_id: str | None
     ) -> None:
         """Recheck only the original selected client inputs in the current writer."""
-        from yuki.runtime.work_repository import WorkConflict
 
         verified = self._verified
         if verified is None:
@@ -329,7 +329,6 @@ class WorkSourceGuard:
                         additional[row.id] = digest
                 selected_summary = version.selected_summary_text
                 summary: object = selected_summary
-                from yuki.conversation.observations import validate_observations
 
                 if original_observations:
                     assert version.conversation_id is not None

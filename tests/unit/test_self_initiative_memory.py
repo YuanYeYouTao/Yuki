@@ -647,7 +647,9 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
         group_id="3001",
     )
     await repository.scan_new_events()
+    from yuki import event_prompt
     from yuki.domain import audio
+    from yuki.persistence import models
 
     transcripts = []
     original_transcript = audio.transcript_context
@@ -656,7 +658,8 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
         transcripts.append(value)
         return original_transcript(value, include_replies=include_replies)
 
-    monkeypatch.setattr(audio, "transcript_context", transcript_context)
+    monkeypatch.setattr(event_prompt, "transcript_context", transcript_context)
+    monkeypatch.setattr(models, "transcript_context", transcript_context)
     (ordinary,) = await repository.claim_due(
         scheduled_slot="mixed-ordinary",
         event_threshold=1,

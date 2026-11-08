@@ -10,6 +10,8 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, context
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
+from yuki.runtime.observability import current_runtime_turn_correlation
+
 current_metrics: ContextVar[dict[str, float] | None] = ContextVar("trace_metrics", default=None)
 current_model_phases: ContextVar[ModelPhases | None] = ContextVar("model_phases", default=None)
 _METRICS = frozenset(
@@ -55,7 +57,6 @@ def turn_detail(name: str) -> Iterator[None]:
     Main adopts them into its existing trace; observe-only input still creates
     no diagnostic row. This never changes execution or persistence authority.
     """
-    from yuki.runtime.observability import current_runtime_turn_correlation
 
     started = time.perf_counter()
     try:

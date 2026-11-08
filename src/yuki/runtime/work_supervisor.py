@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from yuki.runtime.work_control import WorkControl
 
 from yuki.runtime.work_control import ACCEPTED_ENDINGS
+from yuki.runtime.work_schema_v1 import inputs
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +80,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         await control.repository._assert_lease(session, control.lease)
         deferred = control.deferred_failure
         if deferred is not None:
-            from yuki.runtime.work_schema_v1 import inputs
-
             failed = deferred.work
             if (
                 failed is None

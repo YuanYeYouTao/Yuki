@@ -1,12 +1,13 @@
 """The history interval belongs to this binding row, including after transfer."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.identity.db_models import AccountAssignmentModel, AccountModel, IdentityBindingModel
+from yuki.time.formatting import stored_utc
 
 
 @dataclass(frozen=True)
@@ -32,12 +33,9 @@ class BindingOwnership:
         return self.starts_at is not None or self.ends_at is not None
 
     def contains(self, timestamp: datetime) -> bool:
-        def utc(value: datetime) -> datetime:
-            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-        point = utc(timestamp)
-        return (self.starts_at is None or point >= utc(self.starts_at)) and (
-            self.ends_at is None or point < utc(self.ends_at)
+        point = stored_utc(timestamp)
+        return (self.starts_at is None or point >= stored_utc(self.starts_at)) and (
+            self.ends_at is None or point < stored_utc(self.ends_at)
         )
 
 
@@ -91,11 +89,11 @@ async def assignments_at(
     result: dict[str, AccountAssignmentModel | None] = {row.account_id: row for row in current}
     if at is None:
         return result
-    point = at.replace(tzinfo=UTC) if at.tzinfo is None else at.astimezone(UTC)
+    point = stored_utc(at)
     earlier = set(account_ids) - result.keys()
     for row in current:
         start = row.started_at or row.first_seen_at
-        if point < (start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)):
+        if point < stored_utc(start):
             result[row.account_id] = None
             earlier.add(row.account_id)
     if earlier:
@@ -110,11 +108,7 @@ async def assignments_at(
             .group_by(AccountAssignmentModel.account_id)
         )
         for account_id, total, known_ends, latest_end in known:
-            ended = (
-                latest_end.replace(tzinfo=UTC)
-                if latest_end is not None and latest_end.tzinfo is None
-                else latest_end
-            )
+            ended = None if latest_end is None else stored_utc(latest_end)
             # A new message after every proven ended stage may register a new
             # Person. A historical gap or an unknown end never borrows an owner.
             if account_id in result or total != known_ends or ended is None or point < ended:

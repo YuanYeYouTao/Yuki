@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.models import RuntimeConfigSnapshot
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.ordinary_admission import (
@@ -31,6 +32,7 @@ from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_tasks import ActivationTasks
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
 from yuki.runtime.work_source_guard import WorkSourceGuard
 from yuki.services.agent_runner import (
     AgentRunner,
@@ -46,10 +48,11 @@ from yuki.services.context_boundary import (
     PreparedContextBoundary,
 )
 from yuki.services.context_compaction import PublicCompactContext
-from yuki.services.durable_invocations import DurableInvocations
+from yuki.services.durable_invocations import DurableInvocations, invocation_boundary
 from yuki.services.history_projection import prepare_history
 from yuki.services.processing_status import ProcessingStatusService
 from yuki.services.prompt_composer import PromptComposer, PromptComposition
+from yuki.services.turn_coordinator import HistorySourceChangedError
 from yuki.services.turn_transcript import (
     DispatchOrigin,
     dispatch_request,
@@ -181,8 +184,6 @@ class MainAgentTurnService:
                     return
                 control = current_work_control.get()
                 if control is None:
-                    from yuki.services.turn_coordinator import HistorySourceChangedError
-
                     if not await ordinary_source_guard.check(None, database=repository.database):
                         raise HistorySourceChangedError(ordinary_source_guard.version)
                 if sequence.origin is not DispatchOrigin.COMPOSED_INITIAL or projection_closed:
@@ -222,8 +223,6 @@ class MainAgentTurnService:
                     selected_guard = None
                     selected_revision = original_revision
                     if guard is not None:
-                        from yuki.services.turn_coordinator import HistorySourceChangedError
-
                         selected_guard = guard.fork()
                         try:
                             valid = await selected_guard.check(
@@ -299,8 +298,6 @@ class MainAgentTurnService:
                     version.generation,
                     version.starts_after_event_id,
                 ):
-                    from yuki.services.turn_coordinator import HistorySourceChangedError
-
                     raise HistorySourceChangedError(version)
                 fresh = tuple(row for row in rows if row.id not in known)
                 if not rows:
@@ -330,8 +327,6 @@ class MainAgentTurnService:
                         version.generation,
                         version.starts_after_event_id,
                     ):
-                        from yuki.services.turn_coordinator import HistorySourceChangedError
-
                         raise HistorySourceChangedError(version)
                     # Preparation may await external material. Refresh the same
                     # selection; later arrivals belong to the next boundary.
@@ -372,7 +367,6 @@ class MainAgentTurnService:
                     inputs: tuple[OrdinaryContextInput, ...] = ordinary_candidates,
                 ) -> PreparedContextBoundary:
                     nonlocal committed, observation_watermark
-                    from yuki.services.turn_coordinator import HistorySourceChangedError
 
                     if not await ledger.read_version_matches(current_version):
                         raise HistorySourceChangedError(current_version)
@@ -578,9 +572,6 @@ class MainAgentTurnService:
             or not runtime.canonical_conversation_id
         ):
             return None
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
-        from yuki.runtime.work_repository import WorkConflict, WorkRepository
-        from yuki.services.durable_invocations import invocation_boundary
 
         if previous is None:
             previous = await WorkRepository(self._invocations.database).by_source(
@@ -616,9 +607,6 @@ class MainAgentTurnService:
             ):
                 previous = None
                 if not self._composer._settings.runtime_work_enabled:
-                    from yuki.runtime.work_repository import WorkRepository
-                    from yuki.services.durable_invocations import invocation_boundary
-
                     previous = await WorkRepository(self._invocations.database).by_source(
                         f"invocation:{invocation_boundary(runtime)}"
                     )
