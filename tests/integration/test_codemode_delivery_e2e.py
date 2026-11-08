@@ -158,7 +158,7 @@ r = await yuki_read_chat({'query': 'CODE_CHILD_BODY'})
             assert child_view["preview_excerpt"] == original[:40]
             assert child_view["preview_characters"] > 0
             assert "".join(parts) == original[child_view["preview_characters"] :]
-            assert all(page["data"]["handle"] == child_view["child_ref"] for page in pages)
+            assert all(page["handle"] == child_view["child_ref"] for page in pages)
     finally:
         evidence["vm_child_projection"] = child_view
         async with database.read_session() as reader:
@@ -341,12 +341,7 @@ async def test_main_code_delivers_program_value_and_reads_its_original_parent(
                 assert code_result["result_ref"] == code_result["summary_ref"]
                 assert code_result["result_path"] == ["result"]
                 assert code_result["read_more"] == [
-                    {
-                        "handle": code_result["result_ref"],
-                        "operation": "get",
-                        "path": ["result"],
-                        "offset": 0,
-                    }
+                    {"handle": code_result["result_ref"], "path": ["result"], "cursor": "0"}
                 ]
                 assert "".join(parts) == original
             else:
