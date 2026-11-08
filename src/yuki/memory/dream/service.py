@@ -439,14 +439,10 @@ class DreamService:
             ):
                 raise RuntimeError("dream_cluster_stale")
             current_map[ref] = current
-        used: set[str] = set()
         for action_index, action in enumerate(output.actions, start=1):
             sources = tuple(current_map[ref] for ref in action.source_refs if ref in current_map)
             if len(sources) != len(action.source_refs):
                 raise ValueError("dream output referenced an unknown memory alias")
-            if used.intersection(action.consumed_source_refs):
-                raise ValueError("dream output reused a memory alias")
-            used.update(action.consumed_source_refs)
             if action.operation is DreamOperationType.RECOMPOSE:
                 referenced = {ref for item in action.outputs for ref in item.source_refs}
                 sources = tuple(current_map[ref] for ref in action.source_refs if ref in referenced)
