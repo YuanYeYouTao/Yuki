@@ -1281,8 +1281,6 @@ class ChatService:
                 InvocationContextFactory.from_tools(
                     replace(runtime, conversation_key=conversation_key),
                     allowed_capabilities=self.web_capabilities(config),
-                    max_tool_calls=config.agent.max_tool_calls,
-                    max_model_requests=config.agent.max_model_requests,
                 ),
                 before_model_request=before_model_request,
                 invocation_goal=invocation_goal,
@@ -1298,8 +1296,11 @@ class ChatService:
 
     async def validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
         control = current_work_control.get()
+        # Accepted Work and scheduled occurrences are not superseded by later
+        # user input; their generation still fences them.
         return (
             (control is not None and control.current is not None)
+            or snapshot.automation_run_id is not None
             or self._turn_coordinator.version_matches(
                 snapshot.scope_key,
                 snapshot.coordinator_version,

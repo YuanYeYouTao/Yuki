@@ -18,8 +18,6 @@ class InvocationContextFactory:
         source: ToolRuntime,
         *,
         allowed_capabilities: frozenset[str],
-        max_tool_calls: int | None,
-        max_model_requests: int | None,
     ) -> AgentRuntime:
         config = source.runtime_config
         bot = source.effective_bot_user_id
@@ -35,8 +33,6 @@ class InvocationContextFactory:
             gateway=None,
             runtime_config=config,
             allowed_capabilities=allowed_capabilities,
-            max_tool_calls=max_tool_calls,
-            max_model_requests=max_model_requests,
             before_model_request=source.before_model_request,
             observation_boundary=source.observation_boundary,
             public_compaction=source.public_compaction,

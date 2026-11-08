@@ -34,7 +34,7 @@ async def test_invalid_paid_compact_survives_pairing_reopen_and_next_candidate(
 
     provider = FakeLLMProvider(empty_response)
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=None, auxiliary_requests=[0])
+    runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript
     request = ChatRequest(messages=original.messages, max_output_tokens=1024)

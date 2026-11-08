@@ -173,7 +173,7 @@ async def test_short_work_does_not_buy_summary_at_soft_watermark(database, tmp_p
     initial = (*initial[:-1], ChatMessage("user", "public history " * 11000), initial[-1])
     provider = FakeLLMProvider(lambda request: "finished")
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=3)
+    runtime = replace(runtime)
     result = await runner.run(initial, runtime, None)
     assert result.text == "finished"
     assert len(provider.requests) == 1
@@ -361,7 +361,6 @@ async def test_actual_overflow_compacts_paired_prefix_and_keeps_fitting_tail(
     )
     runtime = replace(
         runtime,
-        max_model_requests=20,
         auxiliary_requests=[0],
     )
     execution = TurnExecution(runner, initial, runtime, None)
@@ -389,7 +388,7 @@ async def test_paid_compact_response_reused_after_publication_failure(
     original = transcript.request().messages
     provider = FakeLLMProvider(lambda request: "Verified finding; continue original goal.")
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=3, auxiliary_requests=[0])
+    runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = transcript
     request = ChatRequest(messages=original, max_output_tokens=1024)
@@ -729,7 +728,6 @@ async def test_ordinary_native_cold_preserves_host_tool_proof_for_another_compac
         public_compaction=context,
         execution_id="ordinary-native-cold-" + phase,
         fixed_tools=tools,
-        max_model_requests=None,
         auxiliary_requests=[0],
     )
     public = TurnExecution(runner, initial, replace(runtime, compact_focus=""), None)

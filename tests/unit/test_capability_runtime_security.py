@@ -135,8 +135,6 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
         gateway=None,
         runtime_config=config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=config.agent.max_tool_calls,
-        max_model_requests=config.agent.max_model_requests,
         work_control=work.control,
     )
     backend._capability_runtime = runtime
@@ -193,8 +191,6 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
         gateway=None,
         runtime_config=tools.runtime_config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=None,
-        max_model_requests=None,
         work_control=owner.control,
     )
     from tests.support.fixed_contract_fixture import bind_main_contract

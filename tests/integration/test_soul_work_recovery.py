@@ -182,27 +182,29 @@ async def test_hot_soul_edit_keeps_lost_paid_dispatch_unknown(database, tmp_path
     persisted = await probe.repository.get(control.current["id"])
     assert persisted["model_requests"] == 1 and persisted["tool_calls"] == 0
     async with database.read_session() as reader:
-        assert await reader.scalar(
-            select(journal.c.phase).where(journal.c.work_id == control.current["id"])
-        ) == "dispatched"
+        assert (
+            await reader.scalar(
+                select(journal.c.phase).where(journal.c.work_id == control.current["id"])
+            )
+            == "dispatched"
+        )
 
 
 async def test_paired_work_new_business_activation_uses_new_soul(database, tmp_path):
     from tests.conftest import MemorySender
     from tests.integration.test_person_paid_recovery import _facts
-    from tests.unit.test_history_dispatch_ownership import _scene, _tool
+    from tests.unit.test_history_dispatch_ownership import _scene, _tool, retry_due_now
     from tests.unit.test_work_owner_recovery import original_responses, original_scheduler
 
     from yuki.llm.fake import FakeLLMProvider
 
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
-    env, harness, chat, _state, inbound = await _scene(
-        database, tmp_path, provider, request_limit=2
-    )
+    env, harness, chat, _state, inbound = await _scene(database, tmp_path, provider, yield_after=2)
     path = tmp_path / "SOUL.md"
     activate(harness.settings, path, name="初雪", soul="原人格{{name}}", revision=1)
     await harness.processor.handle(inbound, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())

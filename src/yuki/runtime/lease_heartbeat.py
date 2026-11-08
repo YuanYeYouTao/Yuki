@@ -97,13 +97,26 @@ async def supervise_lease(
     pulse.add_done_callback(failed)
     try:
         yield
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as cancelled:
         active = False
         if interrupted:
             owner.uncancel()
             interrupted = False
             if owner.cancelling() == 0:
-                await pulse
+                try:
+                    await pulse
+                except BaseException as failure:
+                    from yuki.runtime.activation_outcome import (
+                        record_model_requests,
+                        recorded_model_requests,
+                    )
+
+                    # The pulse failure replaces the interruption; keep the
+                    # requests the interrupted activation actually paid.
+                    count = recorded_model_requests(cancelled)
+                    if count is not None:
+                        record_model_requests(failure, count)
+                    raise
         raise
     else:
         active = False

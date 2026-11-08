@@ -167,7 +167,7 @@ def wire_work_receipts(value):
 @pytest.mark.parametrize("vendor,protocol", DIALECTS)
 @pytest.mark.parametrize("boundary", [False, True])
 async def test_code_children_never_become_provider_function_calls(
-    database, tmp_path, vendor, protocol, boundary
+    database, tmp_path, monkeypatch, vendor, protocol, boundary
 ):
     # Exact quantum settles the VM before the next model dispatch. Its unseen
     # result still belongs to the original paid native response and call IDs.
@@ -239,12 +239,14 @@ async def test_code_children_never_become_provider_function_calls(
         # The dialect stays explicitly configured, independent of task contents.
         runtime = replace(runtime, canonical_conversation_id=control.lease.conversation_id)
         backend = Backend()
+        if boundary:
+            from tests.unit.test_history_dispatch_ownership import yield_each_activation_after
+
+            # The activation ends before its third request (a retryable exit
+            # before dispatch), so the next one must deliver the original result.
+            yield_each_activation_after(monkeypatch, 2)
         result = await chat.runtime.runner.run(
-            (ChatMessage("user", "creation-time chat"),),
-            # Exhaust model admission as well, so the boundary yields before
-            # the next request and must resume its original result afterwards.
-            replace(runtime, max_model_requests=2) if boundary else runtime,
-            backend,
+            (ChatMessage("user", "creation-time chat"),), runtime, backend
         )
         if boundary:
             assert result.work_state == "queued"

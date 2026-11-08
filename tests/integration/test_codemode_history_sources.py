@@ -203,7 +203,6 @@ async def test_code_history_parent_and_real_backend_archive_keep_sources(
             (outer.call,),
             env.test_case.backend,
             env.test_case.runtime,
-            remaining_calls=None,
             max_parallel_calls=2,
             declared_names=frozenset({"execute_code"}),
         )

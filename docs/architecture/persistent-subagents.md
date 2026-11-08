@@ -98,7 +98,7 @@ writer 后只重读当前仍合法的候选；其他页继续扫描，没有总�
 目录按内部 ID 分页，
 执行收拢读取真实所属执行，不能以目录页面代替执行事实，也不要求全部子目标成功。
 模型并发为一时沿现有模型调度串行接纳。
-每段模型请求与业务工具限额沿当前 `agent.max_model_requests` 和 `agent.max_tool_calls` 热配置；到限保存并重新排队。
+主、子任务激活不设每段模型请求或业务工具限额，也不按段保存后重新排队。
 新根任务及其全部子任务共用累计计量，默认模型和业务工具累计限额为 null（无限），
 定时到期发生若接纳 Work，其原工作树沿同一累计计量规则，不每段重置计数。
 显式有限预算仍原子执行，不额外扣除固定 8/8 的收尾预留。
@@ -143,7 +143,8 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 `SUBAGENTS_ENABLED` 默认关闭，由 `SubagentRepository.start` 统一控制新工作者登记；
 `subagent_start` 和工作者的 `task_control(derive)` 使用同一入口。关闭后原调用重放仍返回
 原 child ID，已接纳任务继续执行、恢复并提交回执；普通业务子 Work 不受工作者开关影响。
-`AGENT_MAX_MODEL_REQUESTS=24`、`AGENT_MAX_TOOL_CALLS=32` 更新旧环境里的显式配置。
+`AGENT_MAX_MODEL_REQUESTS`、`AGENT_MAX_TOOL_CALLS` 及热配置 `agent.max_model_requests`、
+`agent.max_tool_calls` 已删除；部署时从环境中移除，残留值被忽略。
 主、子任务窗口由所选模型 Profile 的容量合同统一提供，不保留子任务独有的默认窗口。
 `SUBAGENT_CONCURRENCY` 由调度器控制后台激活并发，收尾 reconcile 租约不占执行名额。
 同一 SQLite 数据库只允许一个活动 Application；仓储仍核验每个工作者的原执行租约和 generation。
@@ -152,7 +153,7 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 
 定向协议测试直接比较 Chat Completions、DeepSeek Responses 和 OpenAI Responses 的
 真实序列化 `messages/input`、完整工具和原生工具声明，而非只比较哈希。
-覆盖跨段、父子交流、32 次执行、媒体恢复、预算竞争、取消、回执修复和七天归档。
+覆盖长执行、父子交流、媒体恢复、预算竞争、取消、回执修复和七天归档。
 真实缓存审计应使用隔离数据库与选定 Provider 的实际 API，不启动第二个生产 Bot，不发送 QQ 消息。
 生产网关、RSS、Manager 和持久环境必须在更新 Bot 后复核。
 

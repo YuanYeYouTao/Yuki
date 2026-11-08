@@ -134,8 +134,6 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         gateway=None,
         runtime_config=runtime.runtime_config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=runtime.runtime_config.agent.max_tool_calls,
-        max_model_requests=runtime.runtime_config.agent.max_model_requests,
         work_control=owner.control,
     )
     calls = tuple(ToolCall(i, ToolFunction("send", "{}")) for i in ("call_0", "call_1"))
@@ -146,7 +144,6 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
             selected,
             backend,
             agent,
-            remaining_calls=10,
             max_parallel_calls=2,
             manifest_revision="contract",
         )

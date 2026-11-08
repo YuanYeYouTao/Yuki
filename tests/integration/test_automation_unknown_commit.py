@@ -46,8 +46,6 @@ async def test_automation_commit_ack_loss_survives_the_real_main_binding(
         gateway=None,
         runtime_config=config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=config.agent.max_tool_calls,
-        max_model_requests=config.agent.max_model_requests,
     )
     backend = MainAgentBackend(case.chat, runtime)
     await backend.prepare(agent)

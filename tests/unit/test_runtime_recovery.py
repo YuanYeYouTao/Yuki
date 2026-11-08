@@ -447,3 +447,32 @@ async def test_prepared_input_wins_race_with_wait_commit(database, tmp_path):
     await control.settle(pending_inputs=False)
     assert control.current["state"] == "queued"
     assert control.outcome.reason.value == "waiting_input"
+
+
+@pytest.mark.parametrize("paid", [3, None])
+async def test_pulse_failure_keeps_interrupted_activation_request_count(paid):
+    """Failure cases: the pulse error replaces the interrupted activation's
+    cancellation and drops its paid request count; or a count is invented
+    when the activation recorded none."""
+    import time
+
+    from yuki.runtime.activation_outcome import record_model_requests, recorded_model_requests
+
+    async def renew():
+        raise RuntimeError("renewal failed")
+
+    async def expiry():
+        return time.time() + 60
+
+    async def activation():
+        async with supervise_lease(renew, expiry, interval=0.01):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                if paid is not None:
+                    record_model_requests(exc, paid)
+                raise
+
+    with pytest.raises(RuntimeError) as raised:
+        await asyncio.wait_for(activation(), 2)
+    assert recorded_model_requests(raised.value) == paid

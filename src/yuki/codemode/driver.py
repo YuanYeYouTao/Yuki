@@ -95,7 +95,7 @@ class CodeHost:
     execute_control: Callable[[ToolCall, str], Awaitable[tuple[str, bool]]]
     classify: Callable[[ToolCall], ChildClass]
     max_parallel: int
-    tool_limit: int
+    tool_limit: int | None
     result_limit: int
     archive: Callable[[str], Awaitable[str | None]] | None = None
     engine_factory: Callable[[PinnedWorker, CodeModeLimits], Any] | None = None
@@ -644,7 +644,11 @@ class CodeModeDriver:
         # Segment allowance, checked synchronously with in-flight reservations so
         # concurrent reads cannot overshoot it. The root budget stays atomic at T2.
         charged = counts_toward_business_limit(child.tool)
-        if charged and control.tools_started + self._inflight >= self.host.tool_limit:
+        if (
+            charged
+            and self.host.tool_limit is not None
+            and control.tools_started + self._inflight >= self.host.tool_limit
+        ):
             raise CodeCompositionYield(child.operation_id)
         self._inflight += int(charged)
         invocation = self._child_invocation(

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 from tests.conftest import MemorySender
 from tests.support.work_session import WorkSession, invoke_tool
-from tests.unit.test_history_dispatch_ownership import _scene, _tool
+from tests.unit.test_history_dispatch_ownership import _scene, _tool, retry_due_now
 from tests.unit.test_tool_effect_audit import active_work
 
 from yuki.capabilities.invocation import direct_invocations
@@ -114,10 +114,9 @@ async def test_t3_preserves_host_metadata_and_rejects_conflicting_results(
     provider = FakeLLMProvider(
         lambda _: _tool("task_control", {"action": "accept", "goal": "send once"}, "accept")
     )
-    env, harness, _chat, _state, message = await _scene(
-        database, tmp_path, provider, request_limit=1
-    )
+    env, harness, _chat, _state, message = await _scene(database, tmp_path, provider, yield_after=1)
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())

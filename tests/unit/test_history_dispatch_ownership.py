@@ -24,6 +24,7 @@ from yuki.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from yuki.llm.base import LLMUnavailableError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_repository import WorkRepository
@@ -35,15 +36,68 @@ from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
 
-async def _scene(database, tmp_path, provider, *, request_limit=24, code_enabled=False):
+def yield_activation_after(provider, requests):
+    """End the first activation after N answered requests, as a real retryable exit.
+
+    The next dispatch fails before admission (no request is bought), so the
+    accepted Work settles ``queued`` for WorkScheduler; later activations
+    proceed. There is no request-count segment any more.
+    """
+    complete = provider.complete
+    armed = True
+
+    async def complete_or_yield(request):
+        nonlocal armed
+        if armed and len(provider.requests) >= requests:
+            armed = False
+            raise LLMUnavailableError("synthetic provider outage before dispatch")
+        return await complete(request)
+
+    provider.complete = complete_or_yield
+
+
+def yield_each_activation_after(monkeypatch, requests):
+    """End every Work activation after N requests, as a real retryable exit.
+
+    The request beyond N fails inside dispatch admission, before it is reserved
+    or sent, so the original Work settles ``queued`` and later activations of
+    any Provider adapter resume it.
+    """
+    from yuki.runtime.work_control import WorkControl
+
+    reserve = WorkControl.reserve_request
+
+    async def reserve_or_yield(control, *, auxiliary=False):
+        if not auxiliary and control.current is not None and control.requests_started >= requests:
+            raise LLMUnavailableError("synthetic provider outage before dispatch")
+        await reserve(control, auxiliary=auxiliary)
+
+    monkeypatch.setattr(WorkControl, "reserve_request", reserve_or_yield)
+
+
+async def retry_due_now(database):
+    """Make the synthetic yield an immediately due, first-attempt resume.
+
+    Later real failures in a scenario keep their own attempt and backoff.
+    """
+    from sqlalchemy import update
+
+    from yuki.runtime.work_recovery_schema import recovery
+
+    async with database.immediate_session() as writer:
+        await writer.execute(update(recovery).values(not_before=0, attempts=0, failure_json="{}"))
+
+
+async def _scene(database, tmp_path, provider, *, yield_after=None, code_enabled=False):
     env = await social_env(database, tmp_path)
+    if yield_after is not None:
+        yield_activation_after(provider, yield_after)
     harness = build_harness(
         database,
         make_settings(
             database.url,
             runtime_work_enabled=True,
             enabled_groups_csv="20001",
-            agent_max_model_requests=request_limit,
             code_mode_enabled=code_enabled,
         ),
         provider,
@@ -119,7 +173,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
         raise AssertionError("unexpected model replay")
 
     provider._responder = respond
-    env, harness, chat, state, message = await _scene(database, tmp_path, provider, request_limit=2)
+    env, harness, chat, state, message = await _scene(database, tmp_path, provider, yield_after=2)
     result = await harness.processor.handle(message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 2
     repository = WorkRepository(database)

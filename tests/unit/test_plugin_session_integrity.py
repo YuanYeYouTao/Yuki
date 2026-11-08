@@ -126,7 +126,6 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             replace(authority, actor_user_id="99999"),
             session_id=str(session.session_id),
             user_input="read another person's story",
-            max_model_requests=None,
         )
 
 

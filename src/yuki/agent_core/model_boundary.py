@@ -17,26 +17,12 @@ from yuki.agent_core.types import (
 )
 from yuki.domain.messages import ChatResponse
 
-
-class LoopSignal:
-    __slots__ = ("name",)
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __repr__(self) -> str:
-        return f"<{self.name}>"
-
-
-# Request budget or segment limit reached: settle as exhausted.
-STOP = LoopSignal("stop")
-
-RequestResult = ChatResponse | End | LoopSignal
+RequestResult = ChatResponse | End
 
 
 class ModelBoundary(Protocol):
-    async def begin(self, index: int) -> LoopSignal | None:
-        """Per-request admission (budgets, public observation boundary)."""
+    async def begin(self, index: int) -> None:
+        """Per-request admission (public observation boundary)."""
 
     async def steer(self, index: int) -> End | None:
         """Consume durable Work inputs before the next request."""
@@ -59,6 +45,4 @@ class TurnSettlement(Protocol):
 
     async def finish_tool_turn(
         self, index: int, response: ChatResponse, batch: ToolBatchOutcome
-    ) -> TurnDecision | LoopSignal: ...
-
-    async def exhausted(self) -> object: ...
+    ) -> TurnDecision: ...

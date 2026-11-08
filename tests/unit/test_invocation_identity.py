@@ -43,7 +43,6 @@ async def execute(calls, backend, *, sequence=1):
         calls,
         backend,
         SimpleNamespace(execution_id="trusted-run", work_control=None),
-        remaining_calls=10,
         max_parallel_calls=2,
         chain_id="chain",
         request_sequence=sequence,

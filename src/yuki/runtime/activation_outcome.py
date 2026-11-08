@@ -56,8 +56,17 @@ class WorkActivationHandled(RuntimeError):
     """An owned activation has already committed its recovery decision."""
 
 
-class SegmentBudgetReached(RuntimeError):
-    """An auxiliary HTTP retry cannot borrow a request from the next activation."""
+_MODEL_REQUESTS = "yuki_model_requests"
+
+
+def record_model_requests(exc: BaseException, count: int) -> None:
+    """Carry an unowned activation's paid request count to its caller's settlement."""
+    setattr(exc, _MODEL_REQUESTS, count)
+
+
+def recorded_model_requests(exc: BaseException) -> int | None:
+    count = getattr(exc, _MODEL_REQUESTS, None)
+    return count if isinstance(count, int) else None
 
 
 class WorkRecoveryDeferred(RuntimeError):

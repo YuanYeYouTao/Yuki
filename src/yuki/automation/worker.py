@@ -19,12 +19,14 @@ from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.activation_outcome import recorded_model_requests
 from yuki.runtime.lease_heartbeat import supervise_lease
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import bind_work_activation
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.services.agent_tools import ToolRuntime
+from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.execution_sources import recover_automation_source
 from yuki.services.turn_coordinator import ConversationTurnCoordinator
 from yuki.time.service import TimeContextService
@@ -43,6 +45,7 @@ class AutomationWorker:
         runtime_config: RuntimeConfigService,
         conversation_scopes: ConversationScopeRepository,
         turns: ConversationTurnCoordinator,
+        concurrency: ConcurrencyManager,
         work_repository: WorkRepository,
         bindings: ActiveWorkBindings,
     ) -> None:
@@ -53,6 +56,7 @@ class AutomationWorker:
         self._config = runtime_config
         self._scopes = conversation_scopes
         self._turns = turns
+        self._concurrency = concurrency
         self._works = work_repository
         self._bindings = bindings
         self._stop = asyncio.Event()
@@ -135,6 +139,7 @@ class AutomationWorker:
             await self._repository.settle_interrupted_occurrences(
                 occurrence=(automation.id, automation.next_run_at),
                 error_category=type(exc).__name__,
+                llm_calls=recorded_model_requests(exc),
             )
             if not isinstance(exc, Exception):
                 raise
@@ -215,118 +220,123 @@ class AutomationWorker:
         ) as token:
             if token is None:
                 return
-            lease = await self._works.acquire(state.id, state.generation)
-            if lease is None:
-                return
-            activation = None
-            try:
-                assert automation.next_run_at is not None
-                run = await self._repository.create_run(
-                    automation.id,
-                    scheduled_for=automation.next_run_at,
-                    actual_started_at=self._time.clock.now(),
-                    worker_id=automation.claimed_by,
-                    version_id=automation.version_id,
-                )
-                if run is None:
+            # The conversation lock orders this occurrence with ordinary Mains:
+            # their input waits for the lock instead of losing the Work lease.
+            async with self._concurrency.conversation(key):
+                lease = await self._works.acquire(state.id, state.generation)
+                if lease is None:
                     return
-                original = await self._repository.get_for_run(run.id)
-                if original is None:
-                    raise ValueError("missing_original_run_version")
-                instruction = TaskSpec.model_validate(original.script).instruction()
-                execution_id = f"automation:{run.id}:{original.script_hash}"
-                source = {
-                    "owner": "automation",
-                    "origin": TurnOrigin.SCHEDULED_AUTOMATION.value,
-                    "automation_id": automation.id,
-                    "automation_run_id": run.id,
-                    "script_hash": original.script_hash,
-                    "parent_execution_id": execution_id,
-                    "conversation_id": state.id,
-                    "generation": state.generation,
-                    "principal_kind": original.creator_kind,
-                    "actor_person_id": original.canonical_creator_person_id,
-                    "actor_user_id": actor_user_id,
-                    "presence_id": original.canonical_presence_id,
-                    "space_id": conversation.space_id,
-                    "bot_user_id": original.bot_user_id,
-                    "current_group_id": group_id,
-                    "instruction": instruction,
-                }
-                recovered = await recover_automation_source(
-                    self._repository._database,
-                    state.id,
-                    source,
-                    request_id=execution_id,
-                )
-
-                async def validate() -> None:
-                    fresh = await recover_automation_source(
+                activation = None
+                try:
+                    assert automation.next_run_at is not None
+                    run = await self._repository.create_run(
+                        automation.id,
+                        scheduled_for=automation.next_run_at,
+                        actual_started_at=self._time.clock.now(),
+                        worker_id=automation.claimed_by,
+                        version_id=automation.version_id,
+                    )
+                    if run is None:
+                        return
+                    original = await self._repository.get_for_run(run.id)
+                    if original is None:
+                        raise ValueError("missing_original_run_version")
+                    instruction = TaskSpec.model_validate(original.script).instruction()
+                    execution_id = f"automation:{run.id}:{original.script_hash}"
+                    source = {
+                        "owner": "automation",
+                        "origin": TurnOrigin.SCHEDULED_AUTOMATION.value,
+                        "automation_id": automation.id,
+                        "automation_run_id": run.id,
+                        "script_hash": original.script_hash,
+                        "parent_execution_id": execution_id,
+                        "conversation_id": state.id,
+                        "generation": state.generation,
+                        "principal_kind": original.creator_kind,
+                        "actor_person_id": original.canonical_creator_person_id,
+                        "actor_user_id": actor_user_id,
+                        "presence_id": original.canonical_presence_id,
+                        "space_id": conversation.space_id,
+                        "bot_user_id": original.bot_user_id,
+                        "current_group_id": group_id,
+                        "instruction": instruction,
+                    }
+                    recovered = await recover_automation_source(
                         self._repository._database,
                         state.id,
                         source,
                         request_id=execution_id,
                     )
-                    if fresh != recovered:
-                        raise ValueError("automation_source_changed")
 
-                snapshot = ConversationTurnSnapshot(
-                    state.id,
-                    key,
-                    state.generation,
-                    None,
-                    token.version,
-                    identity.key,
-                    automation_run_id=run.id,
-                )
-                runtime = await self._config.snapshot(
-                    user_id=recovered.actor_person_id,
-                    group_id=recovered.target_space_id,
-                )
-                control = WorkControl(self._works, lease, execution_id, source, validate)
-                activation = bind_work_activation(control, bindings=self._bindings, scope_key=key)
-                async with activation:
-                    await validate()
-                    result = await self._generate(
-                        content=instruction,
-                        identity=identity,
-                        runtime=runtime,
-                        turn_token=token,
-                        turn_snapshot=snapshot,
-                        before_model_request=validate,
-                        source_runtime=ToolRuntime(
-                            inbound=None,
-                            actor_context=recovered.actor(execution_id),
-                            actor_is_superuser=recovered.actor_is_superuser,
-                            conversation_key=key,
-                            execution_id=execution_id,
-                            origin=TurnOrigin.SCHEDULED_AUTOMATION,
-                            scope_type=identity.scope_type,
-                            conversation_id=state.id,
-                            person_id=recovered.actor_person_id,
-                            space_id=recovered.target_space_id,
-                            external_target_id=recovered.external_target_id,
-                            sandbox_source=source,
-                            activation_context=recovered.activation_context,
-                        ),
+                    async def validate() -> None:
+                        fresh = await recover_automation_source(
+                            self._repository._database,
+                            state.id,
+                            source,
+                            request_id=execution_id,
+                        )
+                        if fresh != recovered:
+                            raise ValueError("automation_source_changed")
+
+                    snapshot = ConversationTurnSnapshot(
+                        state.id,
+                        key,
+                        state.generation,
+                        None,
+                        token.version,
+                        identity.key,
+                        automation_run_id=run.id,
                     )
-                if control.current is not None:
-                    await self._repository.settle_work_occurrences()
-                else:
-                    failure = result.outcome.failure if result.outcome is not None else None
-                    await self._repository.finish_run(
-                        run.id,
-                        status=RunStatus.FAILED if failure else RunStatus.SUCCEEDED,
-                        llm_calls=result.model_requests,
-                        tool_calls=result.tool_calls_used,
-                        messages_sent=result.messages_sent,
-                        error_category=failure.code if failure else None,
-                        summary={
-                            "result": result.text,
-                            "messages_sent_semantics": "social_successful_parts",
-                        },
-                        finished_at=self._time.clock.now(),
+                    runtime = await self._config.snapshot(
+                        user_id=recovered.actor_person_id,
+                        group_id=recovered.target_space_id,
                     )
-            finally:
-                if activation is None:
-                    await self._works.release(lease)
+                    control = WorkControl(self._works, lease, execution_id, source, validate)
+                    activation = bind_work_activation(
+                        control, bindings=self._bindings, scope_key=key
+                    )
+                    async with activation:
+                        await validate()
+                        result = await self._generate(
+                            content=instruction,
+                            identity=identity,
+                            runtime=runtime,
+                            turn_token=token,
+                            turn_snapshot=snapshot,
+                            before_model_request=validate,
+                            source_runtime=ToolRuntime(
+                                inbound=None,
+                                actor_context=recovered.actor(execution_id),
+                                actor_is_superuser=recovered.actor_is_superuser,
+                                conversation_key=key,
+                                execution_id=execution_id,
+                                origin=TurnOrigin.SCHEDULED_AUTOMATION,
+                                scope_type=identity.scope_type,
+                                conversation_id=state.id,
+                                person_id=recovered.actor_person_id,
+                                space_id=recovered.target_space_id,
+                                external_target_id=recovered.external_target_id,
+                                sandbox_source=source,
+                                activation_context=recovered.activation_context,
+                            ),
+                        )
+                    if control.current is not None:
+                        await self._repository.settle_work_occurrences()
+                    else:
+                        failure = result.outcome.failure if result.outcome is not None else None
+                        await self._repository.finish_run(
+                            run.id,
+                            status=RunStatus.FAILED if failure else RunStatus.SUCCEEDED,
+                            llm_calls=result.model_requests,
+                            tool_calls=result.tool_calls_used,
+                            messages_sent=result.messages_sent,
+                            error_category=failure.code if failure else None,
+                            summary={
+                                "result": result.text,
+                                "messages_sent_semantics": "social_successful_parts",
+                            },
+                            finished_at=self._time.clock.now(),
+                        )
+                finally:
+                    if activation is None:
+                        await self._works.release(lease)

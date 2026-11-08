@@ -153,8 +153,6 @@ async def run(*, native_child=False):
                 gateway=None,
                 runtime_config=tr.runtime_config,
                 allowed_capabilities=frozenset(),
-                max_model_requests=tr.runtime_config.agent.max_model_requests,
-                max_tool_calls=tr.runtime_config.agent.max_tool_calls,
             )
 
             async def execute(backend, args, seq):

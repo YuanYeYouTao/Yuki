@@ -65,7 +65,7 @@ class CreateAgentSessionRequest(StrictModel):
 class RunAgentSessionRequest(StrictModel):
     session_id: UUID
     user_input: str  # 1..12000
-    max_model_requests: int | None  # 1..64
+    max_model_requests: int | None  # 1..64；无工具会话单次请求，总被满足
 
 
 class AgentSession(StrictModel):

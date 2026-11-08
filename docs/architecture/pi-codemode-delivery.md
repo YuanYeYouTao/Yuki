@@ -182,7 +182,9 @@ mypy 710 文件无错误。
   宿主停止脚本并配对外层结果；get/list 保持原分页且不停止脚本。
 - 记忆写与其他副作用不同步；先前已有副作用时记忆写被拒；同步的发送不派发。
 - 段额度用尽：外层 call 不配对，下一段 restore 的 `PendingComposition` 在任何模型请求前
-  续跑同一程序；已配对 partial 永不恢复 VM。
+  续跑同一程序；已配对 partial 永不恢复 VM。（2026-11-07 起已删除每段业务额度，
+  主 Agent 传入的 `tool_limit` 为空，此让出只在显式段额度下触发；现行合同见
+  [Tool Kernel](tool-kernel.md)。）
 
 更新的既有测试：`tests/integration/test_code_composition_restore.py`
 （`PendingComposition` 现携带原外层 call 的 name/arguments）。清单 JSON 重新导出为 76 项。

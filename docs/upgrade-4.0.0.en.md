@@ -91,7 +91,7 @@ The Host only loads `plugin_api = "9.0"`. Product 4.0 and Plugin API 9.0 are sep
 | [8.0 automation](plugin-development/api-8.0-migration.md) | Adopt current TaskSpec definitions and original request identities |
 | [9.0 message identity](plugin-development/api-9.0-migration.md) | Use nullable `native_message_id`; tasks/replies/history continue using internal `event_id`, without reconstructing ownership from native IDs |
 
-Independent sessions retain per-message metadata, history, real `max_model_requests` and request counts. Main's `ctx.agent.run()` retains its separate tool and authorization contract.
+Independent sessions retain per-message metadata, history and request counts; `max_model_requests` is still accepted, and a tool-free session answers in one request charged to the initiating root Work. Explicit `max_model_requests`/`max_tool_calls` on Main's `ctx.agent.run()` are written to the root Work budget as totals for the whole Work. Main's `ctx.agent.run()` retains its separate tool and authorization contract.
 
 Preserve original KV, jobs, outbox, approval and incomplete receipts. Rediscover the updated plugin, review its actual manifest and approve the capabilities it needs. Do not broaden approval to bypass an interface change or resend old notifications/paid requests. Bundled plugins follow actual SDK 9.0 manifests/examples. [Kun](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) and [GitHub Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) use their independently maintained compatible versions. GitHub Monitor is no longer bundled in the main deployment archive.
 

@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import event, text, update
 from sqlalchemy.exc import OperationalError
-from tests.support.work_runner_helpers import case, run, tool
+from tests.support.work_runner_helpers import case, limit_root_requests, run, tool
 from tests.unit.test_work_journal_source_retry import _change, _saved, _session
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -56,14 +56,16 @@ def fail_publications(
     return writers
 
 
-async def paid_case(database, tmp_path):
+async def paid_case(database, tmp_path, *, models=1):
     call = tool("read_fixture", {"key": "same"}, "original-paid-call")
     result = await case(
         database,
         tmp_path,
         [ChatResponse("original-paid-response", 0, tool_calls=(call,))],
     )
-    result.runtime = replace(result.runtime, max_model_requests=1)
+    # One paid request; the root's explicit total stops a second purchase.
+    if models is not None:
+        await limit_root_requests(result, models)
     return result
 
 
@@ -87,7 +89,7 @@ async def test_busy_republishes_original_response_in_new_transactions_without_a_
     assert all(not writer.in_transaction() for writer in writers)
     assert len(test_case.provider.requests) == 1
     assert test_case.observed == ["read_fixture"]
-    assert result.work_state == "queued"  # normal segment budget boundary
+    assert result.work_state == "suspended"  # the root's explicit total
     persisted = await test_case.repository.get(test_case.control.current["id"])
     assert persisted["model_requests"] == persisted["tool_calls"] == 1
     journal = await snapshot(test_case)
@@ -148,7 +150,7 @@ async def test_paid_checkpoint_busy_exits_on_original_cancellation_or_lost_lease
 async def test_known_provider_failure_retries_original_work_with_new_input_and_budget(
     database, tmp_path
 ):
-    test_case = await paid_case(database, tmp_path)
+    test_case = await paid_case(database, tmp_path, models=None)
 
     def respond(_request):
         if len(test_case.provider.requests) == 1:
@@ -211,7 +213,7 @@ async def test_confirmed_outer_rollback_replaces_inner_cleanup_uncertainty(
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
     assert len(writers) == 2
-    assert result.work_state == "queued"
+    assert result.work_state == "suspended"
     assert len(test_case.provider.requests) == 1 and test_case.observed == ["read_fixture"]
 
 
@@ -221,7 +223,8 @@ async def test_predispatch_busy_republishes_without_buying_an_extra_request(
     fail_publications(monkeypatch, phase="dispatched", failures=10)
     test_case = await paid_case(database, tmp_path)
     result = await run(test_case)
-    assert result.work_state == "queued" and result.outcome is None
+    assert result.work_state == "suspended"
+    assert result.outcome.reason.value == "root_budget"
     assert len(test_case.provider.requests) == 1 and test_case.observed == ["read_fixture"]
     persisted = await test_case.repository.get(test_case.control.current["id"])
     assert persisted["model_requests"] == persisted["tool_calls"] == 1
@@ -264,7 +267,7 @@ async def test_real_competing_sqlite_writer_retries_only_the_received_publicatio
         assert busy_codes == [sqlite3.SQLITE_BUSY] and response_attempts == 2
         assert len(test_case.provider.requests) == 1
         assert test_case.observed == ["read_fixture"]
-        assert result.work_state == "queued"
+        assert result.work_state == "suspended"
         persisted = await test_case.repository.get(test_case.control.current["id"])
         assert persisted["model_requests"] == persisted["tool_calls"] == 1
         assert (await snapshot(test_case)).record["phase"] == "paired"

@@ -40,7 +40,7 @@ from yuki.llm.base import (
 )
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.models import ModelCapability, ModelTask
-from yuki.runtime.activation_outcome import ActivationOutcome
+from yuki.runtime.activation_outcome import ActivationOutcome, record_model_requests
 from yuki.runtime.effect_outcomes import (
     ResultCapture,
     captured_evidence,
@@ -104,8 +104,6 @@ class AgentRuntime:
     gateway: object | None
     runtime_config: RuntimeConfigSnapshot
     allowed_capabilities: frozenset[str]
-    max_tool_calls: int | None
-    max_model_requests: int | None
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
     presence_id: str | None = None
@@ -321,25 +319,8 @@ class AgentRunner:
         token = current_receipts.set(receipts)
         control = runtime.work_control
         if control is not None:
-            runtime = replace(
-                runtime,
-                max_model_requests=(
-                    runtime.max_model_requests
-                    if runtime.max_model_requests is not None
-                    else runtime.runtime_config.agent.max_model_requests
-                ),
-                max_tool_calls=(
-                    runtime.max_tool_calls
-                    if runtime.max_tool_calls is not None
-                    else runtime.runtime_config.agent.max_tool_calls
-                ),
-            )
-        if control is not None:
             for _ in range(runtime.preparation_model_requests):
                 await control.reserve_request(auxiliary=True)
-        if control is not None:
-            assert runtime.max_model_requests is not None
-            control.segment_model_limit = runtime.max_model_requests
         try:
             try:
                 from yuki.services.turn_execution import TurnExecution
@@ -372,8 +353,11 @@ class AgentRunner:
                             original = original.exceptions[0]
                         raise original from exc
                 raise
-        except Exception as exc:
-            if control is None or control.current is None:
+        except BaseException as exc:
+            if control is None or control.current is None or not isinstance(exc, Exception):
+                if control is not None:
+                    # The unowned caller settles this exit with the requests it paid.
+                    record_model_requests(exc, control.requests_started)
                 raise
             outcome = await control.recover_failure(exc)
             return AgentRunResult(
@@ -549,9 +533,6 @@ class AgentRunner:
                     (call,),
                     tools,
                     runtime,
-                    remaining_calls=None
-                    if runtime.max_tool_calls is None
-                    else max(0, runtime.max_tool_calls - control.tools_started),
                     max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
                     declared_names=declared,
                     batch_calls=calls,
@@ -694,7 +675,6 @@ class AgentRunner:
                 call, tools, runtime, frozenset(api.schemas), key
             )
 
-        assert runtime.max_tool_calls is not None
         return CodeHost(
             control=control,
             api=api,
@@ -704,8 +684,8 @@ class AgentRunner:
             execute_control=execute_control,
             classify=classify,
             max_parallel=max_parallel_calls,
-            # Segment business allowance: the same counter direct calls use.
-            tool_limit=runtime.max_tool_calls,
+            # No segment allowance; explicit root budgets apply at each child's T2.
+            tool_limit=None,
             result_limit=effective_result_character_budget(runtime.runtime_config) or 12000,
             archive=tools.archive_code_result if tools is not None else None,
             background=(
@@ -760,7 +740,6 @@ class AgentRunner:
         tools: AgentToolBackend | None,
         runtime: AgentRuntime,
         *,
-        remaining_calls: int | None,
         max_parallel_calls: int,
         declared_names: frozenset[str],
         chain_id: str = "",
@@ -824,11 +803,6 @@ class AgentRunner:
                     calls[index:end],
                     tools,
                     runtime,
-                    remaining_calls=(
-                        None
-                        if remaining_calls is None
-                        else max(0, remaining_calls - mixed_executed)
-                    ),
                     max_parallel_calls=max_parallel_calls,
                     declared_names=declared_names,
                     chain_id=chain_id,
@@ -1021,7 +995,7 @@ class AgentRunner:
             tuple(unique_calls),
             tools,
             runtime,
-            remaining_calls=remaining_calls,
+            remaining_calls=await control.remaining_tools() if control is not None else None,
             max_parallel_calls=max_parallel_calls,
             chain_id=chain_id,
             request_sequence=request_sequence,

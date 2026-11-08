@@ -13,7 +13,7 @@ from yuki.services.turn_execution import TurnExecution
 async def compact_session(database, control, initial, *, public_tail=()):
     provider = FakeLLMProvider(lambda request: "Verified results; continue the original task.")
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, auxiliary_requests=[0], max_model_requests=20)
+    runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = control.session.transcript
     execution.state.public_tail = list(public_tail)

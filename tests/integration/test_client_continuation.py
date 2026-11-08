@@ -372,11 +372,9 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
                 "after-input-read",
             )
 
-        # One existing per-segment request slot yields naturally after this tool.
+        # This activation ends after one request with a retryable exit.
         # The original root budget and counters remain in the original tables.
-        app = ApplicationContainer(
-            settings.model_copy(update={"agent_max_model_requests": 1}), database=database
-        )
+        app = ApplicationContainer(settings, database=database)
         app.models.apply_catalog(
             _catalog(_profile()),
             ModelClientPool(injected_profiles={"main": FakeLLMProvider(read_after_input)}),
@@ -384,7 +382,11 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
         app.gateway_registry.connect(qq.bot, provider_id="snowluma", presence_id=qq.presence)
         await app.model_invocations.writer.start()
         await app.app_gateway.start()
-        await app.work_resumer.resume(await repository.get(original["id"]))
+        with pytest.MonkeyPatch.context() as patch:
+            from tests.unit.test_history_dispatch_ownership import yield_each_activation_after
+
+            yield_each_activation_after(patch, 1)
+            await app.work_resumer.resume(await repository.get(original["id"]))
         continued = await repository.get(original["id"])
         assert (
             continued["state"] == "queued"

@@ -91,7 +91,7 @@ Host 只加载精确声明 `plugin_api = "9.0"` 的插件。产品 4.0 与 Plugi
 | [8.0 自动化](plugin-development/api-8.0-migration.md) | 按当前 TaskSpec 及原 request 身份适配自动化定义 |
 | [9.0 消息身份](plugin-development/api-9.0-migration.md) | 使用可空 `native_message_id`，内部任务/回复/历史仍沿 `event_id`；不将原生号重建为业务身份 |
 
-独立会话仍保留逐消息 metadata、历史、实际 `max_model_requests` 和请求计数。Main 的 `ctx.agent.run()` 继续沿自身工具与授权合同，不与无工具独立会话混为一谈。
+独立会话仍保留逐消息 metadata、历史和请求计数；`max_model_requests` 仍可传入，独立会话为无工具的单次请求，嵌套请求计入发起方根 Work。Main 的 `ctx.agent.run()` 的显式 `max_model_requests`/`max_tool_calls` 写入根 Work 预算，是整项工作的总额度。Main 的 `ctx.agent.run()` 继续沿自身工具与授权合同，不与无工具独立会话混为一谈。
 
 保存插件原 KV、job、outbox、批准和未完成回执，更新插件后重新发现、审阅实际 manifest 并按所需权限批准。不要扩大批准来绕过接口变化，也不重发旧通知或已付模型请求。随仓库插件以实际 SDK 9.0 示例和 manifest 为准；[Kun](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game)及[GitHub Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor)使用各自仓库的当前兼容实现。GitHub Monitor 不再随主仓部署包附带。
 

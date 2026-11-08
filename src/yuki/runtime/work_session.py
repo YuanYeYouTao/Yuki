@@ -989,7 +989,12 @@ class WorkSession:
         *,
         compaction_versions: tuple[int, int] | None = None,
         publication: Publication | None = None,
+        work_id: str | None = None,
     ) -> None:
+        """Publish this activation's checkpoint for its current Work.
+
+        ``work_id`` names a Work that ``publication`` admits in the same writer.
+        """
         candidate = self.dispatch_boundary if phase == "dispatched" else None
         if candidate is not None:
             candidate.stage()
@@ -1006,6 +1011,7 @@ class WorkSession:
                 calls,
                 compaction_versions=compaction_versions,
                 publication=publish if candidate is not None else publication,
+                work_id=work_id,
             )
         except BaseException:
             if candidate is not None:
@@ -1023,9 +1029,12 @@ class WorkSession:
         *,
         compaction_versions: tuple[int, int] | None = None,
         publication: Publication | None = None,
+        work_id: str | None = None,
     ) -> None:
-        if self.control.current is None:
-            return
+        if work_id is None:
+            if self.control.current is None:
+                return
+            work_id = str(self.control.current["id"])
         assert self.transcript is not None
         self.handoff_work_id = self.control.handoff_work_id or self.handoff_work_id
         self.pending = [
@@ -1046,7 +1055,7 @@ class WorkSession:
                 try:
                     await self.journal.save(
                         self.control.lease,
-                        self.control.current["id"],
+                        work_id,
                         self.contract,
                         self.transcript,
                         phase=phase,

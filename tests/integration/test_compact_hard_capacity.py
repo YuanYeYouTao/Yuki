@@ -150,7 +150,6 @@ async def test_hard_capacity_preserves_paid_checkpoint_and_only_compacts_uncover
     monkeypatch.setattr(runner._models, "capacity", lambda _: ModelCapacity(input_tokens=budget))
     runtime = replace(
         runtime,
-        max_model_requests=None,
         auxiliary_requests=[0],
     )
     execution = TurnExecution(runner, initial, runtime, None)
@@ -264,7 +263,6 @@ async def test_native_execution_compact_can_hand_over_to_newly_legal_public_comp
     )
     runtime = replace(
         runtime,
-        max_model_requests=None,
         auxiliary_requests=[0],
         public_compaction=public,
         fixed_tools=(ChatTool("read_probe", "Read original file", {"type": "object"}),),
@@ -385,7 +383,6 @@ async def test_ordinary_user_only_material_can_compact_without_claiming_tool_aut
     runtime = replace(
         runtime,
         work_control=None,
-        max_model_requests=None,
         auxiliary_requests=[0],
         fixed_tools=(ChatTool("read_probe", "Read original file", {"type": "object"}),),
     )
@@ -465,7 +462,6 @@ async def test_cold_host_portable_receipt_is_protected_during_hard_preparation(
     monkeypatch.setattr(runner._models, "capacity", lambda _: ModelCapacity(input_tokens=budget))
     runtime = replace(
         runtime,
-        max_model_requests=None,
         auxiliary_requests=[0],
         fixed_tools=(ChatTool("read_probe", "Read original file", {"type": "object"}),),
     )

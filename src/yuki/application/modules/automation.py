@@ -16,6 +16,7 @@ from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.persistence.database import Database
 from yuki.runtime.work_repository import WorkRepository
 from yuki.services.chat import ChatService
+from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.turn_coordinator import ConversationTurnCoordinator
 from yuki.time.service import TimeContextService
 
@@ -40,6 +41,7 @@ class AutomationModule:
         admin_audit: AdminAuditService,
         conversation_scopes: ConversationScopeRepository,
         turns: ConversationTurnCoordinator,
+        concurrency: ConcurrencyManager,
         work_repository: WorkRepository,
     ) -> None:
         self._settings = settings
@@ -50,6 +52,7 @@ class AutomationModule:
         self._audit = admin_audit
         self._scopes = conversation_scopes
         self._turns = turns
+        self._concurrency = concurrency
         self._works = work_repository
 
     def build(self) -> AutomationBundle:
@@ -72,6 +75,7 @@ class AutomationModule:
                 runtime_config=self._config,
                 conversation_scopes=self._scopes,
                 turns=self._turns,
+                concurrency=self._concurrency,
                 work_repository=self._works,
                 bindings=self._chat.runtime.bindings,
             ),

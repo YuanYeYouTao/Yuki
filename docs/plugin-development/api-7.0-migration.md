@@ -10,7 +10,7 @@ Host 只加载精确声明 `plugin_api = "7.0"` 的插件。独立会话的公�
 - `RunAgentSessionRequest.allowed_capabilities`、`max_tool_calls`。
 - `AgentSessionRunResult.tool_calls_used`，它在无工具会话中始终为零。
 
-旧字段不被忽略，也不转换成新授权；调用方直接移除这些参数。`max_model_requests` 继续限制真实请求，返回值仍有 `text`、`session` 和 `model_requests`。主 Agent 的 `ctx.agent.run()` 工具与权限合同不因此变化。
+旧字段不被忽略，也不转换成新授权；调用方直接移除这些参数。`max_model_requests` 仍可传入；独立会话是无工具的单次请求，该值总被满足。返回值仍有 `text`、`session` 和 `model_requests`。主 Agent 的 `ctx.agent.run()` 工具与权限合同不因此变化。
 
 同一人的原 Session 历史按原归属读取。Space 暂停后仍能读取已有资料、保存并返回已接纳的模型结果；开始新的 run 仍核真实当前资格和插件会话权限，不能跨插件或场景读取。
 

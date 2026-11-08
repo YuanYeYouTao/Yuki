@@ -94,8 +94,6 @@ async def _boundary_scene(database, tmp_path):
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
         allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
         before_model_request=AsyncMock(),
     )
 

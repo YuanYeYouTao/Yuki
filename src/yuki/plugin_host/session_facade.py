@@ -61,8 +61,9 @@ class BoundAgentSessionFacade:
         result = await self._service.run(
             self._authority,
             session_id=str(request.session_id),
+            # A tool-free isolated session answers in one request, within any
+            # explicit SDK limit; nested requests are charged to the parent root.
             user_input=request.user_input,
-            max_model_requests=request.max_model_requests,
         )
         return AgentSessionRunResult(
             session=_sdk_session(result.session),

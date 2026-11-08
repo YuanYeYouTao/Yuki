@@ -305,7 +305,6 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
         )
         runtime = replace(
             runtime,
-            max_model_requests=None,
             auxiliary_requests=[0],
             runtime_config=replace(
                 runtime.runtime_config,
@@ -366,7 +365,6 @@ async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp
     monkeypatch.setattr(runner._models, "capacity", lambda task: ModelCapacity(input_tokens=4096))
     runtime = replace(
         runtime,
-        max_model_requests=3,
         auxiliary_requests=[0],
     )
     execution = TurnExecution(runner, initial, runtime, None)

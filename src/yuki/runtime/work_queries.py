@@ -27,6 +27,19 @@ from yuki.runtime.work_wait_schema import waits
 PROMPT_GOAL_CHARACTERS = 160
 PROMPT_CREATOR_CHARACTERS = 64
 PROMPT_AVAILABLE_LIMIT = 16
+PROMPT_RECENT_STEPS = 8
+# Original receipt facts a later activation needs; arguments are not stored.
+PROMPT_STEP_FIELDS = (
+    "tool",
+    "ok",
+    "pending",
+    "uncertain",
+    "status",
+    "run_id",
+    "error_code",
+    "artifacts",
+    "delivered",
+)
 
 
 class WorkQueries:
@@ -40,6 +53,7 @@ class WorkQueries:
         *,
         local: bool = False,
         include_workers: bool = False,
+        scope_fields: tuple[str, ...] = SOURCE_SCOPE_FIELDS,
     ) -> Select[Any]:
         creator = source_scope_column("actor_user_id")
         person = func.json_extract(work.c.source_json, literal_column("'$.actor_person_id'"))
@@ -94,7 +108,7 @@ class WorkQueries:
                     same_person_condition(source_scope_column(key), source[key])
                     if key == "actor_person_id" and source.get(key)
                     else source_scope_column(key).is_(source.get(key))
-                    for key in SOURCE_SCOPE_FIELDS
+                    for key in scope_fields
                 ),
             )
         if local and lease.work_id:
@@ -212,9 +226,14 @@ class WorkQueries:
                 result["wait"] = waiting
         return result
 
-    def _prompt_query(self, lease: WorkLease, source: dict[str, Any]) -> Select[Any]:
+    def _prompt_query(
+        self,
+        lease: WorkLease,
+        source: dict[str, Any],
+        scope_fields: tuple[str, ...] = SOURCE_SCOPE_FIELDS,
+    ) -> Select[Any]:
         """Read a bounded directory excerpt, never a replacement for the goal."""
-        query = self._query(lease, source, local=True)
+        query = self._query(lease, source, local=True, scope_fields=scope_fields)
         return query.with_only_columns(
             work.c.id.label("work_id"),
             func.substr(work.c.goal, 1, PROMPT_GOAL_CHARACTERS).label("goal_excerpt"),
@@ -243,12 +262,20 @@ class WorkQueries:
             return [dict(row) for row in (await session.execute(query)).mappings().all()]
 
     async def recent(self, lease: WorkLease, source: dict[str, Any]) -> dict[str, Any] | None:
-        """Only this actor/source and current conversation generation enter prompts."""
-        query = self._prompt_query(lease, source)
+        """This actor's latest Work in the current conversation generation, from any entry.
+
+        A later message and the same person's scheduled occurrence both read what
+        the previous execution actually did: its latest original step receipts.
+        """
+        query = self._prompt_query(
+            lease, source, tuple(key for key in SOURCE_SCOPE_FIELDS if key != "origin")
+        )
         columns = query.selected_columns
         query = query.with_only_columns(
             columns.work_id, columns.goal_excerpt, columns.goal_complete, columns.state
         )
+        from yuki.runtime.effect_outcomes import historical_evidence
+
         async with self.repository.database.read_session() as session:
             row = (
                 (
@@ -259,7 +286,32 @@ class WorkQueries:
                 .mappings()
                 .first()
             )
-            return dict(row) if row else None
+            if row is None:
+                return None
+            steps = (
+                (
+                    await session.execute(
+                        select(effects)
+                        .where(effects.c.work_id == row["work_id"])
+                        .order_by(effects.c.updated.desc(), effects.c.effect_key.desc())
+                        .limit(PROMPT_RECENT_STEPS)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        recent = dict(row)
+        recent["recent_steps"] = [
+            {
+                key: value
+                for key, value in historical_evidence(
+                    json.loads(step["receipt_json"]), state=step["state"], kind=step["kind"]
+                ).items()
+                if key in PROMPT_STEP_FIELDS
+            }
+            for step in steps
+        ]
+        return recent
 
     @staticmethod
     def _cursor(cursor: str) -> tuple[float, str]:

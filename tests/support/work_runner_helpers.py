@@ -89,8 +89,6 @@ async def case(database, tmp_path, responses, *, send_status="succeeded"):
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
         allowed_capabilities=frozenset(),
-        max_tool_calls=12,
-        max_model_requests=12,
         work_control=control,
         fixed_tools=fixed_tools,
     )
@@ -105,6 +103,14 @@ async def case(database, tmp_path, responses, *, send_status="succeeded"):
         observed=observed,
         chat=chat,
     )
+
+
+async def limit_root_requests(test_case, models):
+    """Give the original root Work an explicit total, the only request limit left."""
+    from yuki.runtime.work_budget import limit
+
+    async with test_case.repository.database.immediate_session() as writer:
+        await limit(writer, test_case.control.current["id"], models=models, tools=None)
 
 
 async def run(test_case):

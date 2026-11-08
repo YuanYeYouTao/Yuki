@@ -273,7 +273,7 @@ async def test_current_compact_keeps_unobserved_original_receipt_for_next_main(
         )
     )
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=None, auxiliary_requests=[0])
+    runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript
     evidence.update(
@@ -373,7 +373,6 @@ async def test_legacy_public_compact_restore_does_not_invent_original_effect_key
         public_compaction=context,
         compact_focus="",
         auxiliary_requests=[0],
-        max_model_requests=None,
     )
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript
