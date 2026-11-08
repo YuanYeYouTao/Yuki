@@ -328,6 +328,11 @@ def _input_content(message: InboundMessage, text: str) -> str:
     return content
 
 
+def _audio_failed(audio: AudioInput, text: str, has_media_input: bool) -> bool:
+    """Voice was the only input and none of it was transcribed."""
+    return bool(audio.error and not audio.transcript and not has_media_input and not text.strip())
+
+
 def _same_input_source(expected: EventRecord, current: EventRecord | None) -> bool:
     return current is not None and (
         source_revision(expected),
@@ -543,7 +548,7 @@ class MessageProcessor:
             return ProcessResult(False, reason="ordinary_busy_or_superseded")
         snapshot = replace(observed.snapshot, coordinator_version=token.version)
         with self._chat.pin_model_runtime():
-            return await self._handle_foreground(
+            return await self._prepare_foreground(
                 observed.message,
                 observed.sender,
                 observed.profile,
@@ -553,8 +558,6 @@ class MessageProcessor:
                 runtime,
                 PolicyDecision(True, observed.message.text, reason=reason),
                 None,
-                False,
-                True,
                 observed.created,
                 observed.has_media_input,
                 binding,
@@ -946,12 +949,7 @@ class MessageProcessor:
                         )
                     except (TurnInterruptedError, TurnSupersededError, WorkConflict):
                         return ProcessResult(True, reason="turn_interrupted")
-                    if (
-                        audio.error
-                        and not audio.transcript
-                        and not has_media_input
-                        and not (decision.content or message.text).strip()
-                    ):
+                    if _audio_failed(audio, decision.content or message.text, has_media_input):
                         sent = await self._send_text(
                             message, sender, audio.failure_message, turn_snapshot=turn_snapshot
                         )
@@ -1013,7 +1011,7 @@ class MessageProcessor:
                 binding = await self._participation.binding_for_event(
                     record.id, record=record, runtime=runtime_snapshot
                 )
-        return await self._handle_foreground(
+        return await self._prepare_foreground(
             message,
             sender,
             profile,
@@ -1023,60 +1021,11 @@ class MessageProcessor:
             runtime_snapshot,
             decision,
             direct_match,
-            admin_candidate,
-            direct_turn,
             created,
             has_media_input,
             binding,
             started,
         )
-
-    async def _handle_foreground(
-        self,
-        message: InboundMessage,
-        sender: OutboundSender,
-        profile: UserProfileSnapshot,
-        record: EventRecord,
-        turn_snapshot: ConversationTurnSnapshot,
-        turn_token: TurnToken,
-        runtime_snapshot: RuntimeConfigSnapshot,
-        decision: PolicyDecision,
-        direct_match: DirectCommandMatch | None,
-        admin_candidate: bool,
-        direct_turn: bool,
-        created: bool,
-        has_media_input: bool,
-        binding: OrdinaryParticipationBinding | None,
-        started: float,
-        *,
-        input_only: bool = False,
-        defer_new_main: bool = False,
-        observed: _ObservedHumanTurn | None = None,
-    ) -> ProcessResult:
-        lock = self._ordinary_locks.setdefault(record.id, asyncio.Lock())
-        async with lock:
-            if await self.ordinary_admissions.get(record.id) is not None:
-                return ProcessResult(False, reason="ordinary_already_admitted")
-            return await self._prepare_foreground(
-                message,
-                sender,
-                profile,
-                record,
-                turn_snapshot,
-                turn_token,
-                runtime_snapshot,
-                decision,
-                direct_match,
-                admin_candidate,
-                direct_turn,
-                created,
-                has_media_input,
-                binding,
-                started,
-                input_only=input_only,
-                defer_new_main=defer_new_main,
-                observed=observed,
-            )
 
     async def _prepare_human_input(
         self,
@@ -1293,8 +1242,6 @@ class MessageProcessor:
         runtime_snapshot: RuntimeConfigSnapshot,
         decision: PolicyDecision,
         direct_match: DirectCommandMatch | None,
-        admin_candidate: bool,
-        direct_turn: bool,
         created: bool,
         has_media_input: bool,
         binding: OrdinaryParticipationBinding | None,
@@ -1304,434 +1251,430 @@ class MessageProcessor:
         defer_new_main: bool = False,
         observed: _ObservedHumanTurn | None = None,
     ) -> ProcessResult:
-        # defer_new_main: offer the raw source to the original Work/wait only.
-        # It is not a new foreground turn, so newer messages neither cancel nor
-        # supersede it; rate, ASR, media and text limits still apply.
-        identity = message.scope()
-        if observed is None:
-            observed = self._observed_human_turns.get(record.id)
-        coordinator_key = turn_snapshot.scope_key
-        event_key = build_event_key(message, identity.key)
-        if not defer_new_main:
-            category = (
-                "command" if direct_match is not None or decision.command is not None else "chat"
-            )
-            rate = await self._rate_limiter.check(
-                user_id=cast(str, record.author_person_id),
-                group_id=message.space_id,
-                category=category,
-            )
-            if not rate.allowed:
+        async with self._ordinary_locks.setdefault(record.id, asyncio.Lock()):
+            if await self.ordinary_admissions.get(record.id) is not None:
+                return ProcessResult(False, reason="ordinary_already_admitted")
+            # defer_new_main: offer the raw source to the original Work/wait only.
+            # It is not a new foreground turn, so newer messages neither cancel nor
+            # supersede it; rate, ASR, media and text limits still apply.
+            identity = message.scope()
+            if observed is None:
+                observed = self._observed_human_turns.get(record.id)
+            coordinator_key = turn_snapshot.scope_key
+            event_key = build_event_key(message, identity.key)
+            if not defer_new_main:
+                category = (
+                    "command"
+                    if direct_match is not None or decision.command is not None
+                    else "chat"
+                )
+                rate = await self._rate_limiter.check(
+                    user_id=cast(str, record.author_person_id),
+                    group_id=message.space_id,
+                    category=category,
+                )
+                if not rate.allowed:
+                    sent = await self._send_text(
+                        message,
+                        sender,
+                        RATE_LIMIT_MESSAGE,
+                        turn_snapshot=turn_snapshot,
+                    )
+                    return ProcessResult(True, int(sent), f"{rate.scope}_rate_limited")
+
+            if direct_match is not None:
+                try:
+                    return await self._handle_direct_plugin_command(
+                        direct_match,
+                        message,
+                        identity,
+                        sender,
+                        event_key,
+                        started,
+                        turn_snapshot,
+                    )
+                except (TurnInterruptedError, TurnSupersededError, WorkConflict):
+                    return ProcessResult(True, reason="turn_interrupted")
+
+            if decision.command is not None:
+                try:
+                    return await self._handle_command(
+                        decision.command,
+                        message,
+                        identity,
+                        profile,
+                        decision.content,
+                        sender,
+                        event_key,
+                        started,
+                        turn_snapshot,
+                    )
+                except (TurnInterruptedError, TurnSupersededError, WorkConflict):
+                    return ProcessResult(True, reason="turn_interrupted")
+
+            content = _input_content(message, decision.content)
+            is_overlong = len(content) > self._settings.max_input_characters
+            if not _same_input_source(record, await self._ledger.get_event(record.id)):
+                return ProcessResult(False, reason="ordinary_source_changed")
+            audio: AudioInput | None = None
+            work_input_id: int | None = None
+            prepared: PreparedOrdinaryAdmission | None
+
+            async def abandon(exc: Exception) -> ProcessResult:
+                """Drop this unadmitted input; a write whose outcome is open propagates."""
+                if (
+                    write_failure_phase(exc) is not None
+                    and write_failure_committed(exc) is not False
+                ):
+                    raise exc
+                if isinstance(exc, OrdinaryAdmissionDuplicate):
+                    return ProcessResult(False, reason="ordinary_already_admitted")
+                await self._chat.discard_work_input(work_input_id)
+                if isinstance(exc, OrdinaryAdmissionConflict):
+                    return ProcessResult(False, reason="ordinary_source_changed")
+                return ProcessResult(True, reason="turn_interrupted")
+
+            async def prepare_source(*, existing_work: bool) -> PreparedOrdinaryAdmission | None:
+                nonlocal record, audio, prepared
+                cached = observed.prepared_input if observed is not None else None
+                async with (
+                    nullcontext()
+                    if existing_work
+                    else self._turn_coordinator.track(turn_token, "admission")
+                ):
+                    if cached is not None and _same_input_source(cached.record, record):
+                        record, audio = cached.record, cached.audio
+                    elif (
+                        observed is not None
+                        and observed.audio is not None
+                        and _same_input_source(observed.record, record)
+                    ):
+                        audio = observed.audio
+                    else:
+                        record, audio = await self._prepare_audio_source(
+                            message,
+                            sender,
+                            record,
+                            turn_snapshot,
+                            turn_token=None if existing_work else turn_token,
+                        )
+                if _audio_failed(audio, decision.content or message.text, has_media_input):
+                    return None
+                if cached is None and created:
+                    await self._enqueue_memory(record)
+                if is_overlong:
+                    prepared = None
+                    return None
+                prepared = self.ordinary_admissions.prepare(
+                    record, turn_snapshot.generation, turn_token.version, reason=decision.reason
+                )
+                return prepared
+
+            try:
+                prepared = self.ordinary_admissions.prepare(
+                    record, turn_snapshot.generation, turn_token.version, reason=decision.reason
+                )
+                if is_overlong and (not defer_new_main or input_only):
+                    await prepare_source(existing_work=input_only)
+                else:
+                    work_input_id = await self._chat.stage_work_input(
+                        coordinator_key,
+                        message,
+                        record.id,
+                        admission=prepared,
+                        prepare_source=lambda: prepare_source(existing_work=True),
+                    )
+                    if audio is None and (work_input_id is not None or not defer_new_main):
+                        await prepare_source(
+                            existing_work=work_input_id is not None or defer_new_main
+                        )
+            except (
+                OrdinaryAdmissionConflict,
+                TurnInterruptedError,
+                TurnSupersededError,
+                WorkConflict,
+            ) as exc:
+                return await abandon(exc)
+            except BaseException:
+                await self._chat.discard_work_input(work_input_id)
+                raise
+            if audio is not None and _audio_failed(
+                audio, decision.content or message.text, has_media_input
+            ):
+                sent = await self._send_text(
+                    message, sender, audio.failure_message, turn_snapshot=turn_snapshot
+                )
+                await self._chat.discard_work_input(work_input_id)
+                return ProcessResult(True, int(sent), "asr_" + audio.error)
+            if is_overlong and (not defer_new_main or input_only or prepared is None):
                 sent = await self._send_text(
                     message,
                     sender,
-                    RATE_LIMIT_MESSAGE,
+                    f"消息过长，请控制在 {self._settings.max_input_characters} 个字符以内。",
                     turn_snapshot=turn_snapshot,
                 )
-                return ProcessResult(True, int(sent), f"{rate.scope}_rate_limited")
-
-        if direct_match is not None:
-            try:
-                return await self._handle_direct_plugin_command(
-                    direct_match,
-                    message,
-                    identity,
-                    sender,
-                    event_key,
-                    started,
-                    turn_snapshot,
-                )
-            except (TurnInterruptedError, TurnSupersededError, WorkConflict):
-                return ProcessResult(True, reason="turn_interrupted")
-
-        if decision.command is not None:
-            try:
-                return await self._handle_command(
-                    decision.command,
-                    message,
-                    identity,
-                    profile,
-                    decision.content,
-                    sender,
-                    event_key,
-                    started,
-                    turn_snapshot,
-                )
-            except (TurnInterruptedError, TurnSupersededError, WorkConflict):
-                return ProcessResult(True, reason="turn_interrupted")
-
-        content = _input_content(message, decision.content)
-        is_overlong = len(content) > self._settings.max_input_characters
-        if not _same_input_source(record, await self._ledger.get_event(record.id)):
-            return ProcessResult(False, reason="ordinary_source_changed")
-        audio: AudioInput | None = None
-        work_input_id: int | None = None
-        prepared: PreparedOrdinaryAdmission | None
-
-        async def prepare_source(*, existing_work: bool) -> PreparedOrdinaryAdmission | None:
-            nonlocal record, audio, prepared
-            cached = observed.prepared_input if observed is not None else None
-            async with (
-                nullcontext()
-                if existing_work
-                else self._turn_coordinator.track(turn_token, "admission")
-            ):
-                if cached is not None and _same_input_source(cached.record, record):
-                    record, audio = cached.record, cached.audio
-                elif (
-                    observed is not None
-                    and observed.audio is not None
-                    and _same_input_source(observed.record, record)
-                ):
-                    audio = observed.audio
-                else:
-                    record, audio = await self._prepare_audio_source(
-                        message,
-                        sender,
-                        record,
-                        turn_snapshot,
-                        turn_token=None if existing_work else turn_token,
-                    )
-            if (
-                audio.error
-                and not audio.transcript
-                and not has_media_input
-                and not (decision.content or message.text).strip()
-            ):
-                return None
-            if cached is None and created and (direct_turn or existing_work):
-                await self._enqueue_memory(record)
-            if is_overlong:
-                prepared = None
-                return None
-            prepared = self.ordinary_admissions.prepare(
-                record, turn_snapshot.generation, turn_token.version, reason=decision.reason
-            )
-            return prepared
-
-        try:
-            prepared = self.ordinary_admissions.prepare(
-                record, turn_snapshot.generation, turn_token.version, reason=decision.reason
-            )
-            if is_overlong and (not defer_new_main or input_only):
-                await prepare_source(existing_work=input_only)
-            else:
-                work_input_id = await self._chat.stage_work_input(
-                    coordinator_key,
-                    message,
-                    record.id,
-                    admission=prepared,
-                    prepare_source=lambda: prepare_source(existing_work=True),
-                )
-                if audio is None and (work_input_id is not None or not defer_new_main):
-                    await prepare_source(existing_work=work_input_id is not None or defer_new_main)
-        except OrdinaryAdmissionDuplicate as exc:
-            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
-                raise
-            return ProcessResult(False, reason="ordinary_already_admitted")
-        except OrdinaryAdmissionConflict as exc:
-            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
-                raise
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(False, reason="ordinary_source_changed")
-        except (TurnInterruptedError, TurnSupersededError, WorkConflict) as exc:
-            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
-                raise
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(True, reason="turn_interrupted")
-        except BaseException:
-            await self._chat.discard_work_input(work_input_id)
-            raise
-        if (
-            audio is not None
-            and audio.error
-            and not audio.transcript
-            and not has_media_input
-            and not (decision.content or message.text).strip()
-        ):
-            sent = await self._send_text(
-                message, sender, audio.failure_message, turn_snapshot=turn_snapshot
-            )
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(True, int(sent), "asr_" + audio.error)
-        if is_overlong and (not defer_new_main or input_only or prepared is None):
-            sent = await self._send_text(
-                message,
-                sender,
-                f"消息过长，请控制在 {self._settings.max_input_characters} 个字符以内。",
-                turn_snapshot=turn_snapshot,
-            )
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(True, int(sent), "input_too_long")
-        if work_input_id == 0:
-            if defer_new_main:
-                return ProcessResult(True, reason="work_wait_partial")
-            work_input_id = None
-        if defer_new_main and work_input_id is None:
-            return ProcessResult(False, reason="ordinary_deferred")
-        assert prepared is not None
-        accepted = await self.ordinary_admissions.get(record.id)
-        if accepted is not None:
-            if accepted.activation_id != prepared.admission.activation_id:
-                return ProcessResult(False, reason="ordinary_already_admitted")
-            await self._record_ordinary_participation(
-                record.id, accepted.binding, admission=accepted
-            )
-            return ProcessResult(True, reason="work_input_queued")
-        if work_input_id is not None:
-            binding = None
-        assert audio is not None
-        try:
-            complete = await self._prepare_human_input(
-                observed,
-                message,
-                sender,
-                record,
-                turn_snapshot,
-                content,
-                audio=audio,
-            )
-            record, content, audio = complete.record, complete.content, complete.audio
-        except (TurnInterruptedError, TurnSupersededError, WorkConflict) as exc:
-            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
-                raise
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(True, reason="turn_interrupted")
-        except BaseException:
-            await self._chat.discard_work_input(work_input_id)
-            raise
-        if not content:
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(True, reason="empty")
-        if binding is not None and binding.source_revision != str(source_revision(record)):
-            if decision.reason == "semantic_invitation":
                 await self._chat.discard_work_input(work_input_id)
-                return ProcessResult(False, reason="ordinary_source_changed")
-            if decision.reason == "continuation":
-                with turn_detail("participation_binding"):
-                    found = (
-                        await self._participation.continuation_for_event(record.id)
-                        if self._participation is not None
-                        else None
-                    )
-                if found is None:
-                    await self._chat.discard_work_input(work_input_id)
-                    return ProcessResult(False, reason="ordinary_continuation_closed")
-                binding, current_reason = found
-                decision = replace(decision, reason=current_reason)
-            else:
-                with turn_detail("participation_binding"):
-                    binding = (
-                        await self._participation.binding_for_event(record.id)
-                        if self._participation is not None
-                        else None
-                    )
-        try:
-            prepared = self.ordinary_admissions.prepare(
-                record,
-                turn_snapshot.generation,
-                turn_token.version,
-                binding,
-                reason=decision.reason,
-            )
-        except OrdinaryAdmissionConflict as exc:
-            if write_failure_phase(exc) is not None and write_failure_committed(exc) is not False:
-                raise
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(False, reason="ordinary_source_changed")
-        if (
-            work_input_id is None
-            and not defer_new_main
-            and not self._turn_coordinator.is_current(turn_token)
-        ):
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(True, reason="turn_interrupted")
-
-        if work_input_id is not None:
-            input_text = "\n\n".join(part for part in (content, audio.context) if part)
-            try:
-                ready = await self._chat.ready_work_input(
-                    coordinator_key,
-                    work_input_id,
-                    input_text,
-                    admission=prepared,
-                )
-            except OrdinaryAdmissionDuplicate as exc:
-                if (
-                    write_failure_phase(exc) is not None
-                    and write_failure_committed(exc) is not False
-                ):
-                    raise
-                return ProcessResult(False, reason="ordinary_already_admitted")
-            if ready:
-                await self._record_ordinary_participation(record.id, binding)
-                return ProcessResult(True, reason="work_input_queued")
-        if defer_new_main:
-            # The original owner refused it; drop only this unready preparation.
-            await self._chat.discard_work_input(work_input_id)
-            return ProcessResult(False, reason="ordinary_deferred")
-
-        if input_only:
-            # A matched activation may have yielded during media preparation.
-            # It cannot lend its ordering token to a second ordinary Main.
-            promoted = await self._turn_coordinator.promote_observation(turn_token)
-            if promoted is None:
-                return ProcessResult(False, reason="ordinary_busy_or_superseded")
-            turn_token = promoted
-            turn_snapshot = replace(turn_snapshot, coordinator_version=promoted.version)
-            prepared = self.ordinary_admissions.prepare(
-                record,
-                turn_snapshot.generation,
-                promoted.version,
-                binding,
-                reason=decision.reason,
-            )
-
-        while True:
-            continuation = (
-                await self._participation.prepare_continuation(binding)
-                if binding is not None
-                and self._participation is not None
-                and decision.reason in {"continuation", "semantic_invitation"}
-                else None
-            )
-
-            selected_prepared = prepared
-
-            async def admission_allowed(
-                session: AsyncSession,
-                continuation: PreparedContinuation | None = continuation,
-                selected: PreparedOrdinaryAdmission = selected_prepared,
-                reason: str = decision.reason,
-            ) -> bool:
-                return await self._ordinary_admission_allowed(
-                    selected, reason, session, continuation=continuation
-                )
-
-            try:
-                if not await self.ordinary_admissions.commit(
-                    prepared, admission_allowed=admission_allowed
-                ):
+                return ProcessResult(True, int(sent), "input_too_long")
+            if work_input_id == 0:
+                if defer_new_main:
+                    return ProcessResult(True, reason="work_wait_partial")
+                work_input_id = None
+            if defer_new_main and work_input_id is None:
+                return ProcessResult(False, reason="ordinary_deferred")
+            assert prepared is not None
+            accepted = await self.ordinary_admissions.get(record.id)
+            if accepted is not None:
+                if accepted.activation_id != prepared.admission.activation_id:
                     return ProcessResult(False, reason="ordinary_already_admitted")
-            except OrdinaryAdmissionConflict as exc:
-                if (
-                    str(exc) == "ordinary_participation_preparation_changed"
-                    and write_failure_committed(exc) is False
-                ):
-                    selected = (
-                        await self._participation.continuation_for_event(
-                            record.id, prepared=continuation
-                        )
-                        if self._participation is not None
-                        else None
-                    )
-                    if selected is None:
-                        return ProcessResult(False, reason="ordinary_continuation_closed")
-                    binding, reason = selected
-                    try:
-                        prepared = self.ordinary_admissions.reprepare(
-                            prepared, binding, reason=reason
-                        )
-                    except OrdinaryAdmissionConflict:
-                        return ProcessResult(False, reason="ordinary_source_changed")
-                    decision = replace(decision, reason=reason)
-                    continue
-                if (
-                    write_failure_phase(exc) is not None
-                    and write_failure_committed(exc) is not False
-                ):
-                    raise
-                return ProcessResult(False, reason="ordinary_source_changed")
-            break
-        await self._record_ordinary_participation(record.id, binding, admission=prepared.admission)
-
-        await publish_notification(
-            self._event_publisher,
-            EventName.TURN_ADMITTED,
-            content_free_turn_payload(
-                origin=TurnOrigin.USER_MESSAGE.value,
-                scope_type=message.scope_type.value,
-                conversation_key=coordinator_key,
-                reason=decision.reason,
-            ),
-        )
-        result: ProcessResult
-        try:
-            async with AsyncExitStack() as stages:
-                if message.scope_type is ScopeType.PRIVATE:
-                    await stages.enter_async_context(
-                        self._turn_coordinator.track(turn_token, "admission")
-                    )
-                sent_count = await self._chat.handle_turn(
-                    message,
-                    identity,
-                    profile,
-                    content,
-                    sender,
-                    runtime_snapshot=runtime_snapshot,
-                    attachment_text=audio.context,
-                    turn_token=turn_token,
-                    turn_snapshot=turn_snapshot,
-                    ordinary_inputs=self._ordinary_context_inputs,
+                await self._record_ordinary_participation(
+                    record.id, accepted.binding, admission=accepted
                 )
-        except (TurnInterruptedError, TurnSupersededError, WorkConflict):
-            result = ProcessResult(True, reason="turn_interrupted")
-        except (WorkActivationHandled, WorkRecoveryDeferred):
-            result = ProcessResult(True, reason="work_recovery")
-        except RequestCancelledError:
-            result = ProcessResult(True, reason="cancelled")
-        except LLMConfigurationError:
-            result = ProcessResult(True, reason="llm_not_configured")
-        except LLMEmptyResponseError:
-            result = ProcessResult(True, reason="empty_llm_response")
-        except LLMError as exc:
-            logger.warning("llm_failure exception_category=%s", type(exc).__name__)
-            result = ProcessResult(True, reason="llm_failure")
-        except WorkCapacityError as exc:
-            logger.warning("turn_capacity_failure exception_category=%s", type(exc).__name__)
-            result = ProcessResult(True, reason="capacity_failure")
-        except ValidationError as exc:
-            logger.error(
-                "turn_validation_failure exception_category=%s",
-                type(exc).__name__,
-                exc_info=exc,
+                return ProcessResult(True, reason="work_input_queued")
+            if work_input_id is not None:
+                binding = None
+            assert audio is not None
+            try:
+                complete = await self._prepare_human_input(
+                    observed,
+                    message,
+                    sender,
+                    record,
+                    turn_snapshot,
+                    content,
+                    audio=audio,
+                )
+                record, content, audio = complete.record, complete.content, complete.audio
+            except (TurnInterruptedError, TurnSupersededError, WorkConflict) as exc:
+                return await abandon(exc)
+            except BaseException:
+                await self._chat.discard_work_input(work_input_id)
+                raise
+            if not content:
+                await self._chat.discard_work_input(work_input_id)
+                return ProcessResult(True, reason="empty")
+            if binding is not None and binding.source_revision != str(source_revision(record)):
+                if decision.reason == "semantic_invitation":
+                    await self._chat.discard_work_input(work_input_id)
+                    return ProcessResult(False, reason="ordinary_source_changed")
+                if decision.reason == "continuation":
+                    with turn_detail("participation_binding"):
+                        found = (
+                            await self._participation.continuation_for_event(record.id)
+                            if self._participation is not None
+                            else None
+                        )
+                    if found is None:
+                        await self._chat.discard_work_input(work_input_id)
+                        return ProcessResult(False, reason="ordinary_continuation_closed")
+                    binding, current_reason = found
+                    decision = replace(decision, reason=current_reason)
+                else:
+                    with turn_detail("participation_binding"):
+                        binding = (
+                            await self._participation.binding_for_event(record.id)
+                            if self._participation is not None
+                            else None
+                        )
+            try:
+                prepared = self.ordinary_admissions.prepare(
+                    record,
+                    turn_snapshot.generation,
+                    turn_token.version,
+                    binding,
+                    reason=decision.reason,
+                )
+            except OrdinaryAdmissionConflict as exc:
+                return await abandon(exc)
+            if (
+                work_input_id is None
+                and not defer_new_main
+                and not self._turn_coordinator.is_current(turn_token)
+            ):
+                await self._chat.discard_work_input(work_input_id)
+                return ProcessResult(True, reason="turn_interrupted")
+
+            if work_input_id is not None:
+                input_text = "\n\n".join(part for part in (content, audio.context) if part)
+                try:
+                    ready = await self._chat.ready_work_input(
+                        coordinator_key,
+                        work_input_id,
+                        input_text,
+                        admission=prepared,
+                    )
+                except OrdinaryAdmissionDuplicate as exc:
+                    return await abandon(exc)
+                if ready:
+                    await self._record_ordinary_participation(record.id, binding)
+                    return ProcessResult(True, reason="work_input_queued")
+            if defer_new_main:
+                # The original owner refused it; drop only this unready preparation.
+                await self._chat.discard_work_input(work_input_id)
+                return ProcessResult(False, reason="ordinary_deferred")
+
+            if input_only:
+                # A matched activation may have yielded during media preparation.
+                # It cannot lend its ordering token to a second ordinary Main.
+                promoted = await self._turn_coordinator.promote_observation(turn_token)
+                if promoted is None:
+                    return ProcessResult(False, reason="ordinary_busy_or_superseded")
+                turn_token = promoted
+                turn_snapshot = replace(turn_snapshot, coordinator_version=promoted.version)
+                prepared = self.ordinary_admissions.prepare(
+                    record,
+                    turn_snapshot.generation,
+                    promoted.version,
+                    binding,
+                    reason=decision.reason,
+                )
+
+            while True:
+                continuation = (
+                    await self._participation.prepare_continuation(binding)
+                    if binding is not None
+                    and self._participation is not None
+                    and decision.reason in {"continuation", "semantic_invitation"}
+                    else None
+                )
+
+                selected_prepared = prepared
+
+                async def admission_allowed(
+                    session: AsyncSession,
+                    continuation: PreparedContinuation | None = continuation,
+                    selected: PreparedOrdinaryAdmission = selected_prepared,
+                    reason: str = decision.reason,
+                ) -> bool:
+                    return await self._ordinary_admission_allowed(
+                        selected, reason, session, continuation=continuation
+                    )
+
+                try:
+                    if not await self.ordinary_admissions.commit(
+                        prepared, admission_allowed=admission_allowed
+                    ):
+                        return ProcessResult(False, reason="ordinary_already_admitted")
+                except OrdinaryAdmissionConflict as exc:
+                    if (
+                        str(exc) == "ordinary_participation_preparation_changed"
+                        and write_failure_committed(exc) is False
+                    ):
+                        selected = (
+                            await self._participation.continuation_for_event(
+                                record.id, prepared=continuation
+                            )
+                            if self._participation is not None
+                            else None
+                        )
+                        if selected is None:
+                            return ProcessResult(False, reason="ordinary_continuation_closed")
+                        binding, reason = selected
+                        try:
+                            prepared = self.ordinary_admissions.reprepare(
+                                prepared, binding, reason=reason
+                            )
+                        except OrdinaryAdmissionConflict:
+                            return ProcessResult(False, reason="ordinary_source_changed")
+                        decision = replace(decision, reason=reason)
+                        continue
+                    if (
+                        write_failure_phase(exc) is not None
+                        and write_failure_committed(exc) is not False
+                    ):
+                        raise
+                    return ProcessResult(False, reason="ordinary_source_changed")
+                break
+            await self._record_ordinary_participation(
+                record.id, binding, admission=prepared.admission
             )
-            result = ProcessResult(True, reason="validation_failure")
-        except (OSError, RuntimeError, TypeError) as exc:
-            logger.error("message_send_or_storage_failure", exc_info=exc)
-            result = ProcessResult(True, reason="send_or_storage_failure")
-        except Exception as exc:
-            logger.error(
-                "turn_internal_failure exception_category=%s",
-                type(exc).__name__,
-                exc_info=exc,
+
+            await publish_notification(
+                self._event_publisher,
+                EventName.TURN_ADMITTED,
+                content_free_turn_payload(
+                    origin=TurnOrigin.USER_MESSAGE.value,
+                    scope_type=message.scope_type.value,
+                    conversation_key=coordinator_key,
+                    reason=decision.reason,
+                ),
             )
-            result = ProcessResult(True, reason="internal_failure")
-        else:
-            self._log_result(
-                event_key,
-                identity,
-                message,
-                handler="chat",
-                started=started,
-                success=True,
-                conversation_key=coordinator_key,
+            result: ProcessResult
+            try:
+                async with AsyncExitStack() as stages:
+                    if message.scope_type is ScopeType.PRIVATE:
+                        await stages.enter_async_context(
+                            self._turn_coordinator.track(turn_token, "admission")
+                        )
+                    sent_count = await self._chat.handle_turn(
+                        message,
+                        identity,
+                        profile,
+                        content,
+                        sender,
+                        runtime_snapshot=runtime_snapshot,
+                        attachment_text=audio.context,
+                        turn_token=turn_token,
+                        turn_snapshot=turn_snapshot,
+                        ordinary_inputs=self._ordinary_context_inputs,
+                    )
+            except (TurnInterruptedError, TurnSupersededError, WorkConflict):
+                result = ProcessResult(True, reason="turn_interrupted")
+            except (WorkActivationHandled, WorkRecoveryDeferred):
+                result = ProcessResult(True, reason="work_recovery")
+            except RequestCancelledError:
+                result = ProcessResult(True, reason="cancelled")
+            except LLMConfigurationError:
+                result = ProcessResult(True, reason="llm_not_configured")
+            except LLMEmptyResponseError:
+                result = ProcessResult(True, reason="empty_llm_response")
+            except LLMError as exc:
+                logger.warning("llm_failure exception_category=%s", type(exc).__name__)
+                result = ProcessResult(True, reason="llm_failure")
+            except WorkCapacityError as exc:
+                logger.warning("turn_capacity_failure exception_category=%s", type(exc).__name__)
+                result = ProcessResult(True, reason="capacity_failure")
+            except ValidationError as exc:
+                logger.error(
+                    "turn_validation_failure exception_category=%s",
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
+                result = ProcessResult(True, reason="validation_failure")
+            except (OSError, RuntimeError, TypeError) as exc:
+                logger.error("message_send_or_storage_failure", exc_info=exc)
+                result = ProcessResult(True, reason="send_or_storage_failure")
+            except Exception as exc:
+                logger.error(
+                    "turn_internal_failure exception_category=%s",
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
+                result = ProcessResult(True, reason="internal_failure")
+            else:
+                self._log_result(
+                    event_key,
+                    identity,
+                    message,
+                    handler="chat",
+                    started=started,
+                    success=True,
+                    conversation_key=coordinator_key,
+                )
+                result = ProcessResult(True, sent_count, "chat")
+            await publish_notification(
+                self._event_publisher,
+                EventName.TURN_CLOSED,
+                content_free_turn_payload(
+                    origin=TurnOrigin.USER_MESSAGE.value,
+                    scope_type=message.scope_type.value,
+                    conversation_key=coordinator_key,
+                    outcome=result.reason,
+                    handled=result.handled,
+                    sent_messages=result.sent_messages,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                ),
             )
-            result = ProcessResult(True, sent_count, "chat")
-        await publish_notification(
-            self._event_publisher,
-            EventName.TURN_CLOSED,
-            content_free_turn_payload(
-                origin=TurnOrigin.USER_MESSAGE.value,
-                scope_type=message.scope_type.value,
-                conversation_key=coordinator_key,
-                outcome=result.reason,
-                handled=result.handled,
-                sent_messages=result.sent_messages,
-                latency_ms=int((time.perf_counter() - started) * 1000),
-            ),
-        )
-        return result
+            return result
 
     async def _prepare_audio_source(
         self,
