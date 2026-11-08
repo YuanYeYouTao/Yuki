@@ -48,7 +48,8 @@ limit 为正整数，没有 50/100 条经验上限；`CONVERSATION_HISTORY_AROUN
 列表与检索的 `context` 邻文默认 0，给出时前后各取该条数；已核实结果不重查中心，
 两侧直接读取所需数量，不为侧页多探测N+1。
 around 先定位实际中心，中心仍与 target 取交集；around 只配合 target 与 context，加其他筛选、
-cursor、limit 或 order 返回 `around_with_filters`；结果按事件 ID 升序呈现。
+cursor、limit 或 order 返回 `around_with_filters`；结果按事件 ID 升序呈现。锚点自身带合并转发时
+结果另附第一层 `forwards`，见[工具内核](tool-kernel.md#合并转发读取)。
 `read_result` 的 cursor 只翻阅一次调用已经保存的载荷，聊天 cursor 才查询下一批原事件。
 
 ## 字面匹配与索引

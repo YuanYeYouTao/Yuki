@@ -29,6 +29,7 @@ CORE_ONEBOT_ACTIONS: Final[tuple[OneBotActionContract, ...]] = (
         ("group_id", "user_id"),
     ),
     OneBotActionContract("get_image", "read", "media_fetch", ("file",)),
+    OneBotActionContract("get_forward_msg", "read", "forward_read", ("id",)),
     OneBotActionContract(
         "get_group_msg_history",
         "read",

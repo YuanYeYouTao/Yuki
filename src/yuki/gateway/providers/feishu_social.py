@@ -10,7 +10,9 @@ from urllib.parse import quote
 
 from yuki.domain.conversations import ConversationScope
 from yuki.gateway.providers.feishu import FeishuAPIError, FeishuClient, decode_account_id
+from yuki.gateway.registry import RegistryClosed
 from yuki.gateway.social import (
+    ForwardNode,
     TransportEffectError,
     TransportMention,
     TransportMessage,
@@ -212,3 +214,7 @@ class FeishuSocialOperations:
             if not data.get("has_more"):
                 return False
             params["page_token"] = data["page_token"]
+
+    async def read_forward(self, handle: object, locator: str) -> tuple[ForwardNode, ...]:
+        # No merged-forward read: this connection does not declare ``forward_read``.
+        raise RegistryClosed("capability")

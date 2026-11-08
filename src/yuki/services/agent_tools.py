@@ -941,7 +941,11 @@ class AgentToolService:
                 )
                 try:
                     data = await read_history(
-                        self._ledger._database, selected, context, runtime=runtime
+                        self._ledger._database,
+                        selected,
+                        context,
+                        router=self.social_service.router,
+                        runtime=runtime,
                     )
                 except ValidationError as exc:
                     raise SocialError(validation_code(exc)) from None
@@ -950,8 +954,19 @@ class AgentToolService:
                 error=str(exc),
                 detail=SOCIAL_ERROR_MESSAGES.get(str(exc), "无法读取所选聊天范围"),
             )
+        # Every outer forward failed: the real first error, with each group's state.
+        failed = [group["error"] for group in data.get("forwards", ()) if "error" in group]
+        result = (
+            self._result(
+                error=failed[0],
+                detail=SOCIAL_ERROR_MESSAGES.get(failed[0], "合并转发没有读取到"),
+                data=data,
+            )
+            if failed and len(failed) == len(data["forwards"])
+            else self._result(data=data)
+        )
         return replace(
-            self._result(data=data),
+            result,
             source_event_ids=getattr(data, "source_event_ids", ()),
             source_privacy_generation=getattr(data, "source_privacy_generation", None),
         )

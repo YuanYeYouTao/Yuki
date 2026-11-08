@@ -25,6 +25,7 @@ from yuki.domain.messages import (
     MessageMention,
     SenderIdentity,
 )
+from yuki.gateway.social import ForwardNode
 from yuki.services.qq_face_resolver import QQFaceResolver
 from yuki.services.renderer import sanitize_input
 
@@ -470,3 +471,59 @@ def normalize_event(
         yuki_account_ids=known_yuki,
         occurred_at=datetime.fromtimestamp(event.time, UTC) if event.time is not None else None,
     )
+
+
+_FORWARD_MEDIA = frozenset({"image", "video", "file", "record"})
+
+
+def _forward_list(payload: Any) -> list[Any]:
+    """The first actual node list among the OneBot implementations' reply envelopes."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if payload.get("status") == "failed" or payload.get("retcode", 0) != 0:
+            raise ValueError("forward_read_failed")
+        data = payload.get("data")
+        candidates = [payload.get("messages"), payload.get("message_list"), data]
+        if isinstance(data, dict):
+            candidates.extend([data.get("list"), data.get("messages"), data.get("message_list")])
+        for candidate in candidates:
+            if isinstance(candidate, list):
+                return candidate
+    raise ValueError("invalid_forward_result")
+
+
+def forward_nodes(payload: Any, *, self_id: str) -> tuple[ForwardNode, ...]:
+    """Project one ``get_forward_msg`` reply; inner forwards stay unexpanded segments."""
+    nodes: list[ForwardNode] = []
+    for item in _forward_list(payload):
+        if not isinstance(item, dict):
+            raise ValueError("invalid_forward_result")
+        # Send-format replies wrap each node as {"type": "node", "data": {...}}.
+        body = (
+            item["data"]
+            if item.get("type") == "node" and isinstance(item.get("data"), dict)
+            else item
+        )
+        sender = value if isinstance(value := body.get("sender"), dict) else {}
+        # Array format carries segment objects; string format carries CQ codes.
+        raw = body["message"] if "message" in body else body.get("content")
+        message = Message(_message_from_serialized_segments(raw) if isinstance(raw, list) else raw)
+        stamp = body.get("time")
+        nodes.append(
+            ForwardNode(
+                author_name=str(
+                    sender.get("card") or sender.get("nickname") or body.get("nickname") or ""
+                ),
+                occurred_at=datetime.fromtimestamp(stamp, UTC)
+                if isinstance(stamp, int) and not isinstance(stamp, bool)
+                else None,
+                text=_extract_segments(
+                    [segment for segment in message if segment.type not in _FORWARD_MEDIA],
+                    yuki_account_ids=frozenset({self_id}),
+                    source="forward",
+                ).text,
+                segments=_serialize_segments(message),
+            )
+        )
+    return tuple(nodes)
