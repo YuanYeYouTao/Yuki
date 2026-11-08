@@ -54,6 +54,24 @@ Code Mode 使用相同 JSON 计量原语和自己的 compact 编码，删除固�
 result_preview 是 JSON 摘录，其 read_more 从真实 result 路径的 0 开始，不冒充已经读取的页。
 原 ID、control、stdout 截断事实、累计预算和旧 accepted 恢复保持，不为凑预算只留身份 hash。
 
+## 模型可见文本与内部读取
+
+模型收到的结果文本只是 `ToolExecutionResult` 的投影，Host 内部判断不解析它：
+
+- Work 的跨模型搜索观察（`portable_search`）读本批现场执行的 typed outcome
+  （`CoordinatedToolResult.outcomes` 中 `web_search` 的 `data.sources`），成败认已接受的
+  typed 证据。只读回执重读没有现场 outcome，不再从原文本补记来源；原执行当时已记录。
+- 媒体预算超出模型图片能力或帧/字节预算时，是否保留原结果按 typed 证据的
+  `mutation_committed` 判断；恢复时从 journal 读出的原回执用其历史证据。`execute_code`
+  仍按 Code 自己结果的 `executed`。
+- 已接受的生命周期控制（`task_control`、`subagent_*`）由 `control_result_payload` 一处生成
+  模型文本，现场返回与 effect 回执 `result` 共用；回放按原回执原文返回。
+- `memory_tool_receipts.result_excerpt` 存模型实际看到的有界文本，SELF 记忆的引文证据按它
+  匹配，因此证据随模型实际看到的投影变化；旧行不改写。SELF 自省输入展示的工具名经
+  `RECORDED_TOOL_NAMES` 映射为现役名，存储行保留原名。
+- Provider 适配器（Anthropic `is_error`、Gemini `error`）仍按工具消息文本标记失败，
+  这是协议投影，随结果投影切换一并调整。
+
 ## 环境文件与旧脚本结果
 
 普通文件内容由终端读取、搜索与过滤，八项通用工作区工具已退出新声明与执行。媒体仍用 `workspace_inspect` 交给原模型；文件用统一 `send(path=..., attachment_kind=...)` 内部固化并交付，也可发送已有不可变 artifact。实际快照 ID 与逐步发送状态沿原回执进入效果证据，不以原参数缺少 ID 漏记交付。普通终端文件不附加 CAS、分页文本协议或经验文件配额。

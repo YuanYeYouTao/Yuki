@@ -113,14 +113,7 @@ class DurableInvocations:
                         goal=runtime.invocation_goal,
                     )
                 elif bounded.current is None and runtime.invocation_goal:
-                    await bounded.execute(
-                        "task_control",
-                        {
-                            "action": "accept",
-                            "goal": runtime.invocation_goal,
-                        },
-                        "host-invocation-admission",
-                    )
+                    await bounded.admit_goal(runtime.invocation_goal)
                 result = await self._execute(
                     messages, replace(runtime, work_control=bounded), backend
                 )

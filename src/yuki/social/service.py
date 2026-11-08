@@ -977,11 +977,24 @@ class SocialService:
             )
         return result
 
+    async def group_members(self, args: dict[str, Any], context: SocialContext) -> dict[str, Any]:
+        """Current member directory of one Space entry, for Main and plugin readers alike."""
+        from yuki.social.source_keys import social_call_key
+
+        context = replace(context, call_id=social_call_key(context.call_id))
+        await self._validate_self_context(context)
+        await self._validate_person_context(context)
+        with model_detail("social_preparation"):
+            target = await self.target("space", args, context, validate=False)
+        return await self._group_directory(target, args, context)
+
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
         from yuki.social.source_keys import social_call_key
 
+        if name == "get_group_members":
+            return await self.group_members(args, context)
         context = replace(context, call_id=social_call_key(context.call_id))
         if name == "send":
             with model_detail("social_preparation"):
@@ -1036,15 +1049,10 @@ class SocialService:
             if args.get("target") and not selected.get("target_id"):
                 raise SocialError("target_selector_conflict")
             target_args = selected
-        elif name == "get_group_members":
-            kind = "space"
-            target_args = args
         else:
             raise SocialError("unknown_tool")
         with model_detail("social_preparation"):
             target = await self.target(kind, target_args, context, validate=False)
-        if name == "get_group_members":
-            return await self._group_directory(target, args, context)
         with model_detail("social_preparation"):
             known_event_id = await self.check_target(target)
             original_route = (

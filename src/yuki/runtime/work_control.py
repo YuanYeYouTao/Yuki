@@ -36,6 +36,11 @@ ACCEPTED_ENDINGS = {
 }
 
 
+def control_result_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Model projection of an accepted lifecycle control; its receipt stores the same text."""
+    return {"ok": True, **data}
+
+
 class WorkInputsPreparing(RuntimeError):
     """Input is durable but its admitted attachment preparation is unfinished."""
 
@@ -631,7 +636,7 @@ class WorkControl:
                 result = await execute_subagent(self, name, args, call_key)
             else:
                 raise ValueError("unknown_work_control")
-            payload = {"ok": True, **result}
+            payload = control_result_payload(result)
             outcome = ToolExecutionResult(
                 ok=payload["ok"] is True,
                 data=result,
@@ -868,64 +873,7 @@ class WorkControl:
         if action == "accept":
             if self.current is not None:
                 return await self._queue_work(args)
-            goal = args.get("goal")
-            if not isinstance(goal, str) or not goal.strip():
-                raise ValueError("work_goal_required")
-            from sqlalchemy.dialects.sqlite import insert
-
-            from yuki.capabilities.results import ToolExecutionResult
-            from yuki.runtime.effect_outcomes import effect_evidence
-            from yuki.runtime.work_schema_v1 import effects
-
-            metadata = invocation.durable_metadata() if invocation is not None else {}
-            source_json = encode_json(self.source)
-            async with self.repository.database.immediate_session() as writer:
-                admitted = await self._admit_in_session(writer, goal, source_json)
-                if invocation is not None:
-                    admission_result = {
-                        "work_id": admitted["id"],
-                        "state": admitted["state"],
-                        "revision": admitted["revision"],
-                        "ending_proposed": self.ending,
-                    }
-                    outcome = ToolExecutionResult(
-                        ok=True,
-                        data=admission_result,
-                        tool_name="task_control",
-                        provider_id="work_control",
-                    )
-                    await writer.execute(
-                        insert(effects).values(
-                            effect_key=call_key,
-                            work_id=admitted["id"],
-                            kind="tool",
-                            state="accepted",
-                            receipt_json=json.dumps(
-                                {
-                                    "result": json.dumps(
-                                        {"ok": True, **admission_result}, ensure_ascii=False
-                                    ),
-                                    "outcome": effect_evidence(
-                                        outcome,
-                                        tool="task_control",
-                                        side_effecting=True,
-                                        arguments="{}",
-                                    ),
-                                    "invocation": {
-                                        **metadata,
-                                        "owner_execution_id": admitted["id"],
-                                        "dispatch_started": True,
-                                        "budget_admitted": False,
-                                        "revision": 1,
-                                    },
-                                },
-                                ensure_ascii=False,
-                            ),
-                            created=admitted["created"],
-                            updated=admitted["updated"],
-                        )
-                    )
-            self.current = admitted
+            self.current = await self._admit_goal(args.get("goal"), call_key, invocation)
         elif self.current is None:
             raise ValueError("no_active_work")
         elif action == "wait_status":
@@ -1056,6 +1004,80 @@ class WorkControl:
             "revision": self.current["revision"],
             "ending_proposed": self.ending,
         }
+
+    async def admit_goal(self, goal: str) -> None:
+        """Host admission of an invocation's own goal, without a model control call.
+
+        Same writer, budget charge and checks as a model ``accept``; no result
+        text is produced and no effect receipt is written.
+        """
+        await self.validate()
+        if not await self.repository.valid(self.lease):
+            raise WorkConflict("work_activation_obsolete")
+        self.current = await self._admit_goal(goal, "", None)
+
+    async def _admit_goal(
+        self, goal: Any, call_key: str, invocation: Invocation | None
+    ) -> dict[str, Any]:
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError("work_goal_required")
+        from sqlalchemy.dialects.sqlite import insert
+
+        from yuki.capabilities.results import ToolExecutionResult
+        from yuki.runtime.effect_outcomes import effect_evidence
+        from yuki.runtime.work_schema_v1 import effects
+
+        metadata = invocation.durable_metadata() if invocation is not None else {}
+        source_json = encode_json(self.source)
+        async with self.repository.database.immediate_session() as writer:
+            admitted = await self._admit_in_session(writer, goal, source_json)
+            if invocation is not None:
+                admission_result = {
+                    "work_id": admitted["id"],
+                    "state": admitted["state"],
+                    "revision": admitted["revision"],
+                    "ending_proposed": self.ending,
+                }
+                outcome = ToolExecutionResult(
+                    ok=True,
+                    data=admission_result,
+                    tool_name="task_control",
+                    provider_id="work_control",
+                )
+                await writer.execute(
+                    insert(effects).values(
+                        effect_key=call_key,
+                        work_id=admitted["id"],
+                        kind="tool",
+                        state="accepted",
+                        receipt_json=json.dumps(
+                            {
+                                # The same projection the live control call returns.
+                                "result": json.dumps(
+                                    control_result_payload(admission_result),
+                                    ensure_ascii=False,
+                                ),
+                                "outcome": effect_evidence(
+                                    outcome,
+                                    tool="task_control",
+                                    side_effecting=True,
+                                    arguments="{}",
+                                ),
+                                "invocation": {
+                                    **metadata,
+                                    "owner_execution_id": admitted["id"],
+                                    "dispatch_started": True,
+                                    "budget_admitted": False,
+                                    "revision": 1,
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        created=admitted["created"],
+                        updated=admitted["updated"],
+                    )
+                )
+        return admitted
 
     async def _admit_in_session(
         self, writer: AsyncSession, goal: str, source_json: str, *, identity: str | None = None

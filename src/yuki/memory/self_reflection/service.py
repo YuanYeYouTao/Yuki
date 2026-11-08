@@ -56,6 +56,7 @@ from yuki.model_runtime.request_accounting import (
 )
 from yuki.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from yuki.persistence.repository_records import EventRecord
+from yuki.runtime.effect_outcomes import recorded_tool
 from yuki.time.formatting import local_datetime, utc_iso
 
 logger = logging.getLogger(__name__)
@@ -348,7 +349,9 @@ class SelfReflectionService:
         tools = tuple(
             SelfReflectionToolReceipt(
                 ref=ref,
-                tool_name=item.tool_name,
+                # The stored row keeps its original name; the model reads the
+                # current tool that name stands for.
+                tool_name=recorded_tool(item.tool_name),
                 success=item.success,
                 result_excerpt=item.result_excerpt,
                 occurred_at=(

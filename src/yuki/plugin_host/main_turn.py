@@ -432,11 +432,7 @@ async def _execute_plugin_main_turn(
                         )
                     )
                     if owned.current is None:
-                        await owned.execute(
-                            "task_control",
-                            {"action": "accept", "goal": instruction},
-                            "host-invocation-admission",
-                        )
+                        await owned.admit_goal(instruction)
             control = current_work_control.get()
             payload = {"plugin": {"id": host.plugin_id, "source_key": actor.source_key}}
             if context_data:
