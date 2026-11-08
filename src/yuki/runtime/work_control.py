@@ -7,13 +7,35 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from pydantic import ValidationError
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.sqlite import insert
+
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.audio import transcript_context
 from yuki.domain.messages import ChatMessage, ChatTool, ToolCall
 from yuki.identity.person_identity import same_person_condition
-from yuki.runtime.activation_outcome import ActivationOutcome
+from yuki.persistence.database import (
+    write_failure_committed,
+    write_failure_phase,
+    write_failure_retryable,
+)
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.activation_outcome import ActivationOutcome, WorkRecoveryDeferred
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import children
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_management import WorkManagementError, manage_work
 from yuki.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
+from yuki.runtime.work_schema_v1 import effects, work
+from yuki.runtime.work_tree import budget_root_id, descendants
+from yuki.runtime.work_wait import WorkWaitRepository, normalize_conditions
+from yuki.runtime.work_wait_schema import waits
+from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.tool_results.access import ArtifactAccess
 
 if TYPE_CHECKING:
@@ -93,8 +115,6 @@ def control_result_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _iso(stamp: Any) -> str | None:
-    from datetime import datetime, timedelta, timezone
-
     if not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
         return None
     return datetime.fromtimestamp(stamp, timezone(timedelta(hours=8))).isoformat(timespec="seconds")
@@ -403,7 +423,6 @@ class WorkControl:
         return await self.repository.has_owned_execution(self.lease, self.current["id"])
 
     async def recover_failure(self, exc: BaseException) -> ActivationOutcome:
-        from yuki.runtime.activation_outcome import WorkRecoveryDeferred
         from yuki.runtime.work_supervisor import recover_failure
 
         try:
@@ -417,7 +436,6 @@ class WorkControl:
         """Project background work while no lifecycle decision has been accepted."""
         if self.current is None or self.lease.work_id:
             return None
-        from yuki.runtime.subagent_repository import SubagentRepository
 
         unfinished = await SubagentRepository(self.repository).unfinished(self.current["id"])
         if any(r["state"] in {"queued", "running", "waiting_external"} for r in unfinished):
@@ -451,9 +469,6 @@ class WorkControl:
         accepted = self.accepted
         if accepted is None or "wait_id" not in accepted:
             return False
-        from sqlalchemy import select
-
-        from yuki.runtime.work_wait_schema import waits
 
         assert self.current is not None
         async with self.repository.database.read_session() as reader:
@@ -617,12 +632,6 @@ class WorkControl:
                             event_id = matched.get("event_id")
                             if isinstance(event_id, int) and event_id not in ids:
                                 ids.append(event_id)
-                    from sqlalchemy import select
-
-                    from yuki.conversation.canonical_db_models import (
-                        CanonicalConversationModel,
-                    )
-                    from yuki.persistence.models import ChatEventModel
 
                     async with self.repository.database.read_session() as reader:
                         scope = await reader.get(
@@ -644,7 +653,6 @@ class WorkControl:
                             if scope and scope.generation == self.lease.generation
                             else []
                         )
-                    from yuki.domain.audio import transcript_context
 
                     bodies = {
                         event.id: (
@@ -757,10 +765,6 @@ class WorkControl:
         """
         if self.current is None:
             return None
-        from sqlalchemy import select
-
-        from yuki.runtime.work_budget_schema import budgets
-        from yuki.runtime.work_tree import budget_root_id
 
         async with self.repository.database.read_session() as reader:
             root = await budget_root_id(reader, self.current["id"])
@@ -848,12 +852,6 @@ class WorkControl:
                 provider_id="work_control",
             )
         except Exception as exc:
-            from yuki.persistence.database import (
-                write_failure_committed,
-                write_failure_phase,
-                write_failure_retryable,
-            )
-
             phase, committed = write_failure_phase(exc), write_failure_committed(exc)
             if phase is not None and committed is not False:
                 outcome = ToolExecutionResult(
@@ -868,8 +866,6 @@ class WorkControl:
                 )
                 payload = outcome.model_payload()
             elif isinstance(exc, (ValueError, WorkConflict)):
-                from pydantic import ValidationError
-
                 code = "invalid_note" if isinstance(exc, ValidationError) else str(exc)
                 outcome = ToolExecutionResult(
                     ok=False,
@@ -1017,7 +1013,6 @@ class WorkControl:
                 action in {"cancel", "fail"}
                 and (self.current is None or target != self.current["id"])
             ) or (action == "resume" and self.current is not None and target != self.current["id"]):
-                from yuki.runtime.work_management import WorkManagementError, manage_work
                 from yuki.runtime.work_queries import WorkQueries
 
                 candidate = await WorkQueries(self.repository).get(
@@ -1112,10 +1107,6 @@ class WorkControl:
         }
 
     async def _is_subtask(self, identity: str) -> bool:
-        from sqlalchemy import select
-
-        from yuki.runtime.subagent_schema import children
-
         async with self.repository.database.read_session() as reader:
             found = await reader.scalar(
                 select(children.c.work_id).where(children.c.work_id == identity)
@@ -1123,8 +1114,6 @@ class WorkControl:
         return found is not None
 
     async def _wait(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
-        from yuki.runtime.work_wait import WorkWaitRepository, normalize_conditions
-
         if self.current is None:
             raise ValueError("no_active_work")
         every = args.get("all", False)
@@ -1141,12 +1130,6 @@ class WorkControl:
                 self.resolve_child is not None and await self.resolve_child(identity) is not None
             )
             if not owned:
-                from sqlalchemy import func, or_, select
-
-                from yuki.runtime.work_schema_v1 import work
-                from yuki.runtime.work_tree import descendants
-                from yuki.sandbox.db_models import SandboxTaskRunModel
-
                 owned_work = descendants(self.current["id"])
                 async with self.repository.database.read_session() as reader:
                     owned = bool(
@@ -1216,11 +1199,9 @@ class WorkControl:
     ) -> dict[str, Any]:
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError("work_goal_required")
-        from sqlalchemy.dialects.sqlite import insert
 
         from yuki.capabilities.results import ToolExecutionResult
         from yuki.runtime.effect_outcomes import effect_evidence
-        from yuki.runtime.work_schema_v1 import effects
 
         metadata = invocation.durable_metadata() if invocation is not None else {}
         source_json = encode_json(self.source)
@@ -1277,10 +1258,7 @@ class WorkControl:
         self, writer: AsyncSession, goal: str, source_json: str, *, identity: str | None = None
     ) -> dict[str, Any]:
         """First admission of this source: paid requests and explicit root limits."""
-        from sqlalchemy import update
-
         from yuki.runtime.work_budget import charge, limit
-        from yuki.runtime.work_schema_v1 import work
 
         identity = identity or str(uuid4())
         admitted = await self.repository.accept_in_session(
@@ -1330,10 +1308,6 @@ class WorkControl:
         self.current = admitted
 
     async def _queue_work(self, args: dict[str, Any]) -> dict[str, Any]:
-        from sqlalchemy import select
-
-        from yuki.persistence.models import ChatEventModel
-
         assert self.current is not None
         if self.source.get("origin") != "user_message":
             raise ValueError("independent_work_requires_new_user_input")

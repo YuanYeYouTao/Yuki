@@ -91,34 +91,7 @@ class MemoryFact(_MemoryModel):
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> MemoryFact:
-        _validate_fact_identity(
-            scope_type=self.scope_type,
-            subject_user_id=self.subject_user_id,
-            group_id=self.group_id,
-            visibility_type=self.visibility_type,
-            visibility_user_id=self.visibility_user_id,
-            visibility_group_id=self.visibility_group_id,
-            canonical_subject_person_id=self.canonical_subject_person_id,
-            canonical_subject_space_id=self.canonical_subject_space_id,
-            canonical_visibility_person_id=self.canonical_visibility_person_id,
-            canonical_visibility_space_id=self.canonical_visibility_space_id,
-        )
-        _validate_fact_lifecycle(
-            status=self.status,
-            conflict_state=self.conflict_state,
-            invalidated_reason=self.invalidated_reason,
-        )
-        if (
-            self.authority is MemoryAuthority.AGENT_REFLECTION
-            and self.scope_type is not MemoryScopeType.SELF
-        ):
-            raise ValueError("agent reflection authority is only valid for self memory")
-        if (
-            self.valid_from is not None
-            and self.valid_until is not None
-            and self.valid_from > self.valid_until
-        ):
-            raise ValueError("memory valid_from must not be after valid_until")
+        _validate_fact(self)
         return self
 
     @property
@@ -200,34 +173,7 @@ class MemoryFactCreate(_MemoryModel):
 
     @model_validator(mode="after")
     def _validate_scope(self) -> MemoryFactCreate:
-        _validate_fact_identity(
-            scope_type=self.scope_type,
-            subject_user_id=self.subject_user_id,
-            group_id=self.group_id,
-            visibility_type=self.visibility_type,
-            visibility_user_id=self.visibility_user_id,
-            visibility_group_id=self.visibility_group_id,
-            canonical_subject_person_id=self.canonical_subject_person_id,
-            canonical_subject_space_id=self.canonical_subject_space_id,
-            canonical_visibility_person_id=self.canonical_visibility_person_id,
-            canonical_visibility_space_id=self.canonical_visibility_space_id,
-        )
-        _validate_fact_lifecycle(
-            status=self.status,
-            conflict_state=self.conflict_state,
-            invalidated_reason=self.invalidated_reason,
-        )
-        if (
-            self.authority is MemoryAuthority.AGENT_REFLECTION
-            and self.scope_type is not MemoryScopeType.SELF
-        ):
-            raise ValueError("agent reflection authority is only valid for self memory")
-        if (
-            self.valid_from is not None
-            and self.valid_until is not None
-            and self.valid_from > self.valid_until
-        ):
-            raise ValueError("memory valid_from must not be after valid_until")
+        _validate_fact(self)
         return self
 
 
@@ -517,6 +463,37 @@ class MemoryIndexHealth(_MemoryModel):
     @property
     def healthy(self) -> bool:
         return self.missing_row_count == 0 and self.orphan_row_count == 0
+
+
+def _validate_fact(fact: MemoryFact | MemoryFactCreate) -> None:
+    _validate_fact_identity(
+        scope_type=fact.scope_type,
+        subject_user_id=fact.subject_user_id,
+        group_id=fact.group_id,
+        visibility_type=fact.visibility_type,
+        visibility_user_id=fact.visibility_user_id,
+        visibility_group_id=fact.visibility_group_id,
+        canonical_subject_person_id=fact.canonical_subject_person_id,
+        canonical_subject_space_id=fact.canonical_subject_space_id,
+        canonical_visibility_person_id=fact.canonical_visibility_person_id,
+        canonical_visibility_space_id=fact.canonical_visibility_space_id,
+    )
+    _validate_fact_lifecycle(
+        status=fact.status,
+        conflict_state=fact.conflict_state,
+        invalidated_reason=fact.invalidated_reason,
+    )
+    if (
+        fact.authority is MemoryAuthority.AGENT_REFLECTION
+        and fact.scope_type is not MemoryScopeType.SELF
+    ):
+        raise ValueError("agent reflection authority is only valid for self memory")
+    if (
+        fact.valid_from is not None
+        and fact.valid_until is not None
+        and fact.valid_from > fact.valid_until
+    ):
+        raise ValueError("memory valid_from must not be after valid_until")
 
 
 def _validate_fact_lifecycle(

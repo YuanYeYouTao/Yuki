@@ -113,7 +113,7 @@ async def owned_child_parent(control: Any, identity: Any) -> str:
 
 
 async def manage_subtask(
-    control: Any, action: str, identity: str, key: str, text: Any
+    control: Any, action: str, identity: str, key: str, text: str | None
 ) -> dict[str, Any]:
     """Cancel or resume (optionally with new requirements) an owned child Work."""
     parent_id = await owned_child_parent(control, identity)
@@ -121,8 +121,6 @@ async def manage_subtask(
     if action == "cancel":
         await repository.cancel(control.lease, parent_id, identity)
     else:
-        if text is not None and not isinstance(text, str):
-            raise ValueError("invalid_task_text")
         await repository.resume(control.lease, parent_id, identity, key=key, instruction=text)
     row = await repository.related(parent_id, identity)
     return {"id": identity, "status": child_state(row)}

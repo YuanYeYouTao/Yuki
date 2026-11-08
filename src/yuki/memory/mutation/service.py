@@ -297,8 +297,6 @@ class MemoryMutationService:
     def select_dream_anchor(facts: tuple[MemoryFact, ...]) -> MemoryFact:
         """Choose one stable metadata anchor without asking the model for identity fields."""
 
-        if not facts:
-            raise ValueError("dream anchor selection requires at least one fact")
         return min(facts, key=lambda fact: fact.id)
 
     async def mutate_dream(
@@ -318,8 +316,6 @@ class MemoryMutationService:
     ) -> DreamMutationResult:
         """Apply one already-validated Dream action inside its cluster transaction."""
 
-        if not source_facts:
-            raise ValueError("dream mutation requires source facts")
         current_by_id = {
             fact.id: fact
             for fact in await self._facts.repository.get_facts(
@@ -338,11 +334,6 @@ class MemoryMutationService:
             item.kind != sources[0].kind for item in sources[1:]
         ) or not await self._facts.same_targets(sources, session=session):
             raise ValueError("dream mutation cannot cross memory partitions")
-        if operation_type is DreamOperationType.RECOMPOSE:
-            if any(not 1 <= output.importance <= 5 for output in recompose_outputs):
-                raise ValueError("dream recompose importance is out of range")
-        elif recompose_outputs:
-            raise ValueError("only dream recompose accepts multiple outputs")
         explicit = tuple(item for item in sources if self._dream_explicit(item))
         if (
             operation_type
@@ -527,17 +518,9 @@ class MemoryMutationService:
         elif operation_type is DreamOperationType.RECOMPOSE:
             assert anchor is not None
             source_by_id = {item.id: item for item in sources}
-            if not recompose_outputs:
-                raise ValueError("dream recompose requires outputs")
             referenced = {
                 source.id for output in recompose_outputs for source in output.source_facts
             }
-            if any(
-                not output.source_facts
-                or any(source.id not in source_by_id for source in output.source_facts)
-                for output in recompose_outputs
-            ):
-                raise ValueError("dream recompose output has invalid sources")
             normalized_outputs = tuple(
                 normalize_memory_text(output.content) for output in recompose_outputs
             )
