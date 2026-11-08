@@ -142,6 +142,8 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
     )
     provider = FakeLLMProvider(lambda _: next(steps))
     chat = build_harness(database, make_settings(database.url), provider).processor._chat
+    # Control arguments are validated against the deployment's frozen contract.
+    await chat.runtime.runner.main_contract.definitions()
     client, captured = install_wire(chat, provider, protocol)
     backend = DeliveryBackend(env)
     runtime = AgentRuntime(

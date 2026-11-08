@@ -634,7 +634,9 @@ async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
         assert (await repository.get(resumed["id"]))["state"] == "completed"
         delivered = await workers.related(resumed["parent_work_id"], resumed["id"])
         assert json.loads(delivered["result_json"])["text"] == "timer woke and task completed"
-    for invalid in (True, float("inf"), float("nan")):
+    # The wait schema admits only JSON numbers (never booleans); parsed
+    # Infinity/NaN remain numbers and are refused as a due time.
+    for invalid in (float("inf"), float("nan")):
         with pytest.raises(ValueError, match="invalid_wait_delay"):
             normalize_conditions([{"kind": "time_due", "after_seconds": invalid}], due)
 

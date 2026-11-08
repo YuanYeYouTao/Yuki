@@ -586,7 +586,7 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 
 `wait(for=[…], all?, deadline?)` 的每项恰含一个键：`{"run": id}`（子任务或命令的 id，即 `owned_run`）、
 `{"message": true}`（当前 canonical Conversation 的下一条消息）、`{"seconds": n}` 或 `{"at": 带时区时间}`（`time_due`）、
-`{"plugin_event": {plugin_id, event_type, source?}}`（获准插件发布的事件）；存储仍是原条件种类。已结束或未知的执行也可提供真实完成信号。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
+`{"plugin_event": {plugin_id, event_type, source?}}`（获准插件发布的事件；`plugin_id`、`event_type` 为 1–128 字、`source` 不超过 128 字，与插件发布合同一致，写在声明 schema 中）；存储仍是原条件种类。形状由冻结 schema 校验（见 [Tool Kernel](tool-kernel.md#代码定位)），`wait` 只核时间可解析且带时区、`seconds` 有限及 `run` 归属。已结束或未知的执行也可提供真实完成信号。主工作和子工作都可按自己的原 Work ID 登记、接收并消费信号，再沿原 lease 完成。
 同时接收会话输入与子结果时，在 `for` 中同时列 `message` 与 `run`（默认任一命中即唤醒）。
 等待是一次性的。`any` 任一命中后，处理当前输入并继续可执行工作；仍依赖未完成子任务且当前没有可执行步骤时，按原 ID 等待剩余结果，不重新派生。
 `all=true` 等全部条件满足，局部命中留在原绑定中。集合可选 `deadline`，没有隐式 90 秒有效期。绑定持久化在

@@ -68,30 +68,24 @@ async def start_subtask(control: Any, args: dict[str, Any], key: str) -> dict[st
 
 
 async def message_task(control: Any, args: dict[str, Any], key: str) -> dict[str, Any]:
-    identity = args.get("id")
-    text = args.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("message_text_required")
-    to_parent = identity is None
+    text = args["text"]
+    to_parent = "id" not in args
     if to_parent:
         if control.current is None or control.current["parent_work_id"] is None:
             raise ValueError("subtask_parent_unavailable")
         identity = control.current["id"]
         parent_id = control.current["parent_work_id"]
     else:
+        identity = args["id"]
         parent_id = await owned_child_parent(control, identity)
-    ask = args.get("ask", False)
-    reply_to = args.get("reply_to")
-    if type(ask) is not bool or (reply_to is not None and not isinstance(reply_to, str)):
-        raise ValueError("invalid_message_arguments")
     receipt = await SubagentRepository(control.repository).message(
         control.lease,
         parent_id,
-        str(identity),
+        identity,
         key,
         text,
-        ask=ask,
-        reply_to=reply_to,
+        ask=args.get("ask", False),
+        reply_to=args.get("reply_to"),
         to_parent=to_parent,
     )
     if receipt["waiting_parent"]:
@@ -100,10 +94,8 @@ async def message_task(control: Any, args: dict[str, Any], key: str) -> dict[str
     return {"message_id": receipt["message_id"]}
 
 
-async def owned_child_parent(control: Any, identity: Any) -> str:
+async def owned_child_parent(control: Any, identity: str) -> str:
     """The parent through which this execution owns child ``identity``."""
-    if not isinstance(identity, str) or not identity:
-        raise ValueError("task_id_required")
     child = await WorkQueries(control.repository).get(
         control.lease, control.source, identity, local=True
     )

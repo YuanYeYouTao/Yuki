@@ -10,6 +10,7 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.codemode_cases import BINARY, TOOLS, worker
 from tests.support.social_identity_cases import social_env
 
+from yuki.capabilities.validation import JsonSchemaCapabilityValidator
 from yuki.codemode.api_projection import project
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.llm.fake import FakeLLMProvider
@@ -25,6 +26,12 @@ FIXED_TOOLS = tuple(
         key=lambda tool: tool.name,
     )
 )
+
+
+def _schema_view():
+    validator = JsonSchemaCapabilityValidator()
+    validator.admit_tools(FIXED_TOOLS)
+    return validator.freeze()
 
 
 def call(name, args, identity):
@@ -85,6 +92,8 @@ async def runner_env(database, tmp_path, responses):
     chat.runtime.runner.main_contract = SimpleNamespace(
         revision="manifest-test",
         script_api=project(TOOLS, "manifest-test"),
+        # Control calls are validated against the same frozen schemas.
+        schema_view=_schema_view(),
         invariant_messages=chat._prompt_composer.invariant_messages,
     )
     env = await social_env(database, tmp_path)

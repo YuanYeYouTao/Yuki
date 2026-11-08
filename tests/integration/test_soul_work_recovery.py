@@ -49,6 +49,7 @@ async def test_hot_soul_edit_finishes_original_paid_response_after_cold_restore(
     probe.runner.main_contract = MainAgentContract(
         probe.chat, ShortState(WorkspaceStore(tmp_path / "main-contract"))
     )
+    await probe.runner.main_contract.definitions()
     settings = probe.chat._settings
     path = tmp_path / "SOUL.md"
     activate(settings, path, name="初雪", soul="原人格{{name}}", revision=1)

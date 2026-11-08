@@ -110,7 +110,7 @@ Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
 不增加业务别名或权限；`execute_code` 和只读目录自身不投影，未知名称在沙箱内即 NameError。
-模型只能直接调用当前直调视图中的工具；Code Mode 业务子调用按完整 API 核验名称和原 schema，
+模型只能直接调用当前直调视图中的工具；Code Mode 子调用按完整 API 核验名称和原 schema，
 再进入同一执行后端。目录结果不使隐藏工具获得直接调用资格。完整执行清单、直调政策和
 工作者子集都纳入 revision；隐藏工具 schema 变更同样改变恢复合同，旧链不暗改。
 未配置或不可用的 native worker 如实返回不可用，隐藏能力不能借此改走未声明的直接工具。
@@ -243,8 +243,14 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 `mutation_committed=false`，实际执行次数与原 admission/已付尝试预算分别计量，不笼统退款。
 这些反馈在本次调用内生成，不为格式化结果重新查来源、取得 writer 或写错误账本。
 生命周期控制（`get_tasks`、`manage_task`、`wait`、`start_subtask`、`message_task`）的直调、
-Code Mode 子调用和恢复重派都经 `AgentRunner._execute_control_call` 进入 `WorkControl.execute`，
-不经上述 schema 校验器；参数由 `WorkControl` 与子任务工具自行核验并返回领域错误码。
+Code Mode 子调用和恢复重派都经 `AgentRunner._execute_control_call`：先核声明、执行后端许可与
+`get_tasks` 的执行处读取授权（拒绝不写回执），再在原 effect 边界内按同一冻结合同的
+`schema_view` 校验参数，失败与业务工具同形（`tool_input_validation_failed` 加一句说明，
+`executed=false`），控制不计业务工具预算。已有回执的调用按原回执返回，不再校验或重派；
+同一合同下未派发的原调用恢复时按当前 schema 校验。`WorkControl` 与子任务工具只核当前事实
+（当前任务、归属、id 是否存在、时间可解析且带时区、`seconds` 有限、目标非空白）和 schema
+无法表达的跨字段规则（start 需要 goal、resume 需要 id）；Host 接纳 `admit_goal` 不经 schema，
+保留自己的目标检查。
 
 命令结果的模型投影为 `{id, status, output, exit_code, next_cursor}` 等实际字段，读取成功本身
 不加 `ok`；观察到的进程成败另以 `process.succeeded` 表示，typed 数据保留原 run_id、request_id、

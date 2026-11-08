@@ -91,7 +91,8 @@ result_preview 是 JSON 摘录，其 read_more 从真实 result 路径的 cursor
   仍按 Code 自己结果的 `executed`。
 - 已接受的生命周期控制（`manage_task`、`wait`、`start_subtask`、`message_task`）由
   `control_result_payload` 一处生成模型文本，现场返回与 effect 回执 `result` 共用；回放按原回执
-  原文返回（切换前的旧回执保持旧文本）。
+  原文返回（切换前的旧回执保持旧文本）。参数不符冻结 schema 的控制调用与业务工具同形拒绝
+  （`tool_input_validation_failed` 加一句说明），按当前事实拒绝的仍是领域错误码加中文说明。
 - `memory_tool_receipts.result_excerpt` 存模型实际看到的有界文本，SELF 记忆的引文证据按它
   匹配，因此证据随模型实际看到的投影变化；旧行不改写。SELF 自省输入展示的工具名经
   `RECORDED_TOOL_NAMES` 映射为现役名，存储行保留原名。去掉信封后，只出现在旧信封中的引文
