@@ -1,8 +1,10 @@
 """Current deployment contracts through real Chat, SELF and due-slot Main calls."""
 
 import json
+import re
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -194,6 +196,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                 app.models.apply_catalog(
                     _catalog(profile), ModelClientPool(injected_profiles={"main": provider})
                 )
+            before = datetime.now(UTC)
             assert (await app.processor.handle(message, sender)).reason == "chat"
             app.main_agent_contract.state.update({"slot": 1, "text": "CURRENT_MATERIAL_VALUE"})
             current = replace(
@@ -203,6 +206,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                 text="FINAL_CURRENT_USER_BODY\nEND_CURRENT_USER_BODY",
             )
             assert (await app.processor.handle(current, sender)).reason == "chat"
+            after = datetime.now(UTC)
             assert len(wire) == 2
             if protocol == "gemini":
                 assert wire[-1]["contents"][-1]["role"] == "user"
@@ -217,7 +221,32 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             state_json = host.partition("<runtime_context>\n")[2].removesuffix(
                 "\n</runtime_context>\n\n"
             )
-            assert json.loads(state_json)["state"] == "no_active_work"
+            state = json.loads(state_json)
+            assert state["state"] == "no_active_work"
+            # #566: every prepared runtime context carries the absolute current time.
+            shown = re.fullmatch(
+                r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) 星期(.) \(UTC\+8\)",
+                state["current_time"],
+            )
+            assert shown is not None, state
+            local = datetime.fromisoformat(shown[1]).replace(tzinfo=timezone(timedelta(hours=8)))
+            assert shown[2] == "一二三四五六日"[local.weekday()]
+            assert before.replace(microsecond=0) <= local <= after
+            evidence = Path("test-results") / "runtime-current-time" / f"{protocol}.json"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text(
+                json.dumps(
+                    {
+                        "protocol": protocol,
+                        "runtime_context": state,
+                        "request_window_utc": [before.isoformat(), after.isoformat()],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             assert joined.count("<runtime_context>") == joined.count("CURRENT_MATERIAL_VALUE") == 1
             assert joined.index("</runtime_context>") < joined.index("CURRENT_MATERIAL_VALUE")
             assert joined.index("CURRENT_MATERIAL_VALUE") < joined.index(current.text)

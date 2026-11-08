@@ -62,8 +62,10 @@ class DeviceFiles:
         self.queries.append((device, actor, destination, request_id))
         return self.prior
 
-    async def upload(self, device, actor, path, destination, *, request_id):
-        self.uploads.append((device, actor, destination, request_id, path.read_bytes()))
+    async def upload(self, device, actor, stream, size, sha256, destination, *, request_id):
+        data = await stream(size)
+        assert hashlib.sha256(data).hexdigest() == sha256
+        self.uploads.append((device, actor, destination, request_id, data))
         return {"path": destination, "device_id": device, "status": "succeeded"}
 
 
@@ -226,7 +228,10 @@ async def test_attachment_save_replays_original_receipt_after_cache_expiry(tmp_p
 
 async def test_attachment_save_uploads_authorized_original_bytes(tmp_path):
     service, devices, media = workspace(tmp_path)
-    media.authorized_path.return_value = (SimpleNamespace(), devices.path)
+    media.authorized_path.return_value = (
+        SimpleNamespace(content_sha256=hashlib.sha256(devices.path.read_bytes()).hexdigest()),
+        devices.path,
+    )
     result = await service.execute(
         "save_conversation_attachment_to_workspace",
         {

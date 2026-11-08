@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any
+import os
+from contextlib import AsyncExitStack
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
@@ -15,6 +17,19 @@ from yuki.services.native_media import MAX_IMAGE_BYTES
 from yuki.workspace.inspect import WorkspaceInspector
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 from yuki.workspace.tools import workspace_tools as workspace_tools
+
+
+def _unconfirmed(result: dict[str, Any], sha256: str | None) -> dict[str, Any]:
+    """Explain an unconfirmed computer write without turning it into a failure."""
+    if not result.get("uncertain"):
+        return result
+    return {
+        **result,
+        **({"source_sha256": sha256} if sha256 is not None else {}),
+        "message": "目标写入未确认，不要按失败重传同一调用。目标目录可能残留"
+        " .yuki-transfer-*.part；可在该电脑终端核对目标文件的 sha256，"
+        "确认未完成后再以新调用复制。",
+    }
 
 
 class WorkspaceService:
@@ -137,41 +152,82 @@ class WorkspaceService:
             return await self.visual_inspector(
                 None, str(args["question"]), runtime=vision, file_metadata=metadata, data=data
             )
-        if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
-            source_key = f"attachment:{int(args['event_id'])}:{int(args['attachment_index'])}"
-            if name == "save_conversation_attachment_to_workspace" and "device_id" in args:
-                media = self.conversation_media
-                try:
-                    await media._sources(((int(args["event_id"]), int(args["attachment_index"])),))
-                    devices = self.sandbox.local_devices
-                    assert devices is not None
-                    device_id, destination = str(args["device_id"]), str(args["destination"])
-                    actor = devices.actor(source)
-                    prior = await devices.upload_result(
-                        device_id,
-                        actor,
-                        destination,
+        if name == "save_conversation_attachment_to_workspace":
+            # The tool-surface switch renames this declaration to copy_file
+            # (device -> source computer, to_device -> target computer).
+            return await self.copy_file(
+                destination=str(args["destination"]),
+                request_id=request_id,
+                source=source,
+                path=args.get("path"),
+                artifact_id=args.get("artifact_id"),
+                event_id=args.get("event_id"),
+                attachment_index=args.get("attachment_index"),
+                to_device=args.get("device_id"),
+            )
+        if name == "inspect_conversation_attachment":
+            media = self.conversation_media
+            try:
+                item, path = await media.authorized_path(
+                    event_id=int(args["event_id"]),
+                    attachment_index=int(args["attachment_index"]),
+                )
+                return await media.inspect(
+                    item,
+                    path,
+                    str(args["question"]),
+                    runtime=(
+                        runtime.runtime_config.vision
+                        if runtime is not None and runtime.runtime_config
+                        else None
+                    ),
+                )
+            except ConversationMediaError as exc:
+                raise WorkspaceError(str(exc)) from exc
+        raise WorkspaceError("unknown_tool")
+
+    async def copy_file(
+        self,
+        *,
+        destination: str,
+        request_id: str,
+        source: dict[str, Any] | None,
+        path: str | None = None,
+        artifact_id: str | None = None,
+        event_id: int | None = None,
+        attachment_index: int | None = None,
+        device: str | None = None,
+        to_device: str | None = None,
+    ) -> dict[str, Any]:
+        """Copy one original file byte-for-byte; its receipt is read before any source."""
+        attachment = (
+            (int(event_id), int(attachment_index))
+            if event_id is not None and attachment_index is not None
+            else None
+        )
+        if [path, artifact_id, attachment].count(None) != 2 or (
+            attachment is None and (event_id is not None or attachment_index is not None)
+        ):
+            raise WorkspaceError("choose_one_source")
+        # A source computer, and artifacts into the Yuki environment, need new
+        # Manager methods; they are not served by another transfer path.
+        if device is not None or (artifact_id is not None and to_device is None):
+            raise WorkspaceError("source_not_supported_for_destination")
+        media = self.conversation_media
+        try:
+            if to_device is None:
+                if path is not None:
+                    return await self.copy_from_cache(
+                        path=path,
+                        destination=destination,
                         request_id=request_id,
+                        source_key=f"path:{path}",
                     )
-                    if prior is not None:
-                        return prior
-                    _, path = await media.authorized_path(
-                        event_id=int(args["event_id"]),
-                        attachment_index=int(args["attachment_index"]),
-                    )
-                    return await devices.upload(
-                        device_id,
-                        actor,
-                        path,
-                        destination,
-                        request_id=request_id,
-                    )
-                except ConversationMediaError as exc:
-                    raise WorkspaceError(str(exc)) from exc
-            if name == "save_conversation_attachment_to_workspace":
+                assert attachment is not None
+                source_key = f"attachment:{attachment[0]}:{attachment[1]}"
                 prior = await self.sandbox.execute(
                     "workspace_copy_result",
-                    {"source_key": source_key, "destination": str(args["destination"])},
+                    {"source_key": source_key, "destination": destination},
                     request_id=request_id,
                 )
                 if prior.get("error"):
@@ -183,33 +239,81 @@ class WorkspaceService:
                 if prior.get("found"):
                     result: dict[str, Any] = prior["result"]
                     return result
-            media = self.conversation_media
-            try:
-                item, path = await media.authorized_path(
-                    event_id=int(args["event_id"]),
-                    attachment_index=int(args["attachment_index"]),
+                item, cached = await media.authorized_path(
+                    event_id=attachment[0], attachment_index=attachment[1]
                 )
-                if name == "inspect_conversation_attachment":
-                    return await media.inspect(
-                        item,
-                        path,
-                        str(args["question"]),
-                        runtime=(
-                            runtime.runtime_config.vision
-                            if runtime is not None and runtime.runtime_config
-                            else None
-                        ),
-                    )
                 return await self.copy_from_cache(
-                    path="/inputs/media-cache/v1/" + path.relative_to(media.root).as_posix(),
-                    destination=str(args["destination"]),
+                    path="/inputs/media-cache/v1/" + cached.relative_to(media.root).as_posix(),
+                    destination=destination,
                     expected_version=item.content_sha256,
                     request_id=request_id,
                     source_key=source_key,
                 )
-            except ConversationMediaError as exc:
-                raise WorkspaceError(str(exc)) from exc
-        raise WorkspaceError("unknown_tool")
+            devices = self.sandbox.local_devices
+            assert devices is not None
+            actor = devices.actor(source)
+            if attachment is not None:
+                await media._sources((attachment,))
+            # transfer_id is the original invocation key: a recorded transfer is
+            # returned as it stands, and only a transfer the computer never saw
+            # reads its source.
+            receipt = await devices.upload_result(
+                to_device, actor, destination, request_id=request_id
+            )
+            if receipt is not None:
+                return _unconfirmed(receipt, None)
+            async with AsyncExitStack() as resources:
+                if path is not None:
+                    try:
+                        header, reader, _ = await resources.enter_async_context(
+                            self.sandbox.stream("files_read", {"path": path})
+                        )
+                    except OSError as exc:
+                        raise WorkspaceError("sandbox_unavailable") from exc
+                    except ValueError as exc:
+                        raise WorkspaceError("source_file_unavailable") from exc
+                    size, sha256 = int(header["size"]), str(header["sha256"])
+
+                    async def stream(wanted: int) -> bytes:
+                        try:
+                            return await reader.readexactly(wanted)
+                        except asyncio.IncompleteReadError as exc:
+                            return exc.partial
+
+                else:
+                    opened: BinaryIO
+                    if artifact_id is not None:
+                        metadata, opened = await asyncio.to_thread(
+                            self.store.open_blob, str(artifact_id)
+                        )
+                        resources.enter_context(opened)
+                        if not metadata["immutable"]:
+                            raise WorkspaceError("artifact_not_immutable")
+                        size, sha256 = int(metadata["size"]), str(metadata["sha256"])
+                    else:
+                        assert attachment is not None
+                        item, cached = await media.authorized_path(
+                            event_id=attachment[0], attachment_index=attachment[1]
+                        )
+                        opened = resources.enter_context(cached.open("rb"))
+                        size = os.fstat(opened.fileno()).st_size
+                        sha256 = str(item.content_sha256)
+
+                    async def stream(wanted: int) -> bytes:
+                        return await asyncio.to_thread(opened.read, wanted)
+
+                result = await devices.upload(
+                    to_device,
+                    actor,
+                    stream,
+                    size,
+                    sha256,
+                    destination,
+                    request_id=request_id,
+                )
+            return _unconfirmed(result, sha256)
+        except ConversationMediaError as exc:
+            raise WorkspaceError(str(exc)) from exc
 
     async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
         """Execution-time authority and current source versions, without fetching pixels."""

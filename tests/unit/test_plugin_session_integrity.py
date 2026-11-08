@@ -96,7 +96,11 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
         result = await facade.run(request)
         assert result.text == visible_output
         assert "private hidden reasoning" not in result.model_dump_json()
-        assert [message.content for message in provider.requests[0].messages[1:]] == [
+        assert [
+            message.content
+            for message in provider.requests[0].messages[1:]
+            if "<runtime_context>" not in (message.content or "")
+        ] == [
             old_input,
             old_output,
             *middle,
@@ -208,6 +212,7 @@ async def test_actorless_session_keeps_real_group_or_plugin_scope(database, tmp_
         message.content
         for message in restored_provider.requests[0].messages
         if message.role in {"user", "assistant"}
+        and "<runtime_context>" not in (message.content or "")
     ] == [
         "continue",
         "only the real original scope",

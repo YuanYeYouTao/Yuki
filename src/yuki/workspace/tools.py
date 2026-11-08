@@ -62,17 +62,25 @@ def workspace_tools() -> tuple[ChatTool, ...]:
         ),
         tool(
             "save_conversation_attachment_to_workspace",
-            "按内部事件 ID 与附件序号直接保存原件为持久工作文件；"
-            "device_id 指定本人电脑，省略时保存到 Yuki 的全局共享环境。"
+            "把一个原件按字节复制到 destination，内容不经过你的上下文。来源三选一："
+            "event_id 与 attachment_index 选聊天附件；path 选 Yuki 环境 /workspace 中的文件；"
+            "artifact_id 选已发布或已发送的不可变文件（只能写入本人电脑）。"
+            "device_id 是写入目标的本人电脑；省略时写入 Yuki 的全局共享环境。"
+            "成功回执给出 size 与 sha256；写入未确认时不要用同一请求重传，按回执说明核对。"
             "可自主收藏图片；收藏或整理表情库时，先用终端阅读 "
             "/workspace/stickers/AGENT.md，按目录中的说明保存原件、补标签和更新索引。",
             {
                 "event_id": {"type": "integer", "minimum": 1},
                 "attachment_index": {"type": "integer", "minimum": 0},
+                "path": {
+                    "type": "string",
+                    "description": "相对 /workspace 的文件路径或 /workspace/完整路径，支持中文。",
+                },
+                **identity,
                 "destination": {"type": "string"},
                 **device,
             },
-            ("event_id", "attachment_index", "destination"),
+            ("destination",),
         ),
     )
 

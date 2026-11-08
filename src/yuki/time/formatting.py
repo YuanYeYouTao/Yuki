@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import overload
 from zoneinfo import ZoneInfo
 
@@ -57,3 +57,10 @@ def local_text(value: datetime | None, timezone: str) -> str:
     if rendered is None:
         return "无"
     return datetime.fromisoformat(rendered).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def runtime_current_time(value: datetime) -> str:
+    """Render the trusted current time for runtime context, always in UTC+8."""
+
+    local = stored_utc(value).astimezone(timezone(timedelta(hours=8)))
+    return f"{local:%Y-%m-%d %H:%M:%S} 星期{'一二三四五六日'[local.weekday()]} (UTC+8)"

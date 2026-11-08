@@ -185,7 +185,9 @@ async def test_ordinary_invalid_paid_checkpoint_is_reused_after_cold_restore(dat
     execution = TurnExecution(runner, initial, runtime, None)
     original = execution.state.transcript.entries()
     first = await execution.prepare_request(0, (), WebMode.DISABLED)
-    assert first.request.messages == original
+    # Only the current-time runtime block is added in front of the current request.
+    assert (*first.request.messages[:-2], first.request.messages[-1]) == original
+    assert "<runtime_context>" in first.request.messages[-2].content
     receipt = CompactReceipt(context, runtime.execution_id, runtime.actor_user_id)
     state = await receipt.read()
     assert state["phase"] == "paired" and state["valid"] is False
@@ -194,7 +196,9 @@ async def test_ordinary_invalid_paid_checkpoint_is_reused_after_cold_restore(dat
     recovered = TurnExecution(runner, initial, runtime, None)
     await recovered.restore_compact_receipt()
     prepared = await recovered.prepare_request(0, (), WebMode.DISABLED)
-    assert prepared.request.messages == first.request.messages
+    # The new request prepares its own current time; everything else is the original.
+    assert (*prepared.request.messages[:-2], prepared.request.messages[-1]) == original
+    assert "<runtime_context>" in prepared.request.messages[-2].content
     assert len(provider.requests) == 1
     assert runtime.auxiliary_requests == [1]
     enlarged = (*initial[:-1], ChatMessage("user", "New unprocessed current material. " * 24000))

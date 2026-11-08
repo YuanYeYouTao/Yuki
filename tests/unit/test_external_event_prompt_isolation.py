@@ -683,7 +683,10 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
 
     assert len(provider.requests) == 2
     ordinary_request, wakeup_request = provider.requests
-    assert ordinary_request.messages[:-1] == wakeup_request.messages[:-1] == stable_prefix
+    # Each request prepares its own current-time runtime block before the current input.
+    assert ordinary_request.messages[:-2] == wakeup_request.messages[:-2] == stable_prefix
+    for request in (ordinary_request, wakeup_request):
+        assert request.messages[-2].content.startswith('\n\n<runtime_context>\n{"current_time":')
     assert ordinary_request.messages[-1].role == wakeup_request.messages[-1].role == "user"
     assert ordinary_request.messages[-1].content != wakeup_request.messages[-1].content
     assert ordinary_request.tools == wakeup_request.tools

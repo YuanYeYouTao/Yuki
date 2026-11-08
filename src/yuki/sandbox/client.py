@@ -48,7 +48,11 @@ class SandboxClient:
             await writer.drain()
             from yuki.sandbox.protocol import read_protocol_line
 
-            header = json.loads(await read_protocol_line(reader))
+            line = await read_protocol_line(reader)
+            if not line:
+                # The Manager closed the stream after an uncaught error.
+                raise ValueError("stream_closed_before_header")
+            header = json.loads(line)
             if not isinstance(header, dict):
                 raise ValueError("invalid_stream_response")
             if header.get("error"):

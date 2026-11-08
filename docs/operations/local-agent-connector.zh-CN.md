@@ -16,9 +16,9 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 截图和下载文件先落本机，再走下面同一文件管线。原 stdin 接纳、CLI 进程退出和网页业务完成分别认实际输出；未知不自动重派原命令。关闭完整访问拒绝新命令和后续 stdin，已运行脚本或外部后台程序需要停止时显式取消原 run；不宣称能追入任意程序逐网页动作撤权。
 
-`workspace_inspect(path,device_id)` 将所选本机字节准备为原私有媒体结果，回读沿原 tool_handle；`send(path,device_id)` 冻结一次原件后发送，沿原 artifact/source_key 恢复。附件保存仍按内部 event_id/attachment_index 核来源，再写入本机指定路径；未知写入查原传输回执。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
+`workspace_inspect(path,device_id)` 将所选本机字节准备为原私有媒体结果，回读沿原 tool_handle；`send(path,device_id)` 冻结一次原件后发送，沿原 artifact/source_key 恢复。`save_conversation_attachment_to_workspace` 的 `device_id` 指写入目标电脑，可把聊天附件（按内部 event_id/attachment_index 核来源）、Yuki 环境 `/workspace` 中的 `path` 或不可变 `artifact_id` 原样写入本机指定路径；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
 
-实施证据与交付状态见[本次实施记录](local-device-full-access-implementation-20261029.md)。
+实施证据与交付状态见[本次实施记录](local-device-full-access-implementation-20261029.md)。文件复制来源扩展见[2026-11-07 实施记录](file-copy-backend-implementation-20261107.md)。
 
 ## 从桌面连接
 

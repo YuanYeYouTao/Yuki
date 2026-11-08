@@ -9,7 +9,6 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from contextvars import copy_context
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
@@ -332,11 +331,7 @@ async def _execute_plugin_main_turn(
                 if recovered_actor != actor:
                     raise PluginPermissionError("plugin execution source changed")
                 if isinstance(recovered, AutomationTaskSource):
-
-                    def occurrence_context() -> dict[str, Any]:
-                        return recovered.activation_context(datetime.now(UTC))
-
-                    activation_context = occurrence_context
+                    activation_context = recovered.activation_context
             if not await ledger.read_version_matches(version):
                 raise ContextBoundaryChanged("plugin Conversation changed before model request")
             if runtime.before_model_request is not None:

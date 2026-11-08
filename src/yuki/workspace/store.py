@@ -12,7 +12,7 @@ from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 from uuid import UUID, uuid4
 
 from yuki.workspace.artifact_lock import ArtifactLockBusy, ArtifactRootLock
@@ -187,9 +187,10 @@ class WorkspaceStore:
         # A lost commit acknowledgement does not prove rollback. Renamed
         # blobs are reclaimed only by reference-checked GC, never here.
 
-    def read_bytes(
+    def open_blob(
         self, artifact_id: str, *, max_bytes: int | None = None
-    ) -> tuple[dict[str, Any], bytes]:
+    ) -> tuple[dict[str, Any], BinaryIO]:
+        """Open one artifact's blob; the caller owns and closes the returned stream."""
         with ExitStack() as resources:
             with self._transaction(write=False) as db:
                 row = self._row(db, artifact_id)
@@ -207,10 +208,18 @@ class WorkspaceStore:
                     raise WorkspaceError("artifact_too_large")
                 metadata = self._metadata(row)
             # The open FD pins the selected immutable blob after releasing SQLite.
+            resources.pop_all()
+            return metadata, stream
+
+    def read_bytes(
+        self, artifact_id: str, *, max_bytes: int | None = None
+    ) -> tuple[dict[str, Any], bytes]:
+        metadata, stream = self.open_blob(artifact_id, max_bytes=max_bytes)
+        with stream:
             data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
-            if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
-                raise WorkspaceError("artifact_corrupt")
-            return metadata, data
+        if len(data) != metadata["size"] or hashlib.sha256(data).hexdigest() != metadata["sha256"]:
+            raise WorkspaceError("artifact_corrupt")
+        return metadata, data
 
     def snapshot(
         self,

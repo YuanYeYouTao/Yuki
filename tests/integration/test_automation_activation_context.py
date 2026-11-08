@@ -1,6 +1,7 @@
 """A due occurrence reaches common Main as an execution, with real Social effects."""
 
 import json
+import re
 import time
 from datetime import UTC, datetime
 
@@ -62,7 +63,6 @@ async def test_due_relative_request_has_original_occurrence_and_frozen_activatio
     )
     assert updated.created_at == created_at and updated.next_run_at == scheduled_for
     case.clock.advance(1802)
-    activated_at = case.clock.now()
 
     def respond(request):
         if len(case.provider.requests) == 1:
@@ -90,7 +90,11 @@ async def test_due_relative_request_has_original_occurrence_and_frozen_activatio
     }
     assert datetime.fromisoformat(context["created_at"]) == created_at
     assert datetime.fromisoformat(context["scheduled_for"]) == scheduled_for
-    assert datetime.fromisoformat(context["current_time"]) == activated_at
+    # The runtime context shows the real wall clock in UTC+8; the fake scheduling
+    # clock only decides due time.
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 星期. \(UTC\+8\)", context["current_time"]
+    )
     assert "已经到期" in context["instruction"] and "相对时间属于原安排" in context["instruction"]
     assert "goal" not in context
     assert first.messages[-1].content.endswith(goal)
