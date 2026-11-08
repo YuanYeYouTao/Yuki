@@ -740,8 +740,13 @@ class AutomationRepository:
         run_id: int | None = None,
         occurrence: tuple[int, datetime] | None = None,
         error_category: str = "main_activation_interrupted",
+        llm_calls: int | None = None,
     ) -> None:
-        """Close unowned original occurrences without dispatching any effects."""
+        """Close unowned original occurrences without dispatching any effects.
+
+        ``llm_calls`` is the request count the failed activation actually paid;
+        a lost process has none to report and keeps the recorded value.
+        """
         from yuki.runtime.work_schema_v1 import work
 
         async with self._database.read_session() as reader:
@@ -774,7 +779,7 @@ class AutomationRepository:
             await self.finish_run(
                 run.id,
                 status=RunStatus.UNCERTAIN,
-                llm_calls=run.llm_calls,
+                llm_calls=run.llm_calls if llm_calls is None else llm_calls,
                 tool_calls=run.tool_calls,
                 messages_sent=run.messages_sent,
                 error_category=error_category,

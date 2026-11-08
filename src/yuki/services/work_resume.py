@@ -25,6 +25,7 @@ from yuki.runtime.work_repository import WorkConflict, WorkRepository
 from yuki.runtime.work_schema_v1 import journal
 from yuki.sandbox.task_repository import SandboxTaskRepository
 from yuki.services.agent_tools import ToolRuntime
+from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.execution_sources import (
     AutomationTaskSource,
     MessageTaskSource,
@@ -43,6 +44,7 @@ class WorkResumeDependencies:
     ledger: EventLedgerRepository
     conversation_scopes: ConversationScopeRepository
     turn_coordinator: ConversationTurnCoordinator
+    concurrency: ConcurrencyManager
     runtime_config: RuntimeConfigService
     sandbox_tasks: SandboxTaskRepository
     active_bindings: ActiveWorkBindings
@@ -218,32 +220,35 @@ class WorkResumer:
             if token is None:
                 yield None
                 return
-            snapshot = ConversationTurnSnapshot(
-                state.id,
-                key,
-                recovered.generation,
-                recovered.event_id,
-                token.version,
-                identity.key,
-                initiative_run_id=recovered.run_id
-                if isinstance(recovered, SelfTaskSource)
-                else None,
-                automation_run_id=recovered.automation_run_id
-                if isinstance(recovered, AutomationTaskSource)
-                else None,
-            )
-
-            async def validate() -> None:
-                fresh_source = await recover_execution_source(
-                    self.repository.database,
-                    item["conversation_id"],
-                    source,
-                    request_id=item["id"],
+            # Hold the conversation lock across the activation so an ordinary
+            # Main waits for it instead of failing on the busy Work lease.
+            async with self.services.concurrency.conversation(key):
+                snapshot = ConversationTurnSnapshot(
+                    state.id,
+                    key,
+                    recovered.generation,
+                    recovered.event_id,
+                    token.version,
+                    identity.key,
+                    initiative_run_id=recovered.run_id
+                    if isinstance(recovered, SelfTaskSource)
+                    else None,
+                    automation_run_id=recovered.automation_run_id
+                    if isinstance(recovered, AutomationTaskSource)
+                    else None,
                 )
-                if fresh_source != recovered:
-                    raise ValueError("work_source_changed")
 
-            yield _ResumeScene(identity, key, snapshot, token, validate)
+                async def validate() -> None:
+                    fresh_source = await recover_execution_source(
+                        self.repository.database,
+                        item["conversation_id"],
+                        source,
+                        request_id=item["id"],
+                    )
+                    if fresh_source != recovered:
+                        raise ValueError("work_source_changed")
+
+                yield _ResumeScene(identity, key, snapshot, token, validate)
 
     def _child_resolver(self, identity: str) -> Callable[[str], Awaitable[dict[str, Any] | None]]:
         async def child(run_id: str) -> dict[str, Any] | None:

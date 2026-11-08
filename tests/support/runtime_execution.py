@@ -7,6 +7,7 @@ from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.sandbox.task_repository import SandboxTaskRepository
+from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.prompt_composer import PromptComposer
 from yuki.services.subagent_execution import SubagentExecution, SubagentExecutionDependencies
@@ -27,6 +28,7 @@ def make_work_resumer(
     sandbox_tasks=None,
     settings=None,
     generate_origin=None,
+    concurrency=None,
 ):
     return WorkResumer(
         repository,
@@ -37,6 +39,7 @@ def make_work_resumer(
             ledger=ledger,
             conversation_scopes=scopes,
             turn_coordinator=turns,
+            concurrency=concurrency or ConcurrencyManager(),
             runtime_config=config,
             sandbox_tasks=sandbox_tasks or SandboxTaskRepository(repository.database),
             active_bindings=bindings or ActiveWorkBindings(),

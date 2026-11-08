@@ -352,6 +352,7 @@ class ApplicationContainer:
                 ledger=self.ledger,
                 conversation_scopes=self.conversation_scopes,
                 turn_coordinator=self.turn_coordinator,
+                concurrency=self.concurrency,
                 runtime_config=self.runtime_config,
                 sandbox_tasks=self.sandbox_tasks,
                 active_bindings=self.runtime.bindings,
@@ -435,6 +436,7 @@ class ApplicationContainer:
             admin_audit=self.admin_audit,
             conversation_scopes=self.conversation_scopes,
             turns=self.turn_coordinator,
+            concurrency=self.concurrency,
             work_repository=works,
         )
         automation = self.automation_module.build()
