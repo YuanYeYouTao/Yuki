@@ -275,9 +275,7 @@ async def run(*, native_child=False):
             assert "error" not in out["before"]["result"]
             assert not out["disabled_result"]["ok"]
             assert out["after_risk_change"]["result"]["ok"] is False
-            assert (
-                out["after_risk_change"]["result"]["error"] == "plugin_tool_contract_changed"
-            )
+            assert out["after_risk_change"]["result"]["error"] == "plugin_tool_contract_changed"
             assert contract.health()["restart_required"] is True
             assert not out["after_risk_change"]["fixture_file_committed"]
             assert out["schema_change"]["frozen_same"] and out["schema_change"]["revision_same"]
