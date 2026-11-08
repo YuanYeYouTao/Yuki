@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from yuki.domain.messages import ChatTool
 
+# Manager RPC methods and job kinds of submitted executions, imported by the
+# Manager (persistent.py). Wire protocol: it does not follow model tool names.
 EXECUTION_TOOLS = frozenset({"terminal_exec"})
 READ_TOOLS = frozenset({"terminal_read", "environment_status"})
 ENVIRONMENT_TOOLS = frozenset(

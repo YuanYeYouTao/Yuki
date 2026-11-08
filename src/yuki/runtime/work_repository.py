@@ -2647,7 +2647,7 @@ class WorkRepository:
     ) -> None:
         """Use an owned run receipt; preserve every original invocation and its mutating role."""
         from yuki.capabilities.executions import is_execution
-        from yuki.runtime.effect_outcomes import execution_finished
+        from yuki.runtime.effect_outcomes import execution_finished, recorded_tool
 
         if not execution_finished(outcome) or outcome.get("run_id") != run_id:
             return
@@ -2700,7 +2700,7 @@ class WorkRepository:
                 for row in rows:
                     receipt = json.loads(row["receipt_json"])
                     previous = receipt.get("outcome", {})
-                    name = previous.get("tool", "")
+                    name = recorded_tool(previous.get("tool", ""))
                     original_action = receipt.get("invocation", {}).get("action")
                     execution = is_execution(
                         name, {"action": previous.get("action", original_action)}

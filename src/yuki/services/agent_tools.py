@@ -869,8 +869,10 @@ class AgentToolService:
                             arguments, request_id=request_id, source=source
                         )
                     else:
+                        from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
+
                         execution_result = await self.sandbox_client.execute(
-                            name,
+                            MODEL_TOOL_RPC_METHODS[name],
                             arguments,
                             request_id=request_id,
                             source=source,
