@@ -544,13 +544,20 @@ async def _execute_plugin_main_turn(
                     if composition.commit_projection is not None:
                         await composition.commit_projection()
 
+                # An explicit zero tool limit answers without declaring any tool.
+                no_tools = tool_limit == 0 or (
+                    control is not None and control.source.get("tool_limit") == 0
+                )
                 result = await main.run(
                     composition.messages,
                     replace(
                         InvocationContextFactory.from_tools(
                             tool_runtime,
-                            allowed_capabilities=runtime.allowed_capabilities,
+                            allowed_capabilities=frozenset()
+                            if no_tools
+                            else runtime.allowed_capabilities,
                         ),
+                        fixed_tools=() if no_tools else None,
                         origin=runtime.origin,
                         invocation_goal=instruction,
                         invocation_source=invocation_source,

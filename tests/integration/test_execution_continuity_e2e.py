@@ -407,6 +407,97 @@ async def test_parallel_batch_and_execute_code_share_the_admitted_work(database,
     }
 
 
+async def test_private_resume_continues_original_chain_and_queries_admit_nothing(
+    database, tmp_path
+):
+    import time
+
+    from tests.support.runtime_execution import make_work_resumer
+
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.runtime.work_scheduler import WorkScheduler
+
+    phase: dict[str, Any] = {"name": "first"}
+
+    def respond(request):
+        number = len(provider.requests)
+        if phase["name"] == "first":
+            if number == 1:
+                return _call("update_short_state", {"slot": 1, "text": "half"}, "half")
+            return _call("task_control", {"action": "fail", "reason": "Mac 写入失败"}, "stop")
+        if phase["name"] == "resume":
+            return _call(
+                "task_control", {"action": "resume", "work_id": phase["work_id"]}, "resume"
+            )
+        if phase["name"] == "resumed":
+            if phase.setdefault("resumed_first", number) == number:
+                phase["resumed_context"] = _plain(request)
+                return _call("update_short_state", {"slot": 1, "text": "done"}, "finish")
+            return "完成原工作"
+        if phase.setdefault("query_first", number) == number:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall("lookup", ToolFunction("task_control", json.dumps(phase["lookup"]))),
+                    ToolCall("listing", ToolFunction("task_control", '{"action":"list"}')),
+                ),
+            )
+        return "查询完毕"
+
+    provider = ScriptedProvider(respond)
+    env, harness, chat, _ = await _private_scene(database, tmp_path, provider)
+    await harness.processor.handle(_private(env, "把报告放到电脑里", "resume-1"), MemorySender())
+    original = (await _rows(database, work))[0]
+    assert original["state"] == "failed"
+
+    phase.update(name="resume", work_id=original["id"])
+    result = await harness.processor.handle(
+        _private(env, "继续刚才那个，改用 Documents 目录", "resume-2"), MemorySender()
+    )
+    works = await _rows(database, work)
+    queued = works[0]
+    assert result.reason == "chat", result
+    assert len(works) == 1 and queued["id"] == original["id"]
+    assert queued["state"] == "queued"
+
+    phase["name"] = "resumed"
+    repository = WorkRepository(database)
+    resumer = make_work_resumer(
+        repository,
+        ledger=harness.ledger,
+        scopes=chat._conversation_scopes,
+        turns=chat._turn_coordinator,
+        router=env.router,
+        config=chat._runtime_config,
+        generate_self=chat.generate_self_initiative,
+        generate_wakeup=chat.generate_main_agent_wakeup,
+        bindings=chat.runtime.bindings,
+        concurrency=chat._concurrency,
+    )
+    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
+    scheduler._last_reclaim = time.monotonic()
+    await scheduler.drain_once()
+    final = await repository.get(original["id"])
+    assert final["state"] == "completed"
+    assert "改用 Documents 目录" in phase["resumed_context"]
+
+    phase.update(name="query", lookup={"action": "get", "work_id": original["id"]})
+    query = await harness.processor.handle(_private(env, "查一下进度", "resume-3"), MemorySender())
+    after_query = await _rows(database, work)
+    assert query.reason == "chat"
+    assert len(after_query) == 1
+    RESULTS["private_resume_and_queries"] = {
+        "original_work_id": original["id"],
+        "resume_turn_reason": result.reason,
+        "works_after_resume_turn": len(works),
+        "state_after_resume_turn": queued["state"],
+        "state_after_scheduler": final["state"],
+        "user_message_reached_original_chain": "改用 Documents 目录" in phase["resumed_context"],
+        "works_after_get_list_turn": len(after_query),
+    }
+
+
 class HardExit(BaseException):
     """Process death after a committed transaction: no Python cleanup writes."""
 
@@ -826,6 +917,57 @@ async def test_plugin_explicit_limit_is_written_to_root_work_budget(database, tm
             "budget": {
                 key: budget[key] for key in ("models", "tools", "model_limit", "tool_limit")
             },
+        }
+    finally:
+        await host.close_host_resources()
+
+
+async def test_plugin_tool_limits_refuse_overflow_and_zero_declares_no_tools(database, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from tests.integration.test_plugin_agent_domain_grants import source_host
+
+    from yuki.runtime.work_repository import WorkRepository
+
+    def respond(request):
+        if not request.tools:
+            return "无需工具的回答"
+        if len(provider.requests) == 1:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall("first", ToolFunction("environment_status", "{}")),
+                    ToolCall("second", ToolFunction("environment_status", "{}")),
+                ),
+            )
+        return "done"
+
+    provider = FakeLLMProvider(respond)
+    _, _, chat, source, host = await source_host(database, tmp_path, provider, ())
+    try:
+        sandbox = SimpleNamespace(execute=AsyncMock(return_value={"ready": True}))
+        chat._tools.sandbox_client = sandbox
+        with host.invocation_scope(host.plugin_id, source):
+            limited = await host.agent.run("Inspect twice", max_tool_calls=1)
+        receipts = _tool_results(provider.requests[1])
+        row = await WorkRepository(database).get(limited.data["work_id"])
+        assert receipts["second"]["executed"] is False
+        assert receipts["second"]["error"] == "work_total_budget_exhausted"
+        assert "uncertain" not in receipts["second"]
+        assert sandbox.execute.await_count == 1 and row["tool_calls"] == 1
+
+        before = len(provider.requests)
+        with host.invocation_scope(host.plugin_id, source):
+            plain = await host.agent.run("Answer only", max_tool_calls=0)
+        assert len(provider.requests) == before + 1
+        assert provider.requests[-1].tools == () and not provider.requests[-1].native_tools
+        assert plain.ok
+        RESULTS["plugin_tool_limit_overflow_and_zero"] = {
+            "overflow_receipt": receipts["second"],
+            "dispatched_tools": sandbox.execute.await_count,
+            "zero_limit_request_tools": len(provider.requests[-1].tools),
         }
     finally:
         await host.close_host_resources()

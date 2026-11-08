@@ -51,7 +51,7 @@ from yuki.model_runtime.executor import PreparedModelInput
 from yuki.model_runtime.models import ModelCapability, ModelExecutionPriority
 from yuki.runtime.execution_receipts import current_receipts
 from yuki.runtime.origin import TurnOrigin
-from yuki.runtime.work_control import WorkControl, WorkInputsPreparing
+from yuki.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.agent_runner import (
     CODE_COMPOSITION_YIELDED,
@@ -230,14 +230,15 @@ class _PrimaryDispatch:
         self.prepared = True
 
 
-def _accepts(call: ToolCall) -> bool:
+def _needs_neutral_foreground(call: ToolCall) -> bool:
+    """The model's own accept/resume use the original control path, not a Host Work."""
     if call.function.name != "task_control":
         return False
     try:
         arguments = json.loads(call.function.arguments)
     except ValueError:
         return False
-    return isinstance(arguments, dict) and arguments.get("action") == "accept"
+    return isinstance(arguments, dict) and arguments.get("action") in {"accept", "resume"}
 
 
 class TurnExecution:
@@ -1439,11 +1440,12 @@ class TurnExecution:
     async def admit_private_execution(self, response: ChatResponse) -> None:
         """Host-admit a private multi-step execution before its first tool batch.
 
-        Only a private Main without a current Work and with a non-send call is
-        admitted. The Work, the requests already paid by this activation and the
-        first response journal commit in one writer before any call identity is
-        bound, so the whole batch and its recovery belong to the admitted Work.
-        A batch carrying the model's own ``accept`` keeps that original admission.
+        Only a private Main without a current Work and with a call that is neither
+        ``send`` nor a Work control is admitted. The Work, the requests already
+        paid by this activation and the first response journal commit in one
+        writer before any call identity is bound, so the whole batch and its
+        recovery belong to the admitted Work. A batch carrying the model's own
+        ``accept`` or ``resume`` keeps that original control path.
         """
         control = self.runtime.work_control
         if (
@@ -1452,8 +1454,11 @@ class TurnExecution:
             or control.lease.work_id
             or self.runtime.origin is not TurnOrigin.USER_MESSAGE
             or self.runtime.current_group_id is not None
-            or all(call.function.name == "send" for call in response.tool_calls)
-            or any(_accepts(call) for call in response.tool_calls)
+            or all(
+                call.function.name == "send" or call.function.name in WORK_CONTROL_NAMES
+                for call in response.tool_calls
+            )
+            or any(_needs_neutral_foreground(call) for call in response.tool_calls)
         ):
             return
         # Once admitted, new input joins this Work instead of cancelling it.

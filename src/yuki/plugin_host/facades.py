@@ -1565,7 +1565,8 @@ class _AgentFacade:
         invocation = self._host._require(PluginPermission.AGENT_RUN)
         assert invocation is not None
         _, runtime = await _agent_dependencies(self._host, invocation)
-        # Explicit limits are totals of the admitted root Work and its workers.
+        # Explicit limits are totals of the admitted root Work and its workers;
+        # invalid values clamp as before, and zero tools answers without tools.
         result = await run_plugin_main_turn(
             self._host,
             invocation,
@@ -1575,8 +1576,8 @@ class _AgentFacade:
             tools=None,
             permission=PluginPermission.AGENT_RUN,
             context_profile=context_profile,
-            model_limit=max_model_requests,
-            tool_limit=max_tool_calls,
+            model_limit=None if max_model_requests is None else max(1, max_model_requests),
+            tool_limit=None if max_tool_calls is None else max(0, max_tool_calls),
         )
         return _agent_result(result, ())
 

@@ -995,6 +995,7 @@ class AgentRunner:
             tuple(unique_calls),
             tools,
             runtime,
+            remaining_calls=await control.remaining_tools() if control is not None else None,
             max_parallel_calls=max_parallel_calls,
             chain_id=chain_id,
             request_sequence=request_sequence,

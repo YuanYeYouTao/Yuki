@@ -56,6 +56,7 @@ class ToolInvocationCoordinator:
         runtime: Any,
         *,
         max_parallel_calls: int,
+        remaining_calls: int | None = None,
         before_execute: Callable[[ToolCall], Awaitable[str | None]] | None = None,
         chain_id: str = "",
         request_sequence: int = 0,
@@ -81,6 +82,7 @@ class ToolInvocationCoordinator:
         def counts_toward_limit(call: ToolCall) -> bool:
             return backend.counts_toward_limit(call.function.name, runtime)
 
+        overflow_ids: set[str] = set()
         rejected_ids: set[str] = set()
         counted_executions = 0
         results: dict[str, str] = {}
@@ -112,7 +114,13 @@ class ToolInvocationCoordinator:
                     results[call.id] = rejection
                     rejected_ids.add(call.id)
                     return False
-            if counts_toward_limit(call):
+            counted = counts_toward_limit(call)
+            if counted and remaining_calls is not None and counted_executions >= remaining_calls:
+                # The explicit root budget cannot cover this call: refuse it
+                # before dispatch instead of cancelling it into uncertainty.
+                overflow_ids.add(call.id)
+                return False
+            if counted:
                 counted_executions += 1
             return True
 
@@ -183,6 +191,17 @@ class ToolInvocationCoordinator:
                     group.create_task(execute_one(candidate))
             index = end
 
+        for identity in overflow_ids:
+            results[identity] = json.dumps(
+                {
+                    "ok": False,
+                    "error": "work_total_budget_exhausted",
+                    "executed": False,
+                    "mutation_committed": False,
+                },
+                ensure_ascii=False,
+            )
+            rejected_ids.add(identity)
         return CoordinatedToolResult(
             _attach_batch_results(calls, results=results, rejected_ids=rejected_ids),
             counted_executions,

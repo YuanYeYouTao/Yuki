@@ -558,6 +558,30 @@ class WorkControl:
         ):
             self.handoff_work_id = identity
 
+    async def remaining_tools(self) -> int | None:
+        """Calls left under an explicit root tool limit; None when unlimited.
+
+        A pre-dispatch view for refusing batch overflow cleanly; T2 still
+        charges the root budget atomically.
+        """
+        if self.current is None:
+            return None
+        from sqlalchemy import select
+
+        from yuki.runtime.work_budget_schema import budgets
+        from yuki.runtime.work_tree import budget_root_id
+
+        async with self.repository.database.read_session() as reader:
+            root = await budget_root_id(reader, self.current["id"])
+            row = (
+                await reader.execute(
+                    select(budgets.c.tools, budgets.c.tool_limit).where(budgets.c.root_id == root)
+                )
+            ).first()
+        if row is None or row.tool_limit is None:
+            return None
+        return max(0, int(row.tool_limit) - int(row.tools))
+
     async def reserve_request(self, *, auxiliary: bool = False) -> None:
         if self.current is not None:
             await self.repository.checkpoint(self.lease, self.current["id"], None, models=1)
