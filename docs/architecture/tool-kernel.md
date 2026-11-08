@@ -23,7 +23,7 @@ actor、Conversation、设备来源及委托在执行处核验，不为选择声
 `read_chat(around=…)` 以内部事件 ID 定位实际目标会话账本；`target.operation_id` 未给 around
 时使用原回执锚点，其他目标需明确内部编号。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
-长期记忆的主 Agent 读取声明是统一 `search_memory`，按 `fact_id` 读取单条事实（原 `read_memory` 已并入，evidence 视图已删除）；
+长期记忆的主 Agent 读取声明是统一 `search_memory`，按 `fact_id` 读取单条事实（原 `read_memory` 已并入，evidence 视图已删除），省略 `query` 时在同一授权范围列出记忆；
 写入为 `save_memory` 与 `edit_memory(action=correct|invalidate)`。旧三个 `get_*_memories` 执行入口已退出；已存回执只按原 call_id 读取，未知调用不取得重跑资格。插件只获 Person 或 Group 读权限时
 仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 

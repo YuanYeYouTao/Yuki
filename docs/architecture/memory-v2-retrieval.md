@@ -21,6 +21,9 @@ FTS 和向量候选先在授权 SQL 范围内检索，再在共同候选池用�
 同 key 的独立事实均可返回；不把单值槽或争议分类当作读取条件。
 
 query 不按字符数截断；无实际消费者的 entities、preferred_kinds 参数已退出工具 schema 和调用链。
+省略 query（且不给 fact_id）时，在同一 target 解析与 SQL 授权范围内按既有 overview 顺序
+（importance、confidence、updated_at 降序）列出有效事实，不调用 Embedding；`since`／`until`、
+`limit` 与 truncated/exhaustive 含义同搜索，本工具没有游标。
 语义检索不按经验相似度阈值
 提前丢掉候选。真实候选工作预算和返回数量预算继续生效，并明确报告 truncated/exhaustive 和原因。
 Embedding 的来源资格、profile、向量维度和候选内容指纹仍核验，不能拿过期索引冒充完整覆盖。
