@@ -1559,7 +1559,6 @@ async def test_private_note_keeps_normal_resume_without_public_history_publicati
                 {
                     "action": "update",
                     "note": {
-                        "version": 1,
                         "facts": [{"text": "optional sourced note", "refs": ["goal"]}],
                         "unresolved": [],
                         "next_steps": [],

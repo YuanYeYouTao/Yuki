@@ -43,6 +43,8 @@ async def case(database, tmp_path, responses, *, send_status="succeeded"):
     provider = FakeLLMProvider(lambda _: next(scripted))
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
+    # Control arguments are validated against the deployment's frozen contract.
+    await chat.runtime.runner.main_contract.definitions()
     observed = []
     fixed_tools = (
         *work_control_tools(),

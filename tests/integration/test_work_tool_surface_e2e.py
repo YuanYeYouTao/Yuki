@@ -3,7 +3,8 @@
 Failure cases listed before the implementation (docs/operations/
 tool-surface-cutover-20261107.md, section F): the five Work tools are the only
 lifecycle controls; ``wait`` covers subtask/command runs, the next message,
-plugin events, timers, any/all and a deadline with strict single-key items;
+plugin events, timers, any/all and a deadline (strict single-key items are
+enforced by the frozen schema, docs/operations/control-call-schema-20261108.md);
 a recorded ``task_control`` name is history only and is never dispatched again;
 schedules are created and paused through ``manage_schedule`` with an explicit
 persisted confirmation and the real ``id``.
@@ -184,17 +185,11 @@ async def test_wait_for_subtask_or_message_or_plugin_event(database, tmp_path, s
         control, "start_subtask", {"goal": "查证一个来源", "acceptance": "给出链接"}, "spawn"
     )
     assert child["status"] == "running"
-    # Malformed items are refused before anything is registered.
+    # Fact refusals happen before anything is registered. Malformed items are
+    # refused earlier by the frozen schema (test_control_call_schema_e2e).
     refusals = {
-        "two_keys": await _call(
-            control, "wait", {"for": [{"run": child["id"], "message": True}]}, "bad-1"
-        ),
-        "false_message": await _call(control, "wait", {"for": [{"message": False}]}, "bad-2"),
         "naive_at": await _call(control, "wait", {"for": [{"at": "2026-11-08T09:00"}]}, "bad-3"),
         "foreign_run": await _call(control, "wait", {"for": [{"run": str(uuid4())}]}, "bad-4"),
-        "plugin_missing_type": await _call(
-            control, "wait", {"for": [{"plugin_event": {"plugin_id": "synthetic-wait"}}]}, "bad-5"
-        ),
     }
     for refusal in refusals.values():
         assert refusal["ok"] is False and refusal["message"]

@@ -23,6 +23,7 @@ async def query_environment(database):
     # Use the production definitions, registry and capability policy. No domain
     # operation is dispatched while checking read authority.
     chat.set_automation_tools(AutomationToolService(SimpleNamespace(enabled=True)))
+    await chat.runtime.runner.main_contract.definitions()
     config = await chat._runtime_config.snapshot()
     inbound = InboundMessage(
         ingress_key="platform-id",

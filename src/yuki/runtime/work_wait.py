@@ -55,63 +55,35 @@ def _timestamp(raw: str) -> float:
     return value.timestamp()
 
 
-def normalize_conditions(raw: Any, now: float) -> list[dict[str, Any]]:
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("wait_conditions_required")
+def normalize_conditions(conditions: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
+    """Resolve the wait tool's translated conditions; shapes come from its frozen schema."""
     result: list[dict[str, Any]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            raise ValueError("invalid_wait_condition")
-        kind = item.get("kind")
+    for item in conditions:
+        kind = item["kind"]
         if kind == "time_due":
-            if ("at" in item) == ("after_seconds" in item):
-                raise ValueError("wait_time_requires_at_or_after")
             if "at" in item:
-                if not isinstance(item["at"], str):
-                    raise ValueError("invalid_wait_time")
                 due = _timestamp(item["at"])
             else:
+                # JSON numbers parse to inf/nan; a due time must be finite.
                 seconds = item["after_seconds"]
-                if (
-                    not isinstance(seconds, (int, float))
-                    or isinstance(seconds, bool)
-                    or not math.isfinite(seconds)
-                ):
+                if not math.isfinite(seconds):
                     raise ValueError("invalid_wait_delay")
                 due = now + seconds
             result.append({"kind": kind, "due": due, "matched": None})
         elif kind == "conversation":
-            if set(item) != {"kind"}:
-                raise ValueError("invalid_wait_condition")
             result.append({"kind": kind, "matched": None})
         elif kind == "plugin_event":
-            plugin_id, event_type = item.get("plugin_id"), item.get("event_type")
-            source = item.get("external_source")
-            if (
-                not isinstance(plugin_id, str)
-                or not 1 <= len(plugin_id) <= 128
-                or not isinstance(event_type, str)
-                or not 1 <= len(event_type) <= 128
-                or (source is not None and (not isinstance(source, str) or len(source) > 128))
-                or set(item) - {"kind", "plugin_id", "event_type", "external_source"}
-            ):
-                raise ValueError("invalid_wait_plugin_filter")
             result.append(
                 {
                     "kind": kind,
-                    "plugin_id": plugin_id,
-                    "event_type": event_type,
-                    "external_source": source,
+                    "plugin_id": item["plugin_id"],
+                    "event_type": item["event_type"],
+                    "external_source": item.get("external_source"),
                     "matched": None,
                 }
             )
-        elif kind == "owned_run":
-            run_id = item.get("run_id")
-            if not isinstance(run_id, str) or not run_id or set(item) != {"kind", "run_id"}:
-                raise ValueError("invalid_wait_run")
-            result.append({"kind": kind, "run_id": run_id, "matched": None})
         else:
-            raise ValueError("unknown_wait_condition")
+            result.append({"kind": kind, "run_id": item["run_id"], "matched": None})
     return result
 
 

@@ -64,10 +64,8 @@ ACCEPTED_ENDINGS = {
 
 _ERROR_MESSAGES = {
     "no_active_work": "当前没有任务；先用 manage_task(action=start, goal=…) 登记。",
-    "task_id_required": "id 必须是已有任务的 id。",
     "work_not_found_or_not_authorized": "id 对应的任务不存在或无权操作；先用 get_tasks 查看。",
     "work_goal_required": "goal 不能为空。",
-    "task_action_invalid": "action 必须是 start、update、finish、fail、cancel 或 resume。",
     "worker_already_registered": "子任务已经登记，直接推进；修改目标用 update。",
     "resume_requires_neutral_foreground": "当前已有任务；恢复另一项任务请在没有当前任务时调用。",
     "resume_work_not_authorized": "该任务已结束或无权恢复。",
@@ -75,16 +73,9 @@ _ERROR_MESSAGES = {
     "independent_work_requires_new_user_input": "只有新的用户消息才能另起一项独立任务。",
     "independent_work_source_invalid": "找不到能另起任务的新用户消息。",
     "waiting_requires_owned_execution": "for 中的 run 必须是自己的子任务或自己运行的命令 id。",
-    "wait_for_invalid": (
-        "for 是非空数组，每项恰含一个键：run、message、seconds、at 或 plugin_event。"
-    ),
     "wait_time_requires_timezone": "at 和 deadline 必须是带时区的 ISO-8601 时间。",
     "invalid_wait_time": "at 和 deadline 必须是带时区的 ISO-8601 时间。",
     "invalid_wait_delay": "seconds 必须是有限数字。",
-    "invalid_wait_plugin_filter": (
-        "plugin_event 需要 plugin_id 与 event_type（各 1–128 字），source 可选。"
-    ),
-    "invalid_wait_run": "run 必须是子任务或命令的 id。",
     "subtask_requires_current_task": (
         "start_subtask 需要当前任务；先用 manage_task(action=start) 登记。"
     ),
@@ -94,11 +85,8 @@ _ERROR_MESSAGES = {
     "subagent_archived": "该子任务已归档，不能再发送或恢复。",
     "subagent_not_resumable": "该子任务已取消，不能恢复。",
     "subagent_message_target_terminal": "该子任务已取消，不能再发消息。",
-    "message_text_required": "text 不能为空。",
+    "invalid_subagent_message": "text 不能为空。",
     "invalid_note": "note 的 facts、unresolved、next_steps 每项须含 text 与非空 refs。",
-    "invalid_task_query": (
-        "limit 为 1–50，status 为 active、done 或 all，cursor 用上次返回的 next_cursor。"
-    ),
     "invalid_work_query_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "invalid_work_progress_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "work_activation_obsolete": "本次执行已失效，操作未执行。",
@@ -190,40 +178,28 @@ def task_view(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in view.items() if value is not None}
 
 
-def _wait_conditions(raw: Any) -> list[dict[str, Any]]:
-    """Translate the model's single-key ``for`` items into stored wait conditions."""
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("wait_for_invalid")
+def _wait_conditions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate the schema-checked single-key ``for`` items into stored wait conditions."""
     conditions: list[dict[str, Any]] = []
-    for item in raw:
-        if not isinstance(item, dict) or len(item) != 1:
-            raise ValueError("wait_for_invalid")
+    for item in items:
         ((key, value),) = item.items()
         if key == "run":
             conditions.append({"kind": "owned_run", "run_id": value})
         elif key == "message":
-            if value is not True:
-                raise ValueError("wait_for_invalid")
             conditions.append({"kind": "conversation"})
         elif key == "seconds":
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError("invalid_wait_delay")
             conditions.append({"kind": "time_due", "after_seconds": value})
         elif key == "at":
             conditions.append({"kind": "time_due", "at": value})
-        elif key == "plugin_event":
-            if not isinstance(value, dict) or set(value) - {"plugin_id", "event_type", "source"}:
-                raise ValueError("invalid_wait_plugin_filter")
+        else:
             condition = {
                 "kind": "plugin_event",
-                "plugin_id": value.get("plugin_id"),
-                "event_type": value.get("event_type"),
+                "plugin_id": value["plugin_id"],
+                "event_type": value["event_type"],
             }
             if "source" in value:
                 condition["external_source"] = value["source"]
             conditions.append(condition)
-        else:
-            raise ValueError("wait_for_invalid")
     return conditions
 
 
@@ -242,6 +218,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
     note_schema.pop("title", None)
     string = {"type": "string"}
     timestamp = {"type": "string", "description": "带时区 ISO-8601 时间"}
+    # Plugin ids and published event types are 1–128 characters (SDK contract).
+    name = {"type": "string", "minLength": 1, "maxLength": 128}
     return (
         ChatTool(
             name="get_tasks",
@@ -342,9 +320,9 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                                         "plugin_event": {
                                             "type": "object",
                                             "properties": {
-                                                "plugin_id": string,
-                                                "event_type": string,
-                                                "source": string,
+                                                "plugin_id": name,
+                                                "event_type": name,
+                                                "source": {"type": "string", "maxLength": 128},
                                             },
                                             "required": ["plugin_id", "event_type"],
                                             "additionalProperties": False,
@@ -933,17 +911,8 @@ class WorkControl:
         queries = WorkQueries(self.repository)
         limit = args.get("limit", 8)
         cursor = args.get("cursor")
-        if (
-            isinstance(limit, bool)
-            or not isinstance(limit, int)
-            or not 1 <= limit <= 50
-            or (cursor is not None and (not isinstance(cursor, str) or not cursor))
-        ):
-            raise ValueError("invalid_task_query")
         identity = args.get("id")
         if identity is not None:
-            if not isinstance(identity, str) or not identity.strip() or len(identity) > 36:
-                raise ValueError("task_id_required")
             row = await queries.get(
                 self.lease,
                 self.source,
@@ -962,19 +931,16 @@ class WorkControl:
                 if result is not None:
                     view["result"] = result
             return view
-        status = {"active": "active", "done": "terminal", "all": "all"}.get(
+        status = {"active": "active", "done": "terminal", "all": "all"}[
             args.get("status", "active")
-        )
-        parent = args.get("parent")
-        if status is None or (parent is not None and not isinstance(parent, str)):
-            raise ValueError("invalid_task_query")
+        ]
         page = await queries.list(
             self.lease,
             self.source,
             limit=limit,
             status=status,
             cursor=cursor,
-            parent_work_id=parent,
+            parent_work_id=args.get("parent"),
         )
         return {
             "tasks": [task_view(row) for row in page["works"]],
@@ -984,15 +950,9 @@ class WorkControl:
     async def _manage(
         self, args: dict[str, Any], call_key: str, *, invocation: Invocation | None = None
     ) -> dict[str, Any]:
-        action = args.get("action")
-        if action not in {"start", "update", "finish", "fail", "cancel", "resume"}:
-            raise ValueError("task_action_invalid")
+        action = args["action"]
         target = args.get("id")
-        if target is not None and (not isinstance(target, str) or not target):
-            raise ValueError("task_id_required")
         text = args.get("text")
-        if text is not None and not isinstance(text, str):
-            raise ValueError("invalid_task_text")
         if (
             action in {"cancel", "resume"}
             and target is not None
@@ -1042,7 +1002,7 @@ class WorkControl:
 
             candidate = (
                 await WorkQueries(self.repository).get(self.lease, self.source, target, local=True)
-                if isinstance(target, str)
+                if target is not None
                 else None
             )
             if candidate is None or candidate["state"] in {"completed", "cancelled"}:
@@ -1081,7 +1041,7 @@ class WorkControl:
 
                 note_plan = await validate_note(self, args["note"])
             if goal is not None:
-                if not isinstance(goal, str) or not goal.strip():
+                if not goal.strip():
                     raise ValueError("work_goal_required")
                 self.current = await self.repository.transition(
                     self.lease,
@@ -1096,10 +1056,7 @@ class WorkControl:
         elif action in {"fail", "cancel"}:
             await self._accept(action, call_key, reason=text)
         else:
-            result = args.get("result")
-            if result is not None and not isinstance(result, str):
-                raise ValueError("work_result_invalid")
-            await self._accept("complete", call_key, result=result or "")
+            await self._accept("complete", call_key, result=args.get("result") or "")
         return {
             "id": self.current["id"],
             "status": self.current["state"],
@@ -1118,9 +1075,7 @@ class WorkControl:
             raise ValueError("no_active_work")
         every = args.get("all", False)
         deadline = args.get("deadline")
-        if type(every) is not bool or (deadline is not None and not isinstance(deadline, str)):
-            raise ValueError("wait_for_invalid")
-        conditions = _wait_conditions(args.get("for"))
+        conditions = _wait_conditions(args["for"])
         normalized = normalize_conditions(conditions, time.time())
         for condition in normalized:
             if condition["kind"] != "owned_run":

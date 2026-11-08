@@ -72,12 +72,13 @@ logger = logging.getLogger(__name__)
 CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
 
 
-def _unexecuted_tool_result(name: str, error: str) -> str:
+def _unexecuted_tool_result(name: str, error: str, detail: str = "") -> str:
     """Publish a pre-dispatch refusal before formatting its public result."""
     outcome = ToolExecutionResult(
         ok=False,
         error_code=error,
-        public_message=(
+        public_message=detail
+        or (
             f"没有名为 {name} 的工具；只调用当前声明的工具。"
             if error == "tool_not_declared"
             else "调用没有执行。"
@@ -736,28 +737,34 @@ class AgentRunner:
         key: str,
         invocation: Invocation | None = None,
     ) -> tuple[str, bool]:
-        """One lifecycle control with the original checks; shared by direct and code calls."""
+        """One lifecycle control; shared by direct, code and recovered calls.
+
+        Arguments are checked against the frozen contract schema inside the
+        original effect boundary, so a call that already has a receipt returns
+        it without being validated again.
+        """
         control = runtime.work_control
+        name = call.function.name
         if (
-            call.function.name not in declared_names
+            name not in declared_names
             or control is None
             or tools is None
-            or not tools.work_control_allowed(call.function.name)
+            or not tools.work_control_allowed(name)
         ):
-            return _unexecuted_tool_result(call.function.name, "work_control_unavailable"), False
-        try:
-            arguments = json.loads(call.function.arguments)
-            if not isinstance(arguments, dict):
-                raise ValueError("arguments must be an object")
-        except (ValueError, TypeError):
-            return _unexecuted_tool_result(call.function.name, "invalid_work_arguments"), False
-        if call.function.name in READ_ONLY_CONTROLS and not tools.work_query_allowed(
-            call.function.name
-        ):
-            return _unexecuted_tool_result(call.function.name, "work_query_not_authorized"), False
+            return _unexecuted_tool_result(name, "work_control_unavailable"), False
+        if name in READ_ONLY_CONTROLS and not tools.work_query_allowed(name):
+            return _unexecuted_tool_result(name, "work_query_not_authorized"), False
+        assert self.main_contract is not None
+        schemas = self.main_contract.schema_view
 
         async def execute() -> str:
-            return await control.execute(call.function.name, arguments, key, invocation=invocation)
+            validation = schemas.validate(name, call.function.arguments)
+            if not validation.ok:
+                return _unexecuted_tool_result(
+                    name, str(validation.error_category), validation.detail
+                )
+            arguments = json.loads(call.function.arguments)
+            return await control.execute(name, arguments, key, invocation=invocation)
 
         if invocation is None:
             return await execute(), True
