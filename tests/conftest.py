@@ -128,11 +128,23 @@ class _AbsentGroupRecovery:
         return None
 
 
+_OPEN_ORDINARY_INPUTS: list[_ImmediateOrdinaryInput] = []
+
+
 class _ImmediateOrdinaryInput:
     """Autonomous-group stand-in: no quiet window, ordinary input is promoted at once."""
 
     def __init__(self):
         self.tasks: set[asyncio.Task[int]] = set()
+        # Closed with the test database, as the real service closes before it.
+        _OPEN_ORDINARY_INPUTS.append(self)
+
+    async def close(self) -> None:
+        tasks = [task for task in self.tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def observe(self, message, *, ordinary_attempt=None):
         if ordinary_attempt is not None:
@@ -590,5 +602,7 @@ async def database(tmp_path: Path, _database_template: Path) -> Database:
     try:
         yield db
     finally:
+        while _OPEN_ORDINARY_INPUTS:
+            await _OPEN_ORDINARY_INPUTS.pop().close()
         reset_identity_write_settings()
         await db.close()
