@@ -555,7 +555,6 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         runtime = replace(
             runtime,
             work_control=resumed,
-            max_model_requests=1,
             visible_event_ids=current.visible_event_ids,
             before_model_request=chat._context_validator(
                 current.read_version, commit_projection=current.commit_projection

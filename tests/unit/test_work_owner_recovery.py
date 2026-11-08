@@ -12,7 +12,12 @@ from tests.support.automation_claims import collect_due
 from tests.support.event_seed import seed_event
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
-from tests.unit.test_history_dispatch_ownership import _scene, _tool
+from tests.unit.test_history_dispatch_ownership import (
+    _scene,
+    _tool,
+    retry_due_now,
+    yield_activation_after,
+)
 
 from yuki.admin.authority.commands import ControlCommand
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
@@ -99,8 +104,9 @@ async def test_message_work_recovery_uses_current_person_qualification(
 ):
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
-    env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
+    env, harness, chat, _, message = await _scene(database, tmp_path, provider, yield_after=1)
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
@@ -139,7 +145,9 @@ async def test_message_work_recovery_uses_current_person_qualification(
     await scheduler.drain_once()
     assert authorities == [current_superuser]
     resumed = await repository.get(original["id"])
-    assert resumed["model_requests"] == original["model_requests"] + 1
+    # The resumed activation finishes the original goal without a segment cap.
+    assert resumed["model_requests"] == original["model_requests"] + 2
+    assert resumed["state"] == "completed"
     assert json.loads(resumed["source_json"]) == frozen_source
 
 
@@ -165,9 +173,10 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
     env, harness, chat, state, message = await _scene(
-        database, tmp_path, provider, request_limit=2 if accepted_effect else 1
+        database, tmp_path, provider, yield_after=2 if accepted_effect else 1
     )
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
@@ -414,7 +423,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
         return _tool("task_control", {"action": "complete"}, "finish-33")
 
     provider._responder = respond
-    env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
+    env, harness, chat, _, message = await _scene(database, tmp_path, provider)
     harness.processor._rate_limiter = SlidingWindowRateLimiter(per_user=1000, per_group=1000)
     repository = WorkRepository(database)
     paused = []
@@ -425,6 +434,8 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
             native_message_id=f"capacity-input-{number}",
             text=f"distinct input {number}",
         )
+        # Each original activation ends after its accepted first request.
+        yield_activation_after(provider, len(provider.requests) + 1)
         await harness.processor.handle(incoming, MemorySender())
         async with database.read_session() as reader:
             current = dict(
@@ -445,6 +456,7 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
             await repository.release(lease)
             paused.append(current["id"])
     scheduler = original_scheduler(repository, env, harness, chat)
+    await retry_due_now(database)
     await scheduler.drain_once()
     await scheduler.drain_once()
     final = await repository.get(current["id"])
@@ -467,7 +479,9 @@ async def test_exact_33rd_input_is_selected_after_32_paused_works(database, tmp_
         conversation_id=None,
         text="independent private work",
     )
+    yield_activation_after(provider, len(provider.requests) + 1)
     await harness.processor.handle(private, MemorySender())
+    await retry_due_now(database)
     async with database.read_session() as reader:
         idle = dict(
             (
@@ -607,8 +621,9 @@ async def test_message_recovery_uses_original_event_account_and_canonical_owner(
 
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
-    _, harness, _, _, message = await _scene(database, tmp_path, provider, request_limit=1)
+    _, harness, _, _, message = await _scene(database, tmp_path, provider, yield_after=1)
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
     source = json.loads(original["source_json"])
@@ -831,6 +846,7 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     provider = FakeLLMProvider(responder=lambda _: "original conversation observed")
     env, harness, chat, _, message = await _scene(database, tmp_path, provider)
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     async with database.read_session() as reader:
         event = await reader.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")

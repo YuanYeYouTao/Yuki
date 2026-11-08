@@ -8,14 +8,17 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
-from yuki.domain.messages import ChatMessage, ChatTool
+from yuki.domain.messages import ChatMessage, ChatTool, ToolCall
 from yuki.identity.person_identity import same_person_condition
 from yuki.runtime.activation_outcome import ActivationOutcome
 from yuki.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
 from yuki.tool_results.access import ArtifactAccess
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from yuki.capabilities.invocation import Invocation
     from yuki.runtime.work_session import WorkSession
 
@@ -51,8 +54,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "原私有来源获准时附最近执行与真实结果，limit/cursor 翻更早页。"
                 "按 history_order 和发生时间读进展；状态和查询时间不代表刚完成了目标。"
                 "list 默认 active，终态用 status=terminal，全部用 all。"
-                "持续目标（含定期复查、持续跟进）用 accept(goal) 登记，写清目标与反馈约定；"
-                "普通聊天无需登记，发言用 send。"
+                "私聊里调用 send 以外的工具时，Host 已自动登记当前工作；"
+                "已在工作中时用 update 改写目标、反馈约定或保存 context_note，不再 accept。"
+                "其他场景的持续目标（含定期复查、持续跟进）用 accept(goal) 登记，"
+                "写清目标与反馈约定；普通聊天无需登记，发言用 send。"
                 "当前工作直接继续或 update；恢复已有工作用原 work_id 调用 resume，不重复 accept。"
                 "恢复另一项工作是将它交回原执行链，不会替换当前工作；以回执为准。"
                 "独立新工作用 accept 排队，update 只修正当前目标。"
@@ -170,7 +175,6 @@ class WorkControl:
     # Set only by the original SELF source when its first scene/Presence
     # preparation failed before any activation; see work_supervisor.
     protocol_recovery_preparation: Any = None
-    segment_model_limit: int = 24
     tools_started: int = 0
     yield_segment: bool = False
     handoff_work_id: str | None = None
@@ -555,10 +559,6 @@ class WorkControl:
             self.handoff_work_id = identity
 
     async def reserve_request(self, *, auxiliary: bool = False) -> None:
-        if auxiliary and self.requests_started >= self.segment_model_limit:
-            from yuki.runtime.activation_outcome import SegmentBudgetReached
-
-            raise SegmentBudgetReached()
         if self.current is not None:
             await self.repository.checkpoint(self.lease, self.current["id"], None, models=1)
             self.current["model_requests"] += 1
@@ -847,33 +847,16 @@ class WorkControl:
             goal = args.get("goal")
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("work_goal_required")
-            from sqlalchemy import update
             from sqlalchemy.dialects.sqlite import insert
 
             from yuki.capabilities.results import ToolExecutionResult
             from yuki.runtime.effect_outcomes import effect_evidence
-            from yuki.runtime.work_budget import charge
-            from yuki.runtime.work_schema_v1 import effects, work
+            from yuki.runtime.work_schema_v1 import effects
 
             metadata = invocation.durable_metadata() if invocation is not None else {}
             source_json = encode_json(self.source)
             async with self.repository.database.immediate_session() as writer:
-                admitted = await self.repository.accept_in_session(
-                    writer,
-                    self.lease,
-                    source_key=self.source_key,
-                    source=self.source,
-                    prepared_source_json=source_json,
-                    goal=goal,
-                )
-                if self.requests_started and admitted["model_requests"] == 0:
-                    await charge(writer, admitted["id"], models=self.requests_started, tools=0)
-                    await writer.execute(
-                        update(work)
-                        .where(work.c.id == admitted["id"])
-                        .values(model_requests=self.requests_started)
-                    )
-                    admitted["model_requests"] = self.requests_started
+                admitted = await self._admit_in_session(writer, goal, source_json)
                 if invocation is not None:
                     admission_result = {
                         "work_id": admitted["id"],
@@ -1049,6 +1032,62 @@ class WorkControl:
             "revision": self.current["revision"],
             "ending_proposed": self.ending,
         }
+
+    async def _admit_in_session(
+        self, writer: AsyncSession, goal: str, source_json: str, *, identity: str | None = None
+    ) -> dict[str, Any]:
+        """First admission of this source: paid requests and explicit root limits."""
+        from sqlalchemy import update
+
+        from yuki.runtime.work_budget import charge, limit
+        from yuki.runtime.work_schema_v1 import work
+
+        identity = identity or str(uuid4())
+        admitted = await self.repository.accept_in_session(
+            writer,
+            self.lease,
+            source_key=self.source_key,
+            source=self.source,
+            prepared_source_json=source_json,
+            goal=goal,
+            identity=identity,
+        )
+        if self.requests_started and admitted["model_requests"] == 0:
+            await charge(writer, admitted["id"], models=self.requests_started, tools=0)
+            await writer.execute(
+                update(work)
+                .where(work.c.id == admitted["id"])
+                .values(model_requests=self.requests_started)
+            )
+            admitted["model_requests"] = self.requests_started
+        models, tools = self.source.get("model_limit"), self.source.get("tool_limit")
+        if admitted["id"] == identity and (models is not None or tools is not None):
+            # An explicit caller limit is a total for this root and its workers.
+            await limit(writer, identity, models=models, tools=tools)
+        return admitted
+
+    async def admit_execution(self, calls: tuple[ToolCall, ...]) -> None:
+        """Host admission before a private execution's first tool batch.
+
+        The Work, the requests already paid by this activation and the first
+        ``phase=response`` journal commit in one writer. The goal references the
+        original trigger event instead of copying the user's text.
+        """
+        assert self.current is None and self.session is not None
+        await self.validate()
+        identity = str(uuid4())
+        goal = f"完成本人私聊请求 event:{self.source.get('trigger_event_id')}"
+        source_json = encode_json(self.source)
+        admitted: dict[str, Any] = {}
+
+        async def admit(writer: AsyncSession) -> None:
+            row = await self._admit_in_session(writer, goal, source_json, identity=identity)
+            if row["id"] != identity:
+                raise WorkConflict("work_admission_source_conflict")
+            admitted.update(row)
+
+        await self.session.save("response", calls, work_id=identity, publication=admit)
+        self.current = admitted
 
     async def _queue_work(self, args: dict[str, Any]) -> dict[str, Any]:
         from sqlalchemy import select

@@ -122,7 +122,6 @@ class PluginAgentSessionService:
         *,
         session_id: str,
         user_input: str,
-        max_model_requests: int | None,
     ) -> PluginSessionRunResult:
         self._require_session_permission(authority)
         normalized_input = user_input.strip()
@@ -183,12 +182,7 @@ class PluginAgentSessionService:
                     gateway=None,
                     runtime_config=runtime,
                     allowed_capabilities=frozenset(),
-                    max_tool_calls=0,
                     before_model_request=reserve_parent_request,
-                    max_model_requests=min(
-                        max(1, max_model_requests or runtime.agent.max_model_requests),
-                        max(1, runtime.agent.max_model_requests),
-                    ),
                     canonical_conversation_id=authority.conversation_id,
                 ),
                 tools=None,

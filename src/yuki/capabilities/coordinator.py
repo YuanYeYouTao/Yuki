@@ -55,15 +55,14 @@ class ToolInvocationCoordinator:
         backend: CoordinatedToolBackend | None,
         runtime: Any,
         *,
-        remaining_calls: int | None,
         max_parallel_calls: int,
         before_execute: Callable[[ToolCall], Awaitable[str | None]] | None = None,
         chain_id: str = "",
         request_sequence: int = 0,
         manifest_revision: str = "",
     ) -> CoordinatedToolResult:
-        if (remaining_calls is not None and remaining_calls < 0) or max_parallel_calls <= 0:
-            raise ValueError("tool call budgets must be non-negative and parallelism positive")
+        if max_parallel_calls <= 0:
+            raise ValueError("tool call parallelism must be positive")
         if backend is None:
             unavailable = json.dumps(
                 {
@@ -82,7 +81,6 @@ class ToolInvocationCoordinator:
         def counts_toward_limit(call: ToolCall) -> bool:
             return backend.counts_toward_limit(call.function.name, runtime)
 
-        overflow_ids: set[str] = set()
         rejected_ids: set[str] = set()
         counted_executions = 0
         results: dict[str, str] = {}
@@ -114,11 +112,7 @@ class ToolInvocationCoordinator:
                     results[call.id] = rejection
                     rejected_ids.add(call.id)
                     return False
-            counted = counts_toward_limit(call)
-            if counted and remaining_calls is not None and counted_executions >= remaining_calls:
-                overflow_ids.add(call.id)
-                return False
-            if counted:
+            if counts_toward_limit(call):
                 counted_executions += 1
             return True
 
@@ -189,23 +183,8 @@ class ToolInvocationCoordinator:
                     group.create_task(execute_one(candidate))
             index = end
 
-        limited = json.dumps(
-            {
-                "ok": False,
-                "error": "tool_limit_exceeded",
-                "executed": False,
-                "mutation_committed": False,
-            },
-            ensure_ascii=False,
-        )
         return CoordinatedToolResult(
-            _attach_batch_results(
-                calls,
-                results=results,
-                overflow_ids=overflow_ids,
-                limited=limited,
-                rejected_ids=rejected_ids,
-            ),
+            _attach_batch_results(calls, results=results, rejected_ids=rejected_ids),
             counted_executions,
             evidence=facts,
         )
@@ -215,21 +194,16 @@ def _attach_batch_results(
     calls: tuple[ToolCall, ...],
     *,
     results: dict[str, str],
-    overflow_ids: set[str],
-    limited: str,
-    rejected_ids: set[str] | None = None,
+    rejected_ids: set[str],
 ) -> tuple[tuple[ToolCall, str, bool], ...]:
     """Map each model call id back to a payload without raising on a missing key."""
 
     ordered: list[tuple[ToolCall, str, bool]] = []
     for call in calls:
-        if call.id in overflow_ids:
-            ordered.append((call, limited, False))
-            continue
         payload = results.get(call.id)
         if payload is None:
             logger.error("tool_result_missing call_id=%s", call.id)
             ordered.append((call, MISSING_TOOL_RESULT, False))
             continue
-        ordered.append((call, payload, call.id not in (rejected_ids or set())))
+        ordered.append((call, payload, call.id not in rejected_ids))
     return tuple(ordered)

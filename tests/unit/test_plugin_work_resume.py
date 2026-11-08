@@ -26,7 +26,7 @@ async def test_resume_keeps_original_outcome_when_release_fails(
             )
         identity = admitted.data["work_id"]
         before = await WorkRepository(database).get(identity)
-        assert before["state"] == "queued"
+        assert before["state"] == "suspended"  # explicit total of 1 request
         release, enqueue = WorkRepository.release, WorkRepository.enqueue
         cleanup = OSError("original release failure")
         original = (

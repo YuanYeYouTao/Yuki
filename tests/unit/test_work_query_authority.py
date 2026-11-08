@@ -138,8 +138,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
         gateway=None,
         runtime_config=tool_runtime.runtime_config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
         work_control=control,
     )
 
@@ -153,7 +151,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
             (call,),
             backend,
             runtime,
-            remaining_calls=8,
             max_parallel_calls=1,
             declared_names=frozenset({"task_control"}),
         )

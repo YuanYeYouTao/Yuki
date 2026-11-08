@@ -131,8 +131,12 @@ class MainAgentBackend(AgentToolBackend):
     def _memory(self) -> Any:
         return self._memory_session
 
-    async def protect_native_dispatch(self, runtime: AgentRuntime) -> None:
-        """Native effects cannot be ruled out after a transport cancellation."""
+    async def protect_dispatch(self, runtime: AgentRuntime) -> None:
+        """Protect this private turn from input preemption once effects may exist.
+
+        Native effects cannot be ruled out after a transport cancellation, and a
+        Host-admitted execution continues through new input instead.
+        """
         execution_runtime = self._request_runtime()
         if execution_runtime.turn_token is not None:
             await self._service._turn_coordinator.mark_mutation_started(

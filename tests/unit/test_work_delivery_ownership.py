@@ -155,8 +155,6 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
         allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
         fixed_tools=DELIVERY_TOOLS,
     )
 
@@ -619,7 +617,9 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
         ),
     )
     if mode == "neutral":
+        # A private Main without a Work: the Host admits its own source first.
         test_case.control.current = None
+        test_case.control.source_key = "neutral-private-source"
     elif mode == "disabled":
         test_case.runtime = replace(test_case.runtime, work_control=None)
     result = await run(test_case)

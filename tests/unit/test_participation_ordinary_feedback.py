@@ -68,8 +68,6 @@ async def ordinary_backend(database, content, *, callback=None):
         gateway=None,
         runtime_config=config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
         dynamic_context_prepared=True,
     )
     return chat, provider, tool_runtime, runtime, MainAgentBackend(chat, tool_runtime)

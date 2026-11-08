@@ -4,7 +4,6 @@ import json
 from dataclasses import replace
 
 import httpx
-import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
 from tests.support.event_seed import seed_scoped_event
@@ -18,18 +17,15 @@ from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.llm.openai_compatible import OpenAICompatibleProvider
 
 
-@pytest.mark.parametrize("request_limit, expected_main_calls", [(2, 0), (3, 1)])
 async def test_preparation_requests_reach_main_budget_without_prompt_hashes(
-    database, tmp_path, monkeypatch, request_limit, expected_main_calls
+    database, tmp_path, monkeypatch
 ):
     from yuki.llm.fake import FakeLLMProvider
     from yuki.runtime.work_activation import current_work_control
     from yuki.runtime.work_budget import WorkBudgetExceeded
 
     provider = FakeLLMProvider(lambda _: "内部结束")
-    _env, harness, chat, _state, message = await _scene(
-        database, tmp_path, provider, request_limit=request_limit
-    )
+    _env, harness, chat, _state, message = await _scene(database, tmp_path, provider)
     compose = chat.runtime.main_turns.compose
     run = chat._run_agent
     completed = []
@@ -53,12 +49,10 @@ async def test_preparation_requests_reach_main_budget_without_prompt_hashes(
     monkeypatch.setattr(chat.runtime.main_turns, "compose", prepared)
     monkeypatch.setattr(chat, "_run_agent", capture)
     await harness.processor.handle(message, MemorySender())
-    assert len(provider.requests) == expected_main_calls
-    if expected_main_calls:
-        assert len(completed) == 1 and not exhausted
-        assert completed[0].model_requests == 2 + expected_main_calls
-    else:
-        assert not completed and exhausted == [2]
+    # Paid preparation is counted, but no segment cap can refuse the Main response.
+    assert len(provider.requests) == 1
+    assert len(completed) == 1 and not exhausted
+    assert completed[0].model_requests == 3
 
 
 async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(

@@ -85,7 +85,6 @@ async def test_tool_round_reads_latest_scoped_facts_after_original_prefix(
         runtime,
         work_control=control if with_work else None,
         fixed_tools=(ChatTool("probe", "Read original evidence", {"type": "object"}),),
-        max_model_requests=3,
     )
     backend = ParticipationBackend(
         {"unit_id": "original-discussion", "self": {"engage": "stay", "focus_event_id": 8}}
@@ -115,7 +114,7 @@ async def test_new_feedback_does_not_force_another_model_request(database, tmp_p
 
     provider = FakeLLMProvider(finish)
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, work_control=None, max_model_requests=3)
+    runtime = replace(runtime, work_control=None)
     result = await runner.run(initial, runtime, backend)
     assert result.text == "done"
     assert result.model_requests == len(provider.requests) == len(backend.reads) == 1
@@ -156,7 +155,6 @@ async def test_gemini_signed_tool_round_keeps_wire_prefix_and_original_pairing(d
             runtime,
             work_control=None,
             fixed_tools=(ChatTool("probe", "Read original evidence", {"type": "object"}),),
-            max_model_requests=3,
         )
         backend = ParticipationBackend({"self": {"engage": "stay"}})
         await runner.run(initial, runtime, backend)
@@ -248,7 +246,6 @@ async def test_pause_replays_original_checkpoint_then_reads_at_next_normal_bound
         runtime,
         work_control=None,
         fixed_tools=(ChatTool("probe", "Read original evidence", {"type": "object"}),),
-        max_model_requests=4,
     )
     backend = ParticipationBackend({"self": {"engage": "stay"}})
     result = await runner.run(initial, runtime, backend)

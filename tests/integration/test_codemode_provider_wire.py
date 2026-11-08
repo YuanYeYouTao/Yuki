@@ -243,7 +243,7 @@ async def test_code_children_never_become_provider_function_calls(
             (ChatMessage("user", "creation-time chat"),),
             # Exhaust model admission as well, so the boundary yields before
             # the next request and must resume its original result afterwards.
-            replace(runtime, max_model_requests=2) if boundary else runtime,
+            replace(runtime) if boundary else runtime,
             backend,
         )
         if boundary:

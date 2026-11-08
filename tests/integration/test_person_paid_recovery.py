@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from tests.conftest import MemorySender
 from tests.support.person_merge import merge_persons
 from tests.support.work_session import WorkSession
-from tests.unit.test_history_dispatch_ownership import _scene, _tool
+from tests.unit.test_history_dispatch_ownership import _scene, _tool, retry_due_now
 from tests.unit.test_work_owner_recovery import original_responses, original_scheduler
 
 from yuki.domain.messages import ChatMessage
@@ -56,7 +56,7 @@ async def test_merge_cold_work_observes_original_paired_result_once(
 ):
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
-    env, harness, chat, state, message = await _scene(database, tmp_path, provider, request_limit=2)
+    env, harness, chat, state, message = await _scene(database, tmp_path, provider, yield_after=2)
     mutations = []
     update_state = state.update
 
@@ -66,6 +66,7 @@ async def test_merge_cold_work_observes_original_paired_result_once(
 
     monkeypatch.setattr(state, "update", record_update)
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())
@@ -128,8 +129,9 @@ async def test_merge_cold_work_keeps_lost_paid_response_unknown_without_repurcha
 ):
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
-    env, harness, chat, state, message = await _scene(database, tmp_path, provider, request_limit=1)
+    env, harness, chat, state, message = await _scene(database, tmp_path, provider, yield_after=1)
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         original = dict((await reader.execute(select(work))).mappings().one())

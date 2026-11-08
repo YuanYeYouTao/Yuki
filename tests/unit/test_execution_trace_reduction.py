@@ -205,7 +205,6 @@ async def test_tool_details_are_recorded_once_per_item_without_batch_copies(data
             calls,
             backend,
             runtime,
-            remaining_calls=None,
             max_parallel_calls=1,
             declared_names=frozenset({"lookup"}),
             chain_id="original-chain",

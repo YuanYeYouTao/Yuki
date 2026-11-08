@@ -48,7 +48,6 @@ async def test_shared_watermark_compacts_public_before_main_without_profile_limi
         work_control=None if entry == "ordinary" else control,
         public_compaction=context,
         execution_id=f"soft-public-{entry}",
-        max_model_requests=5,
         auxiliary_requests=[0],
         fixed_tools=(ChatTool("probe_read", "Stable read capability", {"type": "object"}),),
         runtime_config=replace(
@@ -88,7 +87,7 @@ async def test_soft_watermark_does_not_require_summary_below_trigger_or_recompac
     session.transcript.append(ChatMessage("assistant", "An actual completed finding. " * 12000))
     provider = FakeLLMProvider(lambda request: "A long valid checkpoint. " * 16000)
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=10, auxiliary_requests=[0])
+    runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript
     prepared = await execution.prepare_request(0, (), WebMode.DISABLED)
@@ -123,7 +122,7 @@ async def test_invalid_soft_checkpoint_preserves_recovery_request_and_does_not_e
     }
     provider = FakeLLMProvider(lambda request: responses[outcome])
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=5, auxiliary_requests=[0])
+    runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
     execution.state.transcript = session.transcript
     await execution._finalize_initial_layout()
@@ -160,7 +159,7 @@ async def test_large_current_input_without_eligible_history_still_runs(database,
     initial = (*initial[:-1], ChatMessage("user", "Current unprocessed material. " * 18000))
     provider = FakeLLMProvider(lambda request: "Read the current material.")
     runner, runtime = await _runtime(database, control, initial, provider)
-    runtime = replace(runtime, max_model_requests=5, auxiliary_requests=[0])
+    runtime = replace(runtime, auxiliary_requests=[0])
     result = await runner.run(initial, runtime, None)
     assert result.text == "Read the current material."
     assert len(provider.requests) == 1
@@ -179,7 +178,6 @@ async def test_ordinary_invalid_paid_checkpoint_is_reused_after_cold_restore(dat
         work_control=None,
         public_compaction=context,
         execution_id="ordinary-invalid-paid",
-        max_model_requests=5,
         auxiliary_requests=[0],
     )
     execution = TurnExecution(runner, initial, runtime, None)

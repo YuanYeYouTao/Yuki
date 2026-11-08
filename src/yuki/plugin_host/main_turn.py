@@ -90,6 +90,8 @@ async def run_plugin_main_turn(
     tools: AgentToolBackend | None,
     permission: PluginPermission,
     context_profile: str = "none",
+    model_limit: int | None = None,
+    tool_limit: int | None = None,
 ) -> AgentRunResult:
     """Bound the callback wait while the Host retains an accepted activation."""
     from yuki.plugin_host.facades import _invocation_actor
@@ -115,6 +117,8 @@ async def run_plugin_main_turn(
         tools=tools,
         permission=permission,
         context_profile=context_profile,
+        model_limit=model_limit,
+        tool_limit=tool_limit,
     )
     task = _RUNNING.get(key)
     if task is not None and task.done():
@@ -205,6 +209,8 @@ async def _execute_plugin_main_turn(
     tools: AgentToolBackend | None,
     permission: PluginPermission,
     context_profile: str = "none",
+    model_limit: int | None = None,
+    tool_limit: int | None = None,
 ) -> AgentRunResult:
     """Keep SDK reads/effects narrow; never synthesize a user or transport target."""
     from yuki.runtime.work_activation import current_work_control
@@ -380,8 +386,9 @@ async def _execute_plugin_main_turn(
             "context_profile": context_profile,
             "conversation_key": invocation.conversation_key,
             "permission": permission.value,
-            "max_model_requests": runtime.max_model_requests,
-            "max_tool_calls": runtime.max_tool_calls,
+            # First admission writes these explicit totals to the root Work budget.
+            "model_limit": model_limit,
+            "tool_limit": tool_limit,
             "person_id": invocation.person_id,
             "space_id": invocation.space_id,
             "presence_id": invocation.presence_id,
@@ -543,12 +550,6 @@ async def _execute_plugin_main_turn(
                         InvocationContextFactory.from_tools(
                             tool_runtime,
                             allowed_capabilities=runtime.allowed_capabilities,
-                            max_tool_calls=runtime.max_tool_calls
-                            if runtime.max_tool_calls is not None
-                            else runtime.runtime_config.agent.max_tool_calls,
-                            max_model_requests=runtime.max_model_requests
-                            if runtime.max_model_requests is not None
-                            else runtime.runtime_config.agent.max_model_requests,
                         ),
                         origin=runtime.origin,
                         invocation_goal=instruction,
@@ -707,16 +708,8 @@ async def resume_plugin_work(
                 context_data=source["context_data"],
                 context_profile=source["context_profile"],
                 permission=permission,
-                runtime=replace(
-                    runtime,
-                    execution_id=source["parent_execution_id"],
-                    max_model_requests=min(
-                        runtime.runtime_config.agent.max_model_requests,
-                        source["max_model_requests"],
-                    ),
-                    max_tool_calls=min(
-                        runtime.runtime_config.agent.max_tool_calls, source["max_tool_calls"]
-                    ),
-                ),
+                # The root budget already holds any explicit limit; legacy
+                # sources' per-segment max_* fields are no longer applied.
+                runtime=replace(runtime, execution_id=source["parent_execution_id"]),
                 tools=None,
             )

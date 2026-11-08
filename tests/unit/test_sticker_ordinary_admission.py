@@ -66,7 +66,6 @@ async def call_through_main(env, control, arguments):
             (ToolCall("original-message", ToolFunction("send", json.dumps(arguments))),),
             Backend(),
             SimpleNamespace(work_control=control, execution_id=control.lease.owner),
-            remaining_calls=None,
             max_parallel_calls=1,
         )
     finally:

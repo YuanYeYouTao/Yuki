@@ -77,9 +77,7 @@ def _profile():
     )
 
 
-async def _deployment(
-    database, tmp_path, provider, *, code_enabled=False, request_limit=24, **overrides
-):
+async def _deployment(database, tmp_path, provider, *, code_enabled=False, **overrides):
     env = await social_env(database, tmp_path)
     app = ApplicationContainer(
         make_settings(
@@ -94,7 +92,6 @@ async def _deployment(
             automation_enabled=True,
             enabled_groups_csv="20001",
             code_mode_enabled=code_enabled,
-            agent_max_model_requests=request_limit,
             llm_max_output_tokens=4096,
             **overrides,
         ),
@@ -569,7 +566,11 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 
 
-async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(database, tmp_path):
+async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
+    database, tmp_path, monkeypatch
+):
+    from tests.unit.test_history_dispatch_ownership import yield_each_activation_after
+
     wire, sessions, neutral = [], [], []
 
     def transport(request):
@@ -641,7 +642,8 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             client=client,
             provider_name="gemini",
         )
-        app, env, message, sender = await _deployment(database, tmp_path, original, request_limit=2)
+        app, env, message, sender = await _deployment(database, tmp_path, original)
+        yield_each_activation_after(monkeypatch, 2)
         try:
             config = await app.runtime_config.snapshot(group_id=env.space)
             original_contract = await app.runtime.main_turns.recovery_contract(config)
@@ -761,7 +763,9 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
                 ]
             assert final_budget["root_id"] == old_budget["root_id"] and final_budget["models"] == 3
             assert retained == old_effects
-            assert records[:2] == old_invocations and [row[2] for row in records] == [
+            # Two paid requests plus the synthetic pre-dispatch failure statistic.
+            assert records[:3] == old_invocations and [row[2] for row in records] == [
+                "gemini",
                 "gemini",
                 "gemini",
                 "agm",

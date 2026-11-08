@@ -12,12 +12,9 @@ imports no platform, database, Provider or Work code.
 from __future__ import annotations
 
 import json
-from itertools import count
 
 from yuki.agent_core.model_boundary import (
-    STOP,
     InvocationBoundary,
-    LoopSignal,
     ModelBoundary,
     TurnSettlement,
 )
@@ -53,53 +50,41 @@ def fail_truncated_calls(response: ChatResponse) -> tuple[ToolCallOutcome, ...]:
 
 async def run_agent_loop(
     *,
-    max_requests: int | None,
     model: ModelBoundary,
     invocation: InvocationBoundary,
     settlement: TurnSettlement,
 ) -> object:
-    """Drive Yuki's request, invocation and settlement owners within a budget.
+    """Drive Yuki's request, invocation and settlement owners until settlement ends.
 
     The model boundary has already composed or restored the request context.
     Ordinary and resumed execution therefore share this entry. The return
-    value belongs to the settlement that ends the activation.
+    value belongs to the settlement that ends the activation; explicit root
+    Work budgets are enforced where each request or tool is admitted.
     """
-    # Admission may stop before this activation's request budget is spent.
-    for index in count():
-        if max_requests is not None and index >= max_requests:
-            break
-        if await model.begin(index) is STOP:
-            break
+    index = 0
+    while True:
+        await model.begin(index)
         # Consume accepted inputs before dispatching the next request.
         steered = await model.steer(index)
         if steered is not None:
             return steered.value
         result = await model.request(index)
-        if result is STOP:
-            break
         if isinstance(result, End):
             return result.value
-        assert isinstance(result, ChatResponse)
         response = result
         reason = stop_reason(response)
-        decision: TurnDecision | LoopSignal
-        outcomes: tuple[ToolCallOutcome, ...] = ()
+        decision: TurnDecision
         if reason is StopReason.LENGTH:
-            outcomes = fail_truncated_calls(response)
-            decision = await settlement.settle_truncated(index, response, outcomes)
+            decision = await settlement.settle_truncated(
+                index, response, fail_truncated_calls(response)
+            )
         elif reason is StopReason.STOP:
             decision = await settlement.settle_final(index, response)
         else:
             batch = await invocation.execute_tools(index, response)
-            outcomes = batch.outcomes
-            # A terminating batch settles its receipts before exiting.
             decision = await settlement.finish_tool_turn(index, response, batch)
-            if batch.terminate and not isinstance(decision, End):
-                decision = STOP
-        if decision is STOP:
-            break
         if isinstance(decision, End):
             return decision.value
         # ``Continue``: tool results, recovery feedback or follow-up input
         # are already in the context for the next request.
-    return await settlement.exhausted()
+        index += 1

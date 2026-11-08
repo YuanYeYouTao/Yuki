@@ -53,8 +53,6 @@ async def test_short_state_cannot_write_under_obsolete_or_closed_execution(
         gateway=None,
         runtime_config=tools.runtime_config,
         allowed_capabilities=frozenset(),
-        max_tool_calls=None,
-        max_model_requests=None,
         work_control=owner.control,
     )
     control_type = type(owner.control)

@@ -89,7 +89,7 @@ async def invoke(work, backend, runtime, call):
     token = current_work_control.set(work.control)
     try:
         return await ToolInvocationCoordinator().execute_batch(
-            (call,), backend, runtime, remaining_calls=1, max_parallel_calls=1
+            (call,), backend, runtime, max_parallel_calls=1
         )
     finally:
         current_work_control.reset(token)

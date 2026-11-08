@@ -13,6 +13,20 @@ class WorkBudgetExceeded(ValueError):
     """No provider request or tool may be dispatched after a failed reservation."""
 
 
+async def limit(
+    session: AsyncSession, root_id: str, *, models: int | None, tools: int | None
+) -> None:
+    """Record a caller's explicit total limits on a newly admitted root Work."""
+    await session.execute(
+        insert(budgets)
+        .values(root_id=root_id, models=0, tools=0, model_limit=models, tool_limit=tools)
+        .on_conflict_do_update(
+            index_elements=[budgets.c.root_id],
+            set_={"model_limit": models, "tool_limit": tools},
+        )
+    )
+
+
 async def charge(session: AsyncSession, identity: str, *, models: int, tools: int) -> None:
     if models < 0 or tools < 0:
         raise ValueError("invalid_work_budget_charge")

@@ -17,7 +17,12 @@ from tests.support.codemode_cases import TOOLS, build_host, effect_rows, outer_c
 from tests.support.runtime_execution import make_child_executor, make_work_resumer
 from tests.unit.test_external_agent_repository import prepare, register_device
 from tests.unit.test_external_agent_work import case as _native_case
-from tests.unit.test_history_dispatch_ownership import _scene, _tool
+from tests.unit.test_history_dispatch_ownership import (
+    _scene,
+    _tool,
+    retry_due_now,
+    yield_activation_after,
+)
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_operation_identity import create_request
 
@@ -123,7 +128,7 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
 
     provider._responder = respond
     env, harness, chat, _state, message = await _scene(
-        database, tmp_path, provider, request_limit=1 if worker else 2
+        database, tmp_path, provider, yield_after=1 if worker else 2
     )
     chat._tools._memory_mutations = _service(database)[0]
     chat.runtime.runner.main_contract = MainAgentContract(chat, _state, code_enabled=False)
@@ -138,6 +143,7 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
     monkeypatch.setattr(WorkControl, "observe_evidence", observe_memory)
     boundary = DomainCommitBoundary(monkeypatch, "memory_change")
     await harness.processor.handle(message, MemorySender())
+    await retry_due_now(database)
     repository = WorkRepository(database)
     async with database.read_session() as reader:
         root_id = await reader.scalar(select(work.c.id))
@@ -161,7 +167,10 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
                 router=env.router,
             )
 
-        assert await executor().run(identity) is None
+        # The worker activation also ends right after its committed domain call.
+        yield_activation_after(provider, len(provider.requests) + 1)
+        assert await executor().run(identity) == "LLMUnavailableError"
+        await retry_due_now(database)
     await boundary.restore(database)
     before = await repository.get(identity)
     before_budget = await budget(database, root_id)

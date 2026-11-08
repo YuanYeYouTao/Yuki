@@ -1564,24 +1564,8 @@ class _AgentFacade:
     ) -> PluginResult:
         invocation = self._host._require(PluginPermission.AGENT_RUN)
         assert invocation is not None
-        _, base_runtime = await _agent_dependencies(self._host, invocation)
-        tool_limit = min(
-            max_tool_calls
-            if max_tool_calls is not None
-            else base_runtime.runtime_config.agent.max_tool_calls,
-            base_runtime.runtime_config.agent.max_tool_calls,
-        )
-        request_limit = min(
-            max_model_requests
-            if max_model_requests is not None
-            else base_runtime.runtime_config.agent.max_model_requests,
-            base_runtime.runtime_config.agent.max_model_requests,
-        )
-        runtime = replace(
-            base_runtime,
-            max_tool_calls=max(0, tool_limit),
-            max_model_requests=max(1, request_limit),
-        )
+        _, runtime = await _agent_dependencies(self._host, invocation)
+        # Explicit limits are totals of the admitted root Work and its workers.
         result = await run_plugin_main_turn(
             self._host,
             invocation,
@@ -1591,6 +1575,8 @@ class _AgentFacade:
             tools=None,
             permission=PluginPermission.AGENT_RUN,
             context_profile=context_profile,
+            model_limit=max_model_requests,
+            tool_limit=max_tool_calls,
         )
         return _agent_result(result, ())
 
@@ -2433,8 +2419,6 @@ async def _agent_dependencies(
             if PluginPermission.WEB_SEARCH in host._approved_permissions
             else frozenset()
         ),
-        max_tool_calls=runtime.agent.max_tool_calls,
-        max_model_requests=runtime.agent.max_model_requests,
         canonical_conversation_id=invocation.conversation_id,
     )
 

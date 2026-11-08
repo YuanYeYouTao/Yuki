@@ -14,7 +14,7 @@ from tests.support.event_seed import seed_event
 from tests.support.projection import projection_record
 from tests.support.public_history import _publish_checkpoint
 from tests.support.runtime_execution import make_work_resumer
-from tests.unit.test_history_dispatch_ownership import _scene, _tool
+from tests.unit.test_history_dispatch_ownership import _scene, _tool, yield_each_activation_after
 
 from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
 from yuki.conversation.projection_models import PromptProjectionModel
@@ -131,9 +131,8 @@ async def test_pending_code_interleave(
         monkeypatch.setattr(FakeRun, "event", fake_event)
 
     provider._responder = respond
-    env, harness, chat, _, inbound = await _scene(
-        database, tmp_path, provider, request_limit=2, code_enabled=True
-    )
+    env, harness, chat, _, inbound = await _scene(database, tmp_path, provider, code_enabled=True)
+    yield_each_activation_after(monkeypatch, 2)
     if evict_projection:
         await _publish_checkpoint(database, env.context.conversation_id, 1, text=SUMMARY)
         async with database.immediate_session() as writer:

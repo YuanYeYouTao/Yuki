@@ -47,8 +47,6 @@ class ToolBatchOutcome:
     outcomes: tuple[ToolCallOutcome, ...]
     executed_count: int = 0
     reused_count: int = 0
-    # Every result asked the loop to stop.
-    terminate: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,7 +19,7 @@ async def test_overlong_message_is_reported_before_work_staging(
             "task_control", {"action": "accept", "goal": "original work"}, "accept"
         )
     )
-    _, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
+    _, harness, chat, _, message = await _scene(database, tmp_path, provider, yield_after=1)
     if active_work:
         await harness.processor.handle(message, MemorySender())
     before = len(provider.requests)

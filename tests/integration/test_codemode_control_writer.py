@@ -94,9 +94,8 @@ async def test_original_program_control_and_tail_survive_runner_segment_writer(
     worker = env.host.worker if native else SimpleNamespace(execution_digest=lambda: "writer-test")
 
     def host(_tools, runtime, **_kwargs):
-        built = build_host(
-            runtime.work_control.session, env.domain, tool_limit=runtime.max_tool_calls
-        )
+        # Code Mode's explicit allowance (design unchanged, #573) forces the yield.
+        built = build_host(runtime.work_control.session, env.domain, tool_limit=1)
         built.host.api = api
         built.host.worker = worker
         if not native:
@@ -115,7 +114,6 @@ async def test_original_program_control_and_tail_survive_runner_segment_writer(
         work_control=control,
         fixed_tools=definitions,
         script_api=api,
-        max_tool_calls=1,
         origin=TurnOrigin.SYSTEM_TASK if action == "ask" else TurnOrigin.USER_MESSAGE,
     )
     first = await case.runner.run(

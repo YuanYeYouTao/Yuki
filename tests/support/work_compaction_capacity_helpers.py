@@ -129,8 +129,6 @@ async def _runtime(
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
         allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=1,
         work_control=control,
     )
     return runner, runtime

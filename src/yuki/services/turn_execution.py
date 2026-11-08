@@ -11,7 +11,6 @@ from functools import partial
 from typing import Any
 
 from yuki.agent_core import (
-    STOP,
     Continue,
     End,
     ToolBatchOutcome,
@@ -19,7 +18,6 @@ from yuki.agent_core import (
     TurnDecision,
     run_agent_loop,
 )
-from yuki.agent_core.model_boundary import LoopSignal
 from yuki.capabilities.coordinator import (
     CoordinatedToolResult,
 )
@@ -35,6 +33,7 @@ from yuki.domain.messages import (
     NativeToolEvent,
     ProviderContinuation,
     ResponseCitation,
+    ToolCall,
 )
 from yuki.llm.base import (
     LLMEmptyResponseError,
@@ -99,7 +98,6 @@ class TurnState:
     definitions: tuple[ChatTool, ...] = ()
     response_observation: dict[str, Any] = field(default_factory=dict)
     coordinated: CoordinatedToolResult = field(default_factory=lambda: CoordinatedToolResult((), 0))
-    segment_handoff_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +217,7 @@ class _PrimaryDispatch:
         if self.has_native_effects:
             # Mark the original private task before real native dispatch. SDK
             # backends without an ordinary private token have no protection hook.
-            protect_native = getattr(self.tools, "protect_native_dispatch", None)
+            protect_native = getattr(self.tools, "protect_dispatch", None)
             if callable(protect_native):
                 await protect_native(self.runtime)
         if self.on_dispatch is not None:
@@ -230,6 +228,16 @@ class _PrimaryDispatch:
             model_requests=self.request_index + 1 + sum(self.runtime.auxiliary_requests or ()),
         )
         self.prepared = True
+
+
+def _accepts(call: ToolCall) -> bool:
+    if call.function.name != "task_control":
+        return False
+    try:
+        arguments = json.loads(call.function.arguments)
+    except ValueError:
+        return False
+    return isinstance(arguments, dict) and arguments.get("action") == "accept"
 
 
 class TurnExecution:
@@ -366,7 +374,6 @@ class TurnExecution:
         if recovered is not None:
             return recovered
         result = await run_agent_loop(
-            max_requests=self.runtime.max_model_requests,
             model=self,
             invocation=self,
             settlement=self,
@@ -523,15 +530,7 @@ class TurnExecution:
             self.state.transcript.append(message)
         return None
 
-    async def begin(self, request_index: int) -> LoopSignal | None:
-
-        if (
-            self.runtime.max_model_requests is not None
-            and self.runtime.auxiliary_requests
-            and request_index + self.runtime.auxiliary_requests[0]
-            >= self.runtime.max_model_requests
-        ):
-            return STOP
+    async def begin(self, request_index: int) -> None:
         self.state.control = self.runtime.work_control
         self.state.boundary = None
         if (
@@ -564,48 +563,6 @@ class TurnExecution:
                         self.state.public_tail.append(message)
                 for message in self.state.boundary.current_inputs:
                     self.state.transcript.append(message)
-        if (
-            self.state.control is not None
-            and self.state.control.current is not None
-            and self.runtime.max_model_requests is not None
-            and self.state.control.requests_started >= self.runtime.max_model_requests
-        ):
-            return STOP
-        if (
-            self.state.control is not None
-            and self.state.control.current is not None
-            and self.runtime.max_tool_calls is not None
-            and self.runtime.max_tool_calls > 0
-            and self.state.control.tools_started >= self.runtime.max_tool_calls
-            and not self.state.provider_pause_replay
-        ):
-            # Keep the current working data for one final model dispatch. The
-            # same fixed declarations and zero remaining business allowance
-            # still apply; lifecycle/note calls never recharge that allowance.
-            if self.state.segment_handoff_index is not None:
-                return STOP
-            self.state.segment_handoff_index = request_index
-            self.state.transcript.append(
-                ChatMessage(
-                    "user",
-                    json.dumps(
-                        {
-                            "kind": "work_segment_handoff",
-                            "remaining_business_calls": 0,
-                            "instruction": (
-                                "This activation has exhausted its business tool allowance. "
-                                "You have one model request before the working transcript retires. "
-                                "If the goal is verified, call task_control(action='complete'). "
-                                "Otherwise retain useful findings and the next step in an optional "
-                                "task_control(action='update', context_note=...). "
-                                "No further business tool call can execute in this activation."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-            )
-        return None
 
     async def steer(self, request_index: int) -> End | None:
         if self.state.control is not None and not self.state.provider_pause_replay:
@@ -614,7 +571,7 @@ class TurnExecution:
                 return End(waiting)
         return None
 
-    async def request(self, request_index: int) -> ChatResponse | End | LoopSignal:
+    async def request(self, request_index: int) -> ChatResponse | End:
 
         if self.tools is not None:
             self.tools.refresh_catalog(self.runtime)
@@ -642,7 +599,7 @@ class TurnExecution:
         prepared_request: _PreparedRequest | None = None
         try:
             candidate = await self.prepare_request(request_index, native_definitions, web_mode)
-            if isinstance(candidate, (End, LoopSignal)):
+            if isinstance(candidate, End):
                 return candidate
             prepared_request = candidate
             execute = (
@@ -890,7 +847,7 @@ class TurnExecution:
         request_index: int,
         native_definitions: tuple[NativeToolDefinition, ...],
         web_mode: WebMode,
-    ) -> _PreparedRequest | End | LoopSignal:
+    ) -> _PreparedRequest | End:
         """Prepare capacity/compaction before the original request admission."""
         if not await self._finalize_initial_layout():
             participation = await self._participation_context(request_index)
@@ -1016,22 +973,10 @@ class TurnExecution:
                 sequence = self.state.transcript.request()
                 self.state.continuation_tools = ()
                 self.state.continuation_native_tools = ()
-            if (
-                self.runtime.max_model_requests is not None
-                and request_index + sum(self.runtime.auxiliary_requests or ())
-                >= self.runtime.max_model_requests
-            ):
-                return STOP
         while input_budget is not None and predicted_tokens > input_budget:
             if self.state.provider_pause_replay:
                 raise WorkCapacityError("model_request_capacity")
             request = await self.compact_current(request_index, request, priority, input_budget)
-            if (
-                self.runtime.max_model_requests is not None
-                and request_index + sum(self.runtime.auxiliary_requests or ())
-                >= self.runtime.max_model_requests
-            ):
-                return STOP
             sequence = self.state.transcript.request()
             prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
             request = prepared_capacity.request
@@ -1491,6 +1436,32 @@ class TurnExecution:
             )
         )
 
+    async def admit_private_execution(self, response: ChatResponse) -> None:
+        """Host-admit a private multi-step execution before its first tool batch.
+
+        Only a private Main without a current Work and with a non-send call is
+        admitted. The Work, the requests already paid by this activation and the
+        first response journal commit in one writer before any call identity is
+        bound, so the whole batch and its recovery belong to the admitted Work.
+        A batch carrying the model's own ``accept`` keeps that original admission.
+        """
+        control = self.runtime.work_control
+        if (
+            control is None
+            or control.current is not None
+            or control.lease.work_id
+            or self.runtime.origin is not TurnOrigin.USER_MESSAGE
+            or self.runtime.current_group_id is not None
+            or all(call.function.name == "send" for call in response.tool_calls)
+            or any(_accepts(call) for call in response.tool_calls)
+        ):
+            return
+        # Once admitted, new input joins this Work instead of cancelling it.
+        protect = getattr(self.tools, "protect_dispatch", None)
+        if callable(protect):
+            await protect(self.runtime)
+        await control.admit_execution(response.tool_calls)
+
     async def execute_tools(self, request_index: int, response: ChatResponse) -> ToolBatchOutcome:
 
         responses_path = response.continuation is not None
@@ -1503,24 +1474,12 @@ class TurnExecution:
                     reasoning_content=response.reasoning_content,
                 )
             )
+        await self.admit_private_execution(response)
         tooling = self.runtime.runtime_config.tooling
         self.state.coordinated = await self.runner._execute_tool_batch(
             response.tool_calls,
             self.tools,
             self.runtime,
-            remaining_calls=None
-            if self.runtime.max_tool_calls is None
-            else max(
-                0,
-                self.runtime.max_tool_calls
-                - max(
-                    self.state.calls_used,
-                    self.runtime.work_control.tools_started
-                    if self.runtime.work_control is not None
-                    and self.runtime.work_control.current is not None
-                    else 0,
-                ),
-            ),
             max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
             declared_names=frozenset(t.name for t in self.state.definitions),
             chain_id=self.state.transcript.chain_id,
@@ -1545,7 +1504,7 @@ class TurnExecution:
 
     async def finish_tool_turn(
         self, request_index: int, response: ChatResponse, _outcome: ToolBatchOutcome
-    ) -> TurnDecision | LoopSignal:
+    ) -> TurnDecision:
 
         batch = self.state.coordinated.calls
         if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in batch):
@@ -1653,7 +1612,6 @@ class TurnExecution:
                 self.state.coordinated.reused_count,
                 self.state.calls_used,
             )
-        # begin() bounds the segment handoff to one admitted model request.
         return Continue()
 
     async def _code_yield(self, model_requests: int) -> AgentRunResult:
@@ -1683,25 +1641,3 @@ class TurnExecution:
             suppress_delivery=True,
             work_state=control.accepted_ending(),
         )
-
-    async def exhausted(
-        self,
-    ) -> AgentRunResult:
-        control = self.runtime.work_control
-        if control is not None and control.current is not None and control.accepted_ending():
-            return self._accepted_result(control.requests_started)
-        if self.runtime.work_control is not None and self.runtime.work_control.current is not None:
-            self.runtime.work_control.yield_segment = True
-            self.runtime.work_control.ending = "queued"
-            if self.runtime.work_control.session is not None:
-                await self.runtime.work_control.session.save("paired")
-            return AgentRunResult(
-                text="",
-                tool_calls_used=self.state.calls_used,
-                model_requests=self.runtime.work_control.requests_started,
-                suppress_delivery=True,
-                work_state="queued",
-            )
-        from yuki.runtime.work_budget import WorkBudgetExceeded
-
-        raise WorkBudgetExceeded("agent_segment_budget_exhausted")

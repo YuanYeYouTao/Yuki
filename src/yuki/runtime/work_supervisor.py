@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 from yuki.runtime.activation_outcome import (
     ActivationOutcome,
     ExitReason,
-    SegmentBudgetReached,
     classify_failure,
 )
 from yuki.runtime.work_budget import WorkBudgetExceeded
@@ -58,8 +57,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
     reason = ExitReason.FAILED
     if isinstance(exc, WorkBudgetExceeded):
         reason = ExitReason.BUDGET
-    elif isinstance(exc, SegmentBudgetReached):
-        reason = ExitReason.SEGMENT
     elif isinstance(exc, WorkCapacityError):
         reason = ExitReason.CAPACITY
     elif isinstance(exc, WorkConflict):
@@ -134,7 +131,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             not_before = time.time() + delay
         state = (
             "queued"
-            if reason in {ExitReason.RETRY, ExitReason.SEGMENT}
+            if reason is ExitReason.RETRY
             else "suspended"
             if reason in {ExitReason.BUDGET, ExitReason.CAPACITY}
             else "failed"
@@ -147,9 +144,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             )
         )
         proposed = ACCEPTED_ENDINGS.get(str(action)) if action is not None else None
-        if proposed is not None and (
-            reason != ExitReason.SEGMENT or proposed in {"failed", "cancelled"}
-        ):
+        if proposed is not None:
             state, reason, not_before = proposed, ACCEPTED_REASONS[proposed], 0
         values = dict(
             activation_id=control.lease.owner,

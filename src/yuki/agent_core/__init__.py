@@ -4,7 +4,6 @@ Design references are recorded in docs/architecture/pi-port-provenance.md.
 """
 
 from yuki.agent_core.loop import TRUNCATED_CALL_RECEIPT, run_agent_loop
-from yuki.agent_core.model_boundary import STOP
 from yuki.agent_core.types import (
     Continue,
     End,
@@ -15,7 +14,6 @@ from yuki.agent_core.types import (
 )
 
 __all__ = [
-    "STOP",
     "TRUNCATED_CALL_RECEIPT",
     "Continue",
     "End",

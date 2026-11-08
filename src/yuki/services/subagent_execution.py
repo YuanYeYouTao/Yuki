@@ -364,8 +364,6 @@ class SubagentExecution:
                                 )
                                 if delegated
                                 else self.services.web_capabilities(config),
-                                max_tool_calls=None,
-                                max_model_requests=None,
                             ),
                             before_model_request=validate,
                             dynamic_context_prepared=True,

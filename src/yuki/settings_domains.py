@@ -113,8 +113,6 @@ class ConversationSettings(DomainSettings):
     observe_enabled_groups: bool
     recent_history_tool_limit: int = Field(gt=0)
     local_context_event_limit: int = Field(gt=0, le=20_000)
-    agent_max_tool_calls: int = Field(gt=0)
-    agent_max_model_requests: int = Field(gt=0)
     agent_tool_result_max_characters: int = Field(gt=0)
     reply_hard_max_messages: int = Field(gt=0)
     conversation_auto_reply_enabled: bool = True

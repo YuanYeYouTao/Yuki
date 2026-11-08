@@ -61,7 +61,6 @@ from yuki.model_runtime.profiles import ModelProfileCatalog
 from yuki.model_runtime.repository import ModelInvocationRepository
 from yuki.model_runtime.routes import ModelRouter
 from yuki.runtime.origin import TurnOrigin
-from yuki.runtime.work_activation import activate_work
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_journal import JournalUnavailable, decode_transcript, encode_transcript
 from yuki.runtime.work_repository import WorkRepository
@@ -116,13 +115,12 @@ async def test_text_only_truncation_spends_no_correction_request(database, tmp_p
     initial = (ChatMessage("system", "fixed contract"), ChatMessage("user", "answer"))
     runner, runtime = await _runtime(database, None, initial, provider)
     with pytest.raises(LLMIncompleteResponseError):
-        await runner.run(initial, replace(runtime, max_model_requests=2), None)
+        await runner.run(initial, replace(runtime), None)
     assert len(provider.requests) == 1
 
 
-@pytest.mark.parametrize("segment_requests", [1, 2])
 async def test_local_truncation_pairs_unexecuted_call_and_continues_original_work(
-    database, tmp_path, segment_requests
+    database, tmp_path
 ):
     control = await setup(database, tmp_path)
     identity = control.current["id"]
@@ -147,7 +145,6 @@ async def test_local_truncation_pairs_unexecuted_call_and_continues_original_wor
     runner, runtime = await _runtime(database, control, initial, provider)
     runtime = replace(
         runtime,
-        max_model_requests=segment_requests,
         fixed_tools=(ChatTool("fixture_mutation", "mutate", {"type": "object"}),),
     )
     execute = AsyncMock(side_effect=AssertionError("truncated arguments must not execute"))
@@ -157,26 +154,6 @@ async def test_local_truncation_pairs_unexecuted_call_and_continues_original_wor
     )
     result = await runner.run(initial, runtime, backend)
     await control.settle(pending_inputs=False)
-    if segment_requests == 1:
-        assert control.current["state"] == "queued" and control.current["model_requests"] == 1
-        await control.repository.release(control.lease)
-        holder = []
-
-        async def validate():
-            assert await control.repository.valid(holder[0].lease)
-
-        async with activate_work(
-            control.repository,
-            control.lease.conversation_id,
-            control.lease.generation,
-            control.source_key,
-            control.source,
-            validate,
-            work_id=identity,
-        ) as resumed:
-            holder.append(resumed)
-            result = await runner.run(initial, replace(runtime, work_control=resumed), backend)
-        control = resumed
     assert control.current["id"] == identity and control.current["state"] == "completed"
     assert control.current["model_requests"] == 2 and control.current["tool_calls"] == 0
     assert result.text == "verified current answer"
@@ -918,8 +895,6 @@ async def test_runner_preserves_paid_native_boundary_without_requeue_or_local_ex
             gateway=None,
             runtime_config=await chat._runtime_config.snapshot(),
             allowed_capabilities=frozenset({"web"}),
-            max_tool_calls=8,
-            max_model_requests=8,
             fixed_tools=fixed,
             work_control=control,
         )
@@ -1111,8 +1086,6 @@ async def test_native_transport_unknown_fails_original_activation_without_automa
             gateway=None,
             runtime_config=await chat._runtime_config.snapshot(),
             allowed_capabilities=frozenset({"web"}),
-            max_tool_calls=8,
-            max_model_requests=8,
             fixed_tools=fixed,
             work_control=control,
             before_model_request=before,

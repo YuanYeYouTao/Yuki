@@ -56,7 +56,7 @@ class Backend(StubAgentBackend):
         return None
 
 
-async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
+async def runner_env(database, tmp_path, responses):
     provider = FakeLLMProvider(lambda _: next(responses))
     settings = make_settings(
         database.url,
@@ -99,8 +99,6 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
         allowed_capabilities=frozenset(),
-        max_tool_calls=max_tool_calls,
-        max_model_requests=8,
         work_control=control,
         fixed_tools=FIXED_TOOLS,
     )

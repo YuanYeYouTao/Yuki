@@ -902,18 +902,21 @@ async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native
             gateway=None,
             runtime_config=await chat._runtime_config.snapshot(),
             allowed_capabilities=frozenset({"web"}),
-            max_tool_calls=8,
-            max_model_requests=1,
             fixed_tools=common_tools,
             work_control=resumed,
         )
+        from yuki.runtime.work_budget import limit
+
+        # One new request on top of the two paid ones: an explicit root total.
+        async with control.repository.database.immediate_session() as writer:
+            await limit(writer, old_id, models=3, tools=None)
         result = await chat.runtime.runner.run(
             (ChatMessage("system", "new DeepSeek contract"), ChatMessage("user", "wakeup")),
             runtime,
             Backend(),
         )
 
-    assert result.work_state == "queued" and result.suppress_delivery
+    assert result.work_state == "suspended" and result.suppress_delivery
     assert sent == 1 and reads == 1 and len(captured) == 1
     assert resumed.current["id"] == old_id
     payload = captured[0]
@@ -1378,8 +1381,6 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
         gateway=None,
         runtime_config=await chat._runtime_config.snapshot(),
         allowed_capabilities=frozenset(),
-        max_tool_calls=8,
-        max_model_requests=8,
         work_control=control,
     )
     current = ChatMessage("user", "current task plus dynamic context")
@@ -1570,9 +1571,7 @@ async def test_private_note_keeps_normal_resume_without_public_history_publicati
         return ChatResponse("actual internal result", 0)
 
     provider._responder = respond
-    env, harness, chat, _state, inbound = await _scene(
-        database, tmp_path, provider, request_limit=2
-    )
+    env, harness, chat, _state, inbound = await _scene(database, tmp_path, provider, yield_after=2)
     await harness.processor.handle(inbound, MemorySender())
     repository = WorkRepository(database)
     async with database.read_session() as reader:

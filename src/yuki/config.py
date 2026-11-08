@@ -259,8 +259,6 @@ class Settings(BaseSettings):
     memory_rebuild_retry_initial_seconds: float = 30.0
     memory_rebuild_review_page_size: int = 20
     memory_rebuild_source_excerpt_characters: int = 500
-    agent_max_tool_calls: int = 32
-    agent_max_model_requests: int = 24
     agent_tool_result_max_characters: int = Field(default=64000, gt=0)
 
     tooling_max_parallel_calls: int = 8

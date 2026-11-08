@@ -1614,8 +1614,6 @@ class RuntimeConfigService:
                 model=self._settings.llm_model,
             ),
             agent=AgentRuntimeConfig(
-                max_tool_calls=int(cast(int, value("agent.max_tool_calls"))),
-                max_model_requests=int(cast(int, value("agent.max_model_requests"))),
                 tool_result_max_characters=int(
                     cast(int, value("agent.tool_result_max_characters"))
                 ),

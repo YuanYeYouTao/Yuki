@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import func, select, update
 from tests.integration.test_plugin_agent_domain_grants import source_host
-from tests.unit.test_history_dispatch_ownership import _tool
+from tests.unit.test_history_dispatch_ownership import (
+    _tool,
+    retry_due_now,
+    yield_each_activation_after,
+)
 
 from yuki.llm.fake import FakeLLMProvider
 from yuki.plugin_host import main_turn
@@ -26,10 +30,13 @@ async def test_old_boundary_work_survives_callback_observation(
 ):
     provider = FakeLLMProvider(lambda _: _tool("environment_status", {}, "original-status"))
     _, _, chat, source, host = await source_host(database, tmp_path, provider, ())
+    # Each activation of the original Work ends after one request (retryable exit).
+    yield_each_activation_after(monkeypatch, 1)
     sandbox = SimpleNamespace(execute=AsyncMock(return_value={"ready": True}))
     chat._tools.sandbox_client = sandbox
     with host.invocation_scope(host.plugin_id, source):
-        first = await host.agent.run("Inspect the original environment", max_model_requests=1)
+        first = await host.agent.run("Inspect the original environment")
+    await retry_due_now(database)
     repository = WorkRepository(database)
     original = await repository.get(first.data["work_id"])
     assert original["state"] == "queued"
@@ -87,12 +94,7 @@ async def test_old_boundary_work_survives_callback_observation(
     monkeypatch.setattr(main_turn, "CALLBACK_WAIT_SECONDS", 0.3 if observation == "timeout" else 30)
     try:
         with restored.invocation_scope(restored.plugin_id, source):
-            observer = asyncio.create_task(
-                restored.agent.run(
-                    "Inspect the original environment",
-                    max_model_requests=1,
-                )
-            )
+            observer = asyncio.create_task(restored.agent.run("Inspect the original environment"))
             await asyncio.wait_for(entered.wait(), 3)
             if observation == "cancel":
                 observer.cancel()
