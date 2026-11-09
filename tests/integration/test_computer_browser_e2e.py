@@ -548,6 +548,16 @@ def _requests(requests):
                 "messages": len(request.messages),
                 "images": sum(len(message.images) for message in request.messages),
                 "media_observations": notes,
+                "tail": [
+                    {
+                        "role": message.role,
+                        "call": message.tool_call_id
+                        or [call.id for call in message.tool_calls]
+                        or None,
+                        "content": (message.content or "")[:300],
+                    }
+                    for message in request.messages[-4:]
+                ],
             }
         )
     return rows
