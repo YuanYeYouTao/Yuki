@@ -286,13 +286,13 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
 
         async def read() -> None:
             hello = await socket.receive_json()
-            if hello.get("type") != "hello":
-                raise ValueError("connector_hello_required")
             try:
+                if hello.get("type") != "hello":
+                    raise ValueError("connector_hello_required")
                 await service.connect(principal.device_id, connection, hello)
             except ValueError as error:
-                if str(error) == "unsupported_connector_protocol":
-                    await socket.close(code=1008, reason="unsupported_connector_protocol")
+                # A handshake this server refuses does not change by reconnecting.
+                await socket.close(code=1008, reason=str(error))
                 raise
             logger.info(
                 "connector_connected device=%s connection=%s",
@@ -320,10 +320,16 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                 group.create_task(events())
         except* WebSocketDisconnect as disconnected:
             ending = f"closed:{cast(WebSocketDisconnect, disconnected.exceptions[0]).code}"
-        except* (ValueError, ClientError) as rejected:
+        except* ClientError as rejected:
             ending = f"rejected:{rejected.exceptions[0]}"
             with suppress(RuntimeError):
                 await socket.close(code=1008)
+        except* ValueError as failed:
+            # After the handshake this is the server's own processing failure:
+            # 1011 lets the Connector reconnect instead of treating it as revoked.
+            ending = f"failed:{failed.exceptions[0]}"
+            with suppress(RuntimeError):
+                await socket.close(code=1011)
         finally:
             await service.disconnect(connection)
             logger.info(
