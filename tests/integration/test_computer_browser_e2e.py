@@ -336,7 +336,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
     def respond(request):
         if finished.is_set() or not request.tools:
             return "完成。"
-        if (request.messages[-1].content or "").startswith("[Host 上下文压缩要求]"):
+        if "上下文压缩要求]" in (request.messages[-1].content or ""):
             # Real execution compaction of this long Work; the script itself continues.
             return "检查点：按脚本逐步操作网页与桌面，最近一步的结果见保留的尾部。"
         # The result of the call issued last, by its call id (a resumed Work may
