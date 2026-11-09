@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import Callable
 from contextlib import suppress
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
@@ -29,6 +31,8 @@ from yuki.external_agents.service import CONNECTOR_PROTOCOL, ExternalAgentServic
 from yuki.external_agents.transport import DeviceConnection
 from yuki.identity.credentials import DeviceCredentials, DevicePrincipal, require_person
 from yuki.identity.person_identity import person_family_condition
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectorPairBody(BaseModel):
@@ -290,6 +294,11 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                 if str(error) == "unsupported_connector_protocol":
                     await socket.close(code=1008, reason="unsupported_connector_protocol")
                 raise
+            logger.info(
+                "connector_connected device=%s connection=%s",
+                principal.device_id,
+                connection.id,
+            )
             while True:
                 message = await socket.receive_json()
                 kind = message.get("type")
@@ -302,16 +311,27 @@ def attach_external_agent_api(app: FastAPI, resolve: Callable[[], ExternalAgentS
                 else:
                     raise ValueError("invalid_connector_message")
 
+        opened = time.monotonic()
+        # Transport facts only: which device, how the socket ended and after how long.
+        ending = "server"
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(read())
                 group.create_task(events())
-        except* WebSocketDisconnect:
-            pass
-        except* (ValueError, ClientError):
+        except* WebSocketDisconnect as disconnected:
+            ending = f"closed:{cast(WebSocketDisconnect, disconnected.exceptions[0]).code}"
+        except* (ValueError, ClientError) as rejected:
+            ending = f"rejected:{rejected.exceptions[0]}"
             with suppress(RuntimeError):
                 await socket.close(code=1008)
         finally:
             await service.disconnect(connection)
+            logger.info(
+                "connector_disconnected device=%s connection=%s ending=%s seconds=%.0f",
+                principal.device_id,
+                connection.id,
+                ending,
+                time.monotonic() - opened,
+            )
 
     app.include_router(router)
