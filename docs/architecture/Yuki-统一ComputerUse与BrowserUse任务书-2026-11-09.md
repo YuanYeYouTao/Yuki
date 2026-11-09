@@ -27,6 +27,12 @@ Issue：#588。关联：[服务器文件传到本人电脑任务书](Yuki-服务
 4. 与本人共用桌面：Yuki 需要时直接操作；本人在 Desktop 一键接管/叫停，交还后继续；沿用现有接管/交还语义，不加审批、不做空闲检测。
 5. 平台：Windows 与 Mac 一起做。
 
+2026-11-09 补充：
+
+6. 体验目标：computer use 像 Codex 那样自然——能在后台操作就不动本人的光标；browser use 像 Claude Code 那样新开一个 Yuki 专用浏览器窗口。扩展驱动日常 Chrome 退为可选的后续阶段。
+7. 与本人共用桌面不以按钮为主：后台操作不冲突；必须使用真实光标时，本人的物理输入即接管；按钮只作备用（§5.5）。
+8. §9 的 D1–D4 按建议采纳；D5 由作者自行把 Mac mini 连接器地址改为 `http://127.0.0.1:18768`。
+
 ## 4. 现状（已核实）
 
 ### 4.1 Yuki 沙箱
@@ -68,10 +74,12 @@ Issue：#588。关联：[服务器文件传到本人电脑任务书](Yuki-服务
 成功结果是业务数据本身；失败 `{ok:false, error, message}`；结果可能已发生时加 `status:"unknown"`。两工具 `namespace="sandbox.run"`（与 `run_command` 同一插件授权）、`effect="write_state"`、`result_cacheable=false`。`device` 现在就声明：阶段 1 中给出 `device` 返回 `device_not_supported`（照 `copy_file` 源 `device` 先例），阶段 3 只放开实现、不改 schema，避免第二次合同版本变更。
 
 ```
-computer(action, x?, y?, text?, dy?, display?, device?)
+computer(action, x?, y?, text?, dy?, window?, display?, device?)
   action: screenshot | click | type | key | scroll
   坐标为最近一次截图的像素；key 的 text 为按键组合（如 ctrl+l、Return）；scroll 在 x,y 滚 dy 格（正数向下）
-  成功：{width, height, display?, control?} + 附带截图（动作后自动返回新截图）
+  window：给出时只截该窗口、坐标相对该窗口截图，动作在后台投递给该窗口而不移动本人光标（§5.5）；
+          省略时为整屏与真实光标
+  成功：{width, height, display?, window?, windows:[{id,app,title}], control?} + 附带截图（动作后自动返回新截图）
   失败：control_held（附 control:{holder,since}）| display_unavailable | display_locked |
         screen_permission_required | input_permission_required | device_not_supported
 
@@ -112,11 +120,23 @@ browser(action, url?, node?, text?, tab?, device?)
 - 帧预算（**待作者决定 D1**）：改为只统计本次请求实际携带的图像，旧的工具媒体观察由既有上下文压缩丢弃，需要时凭工具产物句柄重读。不另设截图专用阈值。
 - 不支持图像的模型（如 DeepSeek）：沿既有规则返回 `image_capability_unavailable` / `media_read:false`，动作效果保留；`browser` 的快照必须单独就够用。不加“某情况自动附截图”的规则。
 
-### 5.5 本人电脑上的接管
+### 5.5 与本人共用桌面：先不冲突，再自然接管
 
-- 租约放在输入真正发生的地方——连接器：配置项 `computer_control:{holder: owner|none, since}`，与 `full_access` 一样原子写入、每条命令重读、在执行处核验；输入返回 `control_held`（`executed:false`），截图可照常读取；变化经 `catalog_changed` 同步到 `device_capabilities`。不新增服务端表、审批或空闲检测。
-- Desktop：连接器在 `--desktop-stdin` 模式下每个 GUI 动作向 stdout 打一行 JSON 活动；Desktop 据此在「這台電腦」页与托盘显示“Yuki 正在操作这台电脑”，提供「停止並接手」（写 owner）与「交還」（写 none）。本人看的是真屏幕，不需要查看器。
-- 沙箱侧接管保持现状；`help-request` / `wait-control` 保留，`computer` 的 `control_held` 说明里给出等待方式。
+目标是本人照常用电脑，Yuki 同时干活；按钮只是备用。三层，按顺序使用：
+
+1. **浏览器不碰光标**：`browser` 经 CDP 向页面投递输入（`Input.dispatch*` 作用于该页面），Yuki 专用 Chrome 窗口可以在后台或另一个桌面空间，不移动本人光标、不抢焦点。网页任务优先走这里。
+2. **原生应用优先后台操作**：`computer` 给出 `window` 时，截图只截该窗口（macOS ScreenCaptureKit 按窗口过滤；Windows `PrintWindow`/`BitBlt` 窗口 DC），动作投递给该窗口所属进程而不经全局光标：
+   - macOS：能定位到可访问性元素时用 AX 动作（`AXPress`、设置 `AXValue`、`AXFocused`）；否则 `CGEventPostToPid` 把带坐标的键鼠事件只发给目标进程（同样需要辅助功能权限）。
+   - Windows：能定位到 UI Automation 元素时用 `InvokePattern`/`ValuePattern`/`ScrollPattern`；否则向目标窗口投递窗口消息（`PostMessage` 的鼠标/键盘消息）。
+   - 坐标到元素的定位用系统命中测试（macOS `AXUIElementCopyElementAtPosition`，Windows `IUIAutomation::ElementFromPoint`），模型仍只给截图坐标，不需要可访问性树快照。
+   - 已知局限：游戏、画布类、部分 Electron/自绘应用不响应后台投递，结果回执只写 `submitted`，由下一张截图核实；不响应时改用第 3 层。
+3. **必须用真实光标时，本人的物理输入即接管**：省略 `window` 的全局输入期间，连接器监听本人的物理键鼠（macOS 事件监听区分本进程合成事件的来源 PID，Windows 低级钩子的 `LLMHF_INJECTED`/`LLKHF_INJECTED` 标志），一旦出现即把本地租约置为 owner：正在执行的动作停在当前一步，后续输入返回 `control_held`。恢复不设闲置计时：本人在聊天里让 Yuki 继续，或点 Desktop 横幅上的「繼續」，租约回到 none。
+
+租约放在输入真正发生的地方——连接器：配置项 `computer_control:{holder: owner|none, since}`，与 `full_access` 一样原子写入、每条命令重读、在执行处核验；第 1、2 层不取租约，第 3 层输入前核验；截图始终可读；变化经 `catalog_changed` 同步到 `device_capabilities`。不新增服务端表或审批。
+
+Desktop：连接器在 `--desktop-stdin` 模式下每个 GUI 动作向 stdout 打一行 JSON 活动；Desktop 据此在托盘与「這台電腦」页显示“Yuki 正在操作（后台 / 前台）”，备用按钮「停止」（写 owner）与「繼續」（写 none）。本人看的是真屏幕，不需要查看器。
+
+沙箱侧本来就是独立显示，不与本人冲突；接管保持现状，`help-request` / `wait-control` 保留，`computer` 的 `control_held` 说明里给出等待方式。
 
 ### 5.6 GUI 驱动（连接器 0.5.x）
 
@@ -132,7 +152,7 @@ browser(action, url?, node?, text?, tab?, device?)
 - 风险：pyobjc/libffi 回调在 hardened runtime 下可能需要 `com.apple.security.cs.allow-unsigned-executable-memory`，签名版验证后再决定是否加。macOS 15 起有每月一次的屏幕录制再确认提示，作为本人操作写进文档。
 - Desktop 最低 macOS 13，ScreenCaptureKit 截图需 14：只在 14+ 声明 `computer` 能力（**D3**）。
 - 截图字节：连接器把截图注册为一个 `FileTransfers` 源，返回 `transfer_id/size/sha256/version/display/width/height/scale`，服务端复用 `download` 的读/释放循环交给 `WorkspaceInspector`。不依赖阶段 2。
-- 可访问性树（macOS AX、Windows UIA）本期不做；网页结构由 `browser` 提供。真实任务证明原生应用坐标操作不够用时再议。
+- 可访问性只用于 §5.5 第 2 层的“坐标 → 元素”命中测试与后台动作，本期不向模型输出整棵原生可访问性树；网页结构由 `browser` 提供。真实任务证明需要原生结构快照时再议。
 
 ### 5.7 本人电脑上的浏览器
 
@@ -158,8 +178,8 @@ browser(action, url?, node?, text?, tab?, device?)
 | 0 稳定性 | §5.8；服务端两项已在 #590 | — | 2–3 天（含 Desktop 发版） |
 | 1 Yuki 沙箱 | `computer`/`browser` 工具、共享 CDP 驱动、快照格式、动作语义、截图直出与归档、帧预算、Manager 动作处理与恢复、清理过期 CLI 提示与夹具 | D1 | 3–4 天 |
 | 2 文件传输第二期 | Manager 入站流 `files_write`（`files_read` 的镜像：头部 `{destination,size,sha256,source_key,request_id}` + 原始字节，校验后经 `self.files.copy` 提交并记 `environment_mutations`）；`copy_file` 放开产物/设备 → 环境 | — | 3–4 天 |
-| 3 本人电脑 | 连接器 `computer` 资源与本地租约、Mac/Windows 驱动、能力事实、服务端按 `device` 路由、独立 profile `browser`、Desktop 横幅/接管/权限页 | 0、1；D2、D3 | 共享 4–5 天 + macOS 4–6 天 + Windows 3–4 天 + 浏览器 3–4 天 + Desktop 3–4 天 |
-| 4 浏览器扩展 | spike 对比 auto-connect，然后扩展 + native messaging 宿主 + 本地 IPC | 3；D4 | 4–6 天 |
+| 3 本人电脑 | 连接器 `computer` 资源与本地租约、Mac/Windows 驱动（含 §5.5 后台投递与物理输入接管）、能力事实、服务端按 `device` 路由、独立 profile `browser`（新开 Yuki Chrome 窗口）、Desktop 横幅/权限页 | 0、1；D2、D3 | 共享 4–5 天 + macOS 6–8 天 + Windows 5–6 天 + 浏览器 3–4 天 + Desktop 3–4 天 |
+| 4 浏览器扩展（可选） | spike 对比 auto-connect，然后扩展 + native messaging 宿主 + 本地 IPC；只在独立窗口不够用（需要本人日常登录态）时做 | 3；D4 | 4–6 天 |
 
 阶段 0 与阶段 1 可并行。阶段 1 完成后 Yuki 自己的电脑即可用，不等后续阶段。阶段 2 与阶段 1/3 无硬依赖，可穿插。
 
@@ -228,6 +248,11 @@ browser(action, url?, node?, text?, tab?, device?)
 - F29 旧连接器收到 `computer` 命令时未得到 `invalid_resource`，或服务端未隐藏无能力设备。
 - F30 `full_access` 关闭时仍执行。
 - F31 点击成功但图像归档失败时丢失效果（应 `media_read:false`）。
+- F32a 给出 `window` 的后台动作移动了本人光标或抢走前台焦点。
+- F32b 目标应用不响应后台投递时回执写成“已点击”（应为 `submitted`，由截图核实）。
+- F32c 本人物理输入未被识别为接管，或 Yuki 自己的合成输入被误判为本人输入而自我停止。
+- F32d 接管后无闲置计时自动恢复（应只由聊天“继续”或横幅「繼續」恢复）。
+- F32e 后台截图截到了被遮挡窗口的旧内容或黑屏而未报告。
 
 ### 7.5 稳定性
 
@@ -248,12 +273,13 @@ browser(action, url?, node?, text?, tab?, device?)
 - **阶段 4**：先交付 spike 结论（auto-connect 与扩展各自的实机 UX），再实现。
 - 通用：`ruff`、`mypy --platform linux src`、单元与集成全量；连接器包三平台 CI；不把本地 macOS 环境失败当作通过，凡环境失败的测试须核对其是否掩盖了本次改动的真实失败。
 
-## 9. 待作者决定
+## 9. 作者决定（2026-11-09 已定）
 
-| 编号 | 问题 | 建议 |
+| 编号 | 问题 | 决定 |
 | --- | --- | --- |
 | D1 | 帧预算：现为整轮累计 16 帧且不淘汰，会终止长循环 | 只统计本次请求实际携带的图像，旧图由上下文压缩丢弃、凭产物句柄可重读；不设截图专用阈值 |
 | D2 | 连接器运行方式 | 保持 Desktop 子进程模式并加监督；Mac mini 开启托盘常驻与登录项；不恢复独立系统服务 |
 | D3 | macOS 13 上的 `computer` | 只在 macOS 14+ 声明能力，Desktop 最低版本不变 |
-| D4 | 阶段 4 走扩展还是 Chrome 144 auto-connect | 先做短 spike；倾向扩展（可无人值守、只暴露 Yuki 标签组） |
-| D5 | Mac mini 连接器改连 `http://127.0.0.1:18768` | 同意；需要在 Desktop 中重启一次连接器，由作者操作或指定时间 |
+| D4 | 阶段 4 走扩展还是 Chrome 144 auto-connect | 阶段 4 改为可选；需要时先做短 spike，倾向扩展 |
+| D5 | Mac mini 连接器改连回环地址 | 作者在 Desktop 中把连接器服务器地址改为 `http://127.0.0.1:18768`（CLI 转为 `ws://127.0.0.1:18768/agents/v1/connect`）并重启连接器 |
+| D6 | 与本人共用桌面 | §5.5 三层：浏览器不碰光标、原生应用优先后台投递、必须用真实光标时物理输入即接管；恢复只由本人明确表示继续 |
