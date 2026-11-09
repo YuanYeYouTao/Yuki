@@ -337,6 +337,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
     generator = script(f"http://127.0.0.1:{port}", str(upload), take, give_back)
     finished = asyncio.Event()
     outcome: dict = {}
+    calls: list[dict] = []
     pending = {"first": True}
 
     def respond(request):
@@ -358,6 +359,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             outcome["last_result"] = tool.content if tool is not None else None
             finished.set()
             return "脚本检查失败。"
+        calls.append({"at": time.time(), "request": len(model.requests), name: arguments})
         return ChatResponse(
             content="",
             latency_seconds=0,
@@ -457,7 +459,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             await database.close()
             site.server.shutdown()
             site.thread.join(5)
-            _write(manifest=manifest, log=site.log, timeline=timeline, outcome=outcome, **collected)
+            _write(manifest=manifest, log=site.log, timeline=timeline, outcome=outcome, calls=calls, **collected)
 
     assert "script_error" not in outcome, outcome
     receipts, downloads, frames, requests, steps = (
