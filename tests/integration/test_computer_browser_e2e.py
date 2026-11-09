@@ -352,6 +352,11 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             outcome.update(stop.value)
             finished.set()
             return "表单与屏幕操作都完成了。"
+        except Exception as exc:  # the scripted model's own check failed: stop and report
+            outcome["script_error"] = repr(exc)
+            outcome["last_result"] = tool.content if tool is not None else None
+            finished.set()
+            return "脚本检查失败。"
         return ChatResponse(
             content="",
             latency_seconds=0,
@@ -375,7 +380,34 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
         ),
     )
     app.models.apply_catalog(_catalog(profile), ModelClientPool(injected_profiles={"main": model}))
+
+    async def human_returns():
+        await returned.wait()
+        # The human returns only after Yuki registered its original wait.
+        changed = asyncio.Event()
+        manager.computer.changed.add(changed)
+        try:
+            while not any(
+                item["kind"] == "wait_control"
+                for item in manager.computer.snapshot()["help_requests"]
+            ):
+                changed.clear()
+                await changed.wait()
+        finally:
+            manager.computer.changed.discard(changed)
+        manager.computer.set(
+            str(uuid4()),
+            {
+                "action": "return",
+                "actor": {"person_id": owner, "device_id": str(uuid4()), "device_label": "E2E"},
+                "lease_id": human["lease"],
+            },
+        )
+
     started = False
+    manifest: dict = {}
+    collected: dict = {}
+    helper = asyncio.create_task(human_returns())
     try:
         await app.model_invocations.writer.start()
         await app.app_gateway.start()
@@ -391,43 +423,30 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
         device = await app.client_identity.pair(code["code"], "E2E device")
         principal = await app.client_identity.authenticate(device["token"])
         await app.client_api.messages.submit(principal, str(uuid4()), "請把網頁表單和桌面步驟做完")
-        async with asyncio.timeout(600):
-            await returned.wait()
-            # The human returns only after Yuki registered its original wait.
-            changed = asyncio.Event()
-            manager.computer.changed.add(changed)
-            while not any(
-                item["kind"] == "wait_control"
-                for item in manager.computer.snapshot()["help_requests"]
-            ):
-                changed.clear()
-                await changed.wait()
-            manager.computer.changed.discard(changed)
-            manager.computer.set(
-                str(uuid4()),
-                {
-                    "action": "return",
-                    "actor": {
-                        "person_id": owner,
-                        "device_id": str(uuid4()),
-                        "device_label": "E2E",
-                    },
-                    "lease_id": human["lease"],
+        try:
+            async with asyncio.timeout(600):
+                await finished.wait()
+                await asyncio.gather(*tuple(app.app_gateway.tasks), return_exceptions=True)
+        finally:
+            # Partial runs still leave their evidence for diagnosis.
+            collected = {
+                "receipts": {
+                    row["request_id"]: json.loads(row["result"])
+                    for row in manager.db.execute(
+                        "SELECT request_id,result FROM environment_mutations"
+                    )
                 },
-            )
-            await finished.wait()
-            await asyncio.gather(*tuple(app.app_gateway.tasks), return_exceptions=True)
-        receipts = {
-            row["request_id"]: json.loads(row["result"])
-            for row in manager.db.execute("SELECT request_id,result FROM environment_mutations")
-        }
-        downloads = sorted(
-            path.name for path in (manager.files.root / "downloads").glob("*") if path.is_file()
-        )
-        frames = _frames(model.requests)
-        requests = _requests(model.requests)
-        steps = await _steps(app, principal)
+                "downloads": sorted(
+                    path.name
+                    for path in (manager.files.root / "downloads").glob("*")
+                    if path.is_file()
+                ),
+                "frames": _frames(model.requests),
+                "requests": _requests(model.requests),
+                "steps": await _steps(app),
+            }
     finally:
+        helper.cancel()
         try:
             if started:
                 await computer.close()
@@ -437,17 +456,11 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             await database.close()
             site.server.shutdown()
             site.thread.join(5)
+            _write(manifest=manifest, log=site.log, timeline=timeline, outcome=outcome, **collected)
 
-    _write(
-        manifest=manifest,
-        requests=requests,
-        log=site.log,
-        timeline=timeline,
-        receipts=receipts,
-        downloads=downloads,
-        outcome=outcome,
-        frames=frames,
-        steps=steps,
+    assert "script_error" not in outcome, outcome
+    receipts, downloads, frames, requests, steps = (
+        collected[name] for name in ("receipts", "downloads", "frames", "requests", "steps")
     )
     # C1: the 29-tool contract.
     assert len(manifest) == 29 and {"computer", "browser"} <= set(manifest)
@@ -527,7 +540,7 @@ def _requests(requests):
     return rows
 
 
-async def _steps(app, principal):
+async def _steps(app):
     from sqlalchemy import select
 
     from yuki.client_api.work_projection import public_step
@@ -538,10 +551,12 @@ async def _steps(app, principal):
         return [public_step(row, b"e2e") for row in rows]
 
 
-def _write(*, frames, **values):
+def _write(*, frames=(), **values):
     ARTIFACT.mkdir(parents=True, exist_ok=True)
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
-    dirty = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=ROOT)
+    # The CI image runs as root over a checkout owned by the runner user.
+    git = ["git", "-c", "safe.directory=*"]
+    head = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
+    dirty = subprocess.check_output([*git, "status", "--porcelain"], text=True, cwd=ROOT)
     revision = {"commit": head, "worktree_dirty": bool(dirty.strip())}
     directory = ARTIFACT / "frames"
     directory.mkdir(exist_ok=True)
