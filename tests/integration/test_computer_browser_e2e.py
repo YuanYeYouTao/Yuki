@@ -254,6 +254,9 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
     from yuki.model_runtime.pool import ModelClientPool
     from yuki.persistence.database import Database
 
+    # Relative application stores (tool artifacts) belong to this run; CI mounts the
+    # checkout read-only.
+    monkeypatch.chdir(tmp_path)
     site = Site()
     site.thread.start()
     port = site.server.server_port

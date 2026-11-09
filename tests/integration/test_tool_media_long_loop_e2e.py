@@ -79,8 +79,10 @@ DIALECTS = {
 
 
 def _revision() -> dict:
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
-    dirty = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=ROOT)
+    # The headed CI image runs as root over a checkout owned by the runner user.
+    git = ["git", "-c", "safe.directory=*"]
+    head = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
+    dirty = subprocess.check_output([*git, "status", "--porcelain"], text=True, cwd=ROOT)
     return {"commit": head, "worktree_dirty": bool(dirty.strip())}
 
 
