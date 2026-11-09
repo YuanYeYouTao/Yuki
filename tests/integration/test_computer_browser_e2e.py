@@ -331,18 +331,23 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
     outcome: dict = {}
     generator = script(outcome, f"http://127.0.0.1:{port}", str(upload), take, give_back)
     calls: list[dict] = []
-    pending = {"first": True}
+    pending: dict = {"first": True, "call": None}
 
     def respond(request):
         if finished.is_set() or not request.tools:
             return "完成。"
-        tool = next((m for m in reversed(request.messages) if m.role == "tool"), None)
+        # The result of the call issued last, by its call id (a resumed Work may
+        # present it after other context).
+        tool = next(
+            (m for m in request.messages if m.role == "tool" and m.tool_call_id == pending["call"]),
+            None,
+        )
         try:
             if pending["first"]:
                 pending["first"] = False
                 name, arguments = next(generator)
             else:
-                name, arguments = generator.send(json.loads(tool.content))
+                name, arguments = generator.send(json.loads(tool.content) if tool else None)
         except Exception as exc:  # the scripted model's own check failed: stop and report
             outcome["script_error"] = repr(exc)
             outcome["last_result"] = tool.content if tool is not None else None
@@ -351,10 +356,11 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
         if name == "manage_task":
             finished.set()  # the final call; its activation settles in the gateway task
         calls.append({"at": time.time(), "request": len(model.requests), name: arguments})
+        pending["call"] = str(uuid4())
         return ChatResponse(
             content="",
             latency_seconds=0,
-            tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),),
+            tool_calls=(ToolCall(pending["call"], ToolFunction(name, json.dumps(arguments))),),
         )
 
     class Model(FakeLLMProvider):
