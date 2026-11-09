@@ -139,14 +139,16 @@ async def test_original_request_retry_conflict_and_agent_take_does_not_kill_run(
     manager = manager_at(tmp_path)
     try:
         original = await run(manager)
-        agent = set_control(manager, "agent_acquire", {"run_id": original, "work_id": str(uuid4())})
+        agent = set_control(
+            manager, "agent_acquire", {"request_id": "call-1", "work_id": str(uuid4())}
+        )
         device, key = actor(), str(uuid4())
         first = set_control(manager, "take", device, key=key)
         assert first["control"]["holder"] == "human"
         assert manager.get(original)["pending"]
         assert (
             set_control(
-                manager, "agent_release", {"run_id": original}, agent["control"]["lease_id"]
+                manager, "agent_release", {"request_id": "call-1"}, agent["control"]["lease_id"]
             )["error"]
             == "precondition_failed"
         )
@@ -344,9 +346,7 @@ async def test_socket_watch_uses_real_persisted_changes_and_disconnect_drops_sub
         await manager.close()
 
 
-async def test_system_release_finishes_others_wait_as_system_and_agent_end_cannot_release_human(
-    tmp_path,
-):
+async def test_system_release_finishes_others_wait_as_system(tmp_path):
     manager = manager_at(tmp_path)
     try:
         identity = await run(manager, str(uuid4()))
@@ -364,15 +364,6 @@ async def test_system_release_finishes_others_wait_as_system_and_agent_end_canno
             ).fetchone()[0]
             is None
         )
-        original = await run(manager)
-        set_control(manager, "agent_acquire", {"run_id": original})
-        manager.finish(original, "failed", {"exit_code": 1})
-        assert manager.computer.control() == {"holder": "none"}
-        second = await run(manager)
-        set_control(manager, "agent_acquire", {"run_id": second})
-        human = set_control(manager, "take")["control"]
-        manager.finish(second, "cancelled", {"exit_code": None})
-        assert manager.computer.control() == human
     finally:
         await manager.close()
 

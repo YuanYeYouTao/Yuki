@@ -115,7 +115,8 @@ class MainAgentContract:
                         # 33: retire local_device; native Agent connections use external_agent.
                         # 34: original terminal/file tools explicitly select a personal computer.
                         # 35: one-shot tool surface (27 tools, single target, plain results).
-                        "version": 35,
+                        # 36: computer and browser tools (29 tools; schema frozen with device).
+                        "version": 36,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

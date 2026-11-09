@@ -26,6 +26,8 @@ MODEL_TOOL_RPC_METHODS: Mapping[str, str] = MappingProxyType(
         "read_command": "terminal_read",
         "control_command": "terminal_control",
         "get_environment": "environment_status",
+        "computer": "computer_action",
+        "browser": "browser_action",
     }
 )
 # Submitted methods that may already have taken effect when no answer arrives.
@@ -38,6 +40,9 @@ _MUTATING_METHODS = frozenset(
         "workspace_publish",
     }
 )
+# Screen/browser actions: inputs may have taken effect, reads are simply read again.
+# The Manager's own bounded wait is their only time limit.
+_ACTION_METHODS = {"computer_action": "computer", "browser_action": "browser"}
 # Terminal methods whose settled receipt is staged for the owning Work.
 _TERMINAL_METHODS = frozenset(
     {
@@ -175,6 +180,7 @@ class SandboxClient:
                     "workspace_copy_result",
                     "workspace_media_read",
                     "workspace_media_validate",
+                    *_ACTION_METHODS,
                 }
                 else 7 + observation_wait
             ):
@@ -183,7 +189,11 @@ class SandboxClient:
                     return {"error": "sandbox_unavailable", "retryable": False}
                 reader, writer = await connect(
                     str(self.socket),
-                    limit=(28 * 1024 * 1024 if name == "workspace_media_read" else 262144),
+                    limit=(
+                        28 * 1024 * 1024
+                        if name == "workspace_media_read" or name in _ACTION_METHODS
+                        else 262144
+                    ),
                 )
                 try:
                     submitted = True
@@ -235,10 +245,17 @@ class SandboxClient:
                     "retryable": False,
                     "request_id": request_id,
                 }
+            from yuki.sandbox.environment_tools import READ_ACTIONS
+
+            action_input = (
+                name in _ACTION_METHODS
+                and args.get("action") not in READ_ACTIONS[_ACTION_METHODS[name]]
+            )
             return {
                 "error": "sandbox_unavailable",
                 "retryable": False,
-                "uncertain": submitted and (name.startswith("acp_") or name in _MUTATING_METHODS),
+                "uncertain": submitted
+                and (name.startswith("acp_") or name in _MUTATING_METHODS or action_input),
             }
 
     async def _native_terminal(

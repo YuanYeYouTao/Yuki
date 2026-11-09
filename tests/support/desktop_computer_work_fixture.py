@@ -25,11 +25,28 @@ class DesktopComputerWorkScenario:
             return None
         state = self.scenario
         state["phase"] += 1
-        phase = state["phase"]
-        if phase == 1:
+        external = getattr(self.computer, "external", False)
+        # The external page is opened through the model's browser tool, like real work.
+        steps = ("start", "run", *(("open",) if external else ()), "wait", "read", "send", "end")
+        if state["phase"] > len(steps):
+            return None
+        step = steps[state["phase"] - 1]
+        if state["phase"] > 2 and steps[state["phase"] - 2] == "run":
+            receipt = json.loads(request.messages[-1].content)
+            state["run_id"] = receipt["id"]
+            state["url"] = (
+                next(
+                    line.split(":", 1)[1]
+                    for line in receipt.get("output", "").splitlines()
+                    if line.startswith("computer-work-url:")
+                )
+                if external
+                else None
+            )
+        if step == "start":
             name, arguments = "manage_task", {"action": "start", "goal": state["goal"]}
-        elif phase == 2:
-            if getattr(self.computer, "external", False):
+        elif step == "run":
+            if external:
                 program = Path(__file__).with_name("desktop_browser_work.py").read_text("utf-8")
                 python = sys.executable if getattr(self.computer, "headed", False) else "python"
                 command = shlex.join(
@@ -50,26 +67,23 @@ class DesktopComputerWorkScenario:
                     ]
                 )
                 cwd = str(self.root)
-            name, arguments = "terminal_exec", {"command": command, "cwd": cwd}
-        elif phase == 3:
-            receipt = json.loads(request.messages[-1].content)
-            state["run_id"] = receipt["data"]["run_id"]
-            name, arguments = (
-                "wait",
-                {"for": [{"run": state["run_id"]}]},
-            )
-        elif phase == 4:
-            name, arguments = "terminal_read", {"run_id": state["run_id"]}
-        elif phase == 5:
+            name, arguments = "run_command", {"command": command, "cwd": cwd}
+        elif step == "open":
+            name, arguments = "browser", {"action": "open", "url": state["url"]}
+        elif step == "wait":
+            name, arguments = "wait", {"for": [{"run": state["run_id"]}]}
+        elif step == "read":
+            name, arguments = "read_command", {"id": state["run_id"]}
+        elif step == "send":
             assert "畫面處理完成，請沿原工作接續。" in request.messages[-1].content
             name = "send"
             arguments = {"text": "原電腦工作成果"}
-            if getattr(self.computer, "external", False):
+            if external:
                 arguments["file"] = {"path": "original-computer.md", "name": "原電腦成果.md"}
             else:
                 arguments["file"] = {"artifact_id": state["artifact"]["artifact_id"]}
-        elif phase == 6:
-            if getattr(self.computer, "external", False):
+        else:
+            if external:
                 store = self.container.workspace_service.store
                 with store._transaction(write=False) as manifest:
                     row = manifest.execute(
@@ -86,8 +100,6 @@ class DesktopComputerWorkScenario:
                     "result": "已讀原交回回執並交付原版本成果",
                 },
             )
-        else:
-            return None
         return ChatResponse(
             content="",
             latency_seconds=0,

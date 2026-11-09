@@ -11,7 +11,15 @@ if TYPE_CHECKING:
 # Manager (persistent.py). Wire protocol: it does not follow model tool names.
 EXECUTION_TOOLS = frozenset({"terminal_exec"})
 # Model tools served by the persistent environment or a personal computer.
-SANDBOX_TOOLS = frozenset({"run_command", "read_command", "control_command", "get_environment"})
+SANDBOX_TOOLS = frozenset(
+    {"run_command", "read_command", "control_command", "get_environment", "computer", "browser"}
+)
+# Actions that only observe. They write no pending receipt and take no input lease;
+# a retry simply reads again. Every other action is an input with a durable receipt.
+READ_ACTIONS = {
+    "computer": frozenset({"screenshot", "resume"}),
+    "browser": frozenset({"snapshot", "screenshot"}),
+}
 
 
 def tool(
@@ -53,8 +61,8 @@ def environment_tools() -> tuple[ChatTool, ...]:
         tool(
             "run_command",
             "运行一条 Shell 命令。默认在 Yuki 自己的持久 Linux 环境（HOME=/home/yuki，"
-            "文件在 /workspace，可用 Bash、Python、Node、apt、pip/npm 与公网；装有浏览器时"
-            "可用 yuki-computer）；给 device 则在该本人电脑的系统 Shell 执行。约 5 秒后返回，"
+            "文件在 /workspace，可用 Bash、Python、Node、apt、pip/npm 与公网）；"
+            "给 device 则在该本人电脑的系统 Shell 执行。约 5 秒后返回，"
             "仍在运行时用 read_command 按 id 继续读，不要重新提交；tty=true 支持交互输入。",
             {
                 "command": text,
@@ -94,6 +102,81 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "系统、Shell 与授权。",
             {**device},
             read=True,
+        ),
+        tool(
+            "computer",
+            "看和操作电脑屏幕。省略 device 时操作 Yuki 自己 Linux 环境的桌面；"
+            "device 指本人电脑。screenshot 截屏；click、double_click、right_click、move "
+            "作用于 x,y；drag 从 x,y 拖到 x2,y2；type 输入 text；key 按组合键 text"
+            "（如 ctrl+l、Return）；scroll 在 x,y 滚动 dx,dy 格（dy 正数向下）；"
+            "resume 解除本人的叫停。x,y 是本次结果所附截图的像素坐标；给 window 时"
+            "只截该窗口、坐标相对该窗口。每次都附动作后的新截图；submitted 只表示"
+            "输入已投递，是否生效看截图。本人正在操作时输入返回 control_held。"
+            "网页优先用 browser。",
+            {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "screenshot",
+                        "click",
+                        "double_click",
+                        "right_click",
+                        "move",
+                        "drag",
+                        "type",
+                        "key",
+                        "scroll",
+                        "resume",
+                    ],
+                },
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+                "x2": {"type": "integer"},
+                "y2": {"type": "integer"},
+                "dx": {"type": "integer"},
+                "dy": {"type": "integer"},
+                "text": text,
+                "window": {"type": "string", "description": "screenshot 返回的 windows[].id"},
+                "display": text,
+                **device,
+            },
+            ("action",),
+        ),
+        tool(
+            "browser",
+            "使用 Yuki 专用浏览器，按页面节点操作、不动鼠标。open 打开 url"
+            "（给 tab 在该标签页跳转，否则新开）；snapshot 读页面结构，text 为过滤词；"
+            "click、hover 节点；type 以 text 替换输入框内容（文件输入框写文件路径）；"
+            "press 按键 text（如 Enter、ctrl+a）；select 按 text 选定选项；scroll 滚到 "
+            "node 或 text=down|up|像素；screenshot 截取页面；close 关闭标签页；"
+            "accept_dialog、dismiss_dialog 处理弹窗（prompt 的输入写 text）。"
+            "node 用快照中的 [e…] 编号，node_stale 时按附带的新快照重选。"
+            "下载保存到 /workspace/downloads。",
+            {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "open",
+                        "snapshot",
+                        "click",
+                        "type",
+                        "press",
+                        "select",
+                        "hover",
+                        "scroll",
+                        "screenshot",
+                        "close",
+                        "accept_dialog",
+                        "dismiss_dialog",
+                    ],
+                },
+                "url": text,
+                "node": text,
+                "text": text,
+                "tab": text,
+                **device,
+            },
+            ("action",),
         ),
     )
 

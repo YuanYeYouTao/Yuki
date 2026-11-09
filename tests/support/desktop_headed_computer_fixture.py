@@ -39,21 +39,6 @@ class DesktopHeadedComputerFixture:
         wrapper = binary / "yuki-computer"
         wrapper.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(cli)]) + ' "$@"\n')
         wrapper.chmod(0o755)
-        original = self.manager.command
-
-        async def command(*args, **options):
-            if args[:3] == ("docker", "exec", self.manager.name) and args[3] == "yuki-computer":
-                return await original(
-                    "env",
-                    "HOME=" + str(self.manager.home),
-                    "YUKI_COMPUTER_RUNTIME=" + str(self.manager.computer.root),
-                    sys.executable,
-                    str(cli),
-                    *args[4:],
-                )
-            return await original(*args, **options)
-
-        self.manager.command = command
         self.manager.computer_transport.display_stream = self.display_stream
         self.server = None
         self.worker = None
@@ -88,11 +73,17 @@ class DesktopHeadedComputerFixture:
             self.manager.serve, str(self.container.sandbox_client.socket)
         )
         service = Path(__file__).parents[2] / "src/yuki/sandbox/desktop_service.py"
+        # The image copies the shared driver beside desktop_service.py; from a
+        # checkout it is imported from the connector package source.
+        driver = Path(__file__).parents[2] / "packages/yuki-agent-connector/src"
         await self.manager.service(
             {
                 "action": "register",
                 "name": "yuki-desktop",
-                "command": shlex.join([sys.executable, str(service)]),
+                "command": "PYTHONPATH="
+                + shlex.quote(str(driver))
+                + " "
+                + shlex.join([sys.executable, str(service)]),
                 "cwd": str(self.manager.home),
                 "restart": "on-failure",
             }

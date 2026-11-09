@@ -1126,6 +1126,8 @@ class PersistentManager:
                 return await asyncio.to_thread(self.computer_transport.files_list, args)
             if method in {"display_status", "display_wake", "display_sleep", "tabs_list"}:
                 return await self.desktop.handle(method, args, request.get("request_id", ""))
+            if method in {"computer_action", "browser_action"}:
+                return await self.desktop.action(method, args, request.get("request_id", ""))
             if method == "control_get":
                 return self.computer.snapshot()
             if method == "control_set":
@@ -1240,7 +1242,8 @@ class PersistentManager:
                     self.pumps.pop(key, None)
             try:
                 self.computer.collect_requests()
-                await self.desktop.collect_commands()
+                # control_watch subscribers learn display changes from this observation.
+                self.desktop.observe_display()
             except (OSError, ValueError, WorkspaceError):
                 LOGGER.warning("computer_wait_reconcile_pending")
             try:

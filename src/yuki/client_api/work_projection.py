@@ -85,6 +85,10 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         if "memory" in tool
         else ("message", "傳送訊息")
         if tool == "send"
+        else ("computer", "操作電腦")
+        if tool == "computer"
+        else ("browser", "使用瀏覽器")
+        if tool == "browser"
         else ("other", "其他")
     )
     if terminal and evidence.get("step_label") in {"browser", "computer"}:
