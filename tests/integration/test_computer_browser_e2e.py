@@ -459,7 +459,14 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             await database.close()
             site.server.shutdown()
             site.thread.join(5)
-            _write(manifest=manifest, log=site.log, timeline=timeline, outcome=outcome, calls=calls, **collected)
+            _write(
+                manifest=manifest,
+                log=site.log,
+                timeline=timeline,
+                outcome=outcome,
+                calls=calls,
+                **collected,
+            )
 
     assert "script_error" not in outcome, outcome
     receipts, downloads, frames, requests, steps = (
