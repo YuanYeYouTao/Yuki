@@ -30,6 +30,7 @@ from yuki.capabilities.invocation import Invocation
 from yuki.capabilities.results import effective_result_character_budget
 from yuki.capabilities.runtime import TurnCapabilityRuntime
 from yuki.capabilities.validation import UNDECLARED_TOOL
+from yuki.client_api.errors import ClientError
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatImage, ToolCall, ToolFunction
 from yuki.llm.base import LLMError
@@ -776,6 +777,17 @@ class MainAgentBackend(AgentToolBackend):
         return self._runtime
 
 
+_CLIENT_ERROR_MESSAGES = {
+    "not_found": (
+        "目标不存在或不属于本人（例如设备 ID 有误），没有产生效果；"
+        "需要本人电脑的设备 ID 时，先用 get_coding_agents 列出设备。"
+    ),
+    "unauthenticated": (
+        "这台电脑的连接凭据已失效，没有产生效果；需要本人在 Yuki Desktop 中重新连接。"
+    ),
+}
+
+
 def _unexpected_failure(
     exc: Exception, *, uncertain: bool, provider_id: str, tool_name: str
 ) -> ToolExecutionResult:
@@ -787,6 +799,10 @@ def _unexpected_failure(
         code, message = "superseded", "这一轮已被新的输入接替，调用没有继续；按新输入处理。"
     elif uncertain:
         code, message = "tool_failed", "执行中途出错，效果未知；先查询原结果，不要直接重做。"
+    elif isinstance(exc, ClientError):
+        # Public-safe identity/target facts; the model can correct the call from them.
+        code = exc.code
+        message = _CLIENT_ERROR_MESSAGES.get(code, f"请求被拒绝（{code}），没有产生效果。")
     else:
         code, message = "tool_failed", "执行出错，没有产生效果。"
     return ToolExecutionResult(
