@@ -50,16 +50,16 @@ class DesktopComputerWorkScenario:
                     ]
                 )
                 cwd = str(self.root)
-            name, arguments = "terminal_exec", {"command": command, "cwd": cwd}
+            name, arguments = "run_command", {"command": command, "cwd": cwd}
         elif phase == 3:
             receipt = json.loads(request.messages[-1].content)
-            state["run_id"] = receipt["data"]["run_id"]
+            state["run_id"] = receipt["id"]
             name, arguments = (
                 "wait",
                 {"for": [{"run": state["run_id"]}]},
             )
         elif phase == 4:
-            name, arguments = "terminal_read", {"run_id": state["run_id"]}
+            name, arguments = "read_command", {"id": state["run_id"]}
         elif phase == 5:
             assert "畫面處理完成，請沿原工作接續。" in request.messages[-1].content
             name = "send"
