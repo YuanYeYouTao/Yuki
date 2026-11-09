@@ -197,12 +197,13 @@ def script(site_url, upload, take, give_back):
     out["second"] = second = tabs[0]["id"]
     r = yield ("browser", {"action": "snapshot", "tab": second})
     assert "Second page" in r["snapshot"], r
-    r = yield ("browser", {"action": "screenshot", "tab": second})
-    out["page_image"] = (r["width"], r["height"])
     # B3: Enter really submits the first tab's form.
     r = yield ("browser", {"action": "type", "tab": tab, "node": out["email"], "text": "y@e.test"})
     r = yield ("browser", {"action": "press", "tab": tab, "text": "Enter"})
     out["submitted"] = r
+    # The page screenshot also brings the second tab to the front for the screen loop.
+    r = yield ("browser", {"action": "screenshot", "tab": second})
+    out["page_image"] = (r["width"], r["height"])
     # M5/M6: 30 screen steps on the browser window; coordinates always come from
     # the (window-relative) image just received.
     r = yield ("computer", {"action": "screenshot"})
