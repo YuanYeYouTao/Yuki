@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from collections.abc import AsyncIterator
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -337,10 +338,13 @@ async def test_server_revocation_does_not_exit_sdk_or_kill_its_original_native_e
     monkeypatch.setattr(connector, "authorization_lost", hold)
 
     async def server(socket: Any) -> None:
-        await socket.recv()
-        await socket.close(1008, "revoked")
+        raise AssertionError("A revoked credential never completes the handshake")
 
-    async with serve(server, "127.0.0.1", 0) as listener:
+    def revoked(connection: Any, request: Any) -> Any:
+        # The server refuses a revoked credential before accept(): handshake HTTP 403.
+        return connection.respond(HTTPStatus.FORBIDDEN, "revoked")
+
+    async with serve(server, "127.0.0.1", 0, process_request=revoked) as listener:
         connector.config = Config(
             f"ws://127.0.0.1:{listener.sockets[0].getsockname()[1]}", "device", "token"
         )

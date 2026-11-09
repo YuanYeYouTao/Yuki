@@ -69,6 +69,12 @@ jobs:
           name: yuki-agent-connector-${{ matrix.os }}
           path: packages/yuki-agent-connector/dist/*
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connector-stability-${{ matrix.os }}
+          path: test-results/connector-stability/
+          retention-days: 7
 
   checks:
     runs-on: ubuntu-24.04

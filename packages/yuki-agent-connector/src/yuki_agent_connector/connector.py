@@ -9,12 +9,13 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from websockets.asyncio.client import ClientConnection, connect
+from websockets.asyncio.client import ClientConnection, connect, process_exception
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from . import PROTOCOL_VERSION
@@ -99,10 +100,18 @@ def instance_source(spec: Instance) -> str:
 
 class Connector:
     def __init__(
-        self, config: Config, journal: Journal, *, config_path: Path | None = None
+        self,
+        config: Config,
+        journal: Journal,
+        *,
+        config_path: Path | None = None,
+        report: Callable[[dict[str, Any]], None] = lambda line: None,
     ) -> None:
         self.config, self.journal = config, journal
         self.config_path = config_path
+        # One line per connection state change; Desktop reads it from stdout.
+        self.report = report
+        self.state: str | None = None
         self.drivers: dict[str, Driver] = {}
         self.operations: dict[str, Driver] = {}
         self.dispatching: set[str] = set()
@@ -119,6 +128,26 @@ class Connector:
         self.terminal = LocalTerminal(
             journal.path.parent / "terminal", journal, self._terminal_event
         )
+
+    def _transition(self, state: str, reason: str | None = None) -> None:
+        if state == self.state:
+            return
+        self.state = state
+        logger.info("connector_state %s%s", state, f" reason={reason}" if reason else "")
+        self.report({"type": "state", "state": state} | ({"reason": reason} if reason else {}))
+
+    def _retry(self, error: Exception) -> Exception | None:
+        """Only handshake 401/403 ends reconnecting; websockets backs off the rest."""
+        if isinstance(error, InvalidStatus):
+            status = error.response.status_code
+            if status in {401, 403}:
+                return error
+            self._transition("disconnected", f"http_{status}")
+            return None
+        fatal = process_exception(error)
+        if fatal is None:
+            self._transition("disconnected", type(error).__name__)
+        return fatal
 
     async def _terminal_event(self, kind: str, value: dict[str, Any]) -> None:
         self.journal.append({"event_id": str(uuid4()), "kind": kind, **value})
@@ -620,13 +649,12 @@ class Connector:
                 self.journal.ack(value["event_id"])
             elif value.get("type") == "command":
                 self._spawn(self._command(value, websocket))
-            elif value.get("type") == "revoked":
-                raise DriverError("credential_revoked", "Connector authorization was revoked")
 
     async def connection(self, websocket: ClientConnection) -> None:
         self.stream = websocket
         self.refresh_config()
         await websocket.send(json.dumps(self.hello(), ensure_ascii=False))
+        self._transition("connected")
         owners = [
             asyncio.create_task(owner(websocket))
             for owner in (self._read, self._events, self._catalog)
@@ -648,6 +676,7 @@ class Connector:
                 self.config.url,
                 additional_headers={"Authorization": f"Bearer {self.config.token}"},
                 max_size=None,
+                process_exception=self._retry,
             ):
                 try:
                     await self.connection(websocket)
@@ -657,26 +686,28 @@ class Connector:
                         and exc.rcvd.code == 1008
                         and exc.rcvd.reason == "unsupported_connector_protocol"
                     ):
+                        self._transition("protocol_unsupported")
                         logger.error(
                             "unsupported_connector_protocol: Connector and Yuki protocol versions "
                             "are incompatible; update the older installation"
                         )
                         await self.stopped.wait()
                         break
-                    if exc.rcvd and exc.rcvd.code in {1008, 4001, 4003, 4401, 4403}:
-                        await self.authorization_lost()
-                        break
+                    closed = exc.rcvd
+                    self._transition(
+                        "disconnected",
+                        "connection_lost"
+                        if closed is None
+                        else f"close_{closed.code}:{closed.reason}"
+                        if closed.reason
+                        else f"close_{closed.code}",
+                    )
                     logger.info("Server disconnected; native executions continue")
-                except DriverError as exc:
-                    if exc.code != "credential_revoked":
-                        raise
-                    await self.authorization_lost()
-                    break
                 if self.stopped.is_set():
                     break
-        except InvalidStatus as exc:
-            if exc.response.status_code not in {401, 403}:
-                raise
+        except InvalidStatus:
+            # _retry lets only handshake 401/403 reach here.
+            self._transition("authorization_lost")
             await self.authorization_lost()
         finally:
             # Application/service shutdown is distinct from a socket reconnect.

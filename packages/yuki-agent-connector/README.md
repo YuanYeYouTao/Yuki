@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.4.3 / wire protocol 4** connects an existing computer to Yuki through
+Connector **0.4.4 / wire protocol 4** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.4.3-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.4.4-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -51,7 +51,7 @@ are retained; an empty argument array clears arguments. `CODEX_HOME` and
 `CLAUDE_CONFIG_DIR` select native profiles. Cwd is working context, not a Yuki
 file-access boundary: new instances default to home, existing ones retain their
 configured directory, tasks can override it. Online Desktop saves refresh the original
-device through its existing status channel. Version 0.4.3 applies instance changes
+device through its existing status channel. Since 0.4.3 the Connector applies instance changes
 without restarting unrelated native owners, Shell or file transfers. Independent
 CLI edits are applied on the next status request or reconnect; older running services
 require their own reload, which Desktop reports without taking them over.
@@ -85,6 +85,13 @@ Desktop starts its Connector with `run --desktop-stdin` and owns the open stdin
 pipe. Desktop exit or loss of that pipe stops this Connector through its normal
 cleanup. Hiding the Desktop window in the tray does not exit the app. This flag
 is for Desktop ownership; ordinary `run` does not observe stdin.
+
+With `--desktop-stdin` the Connector also writes one JSON object per stdout line
+for its Desktop supervisor, e.g. `{"type": "state", "state": "connected"}`; states are
+`connected`, `disconnected` (with a diagnostic `reason`), `authorization_lost` (handshake
+HTTP 401/403 only) and `protocol_unsupported`. Every other handshake status and every
+close after the handshake reconnects. An unexpected error is logged with its stack in
+`connector.log` and exits non-zero so Desktop can restart the process.
 
 Explicitly installed standalone services run as the current OS user: Windows Task
 Scheduler uses InteractiveToken and LeastPrivilege, Linux uses systemd --user,
