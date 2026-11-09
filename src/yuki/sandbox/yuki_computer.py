@@ -20,10 +20,12 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from yuki_agent_connector import cdp
+if TYPE_CHECKING:
+    # Only the long-lived driver needs it; help/wait/status stay standard-library only.
+    from yuki_agent_connector import cdp
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -79,6 +81,8 @@ def lease_check(root: Path, lease_id: str | None) -> Callable[[], None]:
     """Run before every input: the request's lease must still be the current agent lease."""
 
     def check() -> None:
+        from yuki_agent_connector import cdp
+
         current = control(root)
         if current.get("holder") != "agent" or current.get("lease_id") != lease_id:
             raise cdp.Failure(
@@ -229,6 +233,8 @@ class Screen:
 
     def geometry(self, deadline: float, window: str | None) -> tuple[int, int, int, int]:
         """Origin and size of the root window or of one top-level window, read now."""
+        from yuki_agent_connector import cdp
+
         if window is None:
             output = self.run(deadline, "xwininfo", "-root")
         else:
@@ -290,6 +296,8 @@ class Screen:
         max_pixels: int,
         deadline: float,
     ) -> tuple[dict[str, Any], cdp.Image]:
+        from yuki_agent_connector import cdp
+
         action, window = args["action"], args.get("window")
         result: dict[str, Any] = {}
         inputs = 0
@@ -419,6 +427,8 @@ READS = {"computer": ("screenshot", "resume"), "browser": ("snapshot", "screensh
 def handle(
     request: dict[str, Any], root: Path, browser: cdp.Browser, screen: Screen | None
 ) -> tuple[dict[str, Any], cdp.Image | None]:
+    from yuki_agent_connector import cdp
+
     args = request["args"]
     before_input = (
         unchecked
@@ -460,6 +470,8 @@ def unchecked() -> None:
 
 
 def serve(root: Path, endpoint: str, downloads: str, display: str | None) -> None:
+    from yuki_agent_connector import cdp
+
     driver = root / "driver"
     requests, taken, results = driver / "requests", driver / "taken", driver / "results"
     for directory in (requests, taken, results):
