@@ -279,7 +279,8 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             conversation_autonomous_enabled=False,
             telegram_bot_token="",
             asr_enabled=False,
-            web_mode="disabled",
+            web_mode="tavily",  # declared (29 tools); never called offline
+            tavily_api_key="offline-fixture",
         ),
         database=database,
     )
