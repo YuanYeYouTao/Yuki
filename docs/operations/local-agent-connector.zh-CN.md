@@ -8,7 +8,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 桌面端“这台电脑”管理同一个 Connector。没有 Codex、Claude 或项目目录，也可以连接电脑；完整访问默认关闭，原生 Agent-only 配置不受它开启与关闭影响。开关沿本机 CLI `full-access --enabled true|false --json` 原子保存，云端不能替用户开启。当前系统账号能执行的 Shell、文件和浏览器操作就是访问范围，不另加命令白名单、项目授权或管理员角色。
 
-`run_command` 和 `get_environment` 可选 `device`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。后续 `read_command`／`control_command` 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
+`run_command` 和 `get_environment` 可选 `device`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。`computer`／`browser` 已在合同中声明 `device`，本人电脑一侧尚未开放，给出 `device` 时返回 `device_not_supported`（见[统一 Computer Use 与 Browser Use 任务书](../architecture/Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md) 阶段 3）。后续 `read_command`／`control_command` 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
 
 桌面管理的 Connector 由桌面进程以 `run --desktop-stdin` 启动，桌面持有其 stdin pipe；退出桌面进程或父进程意外结束时，EOF 沿原 Connector 关闭流程停止连接与自己持有的执行。窗口隐藏到托盘仍是 App 在运行。手动 CLI `run` 和用户明确安装的独立服务保留各自生命周期。设备撤销仍使用原凭据机制，Connector 重启后的旧进程失联保原回执与 unknown，不重新执行原命令。Windows 按本次 Job Object、POSIX 按本次进程组取消，不按同名进程扫描，不结束用户 daemon 或整个浏览器。
 
@@ -16,7 +16,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 截图和下载文件先落本机，再走下面同一文件管线。原 stdin 接纳、CLI 进程退出和网页业务完成分别认实际输出；未知不自动重派原命令。关闭完整访问拒绝新命令和后续 stdin，已运行脚本或外部后台程序需要停止时显式取消原 run；不宣称能追入任意程序逐网页动作撤权。
 
-`view_file(path, device)` 将所选本机字节准备为原私有媒体结果，回读沿原 tool_handle；`send` 的文件给 `path` 与 `device` 时冻结一次原件后发送，沿原 artifact/source_key 恢复。`copy_file` 的 `to_device` 指写入目标电脑，可把聊天附件（按内部 `event_id`／`attachment` 核来源）、Yuki 环境 `/workspace` 中的 `path` 或不可变 `artifact_id` 原样写入本机指定路径；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
+`view_file(path, device)` 将所选本机字节准备为工具结果像素（`source="tool"`，归档为私有工具产物，回读沿原 tool_handle）；`send` 的文件给 `path` 与 `device` 时冻结一次原件后发送，沿原 artifact/source_key 恢复。`copy_file` 的 `to_device` 指写入目标电脑，可把聊天附件（按内部 `event_id`／`attachment` 核来源）、Yuki 环境 `/workspace` 中的 `path` 或不可变 `artifact_id` 原样写入本机指定路径；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
 
 实施证据与交付状态见[本次实施记录](local-device-full-access-implementation-20261029.md)。文件复制来源扩展见[2026-11-07 实施记录](file-copy-backend-implementation-20261107.md)。
 
