@@ -317,9 +317,10 @@ class Screen:
                     # Coordinates are in the image this geometry and scale produce.
                     if args.get(x_name) is None or args.get(y_name) is None:
                         return []
+                    # No --sync: it never returns when the pointer is already there,
+                    # and the X server applies the move before the following click.
                     return [
                         "mousemove",
-                        "--sync",
                         str(left + round(args[x_name] / scale)),
                         str(top + round(args[y_name] / scale)),
                     ]
