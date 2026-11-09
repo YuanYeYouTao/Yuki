@@ -45,6 +45,7 @@ from yuki.llm.base import (
     LLMTimeoutError,
     LLMUnavailableError,
 )
+from yuki.llm.request_media import carry_request_media, request_media
 from yuki.model_runtime.capacity import estimate_request_tokens
 from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.executor import PreparedModelInput
@@ -120,7 +121,9 @@ class _PrimaryDispatch:
     boundary: ContextBoundary | None
     observed_event_ids: set[int]
     tools: AgentToolBackend | None = None
+    # Sources to recheck, and every image this request sends (continuation included).
     selected_media: tuple[ChatImage, ...] = ()
+    carried_media: tuple[str, ...] = ()
     has_native_effects: bool = False
     on_dispatch: Callable[[], Awaitable[None]] | None = None
     business_inputs: bool = True
@@ -153,10 +156,8 @@ class _PrimaryDispatch:
             return await self.execute()
 
     async def admit(self) -> None:
-        self.runner._check_request_media_budget(self.selected_media, self.runtime, self.tools)
-        await self.runner._validate_tool_media(
-            self.tools, self.runtime, self.sequence, self.selected_media
-        )
+        self.runner._check_request_media_budget(self.carried_media, self.runtime, self.tools)
+        await self.runner._validate_tool_media(self.tools, self.runtime, self.selected_media)
         # The executor invokes this only after real admission.
         # HTTP retries must not reserve this logical request again.
         if self.runtime.before_model_request is not None:
@@ -622,14 +623,20 @@ class TurnExecution:
                 )
             )
 
+            carried = tuple(image.data_url for image in request_media(candidate.request))
+            sent = set(carried)
             dispatch = _PrimaryDispatch(
                 runner=self.runner,
                 selected_media=tuple(
-                    image
-                    for message in self.state.transcript.portable_entries()
-                    if isinstance(message, ChatMessage)
-                    for image in message.images
+                    dict.fromkeys(
+                        image
+                        for message in self.state.transcript.portable_entries()
+                        if isinstance(message, ChatMessage)
+                        for image in message.images
+                        if image.data_url in sent
+                    )
                 ),
+                carried_media=carried,
                 runtime=self.runtime,
                 request_index=request_index,
                 execute=execute,
@@ -927,7 +934,7 @@ class TurnExecution:
         capacity = self.runner._models.capacity(self.runner._task)
         context = self.runtime.runtime_config.context
         input_budget = capacity.input_budget(output_tokens=request.max_output_tokens)
-        prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
+        prepared_capacity = self._prepare_capacity(request)
         request = prepared_capacity.request
         predicted_tokens = prepared_capacity.input_tokens
         if self.runtime.compact_focus is not None:
@@ -967,7 +974,7 @@ class TurnExecution:
                 trigger_tokens=context.compact_trigger_tokens,
             )
             if request is not prepared_capacity.request:
-                prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
+                prepared_capacity = self._prepare_capacity(request)
                 request = prepared_capacity.request
             predicted_tokens = prepared_capacity.input_tokens
             if self.state.transcript.chain_id != original.chain_id:
@@ -979,12 +986,20 @@ class TurnExecution:
                 raise WorkCapacityError("model_request_capacity")
             request = await self.compact_current(request_index, request, priority, input_budget)
             sequence = self.state.transcript.request()
-            prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
+            prepared_capacity = self._prepare_capacity(request)
             request = prepared_capacity.request
             predicted_tokens = prepared_capacity.input_tokens
             self.state.continuation_tools = ()
             self.state.continuation_native_tools = ()
         return _PreparedRequest(sequence, request, priority, prepared_capacity)
+
+    def _carry_media(self, request: ChatRequest) -> ChatRequest:
+        """Replace old tool media observations in this outgoing request only."""
+        frames, limit = self.runner._media_limits(self.runtime, self.tools)
+        return carry_request_media(request, max_frames=frames, max_bytes=limit)
+
+    def _prepare_capacity(self, request: ChatRequest) -> PreparedModelInput:
+        return self.runner._models.prepare_capacity(self.runner._task, self._carry_media(request))
 
     async def compact_current(
         self,
@@ -1099,6 +1114,8 @@ class TurnExecution:
             if trigger_tokens is None:
                 raise
             return request
+        # The summary request reads the same transcript images under the same limits.
+        plan = replace(plan, request=self._carry_media(plan.request))
         original = self.state.transcript
         control = self.state.control
         session = control.session if control is not None and control.current is not None else None

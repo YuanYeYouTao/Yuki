@@ -57,6 +57,7 @@ async def dispatch(workspace, tool_runtime, transcript, conversation_id, provide
         observed_event_ids=set(),
         tools=backend,
         selected_media=images,
+        carried_media=tuple(image.data_url for image in images),
     ).complete()
 
 

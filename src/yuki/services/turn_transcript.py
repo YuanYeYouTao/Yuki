@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from yuki.capabilities.media import result_images
 from yuki.domain.messages import (
+    ChatImage,
     ChatMessage,
     FunctionCallOutput,
     ProviderContinuation,
@@ -25,6 +26,7 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.llm.base import LLMInvalidRequestError
+from yuki.llm.request_media import is_tool_media_observation, tool_media_observation
 
 
 class DispatchOrigin(StrEnum):
@@ -193,30 +195,26 @@ class TurnTranscript:
         """After *all* paired receipts, append Host observations in call order.
 
         The user role transports pixels on existing protocols; it does not mint
-        an inbound event, principal or new authorization.
+        an inbound event, principal or new authorization. A call observed once
+        (e.g. a recovered paired round) is not observed again; a later call that
+        re-reads the same pixels is a new observation.
         """
 
-        seen = {
-            image
+        observed = [
+            entry
             for entry in self.portable_entries()
-            if isinstance(entry, ChatMessage)
-            for image in entry.images
-        }
+            if isinstance(entry, ChatMessage) and is_tool_media_observation(entry)
+        ]
+        seen: set[ChatImage] = set()
         for call_id, result in results:
             images = tuple(image for image in result_images(result) if image not in seen)
             if not images:
                 continue
+            observation = tool_media_observation(call_id, images)
+            if observation in observed:
+                continue
             seen.update(images)
-            self.append(
-                ChatMessage(
-                    role="user",
-                    content=(
-                        f"[Host 工具媒体观察：call_id={call_id}；"
-                        "像素来自 Agent 已选且获准读取的资料，属于工具结果。]"
-                    ),
-                    images=images,
-                )
-            )
+            self.append(observation)
 
     def request(self) -> TranscriptRequest:
         checkpoints = [

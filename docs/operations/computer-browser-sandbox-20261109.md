@@ -68,10 +68,46 @@
 - P7 Desktop 的 `tabs_list` 失去 Work 归属（原来由 CLI 的 `tabs.json` 提供，现由长驻驱动写出）。
 - P8 驱动等待 CDP 回应无时限（原 `recv()` 无超时）；对话框打开时其他调用挂起（应返回 `dialog_open`）。
 
+### 实施补充（Host 图像，§5.2／§5.3）
+
+核对代码后发现任务书“Responses 续写中已由 provider 持有的历史图像不随本次请求重发”与实现不符：四种方言都由
+Host 重放自己保存的续写载荷（Responses `store:false`、无 `previous_response_id`），工具媒体观察一经发出就并入
+载荷、之后每次请求都重发。据此补充：
+
+- M7 只替换可移植 `ChatMessage` 中的旧图，续写载荷（Chat Completions `image_url`、Claude `image`、Gemini
+  `inlineData`、Responses `input_image`）里的旧图照旧重发且不计数。
+- M8 相邻两次请求对同一旧观察的替换结果不同（截止点后退、改写文本不一），破坏缓存前缀；一经替换必须保持替换。
+- M9 `append_tool_media` 按整条转写去重：`read_result` 读回的图像与已替换的原观察相等（同像素、同句柄），
+  重读不产生新观察。
+- M10 `_validate_tool_media` 在没有选中图像时回退为复核转写中的全部图像，已替换、文件已变化的旧工作区图使整次
+  请求失败。
+- M11 派发预算把将被替换的旧观察计入而拒收新截图；或完全不计，放过本身与入站图合计已超限的单个结果。
+- M12 入站（current／reply）图像被替换；它们单独超限时应仍为 `media_request_budget_exceeded`。
+- M13 工作区／历史图像没有句柄，替换文字未给出重看所需的 path／artifact_id／event_id。
+- M14 替换改写了转写或 journal 中保存的原条目，而不只是本次发出的请求。
+- M15 容量估算与压缩触发按未替换的请求计算；续写载荷中的图像按 base64 字符计入容量（原只有 Gemini 按媒体计），
+  一两张真实尺寸截图就越过压缩触发值；压缩摘要请求携带前缀中的全部旧图。
+
 ## 设计落实
 
 （实现完成后补写：Manager ↔ 驱动请求协议、结果形状、`resume` 在沙箱中的行为、图像替换规则与 Responses 续写。）
 
+### 图像（§5.2／§5.3）
+
+- 归档：`ToolResultBudgeter` 归档所有无 `tool_handle` 且来源非 `workspace`／`history` 的成功结果图像，
+  删除 `local_media` 特例与 Provider 条件；`view_file(device)` 改标 `source="tool"`。
+- 替换：`llm/request_media.py` 的 `carry_request_media` 在组装每个主请求（含压缩摘要请求）时，从最新的
+  工具媒体观察往前保留到现有帧／字节上限，更早的观察保留原文字（含 `call_id`、`media_artifact_handle`
+  或 path）并追加一句未发送说明；同时改写续写载荷中的图像部分。准入与派发都按替换后实际携带的图像计。
+- 与任务书措辞的偏离：Responses 没有 provider 侧持有的历史图像（`store:false`，Host 重放整份续写），
+  所以载荷中的旧图同样计数并替换。详见[结果预算](../architecture/tool-results.md#工具图像与长循环)。
+
 ## 验证
 
 （实现完成后补写。）
+
+- 图像（本地，离线）：`tests/integration/test_tool_media_long_loop_e2e.py` 以真实 `AgentRunner`、真实
+  `TaskModelExecutor`、四种真实方言适配器（Chat Completions 分无续写与带 reasoning_details 续写两种）经
+  `httpx.MockTransport` 各跑 30 轮截图加一次 `read_result`；覆盖 M1、M2、M4、M5、M7–M15。产物
+  `test-results/computer-browser/media/<dialect>.json`（每次请求体，base64 缩为 hash＋长度，替换文字，
+  每次携带帧数与字节）、`no_image_input.json` 与 `workspace_and_oversized_<dialect>.json`。

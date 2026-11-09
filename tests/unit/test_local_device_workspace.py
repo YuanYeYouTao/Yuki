@@ -138,6 +138,11 @@ async def test_local_png_uses_the_real_private_core_media_consumer_after_source_
         source={"actor_person_id": env.person},
     )
     assert isinstance(prepared, PreparedMediaData) and prepared.images
+    # A device read is tool media (no environment version to re-validate), not workspace.
+    assert all(
+        image.source == "tool" and image.tool_handle is None and image.workspace_path is None
+        for image in prepared.images
+    )
     async with database.read_session() as reader:
         conversation = await reader.get(CanonicalConversationModel, env.context.conversation_id)
         generation = conversation.generation

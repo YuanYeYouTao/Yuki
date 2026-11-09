@@ -62,6 +62,9 @@ Qwen；DeepSeek 使用这些工具也走自身已声明的 `image_input`，并�
 本次采用各协议已有的用户图片编码：整批文字工具回执配对后追加 Host 媒体观察，保留原
 call_id、工具顺序、签名和 opaque continuation。不自动尝试多模态 functionResponse 或
 function_call_output.output[]，也不在上游拒绝图片后切换 Qwen。没有图片能力明确未读。
+各方言的续写载荷都由 Host 重放（Responses `store: false`），已发出的观察图像随载荷重发；
+超出帧/字节上限的最旧观察在发出的请求及其载荷中改为本方言的文字部分（`llm/request_media.py`），
+见[结果预算](tool-results.md#工具图像与长循环)。
 
 `user` 图片观察属于 Agent 已选取资料的协议承载，不产生新用户事件或额外授权。主请求
 继续使用原 pinned Profile 和原预算；图片准备没有第二次视觉模型请求。配置图片能力仅
