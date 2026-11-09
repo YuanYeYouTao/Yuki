@@ -269,6 +269,9 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             conversation_media_cache_directory=tmp_path / "media",
             social_transfer_directory=tmp_path / "transfer",
             runtime_work_enabled=True,
+            # A long-context model: the loop goes past the frame limit without an
+            # execution compaction in between, so old frames are replaced (M5).
+            context_compact_trigger_tokens=2_000_000,
             self_memory_enabled=False,
             memory_self_reflection_enabled=False,
             memory_dream_enabled=False,
@@ -514,6 +517,14 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
     # M5: 30+ screenshots in one Work and no request carried more than the frame limit.
     assert len(frames) >= LOOP
     assert max(item["images"] for item in requests) <= 16
+    replaced = [
+        note
+        for item in requests
+        for note in item["media_observations"]
+        if "未随本次请求发送" in note
+    ]
+    assert replaced and all("media_artifact_handle=" in note for note in replaced), replaced
+    assert max(item["images"] for item in requests) == 16
     # H1: Work steps project the new tools into their Desktop categories.
     assert {"computer", "browser"} <= {step["category"] for step in steps}
 
