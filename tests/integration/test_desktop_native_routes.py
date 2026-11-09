@@ -191,6 +191,47 @@ async def test_protocol_mismatch_returns_actual_close_reason(bridge):
     assert directory["connector_protocol"] == 4
 
 
+async def test_handshake_refusals_park_but_server_failures_let_connector_reconnect(bridge):
+    """1008 only for a handshake that reconnecting cannot fix; 1011 for server-side failures."""
+
+    async def closed_by(messages):
+        async with connect(
+            bridge.websocket_url,
+            ssl=bridge.ssl,
+            proxy=None,
+            additional_headers={"Authorization": f"Bearer {bridge.device['token']}"},
+        ) as socket:
+            for message in messages:
+                await socket.send(json.dumps(message))
+            with pytest.raises(ConnectionClosedError) as error:
+                while True:
+                    await socket.recv()
+        return error.value.rcvd.code, error.value.rcvd.reason
+
+    hello = {"type": "hello", "protocol_version": 4, "instances": []}
+    assert await closed_by([{"type": "ping"}]) == (1008, "connector_hello_required")
+    assert await closed_by([{**hello, "device_id": str(uuid4())}]) == (
+        1008,
+        "external_agent_device_mismatch",
+    )
+    assert await closed_by([hello, {"type": "catalog", "instances": "invalid"}]) == (1011, "")
+    assert await closed_by([hello, {"type": "unknown"}]) == (1011, "")
+    devices = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
+    assert devices["devices"][0]["online"] is False
+    # The reconnect a 1011 invites attaches normally.
+    async with connect(
+        bridge.websocket_url,
+        ssl=bridge.ssl,
+        proxy=None,
+        additional_headers={"Authorization": f"Bearer {bridge.device['token']}"},
+    ) as socket:
+        await socket.send(json.dumps(hello))
+        await socket.send(json.dumps({"type": "ping"}))
+        assert json.loads(await socket.recv())["type"] == "pong"
+        devices = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
+        assert devices["devices"][0]["online"] is True
+
+
 async def test_empty_device_transport_changes_wake_existing_hint_without_work(bridge, monkeypatch):
     hints = bridge.database.commit_hints
     queue = hints.subscribe()
