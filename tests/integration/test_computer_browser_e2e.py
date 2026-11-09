@@ -151,9 +151,8 @@ def node(result, pattern):
     raise AssertionError(f"{pattern!r} not in snapshot:\n{result['snapshot']}")
 
 
-def script(site_url, upload, take, give_back):
+def script(out, site_url, upload, take, give_back):
     """Generator Main model: each yield is one tool call, each send its parsed result."""
-    out = {}
     r = yield ("browser", {"action": "open", "url": site_url + "/"})
     out["tab"] = tab = r["tab"]["id"]
     assert r["snapshot"].startswith("page: Yuki E2E"), r
@@ -237,7 +236,6 @@ def script(site_url, upload, take, give_back):
         step += 1
     out["final"] = r
     yield ("manage_task", {"action": "finish", "result": "表单、下载、上传与屏幕循环完成"})
-    return out
 
 
 async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_path, monkeypatch):
@@ -318,25 +316,20 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
     upload = manager.files.root / "upload.txt"
     upload.parent.mkdir(parents=True, exist_ok=True)
     upload.write_text("上傳內容 upload\n", encoding="utf-8")
-    human = {"lease": None}
+    # The human acts through the real paired Desktop device and Client API.
+    human = {"take": False, "lease": None, "principal": None}
 
     def take():
-        human["lease"] = manager.computer.set(
-            str(uuid4()),
-            {
-                "action": "take",
-                "actor": {"person_id": owner, "device_id": str(uuid4()), "device_label": "E2E"},
-            },
-        )["control"]["lease_id"]
+        human["take"] = True
 
     returned = asyncio.Event()
 
     def give_back():
         returned.set()
 
-    generator = script(f"http://127.0.0.1:{port}", str(upload), take, give_back)
     finished = asyncio.Event()
     outcome: dict = {}
+    generator = script(outcome, f"http://127.0.0.1:{port}", str(upload), take, give_back)
     calls: list[dict] = []
     pending = {"first": True}
 
@@ -350,15 +343,13 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
                 name, arguments = next(generator)
             else:
                 name, arguments = generator.send(json.loads(tool.content))
-        except StopIteration as stop:
-            outcome.update(stop.value)
-            finished.set()
-            return "表单与屏幕操作都完成了。"
         except Exception as exc:  # the scripted model's own check failed: stop and report
             outcome["script_error"] = repr(exc)
             outcome["last_result"] = tool.content if tool is not None else None
             finished.set()
             return "脚本检查失败。"
+        if name == "manage_task":
+            finished.set()  # the final call; its activation settles in the gateway task
         calls.append({"at": time.time(), "request": len(model.requests), name: arguments})
         return ChatResponse(
             content="",
@@ -366,7 +357,17 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),),
         )
 
-    model = FakeLLMProvider(respond)
+    class Model(FakeLLMProvider):
+        async def _complete(self, request):
+            response = await super()._complete(request)
+            if human["take"]:
+                # The take lands after Yuki chose its next input and before it runs.
+                human["take"] = False
+                await app.client_api.computer.command(human["principal"], str(uuid4()), "take", {})
+                human["lease"] = manager.computer.control()["lease_id"]
+            return response
+
+    model = Model(respond)
     profile = ModelProfile(
         id="main",
         provider="gemini",
@@ -398,13 +399,8 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
                 await changed.wait()
         finally:
             manager.computer.changed.discard(changed)
-        manager.computer.set(
-            str(uuid4()),
-            {
-                "action": "return",
-                "actor": {"person_id": owner, "device_id": str(uuid4()), "device_label": "E2E"},
-                "lease_id": human["lease"],
-            },
+        await app.client_api.computer.command(
+            human["principal"], str(uuid4()), "return", {"lease_id": human["lease"]}
         )
 
     started = False
@@ -425,6 +421,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
         code = await app.client_identity.issue_for_operator(owner, str(uuid4()), str(uuid4()))
         device = await app.client_identity.pair(code["code"], "E2E device")
         principal = await app.client_identity.authenticate(device["token"])
+        human["principal"] = principal
         await app.client_api.messages.submit(principal, str(uuid4()), "請把網頁表單和桌面步驟做完")
         try:
             async with asyncio.timeout(600):
