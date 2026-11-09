@@ -526,12 +526,15 @@ def _frames(requests):
     frames: dict[str, dict] = {}
     for request in requests:
         for message in request.messages:
-            for image in message.images:
-                digest = hashlib.sha256(image.data_url.encode()).hexdigest()
-                if digest not in frames:
-                    frames[digest] = {
+            for position, image in enumerate(message.images):
+                # One frame per tool observation (call id), even when two screenshots
+                # of an unchanged screen are byte-identical.
+                key = f"{message.content}#{position}"
+                if key not in frames:
+                    frames[key] = {
                         "index": len(frames),
                         "source": image.source,
+                        "sha256": hashlib.sha256(image.data_url.encode()).hexdigest(),
                         "note": (message.content or "")[:200],
                         "data_url": image.data_url,
                     }
