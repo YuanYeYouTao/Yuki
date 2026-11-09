@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import sys
+from http import HTTPStatus
 
 import pytest
 from websockets.asyncio.server import serve
@@ -65,12 +66,9 @@ async def test_missing_codex_executable_publishes_actual_start_error_in_catalog(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("code", "reason", "authorization_lost"),
-    [(1008, "unsupported_connector_protocol", False), (4401, "revoked", True)],
-)
+@pytest.mark.parametrize("authorization_lost", [False, True])
 async def test_protocol_rejection_is_distinct_from_revocation_and_keeps_native_owner(
-    tmp_path, monkeypatch, caplog, code, reason, authorization_lost
+    tmp_path, monkeypatch, caplog, authorization_lost
 ):
     observed, native_stopped = asyncio.Event(), asyncio.Event()
     authorization = []
@@ -109,10 +107,14 @@ async def test_protocol_rejection_is_distinct_from_revocation_and_keeps_native_o
 
     async def reject(socket):
         await socket.recv()
-        await socket.close(code, reason)
+        await socket.close(1008, "unsupported_connector_protocol")
+
+    def revoked(connection, request):
+        # Revocation is only the handshake refusal (HTTP 403), never a close code.
+        return connection.respond(HTTPStatus.FORBIDDEN, "revoked") if authorization_lost else None
 
     try:
-        async with serve(reject, "127.0.0.1", 0) as server:
+        async with serve(reject, "127.0.0.1", 0, process_request=revoked) as server:
             connector.config = Config(
                 f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}", "device", "fixture"
             )

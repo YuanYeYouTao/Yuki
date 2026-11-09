@@ -85,6 +85,11 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def state_line(line: dict[str, object]) -> None:
+    """One JSON object per stdout line for the owning Desktop, written immediately."""
+    print(json.dumps(line, ensure_ascii=True), flush=True)
+
+
 async def run_for_desktop(connector: Connector) -> None:
     if sys.stdin is None:
         raise ValueError("Desktop-owned Connector requires its stdin pipe")
@@ -460,18 +465,30 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 logging.basicConfig(level=logging.INFO, handlers=[handler])
                 private_path(directory / "connector.log")
-                with installation_lock(directory / "connector.lock"):
-                    journal = Journal(
-                        directory / "journal.sqlite3",
-                        namespace=config.device_id,
-                    )
-                    try:
-                        connector = Connector(config, journal, config_path=path)
-                        asyncio.run(
-                            run_for_desktop(connector) if args.desktop_stdin else connector.run()
+                try:
+                    with installation_lock(directory / "connector.lock"):
+                        journal = Journal(
+                            directory / "journal.sqlite3",
+                            namespace=config.device_id,
                         )
-                    finally:
-                        journal.close()
+                        try:
+                            connector = Connector(
+                                config,
+                                journal,
+                                config_path=path,
+                                report=state_line if args.desktop_stdin else lambda line: None,
+                            )
+                            asyncio.run(
+                                run_for_desktop(connector)
+                                if args.desktop_stdin
+                                else connector.run()
+                            )
+                        finally:
+                            journal.close()
+                except Exception:
+                    # The supervising Desktop restarts the process; the cause stays here.
+                    logging.getLogger("yuki_agent_connector").exception("Connector run failed")
+                    raise
         return 0
     except (OSError, ValueError, httpx.HTTPError) as exc:
         if isinstance(exc, httpx.HTTPStatusError):

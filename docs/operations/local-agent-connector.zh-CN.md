@@ -2,13 +2,13 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.3`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.4`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
 桌面端“这台电脑”管理同一个 Connector。没有 Codex、Claude 或项目目录，也可以连接电脑；完整访问默认关闭，原生 Agent-only 配置不受它开启与关闭影响。开关沿本机 CLI `full-access --enabled true|false --json` 原子保存，云端不能替用户开启。当前系统账号能执行的 Shell、文件和浏览器操作就是访问范围，不另加命令白名单、项目授权或管理员角色。
 
-`terminal_exec` 和 `environment_status` 可选 `device_id`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。后续 read/control 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
+`run_command` 和 `get_environment` 可选 `device`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。后续 `read_command`／`control_command` 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
 
 桌面管理的 Connector 由桌面进程以 `run --desktop-stdin` 启动，桌面持有其 stdin pipe；退出桌面进程或父进程意外结束时，EOF 沿原 Connector 关闭流程停止连接与自己持有的执行。窗口隐藏到托盘仍是 App 在运行。手动 CLI `run` 和用户明确安装的独立服务保留各自生命周期。设备撤销仍使用原凭据机制，Connector 重启后的旧进程失联保原回执与 unknown，不重新执行原命令。Windows 按本次 Job Object、POSIX 按本次进程组取消，不按同名进程扫描，不结束用户 daemon 或整个浏览器。
 
@@ -16,7 +16,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 截图和下载文件先落本机，再走下面同一文件管线。原 stdin 接纳、CLI 进程退出和网页业务完成分别认实际输出；未知不自动重派原命令。关闭完整访问拒绝新命令和后续 stdin，已运行脚本或外部后台程序需要停止时显式取消原 run；不宣称能追入任意程序逐网页动作撤权。
 
-`workspace_inspect(path,device_id)` 将所选本机字节准备为原私有媒体结果，回读沿原 tool_handle；`send(path,device_id)` 冻结一次原件后发送，沿原 artifact/source_key 恢复。`save_conversation_attachment_to_workspace` 的 `device_id` 指写入目标电脑，可把聊天附件（按内部 event_id/attachment_index 核来源）、Yuki 环境 `/workspace` 中的 `path` 或不可变 `artifact_id` 原样写入本机指定路径；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
+`view_file(path, device)` 将所选本机字节准备为原私有媒体结果，回读沿原 tool_handle；`send` 的文件给 `path` 与 `device` 时冻结一次原件后发送，沿原 artifact/source_key 恢复。`copy_file` 的 `to_device` 指写入目标电脑，可把聊天附件（按内部 `event_id`／`attachment` 核来源）、Yuki 环境 `/workspace` 中的 `path` 或不可变 `artifact_id` 原样写入本机指定路径；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
 
 实施证据与交付状态见[本次实施记录](local-device-full-access-implementation-20261029.md)。文件复制来源扩展见[2026-11-07 实施记录](file-copy-backend-implementation-20261107.md)。
 
@@ -42,7 +42,9 @@ Connector `0.4.1` 的安装级命令只更新原配置的连接地址：
 yuki-agent-connector server --url https://yuki.example.ts.net
 ```
 
-输入 Yuki 的 HTTP(S) base URL，保留实际路径前缀；CLI 转为对应的 `/agents/v1/connect` WS(S) 地址。远端仍需 HTTPS/WSS，只有本机 loopback 沿原合同允许 HTTP/WS。使用自定义目录时，在 `server` 前指定原 `--data-dir`／`--config`，不要另建目录。
+输入 Yuki 的 HTTP(S) base URL，保留实际路径前缀；CLI 转为对应的 `/agents/v1/connect` WS(S) 地址。远端仍需 HTTPS/WSS，只有本机 loopback 沿原合同允许 HTTP/WS。
+
+连接器与 Yuki 在同一台主机上时（例如 Mac mini 既跑 Bot 又跑 Desktop），直接填回环地址 `http://127.0.0.1:18768`（CLI 转为 `ws://127.0.0.1:18768/agents/v1/connect`），不要经 Tailscale Serve 等代理绕回本机；端口以该主机 Bot 的实际监听端口为准。使用自定义目录时，在 `server` 前指定原 `--data-dir`／`--config`，不要另建目录。
 
 保存保留原 device、token、instance、args、env、原生 owner、完整访问开关和服务来源，只供下次 Connector 启动使用，不启停服务。CLI 不连接目标或验证远端身份，需填写同一原 Yuki 的实际新地址；保存成功不证明新地址已连通。Desktop 的「設定 → 這台電腦」提供同一原连接器地址操作；「設定 → 連線」里的客户端地址独立保存，任一处改址都不自动修改另一处，也不要求两处使用相同 URL。
 
@@ -55,7 +57,7 @@ journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.4.3-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.4.4-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -158,6 +160,26 @@ yuki-agent-connector service uninstall
 ```
 
 卸载服务不删除配置、journal、原生登录或用户会话。断网只断开传输，原生执行继续；停止连接器进程、OS 重启、原生 owner 退出是不同生命周期。Codex 停止客户端／proxy 不等于停止用户 daemon。Claude SDK／ACP 自己启动的进程依其真实生命周期处理，不套用 Codex 的存活结论。
+
+## 桌面监督与状态行
+
+`run --desktop-stdin` 时连接器在 stdout 每行写一个 JSON 对象，供 Desktop 解析；普通 `run` 与用户服务不写。每行都有 `type`，Desktop 忽略不认识的 `type` 与非 JSON 行（例如配置错误时原有的 `{"problem": ...}`）。0.4.4 只有连接状态行，同一状态连续出现只写一次：
+
+```json
+{"type": "state", "state": "connected"}
+{"type": "state", "state": "disconnected", "reason": "http_502"}
+{"type": "state", "state": "authorization_lost"}
+{"type": "state", "state": "protocol_unsupported"}
+```
+
+- `connected`：握手成功并已发送 hello。
+- `disconnected`：建连失败或连接关闭，随后自动重连；`reason` 为 `http_<状态码>`、`close_<关闭码>[:<原因>]`、`connection_lost` 或网络异常类型名，只是诊断信息。
+- `authorization_lost`：握手得到 HTTP 401/403（凭据被撤销或无效）。连接器停止重连但不退出，原生 owner 保持运行，直到 Desktop 关闭 stdin。
+- `protocol_unsupported`：服务端以 1008 + `unsupported_connector_protocol` 关闭。连接器停止重连但不退出，需更新较旧的一方。
+
+授权丢失只认握手 401/403；其他握手状态（502/503/404/421/426 等）按 websockets 自带退避重试（初始 0–5 s 随机，之后 3.1 s 起按 1.618 倍增至 90 s），握手后的任何关闭（1011、其他 1008、4xxx）都重连。连接内部出现未预期异常时，`connector.log` 记录完整栈后进程以非零码退出，由 Desktop 退避重启；重启后进行中的终端与原生操作仍按 journal 规则为 `unknown`，不重派。每次状态变化同时在 `connector.log` 记一行 `connector_state <状态> [reason=…]`，可与服务端 `connector_connected`／`connector_disconnected` 日志对时。
+
+后续阶段会在同一通道增加其他 `type` 的行（例如操作与叫停状态），不改变已有行的形状。
 
 ## 代理与凭据
 
