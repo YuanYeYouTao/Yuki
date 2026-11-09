@@ -11,18 +11,25 @@ test "$(docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}' "$c
 test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
 shift 2
 if [ "$#" -eq 0 ]; then set -- headed; fi
-docker exec --user 0:0 "$container" mkdir -p /opt/yuki-runtime
-for file in yuki_computer.py desktop_service.py; do
+docker exec --user 0:0 "$container" mkdir -p /opt/yuki-runtime/yuki_agent_connector
+# Each entry is <path under /opt/yuki-runtime>=<path under the source tree>.
+for entry in \
+    yuki_computer.py=src/yuki/sandbox/yuki_computer.py \
+    desktop_service.py=src/yuki/sandbox/desktop_service.py \
+    yuki_agent_connector/cdp.py=packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py
+do
+    file=${entry%%=*}
+    source=$source_root/${entry#*=}
     mounted=$(docker inspect --format "{{range .Mounts}}{{if eq .Destination \"/opt/yuki-runtime/$file\"}}{{.RW}}{{end}}{{end}}" "$container")
     if [ "$mounted" = false ]; then
-        expected=$(sha256sum "$source_root/src/yuki/sandbox/$file" | cut -d' ' -f1)
+        expected=$(sha256sum "$source" | cut -d' ' -f1)
         actual=$(docker exec "$container" sha256sum "/opt/yuki-runtime/$file" | cut -d' ' -f1)
         test "$expected" = "$actual" || {
             echo "Read-only $file differs; update its Manager source mount using the documented environment upgrade." >&2
             exit 1
         }
     else
-        docker cp "$source_root/src/yuki/sandbox/$file" "$container:/opt/yuki-runtime/$file"
+        docker cp "$source" "$container:/opt/yuki-runtime/$file"
     fi
 done
 docker cp "$source_root/deploy/sandbox/desktop-manifest.py" "$container:/opt/yuki-runtime/desktop-manifest.py"

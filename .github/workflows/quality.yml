@@ -156,11 +156,12 @@ jobs:
           mkdir -p test-results
           docker run --rm --network none --shm-size 512m \
             --entrypoint /opt/yuki-tests/bin/python \
-            -e PYTHONPATH=/src/src:/src -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONPATH=/src/src:/src:/src/packages/yuki-agent-connector/src -e PYTHONDONTWRITEBYTECODE=1 \
             -e YUKI_TEST_CHROMIUM=/usr/bin/chromium \
             -v "$PWD:/src:ro" -v "$PWD/test-results:/results" -w /src \
             yuki-environment:headed-tests -m pytest \
             tests/unit/test_computer_control.py tests/unit/test_computer_runtime.py \
+            tests/unit/test_computer_driver.py \
             tests/unit/test_computer_transport.py tests/unit/test_computer_authority.py \
             tests/unit/test_retired_local_device_history.py \
             tests/unit/test_manager_deployment.py \
