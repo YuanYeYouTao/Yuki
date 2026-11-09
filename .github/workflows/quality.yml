@@ -169,6 +169,7 @@ jobs:
             tests/unit/test_computer_observer_lifecycle.py \
             tests/unit/test_computer_actions.py \
             tests/integration/test_computer_browser_e2e.py \
+            tests/integration/test_tool_media_long_loop_e2e.py \
             -q --strict-markers -o cache_dir=/tmp/yuki-pytest-cache \
             --basetemp=/tmp/yuki-pytest --junitxml=/results/desktop-headed.xml
       - uses: actions/upload-artifact@v4

@@ -90,7 +90,49 @@ Host 重放自己保存的续写载荷（Responses `store:false`、无 `previous
 
 ## 设计落实
 
-（实现完成后补写：Manager ↔ 驱动请求协议、结果形状、`resume` 在沙箱中的行为、图像替换规则与 Responses 续写。）
+### 合同（§5.1）
+
+- `computer`、`browser` 加入 `SANDBOX_TOOLS`（`namespace="sandbox.run"`、`effect="write_state"`、不缓存），
+  参数按任务书一次冻结；合同版本 35 → 36，直调与 Code Mode 直调视图都增两名，`CODE_API_REVISION` 不变。
+  给出 `device` 时 Bot 直接返回 `device_not_supported`，不接触 Manager。`run_command` 说明删去 `yuki-computer`。
+- 成功结果是业务数据本身，截图作为 `source="tool"` 的 `PreparedMediaData` 像素（按 §5.2 归档，结果带
+  `media_artifact_handle`）；成功的输入动作带 `mutation_committed=True`，无图像能力或归档失败时只报
+  `media_read:false`，效果保留（M4）。失败为 `{ok:false,error,message}`，可能已发生时 `status:"unknown"`。
+- Work 步骤投影：`computer` →「操作電腦」，`browser` →「使用瀏覽器」；旧 `step_label` 回执照旧投影。
+
+### Manager ↔ 长驻驱动（§5.4／§5.6）
+
+- Bot 调 Manager RPC `computer_action`／`browser_action`，不设 bot 侧截止、使用大响应缓冲；传输失败时
+  只有输入类报 `unknown`，读类不报（C4）。
+- Manager（`computer_runtime.py`）按环境用一把 `asyncio.Lock` 串行（C7）。输入类：同键已有结果直接返回；
+  只有待定行时报 `action_unknown`／`status:"unknown"` 并撤回尚未被领取的请求文件（C5／P1），绝不再执行；
+  否则写待定行 → 进程内 `agent_acquire`（actor `{request_id, work_id}`，不再要求 run）→ 写请求 →
+  等结果 → 写结果行 → `finally` 释放租约（C9）。本人持有时直接 `control_held`，不写请求（C8）。
+  遗留的 agent 租约（Manager 中途结束）在下一次取得时被替换，不再报成人类接管（C7）。
+  读类（截图、快照、浏览器截图、沙箱 `resume`）不写待定行、不取租约，本人持有时照常可读。
+- 协议在 runtime 挂载 `computer/driver/` 下：Manager 原子写 `requests/<id>.json`；驱动以 `rename` 领取到
+  `taken/`，执行后写 `results/<id>.jpg`（如有）与 `results/<id>.json`，Manager 经 `FileWorkspace` 读取并删除
+  （P3／P4）。Manager 有界等待到期时，请求仍可删除即确定未执行（`timeout`，无 `unknown`，P2）；已被领取
+  才是 `unknown`（C6）。驱动启动时删除遗留 `taken/` 而不执行。新请求开始前清理上一次放弃等待的结果文件。
+- 驱动：`desktop_service.py` 在 CDP 就绪后把 `yuki_computer.py serve` 作为子进程托管；浏览器部分是只依赖
+  标准库的 `yuki_agent_connector/cdp.py`（自带 RFC 6455 客户端，所有接收带时限，P8），屏幕部分是 xdotool／
+  ImageMagick。每次输入（含 xdotool）前复核 `control.json` 的租约（C8）。驱动写 `driver/tabs.json` 供
+  Desktop 电脑页与 `yuki-computer status` 读取标签页及 Work 归属（P7）。桌面服务未运行时第一次动作沿
+  `display_wake` 唤醒（P6）；无头模式 `computer` 返回 `display_unavailable`（P5）。
+- 删除：文件命令协议（`collect_commands`／`read_command`／`commands/`）、按 run 取放租约、`finish_run` 的
+  agent 释放、CLI 的 `wake`／`sleep`／`screenshot`／`browser`／`input`、`tabs.json` 记录与 websockets 依赖；
+  保留 `observe_display()`、`help-request`、`wait-control`、`status`。
+- 沙箱 `resume`：沙箱没有“本人叫停”状态（本人接管与交还仍是 Desktop 操作），`resume` 是一次读取，
+  返回与 `screenshot` 相同的结果。
+
+### 实施中发现、写回的事实
+
+- `mousemove --sync` 在指针已在目标位置时永不返回（E2E 第二次点同一坐标时超时）；删去 `--sync`，
+  X 服务器按序先移动后点击。
+- 原 `yuki_computer.py` 使用的是 `websockets` 包，不是标准库 WebSocket；驱动另写了标准库客户端。
+- 导航可能把标签页换到新渲染进程，`backendDOMNodeId` 从头编号；驱动只接受自己为当前文档发出的节点 ID，
+  其他一律 `node_stale`。后台标签页不出帧，动作与截图前 `Page.bringToFront`。
+- xdotool 只有一个临时 keycode，"中文" 会打成 "中中"；驱动为缺失字符逐个绑定空闲 keycode 后再输入。
 
 ### 图像（§5.2／§5.3）
 
@@ -104,10 +146,22 @@ Host 重放自己保存的续写载荷（Responses `store:false`、无 `previous
 
 ## 验证
 
-（实现完成后补写。）
-
+- 全应用（有头镜像，CI `desktop-headed` job）：`tests/integration/test_computer_browser_e2e.py` 以脚本化主模型
+  驱动离线完整应用（App 私聊 → Work）、真实 Manager（`NativeManager`）、Xvnc、Openbox、Chromium 与驱动，
+  对本地夹具站点完成：多步表单＋`<select>`＋回车提交、alert／confirm／prompt（对话框打开时其他动作得
+  `dialog_open`）、下载、文件输入（无原生对话框）、`127.0.0.1` 页内 `localhost` 跨站 iframe 表单（OOPIF
+  节点 ID）、`target=_blank` 第二个标签页，以及 30 步 `computer` 循环（窗口截图、按所附图像坐标点击、
+  xdotool 中文输入）；第 13 步前本人经已配对 Desktop 设备的 Client API 接管，下一次输入得
+  `control_held`，Yuki 以 `yuki-computer wait-control` 等原回执，本人交还后继续。断言：清单 29 项、站点
+  输入日志、下载路径、每个输入都有最终回执且无遗留租约、每次请求至多 16 帧且最旧观察被替换为带
+  `media_artifact_handle` 的文字、Work 步骤归入新类别。产物 `test-results/computer-browser/`：`manifest`、
+  `frames/`（每次观察一帧）、`requests`（每次请求的帧数、观察文字与尾部消息）、`calls`、`log`（站点输入）、
+  `timeline`（租约）、`receipts`（Manager 回执）、`downloads`、`steps`、`outcome`。
+- 驱动：`tests/unit/test_computer_driver.py` 直接对真实 Chromium 与本地站点覆盖 B1–B7、C8、P1、P5 与屏幕
+  坐标换算（M6）；`tests/unit/test_computer_actions.py` 覆盖 Manager 侧 C4–C9、P1、P2、P7（真实 SQLite 与
+  租约，驱动替换为按同一文件协议领取的线程）。
 - 图像（本地，离线）：`tests/integration/test_tool_media_long_loop_e2e.py` 以真实 `AgentRunner`、真实
   `TaskModelExecutor`、四种真实方言适配器（Chat Completions 分无续写与带 reasoning_details 续写两种）经
-  `httpx.MockTransport` 各跑 30 轮截图加一次 `read_result`；覆盖 M1、M2、M4、M5、M7–M15。产物
+  `httpx.MockTransport` 各跑 30 轮截图加一次 `read_result`；覆盖 M1、M2、M4、M5、M7–M15（也在 `desktop-headed` job 运行，与上面的产物一并上传）。产物
   `test-results/computer-browser/media/<dialect>.json`（每次请求体，base64 缩为 hash＋长度，替换文字，
   每次携带帧数与字节）、`no_image_input.json` 与 `workspace_and_oversized_<dialect>.json`。
