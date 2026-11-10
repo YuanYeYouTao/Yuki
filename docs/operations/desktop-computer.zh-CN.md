@@ -31,7 +31,7 @@ Manager 创建环境时以原环境名称设置稳定 hostname，使持久 HOME 
 sh deploy/sandbox/install-desktop.sh --container ORIGINAL_ENVIRONMENT_NAME
 ```
 
-该脚本核对原 `persistent-v1` 环境，只在已经运行的原容器内安装组件、更新电脑 CLI 与共享驱动、生成 manifest，不启动或重建容器。只读挂载中的源码必须与本 checkout 相同；需要更新挂载时沿原环境升级流程处理。
+该脚本核对原 `persistent-v1` 环境，只在已经运行的原容器内安装组件、更新电脑 CLI 与共享驱动、生成 manifest，不启动或重建容器。文件经 `docker exec` 从容器内写入：gVisor 环境的 rootFS 由沙箱自己的 overlay 承载，`docker cp` 写到的 Docker 层不会被运行中的沙箱读到（2026-11-09 上线时桌面服务因此读到旧驱动而反复重启）。只读挂载中的源码必须与本 checkout 相同；需要更新挂载时沿原环境升级流程处理。
 
 `computer`／`browser` 工具（2026-11-09）的上线顺序：先用本脚本更新环境内的 `yuki_computer.py`、`desktop_service.py` 与 `cdp.py`，更新并重启 Manager，再让桌面服务重新启动一次（电脑页休眠后唤醒；已在运行的旧桌面服务没有长驻驱动，请求不会被领取，Manager 等待到期后报告确定未执行的 `timeout`），最后部署 Bot。Bot 先于 Manager 上线时，两工具得到 `unknown_method`，不产生效果。
 
