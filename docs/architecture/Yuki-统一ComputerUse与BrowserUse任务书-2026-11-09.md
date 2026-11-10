@@ -125,7 +125,7 @@ browser(action, url?, node?, text?, tab?, device?)
 本人照常用电脑，Yuki 同时干活；叫停是事实，不是计时器。
 
 1. **浏览器不碰光标**：`browser` 经 CDP 向页面投递输入，Yuki 专用 Chrome 窗口可在后台或另一个桌面空间。网页任务优先走这里。
-2. **原生应用优先后台投递** [spike]：`computer` 给出 `window` 时，截图只截该窗口（macOS ScreenCaptureKit 按窗口过滤；Windows `PrintWindow(PW_RENDERFULLCONTENT)`，普通 `BitBlt` 对被遮挡或 GPU 渲染窗口会得到黑图），动作不经全局光标：
+2. **原生应用优先后台投递** [spike，结论与 3b 设计建议见 [3b spike 记录](../operations/computer-3b-spike-20261110.md)；macOS 已实测，Windows 待实机]：`computer` 给出 `window` 时，截图只截该窗口（macOS ScreenCaptureKit 按窗口过滤；Windows `PrintWindow(PW_RENDERFULLCONTENT)`，普通 `BitBlt` 对被遮挡或 GPU 渲染窗口会得到黑图），动作不经全局光标：
    - 在**目标窗口自己的**可访问性子树里按坐标找元素（系统命中测试只返回最上层窗口，对被遮挡窗口无效）：macOS AX 动作（`AXPress`、设置 `AXValue`），Windows UIA `InvokePattern`/`ValuePattern`/`ScrollPattern`。
    - 找不到元素时：macOS 用 `CGEventPostToPid` 把带坐标事件只发给目标进程；Windows 不用 `PostMessage`（对 Chromium/Electron/UWP 与读取键盘状态的应用不可靠），改走第 3 层。
    - 窗口最小化或不存在：直接返回 `window_unavailable`/`window_not_found`，不靠黑图判断。
@@ -180,7 +180,7 @@ browser(action, url?, node?, text?, tab?, device?)
 | 0 稳定性 | §5.9（服务端两项已在 #590） | — | 2–3 天（含 Desktop 发版） |
 | 1 Yuki 沙箱 | 工具合同（一次冻结）、长驻共享 CDP 驱动、快照与动作语义、图像与坐标、长循环预算、Manager 动作与恢复、清理过期 CLI 提示与夹具 | — | 5–7 天 |
 | 3a 本人电脑·前台 | 连接器整屏截图与全局输入、叫停/恢复（§5.5 第 3–5 层）、能力事实与服务端路由、Yuki 专用 Chrome 窗口、Desktop 状态与权限页 | 0、1 | 共享 4–5 天 + macOS 4–6 天 + Windows 3–4 天 + 浏览器 3–4 天 + Desktop 3–4 天 |
-| 3b 本人电脑·后台 | §5.5 第 2 层窗口截图与后台投递 | 3a 与 spike 结论 | spike 后估计 |
+| 3b 本人电脑·后台 | §5.5 第 2 层窗口截图与后台投递 | 3a 与 spike 结论 | 约 2–2.5 周（[spike 记录](../operations/computer-3b-spike-20261110.md) §6；Windows 以实机脚本结果为准） |
 
 阶段 0 与阶段 1 可并行；阶段 1 完成即可让 Yuki 自己的电脑可用；3a 单独可交付。F08（本人电脑/产物 → Yuki 环境）按其任务书独立排期。
 
