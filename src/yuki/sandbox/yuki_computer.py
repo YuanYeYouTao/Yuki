@@ -18,6 +18,7 @@ import re
 import subprocess
 import tempfile
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -464,6 +465,16 @@ def handle(
         )
     except cdp.Failure as failure:
         return failure.result, None
+    except Exception as error:
+        # One request's unforeseen failure answers that request and is logged;
+        # the driver keeps serving instead of taking the whole desktop down.
+        traceback.print_exc()
+        return {
+            "error": "driver_failed",
+            "message": f"驅動處理這個請求時出錯：{type(error).__name__}: {error}",
+            # Not knowing how many inputs ran, an input reports an unknown effect.
+            **({} if args["action"] in READS[request["tool"]] else {"status": "unknown"}),
+        }, None
 
 
 def unchecked() -> None:

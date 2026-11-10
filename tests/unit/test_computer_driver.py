@@ -1,7 +1,7 @@
 """The long-lived environment driver against a real Chromium, plus its file protocol.
 
 Failure cases are listed first in docs/operations/computer-browser-sandbox-20261109.md
-(B1-B7, C8, M3, M6, P1-P8). Browser tests need ``YUKI_TEST_CHROMIUM``; the screen
+(B1-B7, C8, M3, M6, P1-P9). Browser tests need ``YUKI_TEST_CHROMIUM``; the screen
 tests additionally need the headed environment's Xvnc, Openbox, xdotool and
 ImageMagick, so they run in the ``desktop-headed`` CI job.
 """
@@ -603,7 +603,7 @@ def exchange(
     *,
     lease: str | None = None,
     owner: str | None = "work-file",
-    max_dimension: int = 1280,
+    max_dimension: int | None = 1280,
     seconds: float = 60,
 ) -> dict[str, Any]:
     identity = str(uuid4())
@@ -702,6 +702,10 @@ def test_serve_answers_requests_through_runtime_files(chromium, site, tmp_path):
         )
         assert max(shot["image"]["width"], shot["image"]["height"]) == 400
         assert list((root / "driver/results").iterdir()) == []
+        # An unforeseen failure answers that one request; the driver keeps serving (P9).
+        broken = exchange(root, "browser", {"action": "screenshot"}, max_dimension=None)["result"]
+        assert broken["error"] == "driver_failed" and "status" not in broken
+        assert process.poll() is None
         # A human holds the computer: no input, but reads still work.
         control(root, "human")
         held = exchange(

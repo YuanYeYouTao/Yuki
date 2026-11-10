@@ -67,6 +67,9 @@
   `desktop_unavailable`／`browser_unavailable`，不留下待执行请求。
 - P7 Desktop 的 `tabs_list` 失去 Work 归属（原来由 CLI 的 `tabs.json` 提供，现由长驻驱动写出）。
 - P8 驱动等待 CDP 回应无时限（原 `recv()` 无超时）；对话框打开时其他调用挂起（应返回 `dialog_open`）。
+- P9 单个请求在驱动中抛出未归类的异常（例如请求缺 `max_dimension`）：不得结束驱动、连带重启整个桌面服务；
+  该请求以 `driver_failed` 回答，输入类附 `status:"unknown"`（不知道出错前已做了多少输入），读类不附；栈写进
+  桌面服务输出；之后的请求照常执行。（2026-11-09 上线冒烟时，缺参数的截屏让驱动退出，桌面服务整体重启。）
 
 ### 实施补充（Host 图像，§5.2／§5.3）
 
@@ -157,7 +160,7 @@ Host 重放自己保存的续写载荷（Responses `store:false`、无 `previous
   `media_artifact_handle` 的文字、Work 步骤归入新类别。产物 `test-results/computer-browser/`：`manifest`、
   `frames/`（每次观察一帧）、`requests`（每次请求的帧数、观察文字与尾部消息）、`calls`、`log`（站点输入）、
   `timeline`（租约）、`receipts`（Manager 回执）、`downloads`、`steps`、`outcome`。
-- 驱动：`tests/unit/test_computer_driver.py` 直接对真实 Chromium 与本地站点覆盖 B1–B7、C8、P1、P5 与屏幕
+- 驱动：`tests/unit/test_computer_driver.py` 直接对真实 Chromium 与本地站点覆盖 B1–B7、C8、P1、P5、P9 与屏幕
   坐标换算（M6）；`tests/unit/test_computer_actions.py` 覆盖 Manager 侧 C4–C9、P1、P2、P7（真实 SQLite 与
   租约，驱动替换为按同一文件协议领取的线程）。
 - 图像（本地，离线）：`tests/integration/test_tool_media_long_loop_e2e.py` 以真实 `AgentRunner`、真实
