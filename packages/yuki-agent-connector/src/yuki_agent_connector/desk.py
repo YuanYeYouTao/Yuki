@@ -8,6 +8,12 @@ it waits until the owner has been quiet for a moment, then refuses this input wi
 running it (``owner_active``) because the screen may have changed; a fresh screenshot moves
 the baseline and the retried input runs. The owner's input never stops Yuki.
 
+With ``window`` (phase 3b) the picture is that window alone and input goes to it in the
+background, without the cursor or the frontmost app. It yields only on a real collision:
+the window's app is the owner's frontmost app, or the window under the owner's pointer is
+its, and the owner used the computer since Yuki last looked. Input that has no background
+route is refused; it never falls back to global input.
+
 The stop is explicit: Desktop 「停止」 (stdin) sets the holder to ``owner``, and every
 ``computer`` and ``browser`` input is refused with ``control_held`` while screenshots and
 snapshots still read. Only Desktop 「繼續」 or ``computer(action=resume)`` clears it. The
@@ -27,7 +33,7 @@ from typing import Any
 
 from .chrome import BrowserHost, capture_name
 from .config import private_path
-from .screen import Backend, Display, frame, parse_keys, to_global
+from .screen import Area, Backend, Display, Refused, Surface, Target, frame, parse_keys, to_global
 
 READS = frozenset({"screenshot", "resume"})
 INPUTS = frozenset(
@@ -136,6 +142,8 @@ class Desk:
             "screen": screen,
             "input": granted,
             "displays": [display.fact() for display in self.screen.displays()],
+            # Phase 3b: ``window`` is captured alone and its input delivered in the background.
+            "windows": True,
         }
 
     def announce(self) -> None:
@@ -189,11 +197,6 @@ class Desk:
                 "这台电脑的连接器不能操作屏幕（只支持 macOS 14 及以上与 Windows）；"
                 "网页可用 browser。",
             )
-        if args.get("window") is not None:
-            return failure(
-                "device_not_supported",
-                "本人电脑暂不支持按窗口截图和操作；省略 window 即使用整个屏幕。",
-            )
         if action not in READS | INPUTS:
             return failure("invalid_arguments", f"未知的动作：{action}")
         keys = None
@@ -231,12 +234,30 @@ class Desk:
                 "这台 Mac 没有给 Yuki 屏幕录制权限；请本人在“系统设置 › 隐私与安全性 › "
                 "录屏与系统录音”中允许 Yuki。",
             )
-        display = self._display(args.get("display"))
-        if display is None:
-            return failure(
-                "display_unavailable",
-                f"找不到显示器 {args.get('display')}；可用的显示器见 get_environment。",
-            )
+        target: Target | None = None
+        display: Display | None = None
+        area: Area
+        if args.get("window") is not None:
+            if not input_granted:
+                # A window's state (minimized) and every background route need Accessibility.
+                return failure(
+                    "input_permission_required",
+                    "按窗口截图和操作需要辅助功能权限；请本人在“系统设置 › 隐私与安全性 › "
+                    "辅助功能”中允许 Yuki，或省略 window 截整个屏幕。",
+                )
+            try:
+                target = self.screen.window(str(args["window"]))
+            except Refused as refused:
+                return failure(refused.error, refused.message)
+            area = target.window
+        else:
+            display = self._display(args.get("display"))
+            if display is None:
+                return failure(
+                    "display_unavailable",
+                    f"找不到显示器 {args.get('display')}；可用的显示器见 get_environment。",
+                )
+            area = display
         max_dimension, max_pixels = args["max_dimension"], args["max_pixels"]
         result: dict[str, Any] = {}
         if action in INPUTS:
@@ -248,30 +269,49 @@ class Desk:
                 )
             if self.control.holder == "owner":
                 return {"status": "failed", **self.control.held()}
+            if target is not None and action not in target.actions:
+                return failure(
+                    "device_not_supported",
+                    f"这台电脑不能在后台向窗口投递 {action}，输入没有执行；"
+                    "需要时省略 window，在前台操作整个屏幕。",
+                )
             if (
                 self.observed is not None
                 # Even the earliest possible moment of the last input is after the baseline.
                 and self.screen.last_input()[0] > self.observed
+                # Background input collides with the owner only in the owner's own app.
+                and (target is None or target.collides())
             ):
                 return self._yield()
 
             def point(x_name: str, y_name: str) -> tuple[float, float]:
-                return to_global(display, max_dimension, max_pixels, args[x_name], args[y_name])
+                return to_global(area, max_dimension, max_pixels, args[x_name], args[y_name])
 
-            target = point("x", "y") if action in POINTED else None
-            if self.screen.elevated(target):
+            pointed = args.get("x") is not None and args.get("y") is not None
+            aim = point("x", "y") if pointed else None
+            if (
+                target.elevated()
+                if target is not None
+                else self.screen.elevated(aim if action in POINTED else None)
+            ):
                 return failure(
                     "target_elevated",
                     "目标窗口以管理员权限运行，系统不允许普通程序向它输入；输入没有执行。",
                 )
-            submitted = self._input(action, args, keys, target, point)
+            submitted = self._input(action, args, keys, aim, point, target)
             if "error" in submitted:
                 return submitted
             result["submitted"] = True
-        width, height = frame(display, max_dimension, max_pixels)
+        width, height = frame(area, max_dimension, max_pixels)
         path = self.captures / f"{capture_name(identity)}.jpg"
         try:
-            self.screen.capture(display, width, height, path)
+            if target is not None:
+                target.capture(width, height, path)
+            else:
+                assert display is not None
+                self.screen.capture(display, width, height, path)
+            if action in READS:
+                result["windows"] = self.screen.windows()
         except OSError as error:
             if action in INPUTS:
                 # The input was posted; only its picture is missing.
@@ -288,14 +328,12 @@ class Desk:
         # After the picture: Yuki's events have been processed by now, and the model will
         # act on what it shows, so only input after this is someone else's.
         self.observed = self._baseline()
-        if action in READS:
-            # Per-window capture and delivery arrive with phase 3b.
-            result["windows"] = []
         return {
             "status": "succeeded",
             "width": width,
             "height": height,
-            "display": display.id,
+            **({"window": target.window.id} if target is not None else {}),
+            **({"display": display.id} if display is not None else {}),
             "control": self.control.visible(),
             **result,
         }
@@ -331,14 +369,26 @@ class Desk:
         action: str,
         args: dict[str, Any],
         keys: tuple[tuple[str, ...], str] | None,
-        target: tuple[float, float] | None,
+        aim: tuple[float, float] | None,
         point: Callable[[str, str], tuple[float, float]],
+        window: Target | None,
     ) -> dict[str, Any]:
         assert self.screen is not None
-        screen = self.screen
+        screen: Surface = window if window is not None else self.screen
+        target = aim if action in POINTED else None
         posted = 0
-        self.report({"type": "activity", "tool": "computer", "action": action, "phase": "start"})
+        activity = {
+            "type": "activity",
+            "tool": "computer",
+            "action": action,
+            "mode": "background" if window is not None else "foreground",
+        }
+        self.report({**activity, "phase": "start"})
         try:
+            if window is not None and aim is not None and action in {"key", "type"}:
+                # Keys go to the app's focus: first make the field at x,y that focus.
+                posted += 1
+                window.focus(*aim)
             if action in {"click", "double_click", "right_click"}:
                 assert target is not None
                 posted += 1
@@ -371,6 +421,14 @@ class Desk:
                         return {"status": "unknown", **self.control.held()}
                     posted += 1
                     screen.type(text[start : start + TYPE_RUN])
+        except Refused as refused:
+            # That call delivered nothing; whatever was posted before it was delivered.
+            posted -= 1
+            return {
+                "status": "unknown" if posted else "failed",
+                "error": refused.error,
+                "message": refused.message,
+            }
         except OSError as error:
             return {
                 "status": "unknown" if posted else "failed",
@@ -381,5 +439,5 @@ class Desk:
             if posted:
                 # Yuki's own events are now the latest input; only later input is someone else's.
                 self.observed = self._baseline()
-            self.report({"type": "activity", "tool": "computer", "action": action, "phase": "end"})
+            self.report({**activity, "phase": "end"})
         return {}

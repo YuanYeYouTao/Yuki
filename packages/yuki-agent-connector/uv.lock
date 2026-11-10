@@ -115,6 +115,15 @@ wheels = [
 ]
 
 [[package]]
+name = "comtypes"
+version = "1.4.17"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/ff/c7836bd0d78fc615281016f154f514e9d523d7cb9ab9e8b4d344adc5f5e7/comtypes-1.4.17.tar.gz", hash = "sha256:3d9c1e92ad8daf7600d371e76ee16161a627a5fb70c3144f6e52e78af6034363", size = 262743, upload-time = "2026-09-21T08:08:07.687Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/9c/d0bc1fb69ad22a04bdc01dd9b5613a2ebc4d02ba1ec24b02127dc93791ba/comtypes-1.4.17-py3-none-any.whl", hash = "sha256:4e0a221dde2c589b82977bed802efd71cd5eb67a380347b732e02735e597f586", size = 298743, upload-time = "2026-09-21T08:08:06.461Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -517,6 +526,21 @@ wheels = [
 ]
 
 [[package]]
+name = "pyobjc-framework-applicationservices"
+version = "13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyobjc-core" },
+    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-framework-coretext" },
+    { name = "pyobjc-framework-quartz" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/69/02/fdcf6554abfb830f335e68a43a5ac102cdc73c720a1e039551d4a61f692b/pyobjc_framework_applicationservices-13.0.tar.gz", hash = "sha256:d869115dd13300fa9ce926cdc23e6cceec1279bc02cc75d1be24562c89cd9ecc", size = 108163, upload-time = "2026-10-30T10:45:46.598Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/01/00/4c19e7b361281fda007b9595d7271aad791c0c4b5cb79601d655c510fb7a/pyobjc_framework_applicationservices-13.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:0b5b8afb749172d366a01dc390cd2da41d66dd8fa9fd6b4df3773a9f4d55b0b6", size = 32631, upload-time = "2026-10-30T10:33:40.274Z" },
+]
+
+[[package]]
 name = "pyobjc-framework-cocoa"
 version = "13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -539,6 +563,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/10/f6/3ccdac27fd6a2a94ae122b807a6f0512076614b85265559a9055996b5839/pyobjc_framework_coremedia-13.0.tar.gz", hash = "sha256:d95ef87f6f33ec98347439284f0add1f7d1d019b88cb8e218e81b39aec14d324", size = 99534, upload-time = "2026-10-30T10:46:14.941Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/25/f8/3086f9c4b57345f8c96b456c0d6cfdc0e5a6d16483579a8c68657a4e0cb9/pyobjc_framework_coremedia-13.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:edb151ff50868a16705228bf2f21348466156a8dc3ba9a2a093d2e0f0ca16a24", size = 29283, upload-time = "2026-10-30T10:36:18.734Z" },
+]
+
+[[package]]
+name = "pyobjc-framework-coretext"
+version = "13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyobjc-core" },
+    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-framework-quartz" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/8c/6521bee7ae7a25ff7cf2ac91078f06a50a2ecf6ef35068108e18f542b398/pyobjc_framework_coretext-13.0.tar.gz", hash = "sha256:0ee3b7e886ffa4be769402c5341b2101d949e31a33d1a468d64b3a3579d2aea1", size = 97797, upload-time = "2026-10-30T10:46:20.71Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/40/64/b9c6531a3c7b9e7bbd574fd4a9eb7ee6c2a786977be8852533c5b080919a/pyobjc_framework_coretext-13.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:d8e36723d180bd8c63d93001683feb80c84760a78083152379f921de62bfc9d5", size = 31160, upload-time = "2026-10-30T10:37:06.813Z" },
 ]
 
 [[package]]
@@ -818,9 +856,11 @@ source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "claude-agent-sdk" },
+    { name = "comtypes", marker = "sys_platform == 'win32'" },
     { name = "httpx", extra = ["socks"] },
     { name = "platformdirs" },
     { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-screencapturekit", marker = "sys_platform == 'darwin'" },
     { name = "python-socks" },
@@ -840,9 +880,11 @@ dev = [
 requires-dist = [
     { name = "agent-client-protocol", specifier = "==0.12.1" },
     { name = "claude-agent-sdk", specifier = "==0.2.172" },
+    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4,<1.5" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },
     { name = "platformdirs", specifier = ">=4,<5" },
     { name = "pyobjc-core", marker = "sys_platform == 'darwin'", specifier = ">=13,<14" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'", specifier = ">=13,<14" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'", specifier = ">=13,<14" },
     { name = "pyobjc-framework-screencapturekit", marker = "sys_platform == 'darwin'", specifier = ">=13,<14" },
     { name = "python-socks", extras = ["asyncio"], specifier = ">=2.7,<3" },

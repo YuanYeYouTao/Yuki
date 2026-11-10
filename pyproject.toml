@@ -48,6 +48,7 @@ dev = [
     # Tests run the Connector source with this environment; on macOS it needs its screen.
     "pyobjc-framework-Quartz>=13,<14 ; sys_platform == 'darwin'",
     "pyobjc-framework-ScreenCaptureKit>=13,<14 ; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=13,<14 ; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

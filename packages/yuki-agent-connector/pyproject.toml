@@ -1,6 +1,6 @@
 [project]
 name = "yuki-agent-connector"
-version = "0.5.0"
+version = "0.6.0"
 description = "Connect local native coding agents to Yuki"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -15,6 +15,8 @@ dependencies = [
   "pyobjc-core>=13,<14 ; sys_platform == 'darwin'",
   "pyobjc-framework-quartz>=13,<14 ; sys_platform == 'darwin'",
   "pyobjc-framework-screencapturekit>=13,<14 ; sys_platform == 'darwin'",
+  "pyobjc-framework-applicationservices>=13,<14 ; sys_platform == 'darwin'",
+  "comtypes>=1.4,<1.5 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]
@@ -50,8 +52,8 @@ strict = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-# pyobjc ships no type information; only screen_macos.py imports it.
-module = ["Quartz", "ScreenCaptureKit"]
+# pyobjc and comtypes ship no type information; only the screen backends import them.
+module = ["Quartz", "ScreenCaptureKit", "ApplicationServices", "objc", "comtypes", "comtypes.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

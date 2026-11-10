@@ -49,6 +49,7 @@ LEFT = {
     "scale": 1.0,
 }
 LIMITS = {"max_dimension": 1568, "max_pixels": 16_777_216}
+FOREGROUND = {"type": "activity", "tool": "computer", "mode": "foreground"}
 
 
 def script(state: Path, **facts: Any) -> None:
@@ -127,6 +128,7 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
                     Display(**RETINA).fact(),
                     Display(**LEFT).fact(),
                 ],
+                "windows": True,
             }
 
             # A screenshot is a read: no journal row, no activity line; the image is a
@@ -149,8 +151,8 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
             assert round(first["x"]) == 756 and round(first["y"]) == 491
             # K3: activity lines around the input.
             assert desktop_lines(process)[-2:] == [
-                {"type": "activity", "tool": "computer", "action": "click", "phase": "start"},
-                {"type": "activity", "tool": "computer", "action": "click", "phase": "end"},
+                {**FOREGROUND, "action": "click", "phase": "start"},
+                {**FOREGROUND, "action": "click", "phase": "end"},
             ]
             # A secondary display left of and above the main one has negative points.
             await call("computer", "move", "move-left", x=0, y=0, display="2")
@@ -260,7 +262,7 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
             unknown_key = (await call("computer", "key", "key-bad", text="ctrl+nonsense"))
             assert unknown_key["result"]["error"] == "invalid_arguments"
             window = (await call("computer", "click", "window-1", x=1, y=1, window="0x1"))
-            assert window["result"]["error"] == "device_not_supported"
+            assert window["result"]["error"] == "window_not_found"
             missing = (await call("computer", "click", "no-point"))["result"]
             assert missing["error"] == "invalid_arguments"
             # D3: an elevated target window.

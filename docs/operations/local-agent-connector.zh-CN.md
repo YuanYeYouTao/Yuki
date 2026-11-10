@@ -194,20 +194,22 @@ stdout 新增三种行，不改变状态行的形状：
 
 ```json
 {"type": "control", "holder": "owner", "since": "2026-11-10T08:00:00.123456Z", "reason": "desktop"}
-{"type": "activity", "tool": "computer", "action": "click", "phase": "start"}
-{"type": "activity", "tool": "computer", "action": "click", "phase": "end"}
+{"type": "activity", "tool": "computer", "action": "click", "mode": "background", "phase": "start"}
+{"type": "activity", "tool": "computer", "action": "click", "mode": "background", "phase": "end"}
 {"type": "permissions", "screen": true, "input": false}
 ```
 
 - `control`：启动时写一次（`holder:"none"`、`reason:"start"`），之后每次变化写一行。`reason` 为 `desktop`（stdin）或 `resume`（模型调用 `computer(action=resume, device)`）；本人在电脑上的输入只让 Yuki 让出，不改 holder、不写行。`since` 是 UTC ISO-8601。
-- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、`owner_active`、权限、锁屏、参数错误等）不写。Desktop 据此显示“Yuki 正在操作”。
+- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、`owner_active`、权限、锁屏、参数错误等）不写。0.6.0 起 `computer` 的行带 `mode`：`background` 为按窗口后台投递（不动本人光标与前台），`foreground` 为整屏全局输入；没有 `mode` 的旧行按前台理解。Desktop 据此显示“Yuki 正在操作（背景／前台）”。
 - `permissions`：启动时写一次，此后预检结果变化时写（每次 `computer` 动作与每 5 秒各读一次预检）。macOS 为 `CGPreflightScreenCaptureAccess`／`CGPreflightPostEventAccess` 的结果，Windows 两项恒为 `true`；不支持屏幕的平台（Linux、macOS 14 以下）不写。变化时同时把新的 `device_capabilities.computer` 发给服务端。
 
 ## 屏幕与 Yuki 专用浏览器
 
-依据[统一 Computer Use 与 Browser Use 任务书](../architecture/Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md) §5.5、§5.7、§5.8 的阶段 3a，实施与验证见[3a 记录](computer-browser-device-3a-20261110.md)。两工具都需要本机完整访问（截图同样算），关闭时返回 `full_access_disabled`。命令 ID 即模型调用键：输入动作先写连接器 journal，同键重试返回原回执，执行中崩溃为 `unknown`，绝不重派；读动作不写 journal，重试即重读。
+依据[统一 Computer Use 与 Browser Use 任务书](../architecture/Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md) §5.5、§5.7、§5.8 的阶段 3a 与 3b，实施与验证见[3a 记录](computer-browser-device-3a-20261110.md)与[3b 记录](computer-3b-20261110.md)。两工具都需要本机完整访问（截图同样算），关闭时返回 `full_access_disabled`。命令 ID 即模型调用键：输入动作先写连接器 journal，同键重试返回原回执，执行中崩溃为 `unknown`，绝不重派；读动作不写 journal，重试即重读。
 
-**屏幕（`computer`）**：只在 macOS 14+ 与 Windows 声明 `device_capabilities.computer = {screen, input, displays:[{id, bounds, scale, primary}]}`，`get_environment(device)` 与 Client API 设备列表透出它。macOS 用 ScreenCaptureKit 截图（失败时退回 `CGWindowListCreateImage`），用私有事件源 `CGEventPost` 输入；Windows 用 GDI 截图、GDI+ 编 JPEG、`SendInput` 输入，进程为 per-monitor-v2 DPI。截图在来源处按服务端传来的 `max_dimension`／`max_pixels` 产出最终尺寸的 JPEG，经文件传输的读／释放循环回到服务端，释放即删除。`x,y` 是本次所附图像的像素，执行时按当下的显示几何换算（Retina、DPI、副屏负坐标），`display` 选显示器，省略为主显示器。3a 只操作整屏：给出 `window` 返回 `device_not_supported`（按窗口后台投递属 3b），`windows` 返回空列表。
+**屏幕（`computer`）**：只在 macOS 14+ 与 Windows 声明 `device_capabilities.computer = {screen, input, displays:[{id, bounds, scale, primary}], windows}`（`windows: true` 自 0.6.0 起，表示支持按窗口后台操作），`get_environment(device)` 与 Client API 设备列表透出它。macOS 用 ScreenCaptureKit 截图（失败时退回 `CGWindowListCreateImage`），用私有事件源 `CGEventPost` 输入；Windows 用 GDI 截图、GDI+ 编 JPEG、`SendInput` 输入，进程为 per-monitor-v2 DPI。截图在来源处按服务端传来的 `max_dimension`／`max_pixels` 产出最终尺寸的 JPEG，经文件传输的读／释放循环回到服务端，释放即删除。`x,y` 是本次所附图像的像素，执行时按当下的显示几何换算（Retina、DPI、副屏负坐标），`display` 选显示器，省略为主显示器。截图（含 `resume`）都返回 `windows:[{id, app, title}]`：macOS 为 ScreenCaptureKit 中 layer 0、有标题的窗口（`id` 为 CGWindowID），Windows 为可见、有标题、非工具窗口且未被 DWM 隐藏的顶层窗口（`id` 为 HWND），都不含连接器自己。
+
+**按窗口（`window`，0.6.0 起）**：截图只截该窗口（macOS ScreenCaptureKit 单窗口过滤器，Windows `PrintWindow(PW_RENDERFULLCONTENT)`），被遮挡也是它自己的画面；`x,y` 相对该窗口图像，执行时按窗口当下的位置与倍率换算；结果带 `window`、不带 `display`。输入只投给该窗口，不动本人光标、不改前台、不还原或抬起窗口，回执仍只是 `submitted` 加该窗口的新截图。macOS 先在**该窗口自己的**无障碍子树里找包含该点的最小元素：点击输入框设 `AXFocused`（读回不生效时在该点盖章点击）、可按的元素 `AXPress`、右键 `AXShowMenu`；没有可用元素时以及双击、移动、拖拽、滚轮，用投给该进程、带窗口字段的“盖章”鼠标事件（未公开字段与 `CGEventSetWindowLocation`，Cua 的做法）；`type`／`key` 用 `CGEventPostToPid` 投给该进程的焦点，给 `x,y` 时先聚焦该处输入框。向 Electron／Chrome 投递前对该 App 设一次 `AXManualAccessibility`（打开网页无障碍树，最多等 4 秒）。Windows 只经 UI Automation：在该窗口子树里找元素，`click` 用 Invoke／Toggle／SelectionItem／ExpandCollapse，`scroll` 用 Scroll，`type` 需给 `x,y` 指向可写输入框，文字接在原值之后；`key`、双击、右键、移动、拖拽在 Windows 窗口模式不支持。CI 实测：经典 Win32 控件经 UIA 操作后目标窗口会被激活到前台（光标不动），实机是否如此待确认。后台送不到时返回 `device_not_supported`，**从不自动改用前台**，模型可省略 `window` 改用整屏。按窗口操作在 macOS 上截图也需要辅助功能权限（读最小化状态）。
 
 | 失败 | 何时 |
 | --- | --- |
@@ -215,11 +217,12 @@ stdout 新增三种行，不改变状态行的形状：
 | `display_locked` | macOS 锁屏或显示器休眠 |
 | `desktop_unavailable` | macOS 控制台是其他用户或登录窗口；Windows 输入桌面不是 `Default`（锁屏、UAC） |
 | `target_elevated` | Windows 目标窗口所属进程完整性级别高于连接器（UIPI 会静默丢弃输入） |
-| `owner_active` | Yuki 上一次截图或输入之后出现了非 Yuki 输入：等本人停手 1.5 秒（最多 10 秒）后拒绝，输入没有执行；重新截图后重试 |
+| `owner_active` | Yuki 上一次截图或输入之后出现了非 Yuki 输入（给 `window` 时还要求该窗口所属 App 是本人的前台 App 或在本人指针下）：等本人停手 1.5 秒（最多 10 秒）后拒绝，输入没有执行；重新截图后重试 |
+| `window_not_found`／`window_unavailable` | 给出的窗口不存在或已关闭／已最小化或不可见（以系统状态为准，不靠截图像素）；Yuki 不还原窗口 |
 | `control_held` | 本人在 Desktop 按了「停止」（叫停中） |
-| `device_not_supported` | Linux、macOS 14 以下、旧连接器（`invalid_resource`）或给出 `window` |
+| `device_not_supported` | Linux、macOS 14 以下、旧连接器（`invalid_resource`）；0.5.0 连接器给出 `window`；按窗口时该动作或该处没有后台途径 |
 
-**让出**：Yuki 的每个合成事件都带标记（macOS `kCGEventSourceUserData`、Windows `dwExtraInfo`）。每次全局输入前比较两件事实：最近一次输入时刻（macOS 对按键按下、鼠标键按下、拖拽与滚轮分别读 `CGEventSourceSecondsSinceLastEventType(CombinedSessionState)` 取最近一次，含屏幕共享与远程控制，只移动指针不算；Windows `GetLastInputInfo`，含远程桌面与指针移动），与 Yuki 上一次截图或 `computer` 输入（或 `resume`、Desktop「繼續」）结束的时刻；前者更晚即为本人在用电脑。这时 Yuki 不投递任何事件，等本人连续 1.5 秒没有输入（最多 10 秒），然后以 `owner_active` 拒绝这次输入——画面可能已变，模型重新截图后按新图重试；截图推进基准，所以重试照常执行。截图与快照从不等待；`browser` 不碰光标，不让出。
+**让出**：Yuki 的每个合成事件都带标记（macOS `kCGEventSourceUserData`、Windows `dwExtraInfo`）。每次全局输入前比较两件事实：最近一次输入时刻（macOS 对按键按下、鼠标键按下、拖拽与滚轮分别读 `CGEventSourceSecondsSinceLastEventType(CombinedSessionState)` 取最近一次，含屏幕共享与远程控制，只移动指针不算；Windows `GetLastInputInfo`，含远程桌面与指针移动），与 Yuki 上一次截图或 `computer` 输入（或 `resume`、Desktop「繼續」）结束的时刻；前者更晚即为本人在用电脑。这时 Yuki 不投递任何事件，等本人连续 1.5 秒没有输入（最多 10 秒），然后以 `owner_active` 拒绝这次输入——画面可能已变，模型重新截图后按新图重试；截图推进基准，所以重试照常执行。截图与快照从不等待；`browser` 不碰光标，不让出。按窗口的后台输入不碰光标，只在真正冲突时让出：该窗口所属 App 是本人的前台 App（`lsappinfo front`／`GetForegroundWindow`），或本人指针下的窗口属于它，并且基准之后有本人输入；投给其他 App 的后台输入不等待。后台事件不推进系统的输入计时，不会让 Yuki 自己的下一次输入让出。
 
 **叫停**：只有 Desktop「停止」置 `holder=owner`。叫停期间 `computer` 与 `browser` 的所有输入都是 `control_held`，截图与快照照常可读。恢复只有 Desktop「繼續」与 `computer(action=resume, device)`，后者服务端只按设备归属本人核验。
 

@@ -10,9 +10,13 @@ this backend. ``<state-dir>`` holds:
 - ``script.json``: facts the operating system would report (read on every call, so a test
   can change them while the Connector runs): ``screen``, ``input``, ``unavailable``,
   ``elevated``, ``displays``, ``hang`` (the next input blocks forever, to kill the
-  process mid-execution), ``chrome`` (false: no Chrome installed).
+  process mid-execution), ``chrome`` (false: no Chrome installed), ``windows`` (each a
+  ``screen.Window`` plus ``minimized``, ``front`` — the owner's frontmost app or the window
+  under the owner's pointer is this window's — ``elevated`` and ``actions``, the inputs this
+  platform can deliver to a window in the background; omitted means all).
 - ``owner_last_input``: a wall-clock timestamp of the owner's latest deliberate input.
-- ``events.jsonl``: every input the Connector posted, in global input coordinates.
+- ``events.jsonl``: every input the Connector posted, in global input coordinates; input
+  delivered to a window in the background carries ``window``.
 """
 
 from __future__ import annotations
@@ -97,14 +101,86 @@ class FakeScreen:
     def elevated(self, point: tuple[float, float] | None) -> bool:
         return bool(self.script().get("elevated"))
 
-    def _post(self, kind: str, **facts: Any) -> None:
+    def _record(self, kind: str, **facts: Any) -> None:
         if self.script().get("hang"):
             (self.state / "hanging").write_text(kind)
             while True:
                 time.sleep(1)
         with (self.state / "events.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"kind": kind, **facts}, ensure_ascii=False) + "\n")
+
+    def _post(self, kind: str, **facts: Any) -> None:
+        self._record(kind, **facts)
+        # Global input is the session's latest input; background input is not (spike Q4).
         self.own = time.time()
+
+    def move(self, x: float, y: float) -> None:
+        self._post("move", x=x, y=y)
+
+    def click(self, x: float, y: float, button: str, count: int) -> None:
+        self._post("click", x=x, y=y, button=button, count=count)
+
+    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
+        self._post("drag", x=x, y=y, x2=x2, y2=y2)
+
+    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
+        self._post("scroll", x=x, y=y, dx=dx, dy=dy)
+
+    def key(self, modifiers: tuple[str, ...], key: str) -> None:
+        self._post("key", modifiers=list(modifiers), key=key)
+
+    def type(self, text: str) -> None:
+        self._post("type", text=text)
+
+    def _windows(self) -> list[dict[str, Any]]:
+        return list(self.script().get("windows", []))
+
+    def windows(self) -> list[dict[str, str]]:
+        return [
+            {"id": item["id"], "app": item["app"], "title": item["title"]}
+            for item in self._windows()
+        ]
+
+    def window(self, identity: str) -> FakeTarget:
+        facts = next((item for item in self._windows() if item["id"] == identity), None)
+        if facts is None:
+            raise screen.Refused("window_not_found", f"找不到窗口 {identity}。")
+        if facts.get("minimized"):
+            raise screen.Refused("window_unavailable", "这个窗口已最小化。")
+        geometry = {key: facts[key] for key in screen.Window.__dataclass_fields__}
+        return FakeTarget(self, screen.Window(**geometry), facts)
+
+
+class FakeTarget:
+    """One window: input to it is recorded with its id and never as global input."""
+
+    def __init__(self, owner: FakeScreen, window: screen.Window, facts: dict[str, Any]) -> None:
+        self.owner, self.window, self.facts = owner, window, facts
+        self.actions = frozenset(
+            facts.get(
+                "actions",
+                ["click", "double_click", "right_click", "move", "drag", "type", "key", "scroll"],
+            )
+        )
+
+    def collides(self) -> bool:
+        return bool(self.facts.get("front"))
+
+    def elevated(self) -> bool:
+        return bool(self.facts.get("elevated"))
+
+    def capture(self, width: int, height: int, path: Path) -> None:
+        path.write_bytes(jpeg(width, height))
+
+    def _post(self, kind: str, **facts: Any) -> None:
+        refused = self.owner.script().get("refuse")
+        if refused:
+            # No background route for this input (e.g. no UI Automation pattern there).
+            raise screen.Refused(refused, "该处没有可在后台操作的控件。")
+        self.owner._record(kind, window=self.window.id, **facts)
+
+    def focus(self, x: float, y: float) -> None:
+        self._post("focus", x=x, y=y)
 
     def move(self, x: float, y: float) -> None:
         self._post("move", x=x, y=y)

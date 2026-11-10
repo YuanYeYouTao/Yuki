@@ -4,7 +4,8 @@ an actual Connector process (its journal, stop flag and file transfers) and back
 Failure cases: docs/operations/computer-browser-device-3a-20261110.md §1 — routing and
 facts (D4, G2), full access (D5), image transfer and media failures (G1, D6, M6), stop
 and resume through the tool (D8, D9 including resume by someone else), retries and
-interruption (C4, C5). Only the operating system's screen is replaced, by
+interruption (C4, C5); one window in the background (docs/operations/computer-3b-20261110.md
+§1). Only the operating system's screen is replaced, by
 packages/yuki-agent-connector/tests/fakes/screen_connector.py.
 Artifact: test-results/device-computer/server-<test>.json.
 """
@@ -30,7 +31,7 @@ from tests.support.service_dependencies import tool_dependencies
 from yuki_agent_connector import connector as connector_module
 from yuki_agent_connector.config import Config
 from yuki_agent_connector.drivers import DriverError
-from yuki_agent_connector.screen import Display, frame, to_global
+from yuki_agent_connector.screen import Display, Window, frame, to_global
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.capabilities.results import ToolResultBudgeter
@@ -58,6 +59,17 @@ RETINA = {
     "scale": 2.0,
 }
 LIMITS = {"vision_max_dimension": 1568, "vision_max_pixels": 1_500_000}
+EDITOR = {
+    "id": "4242",
+    "app": "TextEdit",
+    "title": "notes.txt",
+    "x": 300,
+    "y": 120,
+    "width": 800,
+    "height": 600,
+    "pixel_width": 1600,
+    "pixel_height": 1200,
+}
 
 
 def script(state: Path, **facts) -> None:
@@ -204,6 +216,7 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
             "screen": True,
             "input": True,
             "displays": [Display(**RETINA).fact()],
+            "windows": True,
         }
 
         # G1/M6: the image comes back through the download loop at the source's size.
@@ -314,12 +327,39 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
         )
         assert typed.ok and events(connector.state)[-1] == {"kind": "type", "text": "中文 ok"}
 
-        # 3a has no per-window delivery; a browser without Chrome says so.
+        # 3b (docs/operations/computer-3b-20261110.md W2, W4, W6, W9, M6): one window in
+        # the background through the model tool; a browser without Chrome says so.
+        script(connector.state, windows=[EDITOR, {**EDITOR, "id": "77", "minimized": True}])
+        listed = await call(tools, owner, "list-1", "computer", action="screenshot", device=device)
+        assert [item["id"] for item in listed.data["windows"]] == ["4242", "77"]
         window = await call(
-            tools, owner, "window-1", "computer", action="screenshot", window="0x1",
+            tools, owner, "window-1", "computer", action="screenshot", window="4242",
             device=device,
         )
-        assert window.error_code == "device_not_supported"
+        calls["window-1"] = view(window)
+        assert window.ok and window.data["window"] == "4242", window
+        assert "display" not in window.data
+        size = frame(Window(**EDITOR), 1568, 1_500_000)
+        (image,) = window.images
+        picture = Image.open(io.BytesIO(base64.b64decode(image.data_url.split(",", 1)[1])))
+        assert picture.size == size == (window.data["width"], window.data["height"])
+        pressed = await call(
+            tools, owner, "window-click", "computer", action="click", window="4242", x=100,
+            y=50, device=device,
+        )
+        calls["window-click"] = view(pressed)
+        assert pressed.ok and pressed.mutation_committed is True, pressed
+        assert pressed.data["submitted"] is True and len(pressed.images) == 1
+        posted = events(connector.state)[-1]
+        assert posted["window"] == "4242"
+        expected = to_global(Window(**EDITOR), 1568, 1_500_000, 100, 50)
+        assert (posted["x"], posted["y"]) == pytest.approx(expected)
+        minimized = await call(
+            tools, owner, "window-min", "computer", action="click", window="77", x=1, y=1,
+            device=device,
+        )
+        assert minimized.error_code == "window_unavailable" and not minimized.uncertain
+        assert minimized.mutation_committed is not True
         missing = await call(tools, owner, "snap-1", "browser", action="snapshot", device=device)
         assert missing.error_code == "browser_unavailable"
 
@@ -357,7 +397,7 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
         )
         calls["click-3-after-restart"] = view(again)
         assert again.error_code == "action_unknown" and again.uncertain is True
-        assert len(events(connector.state)) == 3
+        assert len(events(connector.state)) == 4
     finally:
         if connector.process.returncode is None:
             stderr = await connector.stop()
