@@ -556,6 +556,10 @@ class MacScreen(Keys):
             selection,
             element,
             self.source,
+            # Outside the owner's current Space no app-level AX sees the window and stamped
+            # events miss it; a key there makes the app open a window here and come to the
+            # front (measured). Such a window is only looked at.
+            WINDOW_ACTIONS if item.isOnScreen() else frozenset(),
         )
 
 

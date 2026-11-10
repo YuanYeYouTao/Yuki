@@ -272,7 +272,8 @@ class Desk:
             if target is not None and action not in target.actions:
                 return failure(
                     "device_not_supported",
-                    f"这台电脑不能在后台向窗口投递 {action}，输入没有执行；"
+                    f"这台电脑现在不能在后台向这个窗口投递 {action}（平台没有这种后台途径，"
+                    "或窗口不在本人当前的桌面空间），输入没有执行；"
                     "需要时省略 window，在前台操作整个屏幕。",
                 )
             if (
