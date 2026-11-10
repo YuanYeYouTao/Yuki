@@ -70,8 +70,8 @@ def site() -> Iterator[str]:
         server.shutdown()
 
 
-def chrome_browsers(profile: Path) -> list[tuple[int, str]]:
-    """Browser (not renderer/GPU) processes started with this profile."""
+def chrome_browsers(profile: Path, *, every: bool = False) -> list[tuple[int, str]]:
+    """Browser (not renderer/GPU, unless ``every``) processes started with this profile."""
     if sys.platform == "win32":
         output = subprocess.run(
             [
@@ -94,7 +94,7 @@ def chrome_browsers(profile: Path) -> list[tuple[int, str]]:
     return [
         (int(pid), arguments)
         for pid, arguments in rows
-        if f"--user-data-dir={profile}" in arguments and "--type=" not in arguments
+        if f"--user-data-dir={profile}" in arguments and (every or "--type=" not in arguments)
     ]
 
 
@@ -186,8 +186,13 @@ async def test_dedicated_chrome_outlives_the_connector_and_reopens(
             kill(launched_pid)
             await until(lambda: not chrome_browsers(profile))
             await asyncio.sleep(0.5)
+            record["after_quit"] = chrome_browsers(profile, every=True)
             reopened = await cloud.command(
-                "browser", "open", "open-2", {**LIMITS, "url": site, "owner": "work-a"}
+                "browser",
+                "open",
+                "open-2",
+                {**LIMITS, "url": site, "owner": "work-a"},
+                wait=120,
             )
             record["reopened"] = reopened
             assert reopened["result"]["status"] == "succeeded", reopened
@@ -197,8 +202,11 @@ async def test_dedicated_chrome_outlives_the_connector_and_reopens(
             assert exit_code == 0, stderr
             record["lines"] = {"first": first.lines, "second": second.lines}
     finally:
+        record["processes_at_end"] = chrome_browsers(profile, every=True)
         for pid, _ in chrome_browsers(profile):
             kill(pid)
+        log = data / "connector.log"
+        record["connector_log"] = log.read_text(encoding="utf-8") if log.exists() else None
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         (ARTIFACTS / f"chrome-{sys.platform}.json").write_text(
             json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8"

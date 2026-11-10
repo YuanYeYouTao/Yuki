@@ -69,7 +69,13 @@ class Cloud:
             pass
 
     async def command(
-        self, resource: str, action: str, identity: str, arguments: dict[str, Any]
+        self,
+        resource: str,
+        action: str,
+        identity: str,
+        arguments: dict[str, Any],
+        *,
+        wait: float = 60,
     ) -> dict[str, Any]:
         assert self.socket is not None
         future = asyncio.get_running_loop().create_future()
@@ -86,7 +92,7 @@ class Cloud:
                 ensure_ascii=False,
             )
         )
-        response = await asyncio.wait_for(future, 60)
+        response = await asyncio.wait_for(future, wait)
         return {key: response[key] for key in ("result", "error") if key in response}
 
     async def image(self, path: str, identity: str) -> bytes:

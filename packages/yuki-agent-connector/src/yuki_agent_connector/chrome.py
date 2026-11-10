@@ -224,9 +224,10 @@ class BrowserHost:
             return self.browser
         try:
             self.browser = self._connect()
+            logger.info("Connected to the running Yuki Chrome")
             return self.browser
-        except (OSError, ValueError, IndexError):
-            pass
+        except (OSError, ValueError, IndexError) as error:
+            logger.info("No running Yuki Chrome to connect to (%s)", type(error).__name__)
         executable = find_chrome()
         if executable is None:
             raise Unavailable("这台电脑没有安装 Google Chrome；本人安装后才能使用浏览器。")
@@ -234,13 +235,17 @@ class BrowserHost:
         # A port file left by an instance that is gone names a dead port.
         (self.profile / "DevToolsActivePort").unlink(missing_ok=True)
         launch([executable, f"--user-data-dir={self.profile}", *FLAGS, "about:blank"])
+        logger.info("Launched the Yuki Chrome: %s", executable)
         deadline = time.monotonic() + LAUNCH_SECONDS
+        failure: Exception | None = None
         while time.monotonic() < deadline:
             try:
                 self.browser = self._connect()
                 return self.browser
-            except (OSError, ValueError, IndexError):
+            except (OSError, ValueError, IndexError) as error:
+                failure = error
                 time.sleep(0.1)
+        logger.warning("The Yuki Chrome opened no DevTools port: %r", failure)
         raise Unavailable(
             "Chrome 没有在等待时间内打开调试端口；可让本人退出 Yuki 专用 Chrome 后重试。"
         )

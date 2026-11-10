@@ -101,7 +101,9 @@ class Desk:
             directory, self.captures, lambda: self.control.holder, self.control.held, report
         )
         self.lock = threading.Lock()
-        # Monotonic end of Yuki's previous computer input (or resume), the stop baseline.
+        # End of Yuki's previous computer input (or resume), the stop baseline. perf_counter:
+        # Python 3.12 monotonic() on Windows ticks every ~15.6 ms, coarser than the input
+        # clocks it is compared with, which made Yuki's own input look later than it.
         self.observed: float | None = None
         self.permissions: tuple[bool, bool] | None = None
         self.permission_lock = threading.Lock()
@@ -142,7 +144,7 @@ class Desk:
             return
         if self.control.set(holder, "desktop") and holder == "none":
             # The click on 「繼續」 itself is the owner's input; it must not stop Yuki again.
-            self.observed = time.monotonic()
+            self.observed = time.perf_counter()
 
     def _publish(self) -> None:
         if self.dirty:
@@ -210,7 +212,7 @@ class Desk:
         if action == "resume":
             # The owner said so in chat; the server checked the device belongs to them.
             self.control.set("none", "resume")
-            self.observed = time.monotonic()
+            self.observed = time.perf_counter()
         unavailable = self.screen.unavailable()
         if unavailable is not None:
             return {"status": "failed", **unavailable}
@@ -239,7 +241,7 @@ class Desk:
                 return {"status": "failed", **self.control.held()}
             if (
                 self.observed is not None
-                and time.monotonic() - self.screen.seconds_since_input() > self.observed
+                and time.perf_counter() - self.screen.seconds_since_input() > self.observed
             ):
                 self.control.set("owner", "owner_input")
                 held = self.control.held()
@@ -281,7 +283,7 @@ class Desk:
             }
         if action in INPUTS or self.observed is None:
             # After the picture: Yuki's events have been processed by now.
-            self.observed = time.monotonic()
+            self.observed = time.perf_counter()
         if action in READS:
             # Per-window capture and delivery arrive with phase 3b.
             result["windows"] = []
@@ -360,6 +362,6 @@ class Desk:
         finally:
             if posted:
                 # Yuki's own events are now the latest input; only later input is someone else's.
-                self.observed = time.monotonic()
+                self.observed = time.perf_counter()
             self.report({"type": "activity", "tool": "computer", "action": action, "phase": "end"})
         return {}
