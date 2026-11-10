@@ -652,23 +652,6 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                     )
                 assert str(rejected.value) == "artifact_not_immutable"
                 record("rejected_mutable_artifact", error=str(rejected.value))
-                with pytest.raises(WorkspaceError) as unsupported:
-                    await service(
-                        {"artifact_id": artifacts["report.md"], "destination": "copies/x.md"},
-                        "copy-artifact-env",
-                    )
-                assert str(unsupported.value) == "source_not_supported_for_destination"
-                # ``device`` names the source computer; that direction is not served yet.
-                with pytest.raises(WorkspaceError) as source_device:
-                    await service(
-                        {
-                            "path": "C:\\report.md",
-                            "device": device_id,
-                            "destination": "copies/from-device.md",
-                        },
-                        "copy-from-device",
-                    )
-                assert str(source_device.value) == "source_not_supported_for_destination"
                 with pytest.raises(WorkspaceError) as ambiguous:
                     await service(
                         {
@@ -680,11 +663,7 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                         "copy-two-sources",
                     )
                 assert str(ambiguous.value) == "choose_one_source"
-                record(
-                    "source_selection_errors",
-                    artifact_to_environment=str(unsupported.value),
-                    two_sources=str(ambiguous.value),
-                )
+                record("source_selection_errors", two_sources=str(ambiguous.value))
                 shared = device_root / "shared.bin"
                 first, second = await asyncio.gather(
                     service(

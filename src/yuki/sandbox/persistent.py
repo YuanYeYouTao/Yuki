@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -203,6 +204,9 @@ class PersistentManager:
                 return
             if request.get("method") == "files_read":
                 await self.computer_transport.files_read(request["args"]["path"], writer)
+                return
+            if request.get("method") == "workspace_write":
+                await self.workspace_write(request, reader, writer)
                 return
             if request.get("method") == "control_watch":
                 await self.computer.watch(reader, writer)
@@ -921,6 +925,120 @@ class PersistentManager:
         self._file_requests[request_id] = digest, task
         task.add_done_callback(lambda _: self._file_requests.pop(request_id, None))
         return await self._wait_file(task)
+
+    async def workspace_write(
+        self,
+        request: dict[str, Any],
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Write ``size`` streamed bytes of a known sha256 into one workspace file.
+
+        The request ID is the original tool call. Its receipt is durable as unknown
+        before the first byte is read, so a restart mid-transfer stays unknown and
+        an earlier receipt is answered without reading the stream again.
+        """
+        args, request_id = request["args"], request["request_id"]
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("invalid_request_id")
+        existing = self._file_requests.get(request_id)
+        if existing is not None and not existing[1].done():
+            await self._wait_file(existing[1])
+        digest = hashlib.sha256(
+            json.dumps(["workspace_write", args], sort_keys=True).encode()
+        ).hexdigest()
+        async with self.file_lock:
+            row = self.db.execute(
+                "SELECT * FROM environment_mutations WHERE request_id=?", (request_id,)
+            ).fetchone()
+            if row is None:
+                with self.db:
+                    self.db.execute(
+                        "INSERT INTO environment_mutations VALUES (?,?,?)",
+                        (
+                            request_id,
+                            digest,
+                            json.dumps(
+                                {
+                                    "source_key": args["source_key"],
+                                    "destination": args["destination"],
+                                    "result": {
+                                        "error": "file_mutation_unknown_read_current_version",
+                                        "retryable": False,
+                                        "uncertain": True,
+                                    },
+                                }
+                            ),
+                        ),
+                    )
+        if row is not None:
+            result = (
+                {"error": "idempotency_conflict"}
+                if row["digest"] != digest
+                else json.loads(row["result"])["result"]
+            )
+            if result.get("error") == "file_mutation_unknown_read_current_version":
+                result["uncertain"] = True
+            writer.write(json.dumps({**result, "external_untrusted": True}).encode() + b"\n")
+            await writer.drain()
+            return
+        writer.write(b'{"ready":true}\n')
+        await writer.drain()
+        task = self._start_file(self._write_stream(args, request_id, reader))
+        self._file_requests[request_id] = digest, task
+        task.add_done_callback(lambda _: self._file_requests.pop(request_id, None))
+        result = await self._wait_file(task)
+        writer.write(json.dumps(result).encode() + b"\n")
+        await writer.drain()
+
+    async def _write_stream(
+        self, args: dict[str, Any], request_id: str, reader: asyncio.StreamReader
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        unread = [int(args["size"])]
+
+        def chunks() -> Iterator[bytes]:
+            while unread[0]:
+                data = asyncio.run_coroutine_threadsafe(
+                    reader.read(min(65536, unread[0])), loop
+                ).result()
+                if not data:
+                    raise WorkspaceError("source_stream_incomplete")
+                unread[0] -= len(data)
+                yield data
+
+        try:
+            # The target hash is the declared source hash; a mismatch never replaces it.
+            result = await asyncio.to_thread(
+                self.files._write,
+                args["destination"],
+                chunks(),
+                expected_version=args["sha256"],
+            )
+        except (WorkspaceError, OSError, ValueError) as exc:
+            result = {"error": str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__}
+            if isinstance(exc, OSError) and exc.errno in {28, 122}:
+                result = {"error": "workspace_full", **self.disk_status()}
+        async with self.file_lock:
+            with self.db:
+                self.db.execute(
+                    "UPDATE environment_mutations SET result=? WHERE request_id=?",
+                    (
+                        json.dumps(
+                            {
+                                "source_key": args["source_key"],
+                                "destination": args["destination"],
+                                "result": result,
+                            }
+                        ),
+                        request_id,
+                    ),
+                )
+        # After an early failure the sender still pushes its declared bytes; take
+        # them so it reads this answer instead of a broken pipe.
+        while unread[0] and (data := await reader.read(min(65536, unread[0]))):
+            unread[0] -= len(data)
+        return {**result, "external_untrusted": True}
 
     async def _file_request(
         self, method: str, args: dict[str, Any], request_id: str

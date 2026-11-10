@@ -69,7 +69,7 @@ def workspace_tools() -> tuple[ChatTool, ...]:
         tool(
             "copy_file",
             "把一个文件按字节复制到 destination，内容不经过你的上下文。来源三选一："
-            "path（Yuki 环境中的文件）、artifact_id，或 event_id 加 attachment；"
+            "path（可带 device 表示源在本人电脑）、artifact_id，或 event_id 加 attachment；"
             "to_device 是目标本人电脑，省略写入 Yuki 环境。成功返回 size 与 sha256；"
             "结果未知时不要重复复制，按提示核对。整理表情库前先读 /workspace/stickers/AGENT.md。",
             {

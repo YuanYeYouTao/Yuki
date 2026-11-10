@@ -280,7 +280,7 @@ completion 与 pending。短结果、artifact/最小摘要和原持久效果回�
 保留原请求、来源与已计预算，不盲目重派该调用；其他独立操作不受历史未知全局阻断。
 原请求的可信终态晚到时，按原 `request_id` 与 `effect_key` 核对所属来源后补齐执行事实，
 无需重新提交。终态子任务的晚到回执只结算已发执行，不复活任务或重新授予预算。
-附件保存与表情收藏共用私有 `workspace_copy`，直接从只读媒体缓存复制到最终文件。
+附件保存与表情收藏共用私有 `workspace_copy`，直接从只读媒体缓存复制到最终文件；artifact 与本人电脑文件写入环境用私有流 `workspace_write`，同一原请求回执。
 执行前查询原请求回执；原复制成功后不再检查源或覆盖用户后续修改，确认中断保留原未知。
 普通文件覆盖不要求目标 CAS。旧 checkout 与导入迁移入口退役，原持久回执不重写。
 
@@ -387,7 +387,7 @@ direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入�
 
 声明、说明和顺序在部署冻结，direct／Code Mode／Script API 共用；设备目录和实际能力变化只影响查询结果。执行处核当前 Person 与设备授予；operator、平台超管和聊天 token 不自动获得电脑控制权。重要问题和进度沿原 Work 私有输入，交付仍走 send／Social。旧 ACP close／peer／prompt 回执按原事实读取，不接收新调用别名。
 
-- `view_file`、`send(file)` 与 `copy_file` 共用原设备文件桥：`device` 一律指源电脑，`copy_file` 的目标电脑为 `to_device`（来源三选一：path、artifact_id、event_id+attachment；本期源 `device` 返回 `source_not_supported_for_destination`）；view_file 是私有观察，send 内部 publish 才冻结不可变交付。普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
+- `view_file`、`send(file)` 与 `copy_file` 共用原设备文件桥：`device` 一律指源电脑，`copy_file` 的目标电脑为 `to_device`（来源三选一：path（可带 `device`）、artifact_id、event_id+attachment；任一来源都可写入 Yuki 环境或本人电脑）；view_file 是私有观察，send 内部 publish 才冻结不可变交付。普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
 - `get_schedules(id?, history?, limit?, cursor?)` 提供全局安全摘要（列出全部状态）与获准的完整定义/发生历史；get/history 按真实 owner/超管授权。`manage_schedule(action=create/update/pause/resume/cancel/run_now, id?, goal?, trigger?, name?, max_runs?)` 沿原 owner、版本、创建键与调度回执；name 与 max_runs 缺省保留、null 清除，创建回执带 `confirmation=persisted` 与真实 `id`。
 - `read_chat` 读取真实获准的原账本集合；无筛选默认当前入口，有筛选默认全部获准入口，around 按内部事件 ID 定位原会话。时间用 since/until（带时区，until 不含），邻文用 context；内部目标解析与共享读取内核统一，入口授权认各自真实来源。
 - `search_memory(fact_id=…)` 保原 scope 与观察事实；`message_task` 保原父子 ID、ask/reply_to、运行中补充，`manage_task(action=resume, text=…)` 恢复子任务时可附新要求。
