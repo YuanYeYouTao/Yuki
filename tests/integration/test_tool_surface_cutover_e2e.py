@@ -4,9 +4,10 @@ Failure cases were listed before the implementation in
 docs/operations/tool-surface-cutover-20261107.md. This file covers the
 cross-cutting ones; each domain has its own E2E test.
 
-* A1/A2/A6: the frozen manifest of the offline application is exactly the 27
-  tools (direct mode), no old or deleted name is declared, every history-map
-  successor is declared, and Code Mode keeps its frozen direct view.
+* A1/A2/A6: the frozen manifest of the offline application is exactly the 29
+  tools (direct mode; the 27 of the cutover plus computer/browser, contract 36),
+  no old or deleted name is declared, every history-map successor is declared,
+  and Code Mode keeps its frozen direct view.
 * B7: every Host tool carries its capability namespace and effect on the
   declaration itself (no separate name table).
 * B12/D25: a model calling an old name is refused as an unknown tool and
@@ -74,6 +75,8 @@ TOOLS = {
     "read_command",
     "control_command",
     "get_environment",
+    "computer",
+    "browser",
     "get_tasks",
     "manage_task",
     "start_subtask",
@@ -198,10 +201,13 @@ async def test_offline_app_freezes_exactly_the_new_tool_surface(
         "json_bytes_utf8": sum(item["json_bytes_utf8"] for item in manifest.values()),
     }
     _write("manifest.json", {"baseline": BASELINE, "totals": totals, "tools": manifest})
-    assert totals["tools"] == 27
-    # Except read_chat (its filters), no tool exceeds 8 parameters (§6.8).
+    assert totals["tools"] == 29
+    # Except read_chat (its filters) and computer (its coordinates, frozen once by the
+    # computer/browser task book §5.1), no tool exceeds 8 parameters (§6.8).
     assert all(
-        len(item["parameters"]) <= 8 for name, item in manifest.items() if name != "read_chat"
+        len(item["parameters"]) <= 8
+        for name, item in manifest.items()
+        if name not in {"read_chat", "computer"}
     ), {name: item["parameters"] for name, item in manifest.items()}
 
 
@@ -361,6 +367,8 @@ CURRENT_STEPS = [
     ("read_webpage", {}, {"ok": True}, "web"),
     ("send", {}, {"ok": True, "status": "succeeded"}, "message"),
     ("manage_task", {}, {"ok": True}, "other"),
+    ("computer", {"action": "click"}, {"ok": True}, "computer"),
+    ("browser", {"action": "open"}, {"ok": True}, "browser"),
 ]
 
 

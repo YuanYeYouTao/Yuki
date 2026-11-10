@@ -69,7 +69,12 @@ from yuki.persistence.repositories import (
 )
 from yuki.runtime.errors import InvalidTurnContextError
 from yuki.runtime.origin import TurnOrigin
-from yuki.sandbox.environment_tools import SANDBOX_TOOLS, command_arguments, command_view
+from yuki.sandbox.environment_tools import (
+    READ_ACTIONS,
+    SANDBOX_TOOLS,
+    command_arguments,
+    command_view,
+)
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 
@@ -700,6 +705,8 @@ class AgentToolService:
                         }
                     )
                     source["actor_person_id"] = runtime.actor_person_id
+                    if name in {"computer", "browser"}:
+                        return await self._screen_action(name, arguments, request_id, source)
                     view: Callable[[dict[str, Any]], dict[str, Any]] | None
                     try:
                         if name in EXTERNAL_AGENT_TOOLS:
@@ -1749,6 +1756,63 @@ class AgentToolService:
             else False,
             metadata=metadata,
             images=result_images(data) if error is None else (),
+        )
+
+    async def _screen_action(
+        self, name: str, arguments: dict[str, Any], request_id: str, source: dict[str, Any]
+    ) -> ToolExecutionResult:
+        """``computer``/``browser``: business data plus the source-sized image, unscaled."""
+        from yuki.capabilities.media import PreparedMediaData
+        from yuki.domain.messages import ChatImage
+        from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
+
+        if "device" in arguments:
+            # The contract already names the device; personal computers arrive later.
+            return self._result(
+                error="device_not_supported",
+                detail="本人电脑暂不支持 computer／browser；省略 device 即操作 Yuki 自己的环境",
+            )
+        result = dict(
+            await self.sandbox_client.execute(
+                MODEL_TOOL_RPC_METHODS[name],
+                {
+                    **arguments,
+                    "owner": source.get("work_id"),
+                    # The environment produces the final image size; the Host never rescales it.
+                    "max_dimension": self._settings.vision_max_dimension,
+                    "max_pixels": self._settings.vision_max_pixels,
+                },
+                request_id=request_id,
+                source=source,
+            )
+        )
+        image = result.pop("image", None)
+        if result.get("error"):
+            return self._result(
+                data={
+                    key: value
+                    for key, value in result.items()
+                    if key not in {"retryable", "uncertain"}
+                },
+                error=str(result["error"]),
+                detail=str(result.get("message") or "动作没有完成"),
+                uncertain=result.get("status") == "unknown" or bool(result.get("uncertain")),
+            )
+        images = (
+            (
+                ChatImage(
+                    data_url=f"data:{image['media_type']};base64,{image['base64']}",
+                    source="tool",
+                ),
+            )
+            if isinstance(image, dict)
+            else ()
+        )
+        # A delivered input stays a fact even when its screenshot cannot be read
+        # (no image capability, archive failure): media_read is reported separately.
+        return self._result(
+            data=PreparedMediaData(result, images),
+            mutation_committed=arguments["action"] not in READ_ACTIONS[name] or None,
         )
 
     @staticmethod

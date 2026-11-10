@@ -10,7 +10,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from yuki.sandbox.manager import TERMINAL, identifier
 from yuki.workspace.files import FileWorkspace
@@ -102,8 +102,8 @@ class ComputerControl:
                 raise ValueError("invalid_control_actor")
         if action in {"return", "transfer", "agent_release"}:
             identifier(args.get("lease_id"))
-        if action == "agent_acquire":
-            identifier(actor.get("run_id"))
+        if action == "agent_acquire" and not isinstance(actor.get("request_id"), str):
+            raise ValueError("invalid_control_actor")
         payload = json.dumps(args, sort_keys=True, ensure_ascii=False, allow_nan=False)
         digest = hashlib.sha256(payload.encode()).hexdigest()
         db = self.manager.db
@@ -139,8 +139,8 @@ class ComputerControl:
             return {"error": "precondition_failed", "control": control}
         if action in {"take", "agent_acquire"} and control["holder"] == "human":
             return {"error": "control_held", "control": control}
-        if action == "agent_acquire" and control["holder"] == "agent":
-            return {"error": "control_held", "control": control}
+        # Agent leases live inside one Manager-serialized action. One still held at
+        # acquisition belongs to an action whose Manager process ended; replace it.
         old_lease = control.get("lease_id")
         if action in {"take", "transfer", "agent_acquire"}:
             control = {
@@ -254,16 +254,6 @@ class ComputerControl:
         ).fetchone()
         if row is not None and row[0] is None:
             self.cancel(run_id)
-        control = self.control()
-        if control["holder"] == "agent" and control.get("run_id") == run_id:
-            self.set(
-                str(uuid5(NAMESPACE_URL, "yuki:computer:agent-end:" + control["lease_id"])),
-                {
-                    "action": "agent_release",
-                    "actor": {"run_id": run_id},
-                    "lease_id": control["lease_id"],
-                },
-            )
 
     def _write(self, path: str, value: dict[str, Any]) -> None:
         # Runtime directories are writable by the environment. Use checked FDs,

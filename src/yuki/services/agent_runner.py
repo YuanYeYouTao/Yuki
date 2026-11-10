@@ -38,6 +38,7 @@ from yuki.execution_trace.recorder import trace_span
 from yuki.llm.base import (
     LLMError,
 )
+from yuki.llm.request_media import request_media
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.models import ModelCapability, ModelTask
 from yuki.runtime.activation_outcome import ActivationOutcome, record_model_requests
@@ -55,7 +56,6 @@ from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.invocation_service import BatchPlan, InvocationService
 from yuki.services.native_tool_binder import NativeToolBinder
 from yuki.services.turn_transcript import (
-    TranscriptRequest,
     TurnTranscript,
 )
 from yuki.web.models import WebMode
@@ -394,17 +394,11 @@ class AgentRunner:
     async def _validate_tool_media(
         tools: AgentToolBackend | None,
         runtime: AgentRuntime,
-        sequence: TranscriptRequest,
-        selected_media: tuple[ChatImage, ...] = (),
+        selected_media: tuple[ChatImage, ...],
     ) -> None:
+        """Recheck the sources of the images this request actually carries."""
         images = tuple(
             image for image in selected_media if image.source in {"history", "workspace", "tool"}
-        ) or tuple(
-            image
-            for message in (*sequence.messages, *sequence.items)
-            if isinstance(message, ChatMessage)
-            for image in message.images
-            if image.source in {"history", "workspace", "tool"}
         )
         # Older pixels may already live in an opaque continuation. The portable
         # dependency set is validated by the backend separately below.
@@ -415,14 +409,21 @@ class AgentRunner:
             await validator(images, runtime)
 
     @staticmethod
+    def _media_limits(runtime: AgentRuntime, tools: AgentToolBackend | None) -> tuple[int, int]:
+        return runtime.runtime_config.vision.max_frames_per_turn, getattr(
+            tools, "media_max_bytes", 16_777_216
+        )
+
+    @classmethod
     def _check_request_media_budget(
-        images: tuple[ChatImage, ...],
+        cls,
+        carried: tuple[str, ...],
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> None:
-        if len(images) > runtime.runtime_config.vision.max_frames_per_turn or sum(
-            len(image.data_url) for image in images
-        ) > getattr(tools, "media_max_bytes", 16_777_216):
+        """Images left after replacing old observations; only other images can exceed."""
+        frames, limit = cls._media_limits(runtime, tools)
+        if len(carried) > frames or sum(len(url) for url in carried) > limit:
             raise WorkCapacityError("media_request_budget_exceeded")
 
     def _budget_tool_media(
@@ -433,28 +434,35 @@ class AgentRunner:
         tools: AgentToolBackend | None,
         evidence: Mapping[str, dict[str, Any]],
     ) -> tuple[tuple[ToolCall, str, bool], ...]:
-        """Bound new pixels; whether a refused result committed is read from typed evidence."""
-        existing = {
-            image
-            for message in transcript.portable_entries()
-            if isinstance(message, ChatMessage)
-            for image in message.images
-        }
-        limit = getattr(tools, "media_max_bytes", 16_777_216)
-        frames = runtime.runtime_config.vision.max_frames_per_turn
-        size = sum(len(image.data_url) for image in existing)
-        count = len(existing)
+        """Bound each new result's pixels; whether a refused result committed is typed evidence.
+
+        Older observations are replaced at request assembly, so a new result
+        only has to fit beside the images that are never replaced.
+        """
+        sequence = transcript.request()
+        fixed = tuple(
+            image.data_url
+            for image in request_media(
+                ChatRequest(
+                    messages=sequence.messages,
+                    continuation=sequence.continuation,
+                    continuation_items=sequence.items,
+                )
+            )
+            if not image.observation
+        )
+        frames, limit = self._media_limits(runtime, tools)
+        size = sum(len(url) for url in fixed)
         output = []
         for call, result, executed in batch:
             images = result_images(result)
             if images:
-                fresh = set(images) - existing
                 error = None
                 if ModelCapability.IMAGE_INPUT not in self._models.capabilities(self._task):
                     error = "image_capability_unavailable"
                 elif (
-                    count + len(fresh) > frames
-                    or size + sum(len(image.data_url) for image in fresh) > limit
+                    len(fixed) + len(images) > frames
+                    or size + sum(len(image.data_url) for image in images) > limit
                 ):
                     error = "media_request_budget_exceeded"
                 if error:
@@ -470,10 +478,6 @@ class AgentRunner:
                         result = json.dumps({**outcome, "media_read": False, "media_error": error})
                     else:
                         result = json.dumps({"ok": False, "error": error, "read": False})
-                else:
-                    existing.update(fresh)
-                    count += len(fresh)
-                    size += sum(len(image.data_url) for image in fresh)
             output.append((call, result, executed))
         return tuple(output)
 

@@ -1,4 +1,9 @@
-"""Controlled real-browser work: observe actual input before handing control back."""
+"""Controlled real-browser work: serve a page, wait for the human, then record the result.
+
+The page is opened by the model's ``browser`` tool (the scenario reads the URL
+printed here); this terminal program only serves it and waits on the original
+help/control request through ``yuki-computer``.
+"""
 
 import json
 import os
@@ -6,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -18,6 +24,8 @@ HTML = (
     b'fetch("/observed",{method:"POST",body:this.value})\'></textarea>'
     b"</label><p id=echo></p>"
 )
+# Chromium's loopback debugger in the same environment, never through a proxy.
+TABS = "http://127.0.0.1:9222/json/list"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -38,6 +46,12 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def page(url):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(TABS, timeout=5) as response:
+        return next((tab for tab in json.load(response) if tab.get("url") == url), None)
+
+
 def main():
     workspace = Path(os.environ.get("YUKI_DESKTOP_WORKSPACE", "/workspace"))
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
@@ -45,10 +59,9 @@ def main():
         worker.start()
         try:
             url = f"http://127.0.0.1:{server.server_port}/"
-            subprocess.run(
-                ["yuki-computer", "browser", "open", url, "--tab", "desktop-integration"],
-                check=True,
-            )
+            print("computer-work-url:" + url, flush=True)
+            while page(url) is None:
+                time.sleep(0.1)
             print("computer-work-ready", flush=True)
             control_wait = "wait-control" in sys.argv[1:]
             if control_wait:
@@ -64,23 +77,10 @@ def main():
                 else ["yuki-computer", "help-request", "--note", "請協助原工作的畫面步驟"],
                 check=True,
             )
-            subprocess.run(
-                [
-                    "yuki-computer",
-                    "screenshot",
-                    "--screen",
-                    "--out",
-                    str(workspace / "after-return.png"),
-                ],
-                check=True,
-            )
-            actual = subprocess.check_output(
-                ["yuki-computer", "browser", "snapshot", "--tab", "desktop-integration"],
-                text=True,
-            )
             (workspace / "original-computer.md").write_text(
                 "# Original computer artifact\nDelivered after the original return receipt.\n"
-                + actual
+                + json.dumps(page(url), ensure_ascii=False)
+                + "\n"
             )
         finally:
             server.shutdown()

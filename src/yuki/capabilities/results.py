@@ -190,17 +190,15 @@ class ToolResultBudgeter:
             capture.outcome = result
         media_handle = None
         archive_images = getattr(self._artifacts, "write_media_artifact", None)
-        local_media = (
-            result.provider_id == "core"
-            and result.tool_name == "view_file"
-            and isinstance(result.data, dict)
-            and bool(result.data.get("device_id"))
+        # Pixels without a re-validatable source (workspace version, history
+        # event) or an existing handle are archived once as a private tool
+        # artifact, whatever tool produced them.
+        unarchived = tuple(
+            image
+            for image in result.images
+            if image.tool_handle is None and image.source not in {"workspace", "history"}
         )
-        if (
-            result.ok
-            and result.images
-            and (result.provider_id not in {"core", "artifacts"} or local_media)
-        ):
+        if result.ok and unarchived:
             try:
                 if not callable(archive_images):
                     raise ValueError("media_artifact_unavailable")
@@ -212,7 +210,7 @@ class ToolResultBudgeter:
                 media_handle = await archive_images(
                     provider_id=result.provider_id,
                     tool_name=result.tool_name,
-                    images=result.images,
+                    images=unarchived,
                     access=access,
                     retention_seconds=self._artifact_retention_seconds,
                 )
@@ -233,6 +231,8 @@ class ToolResultBudgeter:
                     result,
                     images=tuple(
                         replace(image, source="tool", tool_handle=media_handle)
+                        if image in unarchived
+                        else image
                         for image in result.images
                     ),
                 )

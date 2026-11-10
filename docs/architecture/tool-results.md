@@ -86,7 +86,7 @@ result_preview 是 JSON 摘录，其 read_more 从真实 result 路径的 cursor
 - Work 的跨模型搜索观察（`portable_search`）读本批现场执行的 typed outcome
   （`CoordinatedToolResult.outcomes` 中 `web_search` 的 `data.sources`），成败认已接受的
   typed 证据。只读回执重读没有现场 outcome，不再从原文本补记来源；原执行当时已记录。
-- 媒体预算超出模型图片能力或帧/字节预算时，是否保留原结果按 typed 证据的
+- 新结果图像超出模型图片能力或帧/字节预算（见下文“工具图像与长循环”）时，是否保留原结果按 typed 证据的
   `mutation_committed` 判断；恢复时从 journal 读出的原回执用其历史证据。`execute_code`
   仍按 Code 自己结果的 `executed`。
 - 已接受的生命周期控制（`manage_task`、`wait`、`start_subtask`、`message_task`）由
@@ -100,7 +100,42 @@ result_preview 是 JSON 摘录，其 read_more 从真实 result 路径的 cursor
 - Provider 适配器（Anthropic `is_error`、Gemini `error`）按投影中的 `ok: false` 与
   `process.succeeded: false` 标记失败。
 
-## 环境文件与旧脚本结果
+## 工具图像与长循环
+
+工具结果图像（截图、`view_file`、插件媒体、`read_result` 读回的图）不进入结果 JSON，
+由 `ToolExecutionResult.images` 交给 Runner，回执配对后按调用顺序追加一条 `role=user` 的
+Host 观察：`[Host 工具媒体观察：call_id=…；media_artifact_handle=…；…]`（工作区图写
+`path=`／`artifact_id=`，历史图写 `event_id=…，attachment=…`）。同一调用的同一组像素只观察一次
+（恢复时已配对的回合不重复追加）；之后的调用重读同一像素是新观察。
+
+**归档**：`ToolResultBudgeter` 把成功结果中所有没有 `tool_handle`、来源不是 `workspace`／
+`history` 的图像归档为私有工具产物，与 Provider 无关；模型在结果里看到 `media_artifact_handle`，
+图像改标 `source="tool"` 并带该句柄。工作区图（按文件版本）与历史图（按原事件）在每次派发前
+复核，不归档；`read_result` 读回的图已带原句柄，不再归档；`view_file(device)` 是设备读取、
+没有环境版本可复核，因此标 `source="tool"` 并归档。归档失败时去掉像素、结果加
+`media_read: false`／`media_error`，已发生的效果保留。来源处已定尺寸的截图不由 Host 缩放或重压缩。
+
+**每次请求携带的图像**：组装每个主请求（及其压缩摘要请求）时，`llm/request_media.py` 的
+`carry_request_media` 按现有上限（`vision.max_frames_per_turn` 帧、后端 `media_max_bytes` 字节）
+从最新的工具媒体观察往前保留，第一条放不下的及更早的全部改为文字：保留原观察文字（含 call_id
+与句柄或路径），去掉像素，追加一句“这条观察的图像未随本次请求发送……用 read_result 重读或用
+view_file 重看”。不新增阈值，不调用付费压缩。入站图像（current／reply）从不替换，它们单独超限时
+请求准入仍报 `media_request_budget_exceeded`。请求准入 `_check_request_media_budget` 统计替换后
+实际发送的全部图像（含续写载荷中的）；只复核实际携带的图像来源，被替换的旧工作区图不再复核。
+派发时 `_budget_tool_media` 只要求新结果的图像与不可替换的入站图合计不超限，否则该结果
+`media_read: false`（按 typed `mutation_committed` 保留效果）或未读失败；不再按整轮累计拒收。
+模型不支持图像输入时仍为 `image_capability_unavailable`。
+
+**续写**：四种方言都由 Host 重放自己保存的续写载荷，没有 provider 侧持有的历史——Responses
+`store: false` 且不发 `previous_response_id`，`input = [*inputs, *continuation_items]`；Chat
+Completions（带 reasoning_details 等时）、Claude Messages、Gemini 的续写也都从本次请求逐条生成。
+工具媒体观察一经发出就并入载荷，之后每次请求都重发，因此替换同时改写本次请求所带载荷中的
+图像部分（Chat Completions `image_url`、Claude `image`、Gemini `inlineData`、Responses
+`input_image`，各换成本方言的文字部分），计数也包括载荷中的图像。只改发出的请求：转写中原
+`ChatMessage` 保留像素；下一份续写由实际发出的请求生成，所以一经替换的观察在之后的请求中保持
+同一文字，前缀缓存只在新被替换的最旧观察处失效。容量估算把各方言载荷中的图像部分按媒体计，
+不按 base64 字符计。
+
 
 普通文件内容由终端读取、搜索与过滤，八项通用工作区工具已退出新声明与执行。媒体用 `view_file` 交给原模型；文件用统一 `send(file={path|artifact_id})` 内部固化并交付（图片默认按聊天图片，`as_file=true` 按文件）。实际快照 ID 与逐步发送状态沿原回执进入效果证据，不以原参数缺少 ID 漏记交付。普通终端文件不附加 CAS、分页文本协议或经验文件配额。
 

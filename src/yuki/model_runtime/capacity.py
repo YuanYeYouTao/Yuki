@@ -12,6 +12,7 @@ from yuki.domain.messages import (
     FunctionCallOutput,
     ProviderContinuation,
 )
+from yuki.llm.request_media import without_wire_media
 
 if TYPE_CHECKING:
     from yuki.domain.messages import ChatRequest, ChatTool
@@ -207,34 +208,13 @@ def _input_token_cost(value: object) -> InputTokenCost:
             return {"data_url": "[prepared media]"}
         if isinstance(value, ProviderContinuation):
             payload = value.payload
-            if value.protocol != "gemini" or not isinstance(payload, tuple):
+            if not isinstance(payload, tuple):
                 return payload
-            # Only Gemini content.parts media slots are prepared binary input.
-            # Business JSON inside calls/results and all unknown opaque shapes
-            # stay complete; no recursive interpretation of their field names.
-            contents: list[object] = []
-            for content in payload:
-                if (
-                    not isinstance(content, dict)
-                    or content.get("role") not in ("user", "model")
-                    or not isinstance(content.get("parts"), list)
-                ):
-                    contents.append(content)
-                    continue
-                parts: list[object] = []
-                for part in content["parts"]:
-                    if not isinstance(part, dict):
-                        parts.append(part)
-                        continue
-                    prepared = dict(part)
-                    for key in ("inlineData", "inline_data"):
-                        media = part.get(key)
-                        if isinstance(media, dict) and isinstance(media.get("data"), str):
-                            media_tokens += 4096
-                            prepared[key] = "[prepared media]"
-                    parts.append(prepared)
-                contents.append({**content, "parts": parts})
-            return contents
+            # Each dialect's own image parts are prepared binary input; business
+            # JSON inside calls/results and unknown opaque shapes stay complete.
+            elided, count = without_wire_media(value.protocol, payload)
+            media_tokens += 4096 * count
+            return elided
         if isinstance(value, dict):
             result: dict[str, object] = {}
             for key, item in value.items():

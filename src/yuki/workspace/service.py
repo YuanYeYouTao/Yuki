@@ -7,9 +7,11 @@ import base64
 import logging
 import os
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from typing import Any, BinaryIO
 from uuid import uuid4
 
+from yuki.capabilities.media import PreparedMediaData
 from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
 from yuki.domain.messages import ChatImage
 from yuki.sandbox.client import SandboxClient
@@ -150,8 +152,15 @@ class WorkspaceService:
                     file_metadata={**metadata, "path": path, "version": metadata["sha256"]},
                     data=data,
                 )
-                prepared["device_id"] = device_id
-                return prepared
+            # A device read has no environment version to re-validate; its pixels
+            # are tool media, archived privately once by the result budgeter.
+            return PreparedMediaData(
+                {**prepared, "device_id": device_id},
+                tuple(
+                    replace(image, source="tool", workspace_path=None, version=None)
+                    for image in prepared.images
+                ),
+            )
         metadata = await self.sandbox.execute(
             "workspace_media_read",
             {"path": path, "expected_version": None},

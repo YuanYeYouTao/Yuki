@@ -228,6 +228,19 @@ RPC_CALLS = [
         {"run_id": "run-1", "action": "interrupt"},
     ),
     ("get_environment", {}, "environment_status", {}),
+    # 2026-11-09: screen/browser actions add the owner and the deployment's image limits.
+    (
+        "computer",
+        {"action": "screenshot"},
+        "computer_action",
+        {"action": "screenshot", "owner": None, "max_dimension": 4096, "max_pixels": 16777216},
+    ),
+    (
+        "browser",
+        {"action": "snapshot"},
+        "browser_action",
+        {"action": "snapshot", "owner": None, "max_dimension": 4096, "max_pixels": 16777216},
+    ),
 ]
 
 

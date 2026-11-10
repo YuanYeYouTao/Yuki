@@ -1,12 +1,18 @@
-"""Desktop Supervisor integration and environment file-command delivery."""
+"""Desktop Supervisor integration and screen/browser actions through the environment driver."""
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import json
 import os
+import time
 from typing import TYPE_CHECKING, Any, cast
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from yuki.sandbox.computer_keys import release_key
+from yuki.sandbox.environment_tools import READ_ACTIONS
 from yuki.sandbox.manager import TERMINAL, identifier
 from yuki.workspace.files import FileWorkspace
 from yuki.workspace.store import WorkspaceError
@@ -15,12 +21,23 @@ if TYPE_CHECKING:
     from yuki.sandbox.persistent import PersistentManager
 
 SERVICE = "yuki-desktop"
+ACTION_METHODS = {"computer_action": "computer", "browser_action": "browser"}
+DRIVER = "computer/driver"
+_DRIVER_KEYS = uuid5(NAMESPACE_URL, "https://yuki.life/computer-driver/v1")
+# The driver's own wait for an action to settle (navigation/load, dialog, new tab,
+# download); on expiry it reports ``loading: true``. The Manager waits for the
+# driver's answer a little longer. These bound a call; they are not success gates.
+SETTLE_SECONDS = 15.0
+RESULT_SECONDS = 45.0
+WAKE_SECONDS = 60.0
 
 
 class ComputerRuntime:
     def __init__(self, manager: PersistentManager) -> None:
         self.manager = manager
         self.last_display: str | None = None
+        # One environment, one screen and one browser: actions run one at a time.
+        self.lock = asyncio.Lock()
 
     def browser_status(self) -> str:
         return self._service_status().get("browser", "unavailable")
@@ -69,10 +86,11 @@ class ComputerRuntime:
         if method == "tabs_list":
             if self.browser_status() != "running":
                 return {"tabs": [], "available": False}
-            code, raw = await self.manager.command(
-                "docker", "exec", self.manager.name, "yuki-computer", "status", "--json"
-            )
-            return json.loads(raw) if not code else {"error": "display_unavailable"}
+            try:
+                tabs = self._read_json(DRIVER + "/tabs.json").get("tabs", [])
+            except FileNotFoundError:
+                tabs = []
+            return {"tabs": tabs}
         if method not in {"display_wake", "display_sleep"}:
             return {"error": "unknown_method"}
         if not (
@@ -163,52 +181,206 @@ class ComputerRuntime:
                 self.manager.computer._bump()
             self.manager.computer.notify()
 
+    async def action(self, method: str, args: dict[str, Any], key: str) -> dict[str, Any]:
+        """One ``computer``/``browser`` call; ``key`` is the original tool call key.
+
+        An input writes a pending receipt before it reaches the driver and its
+        result afterwards. A retry of the key returns that result; a key with
+        only a pending row reports ``unknown`` and is never driven again.
+        Reads write nothing and are simply read again.
+        """
+        tool = ACTION_METHODS[method]
+        if not isinstance(args.get("action"), str) or not isinstance(key, str) or not key:
+            raise ValueError("invalid_arguments")
+        read = args["action"] in READ_ACTIONS[tool]
+        digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
+        async with self.lock:
+            if not read:
+                row = self.manager.db.execute(
+                    "SELECT digest,result FROM environment_mutations WHERE request_id=?", (key,)
+                ).fetchone()
+                if row is not None:
+                    if row["digest"] != digest:
+                        return {"error": "idempotency_conflict"}
+                    saved = cast(dict[str, Any], json.loads(row["result"]))
+                    if not saved.get("pending"):
+                        return saved
+                    # The Manager ended between the pending row and the result.
+                    # Withdraw a request the driver never claimed; never run it.
+                    self._unlink(f"{DRIVER}/requests/{self._driver_id(key)}.json")
+                    return {
+                        "error": "action_unknown",
+                        "message": "动作可能已经执行，结果未知；先截图或读快照确认，不要重复输入。",
+                        "status": "unknown",
+                    }
+            unavailable = await self._ready(tool, key)
+            if unavailable is not None:
+                return unavailable
+            if read:
+                return await self._drive(tool, args, str(uuid4()), None, read=True)
+            with self.manager.db:
+                self.manager.db.execute(
+                    "INSERT INTO environment_mutations VALUES (?,?,?)",
+                    (key, digest, '{"pending":true}'),
+                )
+            lease: str | None = None
+            try:
+                acquired = self.manager.computer.set(
+                    str(uuid5(_DRIVER_KEYS, "acquire:" + key)),
+                    {
+                        "action": "agent_acquire",
+                        "actor": {"request_id": key, "work_id": args.get("owner")},
+                    },
+                )
+                if acquired.get("error"):
+                    control = acquired.get("control", {})
+                    result: dict[str, Any] = {
+                        "error": "control_held",
+                        "message": "本人正在操作这台电脑，输入没有执行；等本人交还后再继续。",
+                        "control": {
+                            name: control[name] for name in ("holder", "since") if name in control
+                        },
+                    }
+                else:
+                    lease = acquired["control"]["lease_id"]
+                    try:
+                        result = await self._drive(
+                            tool, args, self._driver_id(key), lease, read=False
+                        )
+                    except (OSError, ValueError, KeyError, TypeError, WorkspaceError):
+                        # The runtime volume belongs to the environment; an unreadable
+                        # answer does not tell whether the input happened.
+                        result = {
+                            "error": "driver_result_unreadable",
+                            "message": "动作结果无法读取，可能已经执行；先截图或读快照确认。",
+                            "status": "unknown",
+                        }
+            finally:
+                if lease is not None:
+                    self.manager.computer.set(
+                        release_key(lease),
+                        {
+                            "action": "agent_release",
+                            "actor": {"request_id": key},
+                            "lease_id": lease,
+                        },
+                    )
+            receipt = {name: value for name, value in result.items() if name != "image"}
+            with self.manager.db:
+                self.manager.db.execute(
+                    "UPDATE environment_mutations SET result=? WHERE request_id=?",
+                    (json.dumps(receipt, ensure_ascii=False), key),
+                )
+            return result
+
+    async def _ready(self, tool: str, key: str) -> dict[str, Any] | None:
+        """Start the desktop service when needed; report what is actually unavailable."""
+        manifest = self.manager.desktop_manifest
+        headless = manifest.get("browser_mode") == "headless"
+        desktop = self.manager.testing or bool(manifest.get("desktop"))
+        if tool == "computer" and (headless or not desktop):
+            return {"error": "display_unavailable", "message": "这个环境没有桌面画面。"}
+        if not (desktop or headless):
+            return {"error": "browser_unavailable", "message": "这个环境没有安装浏览器。"}
+        if self.browser_status() != "running":
+            woken = await self.handle("display_wake", {}, str(uuid5(_DRIVER_KEYS, "wake:" + key)))
+            started = time.monotonic()
+            while not woken.get("error") and self.browser_status() not in {
+                "running",
+                "unavailable",
+            }:
+                if time.monotonic() - started > WAKE_SECONDS:
+                    break
+                await asyncio.sleep(0.1)
+            if self.browser_status() != "running":
+                return {
+                    "error": "display_unavailable" if tool == "computer" else "browser_unavailable",
+                    "message": "桌面服务没有启动。",
+                }
+        return None
+
     @staticmethod
-    def read_command(files: FileWorkspace, name: str) -> dict[str, Any]:
-        with files.open_file(name) as descriptor:
+    def _driver_id(key: str) -> str:
+        return str(uuid5(_DRIVER_KEYS, "request:" + key))
+
+    async def _drive(
+        self, tool: str, args: dict[str, Any], identity: str, lease: str | None, *, read: bool
+    ) -> dict[str, Any]:
+        files = FileWorkspace(self.manager.runtime_root)
+        results = self.manager.runtime_root / DRIVER / "results"
+        # Requests are serialized: any result left here belongs to a call the
+        # Manager stopped waiting for. The runtime volume is small.
+        for leftover in results.glob("*") if results.is_dir() else ():
+            self._unlink(f"{DRIVER}/results/{leftover.name}")
+        request = {
+            "id": identity,
+            "tool": tool,
+            "args": {
+                name: value
+                for name, value in args.items()
+                if name not in {"owner", "max_dimension", "max_pixels"}
+            },
+            "lease_id": lease,
+            "owner": args.get("owner"),
+            "max_dimension": args.get("max_dimension"),
+            "max_pixels": args.get("max_pixels"),
+            "wait_seconds": SETTLE_SECONDS,
+        }
+        await asyncio.to_thread(
+            files.write,
+            f"{DRIVER}/requests/{identity}.json",
+            json.dumps(request, ensure_ascii=False).encode(),
+        )
+        started = time.monotonic()
+        while time.monotonic() - started < RESULT_SECONDS:
+            try:
+                answer = await asyncio.to_thread(
+                    self._read_json, f"{DRIVER}/results/{identity}.json"
+                )
+                break
+            except FileNotFoundError:
+                await asyncio.sleep(0.05)
+        else:
+            if self._unlink(f"{DRIVER}/requests/{identity}.json"):
+                return {"error": "timeout", "message": "浏览器与桌面驱动没有响应，动作没有执行。"}
+            return {
+                "error": "timeout",
+                "message": "动作超时，可能已经执行；先截图或读快照确认，不要重复输入。",
+                **({} if read else {"status": "unknown"}),
+            }
+        result = cast(dict[str, Any], answer["result"])
+        image = answer.get("image")
+        if isinstance(image, dict):
+            name = f"{DRIVER}/results/{image['file']}"
+            with files.open_file(name) as descriptor:
+                data = await asyncio.to_thread(_read_all, descriptor)
+            self._unlink(name)
+            result["image"] = {
+                "base64": base64.b64encode(data).decode("ascii"),
+                "media_type": image["media_type"],
+                "width": image["width"],
+                "height": image["height"],
+            }
+        self._unlink(f"{DRIVER}/results/{identity}.json")
+        return result
+
+    def _read_json(self, path: str) -> dict[str, Any]:
+        with FileWorkspace(self.manager.runtime_root).open_file(path) as descriptor:
             with open(descriptor, closefd=False) as stream:
                 return cast(dict[str, Any], json.load(stream))
 
-    async def collect_commands(self) -> None:
-        directory = self.manager.computer.root / "commands"
-        if not directory.exists():
-            self.observe_display()
-            return
-        files = FileWorkspace(directory)
-        for path in directory.glob("*.json"):
-            try:
-                key = identifier(path.stem)
-                command = self.read_command(files, path.name)
-                method, args = command["method"], command["args"]
-                if method in {"agent_acquire", "agent_release"}:
-                    run_id = identifier(command.get("run_id"))
-                    row = self.manager.db.execute(
-                        "SELECT state,payload FROM jobs WHERE id=?", (run_id,)
-                    ).fetchone()
-                    if row is None or row["state"] in TERMINAL:
-                        result = {"error": "computer_run_unavailable"}
-                    else:
-                        work_id = json.loads(row["payload"]).get("env", {}).get("YUKI_WORK_ID")
-                        result = self.manager.computer.set(
-                            key,
-                            {
-                                "action": method,
-                                "actor": {"run_id": run_id, "work_id": work_id},
-                                **(
-                                    {"lease_id": args["lease_id"]}
-                                    if method == "agent_release"
-                                    else {}
-                                ),
-                            },
-                        )
-                else:
-                    result = await self.handle(method, args, key)
-                self.manager.computer._write("computer/command-results/" + key + ".json", result)
-            except (OSError, WorkspaceError):
-                continue  # Keep the original operation when result delivery failed.
-            except (ValueError, TypeError, KeyError):
-                result = {"error": "invalid_computer_command"}
-                self.manager.computer._write("computer/command-results/" + path.name, result)
-            with files.parent(path.name) as (parent, name):
+    def _unlink(self, path: str) -> bool:
+        """Remove one runtime file through checked directory FDs; False when absent."""
+        try:
+            with FileWorkspace(self.manager.runtime_root).parent(path) as (parent, name):
                 os.unlink(name, dir_fd=parent)
-        self.observe_display()
+            return True
+        except FileNotFoundError:
+            return False
+
+
+def _read_all(descriptor: int) -> bytes:
+    chunks = []
+    while data := os.read(descriptor, 1 << 20):
+        chunks.append(data)
+    return b"".join(chunks)

@@ -15,8 +15,5 @@ if [ "$#" -gt 0 ]; then
     apt-get install -y --no-install-recommends -- "$@"
     rm -rf /var/lib/apt/lists/*
 fi
-if [ "$mode" != none ]; then
-    /usr/local/bin/python -I -m pip --isolated install --no-user --no-cache-dir 'websockets>=16,<17'
-fi
 chmod 755 /usr/local/bin/yuki-computer
 python /opt/yuki-runtime/desktop-manifest.py "$mode" "$@"

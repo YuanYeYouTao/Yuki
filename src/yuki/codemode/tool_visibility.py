@@ -32,6 +32,8 @@ DIRECT_TOOL_NAMES = frozenset(
         "read_command",
         "control_command",
         "get_environment",
+        "computer",
+        "browser",
         "get_tasks",
         "manage_task",
         "start_subtask",

@@ -6,18 +6,19 @@ import asyncio
 import json
 import os
 import signal
+import sys
 import tempfile
 import urllib.request
 from pathlib import Path
 
-CDP_VERSION_URL = "http://127.0.0.1:9222/json/version"
+CDP_ADDRESS = "http://127.0.0.1:9222"
 
 
 def browser_ready() -> bool:
     # Chromium's loopback debugger must never go through an outbound proxy.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(CDP_VERSION_URL, timeout=0.2) as response:
+        with opener.open(CDP_ADDRESS + "/json/version", timeout=0.2) as response:
             version = json.load(response)
         return isinstance(version, dict) and bool(version.get("webSocketDebuggerUrl"))
     except (OSError, ValueError):
@@ -101,6 +102,21 @@ async def main() -> int:
             return 0 if stopped.is_set() else 1
         root = Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
         await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+        # The long-lived driver owns the one CDP connection and the screen input;
+        # downloads go to the workspace, never to the small runtime volume.
+        workspace = Path(os.environ.get("YUKI_DESKTOP_WORKSPACE", "/workspace"))
+        children.append(
+            await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(Path(__file__).with_name("yuki_computer.py")),
+                "serve",
+                "--cdp",
+                CDP_ADDRESS,
+                "--downloads",
+                str(workspace / "downloads"),
+                *(("--display", ":1") if mode == "headed" else ()),
+            )
+        )
         descriptor, temporary = tempfile.mkstemp(dir=root, prefix=".desktop-status-")
         with os.fdopen(descriptor, "w") as stream:
             json.dump(

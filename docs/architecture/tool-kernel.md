@@ -14,7 +14,7 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 actor、Conversation、设备来源及委托在执行处核验，不为选择声明查询入口或建立个人工具副本。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
-部署内冻结的完整工具清单（内置 27 项，2026-11-07 一次切换，见下文“工具面”），不加载 Code 引擎。
+部署内冻结的完整工具清单（内置 29 项：2026-11-07 一次切换的 27 项与 2026-11-09 的 `computer`／`browser`，见下文“工具面”），不加载 Code 引擎。
 显式启用 Code 时才使用 `DIRECT_TOOL_NAMES` 固定直调集合：聊天、工作与子任务、记忆与历史、
 看文件与读结果、命令与环境、联网、编码 Agent、`execute_code` 和 `lookup_tools`；安排、撤回、
 复制文件和插件工具经脚本调用。包安装直接在同一终端执行。两个模式分别
@@ -104,7 +104,7 @@ Work 预算中明确写入的有限额度在每次请求和 T2 处执行，重�
 默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用部署内固定完整工具清单。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
 Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v2`）。
-`run_command`、`read_command`、`control_command`、`get_environment`、`get_coding_agents`、`use_coding_agent` 常驻固定直调视图；
+`run_command`、`read_command`、`control_command`、`get_environment`、`computer`、`browser`、`get_coding_agents`、`use_coding_agent` 常驻固定直调视图；
 环境服务不再是模型工具（Manager 的服务登记与恢复照常）；安装和普通文件读写直接走同一管理员终端。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
 原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
@@ -191,14 +191,17 @@ Monty 内置模块（例如 asyncio、math）可用，宿主 Python 包、文件
 
 工具图片通过 Host 私有 `ToolExecutionResult.images` 交给 Runner，文字 `model_payload()`
 不复制像素。预算后的 `MediaResultText` 携带图片而仍以字符串保存公开回执。历史/工作区
-来源由真实事件或冻结文件版本授权；工具图片先归档到原执行有权读取的私有工具 artifact，
+来源由真实事件或冻结文件版本授权；其余没有句柄的工具图片（不分 Provider，含
+`view_file(device)`）先归档到原执行有权读取的私有工具 artifact，已有句柄的（`read_result`）不再归档；
 归档失败报告图片未读，不能抹去已经发生的外部修改。`read_result` 对图片 Artifact
 仅在原 handle 的读取授权内返回像素，通用文字/JSON 读取不开放原始 Base64。
 
 Runner 按原 call 顺序配齐整批回执，再追加有 call_id 的 Host 原生媒体观察；并行完成先后
 不改变输入顺序。同批别名、缓存命中与 Work 断点恢复保留原媒体，而不是共享图片队列。
-下一实际派发前核验来源仍有效；重读工具声明或内容 hash 不代替权限。图片累计容量按原
-主请求检查，能力/容量不足返回明确未读，不调用额外视觉模型或改变已冻结工具清单。
+下一实际派发前核验本次实际携带图片的来源仍有效；重读工具声明或内容 hash 不代替权限。
+组装请求时超出帧/字节上限的最旧观察（含续写载荷中的）改为带 call_id 与句柄的文字，容量按
+替换后实际发送的图片检查；新结果与入站图合计仍超限或模型无图片能力时返回明确未读，不调用
+额外视觉模型或改变已冻结工具清单（见[结果预算](tool-results.md#工具图像与长循环)）。
 工作区新增 path 与媒体语义变更会改变主合同 revision，部署时旧链不能沿用旧声明继续。
 
 只有明确 cacheable 的只读工具参与新同批别名与跨批缓存复用；非缓存历史工具即使同参数
@@ -353,12 +356,12 @@ send 的 `target` 只给一个内部 ID：person_id、space_id，或用 conversa
 SocialOperation 的 source_conversation_id 仍是原主会话。明确发往另一 Conversation 不冒用本入口回复证明；
 本入口原回复及其冷恢复继续核原入站事件。文件说明沿同一绑定投递。
 
-## 工具面（2026-11-07 一次切换，合同版本 35）
+## 工具面（2026-11-07 一次切换；2026-11-09 增 computer／browser，合同版本 36）
 
-内置 27 个模型工具：会话 `send`、`recall_message`、`read_chat`、`find_contacts`、`get_members`；
+内置 29 个模型工具：会话 `send`、`recall_message`、`read_chat`、`find_contacts`、`get_members`；
 记忆 `search_memory`、`save_memory`、`edit_memory`、`set_short_note`；网络 `web_search`、`read_webpage`；
 文件 `view_file`、`copy_file`、`read_result`；电脑 `run_command`、`read_command`、`control_command`、
-`get_environment`；工作 `get_tasks`、`manage_task`、`start_subtask`、`message_task`、`wait`；安排
+`get_environment`、`computer`、`browser`；工作 `get_tasks`、`manage_task`、`start_subtask`、`message_task`、`wait`；安排
 `get_schedules`、`manage_schedule`；编码 Agent `get_coding_agents`、`use_coding_agent`。共同约定：
 `target` 为恰含一个内部 ID 的对象（记忆另允许 `{"self": true}`），分页为 `limit` + 不透明 `cursor`
 与结果 `next_cursor`，时间为带时区的 `since`／`until`（until 不含），`device` 一律表示源电脑。
@@ -375,6 +378,7 @@ Main 固定合同保持每项固定名称、schema和顺序，各入口共用一
 direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入同一合同；工具数量不作运行准入条件。
 
 - `run_command`／`read_command`／`control_command` 共用原 run/回执；run_command 可选 `device` 选择本人电脑，省略继续使用 Manager。read/control 以 `id`（run_command 返回的 id）认原目标，不因当前目录或实例变化切换设备。模型参数在工具边界翻成 Manager wire 参数（device→device_id、id→run_id、cursor 字符串→整数），RPC 方法与任务行不变。普通本机 Shell 不要求 Work；完整访问仅由本机开关授予。control 的 input 发送原样 text；read 的 wait_seconds 只观察，默认不等待，原终态 completion 与游标同时保留。环境默认无强制期限，显式期限按事实执行。`get_environment(device?)` 查看环境或本机状态。
+- `computer(action, x?, y?, x2?, y2?, dx?, dy?, text?, window?, display?, device?)` 看和操作屏幕，`browser(action, url?, node?, text?, tab?, device?)` 按页面节点操作 Yuki 专用浏览器；两者 `namespace="sandbox.run"`、`effect="write_state"`、不缓存，参数按[任务书](Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md) §5.1 一次冻结。本期省略 `device` 时操作 Yuki 环境，给出 `device` 直接返回 `device_not_supported`、不接触 Manager。Bot 经 Manager RPC `computer_action`／`browser_action`（不设 bot 侧截止，Manager 自身有界等待）请求；Manager 按环境串行，输入类先写 `environment_mutations` 待定行、在进程内按调用键取 agent 租约，经 runtime 挂载把请求交给桌面服务托管的长驻驱动（`yuki_computer.py serve`，浏览器部分为共享 `yuki_agent_connector/cdp.py`），执行后写结果、`finally` 释放租约；同键重试返回原结果，只有待定行报 `unknown` 且不再执行；读类动作（截图、快照、沙箱 `resume`）不写待定行。图像由环境按当前显示几何与部署 `vision_max_dimension`／`vision_max_pixels` 直接产出最终尺寸，`x,y` 即该图坐标；Bot 把它作为 `source="tool"` 的工具结果像素交给模型（归档为私有工具产物，结果带 `media_artifact_handle`），不再缩放或重压缩。Code 脚本拿到不含像素的业务数据与 `media_artifact_handle`，像素随 `execute_code` 结果交给模型。细节见[持久环境桌面](../operations/desktop-computer.zh-CN.md)。
 - `get_coding_agents(device?, target?, history?, cursor?)` 查询本人已授权设备上的原生 Agent 目录、会话、执行、原操作、状态和必要历史，无需 Work；`use_coding_agent(action=prompt/queue/steer/watch/answer/cancel/detach, target, …)` 调用它们：prompt／queue 沿原 Work 登记新操作，watch 只登记监督。steer 追加到指定活跃执行；answer 回答原权限请求或提问（question 为事件 ID，answer 为选项 ID 或原生回答对象），cancel 精确取消原操作，detach 仅结束监督，不关闭用户会话或 daemon。`target` 是单键对象（instance_id／session_id／execution_id／operation_id）。cancel 接纳不等于执行已取消；原 cancel 仍待确认时，读取同 instance/session/native execution 已持久的原执行或监督终态，保留原控制操作 ID。detached 不是原执行终态；自然完成仍报告完成，不改称取消。新调用无 close、peer_id 或服务器 agent_id 别名，不让模型拼接启动程序、环境或 owner endpoint。
 
 公开 device／instance_id／session_id／execution_id／operation_id 均为内部 ID；native ID 仅是适配器引用，不用于重建人物归属。run_id 认 Work 等待，execution_id 认原生执行映射。确认丢失保持原关联，不以 resume、fork 或新 prompt 冒充恢复；原生能力缺失照实返回，不隐式取消重启。原问题回答、纠偏和管理操作记录本次真实 actor 与独立稳定调用键，不复用原 prompt 键。

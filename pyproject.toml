@@ -88,7 +88,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.12"
 strict = true
 packages = ["yuki", "yuki_plugin_sdk"]
-mypy_path = "src"
+mypy_path = "src:packages/yuki-agent-connector/src"
 warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 

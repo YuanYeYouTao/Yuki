@@ -24,6 +24,7 @@ from yuki.domain.messages import (
     ToolCall,
 )
 from yuki.execution_trace.phases import model_detail
+from yuki.llm.request_media import is_tool_media_observation
 from yuki.persistence.database import write_failure_committed, write_failure_retryable
 from yuki.runtime.effect_outcomes import (
     ResultCapture,
@@ -470,8 +471,7 @@ class WorkSession:
             message
             for message in self.transcript.portable_entries()
             if isinstance(message, ChatMessage)
-            and message.role == "user"
-            and (message.content or "").startswith("[Host 工具媒体观察：call_id=")
+            and is_tool_media_observation(message)
             and message.images
             and all(image.source in {"history", "workspace", "tool"} for image in message.images)
         )

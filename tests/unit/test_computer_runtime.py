@@ -1,21 +1,16 @@
-"""Actual CLI/CDP and durable service lifecycle; no Docker daemon required."""
+"""Actual desktop service and durable service lifecycle; no Docker daemon required."""
 
 import asyncio
 import json
-import os
 import shutil
-import subprocess
 import sys
-import time
 from uuid import uuid4
 
 import pytest
 
 pytest.importorskip("fcntl", reason="The persistent environment runs on Linux")
-from tests.unit.test_computer_control import CLI, manager_at, run, set_control
-
-from yuki.sandbox import yuki_computer
-from yuki.sandbox.yuki_computer import Browser, ComputerError
+from tests.unit.test_computer_control import CLI, manager_at
+from tests.unit.test_computer_driver import control, environment, exchange
 
 
 async def test_display_start_retry_and_explicit_wake_after_normal_end(tmp_path):
@@ -76,56 +71,6 @@ async def test_service_start_commit_before_binding_reuses_original_job_after_reo
         await manager.close()
 
 
-async def test_real_cli_input_is_blocked_by_human_and_read_only_snapshot_does_not_acquire(
-    tmp_path, monkeypatch, capsys
-):
-    manager = manager_at(tmp_path)
-    process = None
-    try:
-        identity = await run(manager)
-        set_control(manager, "take")
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            str(CLI),
-            "input",
-            "type",
-            "should not execute xdotool",
-            env={
-                **os.environ,
-                "YUKI_JOB_ID": identity,
-                "YUKI_COMPUTER_RUNTIME": str(manager.computer.root),
-            },
-            stdout=asyncio.subprocess.PIPE,
-        )
-        while not list((manager.computer.root / "commands").glob("*.json")):
-            assert process.returncode is None
-            await asyncio.sleep(0.01)
-        await manager.desktop.collect_commands()
-        output, _ = await asyncio.wait_for(process.communicate(), 5)
-        assert process.returncode == 75 and json.loads(output)["error"] == "control_held"
-        process = None
-        monkeypatch.setenv("YUKI_COMPUTER_RUNTIME", str(manager.computer.root))
-        monkeypatch.setattr(
-            sys, "argv", ["yuki-computer", "browser", "snapshot", "--tab", "real-target"]
-        )
-        monkeypatch.setattr(Browser, "target", lambda self, value: value)
-        monkeypatch.setattr(
-            Browser, "snapshot", lambda self, target: {"text": "tree", "target_id": target}
-        )
-        monkeypatch.setattr(
-            yuki_computer,
-            "input_lease",
-            lambda root: pytest.fail("read-only snapshot tried to acquire input"),
-        )
-        assert yuki_computer.main() == 0
-        assert json.loads(capsys.readouterr().out)["target_id"] == "real-target"
-    finally:
-        if process and process.returncode is None:
-            process.kill()
-            await process.wait()
-        await manager.close()
-
-
 def test_desktop_keeps_existing_resource_defaults_and_explicit_overrides(tmp_path):
     manager = manager_at(tmp_path)
     try:
@@ -145,175 +90,6 @@ def test_desktop_keeps_existing_resource_defaults_and_explicit_overrides(tmp_pat
         manager.db.close()
 
 
-@pytest.fixture
-def actual_browser(tmp_path, monkeypatch):
-    binary = os.environ.get("YUKI_TEST_CHROMIUM")
-    if not binary:
-        pytest.skip("Set YUKI_TEST_CHROMIUM to an actual isolated Chromium executable")
-    profile = tmp_path / "chromium"
-    process = subprocess.Popen(
-        [
-            binary,
-            "--headless",
-            "--no-sandbox",
-            "--no-first-run",
-            "--remote-debugging-port=0",
-            "--user-data-dir=" + str(profile),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        deadline = time.monotonic() + 15
-        active_port = profile / "DevToolsActivePort"
-        while not (active_port.exists() and (port := active_port.read_text().partition("\n")[0])):
-            assert process.poll() is None
-            assert time.monotonic() < deadline
-            time.sleep(0.05)
-        monkeypatch.setattr(yuki_computer, "CDP_ADDRESS", "http://127.0.0.1:" + port)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        yield Browser()
-    finally:
-        process.terminate()
-        process.wait(timeout=5)
-
-
-def editor_page(browser, html, name):
-    # Opening returns the target receipt, not completion of an asynchronous navigation.
-    # Prepare this input fixture synchronously before exercising AX/CLI behavior.
-    target = browser.open("about:blank", name)["target_id"]
-    result = browser.call(
-        "Runtime.evaluate",
-        {
-            "expression": (
-                f"document.documentElement.innerHTML = {json.dumps(html)};"
-                "document.querySelector('input').getAttribute('aria-label')"
-            ),
-            "returnByValue": True,
-        },
-        target,
-    )
-    assert result["result"]["value"] == "editor", result
-    return target
-
-
-def test_real_chromium_target_ownership_snapshot_click_unicode_and_restore_unknown(
-    actual_browser, monkeypatch, tmp_path
-):
-    browser = actual_browser
-    first_work, second_work = str(uuid4()), str(uuid4())
-    page = (
-        "<title>same</title><input aria-label='editor'>"
-        "<button onclick='document.title=\"clicked\"'>click me</button>"
-    )
-    monkeypatch.setenv("YUKI_WORK_ID", first_work)
-    first = editor_page(browser, page, "same")
-    monkeypatch.setenv("YUKI_WORK_ID", second_work)
-    second = editor_page(browser, page, "same")
-    assert browser.target("same") == second
-    monkeypatch.setenv("YUKI_WORK_ID", first_work)
-    assert browser.target("same") == first
-    tree = browser.snapshot(first)["text"]
-    # Follow actual AX node IDs returned by Chromium, not guessed DOM indexes.
-    click_node = int(
-        next(line.split("]")[0][1:] for line in tree.splitlines() if "button: click me" in line)
-    )
-    editor = int(
-        next(line.split("]")[0][1:] for line in tree.splitlines() if "textbox: editor" in line)
-    )
-    browser.click(first, click_node)
-    assert next(tab for tab in browser.tabs() if tab["target_id"] == first)["title"] == "clicked"
-    browser.call("DOM.focus", {"backendNodeId": editor}, first)
-    browser.call("Input.insertText", {"text": "真文字🙂"}, first)
-    value = browser.call(
-        "Runtime.evaluate",
-        {"expression": "document.querySelector('input').value", "returnByValue": True},
-        first,
-    )
-    assert value["result"]["value"] == "真文字🙂"
-    # A user-created/restored target has no original ownership record.
-    unknown = browser.call("Target.createTarget", {"url": "data:text/html," + page})["targetId"]
-    tabs = {tab["target_id"]: tab for tab in browser.tabs()}
-    assert tabs[first]["work_id"] == first_work and tabs[second]["work_id"] == second_work
-    assert "work_id" not in tabs[unknown]
-    browser.close(first)
-    assert first not in json.loads((browser.root / "tabs.json").read_text())
-    monkeypatch.setenv("YUKI_WORK_ID", str(uuid4()))
-    with pytest.raises(ComputerError, match="tab_not_found"):
-        browser.target("same")
-
-
-async def test_actual_cli_types_and_screenshots_through_manager_lease_and_releases_it(
-    actual_browser, tmp_path, monkeypatch
-):
-    browser = actual_browser
-    manager = manager_at(tmp_path)
-    work = str(uuid4())
-    monkeypatch.setenv("YUKI_WORK_ID", work)
-    target = editor_page(browser, "<input aria-label='editor'>", "edit")
-    tree = browser.snapshot(target)["text"]
-    node = int(
-        next(line.split("]")[0][1:] for line in tree.splitlines() if "textbox: editor" in line)
-    )
-    identity = await run(manager, work)
-    manager.computer.deliver_results()
-    environment = {
-        **os.environ,
-        "YUKI_JOB_ID": identity,
-        "YUKI_COMPUTER_RUNTIME": str(manager.computer.root),
-    }
-    wrapper = (
-        "import sys; from yuki.sandbox import yuki_computer as c; "
-        "c.CDP_ADDRESS=sys.argv[1]; sys.argv=['yuki-computer',*sys.argv[2:]]; "
-        "raise SystemExit(c.main())"
-    )
-    process = None
-
-    async def invoke(*args):
-        nonlocal process
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-c",
-            wrapper,
-            yuki_computer.CDP_ADDRESS,
-            *args,
-            env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        async with asyncio.timeout(10):
-            while process.returncode is None:
-                await manager.desktop.collect_commands()
-                await asyncio.sleep(0.01)
-            output, error = await process.communicate()
-        assert process.returncode == 0, (output, error)
-        return json.loads(output)
-
-    try:
-        await invoke("browser", "type", "實際 CLI🙂", "--tab", target, "--node", str(node))
-        value = browser.call(
-            "Runtime.evaluate",
-            {"expression": "document.querySelector('input').value", "returnByValue": True},
-            target,
-        )
-        assert value["result"]["value"] == "實際 CLI🙂"
-        assert manager.computer.control() == {"holder": "none"}
-        recorded = json.loads((manager.state_path(identity) / "step-label.json").read_text())
-        assert recorded == {"step_label": "browser"}
-        # A screenshot remains a read operation while a human holds control.
-        human = set_control(manager, "take")["control"]
-        destination = tmp_path / "actual.png"
-        await invoke("screenshot", "--tab", target, "--out", str(destination))
-        assert destination.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-        await invoke("browser", "snapshot", "--tab", target)
-        assert manager.computer.control() == human
-    finally:
-        if process and process.returncode is None:
-            process.kill()
-            await process.wait()
-        await manager.close()
-
-
 async def test_unavailable_headed_image_never_reports_a_started_display(tmp_path):
     manager = manager_at(tmp_path)
     manager.testing = False
@@ -328,23 +104,21 @@ async def test_unavailable_headed_image_never_reports_a_started_display(tmp_path
         await manager.close()
 
 
-async def test_real_headed_service_renders_unicode_exposes_rfb_and_stops_children(
-    tmp_path, monkeypatch
-):
+async def test_real_headed_service_renders_unicode_exposes_rfb_and_stops_children(tmp_path):
     if not all(shutil.which(binary) for binary in ("Xvnc", "openbox", "chromium")):
         pytest.skip("Requires the actual headed environment packages")
     root = tmp_path / "runtime"
     root.mkdir()
-    script = CLI.with_name("desktop_service.py")
+    workspace = tmp_path / "workspace"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(script),
-        env={
-            **os.environ,
-            "HOME": str(tmp_path),
-            "YUKI_COMPUTER_RUNTIME": str(root),
-            "YUKI_JOB_ID": str(uuid4()),
-        },
+        str(CLI.with_name("desktop_service.py")),
+        env=environment(
+            HOME=str(tmp_path),
+            YUKI_COMPUTER_RUNTIME=str(root),
+            YUKI_DESKTOP_WORKSPACE=str(workspace),
+            YUKI_JOB_ID=str(uuid4()),
+        ),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -359,24 +133,31 @@ async def test_real_headed_service_renders_unicode_exposes_rfb_and_stops_childre
             assert await reader.readexactly(12) == b"RFB 003.008\n"
             writer.close()
             await writer.wait_closed()
-            monkeypatch.setenv("HOME", str(tmp_path))
-            browser = Browser()
+            # The service's own driver answers through the runtime files.
+            lease = str(uuid4())
+            control(root, "agent", lease)
             page = await asyncio.to_thread(
-                browser.open, "data:text/html;charset=utf-8,<h1>Yuki 真實有頭畫面</h1>", None
+                exchange,
+                root,
+                "browser",
+                {
+                    "action": "open",
+                    "url": "data:text/html;charset=utf-8,<h1>Yuki 真實有頭畫面</h1>",
+                },
+                lease=lease,
             )
-            while True:
-                snapshot = await asyncio.to_thread(browser.snapshot, page["target_id"])
-                if "Yuki 真實有頭畫面" in snapshot["text"]:
-                    break
-                await asyncio.sleep(0.1)
-            png = await asyncio.to_thread(
-                browser.call, "Page.captureScreenshot", {}, page["target_id"]
-            )
-            import base64
-
-            assert base64.b64decode(png["data"]).startswith(b"\x89PNG\r\n\x1a\n")
+            assert "Yuki 真實有頭畫面" in page["result"]["snapshot"]
+            shot = await asyncio.to_thread(exchange, root, "browser", {"action": "screenshot"})
+            assert shot["image"]["data"].startswith(b"\xff\xd8")
+            assert (workspace / "downloads").is_dir()
     finally:
         if process.returncode is None:
             process.terminate()
         await asyncio.wait_for(process.wait(), 15)
     assert process.returncode == 0
+    # The driver ran as one of the service's children and stopped with it.
+    driver = await asyncio.create_subprocess_exec(
+        "pgrep", "-f", str(workspace / "downloads"), stdout=asyncio.subprocess.PIPE
+    )
+    found, _ = await driver.communicate()
+    assert driver.returncode == 1, found

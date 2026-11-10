@@ -156,22 +156,29 @@ jobs:
           mkdir -p test-results
           docker run --rm --network none --shm-size 512m \
             --entrypoint /opt/yuki-tests/bin/python \
-            -e PYTHONPATH=/src/src:/src -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONPATH=/src/src:/src:/src/packages/yuki-agent-connector/src -e PYTHONDONTWRITEBYTECODE=1 \
             -e YUKI_TEST_CHROMIUM=/usr/bin/chromium \
-            -v "$PWD:/src:ro" -v "$PWD/test-results:/results" -w /src \
+            -v "$PWD:/src:ro" -v "$PWD/test-results:/results" \
+            -v "$PWD/test-results:/src/test-results" -w /src \
             yuki-environment:headed-tests -m pytest \
             tests/unit/test_computer_control.py tests/unit/test_computer_runtime.py \
+            tests/unit/test_computer_driver.py \
             tests/unit/test_computer_transport.py tests/unit/test_computer_authority.py \
             tests/unit/test_retired_local_device_history.py \
             tests/unit/test_manager_deployment.py \
             tests/unit/test_computer_observer_lifecycle.py \
+            tests/unit/test_computer_actions.py \
+            tests/integration/test_computer_browser_e2e.py \
+            tests/integration/test_tool_media_long_loop_e2e.py \
             -q --strict-markers -o cache_dir=/tmp/yuki-pytest-cache \
             --basetemp=/tmp/yuki-pytest --junitxml=/results/desktop-headed.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: tests-desktop-headed
-          path: test-results/desktop-headed.xml
+          path: |
+            test-results/desktop-headed.xml
+            test-results/computer-browser/
           retention-days: 7
 
   native:

@@ -1,21 +1,31 @@
-"""Environment-side computer CLI. Uses only its own runtime mount and stdlib."""
+"""Environment-side computer CLI and driver host. Uses only its runtime mount and stdlib.
+
+``serve`` is the long-lived driver started by ``desktop_service.py``. The Manager
+puts requests under ``<runtime>/driver/requests``; one request runs at a time,
+is claimed by renaming it into ``taken/`` and answered in ``results/``. A request
+claimed by a driver that died is never re-run: its taken file is removed at the
+next start and the Manager reports the original call as unknown.
+"""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import fcntl
+import ctypes
+import ctypes.util
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
-import urllib.request
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
-from uuid import UUID, uuid4
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
+
+if TYPE_CHECKING:
+    # Only the long-lived driver needs it; help/wait/status stay standard-library only.
+    from yuki_agent_connector import cdp
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -45,208 +55,6 @@ def wait(root: Path, kind: str, note: str | None) -> dict[str, Any]:
             time.sleep(0.1)
 
 
-CDP_ADDRESS = "http://127.0.0.1:9222"
-
-
-def operation(root: Path, method: str, args: dict[str, Any]) -> dict[str, Any]:
-    key = str(uuid4())
-    atomic_json(
-        root / "commands" / (key + ".json"),
-        {
-            "method": method,
-            "args": args,
-            "run_id": os.environ.get("YUKI_JOB_ID"),
-        },
-    )
-    result = root / "command-results" / (key + ".json")
-    while True:
-        try:
-            value = cast(dict[str, Any], json.loads(result.read_text()))
-            result.unlink(missing_ok=True)
-            return value
-        except FileNotFoundError:
-            time.sleep(0.1)
-
-
-@contextmanager
-def input_lease(root: Path) -> Iterator[dict[str, Any]]:
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / "input.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        result = operation(root, "agent_acquire", {})
-        if result.get("error"):
-            raise ComputerError(result)
-        try:
-            yield result["control"]
-        finally:
-            operation(root, "agent_release", {"lease_id": result["control"]["lease_id"]})
-
-
-class ComputerError(Exception):
-    def __init__(self, result: dict[str, Any]) -> None:
-        self.result = result
-        super().__init__(result.get("error", "computer_error"))
-
-
-class Browser:
-    def __init__(self) -> None:
-        self.root = Path.home() / ".local/share/yuki-computer"
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.before_input: Callable[[], None] | None = None
-
-    def http(self, path: str) -> Any:
-        # CDP is the browser on container loopback, never an outbound proxy call.
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
-            CDP_ADDRESS + path
-        ) as response:
-            return json.load(response)
-
-    def call(self, method: str, params: dict[str, Any], tab: str | None = None) -> dict[str, Any]:
-        from websockets.sync.client import connect
-
-        if self.before_input and method in {
-            "Target.createTarget",
-            "Target.closeTarget",
-            "DOM.focus",
-            "Input.insertText",
-            "Input.dispatchKeyEvent",
-            "Input.dispatchMouseEvent",
-        }:
-            self.before_input()
-        url = (
-            self.http("/json/version")["webSocketDebuggerUrl"]
-            if tab is None
-            else next(
-                value["webSocketDebuggerUrl"]
-                for value in self.http("/json/list")
-                if value["id"] == tab
-            )
-        )
-        with connect(url, proxy=None, max_size=None) as socket:
-            socket.send(json.dumps({"id": 1, "method": method, "params": params}))
-            while True:
-                result = json.loads(socket.recv())
-                if result.get("id") == 1:
-                    if "error" in result:
-                        raise ComputerError({"error": "cdp_error", "details": result["error"]})
-                    return cast(dict[str, Any], result.get("result", {}))
-
-    @contextmanager
-    def records(self) -> Iterator[dict[str, Any]]:
-        with (self.root / "tabs.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            path = self.root / "tabs.json"
-            try:
-                records = json.loads(path.read_text())
-            except FileNotFoundError:
-                records = {}
-            yield records
-            atomic_json(path, records)
-
-    def tabs(self) -> list[dict[str, Any]]:
-        pages = [tab for tab in self.http("/json/list") if tab.get("type") == "page"]
-        with self.records() as records:
-            live = {tab["id"] for tab in pages}
-            for target in list(records):
-                if target not in live:
-                    records.pop(target)
-            return [
-                {
-                    "target_id": tab["id"],
-                    "title": tab.get("title", ""),
-                    "url": tab.get("url", ""),
-                    **records.get(tab["id"], {}),
-                }
-                for tab in pages
-            ]
-
-    def target(self, name: str | None) -> str:
-        tabs = self.tabs()
-        if name and any(tab["target_id"] == name for tab in tabs):
-            return name
-        candidates = [
-            tab
-            for tab in tabs
-            if tab.get("work_id") == os.environ.get("YUKI_WORK_ID")
-            and (name is None or tab.get("name") == name)
-        ]
-        if len(candidates) != 1:
-            raise ComputerError(
-                {"error": "tab_not_found" if not candidates else "tab_ambiguous", "tabs": tabs}
-            )
-        return cast(str, candidates[0]["target_id"])
-
-    def open(self, url: str, name: str | None) -> dict[str, Any]:
-        target = self.call("Target.createTarget", {"url": url})["targetId"]
-        with self.records() as records:
-            records[target] = {
-                "work_id": os.environ.get("YUKI_WORK_ID"),
-                "created_at": time.time(),
-                "name": name,
-            }
-        return {"target_id": target}
-
-    def close(self, target: str) -> dict[str, Any]:
-        result = self.call("Target.closeTarget", {"targetId": target})
-        with self.records() as records:
-            records.pop(target, None)
-        return result
-
-    def snapshot(self, target: str) -> dict[str, Any]:
-        nodes = self.call("Accessibility.getFullAXTree", {}, target).get("nodes", [])
-        return {
-            "target_id": target,
-            "text": "\n".join(
-                f"[{node.get('backendDOMNodeId', '')}] "
-                f"{node.get('role', {}).get('value', '')}: "
-                f"{node.get('name', {}).get('value', '')}"
-                for node in nodes
-                if not node.get("ignored")
-            ),
-        }
-
-    def click(self, target: str, node: int) -> dict[str, Any]:
-        # Remote object handles belong to the CDP session that created them.
-        # Evaluate a resolved backend node through one persistent connection.
-        return self.node_call(
-            target, node, "function(){this.scrollIntoView({block:'center'});this.click()}"
-        )
-
-    def node_call(self, target: str, node: int, function: str) -> dict[str, Any]:
-        from websockets.sync.client import connect
-
-        url = next(
-            value["webSocketDebuggerUrl"]
-            for value in self.http("/json/list")
-            if value["id"] == target
-        )
-        with connect(url, proxy=None, max_size=None) as socket:
-
-            def call(identity: int, method: str, params: dict[str, Any]) -> dict[str, Any]:
-                socket.send(json.dumps({"id": identity, "method": method, "params": params}))
-                while True:
-                    result = json.loads(socket.recv())
-                    if result.get("id") == identity:
-                        if result.get("error"):
-                            raise ComputerError({"error": "cdp_error", "details": result["error"]})
-                        return cast(dict[str, Any], result["result"])
-
-            if self.before_input:
-                self.before_input()
-            resolved = call(1, "DOM.resolveNode", {"backendNodeId": node})
-            if self.before_input:
-                self.before_input()
-            return call(
-                2,
-                "Runtime.callFunctionOn",
-                {
-                    "objectId": resolved["object"]["objectId"],
-                    "functionDeclaration": function,
-                    "returnByValue": True,
-                },
-            )
-
-
 def mark(label: str) -> None:
     if os.environ.get("YUKI_WORK_ID") and os.environ.get("YUKI_JOB_ID"):
         path = (
@@ -257,144 +65,493 @@ def mark(label: str) -> None:
         atomic_json(path, {"step_label": label})
 
 
+def control(root: Path) -> dict[str, Any]:
+    try:
+        return cast(dict[str, Any], json.loads((root / "control.json").read_text()))
+    except FileNotFoundError:
+        # The Manager writes this file whenever control changes; none means none.
+        return {"holder": "none"}
+
+
+def visible(current: dict[str, Any]) -> dict[str, Any]:
+    return {key: current[key] for key in ("holder", "since") if key in current}
+
+
+def lease_check(root: Path, lease_id: str | None) -> Callable[[], None]:
+    """Run before every input: the request's lease must still be the current agent lease."""
+
+    def check() -> None:
+        from yuki_agent_connector import cdp
+
+        current = control(root)
+        if current.get("holder") != "agent" or current.get("lease_id") != lease_id:
+            raise cdp.Failure(
+                {
+                    "error": "control_held",
+                    "message": "電腦目前不由這次操作控制（可能已被本人接管），沒有繼續輸入。",
+                    "control": visible(current),
+                }
+            )
+
+    return check
+
+
+def keysym(character: str) -> int | None:
+    code = ord(character)
+    if code < 0x20 or code == 0x7F:
+        # Newline and tab are typed by xdotool as Return and Tab.
+        return None
+    if code <= 0x7E or 0xA0 <= code <= 0xFF:
+        return code
+    return 0x01000000 + code
+
+
+class Keymap:
+    """Spare X keycodes bound to the characters that are about to be typed.
+
+    xdotool types a character missing from the keymap by rebinding one scratch
+    keycode per character. A client re-reads the keymap only when it gets to the
+    change notification, by which time the scratch keycode may already mean the
+    next character (observed: "中文" arrived as "中中" in Chromium). Here every
+    character of a run gets its own keycode before the run is typed, bound on both
+    levels so XKB does not case-fold it, and bindings stay in place afterwards so a
+    late re-read still finds them. Only when a text needs more characters than
+    there are spare keycodes are the least recently used bindings reused, between
+    runs.
+    """
+
+    def __init__(self, display: str) -> None:
+        x11 = ctypes.CDLL(ctypes.util.find_library("X11"))
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XDisplayKeycodes.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        x11.XGetKeyboardMapping.restype = ctypes.POINTER(ctypes.c_ulong)
+        x11.XGetKeyboardMapping.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ubyte,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        x11.XChangeKeyboardMapping.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.c_int,
+        ]
+        x11.XFree.argtypes = [ctypes.c_void_p]
+        x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.x11 = x11
+        self.connection = x11.XOpenDisplay(display.encode())
+        if not self.connection:
+            raise OSError(f"cannot open X display {display}")
+        # keycode -> keysym bound here, least recently used first.
+        self.bound: dict[int, int] = {}
+
+    def mapping(self) -> dict[int, tuple[int, ...]]:
+        low, high, width = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+        self.x11.XDisplayKeycodes(self.connection, ctypes.byref(low), ctypes.byref(high))
+        count = high.value - low.value + 1
+        table = self.x11.XGetKeyboardMapping(self.connection, low.value, count, ctypes.byref(width))
+        try:
+            return {
+                low.value + index: tuple(
+                    table[index * width.value + level] for level in range(width.value)
+                )
+                for index in range(count)
+            }
+        finally:
+            self.x11.XFree(table)
+
+    def runs(self, text: str) -> Iterator[str]:
+        """Consecutive parts of ``text``; each is fully on the keymap when yielded."""
+        start = 0
+        while start < len(text):
+            mapping = self.mapping()
+            # Someone else (Xvnc for a viewer's keys) may have rebound a keycode.
+            self.bound = {
+                code: symbol
+                for code, symbol in self.bound.items()
+                if symbol in mapping.get(code, ())
+            }
+            present = {
+                symbol
+                for code, symbols in mapping.items()
+                if code not in self.bound
+                for symbol in symbols
+            }
+            spare = [
+                code
+                for code, symbols in mapping.items()
+                if not any(symbols) and code not in self.bound
+            ] + list(self.bound)
+            wanted: dict[int, None] = {}
+            end = start
+            while end < len(text):
+                symbol = keysym(text[end])
+                if symbol is not None and symbol not in present and symbol not in wanted:
+                    if len(wanted) == len(spare):
+                        break
+                    wanted[symbol] = None
+                end += 1
+            holders = {symbol: code for code, symbol in self.bound.items() if symbol in wanted}
+            free = [code for code in spare if self.bound.get(code) not in wanted]
+            for symbol in wanted:
+                code = holders[symbol] if symbol in holders else free.pop(0)
+                if symbol not in holders:
+                    pair = (ctypes.c_ulong * 2)(symbol, symbol)
+                    self.x11.XChangeKeyboardMapping(self.connection, code, 2, pair, 1)
+                self.bound.pop(code, None)
+                self.bound[code] = symbol
+            self.x11.XSync(self.connection, 0)
+            # With no spare keycode at all, xdotool's own scratch binding remains.
+            end = max(end, start + 1)
+            yield text[start:end]
+            start = end
+
+
+class Screen:
+    """The sandbox X display: screenshots with ImageMagick, input with xdotool."""
+
+    def __init__(self, display: str) -> None:
+        self.display = display
+        self.environment = {**os.environ, "DISPLAY": display, "LC_ALL": "C.UTF-8"}
+        self.keymap: Keymap | None = None
+
+    def run(self, deadline: float, *command: str) -> bytes:
+        return subprocess.run(
+            command,
+            env=self.environment,
+            check=True,
+            capture_output=True,
+            timeout=max(0.0, deadline - time.monotonic()),
+        ).stdout
+
+    def geometry(self, deadline: float, window: str | None) -> tuple[int, int, int, int]:
+        """Origin and size of the root window or of one top-level window, read now."""
+        from yuki_agent_connector import cdp
+
+        if window is None:
+            output = self.run(deadline, "xwininfo", "-root")
+        else:
+            try:
+                # xwininfo reads an unparsable or zero id as "let the user click
+                # a window" and would wait for a pointer click.
+                if not int(window, 0):
+                    raise ValueError(window)
+                output = self.run(deadline, "xwininfo", "-id", window)
+            except (ValueError, subprocess.CalledProcessError):
+                raise cdp.Failure(
+                    {"error": "window_not_found", "message": f"找不到視窗：{window}"}
+                ) from None
+        fields = {
+            key.strip(): value.strip()
+            for key, _, value in (line.partition(":") for line in output.decode().splitlines())
+        }
+        if window and fields["Map State"] != "IsViewable":
+            raise cdp.Failure(
+                {
+                    "error": "window_unavailable",
+                    "message": f"視窗 {window} 目前沒有顯示（可能已最小化）。",
+                }
+            )
+        return (
+            int(fields["Absolute upper-left X"]),
+            int(fields["Absolute upper-left Y"]),
+            int(fields["Width"]),
+            int(fields["Height"]),
+        )
+
+    def windows(self, deadline: float) -> list[dict[str, str]]:
+        """Visible managed top-level windows; ``app`` is the WM_CLASS class name."""
+        listed = self.run(deadline, "xprop", "-root", "_NET_CLIENT_LIST").decode()
+        result = []
+        for identity in re.findall(r"0x[0-9a-f]+", listed.partition("#")[2]):
+            properties = self.run(
+                deadline, "xprop", "-id", identity, "WM_CLASS", "_NET_WM_NAME", "_NET_WM_STATE"
+            ).decode()
+            if "_NET_WM_STATE_HIDDEN" in properties:
+                continue
+            classes = re.findall(r'"((?:[^"\\]|\\.)*)"', _property(properties, "WM_CLASS"))
+            title = re.findall(r'"((?:[^"\\]|\\.)*)"', _property(properties, "_NET_WM_NAME"))
+            result.append(
+                {
+                    "id": identity,
+                    "app": classes[-1] if classes else "",
+                    "title": title[0].replace('\\"', '"') if title else "",
+                }
+            )
+        return result
+
+    def execute(
+        self,
+        args: dict[str, Any],
+        root: Path,
+        before_input: Callable[[], None],
+        max_dimension: int,
+        max_pixels: int,
+        deadline: float,
+    ) -> tuple[dict[str, Any], cdp.Image]:
+        from yuki_agent_connector import cdp
+
+        action, window = args["action"], args.get("window")
+        result: dict[str, Any] = {}
+        inputs = 0
+
+        def xdotool(*command: str) -> None:
+            nonlocal inputs
+            before_input()
+            inputs += 1
+            self.run(deadline, "xdotool", *command)
+
+        try:
+            if action not in ("screenshot", "resume"):
+                left, top, width, height = self.geometry(deadline, window)
+                scale = cdp.image_scale(width, height, max_dimension, max_pixels)
+
+                def at(x_name: str, y_name: str) -> list[str]:
+                    # Coordinates are in the image this geometry and scale produce.
+                    if args.get(x_name) is None or args.get(y_name) is None:
+                        return []
+                    # No --sync: it never returns when the pointer is already there,
+                    # and the X server applies the move before the following click.
+                    return [
+                        "mousemove",
+                        str(left + round(args[x_name] / scale)),
+                        str(top + round(args[y_name] / scale)),
+                    ]
+
+                if action == "click":
+                    xdotool(*at("x", "y"), "click", "1")
+                elif action == "double_click":
+                    xdotool(*at("x", "y"), "click", "--repeat", "2", "1")
+                elif action == "right_click":
+                    xdotool(*at("x", "y"), "click", "3")
+                elif action == "move":
+                    xdotool(*at("x", "y"))
+                elif action == "drag":
+                    xdotool(*at("x", "y"), "mousedown", "1")
+                    xdotool(*at("x2", "y2"))
+                    xdotool("mouseup", "1")
+                elif action == "type":
+                    if self.keymap is None:
+                        self.keymap = Keymap(self.display)
+                    for run in self.keymap.runs(args.get("text") or ""):
+                        xdotool("type", "--clearmodifiers", "--", run)
+                elif action == "key":
+                    xdotool("key", "--clearmodifiers", "--", args.get("text") or "")
+                elif action == "scroll":
+                    # X buttons 4/5 scroll up/down and 6/7 left/right, one notch each.
+                    steps = [*at("x", "y")]
+                    for amount, negative, positive in (
+                        (args.get("dy") or 0, "4", "5"),
+                        (args.get("dx") or 0, "6", "7"),
+                    ):
+                        if amount:
+                            steps += [
+                                "click",
+                                "--repeat",
+                                str(abs(amount)),
+                                positive if amount > 0 else negative,
+                            ]
+                    xdotool(*steps)
+                else:
+                    raise cdp.Failure(
+                        {"error": "invalid_arguments", "message": f"未知的動作：{action}"}
+                    )
+                result["submitted"] = True
+            # The image always shows the state after the action, at current geometry.
+            _, _, width, height = self.geometry(deadline, window)
+            scale = cdp.image_scale(width, height, max_dimension, max_pixels)
+            size = (round(width * scale), round(height * scale))
+            image = self.run(
+                deadline,
+                "import",
+                "-display",
+                self.display,
+                "-window",
+                window or "root",
+                *(("-resize", f"{size[0]}x{size[1]}!") if scale < 1 else ()),
+                "-quality",
+                "80",
+                "jpeg:-",
+            )
+            if action in ("screenshot", "resume"):
+                result["windows"] = self.windows(deadline)
+        except subprocess.TimeoutExpired:
+            raise cdp.Failure(
+                {
+                    "error": "timeout",
+                    "message": "桌面操作在等待時間內沒有完成。",
+                    **({"status": "unknown"} if inputs else {}),
+                }
+            ) from None
+        except subprocess.CalledProcessError as error:
+            raise cdp.Failure(
+                {
+                    "error": "input_failed",
+                    "message": f"桌面指令失敗：{error.stderr.decode(errors='replace').strip()}",
+                    **({"status": "unknown"} if inputs else {}),
+                }
+            ) from None
+        except cdp.Failure as failure:
+            if inputs:
+                failure.result["status"] = "unknown"
+            raise
+        return (
+            {
+                "width": size[0],
+                "height": size[1],
+                "display": self.display,
+                **({"window": window} if window else {}),
+                "control": visible(control(root)),
+                **result,
+            },
+            cdp.Image(image, "image/jpeg", size[0], size[1]),
+        )
+
+
+def _property(output: str, name: str) -> str:
+    for line in output.splitlines():
+        if line.startswith(name + "("):
+            return line.partition("=")[2]
+    return ""
+
+
+READS = {"computer": ("screenshot", "resume"), "browser": ("snapshot", "screenshot")}
+
+
+def handle(
+    request: dict[str, Any], root: Path, browser: cdp.Browser, screen: Screen | None
+) -> tuple[dict[str, Any], cdp.Image | None]:
+    from yuki_agent_connector import cdp
+
+    args = request["args"]
+    before_input = (
+        unchecked
+        if args["action"] in READS[request["tool"]]
+        else lease_check(root, request["lease_id"])
+    )
+    try:
+        if request["tool"] == "browser":
+            return browser.execute(
+                args,
+                owner=request["owner"],
+                before_input=before_input,
+                max_dimension=request["max_dimension"],
+                max_pixels=request["max_pixels"],
+                wait_seconds=request["wait_seconds"],
+            )
+        if screen is None or args.get("display") not in (None, screen.display):
+            return {
+                "error": "display_unavailable",
+                "message": "Yuki 環境沒有可操作的桌面顯示（無頭模式只能使用 browser）。",
+            }, None
+        # In the sandbox nobody else's input competes for this display: a human
+        # takes over through Desktop and returns control there, so ``resume``
+        # has no stop to clear and reads exactly like ``screenshot``.
+        return screen.execute(
+            args,
+            root,
+            before_input,
+            request["max_dimension"],
+            request["max_pixels"],
+            time.monotonic() + request["wait_seconds"],
+        )
+    except cdp.Failure as failure:
+        return failure.result, None
+
+
+def unchecked() -> None:
+    """Read actions never consult the control lease."""
+
+
+def serve(root: Path, endpoint: str, downloads: str, display: str | None) -> None:
+    from yuki_agent_connector import cdp
+
+    driver = root / "driver"
+    requests, taken, results = driver / "requests", driver / "taken", driver / "results"
+    for directory in (requests, taken, results):
+        directory.mkdir(parents=True, exist_ok=True)
+    for leftover in taken.glob("*.json"):
+        leftover.unlink()
+    # Bounds the one-time loopback handshake; desktop_service has already seen
+    # the debugger answer, so this is not a readiness gate.
+    browser = cdp.Browser(endpoint, downloads=downloads, timeout=10)
+    screen = Screen(display) if display else None
+    written: list[dict[str, Any]] | None = None
+    while True:
+        tabs = [
+            {"target_id": tab["id"], "title": tab["title"], "url": tab["url"]}
+            | ({"work_id": tab["work_id"]} if "work_id" in tab else {})
+            for tab in browser.tabs()
+        ]
+        if tabs != written:
+            atomic_json(driver / "tabs.json", {"tabs": tabs})
+            written = tabs
+        pending = sorted(requests.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
+        if not pending:
+            # Idle: wait for browser events instead of sleeping blind.
+            browser.pump(0.05)
+            continue
+        claimed = taken / pending[0].name
+        try:
+            os.rename(pending[0], claimed)
+        except FileNotFoundError:
+            # The Manager withdrew the request before it was claimed.
+            continue
+        request = json.loads(claimed.read_text())
+        identity = str(UUID(request["id"]))
+        result, image = handle(request, root, browser, screen)
+        response: dict[str, Any] = {"result": result}
+        if image is not None:
+            path = results / (identity + ".jpg")
+            path.write_bytes(image.data)
+            response["image"] = {
+                "file": path.name,
+                "media_type": image.media_type,
+                "width": image.width,
+                "height": image.height,
+            }
+        atomic_json(results / (identity + ".json"), response)
+        claimed.unlink()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="yuki-computer")
     commands = parser.add_subparsers(dest="command", required=True)
     help_request = commands.add_parser("help-request")
     help_request.add_argument("--note", required=True)
     commands.add_parser("wait-control")
-    for command in ("wake", "sleep", "status"):
-        commands.add_parser(command).add_argument("--json", action="store_true")
-    screenshot = commands.add_parser("screenshot")
-    screenshot.add_argument("--tab")
-    screenshot.add_argument("--screen", action="store_true")
-    screenshot.add_argument("--out", required=True)
-    browser = commands.add_parser("browser").add_subparsers(dest="action", required=True)
-    for command in ("open", "snapshot", "close", "click", "type", "press", "scroll"):
-        entry = browser.add_parser(command)
-        entry.add_argument("--tab")
-        if command in ("open", "type", "press"):
-            entry.add_argument("value")
-        if command in ("click", "type"):
-            entry.add_argument("--node", type=int, required=command == "click")
-        if command == "scroll":
-            for field in ("x", "y", "delta-x", "delta-y"):
-                entry.add_argument("--" + field, type=float, default=0)
-    inputs = commands.add_parser("input").add_subparsers(dest="action", required=True)
-    click = inputs.add_parser("click")
-    click.add_argument("x", type=int)
-    click.add_argument("y", type=int)
-    for command in ("type", "key"):
-        inputs.add_parser(command).add_argument("value")
+    commands.add_parser("status").add_argument("--json", action="store_true")
+    driver = commands.add_parser("serve")
+    driver.add_argument("--cdp", required=True)
+    driver.add_argument("--downloads", required=True)
+    driver.add_argument("--display")
     args = parser.parse_args()
     root = Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
-    try:
-        if args.command in ("help-request", "wait-control"):
-            mark("computer")
-            value = wait(
-                root,
-                "help" if args.command == "help-request" else "wait_control",
-                getattr(args, "note", None),
-            )
-        elif args.command in ("wake", "sleep"):
-            value = operation(root, "display_" + args.command, {})
-        elif args.command == "status":
-            value = {
-                "control": json.loads((root / "control.json").read_text()),
-                "tabs": Browser().tabs(),
-            }
-        elif args.command == "browser" and args.action == "snapshot":
-            mark("browser")
-            client = Browser()
-            value = client.snapshot(client.target(args.tab))
-        elif args.command == "screenshot":
-            mark("computer" if args.screen else "browser")
-            if args.screen:
-                subprocess.run(
-                    ["import", "-display", ":1", "-window", "root", args.out], check=True
-                )
-            else:
-                client = Browser()
-                image = client.call(
-                    "Page.captureScreenshot", {"format": "png"}, client.target(args.tab)
-                )
-                Path(args.out).write_bytes(base64.b64decode(image["data"]))
-            value = {"path": args.out}
-        else:
-            mark("browser" if args.command == "browser" else "computer")
-            with input_lease(root) as lease:
-                if args.command == "input":
-                    call = (
-                        ["xdotool", "mousemove", "--sync", str(args.x), str(args.y), "click", "1"]
-                        if args.action == "click"
-                        else [
-                            "xdotool",
-                            "type" if args.action == "type" else "key",
-                            "--clearmodifiers",
-                            "--",
-                            args.value,
-                        ]
-                    )
-                    subprocess.run(call, check=True, env={**os.environ, "DISPLAY": ":1"})
-                    value = {"submitted": True}
-                else:
-                    client = Browser()
-
-                    def still_held() -> None:
-                        current = json.loads((root / "control.json").read_text())
-                        if current.get("lease_id") != lease["lease_id"]:
-                            raise ComputerError({"error": "control_held", "control": current})
-
-                    client.before_input = still_held
-                    if args.action == "open":
-                        value = client.open(args.value, args.tab)
-                    else:
-                        target = client.target(args.tab)
-                        if args.action == "snapshot":
-                            value = client.snapshot(target)
-                        elif args.action == "close":
-                            value = client.close(target)
-                        elif args.action == "click":
-                            value = client.click(target, args.node)
-                        elif args.action == "type":
-                            if args.node is not None:
-                                client.call("DOM.focus", {"backendNodeId": args.node}, target)
-                            value = client.call("Input.insertText", {"text": args.value}, target)
-                        elif args.action == "press":
-                            parts = args.value.split("+")
-                            modifiers = sum(
-                                {"Alt": 1, "Ctrl": 2, "Meta": 4, "Shift": 8}[part]
-                                for part in parts[:-1]
-                            )
-                            params = {"key": parts[-1], "modifiers": modifiers}
-                            client.call(
-                                "Input.dispatchKeyEvent", {"type": "keyDown", **params}, target
-                            )
-                            value = client.call(
-                                "Input.dispatchKeyEvent", {"type": "keyUp", **params}, target
-                            )
-                        else:
-                            value = client.call(
-                                "Input.dispatchMouseEvent",
-                                {
-                                    "type": "mouseWheel",
-                                    "x": args.x,
-                                    "y": args.y,
-                                    "deltaX": args.delta_x,
-                                    "deltaY": args.delta_y,
-                                },
-                                target,
-                            )
-        print(json.dumps(value, ensure_ascii=False))
-        return 75 if value.get("error") == "control_held" else (1 if value.get("error") else 0)
-    except (OSError, ValueError, KeyError, StopIteration, subprocess.CalledProcessError) as error:
-        print(
-            json.dumps({"error": "computer_unavailable", "detail": str(error)}, ensure_ascii=False)
+    if args.command == "serve":
+        serve(root, args.cdp, args.downloads, args.display)
+        return 0
+    if args.command == "status":
+        try:
+            tabs = json.loads((root / "driver/tabs.json").read_text())["tabs"]
+        except FileNotFoundError:
+            tabs = []
+        value = {"control": control(root), "tabs": tabs}
+    else:
+        mark("computer")
+        value = wait(
+            root,
+            "help" if args.command == "help-request" else "wait_control",
+            getattr(args, "note", None),
         )
-        return 1
-    except ComputerError as error:
-        print(json.dumps(error.result, ensure_ascii=False))
-        return 75 if error.result.get("error") == "control_held" else 1
+    print(json.dumps(value, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
