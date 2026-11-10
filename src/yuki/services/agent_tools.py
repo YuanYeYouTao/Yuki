@@ -1767,25 +1767,32 @@ class AgentToolService:
         from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
 
         if "device" in arguments:
-            # The contract already names the device; personal computers arrive later.
-            return self._result(
-                error="device_not_supported",
-                detail="本人电脑暂不支持 computer／browser；省略 device 即操作 Yuki 自己的环境",
-            )
-        result = dict(
-            await self.sandbox_client.execute(
-                MODEL_TOOL_RPC_METHODS[name],
-                {
-                    **arguments,
-                    "owner": source.get("work_id"),
-                    # The environment produces the final image size; the Host never rescales it.
-                    "max_dimension": self._settings.vision_max_dimension,
-                    "max_pixels": self._settings.vision_max_pixels,
-                },
+            devices = self.sandbox_client.local_devices
+            assert devices is not None
+            result = await devices.screen_action(
+                name,
+                arguments,
                 request_id=request_id,
                 source=source,
+                max_dimension=self._settings.vision_max_dimension,
+                max_pixels=self._settings.vision_max_pixels,
             )
-        )
+        else:
+            result = dict(
+                await self.sandbox_client.execute(
+                    MODEL_TOOL_RPC_METHODS[name],
+                    {
+                        **arguments,
+                        "owner": source.get("work_id"),
+                        # The environment produces the final image size; the Host never
+                        # rescales it.
+                        "max_dimension": self._settings.vision_max_dimension,
+                        "max_pixels": self._settings.vision_max_pixels,
+                    },
+                    request_id=request_id,
+                    source=source,
+                )
+            )
         image = result.pop("image", None)
         if result.get("error"):
             return self._result(
@@ -1809,10 +1816,16 @@ class AgentToolService:
             else ()
         )
         # A delivered input stays a fact even when its screenshot cannot be read
-        # (no image capability, archive failure): media_read is reported separately.
+        # (no image capability, archive failure, a picture the computer could not
+        # take or send): media_read is reported separately.
+        unread = result.pop("media_error", None) or result.pop("capture_error", None)
+        pictured = name == "computer" or arguments["action"] == "screenshot"
         return self._result(
             data=PreparedMediaData(result, images),
             mutation_committed=arguments["action"] not in READ_ACTIONS[name] or None,
+            metadata={"media_read": False, "media_error": unread or "image_unavailable"}
+            if pictured and not images
+            else None,
         )
 
     @staticmethod

@@ -117,13 +117,16 @@ async def connector_run(
     )
     assert process.stdin is not None and process.stdout is not None
     lines: list[dict[str, Any]] = []
+    # Stop flag, activity and permission lines (task book §5.5) share stdout.
+    desktop: list[dict[str, Any]] = []
     started = time.monotonic()
     try:
         while not until(lines):
             raw = await asyncio.wait_for(process.stdout.readline(), 15)
             if not raw:
                 break
-            lines.append({"after": round(time.monotonic() - started, 3), **json.loads(raw)})
+            line = {"after": round(time.monotonic() - started, 3), **json.loads(raw)}
+            (lines if line["type"] == "state" else desktop).append(line)
         exited_alone = process.returncode is not None or not until(lines)
         attempts_at_stop = len(app.attempts)
         if not exited_alone:
@@ -144,6 +147,7 @@ async def connector_run(
         "exit": process.returncode,
         "exited_before_stdin_closed": exited_alone,
         "state_lines": lines,
+        "desktop_lines": desktop,
         "stdout_after_stdin_closed": rest.decode(),
         "stderr": stderr.decode(),
         "attempts": [{**a, "at": round(a["at"] - app.attempts[0]["at"], 3)} for a in app.attempts],

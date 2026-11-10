@@ -2,13 +2,13 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.4.4`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前源码版本 `0.5.0`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
 桌面端“这台电脑”管理同一个 Connector。没有 Codex、Claude 或项目目录，也可以连接电脑；完整访问默认关闭，原生 Agent-only 配置不受它开启与关闭影响。开关沿本机 CLI `full-access --enabled true|false --json` 原子保存，云端不能替用户开启。当前系统账号能执行的 Shell、文件和浏览器操作就是访问范围，不另加命令白名单、项目授权或管理员角色。
 
-`run_command` 和 `get_environment` 可选 `device`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机。`computer`／`browser` 已在合同中声明 `device`，本人电脑一侧尚未开放，给出 `device` 时返回 `device_not_supported`（见[统一 Computer Use 与 Browser Use 任务书](../architecture/Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md) 阶段 3）。后续 `read_command`／`control_command` 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
+`run_command`、`get_environment`、`computer` 和 `browser` 可选 `device`；不传继续使用 Yuki 自己的 Linux 电脑，传入则使用所选本机（`computer`／`browser` 见下文[屏幕与 Yuki 专用浏览器](#屏幕与-yuki-专用浏览器)）。后续 `read_command`／`control_command` 只认原 run，不能切换设备；普通 Shell 不要求先登记 Work。本机使用 PowerShell 或原 POSIX Shell，支持管道 stdin 与字节游标日志，不宣称已提供完整 PTY/ConPTY。关闭完整访问拒绝新的 Shell、文件、浏览器效果和 stdin，原查询、interrupt/cancel/close 仍可操作。已运行的任意用户脚本需显式取消；开关不撤销进程已经取得的操作系统权限。
 
 桌面管理的 Connector 由桌面进程以 `run --desktop-stdin` 启动，桌面持有其 stdin pipe；退出桌面进程或父进程意外结束时，EOF 沿原 Connector 关闭流程停止连接与自己持有的执行。窗口隐藏到托盘仍是 App 在运行。手动 CLI `run` 和用户明确安装的独立服务保留各自生命周期。设备撤销仍使用原凭据机制，Connector 重启后的旧进程失联保原回执与 unknown，不重新执行原命令。Windows 按本次 Job Object、POSIX 按本次进程组取消，不按同名进程扫描，不结束用户 daemon 或整个浏览器。
 
@@ -57,7 +57,7 @@ journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.4.4-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.5.0-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -163,7 +163,7 @@ yuki-agent-connector service uninstall
 
 ## 桌面监督与状态行
 
-`run --desktop-stdin` 时连接器在 stdout 每行写一个 JSON 对象，供 Desktop 解析；普通 `run` 与用户服务不写。每行都有 `type`，Desktop 忽略不认识的 `type` 与非 JSON 行（例如配置错误时原有的 `{"problem": ...}`）。0.4.4 只有连接状态行，同一状态连续出现只写一次：
+`run --desktop-stdin` 时连接器在 stdout 每行写一个 JSON 对象，供 Desktop 解析；普通 `run` 与用户服务不写。每行都有 `type`，Desktop 忽略不认识的 `type` 与非 JSON 行（例如配置错误时原有的 `{"problem": ...}`）。连接状态行如下，同一状态连续出现只写一次（0.5.0 起另有[叫停、活动与权限行](#叫停活动与权限行)）：
 
 ```json
 {"type": "state", "state": "connected"}
@@ -179,7 +179,53 @@ yuki-agent-connector service uninstall
 
 授权丢失只认握手 401/403；其他握手状态（502/503/404/421/426 等）按 websockets 自带退避重试（初始 0–5 s 随机，之后 3.1 s 起按 1.618 倍增至 90 s），握手后的任何关闭（1011、其他 1008、4xxx）都重连。连接内部出现未预期异常时，`connector.log` 记录完整栈后进程以非零码退出，由 Desktop 退避重启；重启后进行中的终端与原生操作仍按 journal 规则为 `unknown`，不重派。每次状态变化同时在 `connector.log` 记一行 `connector_state <状态> [reason=…]`，可与服务端 `connector_connected`／`connector_disconnected` 日志对时。
 
-后续阶段会在同一通道增加其他 `type` 的行（例如操作与叫停状态），不改变已有行的形状。
+### 叫停、活动与权限行
+
+0.5.0 起 stdin 也有内容：Desktop 每行写一个 JSON 对象，EOF 仍表示停止运行。只认下面两种行，其他 `type`、空行和无法解析的行一律忽略：
+
+```json
+{"type": "control", "holder": "owner"}
+{"type": "control", "holder": "none"}
+```
+
+`owner` 是 Desktop「停止」，`none` 是「繼續」。叫停标志只在连接器内存里（不写配置、journal 或服务端，也没有 CLI），所以 Desktop 每次拉起子进程后立即写一次当前 holder，重启不丢叫停。
+
+stdout 新增三种行，不改变状态行的形状：
+
+```json
+{"type": "control", "holder": "owner", "since": "2026-11-10T08:00:00.123456Z", "reason": "desktop"}
+{"type": "activity", "tool": "computer", "action": "click", "phase": "start"}
+{"type": "activity", "tool": "computer", "action": "click", "phase": "end"}
+{"type": "permissions", "screen": true, "input": false}
+```
+
+- `control`：启动时写一次（`holder:"none"`、`reason:"start"`），之后每次变化写一行。`reason` 为 `desktop`（stdin）或 `resume`（模型调用 `computer(action=resume, device)`）；本人在电脑上的输入只让 Yuki 让出，不改 holder、不写行。`since` 是 UTC ISO-8601。
+- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、`owner_active`、权限、锁屏、参数错误等）不写。Desktop 据此显示“Yuki 正在操作”。
+- `permissions`：启动时写一次，此后预检结果变化时写（每次 `computer` 动作与每 5 秒各读一次预检）。macOS 为 `CGPreflightScreenCaptureAccess`／`CGPreflightPostEventAccess` 的结果，Windows 两项恒为 `true`；不支持屏幕的平台（Linux、macOS 14 以下）不写。变化时同时把新的 `device_capabilities.computer` 发给服务端。
+
+## 屏幕与 Yuki 专用浏览器
+
+依据[统一 Computer Use 与 Browser Use 任务书](../architecture/Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md) §5.5、§5.7、§5.8 的阶段 3a，实施与验证见[3a 记录](computer-browser-device-3a-20261110.md)。两工具都需要本机完整访问（截图同样算），关闭时返回 `full_access_disabled`。命令 ID 即模型调用键：输入动作先写连接器 journal，同键重试返回原回执，执行中崩溃为 `unknown`，绝不重派；读动作不写 journal，重试即重读。
+
+**屏幕（`computer`）**：只在 macOS 14+ 与 Windows 声明 `device_capabilities.computer = {screen, input, displays:[{id, bounds, scale, primary}]}`，`get_environment(device)` 与 Client API 设备列表透出它。macOS 用 ScreenCaptureKit 截图（失败时退回 `CGWindowListCreateImage`），用私有事件源 `CGEventPost` 输入；Windows 用 GDI 截图、GDI+ 编 JPEG、`SendInput` 输入，进程为 per-monitor-v2 DPI。截图在来源处按服务端传来的 `max_dimension`／`max_pixels` 产出最终尺寸的 JPEG，经文件传输的读／释放循环回到服务端，释放即删除。`x,y` 是本次所附图像的像素，执行时按当下的显示几何换算（Retina、DPI、副屏负坐标），`display` 选显示器，省略为主显示器。3a 只操作整屏：给出 `window` 返回 `device_not_supported`（按窗口后台投递属 3b），`windows` 返回空列表。
+
+| 失败 | 何时 |
+| --- | --- |
+| `screen_permission_required`／`input_permission_required` | macOS 未授予屏幕录制／辅助功能（授权给 Desktop 所在的 Yuki.app）；不投递任何事件 |
+| `display_locked` | macOS 锁屏或显示器休眠 |
+| `desktop_unavailable` | macOS 控制台是其他用户或登录窗口；Windows 输入桌面不是 `Default`（锁屏、UAC） |
+| `target_elevated` | Windows 目标窗口所属进程完整性级别高于连接器（UIPI 会静默丢弃输入） |
+| `owner_active` | Yuki 上一次截图或输入之后出现了非 Yuki 输入：等本人停手 1.5 秒（最多 10 秒）后拒绝，输入没有执行；重新截图后重试 |
+| `control_held` | 本人在 Desktop 按了「停止」（叫停中） |
+| `device_not_supported` | Linux、macOS 14 以下、旧连接器（`invalid_resource`）或给出 `window` |
+
+**让出**：Yuki 的每个合成事件都带标记（macOS `kCGEventSourceUserData`、Windows `dwExtraInfo`）。每次全局输入前比较两件事实：最近一次输入时刻（macOS 对按键按下、鼠标键按下、拖拽与滚轮分别读 `CGEventSourceSecondsSinceLastEventType(CombinedSessionState)` 取最近一次，含屏幕共享与远程控制，只移动指针不算；Windows `GetLastInputInfo`，含远程桌面与指针移动），与 Yuki 上一次截图或 `computer` 输入（或 `resume`、Desktop「繼續」）结束的时刻；前者更晚即为本人在用电脑。这时 Yuki 不投递任何事件，等本人连续 1.5 秒没有输入（最多 10 秒），然后以 `owner_active` 拒绝这次输入——画面可能已变，模型重新截图后按新图重试；截图推进基准，所以重试照常执行。截图与快照从不等待；`browser` 不碰光标，不让出。
+
+**叫停**：只有 Desktop「停止」置 `holder=owner`。叫停期间 `computer` 与 `browser` 的所有输入都是 `control_held`，截图与快照照常可读。恢复只有 Desktop「繼續」与 `computer(action=resume, device)`，后者服务端只按设备归属本人核验。
+
+**浏览器（`browser`）**：连接器找已安装的 Google Chrome（Windows 注册表 `App Paths`、Program Files、LocalAppData；macOS `/Applications`、`~/Applications`；Linux `PATH`），找不到返回 `browser_unavailable`，不下载浏览器。profile 在连接器数据目录 `chrome-profile/`，下载在 `downloads/`；参数 `--remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`。先连该 profile 的 `DevToolsActivePort`，失败才启动；Chrome 在新会话（macOS／Linux）或 `CREATE_BREAKAWAY_FROM_JOB`（Windows）中启动，连接器重启不关闭它；本人关闭后下一次动作重新打开。CDP 驱动与 Yuki 环境共用 `cdp.py`，在连接器的一个线程里长驻。
+
+**风险（已接受）**：`--remote-debugging-port` 让本机任何进程都能连接这个 Chrome 并完全控制它。该 profile 只有 Yuki 打开过的页面与在其中登录的账号，不含本人日常 Chrome 的登录态；本人不要在 Yuki 专用 Chrome 里登录不希望本机其他程序能读取的账号。
 
 ## 代理与凭据
 

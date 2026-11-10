@@ -17,7 +17,7 @@ from yuki_agent_connector.journal import Journal
 def transfers(tmp_path, monkeypatch):
     monkeypatch.setattr("yuki_agent_connector.journal.private_path", lambda *_args, **_kwargs: None)
     journal = Journal(tmp_path / "journal.sqlite3", namespace="original-device")
-    yield FileTransfers(journal), journal
+    yield FileTransfers(journal, journal.path.parent / "captures"), journal
     journal.close()
 
 
@@ -121,7 +121,7 @@ async def test_chunked_upload_replays_the_original_receipt_without_touching_user
     assert result["status"] == "succeeded" and target.read_bytes() == content
     assert result["sha256"] == hashlib.sha256(content).hexdigest()
     target.write_bytes(b"later user edit")
-    restarted = FileTransfers(journal)
+    restarted = FileTransfers(journal, journal.path.parent / "captures")
     replay = await restarted.execute(
         command("get", {"transfer_id": "original-transfer", "path": str(target)})
     )

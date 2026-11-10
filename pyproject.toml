@@ -45,6 +45,9 @@ dev = [
     "types-jsonschema>=4.23,<5",
     "types-protobuf>=5,<8",
     "types-defusedxml>=0.7,<1",
+    # Tests run the Connector source with this environment; on macOS it needs its screen.
+    "pyobjc-framework-Quartz>=13,<14 ; sys_platform == 'darwin'",
+    "pyobjc-framework-ScreenCaptureKit>=13,<14 ; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

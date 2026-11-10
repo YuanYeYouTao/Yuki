@@ -111,7 +111,8 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "（如 ctrl+l、Return）；scroll 在 x,y 滚动 dx,dy 格（dy 正数向下）；"
             "resume 解除本人的叫停。x,y 是本次结果所附截图的像素坐标；给 window 时"
             "只截该窗口、坐标相对该窗口。每次都附动作后的新截图；submitted 只表示"
-            "输入已投递，是否生效看截图。本人正在操作时输入返回 control_held。"
+            "输入已投递，是否生效看截图。本人接管或叫停时输入返回 control_held；"
+            "本人电脑上本人刚用过电脑时输入不执行、返回 owner_active，重新截图后再试。"
             "网页优先用 browser。",
             {
                 "action": {

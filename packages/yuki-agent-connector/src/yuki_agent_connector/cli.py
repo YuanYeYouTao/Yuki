@@ -18,6 +18,7 @@ from uuid import uuid4
 import httpx
 
 from . import PROTOCOL_VERSION, __version__
+from . import screen as screens
 from .computer import computer_status
 from .config import Config, Instance, connector_url, data_path, private_path
 from .connector import Connector, installation_lock
@@ -85,9 +86,28 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+_stdout = threading.Lock()
+
+
 def state_line(line: dict[str, object]) -> None:
-    """One JSON object per stdout line for the owning Desktop, written immediately."""
-    print(json.dumps(line, ensure_ascii=True), flush=True)
+    """One JSON object per stdout line for the owning Desktop, written immediately.
+
+    Screen, browser and event-loop threads all report; one write per line keeps them whole.
+    """
+    with _stdout:
+        sys.stdout.write(json.dumps(line, ensure_ascii=True) + "\n")
+        sys.stdout.flush()
+
+
+def desktop_line(connector: Connector, raw: bytes) -> None:
+    """One stdin line from Desktop; only ``{"type":"control","holder":…}`` means anything."""
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        logging.getLogger("yuki_agent_connector").warning("Ignored a Desktop line")
+        return
+    if isinstance(value, dict) and value.get("type") == "control":
+        connector.desk.desktop(str(value.get("holder")))
 
 
 async def run_for_desktop(connector: Connector) -> None:
@@ -95,15 +115,23 @@ async def run_for_desktop(connector: Connector) -> None:
         raise ValueError("Desktop-owned Connector requires its stdin pipe")
     descriptor = sys.stdin.fileno()
     loop = asyncio.get_running_loop()
+    # Before any stdin line: Desktop re-sends a stop right after spawning (task book §5.5).
+    connector.desk.announce()
     running = asyncio.create_task(connector.run())
     closed = threading.Event()
     callback_lock = threading.Lock()
     active = True
 
     def read_owner() -> None:
+        pending = b""
         try:
-            while os.read(descriptor, 4096):
-                pass
+            while chunk := os.read(descriptor, 4096):
+                pending += chunk
+                *lines, pending = pending.split(b"\n")
+                for raw in lines:
+                    with callback_lock:
+                        if active and raw.strip():
+                            loop.call_soon_threadsafe(desktop_line, connector, raw)
         finally:
             with callback_lock:
                 if active:
@@ -477,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
                                 journal,
                                 config_path=path,
                                 report=state_line if args.desktop_stdin else lambda line: None,
+                                screen=screens.native_backend(),
                             )
                             asyncio.run(
                                 run_for_desktop(connector)

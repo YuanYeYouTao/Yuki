@@ -1,6 +1,6 @@
 [project]
 name = "yuki-agent-connector"
-version = "0.4.4"
+version = "0.5.0"
 description = "Connect local native coding agents to Yuki"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -12,6 +12,9 @@ dependencies = [
   "httpx[socks]>=0.28.1,<1",
   "agent-client-protocol==0.12.1",
   "claude-agent-sdk==0.2.172",
+  "pyobjc-core>=13,<14 ; sys_platform == 'darwin'",
+  "pyobjc-framework-quartz>=13,<14 ; sys_platform == 'darwin'",
+  "pyobjc-framework-screencapturekit>=13,<14 ; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]
@@ -45,6 +48,11 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.12"
 strict = true
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+# pyobjc ships no type information; only screen_macos.py imports it.
+module = ["Quartz", "ScreenCaptureKit"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
