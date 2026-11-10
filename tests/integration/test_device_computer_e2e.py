@@ -111,6 +111,9 @@ class Process:
         while raw := await self.process.stdout.readline():
             self.lines.append(json.loads(raw))
 
+    def send(self, value: dict) -> None:
+        self.process.stdin.write((json.dumps(value) + "\n").encode())
+
     async def stop(self) -> str:
         self.process.stdin.close()
         await asyncio.wait_for(self.process.wait(), 20)
@@ -243,13 +246,41 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
         calls["click-1-unarchived"] = rendered
         assert rendered["submitted"] is True and rendered["media_read"] is False
 
-        # D8: the owner uses the computer; the next input is refused, a read is not.
+        # D8/D12: the owner uses the computer; the next input waits for the owner to stop,
+        # then is refused without running, and is not a mutation or uncertain.
         await asyncio.sleep(0.05)
-        (connector.state / "owner_input").write_text(str(time.time()))
-        held = await call(
+        (connector.state / "owner_last_input").write_text(str(time.time()))
+        yielded = await call(
             tools, owner, "click-2", "computer", action="click", x=1, y=1, device=device
         )
-        calls["click-2"] = view(held)
+        calls["click-2"] = view(yielded)
+        assert yielded.error_code == "owner_active" and not yielded.uncertain, yielded
+        assert yielded.mutation_committed is not True
+        assert len(events(connector.state)) == 1
+        # D11: the owner's input did not stop Yuki: no control line, nothing to resume.
+        assert [line["holder"] for line in connector.lines if line["type"] == "control"] == [
+            "none"
+        ]
+        # D14: the model looks again, then the retried click runs.
+        read = await call(tools, owner, "shot-2", "computer", action="screenshot", device=device)
+        assert read.ok and read.data["control"]["holder"] == "none"
+        retried = await call(
+            tools, owner, "click-2-retry", "computer", action="click", x=1, y=1, device=device
+        )
+        calls["click-2-retry"] = view(retried)
+        assert retried.ok and retried.data["submitted"] is True, retried
+        assert len(events(connector.state)) == 2
+
+        # D9: Desktop 「停止」 refuses computer and browser input; a read is not refused.
+        connector.send({"type": "control", "holder": "owner"})
+        holders = lambda: [line.get("holder") for line in connector.lines]  # noqa: E731
+        async with asyncio.timeout(20):
+            while "owner" not in holders():  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+        held = await call(
+            tools, owner, "click-held", "computer", action="click", x=1, y=1, device=device
+        )
+        calls["click-held"] = view(held)
         assert held.error_code == "control_held" and not held.uncertain
         assert held.data["control"]["holder"] == "owner"
         browser = await call(
@@ -258,9 +289,9 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
         )
         calls["open-1"] = view(browser)
         assert browser.error_code == "control_held"
-        read = await call(tools, owner, "shot-2", "computer", action="screenshot", device=device)
+        read = await call(tools, owner, "shot-held", "computer", action="screenshot", device=device)
         assert read.ok and read.data["control"]["holder"] == "owner"
-        assert len(events(connector.state)) == 1
+        assert len(events(connector.state)) == 2
 
         # D9: only the device's person may resume; someone else is told nothing exists.
         async with database.immediate_session() as session:
@@ -326,7 +357,7 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
         )
         calls["click-3-after-restart"] = view(again)
         assert again.error_code == "action_unknown" and again.uncertain is True
-        assert len(events(connector.state)) == 2
+        assert len(events(connector.state)) == 3
     finally:
         if connector.process.returncode is None:
             stderr = await connector.stop()

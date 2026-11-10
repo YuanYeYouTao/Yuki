@@ -1,8 +1,10 @@
-"""Real Connector processes: owner stop/resume, the Desktop stdin/stdout contract and
-``computer``/``browser`` refusals over the actual WebSocket protocol and journal.
+"""Real Connector processes: yielding to the owner's input, the Desktop stop/resume, the
+Desktop stdin/stdout contract and ``computer``/``browser`` refusals over the actual WebSocket
+protocol and journal.
 
-Failure cases: docs/operations/computer-browser-device-3a-20261110.md §1 (D1–D3, D5, D8–D10,
-C4, C5, K1–K5, G1, G4, M6 at the process level). Only the operating system's screen is
+Failure cases: docs/operations/computer-browser-device-3a-20261110.md §1 (D1–D3, D5, D8–D14,
+C4, C5, K1–K5, G1, G4, M6 at the process level; D15 is the macOS backend's own choice of
+events, tests/test_screen_native.py). Only the operating system's screen is
 replaced (tests/fakes/screen_connector.py); everything else is the shipped Connector.
 Artifact: test-results/device-computer/<test>-<platform>.json.
 """
@@ -158,20 +160,55 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
             await call("computer", "double_click", "click-2", x=10, y=10)
             assert events(state)[-1]["count"] == 2
 
-            # D8: the owner touches the computer while the model thinks.
+            # D8/D12: the owner touches the computer while the model thinks. Yuki waits until
+            # the owner has been quiet for 1.5 s, then refuses without running anything.
             await asyncio.sleep(0.05)
-            (state / "owner_input").write_text(str(time.time()))
+            (state / "owner_last_input").write_text(str(time.time()))
             await asyncio.sleep(0.05)
+            before, lines_before = len(events(state)), len(desktop_lines(process))
+            started = time.monotonic()
+            yielded = (await call("computer", "click", "click-3", x=10, y=10))["result"]
+            waited = time.monotonic() - started
+            assert yielded["error"] == "owner_active" and yielded["status"] == "failed"
+            assert "screenshot" in yielded["message"]
+            assert 1.3 < waited < 10, waited
+            # D11: the holder is unchanged and no control (or activity) line is printed.
+            assert len(events(state)) == before
+            assert len(desktop_lines(process)) == lines_before
+            # Without a fresh look the retry is refused again, at once.
+            started = time.monotonic()
+            again = (await call("computer", "click", "click-3-again", x=10, y=10))["result"]
+            assert again["error"] == "owner_active" and time.monotonic() - started < 1.3
+            # D14: the browser does not yield (here: no Chrome installed), and a screenshot
+            # taken while the owner is still busy answers at once.
+            browser_input = (await call("browser", "open", "open-busy", url="about:blank"))[
+                "result"
+            ]
+            assert browser_input["error"] == "browser_unavailable"
+            (state / "owner_last_input").write_text(str(time.time()))
+            started = time.monotonic()
+            shot = (await call("computer", "screenshot", "shot-busy"))["result"]
+            assert time.monotonic() - started < 1.3
+            assert shot["control"]["holder"] == "none" and "error" not in shot
+            await cloud.image(shot["image"]["path"], "shot-busy")
+            # D14: the screenshot is Yuki's new view; the retried click runs.
+            retried = (await call("computer", "click", "click-3-retry", x=10, y=10))["result"]
+            assert retried["status"] == "succeeded" and retried["submitted"] is True
+            assert len(events(state)) == before + 1
+            assert [line for line in desktop_lines(process) if line["type"] == "control"] == [
+                desktop_lines(process)[0]
+            ]
+
+            # D9: Desktop 「停止」 refuses every input; reads still work.
+            process.send({"type": "control", "holder": "owner"})
+            stopped = await process.wait_for(
+                lambda line: line.get("type") == "control" and line["holder"] == "owner"
+            )
+            assert stopped["reason"] == "desktop"
             before = len(events(state))
-            held = (await call("computer", "click", "click-3", x=10, y=10))["result"]
+            held = (await call("computer", "click", "click-held", x=10, y=10))["result"]
             assert held["error"] == "control_held" and held["status"] == "failed"
             assert held["control"]["holder"] == "owner"
-            assert len(events(state)) == before
-            stop = desktop_lines(process)[-1]
-            assert stop["type"] == "control" and stop["holder"] == "owner"
-            assert stop["reason"] == "owner_input"
-
-            # D9: every input is refused while the owner holds the computer; reads work.
             browser_input = (await call("browser", "open", "open-held", url="about:blank"))[
                 "result"
             ]
@@ -189,7 +226,7 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
             process.send(b"not json\n\n")
             process.send({"type": "focus"})
             process.send({"type": "control", "holder": "somebody"})
-            # Desktop 「繼續」; the owner's own click on it does not stop Yuki again.
+            # Desktop 「繼續」; the owner's own click on it does not make Yuki yield.
             process.send({"type": "control", "holder": "none"})
             resumed = await process.wait_for(
                 lambda line: line.get("type") == "control" and line["holder"] == "none"
@@ -200,10 +237,9 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
 
             # Desktop 「停止」, then the model resumes because the owner said so in chat.
             process.send({"type": "control", "holder": "owner"})
-            stopped = await process.wait_for(
+            await process.wait_for(
                 lambda line: line.get("type") == "control" and line["holder"] == "owner"
             )
-            assert stopped["reason"] == "desktop"
             held = (await call("computer", "key", "key-held", text="ctrl+l"))["result"]
             assert held["error"] == "control_held"
             resume = (await call("computer", "resume", "resume-1"))["result"]
@@ -284,6 +320,54 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
         assert "holder" not in (data / "config.json").read_text()
 
 
+async def test_owner_who_keeps_using_the_computer_is_waited_for_at_most_ten_seconds(
+    tmp_path: Path,
+) -> None:
+    """D13: the owner types for longer than Yuki waits; the input is refused, never run."""
+    state, data = tmp_path / "state", tmp_path / "data"
+    state.mkdir()
+    script(state)
+    cloud = Cloud()
+    async with serve(cloud.handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        Config(f"ws://127.0.0.1:{port}/", "original-device", "fixture", full_access=True).save(
+            data / "config.json"
+        )
+        process = ConnectorProcess(state, data)
+        await process.start()
+        typing = True
+
+        async def owner_types() -> None:
+            while typing:
+                (state / "owner_last_input").write_text(str(time.time()))
+                await asyncio.sleep(0.2)
+
+        try:
+            await cloud.connected.wait_for(1)
+            shot = await cloud.command("computer", "screenshot", "busy-shot", LIMITS)
+            await cloud.image(shot["result"]["image"]["path"], "busy-shot")
+            owner = asyncio.create_task(owner_types())
+            started = time.monotonic()
+            refused = await cloud.command(
+                "computer", "type", "busy-type", {**LIMITS, "text": "hello"}
+            )
+            waited = time.monotonic() - started
+            typing = False
+            await owner
+            assert refused["result"]["error"] == "owner_active", refused
+            assert refused["result"]["status"] == "failed"
+            assert 9.5 < waited < 15, waited
+            assert events(state) == []
+            assert [line["type"] for line in desktop_lines(process)] == ["control", "permissions"]
+        finally:
+            typing = False
+            exit_code, stderr = await process.stop()
+    write_artifact(
+        "owner-busy", {"waited": waited, "refused": refused, "stdout_lines": process.lines}
+    )
+    assert exit_code == 0, stderr
+
+
 async def test_restart_keeps_the_desktop_stop_and_never_redrives(tmp_path: Path) -> None:
     state, data = tmp_path / "state", tmp_path / "data"
     state.mkdir()
@@ -349,12 +433,13 @@ async def test_plain_run_prints_no_desktop_lines(tmp_path: Path) -> None:
         process = ConnectorProcess(state, data, desktop=False)
         await process.start()
         await cloud.connected.wait_for(1)
-        # The stop logic still applies; only the Desktop lines are absent (K5).
+        # Yielding to the owner still applies; only the Desktop lines are absent (K5).
         clicked = await cloud.command("computer", "click", "plain-1", {**LIMITS, "x": 1, "y": 1})
         assert clicked["result"]["submitted"] is True
-        (state / "owner_input").write_text(str(time.time() + 1))
+        await asyncio.sleep(0.05)
+        (state / "owner_last_input").write_text(str(time.time()))
         held = await cloud.command("computer", "click", "plain-2", {**LIMITS, "x": 1, "y": 1})
-        assert held["result"]["error"] == "control_held"
+        assert held["result"]["error"] == "owner_active"
         await process.kill()
     write_artifact("plain-run", {"stdout": process.raw})
     assert process.lines == [] and process.raw == []

@@ -110,6 +110,18 @@ BUTTONS = {
 }
 
 
+DELIBERATE = (
+    Quartz.kCGEventKeyDown,
+    Quartz.kCGEventLeftMouseDown,
+    Quartz.kCGEventRightMouseDown,
+    Quartz.kCGEventOtherMouseDown,
+    Quartz.kCGEventLeftMouseDragged,
+    Quartz.kCGEventRightMouseDragged,
+    Quartz.kCGEventOtherMouseDragged,
+    Quartz.kCGEventScrollWheel,
+)
+
+
 class MacScreen:
     def __init__(self) -> None:
         # A private state source: Yuki's events neither read nor change the owner's
@@ -243,15 +255,24 @@ class MacScreen:
         return Quartz.CGBitmapContextCreateImage(context)
 
     def last_input(self) -> tuple[float, float]:
-        # Combined session state: hardware, Screen Sharing / remote control and any other
-        # process posting into this login session, Yuki's own events included. The
-        # system measures "seconds since" at some instant between the two clock reads.
+        # The system measures "seconds since" at some instant between the two clock reads.
         before = time.monotonic()
-        since = Quartz.CGEventSourceSecondsSinceLastEventType(
-            Quartz.kCGEventSourceStateCombinedSessionState, Quartz.kCGAnyInputEventType
-        )
+        since = self.idle()
         after = time.monotonic()
         return before - since, after - since
+
+    def idle(self) -> float:
+        # Combined session state: hardware, Screen Sharing / remote control and any other
+        # process posting into this login session, Yuki's own events included. Only
+        # deliberate input: the owner merely moving the pointer is not using the computer.
+        return min(
+            float(
+                Quartz.CGEventSourceSecondsSinceLastEventType(
+                    Quartz.kCGEventSourceStateCombinedSessionState, kind
+                )
+            )
+            for kind in DELIBERATE
+        )
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         # macOS has no integrity levels between the owner's own windows.

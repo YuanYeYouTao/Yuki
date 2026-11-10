@@ -11,7 +11,7 @@ this backend. ``<state-dir>`` holds:
   can change them while the Connector runs): ``screen``, ``input``, ``unavailable``,
   ``elevated``, ``displays``, ``hang`` (the next input blocks forever, to kill the
   process mid-execution), ``chrome`` (false: no Chrome installed).
-- ``owner_input``: a wall-clock timestamp of the owner's latest input.
+- ``owner_last_input``: a wall-clock timestamp of the owner's latest deliberate input.
 - ``events.jsonl``: every input the Connector posted, in global input coordinates.
 """
 
@@ -78,10 +78,21 @@ class FakeScreen:
     def capture(self, display: screen.Display, width: int, height: int, path: Path) -> None:
         path.write_bytes(jpeg(width, height))
 
+    def _latest(self) -> float:
+        owner = self.state / "owner_last_input"
+        while True:
+            try:
+                return max(self.own, float(owner.read_text()) if owner.exists() else 0.0)
+            except (ValueError, PermissionError):
+                # The test rewrites the file while the Connector reads it.
+                time.sleep(0.01)
+
     def last_input(self) -> tuple[float, float]:
-        owner = self.state / "owner_input"
-        latest = max(self.own, float(owner.read_text()) if owner.exists() else 0.0)
+        latest = self._latest()
         return latest, latest
+
+    def idle(self) -> float:
+        return time.time() - self._latest()
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         return bool(self.script().get("elevated"))

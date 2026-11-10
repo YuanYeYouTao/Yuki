@@ -1,13 +1,17 @@
-"""``computer`` / ``browser`` on the owner's computer, and the owner's stop (task book §5.5).
+"""``computer`` / ``browser`` on the owner's computer, yielding to the owner (task book §5.5).
 
-The owner keeps using the computer while Yuki works; a stop is a fact, not a timer. Yuki's
-global input (the whole screen, the real cursor) first compares two facts: when the last
-input of any source happened, and when Yuki's own previous ``computer`` action ended. Any
-input after that is not Yuki's (the owner, Screen Sharing, a remote-control tool), so the
-holder becomes ``owner`` and the input is refused with ``control_held``. While the owner
-holds the computer every ``computer`` and ``browser`` input is refused; screenshots and
-snapshots still read. Only Desktop 「繼續」 (stdin) or ``computer(action=resume)`` clears
-it. The flag lives in this process only: Desktop re-sends it after restarting the child.
+The owner keeps using the computer while Yuki works. Yuki's global input (the whole screen,
+the real cursor) first compares two facts: when the last input of any source happened, and
+when Yuki last looked or acted (its previous screenshot or ``computer`` input). Any input
+after that is not Yuki's (the owner, Screen Sharing, a remote-control tool), so Yuki yields:
+it waits until the owner has been quiet for a moment, then refuses this input without
+running it (``owner_active``) because the screen may have changed; a fresh screenshot moves
+the baseline and the retried input runs. The owner's input never stops Yuki.
+
+The stop is explicit: Desktop 「停止」 (stdin) sets the holder to ``owner``, and every
+``computer`` and ``browser`` input is refused with ``control_held`` while screenshots and
+snapshots still read. Only Desktop 「繼續」 or ``computer(action=resume)`` clears it. The
+flag lives in this process only: Desktop re-sends it after restarting the child.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +38,9 @@ POINTED = frozenset({"click", "double_click", "right_click", "move", "drag", "sc
 TYPE_RUN = 32
 # Reads the platform's permission preflight so Desktop and the server see a grant soon.
 PERMISSION_SECONDS = 5.0
+# Yielding to the owner: their input has paused for this long, or Yuki gives up waiting.
+QUIET_SECONDS = 1.5
+YIELD_SECONDS = 10.0
 
 
 def now() -> str:
@@ -100,8 +108,8 @@ class Desk:
             directory, self.captures, lambda: self.control.holder, self.control.held, report
         )
         self.lock = threading.Lock()
-        # The latest possible moment of the last input as read right after Yuki's
-        # previous computer input (or resume): the stop baseline, in the backend's clock.
+        # The latest possible moment of the last input as read right after Yuki's previous
+        # screenshot or computer input (or resume): the yield baseline, in the backend's clock.
         self.observed: float | None = None
         self.permissions: tuple[bool, bool] | None = None
         self.permission_lock = threading.Lock()
@@ -141,7 +149,7 @@ class Desk:
         if holder not in {"owner", "none"}:
             return
         if self.control.set(holder, "desktop") and holder == "none":
-            # The click on 「繼續」 itself is the owner's input; it must not stop Yuki again.
+            # The click on 「繼續」 itself is the owner's input; Yuki need not yield to it.
             self.observed = self._baseline()
 
     def _baseline(self) -> float | None:
@@ -245,13 +253,7 @@ class Desk:
                 # Even the earliest possible moment of the last input is after the baseline.
                 and self.screen.last_input()[0] > self.observed
             ):
-                self.control.set("owner", "owner_input")
-                held = self.control.held()
-                held["message"] = (
-                    "Yuki 上一次操作之后有人（本人、屏幕共享或远程控制）在用这台电脑，Yuki 已停下，"
-                    "输入没有执行。截图仍可用；本人明确让你继续时再调用 computer(action=resume)。"
-                )
-                return {"status": "failed", **held}
+                return self._yield()
 
             def point(x_name: str, y_name: str) -> tuple[float, float]:
                 return to_global(display, max_dimension, max_pixels, args[x_name], args[y_name])
@@ -283,9 +285,9 @@ class Desk:
                 "width": width,
                 "height": height,
             }
-        if action in INPUTS or self.observed is None:
-            # After the picture: Yuki's events have been processed by now.
-            self.observed = self._baseline()
+        # After the picture: Yuki's events have been processed by now, and the model will
+        # act on what it shows, so only input after this is someone else's.
+        self.observed = self._baseline()
         if action in READS:
             # Per-window capture and delivery arrive with phase 3b.
             result["windows"] = []
@@ -297,6 +299,20 @@ class Desk:
             "control": self.control.visible(),
             **result,
         }
+
+    def _yield(self) -> dict[str, Any]:
+        """Someone used the computer since Yuki last looked: let them finish, run nothing."""
+        assert self.screen is not None
+        deadline = time.monotonic() + YIELD_SECONDS
+        while (left := deadline - time.monotonic()) > 0 and (
+            idle := self.screen.idle()
+        ) < QUIET_SECONDS:
+            time.sleep(min(QUIET_SECONDS - idle, left))
+        return failure(
+            "owner_active",
+            "本人（或屏幕共享、远程控制）刚在用这台电脑，Yuki 让出了这次输入，没有执行；"
+            "画面可能已经变了。先 computer(action=screenshot) 重新截图，再按新截图重试。",
+        )
 
     def _display(self, identity: str | None) -> Display | None:
         assert self.screen is not None

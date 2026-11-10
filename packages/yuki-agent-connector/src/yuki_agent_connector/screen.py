@@ -146,8 +146,12 @@ class Backend(Protocol):
         """Bounds of the moment of the most recent input from any source, Yuki's included.
 
         In the backend's own clock; only compared with another value of this method, so
-        no conversion to another clock (and its rounding) is involved.
+        no conversion to another clock (and its rounding) is involved. On macOS only
+        deliberate input counts (keys, buttons, drags, scrolling), not pointer movement.
         """
+
+    def idle(self) -> float:
+        """Seconds since that same most recent input, as the operating system counts them."""
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         """Whether input to the window at ``point`` (or the foreground) would be dropped."""

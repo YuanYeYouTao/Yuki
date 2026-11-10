@@ -415,15 +415,23 @@ class WindowsScreen:
         finally:
             gdiplus.GdipDisposeImage(image)
 
-    def last_input(self) -> tuple[float, float]:
-        # Session-wide: local devices, Remote Desktop and every SendInput, Yuki's included.
-        # The 32-bit tick of the last input, unwrapped against one 64-bit tick read: exact.
+    def _ticks(self) -> tuple[int, int]:
+        # Session-wide: local devices, Remote Desktop and every SendInput, Yuki's included
+        # (pointer movement too). The 32-bit tick of the last input, unwrapped against one
+        # 64-bit tick read: exact.
         info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO))
         if not user32.GetLastInputInfo(ctypes.byref(info)):
             raise ctypes.WinError(ctypes.get_last_error())
         now = int(kernel32.GetTickCount64())
-        tick = float(now - ((now - info.dwTime) & 0xFFFFFFFF))
+        return now - ((now - info.dwTime) & 0xFFFFFFFF), now
+
+    def last_input(self) -> tuple[float, float]:
+        tick = float(self._ticks()[0])
         return tick, tick
+
+    def idle(self) -> float:
+        tick, now = self._ticks()
+        return (now - tick) / 1000
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         window = (

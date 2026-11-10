@@ -6,6 +6,17 @@ image (D1). Windows runners have an interactive desktop: the real GDI capture is
 and on CI only (never on a developer's computer) a real ``SendInput`` move proves the
 image-to-cursor mapping under per-monitor-v2 DPI (M6). Linux has no Connector GUI.
 Artifact: test-results/device-computer/native-<platform>.json (and the capture).
+
+The owner's input on macOS (D15), failure cases written before the code:
+
+- Pointer movement alone (``kCGEventMouseMoved``), a key release or a modifier change counts
+  as the owner's input and makes Yuki yield.
+- A key press, a press of any mouse button, a drag with any button or a scroll wheel is
+  missed because only one event type (or ``kCGAnyInputEventType``) is read.
+- The most recent of the deliberate events is not the one used (the oldest, or the first read).
+- A state other than the combined session state is read, losing Screen Sharing and remote
+  control input.
+- The real constants or calls fail on an actual Mac (the native test reads them for real).
 """
 
 from __future__ import annotations
@@ -18,6 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from desk_support import ARTIFACTS
 
 from yuki_agent_connector.desk import Desk
@@ -61,6 +73,11 @@ async def test_native_backend_facts_and_screenshot(tmp_path: Path) -> None:
             "screen": facts["screen"],
             "input": facts["input"],
         }
+        # The real last-input reads (D15 on macOS: every deliberate event type exists).
+        earliest, latest = backend.last_input()
+        quiet = backend.idle()
+        record["last_input"] = {"earliest": earliest, "latest": latest, "idle": quiet}
+        assert earliest <= latest and quiet >= 0
         unavailable = backend.unavailable()
         record["unavailable"] = unavailable
         if sys.platform == "win32":
@@ -110,3 +127,50 @@ async def test_native_backend_facts_and_screenshot(tmp_path: Path) -> None:
         (ARTIFACTS / f"native-{sys.platform}.json").write_text(
             json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
         )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend's choice of events")
+def test_macos_counts_only_deliberate_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yuki_agent_connector import screen_macos
+    from yuki_agent_connector.screen_macos import MacScreen, Quartz
+
+    deliberate = {
+        "key down": Quartz.kCGEventKeyDown,
+        "left button": Quartz.kCGEventLeftMouseDown,
+        "right button": Quartz.kCGEventRightMouseDown,
+        "other button": Quartz.kCGEventOtherMouseDown,
+        "left drag": Quartz.kCGEventLeftMouseDragged,
+        "right drag": Quartz.kCGEventRightMouseDragged,
+        "other drag": Quartz.kCGEventOtherMouseDragged,
+        "scroll": Quartz.kCGEventScrollWheel,
+    }
+    since: dict[int, float] = {}
+    states: set[int] = set()
+
+    def seconds(state: int, kind: int) -> float:
+        states.add(state)
+        if kind == Quartz.kCGAnyInputEventType:
+            return min([1000.0, *since.values()])
+        return since.get(kind, 1000.0)
+
+    monkeypatch.setattr(screen_macos.Quartz, "CGEventSourceSecondsSinceLastEventType", seconds)
+    screen = MacScreen()
+    since.update(
+        {
+            Quartz.kCGEventMouseMoved: 0.01,
+            Quartz.kCGEventKeyUp: 0.01,
+            Quartz.kCGEventFlagsChanged: 0.01,
+            Quartz.kCGEventLeftMouseUp: 0.01,
+        }
+    )
+    assert screen.idle() == 1000.0
+    for name, kind in deliberate.items():
+        since[kind] = 0.5
+        assert screen.idle() == 0.5, name
+        earliest, latest = screen.last_input()
+        assert earliest <= latest
+        del since[kind]
+    # The most recent deliberate event wins.
+    since.update({Quartz.kCGEventKeyDown: 3.0, Quartz.kCGEventScrollWheel: 0.2})
+    assert screen.idle() == 0.2
+    assert states == {Quartz.kCGEventSourceStateCombinedSessionState}

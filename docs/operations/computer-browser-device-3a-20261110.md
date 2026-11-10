@@ -2,7 +2,8 @@
 
 依据[统一 Computer Use 与 Browser Use 任务书](../architecture/Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md)
 §3 决定 4–8、§4.2、§5.1（合同已于阶段 1 冻结，不改参数）、§5.2、§5.5 第 3–5 层、§5.7、§5.8、§7 与 §8“阶段 3a”。
-本记录先列出写代码前的失败情况，再记录实现与验证。阶段 3b（§5.5 第 2 层按窗口后台投递）与 Yuki-Desktop 界面不在
+本记录先列出写代码前的失败情况，再记录实现与验证。本人输入由“叫停”改为“让出并重试”（D8、D9 改写，D11–D15
+新增，均在改代码前写出）。阶段 3b（§5.5 第 2 层按窗口后台投递）与 Yuki-Desktop 界面不在
 本次范围；Desktop 与连接器之间的 stdin/stdout 合同见[本机连接器 · 叫停、活动与权限行](local-agent-connector.zh-CN.md#叫停活动与权限行)。
 
 ## 1. 写代码前列出的可能失败情况
@@ -27,15 +28,27 @@
   `run_command(device)` 相同；每条命令重读配置，关闭立即生效）。
 - D6 点击已投递但截图字节传回失败或图像归档失败时丢失效果或报 `unknown`（回执保持 `submitted:true`，
   `media_read:false`、`media_error` 说明原因）。
-- D8 本人输入（含屏幕共享、远程控制）未被识别为叫停；Yuki 自己的合成输入被误判为本人输入（连续两次 Yuki
-  输入之间没有本人输入时第二次照常执行）；模型思考期间（截图与下一次输入之间）的本人输入被漏掉
-  （截图也算 Yuki 的上一次 `computer` 动作）；叫停后同一次输入仍部分执行。
-- D9 叫停后 `computer` 输入或 `browser` 输入（`open`、`click`、`type` 等）仍执行（都返回 `control_held`；
-  截图、快照、浏览器截图照常可读）；恢复由计时器、重连或连接器重启触发（只由 Desktop「繼續」或
-  `computer(action=resume, device)`）；`resume` 被设备归属人以外的人触发（服务端按既有设备归属核验，
-  非归属人得到 `not_found`，命令不发往连接器）。
+- D8 本人输入（含屏幕共享、远程控制）之后 Yuki 的下一次全局输入照常执行；Yuki 自己的合成输入被误判为本人输入
+  （连续两次 Yuki 输入之间没有本人输入时第二次照常执行）；模型思考期间（截图与下一次输入之间）的本人输入被漏掉
+  （截图也推进基准，基准之后的本人输入都算）。
+- D9 Desktop「停止」后 `computer` 输入或 `browser` 输入（`open`、`click`、`type` 等）仍执行（都返回 `control_held`；
+  截图、快照、浏览器截图照常可读）；叫停后同一次输入仍部分执行（`type` 段间复核）；恢复由计时器、重连或连接器
+  重启触发（只由 Desktop「繼續」或 `computer(action=resume, device)`）；`resume` 被设备归属人以外的人触发（服务端按
+  既有设备归属核验，非归属人得到 `not_found`，命令不发往连接器）。
 - D10 Desktop 重启连接器后叫停丢失（Desktop 在拉起子进程后立即写当前 holder；连接器启动时打
   `reason:"start"` 的 `holder:"none"`，收到后打 `reason:"desktop"` 的 `holder:"owner"`，之后输入为 `control_held`）。
+- D11 本人输入被当成叫停：置 `holder=owner`、打出 `control` 行、之后每次输入都要 `resume`（本人输入只让 Yuki 让出
+  这一次输入：holder 不变、不打 `control` 行、不需要 `resume`；`holder=owner` 只来自 Desktop「停止」）。
+- D12 发现本人输入后立即执行，或本人停手的瞬间就执行、点在已经变化的画面上（等本人连续 1.5 秒没有输入，然后
+  **拒绝且不执行**：`owner_active`、`status:"failed"`，消息说明本人刚用过电脑、画面可能已变，先重新截图再重试；
+  不打 `activity` 行，不投递任何事件）。
+- D13 本人一直在打字或操作时 Yuki 无限等待、占住设备（最多等 10 秒，到时同样 `owner_active` 拒绝且不执行）。
+- D14 让出后重新截图、本人已停手时重试仍被拒绝（截图推进基准，重试照常执行）；截图或其他读动作等待本人停手
+  （读动作从不等待、从不让出）；`browser` 输入因本人用电脑而让出（浏览器经 CDP 投递，不碰光标，只受 Desktop
+  「停止」约束）。
+- D15 macOS 上本人只移动指针也让 Yuki 让出（只认有意输入：按键按下、左／右／其他鼠标键按下、三种拖拽、滚轮，
+  分别读 `CGEventSourceSecondsSinceLastEventType` 取最近一次；Windows 仍为 `GetLastInputInfo`，含移动，低级钩子
+  推迟）。
 - D7（后台投递）属 3b。3a 中给出 `window` 且给出 `device` 时不得截整屏或全局输入冒充窗口操作
   （返回 `device_not_supported`，说明按窗口操作尚未支持、省略 `window` 使用整屏）。
 
@@ -67,7 +80,7 @@
 - K2 stdin 的 `{"type":"control","holder":"owner"|"none"}` 没有生效；其他类型的行、空行或无法解析的行
   使连接器退出；EOF 不再停止运行（EOF 仍取消运行，退出码 0）。
 - K3 非读动作前后没有 `activity` 行（`phase:"start"`／`"end"`，失败与异常也有 `end`）；被拒绝而没有执行的
-  输入（`control_held` 等）打出 `activity` 行；读动作打出 `activity` 行。
+  输入（`control_held`、`owner_active` 等）打出 `activity` 行；读动作打出 `activity` 行。
 - K4 启动时没有 `permissions` 行；预检结果变化（本人在系统设置中授权）时没有新行，或能力事实没有随之
   更新到服务端（重新发送 catalog）；Windows 上 `screen`／`input` 不是 `true`；不支持的平台打出 `permissions` 行。
 - K5 普通 `run`（无 `--desktop-stdin`）打出任何 `control`／`activity`／`permissions` 行（与状态行一样只在
@@ -109,28 +122,46 @@
 - 阻塞调用（G3）：屏幕动作在 `asyncio.to_thread` 中按设备串行（一把锁）；浏览器有自己的线程与请求队列，空闲时
   `pump` CDP 事件；事件循环只等待它们的结果。
 
-### 叫停与恢复（§5.5 第 3–5 层）
+### 让出、叫停与恢复（§5.5 第 3–5 层）
 
-- **本人输入检测的选择**：两平台都用“最近一次任何来源的输入时刻”与“Yuki 上一次 `computer` 输入结束时刻”比较。
-  macOS 读 `CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState,
-  kCGAnyInputEventType)`；用 CombinedSessionState 而不是任务书写的 HIDSystemState，因为前者包含 HID 之外投递到本
-  登录会话的事件（远程控制工具常在会话层投递），而“本人输入”的定义正是“任何不是 Yuki 产生的输入”；Yuki 自己的
-  事件也会更新它，所以基准取在 Yuki 动作（含动作后截图）结束之后。Windows 读 `GetLastInputInfo`（会话级，含远程
-  桌面与所有 `SendInput`）。没有选低级钩子：钩子需要常驻消息循环线程，超过 `LowLevelHooksTimeout` 会被系统静默
-  摘除（检测从此静默失效，正是不能接受的失败方式），并给本人的每次按键增加延迟；macOS 的事件监听还需要第三项
-  “输入监控”权限。代价：Yuki 自己正在投递事件的那几毫秒到几百毫秒内的本人输入，要到下一次动作才被发现。
-  `dwExtraInfo`／`kCGEventSourceUserData` 标记照样打上，供观察者与日后需要时使用。
-- 基准：Yuki 每次 `computer` 输入（无论成功或中途失败，只要投递过事件）之后、`resume` 之后、Desktop「繼續」之后
-  （点「繼續」本身就是本人输入），以及本进程还没有基准时的第一次截图之后。截图不推进已有基准：Yuki 点击后本人
-  用过电脑，再截图也仍会叫停（D8 模型思考期间）。本进程第一次动作若是输入且之前没有截图，则没有可比较的基准、
-  照常执行。
+本人输入不再叫停：任务书 §5.5 第 4 项把“第 3 层检测到本人输入”列为叫停来源，实机评审后本人决定改为
+让出并重试（参照 cmux 的做法，manaflow-ai/cmux#36080）——本人随手动一下电脑，Yuki 只是这一步不做、重新看一眼
+再做，不必每次都去聊天里说“继续”。叫停只剩 Desktop「停止」。
+
+- **本人输入检测的选择**：两平台都用“最近一次输入时刻”与“Yuki 上一次看屏幕或输入之后的时刻”比较。
+  macOS 对按键按下、左／右／其他鼠标键按下、三种拖拽与滚轮分别读
+  `CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, 类型)`，取最近一次；只移动
+  指针不算（本人把鼠标挪开不是在用电脑，D15）。用 CombinedSessionState 而不是任务书写的 HIDSystemState，因为
+  前者包含 HID 之外投递到本登录会话的事件（远程控制工具常在会话层投递），而“本人输入”的定义正是“任何不是
+  Yuki 产生的输入”；Yuki 自己的事件也会更新它，所以基准取在 Yuki 动作（含动作后截图）结束之后。Windows 读
+  `GetLastInputInfo`（会话级，含远程桌面与所有 `SendInput`，指针移动也算）。没有选低级钩子：钩子需要常驻消息
+  循环线程，超过 `LowLevelHooksTimeout` 会被系统静默摘除（检测从此静默失效，正是不能接受的失败方式），并给本人
+  的每次按键增加延迟；macOS 的事件监听还需要第三项“输入监控”权限。Windows 区分指针移动需要钩子，推迟。代价：
+  Yuki 自己正在投递事件的那几毫秒到几百毫秒内的本人输入，要到下一次动作才被发现。`dwExtraInfo`／
+  `kCGEventSourceUserData` 标记照样打上，供观察者与日后需要时使用。
+- 基准：Yuki 每次成功截图（含输入后附带的截图与 `resume`）之后、每次 `computer` 输入（无论成功或中途失败，只要
+  投递过事件）之后、Desktop「繼續」之后（点「繼續」本身就是本人输入）。截图推进基准：模型按这张图决定下一步，
+  只有图之后的输入才可能让图过时（D8 模型思考期间、D14 重试）。本进程第一次动作若是输入且之前没有截图，则没有
+  可比较的基准、照常执行。
+- 让出（D12–D14）：全局输入前发现基准之后有非 Yuki 输入时，不投递任何事件，等本人连续 1.5 秒没有输入
+  （按后端报告的“距最近一次输入的秒数”判断，`idle()`），最多等 10 秒，然后一律拒绝：`owner_active`、
+  `status:"failed"`，不打 `activity` 行，holder 不变、不打 `control` 行（D11）。等到本人停手也不执行，因为画面
+  可能已被本人改变，旧图上的坐标不再可信；消息让模型先重新截图，按新图重试。不重新截图直接重试会再次立即
+  被拒绝。1.5 秒与 10 秒是本人批准的交互参数，不是正确性门槛：等多久都不会让旧坐标变得可信，拒绝才是关键。
+  截图与其他读动作从不等待。`browser` 不让出：它经 CDP 向 Yuki 专用 Chrome 投递，不碰光标与本人的窗口。
+- 错误码选择：新增 `owner_active`，没有复用 `control_held`。`control_held` 在沙箱与本人电脑上都表示“本人持有
+  控制，等本人交还或说继续”，模型对它的正确反应是停下、等 `resume`；让出要求的反应相反——立刻重新截图并重试，
+  不需要任何人许可。合用一个码会让模型在让出后去调 `resume` 或在叫停时不停重试。`owner_active` 在
+  `computer` 工具说明、[本机连接器](local-agent-connector.zh-CN.md#屏幕与-yuki-专用浏览器)失败表与本记录中声明，
+  服务端原样透传连接器的错误码。
 - 时钟：只在后端自己的时钟里比较“最近一次输入时刻”，不换算到其他时钟。Windows 返回 `GetLastInputInfo` 的
   32 位 tick 按一次 `GetTickCount64` 展开后的精确值；macOS 返回区间：调用前后各读一次 `time.monotonic()`，
   减去“已过秒数”。基准取区间上界，检查用区间下界，下界晚于基准才算本人输入——不用经验阈值。Windows CI 首轮
   实测了换算的问题：Python 3.12 的 `time.monotonic()`／`time.time()` 与 `GetTickCount` 在 Windows 上都是约
-  15.6 ms 一跳，换算后 Yuki 自己刚投递的输入会被算成晚于基准而误叫停。
-- 叫停后：`computer` 的所有输入、`browser` 的所有输入（含每次 CDP 输入前的复核，长输入中途也停）都是
-  `control_held`；`type` 按 32 字符一段投递，段间复核 Desktop「停止」。读动作照常。
+  15.6 ms 一跳，换算后 Yuki 自己刚投递的输入会被算成晚于基准而误判。
+- 叫停（D9）：只有 Desktop「停止」（stdin `holder:"owner"`）置叫停。叫停后 `computer` 的所有输入、`browser` 的
+  所有输入（含每次 CDP 输入前的复核，长输入中途也停）都是 `control_held`；`type` 按 32 字符一段投递，段间复核。
+  读动作照常。恢复只有 Desktop「繼續」与 `computer(action=resume, device)`。
 - 状态只在内存（G4）；Desktop 在拉起子进程后重发（D10）。
 
 ### Yuki 专用 Chrome（§5.8）
@@ -175,8 +206,13 @@ Job 允许脱离，此分支只在其他宿主中出现。为了让 B8 在 CI �
 | D4 | `test_device_computer_e2e.py`（`get_environment(device)` 的 `computer`；旧连接器 → `device_not_supported`，无屏幕后端不声明 `computer`）；`test_desk_e2e.py`（hello 中的 facts） |
 | D5 | `test_desk_e2e.py` 与 `test_device_computer_e2e.py`（关闭后截图、浏览器读都为 `full_access_disabled`） |
 | D6 | `test_device_computer_e2e.py`（同键重放时截图已释放 → `media_read:false` 且 `submitted`；无归档能力的结果预算 → `media_read:false`，点击保留） |
-| D8 | `test_desk_e2e.py`（连续两次 Yuki 输入照常；截图后本人输入 → `control_held` 与 `owner_input` 行；普通 `run` 同样生效）；`test_device_computer_e2e.py`（经模型工具） |
-| D9 | `test_desk_e2e.py`（叫停时 `computer`、`browser` 输入拒绝，截图与浏览器读不拒绝；Desktop「繼續」与 `resume` 恢复）；`test_device_computer_e2e.py`（他人 `resume` → `not_found`，叫停保持） |
+| D8 | `test_desk_e2e.py::test_desktop_contract…`（连续两次 Yuki 输入照常；截图后本人输入 → 下一次输入让出；普通 `run` 同样让出）；`test_device_computer_e2e.py`（经模型工具） |
+| D9 | `test_desk_e2e.py`（Desktop「停止」时 `computer`、`browser` 输入 `control_held`，截图与浏览器读不拒绝；Desktop「繼續」与 `resume` 恢复）；`test_device_computer_e2e.py`（经模型工具：「停止」后输入 `control_held`、他人 `resume` → `not_found` 叫停保持、本人 `resume` 恢复） |
+| D11 | `test_desk_e2e.py`（让出前后 holder 仍为 `none`，除启动行外没有 `control` 行，也没有 `activity` 行）；`test_device_computer_e2e.py`（stdout 只有启动时的 `control` 行） |
+| D12 | `test_desk_e2e.py`（本人输入后点击约 1.5 秒后返回 `owner_active`、`status:"failed"`，事件为零；不截图直接重试立即再拒绝）；`test_device_computer_e2e.py`（经模型工具：`owner_active`，非 `uncertain`、非已提交变更） |
+| D13 | `test_desk_e2e.py::test_owner_who_keeps_using_the_computer…`（本人每 0.2 秒输入一次，`type` 在约 10 秒时 `owner_active`，事件为零；产物 `owner-busy-*.json`） |
+| D14 | `test_desk_e2e.py`（本人仍在输入时截图立即返回；截图后重试点击执行；`browser` 输入不让出）；`test_device_computer_e2e.py`（重新截图后重试成功） |
+| D15 | `test_screen_native.py::test_macos_counts_only_deliberate_input`（macOS：指针移动、松键、修饰键变化、松开鼠标不算；八种有意输入各自算；取最近一次；只读 CombinedSessionState）；`test_screen_native.py::test_native_backend…`（真实 `last_input()`／`idle()` 在本机与 CI macOS、Windows 上可读） |
 | D10 | `test_desk_e2e.py::test_restart_keeps_the_desktop_stop…` |
 | M6 | `test_screen_geometry.py`（Retina、副屏负坐标、150 % DPI、虚拟桌面归一化、当下几何）；`test_desk_e2e.py`（进程级：所附图像坐标 → 全局点、左上副屏）；`test_device_computer_e2e.py`（经服务端）；`test_screen_native.py`（CI Windows：真实 `SendInput` 移动后 `GetCursorPos` 与换算一致） |
 | B8 | `test_chrome_e2e.py`（真实 Chrome：私有 profile 与全部参数、`DevToolsActivePort`、下载在 `downloads/`、截图经文件循环、连接器被杀后 Chrome 存活、下一个连接器连已有实例不再启动、本人退出后重新打开）；`test_desk_e2e.py`（找不到 Chrome → `browser_unavailable`） |
@@ -187,7 +223,7 @@ Job 允许脱离，此分支只在其他宿主中出现。为了让 B8 在 CI �
 真实连接器进程 + 伪屏幕：`packages/yuki-agent-connector/tests/fakes/screen_connector.py` 以真实 CLI 入口运行，
 只替换操作系统屏幕（记录投递的事件、按测试脚本报告权限／锁屏／提升权限／本人输入）。产物：
 `test-results/device-computer/`（`desktop-contract-*.json`、`restart-*.json`、`plain-run-*.json`、
-`native-*.json(.jpg)`、`chrome-*.json`、`server-computer.json`、`server-old-connector.json`），CI 连接器三平台 job
+`owner-busy-*.json`、`native-*.json(.jpg)`、`chrome-*.json`、`server-computer.json`、`server-old-connector.json`），CI 连接器三平台 job
 上传为 `device-computer-<os>`，Bot 集成套件随 `tests-integration` 上传。
 
 ### 待实机（签名版 Desktop，Mac mini 与 Windows）
@@ -197,9 +233,9 @@ Job 允许脱离，此分支只在其他宿主中出现。为了让 B8 在 CI �
   Yuki.app；ScreenCaptureKit 在无 NSApplication 的子进程中可用（否则走 `CGWindowListCreateImage` 后备，日志可见）；
   pyobjc 回调在 hardened runtime 下是否需要 `allow-unsigned-executable-memory`；屏幕录制授权后预检是否要重启
   子进程才变为真（TCC 的已知行为，影响 `permissions` 行的及时性）。
-- 叫停：本人鼠标／键盘、屏幕共享（Screen Sharing.app）与远程控制工具的输入是否都推进
-  CombinedSessionState 的最近输入时刻；Yuki 自己的事件不被误判；Desktop「繼續」之后本人继续动鼠标会再次叫停
-  （设计如此，需要确认体验可接受）。
+- 让出：本人按键、点击、拖拽、滚动，屏幕共享（Screen Sharing.app）与远程控制工具的输入是否都推进
+  CombinedSessionState 中对应类型的最近输入时刻；只挪鼠标不让出；Yuki 自己的事件不被误判；本人停手后 Yuki
+  重新截图并重试的体验（等待 1.5 秒、最长 10 秒）是否可接受。Windows 上本人只挪鼠标也会让出（钩子推迟）。
 - Windows：多屏与 125 %／150 % 缩放下的坐标；锁屏与 UAC 为 `desktop_unavailable`；以管理员运行的窗口为
   `target_elevated`；远程桌面输入被识别；Desktop 子进程启动的 Chrome 能脱离 Job 并在连接器重启后存活。
 - 专用 Chrome：被遮挡与在另一桌面空间时截图不停；首次启动抢焦点一次；macOS 上 Chrome 脱离连接器进程组。

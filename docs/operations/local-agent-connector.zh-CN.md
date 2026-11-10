@@ -193,14 +193,14 @@ yuki-agent-connector service uninstall
 stdout 新增三种行，不改变状态行的形状：
 
 ```json
-{"type": "control", "holder": "owner", "since": "2026-11-10T08:00:00.123456Z", "reason": "owner_input"}
+{"type": "control", "holder": "owner", "since": "2026-11-10T08:00:00.123456Z", "reason": "desktop"}
 {"type": "activity", "tool": "computer", "action": "click", "phase": "start"}
 {"type": "activity", "tool": "computer", "action": "click", "phase": "end"}
 {"type": "permissions", "screen": true, "input": false}
 ```
 
-- `control`：启动时写一次（`holder:"none"`、`reason:"start"`），之后每次变化写一行。`reason` 为 `desktop`（stdin）、`owner_input`（Yuki 的全局输入前发现了非 Yuki 输入）或 `resume`（模型调用 `computer(action=resume, device)`）。`since` 是 UTC ISO-8601。
-- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、权限、锁屏、参数错误等）不写。Desktop 据此显示“Yuki 正在操作”。
+- `control`：启动时写一次（`holder:"none"`、`reason:"start"`），之后每次变化写一行。`reason` 为 `desktop`（stdin）或 `resume`（模型调用 `computer(action=resume, device)`）；本人在电脑上的输入只让 Yuki 让出，不改 holder、不写行。`since` 是 UTC ISO-8601。
+- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、`owner_active`、权限、锁屏、参数错误等）不写。Desktop 据此显示“Yuki 正在操作”。
 - `permissions`：启动时写一次，此后预检结果变化时写（每次 `computer` 动作与每 5 秒各读一次预检）。macOS 为 `CGPreflightScreenCaptureAccess`／`CGPreflightPostEventAccess` 的结果，Windows 两项恒为 `true`；不支持屏幕的平台（Linux、macOS 14 以下）不写。变化时同时把新的 `device_capabilities.computer` 发给服务端。
 
 ## 屏幕与 Yuki 专用浏览器
@@ -215,10 +215,13 @@ stdout 新增三种行，不改变状态行的形状：
 | `display_locked` | macOS 锁屏或显示器休眠 |
 | `desktop_unavailable` | macOS 控制台是其他用户或登录窗口；Windows 输入桌面不是 `Default`（锁屏、UAC） |
 | `target_elevated` | Windows 目标窗口所属进程完整性级别高于连接器（UIPI 会静默丢弃输入） |
-| `control_held` | 本人叫停中，或 Yuki 上一次 `computer` 动作之后出现了非 Yuki 输入 |
+| `owner_active` | Yuki 上一次截图或输入之后出现了非 Yuki 输入：等本人停手 1.5 秒（最多 10 秒）后拒绝，输入没有执行；重新截图后重试 |
+| `control_held` | 本人在 Desktop 按了「停止」（叫停中） |
 | `device_not_supported` | Linux、macOS 14 以下、旧连接器（`invalid_resource`）或给出 `window` |
 
-**叫停**：Yuki 的每个合成事件都带标记（macOS `kCGEventSourceUserData`、Windows `dwExtraInfo`）。每次全局输入前比较两件事实：最近一次任何来源的输入时刻（macOS `CGEventSourceSecondsSinceLastEventType(CombinedSessionState)`，含屏幕共享与远程控制；Windows `GetLastInputInfo`，含远程桌面），与 Yuki 上一次 `computer` 输入（或 `resume`、或本进程第一次截图）结束的时刻；前者更晚即为本人输入，置 `holder=owner` 并拒绝。叫停期间 `computer` 与 `browser` 的所有输入都是 `control_held`，截图与快照照常可读。恢复只有 Desktop「繼續」与 `computer(action=resume, device)`，后者服务端只按设备归属本人核验。
+**让出**：Yuki 的每个合成事件都带标记（macOS `kCGEventSourceUserData`、Windows `dwExtraInfo`）。每次全局输入前比较两件事实：最近一次输入时刻（macOS 对按键按下、鼠标键按下、拖拽与滚轮分别读 `CGEventSourceSecondsSinceLastEventType(CombinedSessionState)` 取最近一次，含屏幕共享与远程控制，只移动指针不算；Windows `GetLastInputInfo`，含远程桌面与指针移动），与 Yuki 上一次截图或 `computer` 输入（或 `resume`、Desktop「繼續」）结束的时刻；前者更晚即为本人在用电脑。这时 Yuki 不投递任何事件，等本人连续 1.5 秒没有输入（最多 10 秒），然后以 `owner_active` 拒绝这次输入——画面可能已变，模型重新截图后按新图重试；截图推进基准，所以重试照常执行。截图与快照从不等待；`browser` 不碰光标，不让出。
+
+**叫停**：只有 Desktop「停止」置 `holder=owner`。叫停期间 `computer` 与 `browser` 的所有输入都是 `control_held`，截图与快照照常可读。恢复只有 Desktop「繼續」与 `computer(action=resume, device)`，后者服务端只按设备归属本人核验。
 
 **浏览器（`browser`）**：连接器找已安装的 Google Chrome（Windows 注册表 `App Paths`、Program Files、LocalAppData；macOS `/Applications`、`~/Applications`；Linux `PATH`），找不到返回 `browser_unavailable`，不下载浏览器。profile 在连接器数据目录 `chrome-profile/`，下载在 `downloads/`；参数 `--remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`。先连该 profile 的 `DevToolsActivePort`，失败才启动；Chrome 在新会话（macOS／Linux）或 `CREATE_BREAKAWAY_FROM_JOB`（Windows）中启动，连接器重启不关闭它；本人关闭后下一次动作重新打开。CDP 驱动与 Yuki 环境共用 `cdp.py`，在连接器的一个线程里长驻。
 
