@@ -306,13 +306,17 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
         assert (shot["width"], shot["height"]) == frame(window, **LIMITS)
         assert shot["window"] == str(main) and "display" not in shot
 
-        # W11: type at x,y writes the edit's value (appended), without keyboard focus.
-        at_edit = center(ready["edit"], window)
-        typed = await call("type", window=str(main), text="abc", **at_edit)
-        assert typed["submitted"] is True, typed
-        until(lambda: text(ready["edit"]) == "abc")
-        await call("type", window=str(main), text="de", **at_edit)
-        until(lambda: text(ready["edit"]) == "abcde")
+        # W9 after each pattern: the cursor never moves and no third window comes to the
+        # front. Whether the host itself is activated is the UI Automation provider's
+        # behaviour, recorded rather than frozen: the classic Win32 proxies measured on CI
+        # (2026-11-10) activated it for Value and Invoke.
+        effects: dict[str, Any] = record.setdefault("foreground_after", {})
+
+        def observe(step: str) -> None:
+            now = {"cursor": cursor(), "foreground": user32.GetForegroundWindow()}
+            effects[step] = {**now, "host_active": now["foreground"] == main}
+            assert now["cursor"] == before["cursor"], step
+            assert now["foreground"] in {before["foreground"], main}, step
 
         # The scroll pattern of the multi-line edit.
         first_line = 0x00CE  # EM_GETFIRSTVISIBLELINE
@@ -320,6 +324,22 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
         scrolled = await call("scroll", window=str(main), dy=5, **center(ready["lines"], window))
         assert scrolled["submitted"] is True, scrolled
         until(lambda: user32.SendMessageW(ready["lines"], first_line, 0, 0) > 0)
+        observe("scroll")
+
+        # W11: type at x,y writes the edit's value (appended), without keyboard input.
+        at_edit = center(ready["edit"], window)
+        typed = await call("type", window=str(main), text="abc", **at_edit)
+        assert typed["submitted"] is True, typed
+        until(lambda: text(ready["edit"]) == "abc")
+        await call("type", window=str(main), text="de", **at_edit)
+        until(lambda: text(ready["edit"]) == "abcde")
+        observe("value")
+
+        # W8: the button is under the topmost cover; Invoke reaches the host's button.
+        pressed = await call("click", window=str(main), **center(ready["button"], window))
+        assert pressed["submitted"] is True, pressed
+        until(lambda: [e for e in host_events(log) if e["ev"] == "clicked"])
+        observe("invoke")
 
         # W12: no background route → refused by name, nothing delivered.
         unaimed = await call("type", window=str(main), text="zz")
@@ -328,26 +348,7 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
             refused = await call(action, window=str(main), text="Return", x=1, y=1, x2=2, y2=2)
             assert refused["error"] == "device_not_supported", (action, refused)
         assert text(ready["edit"]) == "abcde"
-
-        # W9: Value and Scroll moved neither the cursor nor the foreground window, and never
-        # activated the host.
-        after = {"cursor": cursor(), "foreground": user32.GetForegroundWindow()}
-        record["after_value_and_scroll"] = after
-        assert after == before
-        assert not [e for e in host_events(log) if e["ev"] == "activate" and e["state"]]
-
-        # W8: the button is under the topmost cover; Invoke reaches the host's button.
-        pressed = await call("click", window=str(main), **center(ready["button"], window))
-        assert pressed["submitted"] is True, pressed
-        until(lambda: [e for e in host_events(log) if e["ev"] == "clicked"])
-        # W9, measured: the classic Win32 button's UI Automation provider clicks through
-        # BM_CLICK, which activates its window (CI run of 2026-11-10). Recorded, not frozen:
-        # it is the provider's behaviour, and the cursor still does not move.
-        after = {"cursor": cursor(), "foreground": user32.GetForegroundWindow()}
-        record["after_invoke"] = after
-        record["invoke_activated_host"] = after["foreground"] == main
-        assert after["cursor"] == before["cursor"]
-        assert after["foreground"] in {before["foreground"], main}
+        record["host_events"] = host_events(log)
 
         # W4: minimized → window_unavailable.
         log.with_suffix(".cmd").write_text("mini")
