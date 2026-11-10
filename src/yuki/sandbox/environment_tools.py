@@ -63,7 +63,8 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "运行一条 Shell 命令。默认在 Yuki 自己的持久 Linux 环境（HOME=/home/yuki，"
             "文件在 /workspace，可用 Bash、Python、Node、apt、pip/npm 与公网）；"
             "给 device 则在该本人电脑的系统 Shell 执行。约 5 秒后返回，"
-            "仍在运行时用 read_command 按 id 继续读，不要重新提交；tty=true 支持交互输入。",
+            "仍在运行时用 read_command 按 id 继续读，不要重新提交；tty=true 支持交互输入。"
+            "不用它在本人电脑上模拟键鼠或截屏，界面操作用 computer。",
             {
                 "command": text,
                 **device,
@@ -113,6 +114,8 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "只截该窗口、坐标相对该窗口。每次都附动作后的新截图；submitted 只表示"
             "输入已投递，是否生效看截图。本人接管或叫停时输入返回 control_held；"
             "本人电脑上本人刚用过电脑时输入不执行、返回 owner_active，重新截图后再试。"
+            "本人电脑的界面（打开或切换应用、点击、按键、输入、截屏）只用本工具，"
+            "不用 run_command 跑 osascript、System Events、screencapture 等脚本代替。"
             "网页优先用 browser。",
             {
                 "action": {
