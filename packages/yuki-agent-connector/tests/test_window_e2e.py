@@ -198,6 +198,15 @@ async def test_window_in_the_background(tmp_path: Path) -> None:
             unrouted = await call("key", "key-unrouted", window="4242", text="Return")
             assert unrouted["error"] == "device_not_supported"
             assert "省略 window" in unrouted["message"]
+            # W24: a window outside the owner's current Space takes no input at all, yet
+            # its picture still reads.
+            script(state, windows=[{**EDITOR, "actions": []}])
+            elsewhere = await call("screenshot", "shot-elsewhere", window="4242")
+            assert elsewhere["window"] == "4242" and "image" in elsewhere
+            for action, extra in (("click", {"x": 1, "y": 1}), ("key", {"text": "cmd+n"})):
+                refused = await call(action, f"{action}-elsewhere", window="4242", **extra)
+                assert refused["error"] == "device_not_supported"
+                assert "桌面空间" in refused["message"]
             # D3 for a window: the window's process is elevated.
             script(state, windows=[{**EDITOR, "elevated": True}])
             elevated = await call("click", "click-elevated", window="4242", x=1, y=1)
