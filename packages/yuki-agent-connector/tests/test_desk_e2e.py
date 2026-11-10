@@ -60,7 +60,8 @@ def script(state: Path, **facts: Any) -> None:
 
 def events(state: Path) -> list[dict[str, Any]]:
     path = state / "events.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [json.loads(line) for line in lines]
 
 
 def jpeg_size(data: bytes) -> tuple[int, int]:

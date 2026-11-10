@@ -68,7 +68,8 @@ def script(state: Path, **facts) -> None:
 
 def events(state: Path) -> list[dict]:
     path = state / "events.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [json.loads(line) for line in lines]
 
 
 class Process:
