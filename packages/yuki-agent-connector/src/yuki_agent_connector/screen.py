@@ -142,8 +142,12 @@ class Backend(Protocol):
     def capture(self, display: Display, width: int, height: int, path: Path) -> None:
         """Write a JPEG of exactly ``width``x``height`` showing ``display`` now."""
 
-    def seconds_since_input(self) -> float:
-        """Seconds since the most recent input event from any source, Yuki's included."""
+    def last_input(self) -> tuple[float, float]:
+        """Bounds of the moment of the most recent input from any source, Yuki's included.
+
+        In the backend's own clock; only compared with another value of this method, so
+        no conversion to another clock (and its rounding) is involved.
+        """
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         """Whether input to the window at ``point`` (or the foreground) would be dropped."""

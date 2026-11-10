@@ -195,6 +195,7 @@ gdi32.DeleteDC.argtypes = [wintypes.HDC]
 kernel32.OpenProcess.restype = HANDLE
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.GetCurrentProcess.restype = HANDLE
+kernel32.GetTickCount64.restype = ctypes.c_ulonglong
 kernel32.CloseHandle.argtypes = [HANDLE]
 advapi32.OpenProcessToken.argtypes = [HANDLE, wintypes.DWORD, ctypes.POINTER(HANDLE)]
 advapi32.GetTokenInformation.argtypes = [
@@ -414,12 +415,15 @@ class WindowsScreen:
         finally:
             gdiplus.GdipDisposeImage(image)
 
-    def seconds_since_input(self) -> float:
+    def last_input(self) -> tuple[float, float]:
         # Session-wide: local devices, Remote Desktop and every SendInput, Yuki's included.
+        # The 32-bit tick of the last input, unwrapped against one 64-bit tick read: exact.
         info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO))
         if not user32.GetLastInputInfo(ctypes.byref(info)):
             raise ctypes.WinError(ctypes.get_last_error())
-        return float((int(kernel32.GetTickCount()) - info.dwTime) & 0xFFFFFFFF) / 1000
+        now = int(kernel32.GetTickCount64())
+        tick = float(now - ((now - info.dwTime) & 0xFFFFFFFF))
+        return tick, tick
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         window = (

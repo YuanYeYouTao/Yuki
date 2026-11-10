@@ -78,10 +78,10 @@ class FakeScreen:
     def capture(self, display: screen.Display, width: int, height: int, path: Path) -> None:
         path.write_bytes(jpeg(width, height))
 
-    def seconds_since_input(self) -> float:
+    def last_input(self) -> tuple[float, float]:
         owner = self.state / "owner_input"
         latest = max(self.own, float(owner.read_text()) if owner.exists() else 0.0)
-        return time.time() - latest
+        return latest, latest
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         return bool(self.script().get("elevated"))

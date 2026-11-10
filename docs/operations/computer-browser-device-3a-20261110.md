@@ -124,8 +124,11 @@
   （点「繼續」本身就是本人输入），以及本进程还没有基准时的第一次截图之后。截图不推进已有基准：Yuki 点击后本人
   用过电脑，再截图也仍会叫停（D8 模型思考期间）。本进程第一次动作若是输入且之前没有截图，则没有可比较的基准、
   照常执行。
-- 时钟：基准与“现在”都用 `time.perf_counter()`。Windows CI 首轮实测：Python 3.12 的 `time.monotonic()` 在
-  Windows 上约 15.6 ms 一跳，比被比较的输入时刻粗，Yuki 自己刚投递的输入被算成晚于基准而误叫停。
+- 时钟：只在后端自己的时钟里比较“最近一次输入时刻”，不换算到其他时钟。Windows 返回 `GetLastInputInfo` 的
+  32 位 tick 按一次 `GetTickCount64` 展开后的精确值；macOS 返回区间：调用前后各读一次 `time.monotonic()`，
+  减去“已过秒数”。基准取区间上界，检查用区间下界，下界晚于基准才算本人输入——不用经验阈值。Windows CI 首轮
+  实测了换算的问题：Python 3.12 的 `time.monotonic()`／`time.time()` 与 `GetTickCount` 在 Windows 上都是约
+  15.6 ms 一跳，换算后 Yuki 自己刚投递的输入会被算成晚于基准而误叫停。
 - 叫停后：`computer` 的所有输入、`browser` 的所有输入（含每次 CDP 输入前的复核，长输入中途也停）都是
   `control_held`；`type` 按 32 字符一段投递，段间复核 Desktop「停止」。读动作照常。
 - 状态只在内存（G4）；Desktop 在拉起子进程后重发（D10）。
@@ -137,7 +140,11 @@
 （`CREATE_BREAKAWAY_FROM_JOB` 得到 `PermissionError`），记录警告后在同一 Job 中启动——Desktop（libuv）为子进程建的
 Job 允许脱离，此分支只在其他宿主中出现。为了让 B8 在 CI 三平台都用真实 Chrome 验证，Linux 也按 `PATH` 找 Chrome
 （连接器在 Linux 仍不做屏幕）。`browser` 工具说明中的“下载保存到 /workspace/downloads”属阶段 1 冻结的合同文字，
-本人电脑上的下载路径以 `download` 事件的 `path` 为准。
+本人电脑上的下载路径以 `download` 事件的 `path` 为准。Windows CI 实测补充：Chrome 被杀后连接被重置，关闭 CDP 连接时发送关闭帧会抛出 `OSError`，
+曾让浏览器线程退出、之后每个浏览器动作都挂起；现在丢弃连接时不让关闭帧的失败逃出，空闲 `pump` 的任何异常都只
+记日志并丢弃连接，下一次动作重连或重新打开 Chrome。GitHub Windows runner 所在 Job 不允许脱离
+（日志 `Chrome could not leave the Connector's job object`），Chrome 仍在连接器被杀后存活（该 Job 没有
+`KILL_ON_JOB_CLOSE`）；Desktop 子进程中的行为待实机。
 
 ### `window` 与 `device`（3a）
 

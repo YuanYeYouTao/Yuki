@@ -12,6 +12,7 @@ the profile holds none of the owner's sign-ins (task book §5.8).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import queue
@@ -133,8 +134,11 @@ class BrowserHost:
                 try:
                     assert self.browser is not None
                     self.browser.pump(0)
-                except (OSError, ValueError):
-                    # Chrome quit or the owner closed it; the next action reopens it.
+                except Exception:
+                    # Chrome quit or the owner closed it (a reset socket, or events cut
+                    # off mid-shutdown): this thread must outlive it, and the next action
+                    # reconnects or reopens Chrome.
+                    logger.info("The Yuki Chrome connection ended", exc_info=True)
                     self._drop()
                 continue
             if item is None:
@@ -153,9 +157,12 @@ class BrowserHost:
             deliver(result)
 
     def _drop(self) -> None:
-        if self.browser is not None:
-            self.browser.close()
-            self.browser = None
+        browser, self.browser = self.browser, None
+        if browser is not None:
+            # The close frame cannot be sent on a reset connection (Windows reports the
+            # killed Chrome that way); the socket is closed either way.
+            with contextlib.suppress(OSError):
+                browser.close()
 
     def _check(self) -> None:
         """Runs before every input the driver sends (task book §5.5 point 4)."""

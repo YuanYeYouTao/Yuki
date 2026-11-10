@@ -242,14 +242,16 @@ class MacScreen:
         Quartz.CGContextDrawImage(context, Quartz.CGRectMake(0, 0, width, height), full)
         return Quartz.CGBitmapContextCreateImage(context)
 
-    def seconds_since_input(self) -> float:
+    def last_input(self) -> tuple[float, float]:
         # Combined session state: hardware, Screen Sharing / remote control and any other
-        # process posting into this login session, Yuki's own events included.
-        return float(
-            Quartz.CGEventSourceSecondsSinceLastEventType(
-                Quartz.kCGEventSourceStateCombinedSessionState, Quartz.kCGAnyInputEventType
-            )
+        # process posting into this login session, Yuki's own events included. The
+        # system measures "seconds since" at some instant between the two clock reads.
+        before = time.monotonic()
+        since = Quartz.CGEventSourceSecondsSinceLastEventType(
+            Quartz.kCGEventSourceStateCombinedSessionState, Quartz.kCGAnyInputEventType
         )
+        after = time.monotonic()
+        return before - since, after - since
 
     def elevated(self, point: tuple[float, float] | None) -> bool:
         # macOS has no integrity levels between the owner's own windows.
