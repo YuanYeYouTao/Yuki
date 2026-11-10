@@ -257,7 +257,6 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
         wintypes.LPARAM,
     ]
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     backend = native_backend()
     assert backend is not None
     lines: list[dict[str, Any]] = []
@@ -273,8 +272,9 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
         return point.x, point.y
 
     def text(handle: int) -> str:
+        # WM_GETTEXT: GetWindowText does not read another process's control text.
         buffer = ctypes.create_unicode_buffer(4096)
-        user32.GetWindowTextW(handle, buffer, len(buffer))
+        user32.SendMessageW(handle, 0x000D, len(buffer), ctypes.addressof(buffer))
         return buffer.value
 
     def center(handle: int, window: Window) -> dict[str, int]:
