@@ -60,7 +60,11 @@ jobs:
       - run: uv sync --frozen --python 3.12
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync mypy src
-      - run: uv run --no-sync pytest -q
+      - name: Let the installed Chrome use its sandbox (Ubuntu 24.04 AppArmor)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Tests (the dedicated-Chrome test opens a real window)
+        run: ${{ runner.os == 'Linux' && 'xvfb-run -a ' || '' }}uv run --no-sync pytest -q
       - run: uv build --out-dir dist
       - name: Install actual connector wheel without the Bot package
         run: uv run --no-sync python scripts/verify_wheel.py
@@ -74,6 +78,12 @@ jobs:
         with:
           name: connector-stability-${{ matrix.os }}
           path: test-results/connector-stability/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: device-computer-${{ matrix.os }}
+          path: test-results/device-computer/
           retention-days: 7
 
   checks:

@@ -32,8 +32,10 @@ class FileSource:
 
 
 class FileTransfers:
-    def __init__(self, journal: Journal) -> None:
+    def __init__(self, journal: Journal, captures: Path) -> None:
         self.journal = journal
+        # Screenshots are registered here as ordinary sources; release deletes them.
+        self.captures = captures
         self.sources: dict[str, asyncio.Task[FileSource]] = {}
         self.writers: dict[str, asyncio.Lock] = {}
 
@@ -110,6 +112,9 @@ class FileTransfers:
             if action == "release":
                 await asyncio.to_thread(self._close_source, source)
                 self.sources.pop(transfer_id)
+                capture = Path(source.metadata["path"])
+                if capture.parent == self.captures:
+                    await asyncio.to_thread(capture.unlink, missing_ok=True)
                 return {"transfer_id": transfer_id, "released": True}
             return await asyncio.to_thread(self._read_locked, source, args)
         if action == "write":

@@ -131,6 +131,14 @@ def main() -> None:
             "import yuki_agent_connector.drivers.acp; import yuki_agent_connector.claude_inspect",
             cwd=relocated,
         )
+        # The owner's screen: pyobjc frameworks on macOS, ctypes DLLs on Windows. Import
+        # only; nothing is captured or posted on the build machine.
+        gui = {
+            "darwin": "import Quartz, ScreenCaptureKit; import yuki_agent_connector.screen_macos",
+            "win32": "import yuki_agent_connector.screen_windows",
+        }.get(target_os)
+        if gui is not None:
+            run(str(moved_python), "-I", "-B", "-c", gui, cwd=relocated)
         with tempfile.TemporaryDirectory(prefix="yuki-runtime-status-") as data:
             run(
                 str(moved_python),

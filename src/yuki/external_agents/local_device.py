@@ -71,10 +71,106 @@ class LocalDeviceService:
         )
         connection.device_capabilities = {
             key: result[key]
-            for key in ("full_access", "platform", "shell", "tty", "interrupt_supported")
+            for key in (
+                "full_access",
+                "platform",
+                "shell",
+                "tty",
+                "interrupt_supported",
+                "computer",
+            )
             if key in result
         }
         return {"device_id": device_id, **result}
+
+    async def screen_action(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        request_id: str,
+        source: dict[str, Any],
+        max_dimension: int,
+        max_pixels: int,
+    ) -> dict[str, Any]:
+        """``computer``/``browser`` with ``device``: one Connector command keyed by the call.
+
+        The Connector journals an input before it runs it, so a retry of the call key
+        returns the original receipt and an interrupted one is ``unknown``; reads are
+        simply read again. The screenshot comes back through the file download loop.
+        """
+        from yuki.sandbox.environment_tools import READ_ACTIONS
+
+        actor = self.actor(source)
+        device_id = str(args["device"])
+        read = args["action"] in READ_ACTIONS[tool]
+        try:
+            # Only the existing rule: the device belongs to the person asking.
+            connection = await self.connection(device_id, actor)
+        except DeviceOffline:
+            return {"error": "device_offline", "message": "这台电脑不在线，动作没有执行。"}
+        command = {
+            "type": "command",
+            "resource": tool,
+            "action": args["action"],
+            "id": request_id,
+            "arguments": {
+                **{key: value for key, value in args.items() if key not in {"device", "action"}},
+                "owner": source.get("work_id"),
+                # The Connector produces the final image size; the Host never rescales it.
+                "max_dimension": max_dimension,
+                "max_pixels": max_pixels,
+            },
+        }
+        try:
+            result = dict(await connection.request(command))
+        except (DeviceOffline, OSError):
+            return {
+                "error": "device_offline",
+                "message": "这台电脑在动作期间断开；"
+                + ("先截图确认，不要重复输入。" if not read else "重新连接后再看。"),
+                **({} if read else {"status": "unknown"}),
+            }
+        refused = result.get("error")
+        if isinstance(refused, dict):
+            # Refused before it ran (old Connector, full access off, invalid command).
+            if refused.get("code") == "invalid_resource":
+                return {
+                    "error": "device_not_supported",
+                    "message": "这台电脑的连接器版本过旧，不能操作屏幕或浏览器；"
+                    "请本人更新 Yuki 桌面端。",
+                }
+            return {"error": str(refused.get("code")), "message": str(refused.get("message", ""))}
+        status = result.pop("status", None)
+        for key in ("state_sequence", "admitted", "pending", "reason", "error_type", "details"):
+            result.pop(key, None)
+        if status == "unknown" and not result.get("error"):
+            # Dispatched, then the Connector stopped before recording a result.
+            return {
+                "error": "action_unknown",
+                "message": "动作可能已经执行，结果未知；先截图或读快照确认，不要重复输入。",
+                "status": "unknown",
+            }
+        if status == "unknown":
+            result["status"] = "unknown"
+        image = result.pop("image", None)
+        if isinstance(image, dict) and not result.get("error"):
+            try:
+                async with self.download(
+                    device_id, actor, image["path"], request_id=f"{request_id}:image"
+                ) as (local, _):
+                    data = await asyncio.to_thread(local.read_bytes)
+                result["image"] = {
+                    "base64": base64.b64encode(data).decode("ascii"),
+                    "media_type": image["media_type"],
+                    "width": image["width"],
+                    "height": image["height"],
+                }
+            except (WorkspaceError, DeviceOffline, OSError) as error:
+                # The effect stays a fact; only its picture is missing (a retry of an
+                # input returns the original receipt, whose capture was already read).
+                result["media_error"] = str(error) or type(error).__name__
+        return result
 
     async def original_run(self, run_id: str, actor: str) -> SandboxTaskRunModel:
         row = await self.tasks.by_run(run_id)

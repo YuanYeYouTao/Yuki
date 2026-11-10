@@ -21,13 +21,26 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from . import PROTOCOL_VERSION
 from .computer import computer_status
 from .config import Config, Instance
+from .desk import Desk
 from .drivers import Driver, DriverError, make_driver
 from .files import FileTransfers
 from .journal import Journal
+from .screen import Backend
 from .terminal import LocalTerminal
 
 logger = logging.getLogger(__name__)
-READ_ACTIONS = {"list", "get", "read", "status", "stat", "release"}
+# Reads are simply answered again on retry; everything else is journaled before it runs.
+READ_ACTIONS = {
+    "list",
+    "get",
+    "read",
+    "status",
+    "stat",
+    "release",
+    "screenshot",
+    "snapshot",
+    "resume",
+}
 ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond", "queue", "watch"}
 
 
@@ -106,6 +119,7 @@ class Connector:
         *,
         config_path: Path | None = None,
         report: Callable[[dict[str, Any]], None] = lambda line: None,
+        screen: Backend | None = None,
     ) -> None:
         self.config, self.journal = config, journal
         self.config_path = config_path
@@ -124,7 +138,9 @@ class Connector:
         self.stopped = asyncio.Event()
         self.catalog_changed = asyncio.Event()
         self._startup: set[asyncio.Task[None]] = set()
-        self.files = FileTransfers(journal)
+        # The owner's screen and the Yuki-dedicated Chrome; no screen backend, no computer.
+        self.desk = Desk(journal.path.parent, screen, report, self.catalog_changed.set)
+        self.files = FileTransfers(journal, self.desk.captures)
         self.terminal = LocalTerminal(
             journal.path.parent / "terminal", journal, self._terminal_event
         )
@@ -230,19 +246,26 @@ class Connector:
 
     def device_capabilities(self) -> dict[str, Any]:
         computer = computer_status()
+        screen = self.desk.facts()
         return {
             "full_access": self.config.full_access is True,
             "platform": computer["platform"],
             "shell": computer["shell"],
             "tty": False,
             "interrupt_supported": computer["interrupt_supported"],
+            **({"computer": screen} if screen is not None else {}),
         }
 
     async def _device_command(self, command: dict[str, Any]) -> dict[str, Any]:
         resource, action = command["resource"], command["action"]
         args = command.get("arguments", {})
         if resource == "terminal" and action == "status":
-            return {"full_access": self.config.full_access is True, **computer_status()}
+            screen = await asyncio.to_thread(self.desk.facts)
+            return {
+                "full_access": self.config.full_access is True,
+                **computer_status(),
+                **({"computer": screen} if screen is not None else {}),
+            }
         if action == "get" and resource == "terminal":
             return self.journal.operation(args["operation_id"])
         allowed_closed = (
@@ -254,6 +277,8 @@ class Connector:
             return await self.terminal.execute(command)
         if resource == "file":
             return await self.files.execute(command)
+        if resource in {"computer", "browser"}:
+            return await self.desk.execute(command)
         raise DriverError("invalid_resource", f"Unsupported device resource: {resource}")
 
     def _spawn(self, coroutine: Any) -> None:
@@ -672,6 +697,7 @@ class Connector:
     async def run(self) -> None:
         try:
             await self.start_drivers()
+            self._spawn(self.desk.watch())
             async for websocket in connect(
                 self.config.url,
                 additional_headers={"Authorization": f"Bearer {self.config.token}"},
@@ -717,6 +743,7 @@ class Connector:
             async def close_owners() -> None:
                 await self.terminal.close()
                 await self.files.close()
+                await self.desk.close()
                 owners = (*self._startup, *self.tasks)
                 for task in owners:
                     task.cancel()
