@@ -5,6 +5,10 @@ converted with the display geometry read when the action runs (task book §5.2),
 with a saved screenshot. ``Display`` rectangles are in the platform's input coordinate
 space: global points on macOS (Retina is pixels/points), physical pixels on Windows
 (the process is per-monitor-v2 DPI aware, so a 150 % display is not scaled twice).
+
+A ``Window`` (phase 3b) is the same kind of rectangle: its image is that window alone and
+its coordinates are relative to that image; input to it goes to that window in the
+background, never through the global cursor (task book §5.5 layer 2).
 """
 
 from __future__ import annotations
@@ -40,14 +44,54 @@ class Display:
         }
 
 
-def frame(display: Display, max_dimension: int, max_pixels: int) -> tuple[int, int]:
+@dataclass(frozen=True)
+class Window:
+    """One top-level window as read now: ``id`` is what ``windows`` lists and ``window`` takes."""
+
+    id: str
+    app: str
+    title: str
+    x: float
+    y: float
+    width: float
+    height: float
+    pixel_width: int
+    pixel_height: int
+
+
+class Area(Protocol):
+    """A display or a window: a rectangle in input coordinates and its native pixel size."""
+
+    @property
+    def x(self) -> float: ...
+    @property
+    def y(self) -> float: ...
+    @property
+    def width(self) -> float: ...
+    @property
+    def height(self) -> float: ...
+    @property
+    def pixel_width(self) -> int: ...
+    @property
+    def pixel_height(self) -> int: ...
+
+
+class Refused(Exception):
+    """The operating system cannot do this for the window; nothing was delivered by this call."""
+
+    def __init__(self, error: str, message: str) -> None:
+        super().__init__(message)
+        self.error, self.message = error, message
+
+
+def frame(display: Area, max_dimension: int, max_pixels: int) -> tuple[int, int]:
     """Size of the image of ``display`` under the profile's limits; never upscaled."""
     scale = image_scale(display.pixel_width, display.pixel_height, max_dimension, max_pixels)
     return round(display.pixel_width * scale), round(display.pixel_height * scale)
 
 
 def to_global(
-    display: Display, max_dimension: int, max_pixels: int, x: float, y: float
+    display: Area, max_dimension: int, max_pixels: int, x: float, y: float
 ) -> tuple[float, float]:
     """An image pixel of ``display`` in global input coordinates (may be negative)."""
     scale = image_scale(display.pixel_width, display.pixel_height, max_dimension, max_pixels)
@@ -128,7 +172,48 @@ def parse_keys(combo: str) -> tuple[tuple[str, ...], str]:
     return tuple(modifiers), key
 
 
-class Backend(Protocol):
+class Surface(Protocol):
+    """Where input goes: the whole screen (global input) or one window (background)."""
+
+    def move(self, x: float, y: float) -> None: ...
+
+    def click(self, x: float, y: float, button: str, count: int) -> None: ...
+
+    def drag(self, x: float, y: float, x2: float, y2: float) -> None: ...
+
+    def scroll(self, x: float, y: float, dx: int, dy: int) -> None: ...
+
+    def key(self, modifiers: tuple[str, ...], key: str) -> None: ...
+
+    def type(self, text: str) -> None: ...
+
+
+class Target(Surface, Protocol):
+    """One window resolved for one call. Input never moves the cursor or raises a window;
+    an action without a background route raises ``Refused`` and delivers nothing."""
+
+    @property
+    def window(self) -> Window: ...
+
+    @property
+    def actions(self) -> frozenset[str]:
+        """Inputs this platform can deliver to a window in the background at all."""
+
+    def collides(self) -> bool:
+        """Whether the owner is using the window's app: it is the frontmost app, or the
+        window under the owner's pointer belongs to it."""
+
+    def elevated(self) -> bool:
+        """Whether the window's process is above Yuki's integrity level (Windows UIPI)."""
+
+    def capture(self, width: int, height: int, path: Path) -> None:
+        """Write a JPEG of exactly ``width``x``height`` showing this window alone, now."""
+
+    def focus(self, x: float, y: float) -> None:
+        """Make the input field at the global point the target of ``key``/``type``."""
+
+
+class Backend(Surface, Protocol):
     """One platform's screen. Every method blocks; the caller runs it off the event loop."""
 
     def permissions(self) -> tuple[bool, bool]:
@@ -156,17 +241,11 @@ class Backend(Protocol):
     def elevated(self, point: tuple[float, float] | None) -> bool:
         """Whether input to the window at ``point`` (or the foreground) would be dropped."""
 
-    def move(self, x: float, y: float) -> None: ...
+    def windows(self) -> list[dict[str, str]]:
+        """``{id, app, title}`` of the owner's ordinary top-level windows, Yuki's excluded."""
 
-    def click(self, x: float, y: float, button: str, count: int) -> None: ...
-
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None: ...
-
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None: ...
-
-    def key(self, modifiers: tuple[str, ...], key: str) -> None: ...
-
-    def type(self, text: str) -> None: ...
+    def window(self, identity: str) -> Target:
+        """The window ``identity`` as it is now; ``Refused`` when missing or minimized."""
 
 
 # Every synthetic event carries this tag (macOS kCGEventSourceUserData, Windows dwExtraInfo).

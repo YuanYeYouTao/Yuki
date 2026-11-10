@@ -180,7 +180,7 @@ browser(action, url?, node?, text?, tab?, device?)
 | 0 稳定性 | §5.9（服务端两项已在 #590） | — | 2–3 天（含 Desktop 发版） |
 | 1 Yuki 沙箱 | 工具合同（一次冻结）、长驻共享 CDP 驱动、快照与动作语义、图像与坐标、长循环预算、Manager 动作与恢复、清理过期 CLI 提示与夹具 | — | 5–7 天 |
 | 3a 本人电脑·前台 | 连接器整屏截图与全局输入、叫停/恢复（§5.5 第 3–5 层）、能力事实与服务端路由、Yuki 专用 Chrome 窗口、Desktop 状态与权限页 | 0、1 | 共享 4–5 天 + macOS 4–6 天 + Windows 3–4 天 + 浏览器 3–4 天 + Desktop 3–4 天 |
-| 3b 本人电脑·后台 | §5.5 第 2 层窗口截图与后台投递 | 3a 与 spike 结论 | 约 2–2.5 周（[spike 记录](../operations/computer-3b-spike-20261110.md) §6；Windows 以实机脚本结果为准） |
+| 3b 本人电脑·后台 | §5.5 第 2 层窗口截图与后台投递 | 3a 与 spike 结论 | 约 2–2.5 周（[spike 记录](../operations/computer-3b-spike-20261110.md) §6；Windows 以实机脚本结果为准）；实施与验证见 [3b 记录](../operations/computer-3b-20261110.md) |
 
 阶段 0 与阶段 1 可并行；阶段 1 完成即可让 Yuki 自己的电脑可用；3a 单独可交付。F08（本人电脑/产物 → Yuki 环境）按其任务书独立排期。
 

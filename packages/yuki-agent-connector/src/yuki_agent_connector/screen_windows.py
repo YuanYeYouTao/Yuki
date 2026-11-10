@@ -13,13 +13,18 @@ import ctypes
 import sys
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from .screen import EVENT_TAG, Display, to_virtual_desk
+from .screen import EVENT_TAG, Display, Refused, Window, to_virtual_desk
 
 assert sys.platform == "win32"
+
+# comtypes initialises COM in the thread that first imports it: make that, like every
+# thread that uses UI Automation here, the multithreaded apartment.
+sys.coinit_flags = 0  # type: ignore[attr-defined]
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -27,6 +32,7 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 shcore = ctypes.WinDLL("shcore")
 gdiplus = ctypes.WinDLL("gdiplus")
+dwmapi = ctypes.WinDLL("dwmapi")
 
 ULONG_PTR = ctypes.c_size_t
 HANDLE = wintypes.HANDLE
@@ -136,6 +142,7 @@ def guid(text: str) -> GUID:
 
 JPEG_ENCODER = guid("557cf401-1a04-11d3-9a73-0000f81ef32e")
 ENCODER_QUALITY = guid("1d5be4b5-fa4a-452d-9cdd-5db35105e7eb")
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 MONITORENUMPROC = ctypes.WINFUNCTYPE(
     wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.LPARAM
 )
@@ -197,6 +204,28 @@ kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.GetCurrentProcess.restype = HANDLE
 kernel32.GetTickCount64.restype = ctypes.c_ulonglong
 kernel32.CloseHandle.argtypes = [HANDLE]
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    HANDLE,
+    wintypes.DWORD,
+    wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD),
+]
+user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+dwmapi.DwmGetWindowAttribute.argtypes = [
+    wintypes.HWND,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+]
 advapi32.OpenProcessToken.argtypes = [HANDLE, wintypes.DWORD, ctypes.POINTER(HANDLE)]
 advapi32.GetTokenInformation.argtypes = [
     HANDLE,
@@ -249,6 +278,8 @@ SRCCOPY, CAPTUREBLT, HALFTONE = 0x00CC0020, 0x40000000, 4
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 MONITORINFOF_PRIMARY = 1
 PROCESS_QUERY_LIMITED_INFORMATION, TOKEN_QUERY, TOKEN_INTEGRITY_LEVEL = 0x1000, 0x0008, 25
+GA_ROOT, GWL_EXSTYLE, WS_EX_TOOLWINDOW = 2, -20, 0x00000080
+DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_CLOAKED, PW_RENDERFULLCONTENT = 9, 14, 2
 PIXEL_FORMAT_32BPP_RGB = 0x00022009
 VIRTUAL_KEYS = {
     **{chr(code).lower(): code for code in range(ord("A"), ord("Z") + 1)},
@@ -362,58 +393,77 @@ class WindowsScreen:
 
     def capture(self, display: Display, width: int, height: int, path: Path) -> None:
         screen = user32.GetDC(None)
-        memory = gdi32.CreateCompatibleDC(screen)
-        bitmap = gdi32.CreateCompatibleBitmap(screen, width, height)
         try:
-            previous = gdi32.SelectObject(memory, bitmap)
-            gdi32.SetStretchBltMode(memory, HALFTONE)
-            gdi32.SetBrushOrgEx(memory, 0, 0, None)
-            copied = gdi32.StretchBlt(
-                memory,
-                0,
-                0,
+            source = (int(display.x), int(display.y), int(display.width), int(display.height))
+            pixels = _stretch(screen, source, width, height, SRCCOPY | CAPTUREBLT)
+        finally:
+            user32.ReleaseDC(None, screen)
+        _jpeg(pixels, width, height, path)
+
+    def windows(self) -> list[dict[str, str]]:
+        handles: list[int] = []
+
+        def found(handle: int, data: Any) -> bool:
+            handles.append(handle)
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(found), 0)
+        own = kernel32.GetCurrentProcessId()
+        listed = []
+        for handle in handles:
+            title = _title(handle)
+            if (
+                title
+                and user32.IsWindowVisible(handle)
+                and not user32.GetWindowLongW(handle, GWL_EXSTYLE) & WS_EX_TOOLWINDOW
+                # Cloaked: a suspended UWP frame or a window on another virtual desktop.
+                and not _cloaked(handle)
+                and _process(handle) != own
+            ):
+                listed.append({"id": str(handle), "app": _app(handle), "title": title})
+        return listed
+
+    def window(self, identity: str) -> WindowsTarget:
+        handle = int(identity) if identity.isdigit() else 0
+        if (
+            not handle
+            or not user32.IsWindow(handle)
+            or user32.GetAncestor(handle, GA_ROOT) != handle
+        ):
+            raise Refused(
+                "window_not_found",
+                f"找不到窗口 {identity}（可能已关闭）；"
+                "先 computer(action=screenshot) 看 windows 列表。",
+            )
+        if user32.IsIconic(handle) or not user32.IsWindowVisible(handle):
+            raise Refused(
+                "window_unavailable",
+                "这个窗口已最小化或隐藏；Yuki 不还原它（还原会抢走前台）。本人还原后再试，"
+                "或省略 window 在前台操作。",
+            )
+        bounds = wintypes.RECT()
+        # The visible frame, without the invisible resize borders GetWindowRect includes.
+        result = dwmapi.DwmGetWindowAttribute(
+            handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(bounds), ctypes.sizeof(bounds)
+        )
+        if result:
+            raise OSError(f"DwmGetWindowAttribute failed: {result:#x}")
+        width, height = bounds.right - bounds.left, bounds.bottom - bounds.top
+        return WindowsTarget(
+            Window(
+                identity,
+                _app(handle),
+                _title(handle),
+                bounds.left,
+                bounds.top,
                 width,
                 height,
-                screen,
-                int(display.x),
-                int(display.y),
-                int(display.width),
-                int(display.height),
-                SRCCOPY | CAPTUREBLT,
-            )
-            gdi32.SelectObject(memory, previous)
-            if not copied:
-                raise ctypes.WinError(ctypes.get_last_error())
-            header = BITMAPINFOHEADER()
-            header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            header.biWidth, header.biHeight = width, -height  # top-down rows
-            header.biPlanes, header.biBitCount = 1, 32
-            pixels = ctypes.create_string_buffer(width * height * 4)
-            if not gdi32.GetDIBits(memory, bitmap, 0, height, pixels, ctypes.byref(header), 0):
-                raise ctypes.WinError(ctypes.get_last_error())
-        finally:
-            gdi32.DeleteObject(bitmap)
-            gdi32.DeleteDC(memory)
-            user32.ReleaseDC(None, screen)
-        image = ctypes.c_void_p()
-        status = gdiplus.GdipCreateBitmapFromScan0(
-            width, height, width * 4, PIXEL_FORMAT_32BPP_RGB, pixels, ctypes.byref(image)
+                width,
+                height,
+            ),
+            handle,
+            _process(handle),
         )
-        if status:
-            raise OSError(f"GdipCreateBitmapFromScan0 failed: {status}")
-        try:
-            quality = wintypes.ULONG(80)
-            parameters = EncoderParameters(1)
-            parameters.Parameter[0] = EncoderParameter(
-                ENCODER_QUALITY, 1, 4, ctypes.cast(ctypes.byref(quality), ctypes.c_void_p)
-            )
-            status = gdiplus.GdipSaveImageToFile(
-                image, str(path), ctypes.byref(JPEG_ENCODER), ctypes.byref(parameters)
-            )
-            if status:
-                raise OSError(f"GdipSaveImageToFile failed: {status}")
-        finally:
-            gdiplus.GdipDisposeImage(image)
 
     def _ticks(self) -> tuple[int, int]:
         # Session-wide: local devices, Remote Desktop and every SendInput, Yuki's included
@@ -441,16 +491,7 @@ class WindowsScreen:
         )
         if not window:
             return False
-        process_id = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(user32.GetAncestor(window, 2), ctypes.byref(process_id))
-        target = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id.value)
-        if not target:
-            # Not even limited query rights: a protected or higher-integrity process.
-            return True
-        try:
-            return _integrity(target) > _integrity(kernel32.GetCurrentProcess())
-        finally:
-            kernel32.CloseHandle(target)
+        return _elevated(_process(user32.GetAncestor(window, GA_ROOT)))
 
     def _send(self, inputs: list[INPUT]) -> None:
         array = (INPUT * len(inputs))(*inputs)
@@ -545,3 +586,309 @@ def _integrity(process: Any) -> int:
         return int(advapi32.GetSidSubAuthority(sid, count - 1)[0])
     finally:
         kernel32.CloseHandle(token)
+
+
+def _process(window: int) -> int:
+    process_id = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(window, ctypes.byref(process_id))
+    return int(process_id.value)
+
+
+def _elevated(process_id: int) -> bool:
+    target = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+    if not target:
+        # Not even limited query rights: a protected or higher-integrity process.
+        return True
+    try:
+        return _integrity(target) > _integrity(kernel32.GetCurrentProcess())
+    finally:
+        kernel32.CloseHandle(target)
+
+
+def _title(window: int) -> str:
+    buffer = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(window) + 1)
+    user32.GetWindowTextW(window, buffer, len(buffer))
+    return buffer.value
+
+
+def _app(window: int) -> str:
+    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, _process(window))
+    if not process:
+        return ""
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
+            return ""
+        return Path(buffer.value).stem
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def _cloaked(window: int) -> bool:
+    cloaked = wintypes.DWORD()
+    dwmapi.DwmGetWindowAttribute(
+        window, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+    )
+    return bool(cloaked.value)
+
+
+def _stretch(
+    source: Any, rectangle: tuple[int, int, int, int], width: int, height: int, operation: int
+) -> Any:
+    """Scale ``rectangle`` of the device context ``source`` to ``width``x``height`` pixels."""
+    memory = gdi32.CreateCompatibleDC(source)
+    bitmap = gdi32.CreateCompatibleBitmap(source, width, height)
+    try:
+        previous = gdi32.SelectObject(memory, bitmap)
+        gdi32.SetStretchBltMode(memory, HALFTONE)
+        gdi32.SetBrushOrgEx(memory, 0, 0, None)
+        copied = gdi32.StretchBlt(memory, 0, 0, width, height, source, *rectangle, operation)
+        gdi32.SelectObject(memory, previous)
+        if not copied:
+            raise ctypes.WinError(ctypes.get_last_error())
+        header = BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        header.biWidth, header.biHeight = width, -height  # top-down rows
+        header.biPlanes, header.biBitCount = 1, 32
+        pixels = ctypes.create_string_buffer(width * height * 4)
+        if not gdi32.GetDIBits(memory, bitmap, 0, height, pixels, ctypes.byref(header), 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return pixels
+    finally:
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory)
+
+
+def _jpeg(pixels: Any, width: int, height: int, path: Path) -> None:
+    image = ctypes.c_void_p()
+    status = gdiplus.GdipCreateBitmapFromScan0(
+        width, height, width * 4, PIXEL_FORMAT_32BPP_RGB, pixels, ctypes.byref(image)
+    )
+    if status:
+        raise OSError(f"GdipCreateBitmapFromScan0 failed: {status}")
+    try:
+        quality = wintypes.ULONG(80)
+        parameters = EncoderParameters(1)
+        parameters.Parameter[0] = EncoderParameter(
+            ENCODER_QUALITY, 1, 4, ctypes.cast(ctypes.byref(quality), ctypes.c_void_p)
+        )
+        status = gdiplus.GdipSaveImageToFile(
+            image, str(path), ctypes.byref(JPEG_ENCODER), ctypes.byref(parameters)
+        )
+        if status:
+            raise OSError(f"GdipSaveImageToFile failed: {status}")
+    finally:
+        gdiplus.GdipDisposeImage(image)
+
+
+def automation() -> tuple[Any, Any]:
+    """UI Automation for the calling thread (multithreaded apartment, as UIA clients use)."""
+    import comtypes.client
+
+    comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+    module = comtypes.client.GetModule("UIAutomationCore.dll")
+    return module, comtypes.client.CreateObject(
+        module.CUIAutomation, interface=module.IUIAutomation
+    )
+
+
+def _pattern(element: Any, identifier: int, interface: Any) -> Any | None:
+    found = element.GetCurrentPattern(identifier)
+    return found.QueryInterface(interface) if found else None
+
+
+class WindowsTarget:
+    """One top-level window, driven only through UI Automation patterns in its own subtree.
+
+    Nothing here posts messages or input, focuses or raises the window: no ``PostMessage``
+    (unreliable for Chromium, Electron, UWP and apps that read the keyboard state), no
+    ``SetFocus`` (UI Automation brings the window to the foreground for it). An input with
+    no pattern to carry it is refused.
+    """
+
+    actions = frozenset({"click", "scroll", "type"})
+
+    def __init__(self, window: Window, handle: int, process_id: int) -> None:
+        self.window, self.handle, self.process_id = window, handle, process_id
+        self.field: Any | None = None
+
+    def collides(self) -> bool:
+        if _process(user32.GetForegroundWindow()) == self.process_id:
+            return True
+        cursor = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(cursor))
+        under = user32.WindowFromPoint(cursor)
+        return bool(under) and _process(user32.GetAncestor(under, GA_ROOT)) == self.process_id
+
+    def elevated(self) -> bool:
+        # UIPI blocks UI Automation into a higher integrity level as it blocks SendInput.
+        return _elevated(self.process_id)
+
+    def capture(self, width: int, height: int, path: Path) -> None:
+        outer = wintypes.RECT()
+        if not user32.GetWindowRect(self.handle, ctypes.byref(outer)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        full = (outer.right - outer.left, outer.bottom - outer.top)
+        screen = user32.GetDC(None)
+        memory = gdi32.CreateCompatibleDC(screen)
+        bitmap = gdi32.CreateCompatibleBitmap(screen, *full)
+        try:
+            previous = gdi32.SelectObject(memory, bitmap)
+            # The window draws itself, covered or not, GPU-composed content included.
+            if not user32.PrintWindow(self.handle, memory, PW_RENDERFULLCONTENT):
+                raise ctypes.WinError(ctypes.get_last_error())
+            visible = (
+                round(self.window.x) - outer.left,
+                round(self.window.y) - outer.top,
+                round(self.window.width),
+                round(self.window.height),
+            )
+            pixels = _stretch(memory, visible, width, height, SRCCOPY)
+            gdi32.SelectObject(memory, previous)
+        finally:
+            gdi32.DeleteObject(bitmap)
+            gdi32.DeleteDC(memory)
+            user32.ReleaseDC(None, screen)
+        _jpeg(pixels, width, height, path)
+
+    def _ancestors(self, x: float, y: float) -> Iterator[tuple[Any, Any]]:
+        """The smallest element of this window's own subtree containing the point, then up.
+
+        Never ``ElementFromPoint``: it answers for whatever window is on top there.
+        """
+        module, client = automation()
+        root = client.ElementFromHandle(self.handle)
+        cache = client.CreateCacheRequest()
+        cache.AddProperty(module.UIA_BoundingRectanglePropertyId)
+        found = root.FindAllBuildCache(
+            module.TreeScope_Subtree, client.CreateTrueCondition(), cache
+        )
+        best, area = None, None
+        for index in range(found.Length):
+            element = found.GetElement(index)
+            bounds = element.CachedBoundingRectangle
+            if bounds.left <= x < bounds.right and bounds.top <= y < bounds.bottom:
+                size = (bounds.right - bounds.left) * (bounds.bottom - bounds.top)
+                if area is None or size <= area:
+                    best, area = element, size
+        walker = client.RawViewWalker
+        node = best
+        while node and not client.CompareElements(node, root):
+            yield module, node
+            node = walker.GetParentElement(node)
+
+    def _deliver(self, run: Callable[[], bool], what: str) -> None:
+        import comtypes
+
+        try:
+            delivered = run()
+        except comtypes.COMError as error:
+            raise OSError(f"UI Automation {what}: {error}") from error
+        if not delivered:
+            raise Refused(
+                "device_not_supported",
+                f"窗口里这一处没有可在后台{what}的控件（UI Automation），输入没有执行；"
+                "需要时省略 window，在前台操作整个屏幕。",
+            )
+
+    def click(self, x: float, y: float, button: str, count: int) -> None:
+        def expand_or_collapse(pattern: Any, collapsed: int) -> None:
+            if pattern.CurrentExpandCollapseState == collapsed:
+                pattern.Expand()
+            else:
+                pattern.Collapse()
+
+        def run() -> bool:
+            for module, node in self._ancestors(x, y):
+                collapsed = module.ExpandCollapseState_Collapsed
+                for identifier, interface, act in (
+                    (
+                        module.UIA_InvokePatternId,
+                        module.IUIAutomationInvokePattern,
+                        lambda pattern: pattern.Invoke(),
+                    ),
+                    (
+                        module.UIA_TogglePatternId,
+                        module.IUIAutomationTogglePattern,
+                        lambda pattern: pattern.Toggle(),
+                    ),
+                    (
+                        module.UIA_SelectionItemPatternId,
+                        module.IUIAutomationSelectionItemPattern,
+                        lambda pattern: pattern.Select(),
+                    ),
+                    (
+                        module.UIA_ExpandCollapsePatternId,
+                        module.IUIAutomationExpandCollapsePattern,
+                        lambda pattern, collapsed=collapsed: expand_or_collapse(
+                            pattern, collapsed
+                        ),
+                    ),
+                ):
+                    pattern = _pattern(node, identifier, interface)
+                    if pattern is not None:
+                        act(pattern)
+                        return True
+            return False
+
+        self._deliver(run, "点击")
+
+    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
+        def run() -> bool:
+            for module, node in self._ancestors(x, y):
+                pattern = _pattern(
+                    node, module.UIA_ScrollPatternId, module.IUIAutomationScrollPattern
+                )
+                if pattern is None:
+                    continue
+                none = module.ScrollAmount_NoAmount
+                forward = module.ScrollAmount_SmallIncrement
+                back = module.ScrollAmount_SmallDecrement
+                for _ in range(abs(dy)):
+                    pattern.Scroll(none, forward if dy > 0 else back)
+                for _ in range(abs(dx)):
+                    pattern.Scroll(forward if dx > 0 else back, none)
+                return True
+            return False
+
+        self._deliver(run, "滚动")
+
+    def focus(self, x: float, y: float) -> None:
+        # No keyboard focus moves (UI Automation would raise the window for it): the field
+        # at x,y is remembered and ``type`` writes its value.
+        def run() -> bool:
+            for module, node in self._ancestors(x, y):
+                value = _pattern(
+                    node, module.UIA_ValuePatternId, module.IUIAutomationValuePattern
+                )
+                if value is not None and not value.CurrentIsReadOnly:
+                    self.field = value
+                    return True
+            return False
+
+        self._deliver(run, "输入")
+
+    def type(self, text: str) -> None:
+        field = self.field
+        if field is None:
+            raise Refused(
+                "device_not_supported",
+                "Windows 上按窗口输入要给 x,y 指向输入框（文字接在原内容之后）；输入没有执行。",
+            )
+
+        def run() -> bool:
+            field.SetValue(field.CurrentValue + text)
+            return True
+
+        self._deliver(run, "输入")
+
+    # Delivered only by moving the real cursor or posting window messages: never here.
+    def move(self, x: float, y: float) -> None:
+        raise Refused("device_not_supported", "Windows 上不能在后台移动指针。")
+
+    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
+        raise Refused("device_not_supported", "Windows 上不能在后台拖拽。")
+
+    def key(self, modifiers: tuple[str, ...], key: str) -> None:
+        raise Refused("device_not_supported", "Windows 上不能在后台按键。")
