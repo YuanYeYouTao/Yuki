@@ -16,7 +16,7 @@ Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户�
 
 截图和下载文件先落本机，再走下面同一文件管线。原 stdin 接纳、CLI 进程退出和网页业务完成分别认实际输出；未知不自动重派原命令。关闭完整访问拒绝新命令和后续 stdin，已运行脚本或外部后台程序需要停止时显式取消原 run；不宣称能追入任意程序逐网页动作撤权。
 
-`view_file(path, device)` 将所选本机字节准备为工具结果像素（`source="tool"`，归档为私有工具产物，回读沿原 tool_handle）；`send` 的文件给 `path` 与 `device` 时冻结一次原件后发送，沿原 artifact/source_key 恢复。`copy_file` 的 `to_device` 指写入目标电脑，可把聊天附件（按内部 `event_id`／`attachment` 核来源）、Yuki 环境 `/workspace` 中的 `path` 或不可变 `artifact_id` 原样写入本机指定路径；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
+`view_file(path, device)` 将所选本机字节准备为工具结果像素（`source="tool"`，归档为私有工具产物，回读沿原 tool_handle）；`send` 的文件给 `path` 与 `device` 时冻结一次原件后发送，沿原 artifact/source_key 恢复。`copy_file` 的 `device` 指源电脑、`to_device` 指写入目标电脑，可把聊天附件（按内部 `event_id`／`attachment` 核来源）、Yuki 环境 `/workspace` 中的 `path`、不可变 `artifact_id` 或本机 `path` 原样写入本机指定路径，也可把本机文件写入 Yuki 环境（经 Manager `workspace_write`）；先查原传输回执，成功不读源，未知不重传。字节分片仅在设备传输内部使用，不进入模型 JSON 或普通 stdout。文件路径是设备来源，聊天投递目标仍由原 send 合同选择。
 
 实施证据与交付状态见[本次实施记录](local-device-full-access-implementation-20261029.md)。文件复制来源扩展见[2026-11-07 实施记录](file-copy-backend-implementation-20261107.md)。
 

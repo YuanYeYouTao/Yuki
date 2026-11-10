@@ -795,8 +795,6 @@ class AgentToolService:
                             "用真实 event_id 与从 0 开始的 attachment",
                             "choose_one_source": "来源三选一：path（可带 device）、"
                             "artifact_id，或 event_id 加 attachment",
-                            "source_not_supported_for_destination": "暂不支持从本人电脑复制，"
-                            "也不支持把 artifact_id 复制进 Yuki 环境",
                         }.get(category, "文件操作没有完成")
                         return self._result(error=category, detail=detail)
 

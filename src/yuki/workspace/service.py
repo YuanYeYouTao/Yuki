@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from typing import Any, BinaryIO
@@ -22,16 +23,22 @@ from yuki.workspace.tools import file_source
 from yuki.workspace.tools import workspace_tools as workspace_tools
 
 
-def _unconfirmed(result: dict[str, Any], sha256: str | None) -> dict[str, Any]:
-    """Explain an unconfirmed computer write without turning it into a failure."""
+def _unconfirmed(
+    result: dict[str, Any], sha256: str | None, *, environment: bool = False
+) -> dict[str, Any]:
+    """Explain an unconfirmed write without turning it into a failure."""
     if not result.get("uncertain"):
         return result
+    residue, terminal = (
+        (".yuki-write-*", "自己环境的终端")
+        if environment
+        else (".yuki-transfer-*.part", "该电脑终端")
+    )
     return {
         **result,
         **({"source_sha256": sha256} if sha256 is not None else {}),
-        "message": "目标写入未确认，不要按失败重传同一调用。目标目录可能残留"
-        " .yuki-transfer-*.part；可在该电脑终端核对目标文件的 sha256，"
-        "确认未完成后再以新调用复制。",
+        "message": f"目标写入未确认，不要按失败重传同一调用。目标目录可能残留 {residue}；"
+        f"可在{terminal}核对目标文件的 sha256，确认未完成后再以新调用复制。",
     }
 
 
@@ -199,16 +206,14 @@ class WorkspaceService:
             else None
         )
         if [path, artifact_id, attachment].count(None) != 2 or (
-            attachment is None and (event_id is not None or attachment_index is not None)
+            (attachment is None and (event_id is not None or attachment_index is not None))
+            or (device is not None and path is None)
         ):
             raise WorkspaceError("choose_one_source")
-        # A source computer, and artifacts into the Yuki environment, need new
-        # Manager methods; they are not served by another transfer path.
-        if device is not None or (artifact_id is not None and to_device is None):
-            raise WorkspaceError("source_not_supported_for_destination")
         media = self.conversation_media
         try:
-            if to_device is None:
+            if to_device is None and device is None and artifact_id is None:
+                # Both sources are files the Manager opens itself.
                 if path is not None:
                     return await self.copy_from_cache(
                         path=path,
@@ -218,20 +223,9 @@ class WorkspaceService:
                     )
                 assert attachment is not None
                 source_key = f"attachment:{attachment[0]}:{attachment[1]}"
-                prior = await self.sandbox.execute(
-                    "workspace_copy_result",
-                    {"source_key": source_key, "destination": destination},
-                    request_id=request_id,
-                )
-                if prior.get("error"):
-                    return (
-                        {**prior, "uncertain": True}
-                        if prior["error"] == "sandbox_unavailable"
-                        else prior
-                    )
-                if prior.get("found"):
-                    result: dict[str, Any] = prior["result"]
-                    return result
+                prior = await self._copy_result(source_key, destination, request_id)
+                if prior is not None:
+                    return prior
                 item, cached = await media.authorized_path(
                     event_id=attachment[0], attachment_index=attachment[1]
                 )
@@ -247,16 +241,31 @@ class WorkspaceService:
             actor = devices.actor(source)
             if attachment is not None:
                 await media._sources((attachment,))
-            # transfer_id is the original invocation key: a recorded transfer is
-            # returned as it stands, and only a transfer the computer never saw
-            # reads its source.
-            receipt = await devices.upload_result(
-                to_device, actor, destination, request_id=request_id
+            # transfer_id / the Manager request is the original invocation key: a
+            # recorded copy is returned as it stands, and only a copy the target never
+            # saw reads its source.
+            source_key = (
+                f"artifact:{artifact_id}" if artifact_id is not None else f"device:{device}:{path}"
             )
-            if receipt is not None:
-                return _unconfirmed(receipt, None)
+            if to_device is not None:
+                receipt = await devices.upload_result(
+                    to_device, actor, destination, request_id=request_id
+                )
+                if receipt is not None:
+                    return _unconfirmed(receipt, None)
+            else:
+                prior = await self._copy_result(source_key, destination, request_id)
+                if prior is not None:
+                    return _unconfirmed(prior, None, environment=True)
             async with AsyncExitStack() as resources:
-                if path is not None:
+                stream: Callable[[int], Awaitable[bytes]]
+                if device is not None:
+                    assert path is not None
+                    metadata, stream = await resources.enter_async_context(
+                        devices.open_file(device, actor, path, request_id=request_id)
+                    )
+                    size, sha256 = int(metadata["size"]), str(metadata["sha256"])
+                elif path is not None:
                     try:
                         header, reader, _ = await resources.enter_async_context(
                             self.sandbox.stream("files_read", {"path": path})
@@ -295,18 +304,48 @@ class WorkspaceService:
                     async def stream(wanted: int) -> bytes:
                         return await asyncio.to_thread(opened.read, wanted)
 
-                result = await devices.upload(
-                    to_device,
-                    actor,
+                if to_device is not None:
+                    result = await devices.upload(
+                        to_device,
+                        actor,
+                        stream,
+                        size,
+                        sha256,
+                        destination,
+                        request_id=request_id,
+                    )
+                    return _unconfirmed(result, sha256)
+                result = await self.sandbox.write(
+                    {
+                        "destination": destination,
+                        "source_key": source_key,
+                        "size": size,
+                        "sha256": sha256,
+                    },
                     stream,
-                    size,
-                    sha256,
-                    destination,
                     request_id=request_id,
                 )
-            return _unconfirmed(result, sha256)
+            return _unconfirmed(result, sha256, environment=True)
         except ConversationMediaError as exc:
             raise WorkspaceError(str(exc)) from exc
+
+    async def _copy_result(
+        self, source_key: str, destination: str, request_id: str
+    ) -> dict[str, Any] | None:
+        """The Manager receipt of this original copy, or None when it never started."""
+        prior = await self.sandbox.execute(
+            "workspace_copy_result",
+            {"source_key": source_key, "destination": destination},
+            request_id=request_id,
+        )
+        if prior.get("error"):
+            return (
+                {**prior, "uncertain": True} if prior["error"] == "sandbox_unavailable" else prior
+            )
+        if prior.get("found"):
+            result: dict[str, Any] = prior["result"]
+            return result
+        return None
 
     async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
         """Execution-time authority and current source versions, without fetching pixels."""

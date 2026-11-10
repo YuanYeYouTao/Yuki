@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import MappingProxyType
@@ -93,6 +93,55 @@ class SandboxClient:
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def write(
+        self,
+        args: dict[str, Any],
+        stream: Callable[[int], Awaitable[bytes]],
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Push ``args["size"]`` source bytes into one environment file (``workspace_write``).
+
+        The Manager answers an earlier receipt of ``request_id`` without asking for
+        bytes, and checks the whole file against ``args["sha256"]`` before replacing.
+        """
+        connect = getattr(asyncio, "open_unix_connection", None)
+        if connect is None:
+            return {"error": "sandbox_unavailable", "retryable": False}
+        try:
+            reader, writer = await connect(str(self.socket))
+        except OSError:
+            return {"error": "sandbox_unavailable", "retryable": False}
+        from yuki.sandbox.protocol import read_protocol_line
+        from yuki.workspace.store import WorkspaceError
+
+        try:
+            message = {"method": "workspace_write", "args": args, "request_id": request_id}
+            writer.write(json.dumps(message).encode() + b"\n")
+            await writer.drain()
+            result = json.loads(await read_protocol_line(reader))
+            if result.get("ready"):
+                remaining = int(args["size"])
+                while remaining:
+                    wanted = min(65536, remaining)
+                    data = await stream(wanted)
+                    if len(data) != wanted:
+                        raise WorkspaceError("source_stream_incomplete")
+                    writer.write(data)
+                    await writer.drain()
+                    remaining -= wanted
+                result = json.loads(await read_protocol_line(reader))
+            return cast(dict[str, Any], result)
+        except (OSError, ValueError):
+            # Submitted: the Manager may have written; its receipt says which.
+            return {"error": "sandbox_unavailable", "retryable": False, "uncertain": True}
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
     async def execute(
         self,

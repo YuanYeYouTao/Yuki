@@ -575,16 +575,19 @@ class LocalDeviceService:
         return result
 
     @asynccontextmanager
-    async def download(
+    async def open_file(
         self,
         device_id: str,
         actor: str,
         path: str,
         *,
         request_id: str,
-        expected_version: str | None = None,
-        max_bytes: int | None = None,
-    ) -> AsyncIterator[tuple[Path, dict[str, Any]]]:
+    ) -> AsyncIterator[tuple[dict[str, Any], Callable[[int], Awaitable[bytes]]]]:
+        """One selected file version: its stat and a reader of its original parts.
+
+        The reader returns ``wanted`` bytes, fewer only at the end of the selection;
+        the receiver checks the whole file against the stat's sha256.
+        """
         metadata = await self.file_request(
             device_id,
             actor,
@@ -593,46 +596,36 @@ class LocalDeviceService:
             identity=f"{request_id}:stat",
         )
         transfer_id = metadata["transfer_id"]
-        temporary = tempfile.TemporaryDirectory(prefix="yuki-device-file-")
-        local = Path(temporary.name) / "content"
-        digest = hashlib.sha256()
+        buffered = bytearray()
+        offset = 0
+
+        async def stream(wanted: int) -> bytes:
+            nonlocal offset
+            while len(buffered) < wanted and offset < metadata["size"]:
+                part = await self.file_request(
+                    device_id,
+                    actor,
+                    "read",
+                    {"transfer_id": transfer_id, "version": metadata["version"], "offset": offset},
+                    identity=f"{request_id}:read:{offset}",
+                )
+                data = base64.b64decode(part["data_base64"], validate=True)
+                buffered.extend(data)
+                offset += len(data)
+                if part["eof"] or not data:
+                    break
+            data = bytes(buffered[:wanted])
+            del buffered[:wanted]
+            return data
+
         try:
-            if max_bytes is not None and metadata["size"] > max_bytes:
-                raise WorkspaceError("workspace_media_too_large")
-            if expected_version is not None and expected_version not in (
-                metadata["version"],
-                metadata["sha256"],
-            ):
-                raise WorkspaceError("version_conflict")
-            offset = 0
-            with local.open("wb") as output:
-                while True:
-                    part = await self.file_request(
-                        device_id,
-                        actor,
-                        "read",
-                        {
-                            "transfer_id": transfer_id,
-                            "version": metadata["version"],
-                            "offset": offset,
-                        },
-                        identity=f"{request_id}:read:{offset}",
-                    )
-                    data = base64.b64decode(part["data_base64"], validate=True)
-                    await asyncio.to_thread(output.write, data)
-                    digest.update(data)
-                    offset += len(data)
-                    if part["eof"]:
-                        break
-            if offset != metadata["size"] or digest.hexdigest() != metadata["sha256"]:
-                raise WorkspaceError("file_changed_during_transfer")
             yield (
-                local,
                 {
                     **metadata,
                     "device_id": device_id,
                     "name": metadata.get("name") or path.replace("\\", "/").rsplit("/", 1)[-1],
                 },
+                stream,
             )
         finally:
             try:
@@ -649,8 +642,41 @@ class LocalDeviceService:
                     transfer_id,
                     type(exc).__name__,
                 )
-            finally:
-                temporary.cleanup()
+
+    @asynccontextmanager
+    async def download(
+        self,
+        device_id: str,
+        actor: str,
+        path: str,
+        *,
+        request_id: str,
+        expected_version: str | None = None,
+        max_bytes: int | None = None,
+    ) -> AsyncIterator[tuple[Path, dict[str, Any]]]:
+        async with self.open_file(device_id, actor, path, request_id=request_id) as (
+            metadata,
+            stream,
+        ):
+            if max_bytes is not None and metadata["size"] > max_bytes:
+                raise WorkspaceError("workspace_media_too_large")
+            if expected_version is not None and expected_version not in (
+                metadata["version"],
+                metadata["sha256"],
+            ):
+                raise WorkspaceError("version_conflict")
+            with tempfile.TemporaryDirectory(prefix="yuki-device-file-") as temporary:
+                local = Path(temporary) / "content"
+                digest = hashlib.sha256()
+                size = 0
+                with local.open("wb") as output:
+                    while data := await stream(65536):
+                        await asyncio.to_thread(output.write, data)
+                        digest.update(data)
+                        size += len(data)
+                if size != metadata["size"] or digest.hexdigest() != metadata["sha256"]:
+                    raise WorkspaceError("file_changed_during_transfer")
+                yield local, metadata
 
     async def upload(
         self,
