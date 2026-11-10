@@ -11,6 +11,11 @@ test "$(docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}' "$c
 test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
 shift 2
 if [ "$#" -eq 0 ]; then set -- headed; fi
+# Write through the container: under gVisor the sandbox keeps its own rootFS
+# overlay, so `docker cp` lands in a Docker layer the running sandbox does not read.
+put() {
+    docker exec -i --user 0:0 "$container" sh -c 'cat > "$1.new" && mv -f "$1.new" "$1"' sh "$2" < "$1"
+}
 docker exec --user 0:0 "$container" mkdir -p /opt/yuki-runtime/yuki_agent_connector
 # Each entry is <path under /opt/yuki-runtime>=<path under the source tree>.
 for entry in \
@@ -29,10 +34,10 @@ do
             exit 1
         }
     else
-        docker cp "$source" "$container:/opt/yuki-runtime/$file"
+        put "$source" "/opt/yuki-runtime/$file"
     fi
 done
-docker cp "$source_root/deploy/sandbox/desktop-manifest.py" "$container:/opt/yuki-runtime/desktop-manifest.py"
-docker cp "$source_root/deploy/sandbox/yuki-computer.sh" "$container:/usr/local/bin/yuki-computer"
-docker cp "$source_root/deploy/sandbox/install-programs.sh" "$container:/opt/yuki-runtime/install-programs.sh"
+put "$source_root/deploy/sandbox/desktop-manifest.py" /opt/yuki-runtime/desktop-manifest.py
+put "$source_root/deploy/sandbox/yuki-computer.sh" /usr/local/bin/yuki-computer
+put "$source_root/deploy/sandbox/install-programs.sh" /opt/yuki-runtime/install-programs.sh
 docker exec --user 0:0 "$container" sh /opt/yuki-runtime/install-programs.sh "$@"
