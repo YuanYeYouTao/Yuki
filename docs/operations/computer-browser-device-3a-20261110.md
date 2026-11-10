@@ -239,3 +239,15 @@ Job 允许脱离，此分支只在其他宿主中出现。为了让 B8 在 CI �
 - Windows：多屏与 125 %／150 % 缩放下的坐标；锁屏与 UAC 为 `desktop_unavailable`；以管理员运行的窗口为
   `target_elevated`；远程桌面输入被识别；Desktop 子进程启动的 Chrome 能脱离 Job 并在连接器重启后存活。
 - 专用 Chrome：被遮挡与在另一桌面空间时截图不停；首次启动抢焦点一次；macOS 上 Chrome 脱离连接器进程组。
+
+### 实机发现（Mac mini，2026-11-10）
+
+- 负责进程：`launchctl procinfo` 显示连接器的 responsible path 为 `~/Applications/Yuki.app/Contents/MacOS/Yuki`，
+  权限授予 Yuki.app 即覆盖连接器。截图为 1920×1080 完整画面，`computer` 点击执行成功。
+- 绕路：群聊中本人要求在 Telegram 里给某人发消息，Yuki 只用了两次 `computer` 点击，其余经 `run_command`
+  在本人电脑上执行 `open -a`、`osascript`（System Events 的 ⌘K、↓↓回车、⌘V）与 `screencapture`。盲按的
+  ↓↓回车选中了千人群，粘贴后未回车所以没有发出。这些输入不经 `computer`，让出、「停止」与 Desktop 的操作
+  提示都管不到。修正：`computer` 与 `run_command` 的说明及程序规则【本人电脑】写明界面操作只用 `computer`、
+  每步先截图并按新截图确认、难撤回的一步前核对目标，不用 Shell 脚本代替键鼠或截屏；不收紧任何权限。
+- 事后否认：群聊不开 Work，后续轮次看不到前一轮的工具记录，模型据此否认操作过。工具记录不进入群聊
+  上下文是有意的开销取舍，本次不改。
