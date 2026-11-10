@@ -1,0 +1,56 @@
+ax-appkitA-focus-field               cur False front False reset [] 0
+ax-appkitA-press                     cur False front False reset [] 0
+ax-appkitA-scroll                    cur False front False reset [] 0
+ax-appkitA-setvalue                  cur False front False reset [] 0
+ax-appkitB-min-press                 cur False front False reset [] 0
+ax-calc-press7                       cur False front False reset [] 0
+ax-chrome-focus                      cur False front False reset [] 0
+ax-chrome-min-press                  cur False front False reset [] 0
+ax-chrome-press                      cur False front False reset [] 0
+ax-chrome-setvalue                   cur False front False reset [] 0
+ax-electronA-focus                   cur False front False reset [] 0
+ax-electronA-press                   cur False front False reset [] 0
+ax-electronA-scroll                  cur False front False reset [] 0
+ax-electronA-setvalue                cur False front False reset [] 0
+ax-web-focus                         cur False front False reset [] 0
+ax-web-press                         cur False front False reset [] 0
+ax-web-setvalue                      cur False front False reset [] 0
+ax-web-setvalue2                     cur False front False reset [] 0
+ax-web-setvalue3                     cur False front False reset [] 0
+post-appkitA-click-button-stamped    cur False front False reset [] 
+post-appkitA-click-pad-pid           cur False front False reset [] 
+post-appkitA-click-pad-pidstamped    cur False front False reset [] 
+post-appkitA-click-pad-pidstampedsl  cur False front False reset [] 
+post-appkitA-click-pad-pidwinfields  cur False front False reset [] 
+post-appkitA-scroll-plain            cur False front False reset [] 
+post-appkitA-scroll-plain2           cur False front False reset [] 
+post-appkitA-scroll-stamped          cur False front False reset [] 
+post-appkitA-scroll-stamped2         cur False front False reset [] 
+post-appkitA-type-after-focus        cur False front False reset [] 
+post-appkitA-type-plain              cur False front False reset [] 
+post-appkitA-type-stamped            cur False front False reset [] 
+post-appkitB-min-click-stamped       cur False front False reset [] 
+post-calc-click8-plain               cur False front False reset [] 
+post-calc-click8-stamped             cur False front False reset [] 
+post-calc-scroll-stamped             cur False front False reset [] 
+post-calc-type9-plain                cur False front False reset [] 
+post-chrome-click-plain              cur False front False reset [] 
+post-chrome-click-stamped            cur False front False reset [] 
+post-chrome-scroll-plain             cur False front False reset [] 
+post-chrome-scroll-stamped           cur False front False reset [] 
+post-chrome-type-plain               cur False front False reset [] 
+post-chrome-type-stamped             cur False front False reset [] 
+post-electronA-click-plain           cur False front False reset [] 
+post-electronA-click-stamped         cur False front False reset [] 
+post-electronA-scroll-plain          cur False front False reset [] 
+post-electronA-scroll-stamped        cur False front False reset [] 
+post-electronA-type-plain            cur False front False reset [] 
+post-electronA-type-stamped          cur False front False reset [] 
+post-noax-click-pad-wf               cur False front False reset [] 
+post-noax-click-pad                  cur False front False reset [] 
+post-web-click-plain                 cur False front False reset [] 
+post-web-click-stamped               cur False front False reset [] 
+post-web-scroll-plain                cur False front False reset [] 
+post-web-scroll-stamped              cur False front False reset [] 
+post-web-type-plain                  cur False front False reset [] 
+post-web-type-stamped                cur False front False reset [] 

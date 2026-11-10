@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SPIKE P0 K0 W0 F-</title>
+<style>
+body{font:14px -apple-system,sans-serif;margin:8px;background:#fff}
+#press{font-size:16px;padding:6px 18px;background:#36c;color:#fff;border:0}
+#field{width:200px;font-size:14px}
+#list{height:150px;overflow:auto;border:1px solid #999;margin-top:6px}
+#list div{height:20px}
+#state{font-weight:bold}
+</style></head>
+<body>
+<button id="press">Press me</button> <span id="state">P0 K0 W0</span><br>
+<input id="field" placeholder="type here"><br>
+<div id="list"></div>
+<script>
+const list=document.getElementById('list');
+for(let i=0;i<200;i++){const d=document.createElement('div');d.textContent='row '+i;list.appendChild(d)}
+let p=0,k=0,w=0,f='-';
+function log(o){o.t=Date.now();o.focus=document.hasFocus();
+  try{window.webkit.messageHandlers.log.postMessage(JSON.stringify(o))}catch(e){}
+  try{window.spikeLog&&window.spikeLog(JSON.stringify(o))}catch(e){}
+  try{console.log('SPIKE '+JSON.stringify(o))}catch(e){}}
+function upd(){const s='P'+p+' K'+k+' W'+w;document.getElementById('state').textContent=s;
+  document.title='SPIKE '+s+' F'+f+' V='+document.getElementById('field').value+' S='+list.scrollTop}
+document.getElementById('press').addEventListener('click',e=>{p++;log({ev:'click',trusted:e.isTrusted,x:e.clientX,y:e.clientY});upd()});
+document.addEventListener('mousedown',e=>log({ev:'mousedown',trusted:e.isTrusted,x:e.clientX,y:e.clientY}));
+document.addEventListener('keydown',e=>{k++;log({ev:'keydown',key:e.key,trusted:e.isTrusted});upd()});
+document.addEventListener('wheel',e=>{w++;log({ev:'wheel',dy:e.deltaY,trusted:e.isTrusted});upd()},{passive:true});
+document.getElementById('field').addEventListener('input',e=>{log({ev:'input',v:e.target.value});upd()});
+list.addEventListener('scroll',()=>upd());
+window.addEventListener('focus',()=>{f='+';log({ev:'winfocus'});upd()});
+window.addEventListener('blur',()=>{f='-';log({ev:'winblur'});upd()});
+upd();
+</script></body></html>
