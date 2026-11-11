@@ -49,7 +49,7 @@ class WorkspaceStore:
         if not index.exists():
             # The Bot and the sandbox Manager share this index through the Bot's group;
             # SQLite itself would create it 0644, read-only for the other one.
-            os.close(os.open(index, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o660))
+            os.close(os.open(index, os.O_CREAT | os.O_WRONLY, 0o660))
         return index
 
     def _initialize(self) -> None:
