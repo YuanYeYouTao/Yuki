@@ -1,6 +1,6 @@
 # Versioned Docker Release
 
-应用版本以 `pyproject.toml` 为源，数据库目标以随包 Alembic 单一 head 为源。4.0.0 对应 `v4.0.0`：数据库 head `0156`、Plugin API `9.0`，变化见[发布说明](../releases/v4.0.0.md)，升级见[升级指南](../upgrade-4.0.1.md)。历史版本的发布物与说明保持各自的版本归属。
+应用版本以 `pyproject.toml` 为源，数据库目标以随包 Alembic 单一 head 为源。4.0.0 对应 `v4.0.0`：数据库 head `0156`、Plugin API `9.0`，变化见[发布说明](../releases/v4.0.0.md)，升级见[升级指南](../upgrade-4.0.2.md)。历史版本的发布物与说明保持各自的版本归属。
 
 ## 仓库与 CI
 
