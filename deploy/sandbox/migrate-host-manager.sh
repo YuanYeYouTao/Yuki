@@ -50,6 +50,7 @@ fi
 labels=$(docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment)
 test "$labels" = persistent-v1/ || { echo 'yuki-environment is not a host-Manager environment.' >&2; exit 1; }
 runtime=$(docker inspect --format '{{.HostConfig.Runtime}}' yuki-environment)
+resolver=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/resolv.conf"}}{{.Source}}{{end}}{{end}}' yuki-environment)
 if [ "$runtime" = runsc ] && ! docker info --format '{{json .Runtimes}}' | grep -q '"runsc".*--overlay2=none'; then
     echo 'runsc keeps this rootFS outside the Docker layer (no --overlay2=none); export it with' >&2
     echo '`runsc tar rootfs-upper` first (docs/operations/mac-arm64-migration-20261107.md).' >&2
@@ -81,6 +82,12 @@ copy() {
 copy "$root/home" yuki-sandbox-home
 copy "$root/environment-jobs" yuki-sandbox-runtime
 if [ -d "$media" ]; then copy "$media" yuki-media-cache; fi
+# A host resolv.conf (gVisor cannot use Docker's DNS) now lives in HOME.
+if [ -n "$resolver" ]; then
+    docker run --rm --network none --entrypoint sh -v "$resolver:/from:ro" \
+        -v yuki-sandbox-home:/home "$checkpoint" -ec \
+        'mkdir -p /home/.config; [ -e /home/.config/resolv.conf ] || cp /from /home/.config/resolv.conf'
+fi
 docker run --rm --network none --entrypoint python -v "$root:/old:ro" -v yuki-sandbox-state:/state \
     "$checkpoint" -c '
 import sqlite3, sys
@@ -116,6 +123,7 @@ case "$(old_value YUKI_SANDBOX_BROWSER_MODE)" in
     *) set_env YUKI_SANDBOX_PROFILE lite ;;
 esac
 set_env YUKI_SANDBOX_RUNTIME "$runtime"
+if [ -n "$resolver" ]; then set_env YUKI_SANDBOX_RESOLV_CONF .config/resolv.conf; fi
 for name in MEMORY_MIB SWAP_MIB CPUS PIDS TMP_MIB SHM_MIB PACKAGES; do
     value=$(old_value "YUKI_SANDBOX_$name")
     if [ -n "$value" ]; then set_env "YUKI_SANDBOX_$name" "$value"; fi
