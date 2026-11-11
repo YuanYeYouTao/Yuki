@@ -1,10 +1,10 @@
-# Yuki 4.0.0 升级指南
+# Yuki 4.0.1 升级指南
 
 <!-- release-baseline: version=4.0.0 schema=0156 -->
 
-[English](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/upgrade-4.0.0.en.md) · [4.0.0 发布说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0.md) · [全部 PR 目录](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0-prs.md)
+[English](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/upgrade-4.0.1.en.md) · [4.0.0 发布说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/releases/v4.0.0.md) · [全部 PR 目录](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/releases/v4.0.0-prs.md)
 
-本指南适用于两类部署：正式 **3.9.0**，以及 3.9.0 之后运行过 4.0 开发镜像的部署。新安装不需要看这里，直接用 [README](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/README.md#安装) 里的安装器。
+本指南适用于两类部署：正式 **3.9.0**，以及 3.9.0 之后运行过 4.0 开发镜像的部署。新安装不需要看这里，直接用 [README](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/README.md#安装) 里的安装器。
 
 按顺序做。标着“仅 3.9.0”的步骤，4.0 开发部署通常已经做过，核对后跳过即可。
 
@@ -49,16 +49,16 @@ systemctl status yuki-sandbox --no-pager            # 宿主 Manager 是否在�
 
 | API 版本 | 需要改的地方 |
 | --- | --- |
-| [4.0 身份](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-4.0-migration.md) | 人物、记忆、消息、配置等目标改用内部 Person、Space、Conversation，不再传 QQ 号 |
-| [5.0 表情](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-5.0-migration.md) | 删除 `ctx.emoji` 及相关权限、Feature、Hook；媒体走现行 artifact 和消息接口 |
-| [6.0 提及](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-6.0-migration.md) | 使用 `CurrentMessage.mentions` 和 `message.current.mentions.v2` |
-| [7.0 独立会话](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-7.0-migration.md) | 使用 `plugin.agent_session.v2`，删除已退出的创建参数和返回字段 |
-| [8.0 自动化](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-8.0-migration.md) | 按当前 TaskSpec 和原 request 身份定义自动化 |
-| [9.0 消息身份](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-9.0-migration.md) | `native_message_id` 可为空；任务、回复和历史沿 `event_id` |
+| [4.0 身份](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-4.0-migration.md) | 人物、记忆、消息、配置等目标改用内部 Person、Space、Conversation，不再传 QQ 号 |
+| [5.0 表情](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-5.0-migration.md) | 删除 `ctx.emoji` 及相关权限、Feature、Hook；媒体走现行 artifact 和消息接口 |
+| [6.0 提及](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-6.0-migration.md) | 使用 `CurrentMessage.mentions` 和 `message.current.mentions.v2` |
+| [7.0 独立会话](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-7.0-migration.md) | 使用 `plugin.agent_session.v2`，删除已退出的创建参数和返回字段 |
+| [8.0 自动化](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-8.0-migration.md) | 按当前 TaskSpec 和原 request 身份定义自动化 |
+| [9.0 消息身份](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-9.0-migration.md) | `native_message_id` 可为空；任务、回复和历史沿 `event_id` |
 
 `ctx.agent.run()` 显式给出的 `max_model_requests` / `max_tool_calls` 现在是整项任务的总额度，不再是每段上限。养鲲和 GitHub 监控插件不再随主仓发布，改用 [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) 和 [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) 的当前版本。插件原有的 KV、任务、outbox 和未完成回执会保留。
 
-**人格（仅 3.9.0）。** 4.0 只读一份 `character/SOUL.md`，角色名在数据库的角色资料里。比较旧的系统提示词和 `persona.md`，挑出真正想要的人格内容，整理成一份 SOUL；不要把两份文件直接拼起来。工具、权限和任务规则由程序提供，不用写进 SOUL。SOUL 可以为空。细节见[单 SOUL 升级说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/soul-deployment-20261022.md)。
+**人格（仅 3.9.0）。** 4.0 只读一份 `character/SOUL.md`，角色名在数据库的角色资料里。比较旧的系统提示词和 `persona.md`，挑出真正想要的人格内容，整理成一份 SOUL；不要把两份文件直接拼起来。工具、权限和任务规则由程序提供，不用写进 SOUL。SOUL 可以为空。细节见[单 SOUL 升级说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/soul-deployment-20261022.md)。
 
 ## 3. 让任务结束，停止旧服务
 
@@ -100,10 +100,10 @@ docker run --rm -v "$PWD:/deploy" --entrypoint python ghcr.io/yuanyeyoutao/yuki:
 
 ```sh
 cd /path/to/yuki
-curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/yuki-4.0.0-deploy.tar.gz
-curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/SHA256SUMS
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/yuki-4.0.1-deploy.tar.gz
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf yuki-4.0.0-deploy.tar.gz --strip-components=1
+tar -xzf yuki-4.0.1-deploy.tar.gz --strip-components=1
 ```
 
 这会替换 `docker-compose.yml`、`.env.example`、`install.sh`、`deploy/sandbox/` 等发布文件，不动 `.env` 和数据目录。之后只用 `docker-compose.yml`，自己的改动（端口、额外挂载、环境变量）写进 `docker-compose.override.yml`。4.0 开发部署如果有 `compose.yaml`，Compose 会优先读它，请把其中需要保留的改动移到 `docker-compose.override.yml`，再移走 `compose.yaml`。
@@ -144,7 +144,7 @@ tar -xzf yuki-4.0.0-deploy.tar.gz --strip-components=1
 | `WEB_EXTRACT_MAX_RESULTS`、`WEB_SOURCE_MAX_RUNS_PER_CONVERSATION` | 删除；网页正文改为显式读取 |
 | `VISION_MAX_RETRIES`、`emoji_replacement` 路由 | 删除 |
 | `SNOWLUMA_NOVNC_*` | 删除；QQ 登录画面改在 Yuki Desktop 里查看 |
-| 代理 | 使用标准 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，见[代理说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/http-proxy.zh-CN.md) |
+| 代理 | 使用标准 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，见[代理说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/http-proxy.zh-CN.md) |
 | 语音转写 | 明确选择 `chat_completions` 或 `audio_transcriptions` 协议 |
 
 ## 7. 把沙箱迁进 Compose
@@ -168,7 +168,7 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki
 注意：
 
 - 宿主机需要 `python3`（宿主 Manager 部署原本就有）。
-- 用 gVisor 但 Docker 里的 `runsc` 没有带 `--overlay2=none` 时，环境里安装的软件不在 Docker 层中，脚本会拒绝并提示先用 `runsc tar rootfs-upper` 导出，见 [Mac 迁移记录](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/mac-arm64-migration-20261107.md)。
+- 用 gVisor 但 Docker 里的 `runsc` 没有带 `--overlay2=none` 时，环境里安装的软件不在 Docker 层中，脚本会拒绝并提示先用 `runsc tar rootfs-upper` 导出，见 [Mac 迁移记录](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/mac-arm64-migration-20261107.md)。
 - 检查点镜像里有旧的 execd 凭据，只作私有保管，不要推送到公开仓库，也不要删除——环境重建时要用它。
 
 没有宿主 Manager 的部署跳过这一步。4.0 的媒体缓存在 `yuki-media-cache` 卷；脚本会把旧的 `data/conversation-media-cache` 复制过去，确认后可删除旧目录。
@@ -181,7 +181,7 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki
 sh install.sh
 ```
 
-`.env` 已存在，所以不会再走配置向导。它会把 `YUKI_VERSION` 改为 `4.0.0`，没有档位时询问档位，确定运行时，创建缺少的卷，拉取镜像，`docker compose up -d`，并一直等到 Bot 能连上沙箱。Bot 启动时自动把数据库迁移到 `0156`。不使用安装器也可以：把 `.env` 的 `YUKI_VERSION` 改为 `4.0.0`，确认有 `YUKI_SANDBOX_PROFILE` 和 `YUKI_SANDBOX_RUNTIME`，运行 `sh deploy/sandbox/prepare.sh` 后 `docker compose up -d`。
+`.env` 已存在，所以不会再走配置向导。它会把 `YUKI_VERSION` 改为 `4.0.1`，没有档位时询问档位，确定运行时，创建缺少的卷，拉取镜像，`docker compose up -d`，并一直等到 Bot 能连上沙箱。Bot 启动时自动把数据库迁移到 `0156`。不使用安装器也可以：把 `.env` 的 `YUKI_VERSION` 改为 `4.0.1`，确认有 `YUKI_SANDBOX_PROFILE` 和 `YUKI_SANDBOX_RUNTIME`，运行 `sh deploy/sandbox/prepare.sh` 后 `docker compose up -d`。
 
 关于数据库迁移：
 
@@ -200,7 +200,7 @@ docker compose run --rm --entrypoint yuki bot admin model migrate-legacy
 docker compose start bot
 ```
 
-检查退出码和输出里的 `ok`、`revision`、`consumed_env_fields`。成功后，从 `.env` 删除 `consumed_env_fields` 列出的旧变量；命令只报告变量名，不改你的文件。结果为 `partial` 或无法确认时，先核对已保存的 revision，不要直接重跑。细节见[模型配置迁移](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/upgrade-model-config-20261031.md)。
+检查退出码和输出里的 `ok`、`revision`、`consumed_env_fields`。成功后，从 `.env` 删除 `consumed_env_fields` 列出的旧变量；命令只报告变量名，不改你的文件。结果为 `partial` 或无法确认时，先核对已保存的 revision，不要直接重跑。细节见[模型配置迁移](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/upgrade-model-config-20261031.md)。
 
 ## 10. 管理员、角色名和插件
 
@@ -219,7 +219,7 @@ docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_T
 docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_TOKEN" yuki admin person superuser grant <PersonID> --revision <当前revision>'
 ```
 
-没有账号的人可以先 `admin person create --display-name "名称"`。账号转交不带走资格，解绑不撤销资格，普通配对不授予资格。之后用 `admin client pair --person <PersonID>` 配对 Yuki Desktop；超级管理员可以用自己的 Desktop 凭据管理。完整说明见[人物授权](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/person-admin-control-plane-upgrade.md)。旧的角色 owner 记录保留但不再授权。
+没有账号的人可以先 `admin person create --display-name "名称"`。账号转交不带走资格，解绑不撤销资格，普通配对不授予资格。之后用 `admin client pair --person <PersonID>` 配对 Yuki Desktop；超级管理员可以用自己的 Desktop 凭据管理。完整说明见[人物授权](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/person-admin-control-plane-upgrade.md)。旧的角色 owner 记录保留但不再授权。
 
 **角色名（仅 3.9.0）。** 数据库里还没有角色资料时初始化一次；已有角色不会被改名：
 
@@ -233,9 +233,9 @@ docker compose run --rm --entrypoint yuki bot init-db --character-name "Yuki"
 
 ## 11. 客户端、QQ 和连接器
 
-- **Yuki Desktop** 使用与 4.0.0 配套的版本（个人客户端 API revision 10）。远程连接需要给服务一个 HTTPS 地址，见[桌面部署与远程入口](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/desktop-local-deployment.zh-CN.md)或 [Tailscale 指南](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/tailscale-connection.zh-CN.md)。
-- **QQ 登录画面** 不再发布在 6081 端口，改在已配对管理员的 Yuki Desktop 电脑窗口里选择「QQ 登入」查看和扫码；SnowLuma 管理页仍在 `127.0.0.1:5099`。QQ 登录数据目录不变。见 [SnowLuma](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/deployment/snowluma.md)。
-- **本机连接器** 由 Desktop 管理时随 Desktop 更新；单独安装的按[本机连接器](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/local-agent-connector.zh-CN.md)说明更新到 0.6.2，原设备、配对和 journal 保留。设备协议仍是 4，旧版本连接器可以继续执行命令和读写文件，但不支持屏幕和浏览器操作。
+- **Yuki Desktop** 使用与 4.0.0 配套的版本（个人客户端 API revision 10）。远程连接需要给服务一个 HTTPS 地址，见[桌面部署与远程入口](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/desktop-local-deployment.zh-CN.md)或 [Tailscale 指南](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/tailscale-connection.zh-CN.md)。
+- **QQ 登录画面** 不再发布在 6081 端口，改在已配对管理员的 Yuki Desktop 电脑窗口里选择「QQ 登入」查看和扫码；SnowLuma 管理页仍在 `127.0.0.1:5099`。QQ 登录数据目录不变。见 [SnowLuma](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/deployment/snowluma.md)。
+- **本机连接器** 由 Desktop 管理时随 Desktop 更新；单独安装的按[本机连接器](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/local-agent-connector.zh-CN.md)说明更新到 0.6.2，原设备、配对和 journal 保留。设备协议仍是 4，旧版本连接器可以继续执行命令和读写文件，但不支持屏幕和浏览器操作。
 
 ## 12. 核对
 
@@ -264,10 +264,10 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki -
 
 它删除 `yuki-environment-retired` 容器、宿主的 systemd 单元、loop 卷和沙箱根目录（`/var/lib/yuki-sandbox` 或你配置的路径）、`/opt/yuki-sandbox`、`/etc/yuki-sandbox`。新 Manager 还没创建环境时它会拒绝执行。旧媒体缓存目录（默认 `data/conversation-media-cache`）需要你确认 `yuki-media-cache` 卷正常后自己删除。
 
-其他可以清理的：3.9.0 的网络 `qq-ai-bot-network`、旧镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot`、发布包 `yuki-4.0.0-deploy.tar.gz`。不要删除 `yuki-environment:migrated-<时间>` 检查点镜像，也不要删除 `yuki-sandbox-*` 和 `yuki-media-cache` 卷；`docker compose down -v` 不会删除它们。
+其他可以清理的：3.9.0 的网络 `qq-ai-bot-network`、旧镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot`、发布包 `yuki-4.0.1-deploy.tar.gz`。不要删除 `yuki-environment:migrated-<时间>` 检查点镜像，也不要删除 `yuki-sandbox-*` 和 `yuki-media-cache` 卷；`docker compose down -v` 不会删除它们。
 
 ## 参考
 
-- [持久工作环境](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/persistent-environment.zh-CN.md)：档位、资源、网络、迁移细节
-- [4.0.0 发布说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0.md)
-- [架构索引](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/architecture/README.md)
+- [持久工作环境](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/persistent-environment.zh-CN.md)：档位、资源、网络、迁移细节
+- [4.0.0 发布说明](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/releases/v4.0.0.md)
+- [架构索引](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/architecture/README.md)

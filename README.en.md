@@ -1,4 +1,4 @@
-<!-- release-baseline: version=4.0.0 schema=0156 -->
+<!-- release-baseline: version=4.0.1 schema=0156 -->
 
 [中文](README.md) · English
 
@@ -11,13 +11,13 @@
 <p>A social AI agent with a lasting presence in real conversations</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0"><img src="https://img.shields.io/badge/Stable-4.0.0-blue" alt="Yuki 4.0.0 stable"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.1"><img src="https://img.shields.io/badge/Stable-4.0.1-blue" alt="Yuki 4.0.1 stable"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="AGPL-3.0-only License"></a>
 </p>
 
-[4.0.0 release notes](docs/releases/v4.0.0.en.md) · [Upgrade to 4.0](docs/upgrade-4.0.0.en.md) · [Benchmark report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md) · [Desktop client](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) · [Help](docs/help.md)
+[4.0.0 release notes](docs/releases/v4.0.0.en.md) · [Upgrade to 4.0](docs/upgrade-4.0.1.en.md) · [Benchmark report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md) · [Desktop client](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) · [Help](docs/help.md)
 
 </div>
 
@@ -92,14 +92,14 @@ When it finishes, Yuki Desktop connects by itself and you can start talking.
 The server needs Docker with the Compose plugin only (Linux containers, amd64 or arm64).
 
 ```sh
-curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.sh
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/install.sh
 sh install.sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -146,7 +146,7 @@ Copy the [installation prompt](docs/install-with-ai.en.md) into an AI assistant 
 
 ## Upgrade
 
-Run the same installer again in the installation directory. It replaces the release files, keeps `.env`, `data/`, `docker-compose.override.yml` and all data volumes, and the database migrates when the Bot starts. Back up first. Coming from 3.9.0 there is more to do: the database file name, the persona file, administrator status, plugins, and moving the sandbox Manager from the host into Compose. Follow the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) step by step.
+Run the same installer again in the installation directory. It replaces the release files, keeps `.env`, `data/`, `docker-compose.override.yml` and all data volumes, and the database migrates when the Bot starts. Back up first. Coming from 3.9.0 there is more to do: the database file name, the persona file, administrator status, plugins, and moving the sandbox Manager from the host into Compose. Follow the [4.0 upgrade guide](docs/upgrade-4.0.1.en.md) step by step.
 
 ## Documentation
 
@@ -155,7 +155,7 @@ Run the same installer again in the installation directory. It replaces the rele
 | [Help](docs/help.md) | Chat commands, model setup and daily administration |
 | [4.0.0 release notes](docs/releases/v4.0.0.en.md) | Everything that changed in this release |
 | [Install with an AI assistant](docs/install-with-ai.en.md) | A prompt to paste into an AI assistant that can use a terminal |
-| [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) | Upgrading from 3.9.0 or a 4.0 development deployment |
+| [4.0 upgrade guide](docs/upgrade-4.0.1.en.md) | Upgrading from 3.9.0 or a 4.0 development deployment |
 | [Persistent environment](docs/operations/persistent-environment.md) | Sandbox profiles, resources, networking and migration |
 | [Desktop computer and headed environment](docs/operations/desktop-computer.zh-CN.md) | Screenshots, clicks and the browser on Yuki's own computer (Chinese) |
 | [Local connector](docs/operations/local-agent-connector.zh-CN.md) | Connecting your computer, full access, screen and browser, native coding agents (Chinese) |
