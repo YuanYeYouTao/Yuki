@@ -159,7 +159,7 @@ The script does the following. The first run only copies; it deletes nothing:
 
 1. Confirms no execution is queued or running, stops the host `yuki-sandbox` service, and disables it and `yuki-environment-storage` at boot (the storage mounts stay until `--cleanup`).
 2. Stops `yuki-environment` and `docker commit`s its full rootFS as `yuki-environment:migrated-<time>`. That image is the starting point for the new environment; everything you installed is in it.
-3. Creates the Docker volumes, copies HOME, run records, the media cache and `jobs.sqlite3` into them, and makes the new Manager create the environment from that checkpoint image. If the old environment mounted a host `resolv.conf` (for gVisor), it is copied to `.config/resolv.conf` in HOME and `YUKI_SANDBOX_RESOLV_CONF` is set.
+3. Creates the Docker volumes, copies HOME, run records, the media cache and `jobs.sqlite3` into them, and makes the new Manager create the environment from that checkpoint image. If the old environment mounted a host `resolv.conf` (for gVisor), it is copied as it was to `.config/yuki/resolv.conf` in HOME and `YUKI_SANDBOX_RESOLV_CONF` is set.
 4. Renames the old container to `yuki-environment-retired` and removes the old Squid egress container, the internal bridge and the related firewall rules.
 5. Writes the old settings into the deployment's `.env`: the old browser mode becomes a profile (headed → `desktop`, headless → `headless`, otherwise `lite`), the old runtime becomes `YUKI_SANDBOX_RUNTIME`, and resources and extra packages become `YUKI_SANDBOX_*`. Values already in `.env` are not overwritten.
 
