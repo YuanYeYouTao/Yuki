@@ -190,6 +190,10 @@ async def _macos_host_session(
         await call("key", window=str(a), text="backspace", **content(290, 286))
         until(lambda: field(a) == "ab")
         assert field(b) == "xyz"
+        # W11: A is now the host's key window; keys without x,y for B still go to B.
+        await call("type", window=str(b), text="w")
+        until(lambda: field(b) == "xyzw")
+        assert field(a) == "ab"
 
         # W10: the custom pad has no AX element; stamped events reach covered window A.
         await call("click", window=str(a), **content(100, 50))
