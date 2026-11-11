@@ -1,16 +1,14 @@
 # Yuki 使用与运维帮助
 
-本页跟随 Yuki **4.0.0 后续开发**：Alembic head 为 `0155`，Plugin API 为 `9.0`。
+本页跟随 Yuki **4.0.0**：Alembic head 为 `0156`，Plugin API 为 `9.0`。
 人物、账号、空间与会话的关系见[当前架构](architecture/canonical-runtime.md)，
 版本迁移见 [4.0 升级指南](upgrade-4.0.0.md)。
 
 ## 安装与启动
 
-现成部署包使用 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)，
-安装器与配置步骤见[对应版本指南](upgrade-3.9.0.md)。4.0 当前提供源码开发基线，
-从 3.9 迁移见 [4.0 指南](upgrade-4.0.0.md)。
+用 [4.0.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) 的 `install.sh`（Windows 为 `install.ps1`）安装：宿主只需 Docker 与 Compose，安装器配置角色和模型、选沙箱档位并启动全部服务，见 [README](../README.md#安装)。在原目录重新运行即升级；从 3.9 迁移见 [4.0 指南](upgrade-4.0.0.md)。
 
-源码开发先安装 Python 3.12、uv 和 C 编译器，Python 的 SQLite 须支持扩展加载；平台要求见 [README](../README.md#安装与升级)。
+源码开发先安装 Python 3.12、uv 和 C 编译器，Python 的 SQLite 须支持扩展加载；平台要求见 [README](../README.md#参与开发)。
 
 ```bash
 uv sync --all-extras --managed-python
@@ -120,7 +118,7 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 
 ## 数据与升级
 
-当前 Alembic head 为 `0143`。正式 3.9.0 的 head 为 `0119`；4.0 新增 23 个迁移节点，涉及人物与账号归属、个人设备、插件会话、表情文件库和查询索引。迁移保留原事件、Work、预算、私有协议与执行回执，逐项变化见 [4.0 升级指南](upgrade-4.0.0.md)。
+当前 Alembic head 为 `0156`。正式 3.9.0 的 head 为 `0119`；4.0 新增 35 个迁移节点，涉及人物与账号归属、个人设备、插件会话、表情文件库和查询索引。迁移保留原事件、Work、预算、私有协议与执行回执，逐项变化见 [4.0 升级指南](upgrade-4.0.0.md)。
 
 历史 `0048` bridge 仍按数据库真实来源处理，不能通过手工 stamp 跳过。`0097` 退役 Genie 表前需保全原 Work、发送回执及被引用音频；这些材料不是可随意删除的缓存。
 
@@ -175,4 +173,4 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 
 ## 发布与版本
 
-当前开发基线见 [4.0.0 说明](releases/v4.0.0.md)，正式下载版本见 [3.9.0 说明](releases/v3.9.0.md)。本次准备不发布 4.0 镜像。正式发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)：tag 流水线核对版本身份及 main 祖先关系，构建后验证镜像、部署包与 release smoke；PR 的 Quality 检查验证源码与测试。
+当前版本见 [4.0.0 说明](releases/v4.0.0.md)。正式发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)：tag 流水线核对版本身份及 main 祖先关系，构建后验证镜像、部署包与 release smoke；PR 的 Quality 检查验证源码与测试。

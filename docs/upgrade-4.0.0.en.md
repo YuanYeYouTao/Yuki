@@ -1,135 +1,273 @@
-# Upgrading to the Yuki 4.0.0 development baseline
+# Yuki 4.0.0 upgrade guide
 
-<!-- release-baseline: version=4.0.0 schema=0155 -->
+<!-- release-baseline: version=4.0.0 schema=0156 -->
 
-[中文](upgrade-4.0.0.md) · [Development notes](releases/v4.0.0.en.md) · [Complete PR ledger](releases/v4.0.0-prs.md)
+[中文](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/upgrade-4.0.0.md) · [4.0.0 release notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0.en.md) · [Every merged PR](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0-prs.md)
 
-This guide covers official 3.9.0 and later development deployments. The unreleased cutoff audited on 2026-11-02 is `81f10229` (#558): database head `0155`, exact Plugin API `9.0`, personal Client API revision `9` and unchanged Code API `yuki.codemode.api.v2`. The official 3.9.0 package retains schema `0119`, API `3.5` and its original assets. Version 4.0.0 is not yet published.
+This guide covers two kinds of deployment: the stable **3.9.0** release, and deployments that ran 4.0 development images after 3.9.0. For a new install you do not need it; use the installer described in the [README](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/README.en.md#install).
 
-## Identify the existing deployment
+Work through the steps in order. Steps marked "3.9.0 only" have usually been done already on a 4.0 development deployment; check and move on.
 
-| Item | Official 3.9.0 | 4.0.0 development baseline |
+## What changes
+
+| Item | 3.9.0 | 4.0.0 |
 | --- | --- | --- |
-| Python module/package | `qq_ai_bot` / old package name | `yuki`, without an old-module shim |
-| Executables | `qq-ai-bot-cli` / `qq-ai-bot` | `yuki` / `yuki-bot` |
-| Database | `0119` | `0155`, 34 additional revisions |
+| Image | `ghcr.io/yuanyeyoutao/yuki-qqbot` | `ghcr.io/yuanyeyoutao/yuki`, plus the sandbox image `ghcr.io/yuanyeyoutao/yuki-environment` |
+| Python package / commands | `qq_ai_bot` / `qq-ai-bot-cli`, `qq-ai-bot` | `yuki` / `yuki`, `yuki-bot`; the old names are gone |
+| Compose project / network | `qq-ai-bot` / `qq-ai-bot-network` | `yuki` / `yuki-network` |
+| Database file | `data/qq_ai_bot.db` | `data/yuki.db` (fixed in the Compose file) |
+| Database revision | `0119` | `0156`, one forward migration chain |
+| Sandbox Manager | systemd service on the host, loop-mounted ext4, Squid | the `manager` Compose service, with data in named Docker volumes |
 | Plugin API | `3.5` | `9.0`, exact match |
-| Administration | Temporary browser UI | Management HTTP API, CLI and `/ai admin`; separate personal clients |
-| Superuser identity | QQ account list | Persistent Person authority; independent operator credentials |
-| Files/packages | Separate workspace and installation tools | Shared persistent terminal, with artifact inspection/publication |
-| Stickers/media | Old pool and automatic expansion | File library, background stickers and shared originals read on demand |
+| Administrators | `SUPERUSERS` in `.env` (QQ numbers) | superuser status on a Person |
+| Persona | system prompt, `persona.md` and other files | one `character/SOUL.md`; the character name lives in the database |
+| Management UI | management WebUI | Yuki Desktop, the CLI, `/ai admin` |
+| Personal client API | — | revision 10 |
+| Local connector | — | 0.6.2, device protocol 4 |
 
-Record the actual `DATABASE_URL`, database revision, full Compose/systemd configuration, Bot and gateways, Manager, environment mounts, plugins and approvals. A development deployment continues from its actual revision; do not infer database structure from the application version.
+## 1. Take stock
 
-## 1. Keep the original database and deployment names
-
-New installations default to Compose project `yuki`, network `yuki-network` and `data/yuki.db`. Existing deployments retain their project, network, volumes, workspace and database path. Renaming the old database is unnecessary, and the new default must not create a second empty database.
-
-If an older native/source installation did not explicitly set `DATABASE_URL`, set its original absolute path before upgrading so migration and startup use the same database:
-
-```dotenv
-DATABASE_URL=sqlite+aiosqlite:////srv/yuki/data/qq_ai_bot.db
-```
-
-Update installed packages, imports, systemd, Manager module paths, scripts and actual Compose commands to `yuki` / `yuki-bot`. Sync the locked dependencies or rebuild the target image; moving source files is insufficient. The future image repository is `ghcr.io/yuanyeyoutao/yuki`; preparing this baseline does not publish a 4.0.0 image tag.
-
-## 2. Back up consistently and migrate forward
-
-Stop Bot writes and preserve the main database, the participation/Manager/artifact receipt databases actually used, configuration, plugin data, protocol objects and referenced files. For a persistent terminal, also save its HOME/runtime filesystems and complete current rootFS. Image configuration can contain an execd credential, so keep these backups private. Pause only writers involved in the migration; retain existing gateways, proxies and unrelated services.
-
-Test the target version against an isolated copy with the same configuration, then migrate the original deployment through its normal startup path. `0119` to `0155` is one chain with 34 new revisions. `0124` directly precedes `0126`, and `0145` directly precedes `0147`; do not invent missing revisions. Do not skip migrations with `stamp`, reset conversations or reset cumulative budgets.
-
-| Revisions | Changes and preserved data |
-| --- | --- |
-| `0120`–`0122` | Separate private conversations by original account/platform entrance and topic; personal devices and pairing retain existing history |
-| `0123`–`0124` | Preserve independent Memory operation receipts and each notification grant's original Conversation |
-| `0126`–`0129` | Canonical monitor/Rebuild targets, publication provenance after temporary-media cleanup, independent personal names and same-human ownership |
-| `0130`–`0131` | Retire dual context windows and automatic search extraction overrides while retaining configuration audit history |
-| `0132` | Separate ACP sessions and original request Conversation scopes without rewriting old receipts |
-| `0133` | Move current projection bytes to immutable append chunks, preserving order and contents |
-| `0134` | Retire unused tool/turn diagnostic tables and indexes; retain real receipts |
-| `0135`–`0137` | Name lookup index, Person superuser authority and management-source references; remove device-read heartbeat writes |
-| `0138`–`0140` | Retire the sticker pool; persist background sticker intents and actually observed attachment snapshots |
-| `0141` | Replace dual ownership tables with Account and authoritative AccountAssignment; preserve original periods, authors, conversations and executions |
-| `0142` | Normalize derived names and index positional mention lookup without rewriting events or delivery receipts |
-| `0143` | Backfill original event attachment references, add current query indexes and remove ineffective independent-session capability storage |
-| `0144`–`0145` | Shared history structure, unique indexes and original event/receipt anchors; stop business writers during migration |
-| `0147` | One SOUL and profile name; later authorization uses Person superusers, without promoting historical owner rows |
-| `0148`–`0150` | Source indexes, local native agents and original observation scopes; retain devices, sessions and requests |
-| `0151`–`0152` | Automation definitions and local computer operations with original receipts |
-| `0153` | Move original float32 vectors into same-database Vec1 using a Vec1-enabled build, without new embedding calls |
-| `0154`–`0155` | Original notification events, separate envelope/ingress/native references and atomic local delivery; retain paid sources and receipts |
-
-Changes including `0141` and `0143` are irreversible, and retired diagnostic/configuration data cannot always be reconstructed. Prefer a forward fix. An old image cannot simply run the upgraded database. If restoring a backup is necessary, first preserve newer messages, files and completed effects and plan their consistency separately.
-
-## 3. Move administrative authority to Person
-
-Before removing old `SUPERUSERS` configuration, export historical account/Person candidates using the target version's read-only script:
+In the old deployment directory, note these facts; later steps depend on them:
 
 ```sh
-python scripts/prepare_person_authority.py --deployment-root /path/to/yuki --output /private/person-authority-candidates.json
+cd /path/to/yuki
+docker compose ls                                   # actual Compose project name
+docker compose exec bot printenv DATABASE_URL       # database the Bot actually uses
+docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment
+systemctl status yuki-sandbox --no-pager            # is the host Manager running?
 ```
 
-Use `--database /absolute/path/original.db` for a nondefault database. Verify the real person and transfer history, then remove `SUPERUSERS` from `.env`, Compose/systemd and the actual process environment. Migration does not automatically grant superuser authority.
+If the last two show `persistent-v1/` and a running `yuki-sandbox`, the sandbox is run by the host Manager and you need step 7. Without a `yuki-environment` container, skip step 7.
 
-An existing independent operator uses `yuki admin person list/show` to obtain the internal Person ID and revision, then explicitly grants authority with `person superuser grant`. A person without an account can be created first. Transferring an account does not transfer authority, unlinking does not revoke it, and replaying an old grant cannot revive a revoked privilege. See the [authority migration procedure](operations/person-admin-control-plane-upgrade.md) for credentials and commands.
+Also check: which plugins you use and the Plugin API they declare; where the persona comes from (`SYSTEM_PROMPT`, `SYSTEM_PROMPT_FILE`, `BOT_PERSONA_FILE`, `YUKI_PERSONA_FILE`, `BOT_DISPLAY_NAME`); your own changes to `.env` and the Compose files; and, on a 4.0 development deployment, whether the directory has a `compose.yaml` or other override files.
 
-Chat administration uses `/ai admin <domain> <operation>`. `/ai help` and `/ai admin help` separate personal/conversation operations from administration. App/ACP message text does not execute platform administration commands. Current Person superusers may use management APIs through original Desktop credentials; independent operator credentials retain their own policy. Ordinary pairing does not grant authority.
+## 2. Prepare plugins and the persona ahead of time
 
-The separate character-owner role is removed. Shared profile/avatar/SOUL, models and server Computer operations check current Person superusers. Historical owner rows/receipts are retained without promotion. Trusted local setup grants its deployer through the original explicit operation. Existing remote deployments verify the original Person and use an operator to grant authority; re-pairing is not a grant.
+Both can be done before the downtime.
 
-## 4. Adapt plugins to API 9.0
+**Plugins.** 4.0 loads only plugins that declare `plugin_api = "9.0"`. Product version 4.0 and Plugin API 9.0 are different things; port the real calls before changing the number in the manifest. From 3.5, work through each step:
 
-The Host only loads `plugin_api = "9.0"`. Product 4.0 and Plugin API 9.0 are separate versions. Update actual consumers before changing the manifest:
-
-| API step | Required adaptation |
+| API version | What to change |
 | --- | --- |
-| [4.0 identity](plugin-development/api-4.0-migration.md) | General People/Memory/message/configuration targets use internal Person, Space and Conversation IDs rather than QQ IDs |
-| [5.0 stickers](plugin-development/api-5.0-migration.md) | Remove `ctx.emoji`, old emoji permissions, Features and Hooks; use current media artifacts and messaging |
-| [6.0 mentions](plugin-development/api-6.0-migration.md) | Use `CurrentMessage.mentions` and `message.current.mentions.v2` instead of old mentioned fields |
-| [7.0 sessions](plugin-development/api-7.0-migration.md) | Use `plugin.agent_session.v2`; remove creation metadata/allowed_capabilities, run allowed_capabilities/max_tool_calls and result tool_calls_used |
-| [8.0 automation](plugin-development/api-8.0-migration.md) | Adopt current TaskSpec definitions and original request identities |
-| [9.0 message identity](plugin-development/api-9.0-migration.md) | Use nullable `native_message_id`; tasks/replies/history continue using internal `event_id`, without reconstructing ownership from native IDs |
+| [4.0 identity](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-4.0-migration.md) | People, memory, message and configuration targets use internal Person, Space and Conversation IDs instead of QQ numbers |
+| [5.0 stickers](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-5.0-migration.md) | Remove `ctx.emoji` and its permissions, features and hooks; media goes through the current artifact and message interfaces |
+| [6.0 mentions](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-6.0-migration.md) | Use `CurrentMessage.mentions` and `message.current.mentions.v2` |
+| [7.0 standalone sessions](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-7.0-migration.md) | Use `plugin.agent_session.v2` and drop the retired creation parameters and return fields |
+| [8.0 automation](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-8.0-migration.md) | Define automation with the current TaskSpec and the original request identity |
+| [9.0 message identity](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-9.0-migration.md) | `native_message_id` may be null; tasks, replies and history follow `event_id` |
 
-Independent sessions retain per-message metadata, history and request counts; `max_model_requests` is still accepted, and a tool-free session answers in one request charged to the initiating root Work. Explicit `max_model_requests`/`max_tool_calls` on Main's `ctx.agent.run()` are written to the root Work budget as totals for the whole Work. Main's `ctx.agent.run()` retains its separate tool and authorization contract.
+Explicit `max_model_requests` / `max_tool_calls` passed to `ctx.agent.run()` are now the total budget for the whole task, not per-segment limits. The Kun game and GitHub monitor plugins no longer ship with the main repository; use the current versions of [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) and [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor). Existing plugin KV data, jobs, outboxes and unfinished receipts are kept.
 
-Preserve original KV, jobs, outbox, approval and incomplete receipts. Rediscover the updated plugin, review its actual manifest and approve the capabilities it needs. Do not broaden approval to bypass an interface change or resend old notifications/paid requests. Bundled plugins follow actual SDK 9.0 manifests/examples. [Kun](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) and [GitHub Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) use their independently maintained compatible versions. GitHub Monitor is no longer bundled in the main deployment archive.
+**Persona (3.9.0 only).** 4.0 reads a single `character/SOUL.md`; the character name lives in the database's character profile. Compare the old system prompt and `persona.md`, pick the persona content you actually want, and turn it into one SOUL; do not just concatenate the files. Tool, permission and task rules come from the program and do not belong in SOUL. An empty SOUL is fine. See the [single-SOUL upgrade notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/soul-deployment-20261022.md) (Chinese).
 
-## 5. Coordinate the persistent environment and media mounts
+## 3. Let tasks finish and stop the old services
 
-Check the host's `src/yuki`, Manager unit/dependencies, Supervisor and sticker helpers. Export matching Manager source from the selected Bot and verify connectivity as the real Bot user; a socket file is insufficient. Environment commands run as root with `HOME=/home/yuki`; keep existing packages, services, HOME/runtime, jobs and complete rootFS. Save a complete snapshot before explicitly changing the environment according to the [persistent environment guide](operations/persistent-environment.md). Do not replace installed software with an empty base image or start two active environments sharing one HOME.
+Let Yuki finish what she is doing, or cancel it explicitly. The sandbox migration script refuses to continue while executions are queued or running (registered long-running services do not count).
 
-- New external native-agent work uses the person's local Connector; the old server ACP B creation/configuration path is retired. Keep old execution facts for querying/settlement without configuring a second executor.
-- Mount the same Bot cache read-only at `/inputs/media-cache`; `YUKI_MANAGER_MEDIA_CACHE` points to its actual host directory. Existing containers do not gain mounts automatically. Bot remains responsible for original downloads and 24-hour cleanup.
-- Authoritative sticker images/JSON live under `/workspace/stickers/<platform>/`. Update the helpers and rebuildable search index. `0138` does not automatically import the old pool. Save any old images you intend to keep before cleaning the retired directory after checking references; keep parent data/workspace/artifact directories.
-- For a gVisor custom bridge, explicitly mount a resolver file with Manager's `--resolv-conf`. Retain a reachable deployment-specific DNS configuration rather than assuming Docker's `127.0.0.11` works.
+Then, in the old deployment directory and with the **old** Compose file, stop the services:
 
-Read old terminal/APT/Python/external-agent results by their original request/run and completion. If replacing the environment interrupts execution, preserve the real interrupted/unknown state; an upgrade does not authorize replay. `yuki setup environment-check` checks the existing socket/artifact connection. Administrator execution, PTY, installation, background recovery, public networking and shared read-only media need their own verification.
+```sh
+docker compose down
+```
 
-## 6. Configuration and mounted prompts
+This stops the Bot and SnowLuma. The sandbox container `yuki-environment` is not part of this Compose project and keeps running until step 7. Only one Bot may write to a database at any time.
 
-| Item | Current behavior |
+## 4. Export the old administrator list (3.9.0 only)
+
+In 4.0, superuser status belongs to a Person, and the database migration grants it to nobody based on `SUPERUSERS`. The migration also drops the old account-binding table, so export the candidates with the read-only script from the 4.0 image **before the database is upgraded**:
+
+```sh
+docker pull ghcr.io/yuanyeyoutao/yuki:4.0.0
+docker run --rm -v "$PWD:/deploy" --entrypoint python ghcr.io/yuanyeyoutao/yuki:4.0.0 \
+  /app/scripts/prepare_person_authority.py --deployment-root /deploy \
+  --database /deploy/data/qq_ai_bot.db --output /deploy/person-authority-candidates.json
+```
+
+The script only reads the database and grants nothing. The list contains identity data; keep it with your deployment data. After exporting, remove `SUPERUSERS` from `.env`, the Compose files and the process environment.
+
+## 5. Back up
+
+With the services stopped, take a complete backup:
+
+- The deployment directory: `data/` (the database together with its `-wal` and `-shm` files), `.env`, `config/`, `webui-config/` (including `model_profiles.secrets.json`), `character/`, `plugins/`, `workspace/`, `social-transfer/`, and the QQ login data `snowluma-data/`, `snowluma-qq-config/`, `snowluma-qq-data/`, `snowluma-extra-accounts/`.
+- The host Manager's data: `/etc/yuki-sandbox/` and the sandbox root (`YUKI_SANDBOX_ROOT` in `/etc/yuki-sandbox/deployment.env`, `/var/lib/yuki-sandbox` by default).
+
+Database migrations only go forward, some cannot be reversed, and an old image cannot run an upgraded database. If something goes wrong, prefer fixing forward. If you really must restore the backup, first save the new messages, files and effects produced after the upgrade; never overwrite them with the old database.
+
+## 6. Put the 4.0.0 release files in place
+
+The sandbox migration script and the new Compose file ship in the release bundle, so put them into the deployment directory first. Do not run the installer yet: it stops when it finds the host Manager's environment and asks you to do step 7 first.
+
+```sh
+cd /path/to/yuki
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/yuki-4.0.0-deploy.tar.gz
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf yuki-4.0.0-deploy.tar.gz --strip-components=1
+```
+
+This replaces the release files (`docker-compose.yml`, `.env.example`, `install.sh`, `deploy/sandbox/` and so on) and leaves `.env` and the data directories alone. From now on use only `docker-compose.yml`, and put your own changes (ports, extra mounts, environment variables) in `docker-compose.override.yml`. If a 4.0 development deployment has a `compose.yaml`, Compose prefers it: move the parts you want to keep into `docker-compose.override.yml` and move `compose.yaml` out of the way.
+
+**Database file (3.9.0 only).** The new Compose file sets `DATABASE_URL=sqlite+aiosqlite:////app/data/yuki.db` under `environment`, which takes precedence over `.env`; changing `DATABASE_URL` in `.env` has no effect. Choose one:
+
+- Rename it (make sure `data/yuki.db` does not exist yet):
+
+  ```sh
+  mv data/qq_ai_bot.db data/yuki.db
+  for suffix in -wal -shm; do
+    [ -f "data/qq_ai_bot.db$suffix" ] && mv "data/qq_ai_bot.db$suffix" "data/yuki.db$suffix"
+  done
+  ```
+
+- Or keep the name and point to it in `docker-compose.override.yml`:
+
+  ```yaml
+  services:
+    bot:
+      environment:
+        DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
+  ```
+
+Either way, never let the Bot create a new empty database at `data/yuki.db`. On a 4.0 development deployment, check against the actual path found in step 1.
+
+**`.env` and persona (3.9.0 only).**
+
+- Save the persona prepared in step 2 as `character/SOUL.md`; if you do not want one, copy the `config/SOUL.md` template from the bundle. Remove `SYSTEM_PROMPT`, `SYSTEM_PROMPT_FILE`, `BOT_PERSONA_FILE`, `YUKI_PERSONA_FILE` and `BOT_DISPLAY_NAME`; keep `BOT_ALIASES` only for wake-up aliases you still want.
+- Remove retired settings. Leftover variables are ignored and do not break startup, but they mislead:
+
+| Setting | What to do |
 | --- | --- |
-| Compact | Default `CONTEXT_COMPACT_TRIGGER_TOKENS=96000` schedules early compaction; hard input capacity comes from explicit Profile limits and the actual output allocation |
-| Old windows | Remove `CONTEXT_WINDOW_TOKENS` and `CONTEXT_WORK_WINDOW_TOKENS`; old values are not copied into the new trigger or model capacity |
-| Old Rollup | Remove retired `CONVERSATION_ROLLUP_*`, `CONTEXT_COMPACTION_WINDOW_TOKENS`, `WORK_COMPACTION_*` settings and `conversation_compaction` route; retain current Memory evidence-compaction settings |
-| Web | Remove `WEB_EXTRACT_MAX_RESULTS` and `WEB_SOURCE_MAX_RUNS_PER_CONVERSATION`; read pages explicitly |
-| Proxy | Use standard `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and actual CA configuration; see [proxy operations](operations/http-proxy.zh-CN.md) |
-| ASR | Explicitly select `chat_completions` or `audio_transcriptions`; the model name does not select the protocol |
-| Stickers | Remove the retired `emoji_replacement` route, obsolete emoji overrides and `VISION_MAX_RETRIES`; retain other profiles, vision/ASR connections and secrets |
+| `SUPERUSERS` | Remove (exported in step 4) |
+| `AGENT_MAX_MODEL_REQUESTS`, `AGENT_MAX_TOOL_CALLS` | Remove; per-segment limits are gone |
+| `CONTEXT_WINDOW_TOKENS`, `CONTEXT_WORK_WINDOW_TOKENS` | Remove. The early compaction threshold is `CONTEXT_COMPACT_TRIGGER_TOKENS` (default 96000); hard capacity comes from the profile's `max_input_tokens` / `context_window_tokens` |
+| `CONVERSATION_ROLLUP_*`, `CONTEXT_COMPACTION_WINDOW_TOKENS`, `WORK_COMPACTION_*` | Remove; Memory evidence compaction settings stay |
+| `WEB_EXTRACT_MAX_RESULTS`, `WEB_SOURCE_MAX_RUNS_PER_CONVERSATION` | Remove; webpage text is read explicitly |
+| `VISION_MAX_RETRIES`, the `emoji_replacement` route | Remove |
+| `SNOWLUMA_NOVNC_*` | Remove; the QQ login screen is viewed in Yuki Desktop |
+| Proxies | Use the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`; see the [proxy notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/http-proxy.zh-CN.md) (Chinese) |
+| Speech transcription | Choose the `chat_completions` or `audio_transcriptions` protocol explicitly |
 
-Current source uses one user-owned `character/SOUL.md`, selected by `SOUL_FILE`. Explicitly choose the desired persona from the previous deployment, initialize the character name and remove retired prompt settings using the [SOUL upgrade procedure](operations/soul-deployment-20261022.md). The public template is only for explicit initialization; an empty SOUL remains empty. Runtime rules come from the program. Previously paid requests remain unchanged.
+## 7. Move the sandbox into Compose
 
-## 7. Model configuration and local Connector
+On 3.9.0 and 4.0 development deployments the sandbox Manager runs on the host (systemd, loop-mounted ext4). 4.0.0 runs it in Compose, and the move happens once. On the Docker host, as root:
 
-Follow the [offline model upgrade](upgrade-model-config-20261031.md): back up the bundle, private sidecar and consistent databases, stop Bot, run `yuki admin model migrate-legacy`, verify the exit status, saved revision and disabled modes, then retire consumed variables from their actual sources. Partial or unknown results require inspecting original files/row revisions before retrying. Restart Bot when auxiliary changes require it, preserving all business identities.
+```sh
+sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki
+```
 
-Clients require revision 9 and matching services, using Desktop's pinned OpenAPI. Upgrade Connector to 0.4.2/protocol4 while keeping device, instances, credentials and journal. Desktop-managed processes no longer register login autostart; tray operation remains connected and actual quit stops them. Adopt standalone installations explicitly. Tailscale/HTTPS and SSH are optional routes; client and Connector addresses are stored separately and changing a route does not require pairing again. See the [Connector](operations/local-agent-connector.zh-CN.md) and [Tailscale guide](operations/tailscale-connection.zh-CN.md).
+The script does the following. The first run only copies; it deletes nothing:
 
-## 8. Verify the upgraded deployment
+1. Confirms no execution is queued or running, stops the host `yuki-sandbox` service, and disables it and `yuki-environment-storage` at boot (the storage mounts stay until `--cleanup`).
+2. Stops `yuki-environment` and `docker commit`s its full rootFS as `yuki-environment:migrated-<time>`. That image is the starting point for the new environment; everything you installed is in it.
+3. Creates the Docker volumes, copies HOME, run records, the media cache and `jobs.sqlite3` into them, and makes the new Manager create the environment from that checkpoint image. If the old environment mounted a host `resolv.conf` (for gVisor), it is copied as it was to `.config/yuki/resolv.conf` in HOME and `YUKI_SANDBOX_RESOLV_CONF` is set.
+4. Renames the old container to `yuki-environment-retired` and removes the old Squid egress container, the internal bridge and the related firewall rules.
+5. Writes the old settings into the deployment's `.env`: the old browser mode becomes a profile (headed → `desktop`, headless → `headless`, otherwise `lite`), the old runtime becomes `YUKI_SANDBOX_RUNTIME`, and resources and extra packages become `YUKI_SANDBOX_*`. Values already in `.env` are not overwritten.
 
-Verify schema `0155`, original people/account periods, conversations, Work, cumulative budgets, protocols and delivery receipts, plus referenced media, configuration and plugin data/approvals. Separately check operator/Person-superuser access, ordinary personal permissions, original requests, configured platform connections, Manager connectivity as the real user, environment files, the shared read-only cache, sticker helpers and fixed tools. App/ACP/Connector retain original devices and sessions.
+The old loop images, `jobs.sqlite3` and media cache directory stay where they are until you run `--cleanup`.
 
-HTTP admission, Main ending, Work completion and platform delivery have separate receipts. After disconnection or lost acknowledgement, query the original operation/request/run; retain running/unknown rather than submitting another ID. Record real provider usage, cache and natural-chat behavior from their actual observations.
+Notes:
 
-See the [architecture index](architecture/README.md), [personal/ACP contract](architecture/client-api.md) and [complete merged-PR ledger](releases/v4.0.0-prs.md).
+- The host needs `python3` (host-Manager deployments already have it).
+- If you use gVisor but Docker's `runsc` lacks `--overlay2=none`, software installed in the environment is not in the Docker layer. The script refuses and asks you to export it with `runsc tar rootfs-upper` first; see the [Mac migration record](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/mac-arm64-migration-20261107.md) (Chinese).
+- The checkpoint image contains the old execd credential. Keep it private, never push it to a public registry, and do not delete it: the environment is recreated from it.
+
+Deployments without a host Manager skip this step. 4.0 keeps the media cache in the `yuki-media-cache` volume; the script copies the old `data/conversation-media-cache` there, and the old directory can be removed once confirmed.
+
+## 8. Start 4.0.0
+
+Run the installer in the deployment directory:
+
+```sh
+sh install.sh
+```
+
+Because `.env` exists, it skips the setup wizard. It sets `YUKI_VERSION` to `4.0.0`, asks for a profile if none is set, settles the runtime, creates any missing volumes, pulls the images, runs `docker compose up -d`, and waits until the Bot can reach the sandbox. The Bot migrates the database to `0156` when it starts. Without the installer: set `YUKI_VERSION=4.0.0` in `.env`, make sure `YUKI_SANDBOX_PROFILE` and `YUKI_SANDBOX_RUNTIME` are set, run `sh deploy/sandbox/prepare.sh`, then `docker compose up -d`.
+
+About the database migration:
+
+- `0119` to `0156` is one chain. `0124` is followed directly by `0126`, and `0145` by `0147`; do not invent the missing numbers. A database that already ran a 4.0 development build continues from its actual revision.
+- Do not skip migrations with `alembic stamp`, and do not reset conversations or task budgets for the upgrade.
+- `0153` moves existing vectors into Vec1 tables in the same database without new embedding calls.
+- People, conversations, tasks, cumulative budgets and delivery receipts are all kept.
+
+## 9. Migrate old model settings
+
+If 3.9.0 configured models in `.env` (`LLM_*` and friends) or through the management WebUI, move them into `webui-config/model_profiles.toml` with the one-time offline command. It makes no upstream calls and costs nothing, but must not run while the Bot is running:
+
+```sh
+docker compose stop bot
+docker compose run --rm --entrypoint yuki bot admin model migrate-legacy
+docker compose start bot
+```
+
+Check the exit code and the `ok`, `revision` and `consumed_env_fields` fields of the output. On success, remove the variables listed in `consumed_env_fields` from `.env`; the command reports names only and never edits your files. If the result is `partial` or uncertain, check the saved revision before retrying. Details: [model configuration migration](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/upgrade-model-config-20261031.md) (Chinese).
+
+## 10. Administrators, character name and plugins
+
+**Operator credential.** Management commands need an operator credential. An old deployment without an operator configuration can get one by running the setup wizard again in the deployment directory; it backs up the previous configuration:
+
+```sh
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/deploy" -w /deploy --entrypoint yuki \
+  ghcr.io/yuanyeyoutao/yuki:4.0.0 setup --deployment-root /deploy
+```
+
+**Grant superuser status.** Check each candidate from step 4 against the real person, then grant one at a time:
+
+```sh
+docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_TOKEN" yuki admin person list'
+docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_TOKEN" yuki admin person show <PersonID>'
+docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_TOKEN" yuki admin person superuser grant <PersonID> --revision <current revision>'
+```
+
+Someone without an account can be created first with `admin person create --display-name "Name"`. Transferring an account does not carry superuser status, unlinking does not revoke it, and ordinary pairing never grants it. Then pair Yuki Desktop with `admin client pair --person <PersonID>`; superusers can administer Yuki with their own Desktop credentials. See [Person authorization](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/person-admin-control-plane-upgrade.md) (Chinese). Old character-owner records are kept but no longer grant anything.
+
+**Character name (3.9.0 only).** Initialize it once while the database has no character profile; an existing character is never renamed this way:
+
+```sh
+docker compose run --rm --entrypoint yuki bot init-db --character-name "Yuki"
+```
+
+**Plugins.** With the ported plugins from step 2 in place, rediscover them with `yuki plugin list` and related commands (also with the operator credential), review the actual manifests and approve the permissions they need. Do not widen approvals to get around interface changes, and do not resend old notifications or paid model requests.
+
+**Management.** The management WebUI is gone. Use Yuki Desktop, the `yuki admin` CLI and `/ai admin <area> <action>` in chat; `/ai help` and `/ai admin help` list the ordinary and administrative actions.
+
+## 11. Clients, QQ and the connector
+
+- **Yuki Desktop:** use the release that matches 4.0.0 (personal client API revision 10). Remote access needs an HTTPS address for the service; see [Desktop deployment and remote access](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/desktop-local-deployment.zh-CN.md) or the [Tailscale guide](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/tailscale-connection.zh-CN.md) (Chinese).
+- **QQ login screen:** no longer published on port 6081. Open the computer window in a Yuki Desktop paired to an administrator and choose QQ login to view it and scan the code; the SnowLuma management page is still at `127.0.0.1:5099`. QQ login data directories are unchanged. See [SnowLuma](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/deployment/snowluma.md).
+- **Local connector:** a Desktop-managed connector updates with Desktop. A standalone install follows the [local connector guide](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/local-agent-connector.zh-CN.md) (Chinese) to 0.6.2, keeping its device, pairing and journal. The device protocol is still 4: older connectors still run commands and handle files, but not screen or browser actions.
+
+## 12. Verify
+
+```sh
+docker compose ps
+docker compose exec bot yuki setup verify
+docker compose exec -T --user 10001:10001 bot yuki setup environment-check
+```
+
+Then confirm, one by one:
+
+- The database is at `0156`, and the original people, account assignments, conversations, tasks and delivery records are there.
+- Sandbox: the terminal shows the old files and installed software, registered services run as configured, and the environment reaches the public internet.
+- Superuser and ordinary permissions behave as expected, and Desktop and paired devices connect.
+- The chat platforms you use send and receive, and plugins run under their new approvals.
+
+A health check only says the corresponding service is up; it does not prove that model calls, chat platforms or plugins work.
+
+## 13. Clean up
+
+Once everything checks out, remove what the host Manager left behind:
+
+```sh
+sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki --cleanup
+```
+
+This removes the `yuki-environment-retired` container, the host systemd units, the loop volumes and the sandbox root (`/var/lib/yuki-sandbox` or your configured path), `/opt/yuki-sandbox` and `/etc/yuki-sandbox`. It refuses to run until the new Manager has created its environment. Delete the old media cache directory (by default `data/conversation-media-cache`) yourself after confirming the `yuki-media-cache` volume works.
+
+You can also remove 3.9.0's `qq-ai-bot-network` network, the old `ghcr.io/yuanyeyoutao/yuki-qqbot` image and the downloaded `yuki-4.0.0-deploy.tar.gz`. Do not delete the `yuki-environment:migrated-<time>` checkpoint image or the `yuki-sandbox-*` and `yuki-media-cache` volumes; `docker compose down -v` does not remove them.
+
+## Reference
+
+- [Persistent environment](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/persistent-environment.md): profiles, resources, networking and migration details
+- [4.0.0 release notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0.en.md)
+- [Architecture index](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/architecture/README.md)

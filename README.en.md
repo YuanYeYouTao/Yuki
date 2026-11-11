@@ -1,4 +1,4 @@
-<!-- release-baseline: version=4.0.0 schema=0155 -->
+<!-- release-baseline: version=4.0.0 schema=0156 -->
 
 [中文](README.md) · English
 
@@ -11,8 +11,7 @@
 <p>A social AI agent with a lasting presence in real conversations</p>
 
 <p>
-  <a href="docs/releases/v4.0.0.en.md"><img src="https://img.shields.io/badge/Development-4.0.0-orange" alt="Yuki 4.0.0 development"></a>
-  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0"><img src="https://img.shields.io/badge/Stable-3.9.0-blue" alt="Yuki 3.9.0 stable"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0"><img src="https://img.shields.io/badge/Stable-4.0.0-blue" alt="Yuki 4.0.0 stable"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="AGPL-3.0-only License"></a>
@@ -22,22 +21,39 @@
 
 </div>
 
-Yuki is an open-source, self-hosted social AI agent. She joins conversations through QQ, Telegram, Feishu, Lark and personal clients, remembers people and shared experiences, and uses a persistent Linux environment to work with files, run programs, maintain projects and carry out scheduled tasks. Identity, memory and tasks live in your own database and can continue across changes of model, account or gateway.
+Yuki is an open-source, self-hosted AI agent. She takes part in conversations on QQ, Telegram, Feishu, Lark and personal clients, and remembers people, their preferences and what you have been through together. She also has a Linux computer of her own where she writes code, runs programs, uses a browser and does scheduled work. With your permission, she can use your own computer too.
 
-**The development baseline is 4.0.0; the stable download is [3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0).** Version 4.0 brings platforms and personal clients into one backend. Chat, SELF initiative, schedules, plugins and task resumption share Main. Profiles and memories belong to people, while each conversation entry keeps its own history.
+People, memories and tasks are stored in your own deployment. Switch models, accounts or chat platforms and Yuki is still the same Yuki.
 
-## What changes in 4.0
+<p align="center"><img src="img/showcase/send.gif" alt="Sending Yuki a message in Yuki Desktop, and her reply" width="735"></p>
 
-- **More ways to reach the same Yuki.** QQ, Telegram, Feishu, Lark, the personal API and ACP share identity, memory, tools and tasks. Feishu and Lark use a custom app's long connection for direct messages, groups and threads; see the [setup guide](docs/operations/feishu.zh-CN.md). Personal devices can pair, send attachments, receive events, inspect work and add instructions to an existing task. [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) is maintained separately. The old management WebUI is retired; administration uses the CLI and `/ai admin`.
-- **Connect coding agents on your own computer.** The independent [local connector](docs/operations/local-agent-connector.zh-CN.md) lets server-hosted Yuki inspect and supervise authorized Codex, Claude Code or ACP agents, returning progress and questions to the original task. Codex connects to the existing daemon; Claude uses official SDK sessions or explicit resume. See the [implementation record](docs/operations/local-agent-connector-implementation-20261023.md) for verified scope and remaining limitations.
-- **People and accounts are separate.** A person can own several accounts or none. Merging the same person, transferring an account, pausing it and unlinking it have distinct meanings. Renaming or reassigning an account preserves the original ownership of past messages, memories and tasks. Superuser status belongs to the person.
-- **A terminal for everyday work.** Files, projects and dependencies are handled directly in the persistent terminal, with interactive input, background execution, inspection and cancellation. Direct mode and optional Code Mode share tools and execution services.
-- **Tasks continue from their records.** Work retains goals, parent-child relationships, model requests, tool runs and delivery records. New messages can update ongoing work. Recovery reads the original execution, and Main Compact uses the current model to condense long conversations and task context.
-- **Media on demand and background sticker selection.** Incoming images, video, stickers and files first provide an index; the agent chooses what to inspect. A shared sticker directory holds files and search information. Text delivery and background image selection have their own execution records.
-- **Desktop model management and usage.** Providers, purposes and auxiliary connections share one configuration with private key storage. Usage queries recorded models and time windows. Shared profile, personality and model changes check current Person superusers, without a separate owner tier.
-- **Updated plugins and backend maintenance.** Plugin API moves to 9.0. The Kun game and GitHub monitor are maintained in separate repositories. Context preparation, person queries, diagnostics and SQLite hot queries receive a broad cleanup and fixes.
+<table>
+  <tr>
+    <td width="50%"><img src="img/showcase/work-detail.webp" alt="Work details beside the conversation"></td>
+    <td width="50%"><img src="img/showcase/works.webp" alt="Work in progress and finished"></td>
+  </tr>
+  <tr>
+    <td align="center">Open a piece of work beside the conversation and follow each step</td>
+    <td align="center">Work in progress and finished, including scheduled work and coding agents she supervises</td>
+  </tr>
+</table>
 
-The [release notes](docs/releases/v4.0.0.en.md) directly list all **101 merged PRs** after the formal 3.9.0 tag through the fixed cutoff `81f10229` (#558), with contributor attribution. The [detailed ledger](docs/releases/v4.0.0-prs.md) distinguishes implementation, documentation, tests and superseded changes. Version 4.0.0 remains unreleased.
+<p align="center">Desktop app: <a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 18-second tour</a></p>
+
+## What she can do
+
+| Capability | In practice |
+| --- | --- |
+| Long-term conversation and memory | Keep talking in groups and private chats and look up past events; ask her to remember, correct or forget something. One person's accounts on different platforms belong to one person |
+| Files and media | Read images, video, voice messages and documents and answer follow-up questions; send text, images, files and stickers |
+| Search and webpages | Use the model's built-in search or a separately configured search connection, and read webpages |
+| Her own computer | A persistent Linux environment: terminal, Python, Node.js, Git, package installs and background services. Depending on the install profile it also has a browser, or a desktop you can watch and take over |
+| Your computer | Through [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) and the local connector, once you switch it on: run commands, read and write files, take screenshots and operate windows, and use a dedicated Chrome. She can also drive Codex, Claude Code or another ACP agent on your computer |
+| Moving files | Copy files between chat attachments, her environment and your computer |
+| Long and scheduled tasks | Tasks continue after a restart; you can add instructions midway, check progress, split work into subtasks, and run work on a schedule or on events |
+| Plugins | Extend her through [Plugin API 9.0](docs/plugin-development/index.md) |
+
+Models can use the Chat Completions, Responses, Claude Messages or Gemini protocols. Chat, memory processing, vision, speech transcription and search can each use a different model.
 
 ## Work beyond conversation
 
@@ -50,87 +66,129 @@ We ran two complete benchmarks locally in external task containers, using Yuki's
 
 SWE Lite tests issue repairs in real repositories. Terminal-Bench covers compilation, system configuration, data processing and other terminal work. SWE accumulated 463 million input tokens, of which 452 million were cache hits: repeated context was heavily reused across task turns.
 
-The evaluation began on October 20, 2026 at fixed revision `313b6b9b`, before this 4.0.0 baseline. TB has complete accounting for 84 tasks and five marked unverified; the complete 84-task cache rate is **98.26%**. Six tasks have both a timeout and a passing verifier reward and remain in the original Harbor pass count. Settings, per-task results, tokens, timings and failure analysis are in the [report directory](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md).
+The evaluation began on October 20, 2026 at fixed revision `313b6b9b`, before the 4.0.0 release. TB has complete accounting for 84 tasks and five marked unverified; the complete 84-task cache rate is **98.26%**. Six tasks have both a timeout and a passing verifier reward and remain in the original Harbor pass count. Settings, per-task results, tokens, timings and failure analysis are in the [report directory](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md).
 
-## Everyday use
+## Install
 
-| Capability | What you can do |
+Pick one:
+
+| I want to… | How |
 | --- | --- |
-| Conversation and memory | Keep talking in groups or privately, look up past events, and ask Yuki to remember, correct or delete facts |
-| Files and media | Inspect images, video frames, voice transcriptions and documents, ask follow-up questions, save originals and deliver results |
-| Search and webpages | Use configured native model search, an independent search connection or an external provider, and read webpages |
-| Persistent workspace | Save projects, run Python, Node.js and Shell, install dependencies and start background work |
-| Tasks and automation | Check progress, add instructions, wait for events, schedule work and manage parent-child tasks |
-| Cross-platform communication | Find observed contacts, send text and files, mention accounts and read authorized history |
+| Use it on my own computer — the simplest way | Install Docker, then "在本機部署 Yuki" (Deploy Yuki locally) in [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) |
+| Run it on a server around the clock, with QQ, Feishu or Telegram | Run the installer on the server, then connect Yuki Desktop with the binding code it prints |
 
-Text, images, files and stickers use the single `send` tool. A workspace path is frozen internally for delivery, without a separate model publication call. Attachment saving and sticker collection copy directly to their final files without permanent intermediary snapshots. Recovery keeps the original delivery receipts and frozen bytes, including partial or unknown outcomes.
+Not comfortable with the command line? [Let an AI assistant install it](#let-an-ai-assistant-install-it).
 
-Supported model protocols include Chat Completions, Responses, Claude Messages and Gemini GenerateContent. Profiles select model connections, reasoning settings, search and task routes.
+### On your own computer
 
-The agent retrieves memory when needed. Extraction, SELF reflection and Dream can each use a different model. Long-term facts, short-term notes, conversation history and working files are stored separately. See [Memory scope](docs/architecture/memory-v2.md).
+1. Install Docker: on macOS [Docker Desktop](https://docs.docker.com/desktop/), [OrbStack](https://orbstack.dev/) or [Colima](https://github.com/abiosoft/colima); on Windows Docker Desktop (WSL 2); on Linux Docker Engine.
+2. Download and open [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) and choose "在本機部署 Yuki".
+3. Choose a data directory, enter Yuki's name, your name and a model service (or pick one from the presets), choose the size of Yuki's computer, and start.
 
-The persistent workspace is a separately deployed Linux environment with Bash, Python, Node.js, Git and build tools. Working files persist. Incoming media originals use a shared 24-hour cache and can be copied into the workspace or sticker directory for longer storage. See the [workspace guide](docs/operations/persistent-environment.md).
+When it finishes, Yuki Desktop connects by itself and you can start talking.
+
+### On a server
+
+The server needs Docker with the Compose plugin only (Linux containers, amd64 or arm64).
+
+```sh
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.sh
+sh install.sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The installer asks for Yuki's name, your name, the model connection (and whether to use QQ and so on) and the size of Yuki's computer. It starts everything, waits until the environment is ready, and ends with:
+
+```text
+Connect Yuki Desktop:
+  1. Open Yuki Desktop and choose "連接已有 Yuki".
+  2. Address: http://127.0.0.1:8080 on this computer. ...
+  3. Binding code: XXXXXXXX  (valid for 10 minutes; a new one: sh deploy/pair.sh)
+```
+
+In Yuki Desktop choose "連接已有 Yuki" (Connect an existing Yuki) and enter the address and code; you become this Yuki's administrator. The code is valid for 10 minutes; run `sh deploy/pair.sh` in the deployment directory for a new one.
+
+Yuki listens on the server's own `127.0.0.1:8080` only, never on the public internet. To reach a server from your computer, [Tailscale](docs/operations/tailscale-connection.zh-CN.md) is the easiest; with a domain you can also set up [HTTPS](docs/operations/desktop-local-deployment.zh-CN.md).
+
+### How big Yuki's computer is
+
+| Size | What it has | Memory, roughly |
+| --- | --- | --- |
+| `lite` | Terminal and files | 512 MiB |
+| `headless` | Plus a headless browser | 1 GiB |
+| `desktop` | Plus a desktop you can watch and take over | 3 GiB |
+
+The installer recommends a size from the machine's memory; you can choose another. To change it later, edit `YUKI_SANDBOX_PROFILE` in the deployment's `.env` and run `docker compose up -d`; a larger size installs what it needs into the existing environment and keeps all files. If Docker has gVisor (`runsc` with `--overlay2=none`) the environment uses it, otherwise the default `runc`.
+
+Unattended install (for scripts, or an AI assistant running it for you):
+
+```sh
+sh install.sh --yes --profile lite --owner-name "Your name" --answers model.json
+```
+
+`model.json` holds the model connection: `{"protocol": "chat_completions", "base_url": "...", "api_key": "...", "model": "..."}`, where `protocol` is `chat_completions`, `responses`, `anthropic_messages` or `gemini`. Delete the file afterwards.
+
+### Let an AI assistant install it
+
+Copy the [installation prompt](docs/install-with-ai.en.md) into an AI assistant that can use a terminal (such as Claude Code or Codex). It checks the machine, helps you install Docker, runs the installer and verifies the result. Type secrets into the terminal yourself; never paste them into the chat.
+
+### After installing
+
+- **Personality**: edit `character/SOUL.md` in the deployment directory.
+- **Chat platforms**: QQ uses [SnowLuma](docs/deployment/snowluma.md) — scan the login code in Yuki Desktop's computer window; for Telegram set `TELEGRAM_BOT_TOKEN` in `.env`; for Feishu and Lark see [the guide](docs/operations/feishu.zh-CN.md).
+- **Your own computer**: connect it in Yuki Desktop under "設定 → 這台電腦", see the [local connector](docs/operations/local-agent-connector.zh-CN.md).
+
+## Upgrade
+
+Run the same installer again in the installation directory. It replaces the release files, keeps `.env`, `data/`, `docker-compose.override.yml` and all data volumes, and the database migrates when the Bot starts. Back up first. Coming from 3.9.0 there is more to do: the database file name, the persona file, administrator status, plugins, and moving the sandbox Manager from the host into Compose. Follow the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) step by step.
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [Help](docs/help.md) | Chat commands, model setup and daily administration |
+| [4.0.0 release notes](docs/releases/v4.0.0.en.md) | Everything that changed in this release |
+| [Install with an AI assistant](docs/install-with-ai.en.md) | A prompt to paste into an AI assistant that can use a terminal |
+| [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) | Upgrading from 3.9.0 or a 4.0 development deployment |
+| [Persistent environment](docs/operations/persistent-environment.md) | Sandbox profiles, resources, networking and migration |
+| [Desktop computer and headed environment](docs/operations/desktop-computer.zh-CN.md) | Screenshots, clicks and the browser on Yuki's own computer (Chinese) |
+| [Local connector](docs/operations/local-agent-connector.zh-CN.md) | Connecting your computer, full access, screen and browser, native coding agents (Chinese) |
+| [Feishu and Lark setup](docs/operations/feishu.zh-CN.md) | Custom apps, permissions, long connections and media (Chinese) |
+| [SnowLuma (QQ)](docs/deployment/snowluma.md) | QQ gateway deployment and login |
+| [Plugin API 9.0](docs/plugin-development/index.md) | Plugin development and SDK |
+| [Architecture index](docs/architecture/README.md) | Entry point to the current architecture documents |
+| [CHANGELOG](CHANGELOG.md) | Earlier versions |
 
 ## Clients and ecosystem
 
 | Project | Purpose |
 | --- | --- |
-| [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) | Cross-platform desktop client project; its public repository currently provides an introduction and license |
-| [Personal API and ACP](docs/architecture/client-api.md) | Device pairing, messages, attachments, event streams, task access and external ACP clients |
+| [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) | Desktop client for Windows, macOS and Linux: chat, tasks, files, memory, computers, models and usage; it can also deploy Yuki locally. Released separately |
+| [Personal API and ACP](docs/architecture/client-api.md) | Device pairing, messages, attachments, event streams, task access and continuation, external ACP clients |
 | [Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation) | Optional semantic participation controller |
 | [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) | Standalone Kun game plugin |
 | [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) | Standalone GitHub repository monitor plugin |
 
-Character preferences live in one editable `character/SOUL.md`; the character name is maintained separately. An empty SOUL is valid, and runtime, tool and authorization rules remain in the program. Existing deployments must explicitly select their persona and initialize the name using the [SOUL upgrade procedure](docs/operations/soul-deployment-20261022.md).
+## Development
 
-## Install and upgrade
-
-For a packaged deployment, download the [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) and follow its [installation and upgrade guide](docs/upgrade-3.9.0.md). Its image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`, for Linux amd64 and arm64.
-
-To work on the 4.0 source, install Python 3.12, uv and a C compiler: GCC/Clang on Linux, Xcode Command Line Tools on macOS, or an MSVC developer terminal on Windows. Python's SQLite must support extension loading; the commands below use uv-managed Python. MinGW GCC can also be selected through `CC`. Vec1 is built with the package; published platform wheels and container images need no compiler at runtime.
+You need Python 3.12, [uv](https://docs.astral.sh/uv/) and a C compiler, because the SQLite vector extension is built with the package (GCC/Clang on Linux, Xcode Command Line Tools on macOS, an MSVC developer terminal on Windows). The release images need no compiler.
 
 ```bash
 git clone https://github.com/YuanYeYouTao/Yuki.git
 cd Yuki
 uv sync --all-extras --managed-python
-uv run yuki --help
-```
-
-The CLI is `yuki` and the server entry point is `yuki-bot`. See the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) for migration from 3.9. QQ uses SnowLuma; Feishu, Lark, Telegram or personal-client-only setups need no QQ account.
-
-The current unreleased 4.0.0 baseline has schema **0155**, Plugin API **9.0**, personal Client API revision **9**, and Connector **0.4.2 / protocol 4**. Tool declarations follow the current complete manifest. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
-
-Migration 0153 moves existing vectors into Vec1 tables in the same database without purchasing new embeddings. Stop old writers and back up both the main database and participation snapshots before upgrading with the new Vec1 build. See the [algorithm implementation record](docs/operations/algorithm-performance-implementation-20261026.md) for the migration procedure and local measurements.
-
-Migration 0155 separates original envelopes, ingress keys and genuine native references. Local messages and notifications publish atomically with their receipts and exact artifact versions. Stop old writers for the upgrade and adapt plugins to SDK 9 with their actual manifests reapproved. See the [upgrade guide](docs/upgrade-message-identity-20261028.md).
-
-## Architecture and development
-
-The B1–B6 development cleanup includes the paired connector `0.2.0` / WSS protocol `2`
-upgrade, corrected Memory Fake results, and retired CLI/Python surfaces. See the
-[compatibility notes](docs/upgrade-code-deletion-20261023.en.md). This is not a new formal
-release or a deployment receipt.
-
-Read the [development contract](docs/architecture/development-contract.md) and [architecture index](docs/architecture/README.md). Chat, background tasks and plugins reuse Main. Native platform protocols stay in adapters, while people, conversations and tasks use internal IDs.
-
-```bash
-uv sync --all-extras
 uv run ruff check .
 uv run mypy --platform linux src
-uv run pytest
+uv run pytest tests/unit -q -m "not native_worker"
 ```
 
-| Documentation | Contents |
-| --- | --- |
-| [Help](docs/help.md) | Chat commands, model setup and daily administration |
-| [4.0.0 release notes](docs/releases/v4.0.0.en.md) | Features, fixes, compatibility changes and the complete PR ledger |
-| [Benchmark report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md) | Full evaluations, usage, cache accounting and per-task data |
-| [Canonical runtime](docs/architecture/canonical-runtime.md) | People, accounts, spaces and conversations |
-| [Feishu and Lark setup](docs/operations/feishu.zh-CN.md) | Custom apps, message permissions, long connections and media |
-| [Conversation compact](docs/architecture/conversation-compact.md) | Long conversations and task context |
-| [Plugin API 9.0](docs/plugin-development/index.md) | Plugin development and SDK |
-| [Persistent subagents](docs/architecture/persistent-subagents.md) | Task trees, parent-child questions and recovery |
-| [CHANGELOG](CHANGELOG.md) | Earlier versions |
+The management CLI is `yuki` and the server entry point is `yuki-bot`. Before changing the architecture, runtime, tools or persistence, read the [development contract](docs/architecture/development-contract.md) and the [architecture index](docs/architecture/README.md).
 
 ## License
 

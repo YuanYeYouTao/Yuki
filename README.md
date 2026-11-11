@@ -1,4 +1,4 @@
-<!-- release-baseline: version=4.0.0 schema=0155 -->
+<!-- release-baseline: version=4.0.0 schema=0156 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -11,8 +11,7 @@
 <p>一个在真实对话中持续存在的社会化 AI Agent</p>
 
 <p>
-  <a href="docs/releases/v4.0.0.md"><img src="https://img.shields.io/badge/Development-4.0.0-orange" alt="Yuki 4.0.0 development"></a>
-  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0"><img src="https://img.shields.io/badge/Stable-3.9.0-blue" alt="Yuki 3.9.0 stable"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0"><img src="https://img.shields.io/badge/Stable-4.0.0-blue" alt="Yuki 4.0.0 stable"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="AGPL-3.0-only License"></a>
@@ -22,22 +21,39 @@
 
 </div>
 
-Yuki 是一个开源、自托管的社会化 AI Agent。她通过 QQ、Telegram、飞书、Lark 和个人客户端参与对话，记住人物、偏好和共同经历，也能在持久 Linux 环境里处理文件、运行程序、维护项目和执行定时任务。人物身份、记忆与任务由自己的数据库保存，更换模型、账号或网关后可以继续使用。
+Yuki 是一个开源、自托管的 AI Agent。她在 QQ、Telegram、飞书、Lark 和个人客户端里参与对话，记得人、偏好和一起经历过的事；她还有一台自己的 Linux 电脑，可以写代码、运行程序、用浏览器、按时做事。经你授权，她也能操作你自己的电脑。
 
-**当前开发基线为 4.0.0，正式下载版本为 [3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)。** 4.0 把多平台和个人客户端放进同一套后端：聊天、SELF 自主行动、定时任务、插件和长任务续跑使用共同 Main，人物资料和记忆跟着人走，各个聊天入口保留自己的对话。
+人物、记忆和任务都保存在你自己的部署里。换模型、换账号或换聊天平台，Yuki 还是同一个 Yuki。
 
-## 4.0 这一版
+<p align="center"><img src="img/showcase/send.gif" alt="在 Yuki Desktop 里给 Yuki 发消息，她回复" width="735"></p>
 
-- **从 QQ 走向多平台和个人客户端。** QQ、Telegram、飞书、Lark、App API 与 ACP 服务共用身份、记忆、工具和任务。飞书和 Lark 使用企业自建应用的长连接，支持单聊、群聊和话题，接入方式见[配置说明](docs/operations/feishu.zh-CN.md)。个人设备可以配对、发送附件、接收事件、查看任务，并向已有任务补充信息；桌面项目 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 单独维护。旧管理 WebUI 已退出，管理使用 CLI 和 `/ai admin`。
-- **连接自己电脑上的编码 Agent。** 独立[本机连接器](docs/operations/local-agent-connector.zh-CN.md)让服务器上的 Yuki 查询和监督本人授权的 Codex、Claude Code 或 ACP Agent，进度和问题交回原任务。Codex 接既有 daemon，Claude 使用官方 SDK 的新建或明确恢复；三种驱动的实测边界见[实施记录](docs/operations/local-agent-connector-implementation-20261023.md)。
-- **把人物和账号分开。** 同一个人可以关联多个账号，也可以没有平台账号。同人合并、账号转交、暂停和解绑分别处理；改昵称或换账号不会把旧消息、记忆和任务改归别人。超级管理员资格属于人物。
-- **让终端承担日常工作。** 普通文件、项目和依赖直接由持久终端操作，支持交互输入、后台执行、查询和取消。direct 与可选 Code Mode 使用同一套工具和执行后端。
-- **长任务继续沿原记录推进。** Work 保存目标、父子关系、模型请求、工具执行与交付记录。新消息可以补充当前工作；重启后查询原执行，接着处理已经发生的结果。Main Compact 整理长会话和执行上下文，沿用当前模型。
-- **媒体按需读取，表情独立配图。** 图片、视频、贴纸和文件先提供索引，Agent 再决定读哪些内容。共享表情目录保存文件与检索资料，文字发送和后台配图各有执行记录。
-- **在桌面管理模型与查看用量。** Provider、用途和辅助连接使用同一模型配置，密钥单独保存；用量按实际模型与时间窗口查询。共享资料、人格和模型修改统一核当前 Person 超管，不再有独立 owner 层。
-- **整理插件与后台链路。** Plugin API 升至 9.0，养鲲和 GitHub 监控迁至独立仓库。上下文准备、人物查询、诊断和 SQLite 热查询也做了集中清理与修复。
+<table>
+  <tr>
+    <td width="50%"><img src="img/showcase/work-detail.webp" alt="对话旁打开工作详情"></td>
+    <td width="50%"><img src="img/showcase/works.webp" alt="进行中和已完成的工作"></td>
+  </tr>
+  <tr>
+    <td align="center">对话旁打开工作详情，一步步看她做了什么</td>
+    <td align="center">进行中和已完成的工作，定时任务和她监督的编码 Agent 也在这里</td>
+  </tr>
+</table>
 
-[完整发布说明](docs/releases/v4.0.0.md)按功能介绍变化，正文列出正式 3.9.0 之后至固定截点 `81f10229`（#558）的全部 **101 个已合并 PR** 及贡献者；[详细目录](docs/releases/v4.0.0-prs.md)区分实际实现、文档、测试和被后续方案替代的变更。4.0.0 仍待正式发行。
+<p align="center">桌面端：<a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 18 秒演示视频</a></p>
+
+## 能做什么
+
+| 能力 | 具体是什么 |
+| --- | --- |
+| 长期聊天与记忆 | 在群聊和私聊里持续交流，查旧事；可以让她记住、纠正或删除某件事。同一个人的多个平台账号归到同一个人物 |
+| 文件与媒体 | 看图片、视频、语音和文档，接着追问；发送文字、图片、文件和表情 |
+| 搜索与网页 | 使用模型自带的搜索或单独配置的搜索连接，读取网页正文 |
+| 自己的电脑 | 一个常驻的 Linux 环境：终端、Python、Node.js、Git、装软件、跑后台服务；按安装档位附带浏览器，或一个你能观看、随时接管的桌面 |
+| 你的电脑 | 通过 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 和本机连接器，在你明确开启后运行命令、读写文件、截屏并操作窗口、使用一个专用 Chrome；也能调用你电脑上的 Codex、Claude Code 或其他 ACP Agent |
+| 文件往返 | 在聊天附件、她的环境和你的电脑之间复制文件 |
+| 长任务与定时任务 | 任务重启后接着做，可以中途插话、查进度、拆子任务、按时间或事件执行 |
+| 插件 | 通过 [Plugin API 9.0](docs/plugin-development/index.md) 扩展 |
+
+模型支持 Chat Completions、Responses、Claude Messages 和 Gemini 四种协议。聊天、记忆整理、视觉、语音转写和搜索可以分别选择模型。
 
 ## 聊天之外，做事的能力如何
 
@@ -50,88 +66,129 @@ Yuki 是一个开源、自托管的社会化 AI Agent。她通过 QQ、Telegram�
 
 SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系统配置、数据处理等终端任务。SWE 累计输入约 4.63 亿 token，其中约 4.52 亿命中缓存；多轮任务中的重复上下文得到了大量复用。
 
-评测于 2026-10-20 开始，固定源码为 `313b6b9b`，早于本次 4.0.0 基线。TB 的 84 题计量完整，5 题保留待核标记；只取完整 84 题，缓存命中率为 **98.26%**。6 题同时记录超时与验证通过，按原 Harbor reward 计入通过数。配置、逐题结果、token、耗时和失败分析都在[报告目录](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md)。
+评测于 2026-10-20 开始，固定源码为 `313b6b9b`，早于 4.0.0 正式版。TB 的 84 题计量完整，5 题保留待核标记；只取完整 84 题，缓存命中率为 **98.26%**。6 题同时记录超时与验证通过，按原 Harbor reward 计入通过数。配置、逐题结果、token、耗时和失败分析都在[报告目录](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md)。
 
-## 日常使用
+## 安装
 
-| 能力 | 可以怎样使用 |
+先选一种方式：
+
+| 我想… | 怎么装 |
 | --- | --- |
-| 长期聊天与记忆 | 在群聊和私聊里持续交流，查询旧事，明确要求记住、纠正或删除事实 |
-| 文件与多模态 | 阅读图片、视频帧、语音转写和文档，继续追问，保存原件或交付处理结果 |
-| 搜索与网页 | 按配置使用模型原生搜索、独立搜索连接或外部搜索服务，读取网页 |
-| 持久工作环境 | 保存项目，运行 Python、Node.js 和 Shell，安装依赖，启动后台工作 |
-| 任务与自动化 | 查看进度、补充要求、等待事件、安排定时任务，管理父子任务 |
-| 跨平台交流 | 查找已观察联系人、发送文字和文件、原生提及人物，读取获准历史 |
+| 在自己电脑上用，最简单 | 装 Docker，再用 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 的「在本機部署 Yuki」 |
+| 放在服务器上 24 小时在线，接 QQ、飞书或 Telegram | 在服务器上运行安装器，再用它给出的绑定码连接 Yuki Desktop |
 
-文字、图片、文件和表情统一使用 `send`。发文件直接传工作区路径，程序内部冻结交付版本，无需模型先发布；收藏和附件保存直接复制到最终文件，不留下永久中转副本。已发送、部分成功和未知结果仍认原回执，不因重试重新读取或重发。
+不熟悉命令行，也可以[让 AI 帮你装](#让-ai-帮你安装)。
 
-模型支持 Chat Completions、Responses、Claude Messages 和 Gemini GenerateContent。模型连接、思考档位、搜索与任务路由都通过 Profile 配置。
+### 方式一：在自己电脑上
 
-记忆由 Agent 按需检索；提取、SELF 自省和 Dream 整理可分别选择模型。长期事实、短期记录、聊天历史和工作文件各自保存。记忆的可见范围见 [Memory 文档](docs/architecture/memory-v2.md)。
+1. 安装 Docker：macOS 用 [Docker Desktop](https://docs.docker.com/desktop/)、[OrbStack](https://orbstack.dev/) 或 [Colima](https://github.com/abiosoft/colima)；Windows 用 Docker Desktop（WSL 2）；Linux 用 Docker Engine。
+2. 下载并打开 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop)，选「在本機部署 Yuki」。
+3. 选一个存放数据的目录，填 Yuki 的名字、你的名字和模型服务（可从「服務預設」里选），再选「Yuki 的電腦」的大小，点「開始部署」。
 
-持久工作环境是单独部署的 Linux 环境，提供 Bash、Python、Node.js、Git 和编译工具。普通工作文件长期保存；入站媒体原件使用共享的 24 小时缓存，需要保留的内容可复制到工作区或表情目录。部署与交互终端见[持久环境说明](docs/operations/persistent-environment.zh-CN.md)。
+部署完成后桌面端会自动连上，直接开始对话。
+
+### 方式二：在服务器上
+
+服务器只需要 Docker 和 Compose 插件（Linux 容器，amd64 或 arm64）。
+
+```sh
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.sh
+sh install.sh
+```
+
+Windows 用 PowerShell：
+
+```powershell
+Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+安装器会依次问你：Yuki 的名字、你的名字、模型连接（以及是否接 QQ 等）、Yuki 的电脑要多大。然后它启动全部服务，等环境就绪，最后显示：
+
+```text
+Connect Yuki Desktop:
+  1. Open Yuki Desktop and choose "連接已有 Yuki".
+  2. Address: http://127.0.0.1:8080 on this computer. ...
+  3. Binding code: XXXXXXXX  (valid for 10 minutes; a new one: sh deploy/pair.sh)
+```
+
+在 Yuki Desktop 选「連接已有 Yuki」，填入地址和绑定码，你就成为这个 Yuki 的管理员。绑定码 10 分钟内有效，过期了在部署目录运行 `sh deploy/pair.sh` 再取一个。
+
+Yuki 只在服务器本机的 `127.0.0.1:8080` 上监听，不暴露到公网。从自己的电脑连接服务器，推荐用 [Tailscale](docs/operations/tailscale-connection.zh-CN.md)；有域名也可以配 [HTTPS](docs/operations/desktop-local-deployment.zh-CN.md)。
+
+### Yuki 的电脑选多大
+
+| 大小 | 内容 | 内存约 |
+| --- | --- | --- |
+| `lite` | 终端和文件 | 512 MiB |
+| `headless` | 再加一个无头浏览器 | 1 GiB |
+| `desktop` | 再加一个可观看、可接管的桌面 | 3 GiB |
+
+安装器按机器内存给出推荐，你可以改选。之后要换，改部署目录 `.env` 里的 `YUKI_SANDBOX_PROFILE`，再执行 `docker compose up -d`；换大会在原环境里补装软件，已有文件都保留。Docker 已注册 gVisor（`runsc`，带 `--overlay2=none`）时用它隔离，否则用默认的 `runc`。
+
+无人值守安装（适合脚本或 AI 代为执行）：
+
+```sh
+sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.json
+```
+
+`model.json` 写模型连接：`{"protocol": "chat_completions", "base_url": "...", "api_key": "...", "model": "..."}`，`protocol` 取 `chat_completions`、`responses`、`anthropic_messages` 或 `gemini`。装完删除这个文件。
+
+### 让 AI 帮你安装
+
+把[安装提示词](docs/install-with-ai.md)整段复制给能操作终端的 AI 助手（如 Claude Code、Codex），它会检查环境、带你装 Docker、运行安装器并核对结果。密钥由你自己在终端里输入，不要贴进对话。
+
+### 装好之后
+
+- **人格**：编辑部署目录里的 `character/SOUL.md`。
+- **聊天平台**：QQ 使用 [SnowLuma](docs/deployment/snowluma.md)，在 Desktop 的电脑窗口扫码登录；Telegram 在 `.env` 填 `TELEGRAM_BOT_TOKEN`；飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)。
+- **连接你自己的电脑**：在 Yuki Desktop 的「設定 → 這台電腦」里连接，见[本机连接器](docs/operations/local-agent-connector.zh-CN.md)。
+
+## 升级
+
+在原安装目录重新运行同一个安装器即可升级：它替换发布文件，保留 `.env`、`data/`、`docker-compose.override.yml` 和全部数据卷，数据库在启动时自动迁移。升级前请备份。从 3.9.0 升级还要处理数据库文件名、人格文件、管理员资格、插件，以及把宿主机上的沙箱 Manager 迁进 Compose，请按 [4.0 升级指南](docs/upgrade-4.0.0.md)逐步操作。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [使用帮助](docs/help.md) | 聊天命令、模型配置和日常管理 |
+| [4.0.0 更新说明](docs/releases/v4.0.0.md) | 这一版的全部变化 |
+| [让 AI 帮你安装](docs/install-with-ai.md) | 复制给能操作终端的 AI 助手的安装提示词 |
+| [4.0 升级指南](docs/upgrade-4.0.0.md) | 从 3.9.0 或 4.0 开发版升级 |
+| [持久工作环境](docs/operations/persistent-environment.zh-CN.md) | 沙箱档位、资源、网络和迁移 |
+| [桌面电脑与有头环境](docs/operations/desktop-computer.zh-CN.md) | Yuki 自己电脑上的截屏、点击和浏览器 |
+| [本机连接器](docs/operations/local-agent-connector.zh-CN.md) | 连接你的电脑、完整访问、屏幕与浏览器、原生编码 Agent |
+| [飞书与 Lark 接入](docs/operations/feishu.zh-CN.md) | 自建应用、权限、长连接和媒体 |
+| [SnowLuma（QQ）](docs/deployment/snowluma.md) | QQ 网关部署与登录 |
+| [Plugin API 9.0](docs/plugin-development/index.md) | 插件开发与 SDK |
+| [架构索引](docs/architecture/README.md) | 现行架构文档入口 |
+| [CHANGELOG](CHANGELOG.md) | 历史版本变化 |
 
 ## 客户端与生态
 
 | 项目 | 用途 |
 | --- | --- |
-| [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) | 跨平台桌面客户端项目；当前公开仓库提供简介与许可证 |
+| [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) | Windows、macOS、Linux 桌面客户端：聊天、任务、文件、记忆、电脑、模型与用量；也能在本机部署 Yuki。单独发版 |
 | [个人 API 与 ACP](docs/architecture/client-api.md) | 设备配对、消息、附件、事件流、任务查询与接续，外部 ACP 客户端接入 |
 | [Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation) | 可选的语义参与控制器 |
 | [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) | 独立养鲲游戏插件 |
 | [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) | 独立 GitHub 仓库监控插件 |
 
-远程 Desktop 和本机 Agent 连接器可通过可选的 [Tailscale 私有接入](docs/operations/tailscale-connection.zh-CN.md)访问原 Yuki。指南说明两端安装、服务器 Serve、原设备独立改址，并提供[可复制给 AI 的配置说明](docs/operations/tailscale-connection.zh-CN.md#请-ai-协助配置)。源码实现、安装产物、正式 Release 与实际网络验收分别记录。
+## 参与开发
 
-角色设定使用一份可自由编辑的 `character/SOUL.md`，角色名称在资料中独立修改。空人格也可运行；工具、权限和任务规则由程序维护。升级现有部署请先按[单 SOUL 升级说明](docs/operations/soul-deployment-20261022.md)显式整理原件并初始化角色名称。
-
-## 安装与升级
-
-新安装使用 [Yuki 单文件 Docker 部署指南](docs/operations/single-file-deployment.zh-CN.md)：从当前模板配置，以 `ghcr.io/yuanyeyoutao/yuki` 的明确镜像版本启动。默认项目为 `yuki`，数据库为 `data/yuki.db`。4.0 仍是开发基线，尚无正式 4.0 部署包；源码部署使用已构建的 `desktop-<完整提交>` 镜像，已发布版本的原始安装资料保留在各自 Release 中。
-
-开发 4.0 源码需要 Python 3.12、uv 和 C 编译器。Python 的 SQLite 须支持扩展加载，以下使用 uv 管理的 Python。Linux 使用 GCC/Clang，macOS 使用 Xcode Command Line Tools，Windows 在 MSVC 开发者终端执行，或用 `CC` 指定 MinGW GCC。Vec1 随包构建；安装已发布的平台 wheel 或使用镜像时无需编译器。
+需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 C 编译器（随包构建 SQLite 向量扩展；Linux 用 GCC/Clang，macOS 用 Xcode Command Line Tools，Windows 用 MSVC 开发者终端）。使用发布镜像时不需要编译器。
 
 ```bash
 git clone https://github.com/YuanYeYouTao/Yuki.git
 cd Yuki
 uv sync --all-extras --managed-python
-uv run yuki --help
-```
-
-当前命令统一为 `yuki`，服务入口为 `yuki-bot`。从 3.9 迁移的步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。QQ 使用 SnowLuma；仅使用飞书、Lark、Telegram 或个人客户端时，无需配置 QQ 账号。
-
-后续开发的 B1–B6 代码清理包含连接器 `0.2.0` / WSS 协议 `2` 配套升级、Memory Fake 结果修正及旧 CLI/Python 表面撤销，见[兼容与升级说明](docs/upgrade-code-deletion-20261023.md)。这不代表新的正式 Release 或已部署状态。
-
-当前 4.0.0 待发布基线为 schema **0155**、Plugin API **9.0**、个人 Client API revision **9**，本机连接器 **0.4.2 / 协议 4**；工具声明以当前完整 manifest 为准。聊天历史支持平台/群私聊组合筛选、可分页的原入口/话题发现，显式查询可读取重开上下文前的记录。
-
-旧库的正文索引转换需要停业务写入，完成升级后再启动 Bot；本次0148仅增加来源定位索引，不重建全文。升级前备份数据库、配置、插件和工作文件，详见[现行历史读取合同](docs/architecture/chat-history.md)、[原实施记录](docs/operations/chat-history-448-implementation-20261022.md)与[来源及执行优化任务书](docs/architecture/Yuki-聊天来源发现与检索执行删减优化任务书-2026-10-22.md)。
-
-0153 将已有向量原样移入同库 Vec1 表，不重新调用 Embedding API。升级前停止旧 writer 并备份主库与参与快照文件，使用带 Vec1 的新构建完成迁移后再启动；步骤及本地性能对照见[算法优化实施记录](docs/operations/algorithm-performance-implementation-20261026.md)。
-
-0155 分开原信封、原接入键和真实原生消息引用；本地消息与通知在原事务中发表，媒体保留精确 artifact/version。升级需停止旧 writer，插件同步适配 SDK9 并按真实 manifest 重新批准。步骤见[消息身份升级](docs/upgrade-message-identity-20261028.md)。
-
-## 架构与开发
-
-开发前阅读[共同架构约束](docs/architecture/development-contract.md)和[架构索引](docs/architecture/README.md)。普通聊天、后台任务与插件复用同一主 Agent；原生平台协议留在适配器中，人物、会话和任务沿内部 ID 关联。
-
-```bash
-uv sync --all-extras
 uv run ruff check .
 uv run mypy --platform linux src
-uv run pytest
+uv run pytest tests/unit -q -m "not native_worker"
 ```
 
-| 文档 | 内容 |
-| --- | --- |
-| [使用帮助](docs/help.md) | 聊天命令、模型配置和日常管理 |
-| [4.0.0 发布说明](docs/releases/v4.0.0.md) | 主要功能、修复、兼容性变化和完整 PR 清单 |
-| [Benchmark 报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md) | 两套全量评测、用量、缓存与逐题数据 |
-| [Canonical runtime](docs/architecture/canonical-runtime.md) | 人物、账号、空间和会话 |
-| [飞书与 Lark 接入](docs/operations/feishu.zh-CN.md) | 自建应用、群消息权限、长连接和媒体 |
-| [会话 Compact](docs/architecture/conversation-compact.md) | 长会话和执行上下文整理 |
-| [Plugin API 9.0](docs/plugin-development/index.md) | 插件开发与 SDK |
-| [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答和恢复 |
-| [CHANGELOG](CHANGELOG.md) | 历史版本变化 |
+管理命令是 `yuki`，服务入口是 `yuki-bot`。改动架构、运行时、工具或持久化之前，先读[共同架构约束](docs/architecture/development-contract.md)和[架构索引](docs/architecture/README.md)。
 
 ## License
 
