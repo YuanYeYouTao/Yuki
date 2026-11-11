@@ -159,7 +159,7 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki
 
 1. 确认没有排队或运行中的执行，停止宿主的 `yuki-sandbox` 服务，并让它和 `yuki-environment-storage` 不再开机启动（存储挂载保留到 `--cleanup`）。
 2. 停止 `yuki-environment`，把它的完整 rootFS `docker commit` 为 `yuki-environment:migrated-<时间>`。这个镜像就是新环境的起点，你装过的软件都在里面。
-3. 创建 Docker 卷，把 HOME、运行记录、媒体缓存和 `jobs.sqlite3` 复制进去，并让新 Manager 从上面的检查点镜像创建环境。原环境若挂了宿主的 `resolv.conf`（gVisor 用），复制为 HOME 里的 `.config/resolv.conf` 并写入 `YUKI_SANDBOX_RESOLV_CONF`。
+3. 创建 Docker 卷，把 HOME、运行记录、媒体缓存和 `jobs.sqlite3` 复制进去，并让新 Manager 从上面的检查点镜像创建环境。原环境若挂了宿主的 `resolv.conf`（gVisor 用），原样复制为 HOME 里的 `.config/yuki/resolv.conf` 并写入 `YUKI_SANDBOX_RESOLV_CONF`。
 4. 把旧容器改名为 `yuki-environment-retired`，删除旧的 Squid 出口容器、内网 bridge 和相关防火墙规则。
 5. 把旧设置写进部署的 `.env`：原来的浏览器模式换算成档位（有头 → `desktop`，无头 → `headless`，否则 `lite`），原运行时写入 `YUKI_SANDBOX_RUNTIME`，内存、CPU 等资源和额外软件包写成 `YUKI_SANDBOX_*`。`.env` 里已有的值不覆盖。
 
