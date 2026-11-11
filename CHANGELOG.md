@@ -1,32 +1,28 @@
 # 更新日志
 
-## 4.0.0 — 开发基线 / Development baseline
+## 4.0.0
 
-从正式 `v3.9.0` 到产品截点 `d7d14bc7`（PR #487）的 **37 个已合并 PR**，按功能整理在 [4.0.0 发布说明](docs/releases/v4.0.0.md)（[English](docs/releases/v4.0.0.en.md)）；[完整 PR 台账](docs/releases/v4.0.0-prs.md)保留每项贡献者和合并提交。迁移步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。
+从 `v3.9.0` 到 #607 的 **144 个已合并 PR**，按功能整理在 [4.0.0 发布说明](docs/releases/v4.0.0.md)（[English](docs/releases/v4.0.0.en.md)），逐项见 [PR 目录](docs/releases/v4.0.0-prs.md)。[下载 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) · [升级指南](docs/upgrade-4.0.0.md)。
 
-- QQ、Telegram、个人客户端与 ACP 共用后端。设备配对、附件、事件流和原 Work 接续进入个人 API；[Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 在组织仓库独立维护。旧管理 WebUI 退役，管理入口转向 CLI 与 `/ai admin`。
-- 人物、平台账号和归属阶段分开；新增同人合并与账号转移，人物主名、账号昵称、群名片各认自己的来源。管理员资格属于 Person，旧消息、工作与发送记录保留当时归属。
-- 普通文件与包操作收拢到持久终端，保留交互输入、后台任务和原执行查询。Work 输入接纳、任务收尾、子 Agent、Main Compact 与协议恢复继续沿共同执行链处理。
-- 入站媒体按索引读取；共享表情目录替代旧分类采用链，文字与后台配图分别发送和记录。搜索与网页读取解耦，补齐标准代理配置。
-- 清理上下文准备、人物与提及查询、可丢诊断和 SQLite 热查询，修复回执恢复、平台身份和当前会话处理中的问题。
-- Plugin API 升至 **7.0**，主工具 manifest 为 **25**，数据库 head 为 **0143**。Python 包统一为 `yuki`，命令为 `yuki` / `yuki-bot`；养鲲与 GitHub 监控迁至独立插件仓库。随包示例和订阅监控同步当前版本声明及 API。
-- 公布两套本地全量 benchmark：SWE-bench Lite **216/300，72.00%**；Terminal-Bench 2.0 **66/89，74.16%**。SWE 输入缓存命中率 **97.47%**；TB 已记录用量为 **98.32%**，完整 84 题为 **98.26%**。固定评测源码为 `313b6b9b`，详情和逐题结果见[报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md)。
-
-本次准备更新源码、文档和报告；正式下载仍为 3.9.0，未发布 4.0 镜像。
+- 一条命令安装和升级：`install.sh` / `install.ps1` 只需要 Docker 和 Compose。沙箱 Manager 进入 Compose，提供 `lite`、`headless`、`desktop` 三个档位；宿主机 systemd、loop 盘和 Squid 退出，旧部署用 `migrate-host-manager.sh` 迁移一次。
+- Yuki 自己的电脑新增 `computer` 和 `browser` 工具：截屏、点击、输入和浏览器操作，`desktop` 档可在 Yuki Desktop 里观看和接管。
+- 你的电脑：经本机连接器 0.6.2 和完整访问开关，在 macOS 14+ 与 Windows 上运行命令、读写文件、截屏操作（可后台操作单个窗口）、使用专用 Chrome，调用本机 Codex、Claude Code 或 ACP Agent。`copy_file` 在聊天附件、Yuki 环境和你的电脑之间复制文件。
+- QQ、Telegram、飞书、Lark、个人客户端和 ACP 共用人物、记忆、工具和任务；人物与账号分开，超级管理员资格属于人物。[Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 单独发版，管理 WebUI 退出。
+- 私聊中使用工具的请求成为持久任务，插话并入原任务；每段请求和工具调用上限取消。工具精简为固定的一小组，结果直接给业务数据。
+- 模型配置统一到一份 Profile，支持连接测试与按实际模型的用量查询；人格只来自 `character/SOUL.md`。
+- 包和命令改名为 `yuki` / `yuki-bot`，镜像为 `ghcr.io/yuanyeyoutao/yuki`。数据库 head **0156**、Plugin API **9.0**、个人客户端 API revision **10**。
 
 ### English
 
-This baseline covers **37 merged PRs** from the formal `v3.9.0` tag through `d7d14bc7` (PR #487). The [release notes](docs/releases/v4.0.0.en.md) explain the features and fixes; the [PR ledger](docs/releases/v4.0.0-prs.md) lists contributors and merge commits.
+**144 merged PRs** from `v3.9.0` through #607. See the [release notes](docs/releases/v4.0.0.en.md) and the [PR ledger](docs/releases/v4.0.0-prs.md); [download 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) and follow the [upgrade guide](docs/upgrade-4.0.0.en.md).
 
-- QQ, Telegram, personal clients and ACP share the backend. Personal devices can pair, send attachments, receive events and continue existing Work. [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) is maintained separately. Administration moves from the retired WebUI to the CLI and `/ai admin`.
-- People, accounts and ownership periods are separate, with explicit person merges and account transfers. Names, nicknames and group cards keep their own sources. Superuser status belongs to Person, while historical messages, work and deliveries retain their original ownership.
-- Persistent terminals handle everyday files, projects and dependencies. Interactive input, background execution, Work input, settlement, subagents and Main Compact use the shared execution path and original records.
-- Incoming media is read on demand. A shared sticker directory replaces the old classification/adoption pipeline; text and background sticker delivery have separate receipts. Search and webpage reading are separated, with standard proxy support.
-- Context preparation, person and mention queries, optional diagnostics and SQLite hot queries receive cleanup and fixes, alongside receipt recovery and platform identity handling.
-- Compatibility moves to **Plugin API 7.0**, main manifest **25** and database head **0143**. The package is `yuki`; commands are `yuki` and `yuki-bot`. The Kun game and GitHub monitor live in separate repositories. Bundled examples and subscription monitoring use current version and API declarations.
-- Local full evaluations report **72.00%** on SWE-bench Lite and **74.16%** on Terminal-Bench 2.0. SWE input cache hits are **97.47%**; TB observed usage is **98.32%**, or **98.26%** across its 84 fully accounted tasks. Evaluation revision: `313b6b9b`. See the [report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md).
-
-This preparation updates source, documentation and reports. The stable download remains 3.9.0; no 4.0 image is published.
+- One-command install and upgrade: `install.sh` / `install.ps1` need only Docker and Compose. The sandbox Manager moves into Compose with `lite`, `headless` and `desktop` profiles; the host systemd units, loop disks and Squid are gone, and existing deployments migrate once with `migrate-host-manager.sh`.
+- Yuki's own computer gains `computer` and `browser` tools for screenshots, clicks, typing and browser actions; with the `desktop` profile you can watch and take over in Yuki Desktop.
+- Your computer: through local connector 0.6.2 and its full-access switch, Yuki runs commands, handles files, operates the screen (including one window in the background) and a dedicated Chrome on macOS 14+ and Windows, and drives local Codex, Claude Code or ACP agents. `copy_file` moves files between chat attachments, Yuki's environment and your computer.
+- QQ, Telegram, Feishu, Lark, personal clients and ACP share people, memory, tools and tasks; people and accounts are separate, and superuser status belongs to the person. [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) is released separately; the management WebUI is gone.
+- Tool use in a private chat becomes a durable task that absorbs follow-up messages; per-segment request and tool-call limits are gone. The tools are a smaller fixed set returning plain business data.
+- Model settings live in one profile bundle with connection tests and usage by recorded model; the persona comes only from `character/SOUL.md`.
+- The package and commands are `yuki` / `yuki-bot`, and the image is `ghcr.io/yuanyeyoutao/yuki`. Database head **0156**, Plugin API **9.0**, personal client API revision **10**.
 
 ## 3.9.0 - 2026-10-15
 
