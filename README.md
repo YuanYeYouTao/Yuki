@@ -1,4 +1,4 @@
-<!-- release-baseline: version=4.0.0 schema=0156 -->
+<!-- release-baseline: version=4.0.1 schema=0156 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -11,13 +11,13 @@
 <p>一个在真实对话中持续存在的社会化 AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0"><img src="https://img.shields.io/badge/Stable-4.0.0-blue" alt="Yuki 4.0.0 stable"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.1"><img src="https://img.shields.io/badge/Stable-4.0.1-blue" alt="Yuki 4.0.1 stable"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="AGPL-3.0-only License"></a>
 </p>
 
-[4.0.0 更新说明](docs/releases/v4.0.0.md) · [升级到 4.0](docs/upgrade-4.0.0.md) · [Benchmark 报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md) · [桌面客户端](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) · [使用帮助](docs/help.md)
+[4.0.0 更新说明](docs/releases/v4.0.0.md) · [升级到 4.0](docs/upgrade-4.0.1.md) · [Benchmark 报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md) · [桌面客户端](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) · [使用帮助](docs/help.md)
 
 </div>
 
@@ -92,14 +92,14 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 服务器只需要 Docker 和 Compose 插件（Linux 容器，amd64 或 arm64）。
 
 ```sh
-curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.sh
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/install.sh
 sh install.sh
 ```
 
 Windows 用 PowerShell：
 
 ```powershell
-Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -146,7 +146,7 @@ sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.j
 
 ## 升级
 
-在原安装目录重新运行同一个安装器即可升级：它替换发布文件，保留 `.env`、`data/`、`docker-compose.override.yml` 和全部数据卷，数据库在启动时自动迁移。升级前请备份。从 3.9.0 升级还要处理数据库文件名、人格文件、管理员资格、插件，以及把宿主机上的沙箱 Manager 迁进 Compose，请按 [4.0 升级指南](docs/upgrade-4.0.0.md)逐步操作。
+在原安装目录重新运行同一个安装器即可升级：它替换发布文件，保留 `.env`、`data/`、`docker-compose.override.yml` 和全部数据卷，数据库在启动时自动迁移。升级前请备份。从 3.9.0 升级还要处理数据库文件名、人格文件、管理员资格、插件，以及把宿主机上的沙箱 Manager 迁进 Compose，请按 [4.0 升级指南](docs/upgrade-4.0.1.md)逐步操作。
 
 ## 文档
 
@@ -155,7 +155,7 @@ sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.j
 | [使用帮助](docs/help.md) | 聊天命令、模型配置和日常管理 |
 | [4.0.0 更新说明](docs/releases/v4.0.0.md) | 这一版的全部变化 |
 | [让 AI 帮你安装](docs/install-with-ai.md) | 复制给能操作终端的 AI 助手的安装提示词 |
-| [4.0 升级指南](docs/upgrade-4.0.0.md) | 从 3.9.0 或 4.0 开发版升级 |
+| [4.0 升级指南](docs/upgrade-4.0.1.md) | 从 3.9.0 或 4.0 开发版升级 |
 | [持久工作环境](docs/operations/persistent-environment.zh-CN.md) | 沙箱档位、资源、网络和迁移 |
 | [桌面电脑与有头环境](docs/operations/desktop-computer.zh-CN.md) | Yuki 自己电脑上的截屏、点击和浏览器 |
 | [本机连接器](docs/operations/local-agent-connector.zh-CN.md) | 连接你的电脑、完整访问、屏幕与浏览器、原生编码 Agent |

@@ -1,5 +1,11 @@
 # 更新日志
 
+## 4.0.1
+
+4.0 的第一个正式发行，内容同 4.0.0；修正发布自检在全新部署里未生成 `character/SOUL.md` 的问题（`v4.0.0` 的发布流程因此中止，没有发布 Release）。见 [4.0.1 发布说明](docs/releases/v4.0.1.md)。
+
+The first published 4.0 release, with the same content as 4.0.0; the release self-check now creates `character/SOUL.md` in a fresh deployment (the `v4.0.0` release stopped there and was never published). See the [4.0.1 notes](docs/releases/v4.0.1.md).
+
 ## 4.0.0
 
 从 `v3.9.0` 到 #610 的 **146 个已合并 PR**，按功能整理在 [4.0.0 发布说明](docs/releases/v4.0.0.md)（[English](docs/releases/v4.0.0.en.md)），逐项见 [PR 目录](docs/releases/v4.0.0-prs.md)。[下载 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) · [升级指南](docs/upgrade-4.0.0.md)。

@@ -1,10 +1,10 @@
-# Yuki 4.0.0 upgrade guide
+# Yuki 4.0.1 upgrade guide
 
 <!-- release-baseline: version=4.0.0 schema=0156 -->
 
-[中文](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/upgrade-4.0.0.md) · [4.0.0 release notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0.en.md) · [Every merged PR](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0-prs.md)
+[中文](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/upgrade-4.0.1.md) · [4.0.0 release notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/releases/v4.0.0.en.md) · [Every merged PR](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/releases/v4.0.0-prs.md)
 
-This guide covers two kinds of deployment: the stable **3.9.0** release, and deployments that ran 4.0 development images after 3.9.0. For a new install you do not need it; use the installer described in the [README](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/README.en.md#install).
+This guide covers two kinds of deployment: the stable **3.9.0** release, and deployments that ran 4.0 development images after 3.9.0. For a new install you do not need it; use the installer described in the [README](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/README.en.md#install).
 
 Work through the steps in order. Steps marked "3.9.0 only" have usually been done already on a 4.0 development deployment; check and move on.
 
@@ -49,16 +49,16 @@ Both can be done before the downtime.
 
 | API version | What to change |
 | --- | --- |
-| [4.0 identity](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-4.0-migration.md) | People, memory, message and configuration targets use internal Person, Space and Conversation IDs instead of QQ numbers |
-| [5.0 stickers](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-5.0-migration.md) | Remove `ctx.emoji` and its permissions, features and hooks; media goes through the current artifact and message interfaces |
-| [6.0 mentions](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-6.0-migration.md) | Use `CurrentMessage.mentions` and `message.current.mentions.v2` |
-| [7.0 standalone sessions](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-7.0-migration.md) | Use `plugin.agent_session.v2` and drop the retired creation parameters and return fields |
-| [8.0 automation](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-8.0-migration.md) | Define automation with the current TaskSpec and the original request identity |
-| [9.0 message identity](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/plugin-development/api-9.0-migration.md) | `native_message_id` may be null; tasks, replies and history follow `event_id` |
+| [4.0 identity](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-4.0-migration.md) | People, memory, message and configuration targets use internal Person, Space and Conversation IDs instead of QQ numbers |
+| [5.0 stickers](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-5.0-migration.md) | Remove `ctx.emoji` and its permissions, features and hooks; media goes through the current artifact and message interfaces |
+| [6.0 mentions](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-6.0-migration.md) | Use `CurrentMessage.mentions` and `message.current.mentions.v2` |
+| [7.0 standalone sessions](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-7.0-migration.md) | Use `plugin.agent_session.v2` and drop the retired creation parameters and return fields |
+| [8.0 automation](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-8.0-migration.md) | Define automation with the current TaskSpec and the original request identity |
+| [9.0 message identity](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/plugin-development/api-9.0-migration.md) | `native_message_id` may be null; tasks, replies and history follow `event_id` |
 
 Explicit `max_model_requests` / `max_tool_calls` passed to `ctx.agent.run()` are now the total budget for the whole task, not per-segment limits. The Kun game and GitHub monitor plugins no longer ship with the main repository; use the current versions of [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) and [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor). Existing plugin KV data, jobs, outboxes and unfinished receipts are kept.
 
-**Persona (3.9.0 only).** 4.0 reads a single `character/SOUL.md`; the character name lives in the database's character profile. Compare the old system prompt and `persona.md`, pick the persona content you actually want, and turn it into one SOUL; do not just concatenate the files. Tool, permission and task rules come from the program and do not belong in SOUL. An empty SOUL is fine. See the [single-SOUL upgrade notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/soul-deployment-20261022.md) (Chinese).
+**Persona (3.9.0 only).** 4.0 reads a single `character/SOUL.md`; the character name lives in the database's character profile. Compare the old system prompt and `persona.md`, pick the persona content you actually want, and turn it into one SOUL; do not just concatenate the files. Tool, permission and task rules come from the program and do not belong in SOUL. An empty SOUL is fine. See the [single-SOUL upgrade notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/soul-deployment-20261022.md) (Chinese).
 
 ## 3. Let tasks finish and stop the old services
 
@@ -100,10 +100,10 @@ The sandbox migration script and the new Compose file ship in the release bundle
 
 ```sh
 cd /path/to/yuki
-curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/yuki-4.0.0-deploy.tar.gz
-curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/SHA256SUMS
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/yuki-4.0.1-deploy.tar.gz
+curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.1/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf yuki-4.0.0-deploy.tar.gz --strip-components=1
+tar -xzf yuki-4.0.1-deploy.tar.gz --strip-components=1
 ```
 
 This replaces the release files (`docker-compose.yml`, `.env.example`, `install.sh`, `deploy/sandbox/` and so on) and leaves `.env` and the data directories alone. From now on use only `docker-compose.yml`, and put your own changes (ports, extra mounts, environment variables) in `docker-compose.override.yml`. If a 4.0 development deployment has a `compose.yaml`, Compose prefers it: move the parts you want to keep into `docker-compose.override.yml` and move `compose.yaml` out of the way.
@@ -144,7 +144,7 @@ Either way, never let the Bot create a new empty database at `data/yuki.db`. On 
 | `WEB_EXTRACT_MAX_RESULTS`, `WEB_SOURCE_MAX_RUNS_PER_CONVERSATION` | Remove; webpage text is read explicitly |
 | `VISION_MAX_RETRIES`, the `emoji_replacement` route | Remove |
 | `SNOWLUMA_NOVNC_*` | Remove; the QQ login screen is viewed in Yuki Desktop |
-| Proxies | Use the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`; see the [proxy notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/http-proxy.zh-CN.md) (Chinese) |
+| Proxies | Use the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`; see the [proxy notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/http-proxy.zh-CN.md) (Chinese) |
 | Speech transcription | Choose the `chat_completions` or `audio_transcriptions` protocol explicitly |
 
 ## 7. Move the sandbox into Compose
@@ -168,7 +168,7 @@ The old loop images, `jobs.sqlite3` and media cache directory stay where they ar
 Notes:
 
 - The host needs `python3` (host-Manager deployments already have it).
-- If you use gVisor but Docker's `runsc` lacks `--overlay2=none`, software installed in the environment is not in the Docker layer. The script refuses and asks you to export it with `runsc tar rootfs-upper` first; see the [Mac migration record](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/mac-arm64-migration-20261107.md) (Chinese).
+- If you use gVisor but Docker's `runsc` lacks `--overlay2=none`, software installed in the environment is not in the Docker layer. The script refuses and asks you to export it with `runsc tar rootfs-upper` first; see the [Mac migration record](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/mac-arm64-migration-20261107.md) (Chinese).
 - The checkpoint image contains the old execd credential. Keep it private, never push it to a public registry, and do not delete it: the environment is recreated from it.
 
 Deployments without a host Manager skip this step. 4.0 keeps the media cache in the `yuki-media-cache` volume; the script copies the old `data/conversation-media-cache` there, and the old directory can be removed once confirmed.
@@ -181,7 +181,7 @@ Run the installer in the deployment directory:
 sh install.sh
 ```
 
-Because `.env` exists, it skips the setup wizard. It sets `YUKI_VERSION` to `4.0.0`, asks for a profile if none is set, settles the runtime, creates any missing volumes, pulls the images, runs `docker compose up -d`, and waits until the Bot can reach the sandbox. The Bot migrates the database to `0156` when it starts. Without the installer: set `YUKI_VERSION=4.0.0` in `.env`, make sure `YUKI_SANDBOX_PROFILE` and `YUKI_SANDBOX_RUNTIME` are set, run `sh deploy/sandbox/prepare.sh`, then `docker compose up -d`.
+Because `.env` exists, it skips the setup wizard. It sets `YUKI_VERSION` to `4.0.1`, asks for a profile if none is set, settles the runtime, creates any missing volumes, pulls the images, runs `docker compose up -d`, and waits until the Bot can reach the sandbox. The Bot migrates the database to `0156` when it starts. Without the installer: set `YUKI_VERSION=4.0.0` in `.env`, make sure `YUKI_SANDBOX_PROFILE` and `YUKI_SANDBOX_RUNTIME` are set, run `sh deploy/sandbox/prepare.sh`, then `docker compose up -d`.
 
 About the database migration:
 
@@ -200,7 +200,7 @@ docker compose run --rm --entrypoint yuki bot admin model migrate-legacy
 docker compose start bot
 ```
 
-Check the exit code and the `ok`, `revision` and `consumed_env_fields` fields of the output. On success, remove the variables listed in `consumed_env_fields` from `.env`; the command reports names only and never edits your files. If the result is `partial` or uncertain, check the saved revision before retrying. Details: [model configuration migration](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/upgrade-model-config-20261031.md) (Chinese).
+Check the exit code and the `ok`, `revision` and `consumed_env_fields` fields of the output. On success, remove the variables listed in `consumed_env_fields` from `.env`; the command reports names only and never edits your files. If the result is `partial` or uncertain, check the saved revision before retrying. Details: [model configuration migration](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/upgrade-model-config-20261031.md) (Chinese).
 
 ## 10. Administrators, character name and plugins
 
@@ -219,7 +219,7 @@ docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_T
 docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_TOKEN" yuki admin person superuser grant <PersonID> --revision <current revision>'
 ```
 
-Someone without an account can be created first with `admin person create --display-name "Name"`. Transferring an account does not carry superuser status, unlinking does not revoke it, and ordinary pairing never grants it. Then pair Yuki Desktop with `admin client pair --person <PersonID>`; superusers can administer Yuki with their own Desktop credentials. See [Person authorization](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/person-admin-control-plane-upgrade.md) (Chinese). Old character-owner records are kept but no longer grant anything.
+Someone without an account can be created first with `admin person create --display-name "Name"`. Transferring an account does not carry superuser status, unlinking does not revoke it, and ordinary pairing never grants it. Then pair Yuki Desktop with `admin client pair --person <PersonID>`; superusers can administer Yuki with their own Desktop credentials. See [Person authorization](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/person-admin-control-plane-upgrade.md) (Chinese). Old character-owner records are kept but no longer grant anything.
 
 **Character name (3.9.0 only).** Initialize it once while the database has no character profile; an existing character is never renamed this way:
 
@@ -233,9 +233,9 @@ docker compose run --rm --entrypoint yuki bot init-db --character-name "Yuki"
 
 ## 11. Clients, QQ and the connector
 
-- **Yuki Desktop:** use the release that matches 4.0.0 (personal client API revision 10). Remote access needs an HTTPS address for the service; see [Desktop deployment and remote access](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/desktop-local-deployment.zh-CN.md) or the [Tailscale guide](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/tailscale-connection.zh-CN.md) (Chinese).
-- **QQ login screen:** no longer published on port 6081. Open the computer window in a Yuki Desktop paired to an administrator and choose QQ login to view it and scan the code; the SnowLuma management page is still at `127.0.0.1:5099`. QQ login data directories are unchanged. See [SnowLuma](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/deployment/snowluma.md).
-- **Local connector:** a Desktop-managed connector updates with Desktop. A standalone install follows the [local connector guide](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/local-agent-connector.zh-CN.md) (Chinese) to 0.6.2, keeping its device, pairing and journal. The device protocol is still 4: older connectors still run commands and handle files, but not screen or browser actions.
+- **Yuki Desktop:** use the release that matches 4.0.0 (personal client API revision 10). Remote access needs an HTTPS address for the service; see [Desktop deployment and remote access](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/desktop-local-deployment.zh-CN.md) or the [Tailscale guide](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/tailscale-connection.zh-CN.md) (Chinese).
+- **QQ login screen:** no longer published on port 6081. Open the computer window in a Yuki Desktop paired to an administrator and choose QQ login to view it and scan the code; the SnowLuma management page is still at `127.0.0.1:5099`. QQ login data directories are unchanged. See [SnowLuma](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/deployment/snowluma.md).
+- **Local connector:** a Desktop-managed connector updates with Desktop. A standalone install follows the [local connector guide](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/local-agent-connector.zh-CN.md) (Chinese) to 0.6.2, keeping its device, pairing and journal. The device protocol is still 4: older connectors still run commands and handle files, but not screen or browser actions.
 
 ## 12. Verify
 
@@ -264,10 +264,10 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki -
 
 This removes the `yuki-environment-retired` container, the host systemd units, the loop volumes and the sandbox root (`/var/lib/yuki-sandbox` or your configured path), `/opt/yuki-sandbox` and `/etc/yuki-sandbox`. It refuses to run until the new Manager has created its environment. Delete the old media cache directory (by default `data/conversation-media-cache`) yourself after confirming the `yuki-media-cache` volume works.
 
-You can also remove 3.9.0's `qq-ai-bot-network` network, the old `ghcr.io/yuanyeyoutao/yuki-qqbot` image and the downloaded `yuki-4.0.0-deploy.tar.gz`. Do not delete the `yuki-environment:migrated-<time>` checkpoint image or the `yuki-sandbox-*` and `yuki-media-cache` volumes; `docker compose down -v` does not remove them.
+You can also remove 3.9.0's `qq-ai-bot-network` network, the old `ghcr.io/yuanyeyoutao/yuki-qqbot` image and the downloaded `yuki-4.0.1-deploy.tar.gz`. Do not delete the `yuki-environment:migrated-<time>` checkpoint image or the `yuki-sandbox-*` and `yuki-media-cache` volumes; `docker compose down -v` does not remove them.
 
 ## Reference
 
-- [Persistent environment](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/persistent-environment.md): profiles, resources, networking and migration details
-- [4.0.0 release notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/releases/v4.0.0.en.md)
-- [Architecture index](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/architecture/README.md)
+- [Persistent environment](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/operations/persistent-environment.md): profiles, resources, networking and migration details
+- [4.0.0 release notes](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/releases/v4.0.0.en.md)
+- [Architecture index](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.1/docs/architecture/README.md)

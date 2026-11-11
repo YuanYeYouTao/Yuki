@@ -175,6 +175,11 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
             "\n[routes]\n" + "".join(f'{task} = "main"\n' for task in example["routes"]),
             encoding="utf-8",
         )
+    # The setup wizard starts every deployment's persona from the bundled template.
+    soul = deploy_directory / "character/SOUL.md"
+    if not soul.exists():
+        soul.parent.mkdir(parents=True, exist_ok=True)
+        soul.write_bytes((deploy_directory / "config/SOUL.md").read_bytes())
     sentinel = deploy_directory / "data/.release-smoke-data"
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("data", encoding="utf-8")
