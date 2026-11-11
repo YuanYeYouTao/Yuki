@@ -1,7 +1,7 @@
 # Desktop 本机部署与远程入口
 
 Desktop 的“在本机部署 Yuki”启动同一份 Bot 和个人 API，使用 Linux Docker 容器。
-它不安装 QQ/TG/飞书，不附带模型，也不安装服务器持久终端 Manager。
+它不安装 QQ/TG/飞书，不附带模型；持久工作环境由同一 Compose 中的 `manager` 服务提供，默认 `desktop` 档。
 本机 Codex 另由独立 Agent Connector 接入，不能把两者当作同一个服务。
 
 ## 本机 App-only
@@ -24,7 +24,7 @@ Docker 中的同机模型需可从容器访问，Desktop 将用户明确输入�
 operator 凭据不成为聊天 token，不要求先有平台账号。
 
 `docker-compose.local.yml` 与原 Compose 合用，只发布 `127.0.0.1:<所选端口>:8080`，
-不绑定公网，也不挂载尚未安装的 Manager。需支持 `!override` 的 Compose（2.24.4+）。
+不绑定公网；`manager` 与 Bot 用同一镜像，组号沿 `YUKI_LOCAL_GID`。首次启动前运行 `deploy/sandbox/prepare.sh` 创建数据卷。需支持 `!override` 的 Compose（2.24.4+）。
 每份 Desktop 管理的目录使用独立 Compose project，配置/journal 与真实实例身份保留。
 已有其他部署的目录不被静默接管；可连接原服务，或给新部署选另一目录。
 关闭 Desktop 不删除数据；“停止本机服务”只停止这份实例的 Bot。

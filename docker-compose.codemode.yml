@@ -8,3 +8,5 @@ services:
     security_opt:
       - seccomp=./deploy/security/yuki-codemode-seccomp.json
       - apparmor=yuki-bot-codemode
+  manager:
+    image: ${YUKI_CODE_IMAGE:?set an explicitly built and verified codemode image}

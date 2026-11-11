@@ -12,6 +12,13 @@ services:
       - ./character:/app/character
       - ./workspace:/app/workspace
       - ./social-transfer:/app/social-transfer
+      - sandbox-run:/run/yuki-sandbox:ro
+      - media-cache:/app/data/conversation-media-cache
       - ./config:/app/config:ro
       - ./webui-config:/app/webui-config:ro
       - ./plugins:/app/plugins:ro
+  manager:
+    image: ${YUKI_LOCAL_IMAGE:-ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}}
+    user: "0:${YUKI_LOCAL_GID:-10001}"
+    environment:
+      YUKI_SANDBOX_PROFILE: ${YUKI_SANDBOX_PROFILE:-desktop}

@@ -94,12 +94,15 @@ async def test_manager_startup_failure_closes_its_real_job_store(
             str(tmp_path / "workspace"),
             "--socket",
             str(tmp_path / "socket"),
-            "--image",
-            "unused-image",
-            "--persistent-home",
-            str(tmp_path / "home"),
+            "--code",
+            str(tmp_path / "code"),
+            "--media-cache",
+            str(tmp_path / "media"),
         ],
     )
+    monkeypatch.setenv("YUKI_ENVIRONMENT_IMAGE", "unused-image")
+    # The entry sets the Manager process's umask; keep the test process's own.
+    monkeypatch.setattr(entry.os, "umask", lambda mask: mask)
     try:
         if failure_stage == "serving_cancel":
             await entry.main()

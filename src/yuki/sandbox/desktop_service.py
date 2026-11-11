@@ -26,10 +26,12 @@ def browser_ready() -> bool:
 
 
 def browser_mode() -> str:
-    manifest = Path("/opt/yuki-runtime/manifest.json")
-    if manifest.exists():
-        return str(json.loads(manifest.read_text()).get("browser_mode", "headed"))
-    return "headed"
+    # The Manager writes the mode it configured from what is installed.
+    root = Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
+    try:
+        return (root / "browser-mode").read_text().strip()
+    except FileNotFoundError:
+        return "headed"
 
 
 async def main() -> int:

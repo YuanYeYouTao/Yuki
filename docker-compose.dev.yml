@@ -8,3 +8,6 @@ services:
       args:
         YUKI_VERSION: dev
         VCS_REF: local
+  manager:
+    image: yuki:dev
+    pull_policy: never

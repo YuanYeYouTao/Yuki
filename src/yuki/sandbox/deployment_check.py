@@ -1,8 +1,7 @@
-"""Read-only Manager verification shared by Bot setup and the minimal host venv."""
+"""Read-only Manager verification for ``yuki setup environment-check``."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
@@ -58,17 +57,3 @@ async def check_environment(
     if status.get("ready") is not True or status.get("workspace") != "/workspace":
         return {"ok": False, "error": "persistent_environment_not_ready"}
     return {"ok": True, "uid": expected_uid, "manager": "connected", "workspace": "/workspace"}
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--socket", type=Path, required=True)
-    parser.add_argument("--artifact-store", type=Path, required=True)
-    args = parser.parse_args()
-    result = asyncio.run(check_environment(args.socket, args.artifact_store))
-    print(json.dumps(result, ensure_ascii=False))
-    return 0 if result["ok"] else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

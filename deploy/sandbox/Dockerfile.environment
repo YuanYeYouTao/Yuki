@@ -22,9 +22,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 RUN pip install --no-cache-dir Pillow openpyxl pypdf
 COPY --from=execd /execd /opt/opensandbox/execd
 COPY --from=execd /source/LICENSE /usr/share/licenses/opensandbox/LICENSE
-COPY src/yuki/sandbox/environment_supervisor.py /opt/yuki-runtime/supervisor.py
-COPY src/yuki/emoji/sticker_index.py /opt/yuki-runtime/sticker_index.py
-COPY src/yuki/emoji/media.py /opt/yuki-runtime/media.py
+# Yuki's own runtime files are mounted read-only from the Manager's code volume.
 ENV HOME=/home/yuki \
     USER=root \
     LOGNAME=root \
