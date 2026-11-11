@@ -48,6 +48,8 @@ async def test_service_publication_rolls_back_before_commit_and_recovers_origina
     await manager.close()
 
     manager = manager_at(tmp_path)
+    # The environment's own token, as the Manager stored it when it created the container.
+    manager.set_setting("execd_token", "original-token")
     try:
         manager.inspect_container = AsyncMock(
             return_value={

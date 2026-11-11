@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -22,26 +24,66 @@ ARCHITECTURES = (
 )
 
 
+VERSION = "9.8.7"
+# The engine the fakes report: 8 GiB of memory and no gVisor.
+ENGINE = {"memory": str(8 * 1024**3), "runtimes": '{"runc":{"path":"runc"}}'}
+
+
+def _bundle(tmp_path):
+    """A release archive with the files the installer uses, in both archive formats."""
+    root = f"yuki-{VERSION}-deploy"
+    files = {
+        "docker-compose.yml": "name: released\n",
+        ".env.example": "USER_CONFIG=template\n",
+        "deploy/sandbox/prepare.sh": (ROOT / "deploy/sandbox/prepare.sh").read_text(),
+    }
+    tar_path, zip_path = tmp_path / f"{root}.tar.gz", tmp_path / f"{root}.zip"
+    with tarfile.open(tar_path, "w:gz") as archive, zipfile.ZipFile(zip_path, "w") as package:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(f"{root}/{name}")
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+            package.writestr(f"{root}/{name}", data)
+    return tar_path, zip_path
+
+
 def _deployment(tmp_path):
     deployment = tmp_path / "existing deployment"
     deployment.mkdir()
     (deployment / "docker-compose.yml").write_text("name: existing\n", encoding="utf-8")
     (deployment / ".env.example").write_text("USER_CONFIG=template\n", encoding="utf-8")
     (deployment / ".env").write_text("USER_CONFIG=keep\n", encoding="utf-8")
+    (deployment / "docker-compose.override.yml").write_text("services: {}\n", encoding="utf-8")
     return deployment
 
 
-def _assert_native_setup(commands, platform, deployment):
-    pull = next(command for command in commands if command[0] == "pull")
-    run = next(command for command in commands if command[0] == "run")
-    for command in (pull, run):
-        assert command[command.index("--platform") + 1] == platform
-        assert "ghcr.io/yuanyeyoutao/yuki:9.8.7" in command
-    assert run[run.index("--entrypoint") + 1] == "yuki"
-    assert run[-3:] == ["setup", "--deployment-root", "/deploy"]
-    assert not any(command[0] in {"up", "stop", "down", "restart"} for command in commands)
-    assert (deployment / ".env").read_text(encoding="utf-8") == "USER_CONFIG=keep\n"
-    assert (deployment / "docker-compose.yml").read_text(encoding="utf-8") == "name: existing\n"
+def _assert_upgrade(commands, platform, deployment):
+    """An existing deployment: release files replaced, .env kept and completed, started."""
+    pulls = [command for command in commands if command[0] == "pull"]
+    assert [command[-1] for command in pulls] == [
+        f"ghcr.io/yuanyeyoutao/yuki:{VERSION}",
+        f"ghcr.io/yuanyeyoutao/yuki-environment:{VERSION}-desktop",
+    ]
+    assert all(command[command.index("--platform") + 1] == platform for command in pulls)
+    # .env exists: no configuration wizard runs again.
+    assert not any(command[0] == "run" for command in commands)
+    assert ["volume", "inspect", "yuki-sandbox-home"] in commands
+    up = next(command for command in commands if command[:2] == ["compose", "up"])
+    assert "-d" in up and "--remove-orphans" in up
+    check = next(command for command in commands if command[:2] == ["compose", "exec"])
+    assert check[-3:] == ["yuki", "setup", "environment-check"]
+    assert check[check.index("--user") + 1] == "10001:10001"
+    environment = (deployment / ".env").read_text(encoding="utf-8").splitlines()
+    assert environment[0] == "USER_CONFIG=keep"
+    assert {
+        f"YUKI_VERSION={VERSION}",
+        "YUKI_SANDBOX_PROFILE=desktop",
+        "YUKI_SANDBOX_RUNTIME=runc",
+    } <= set(environment)
+    assert not any(line.startswith("YUKI_CHARACTER_NAME=") for line in environment)
+    assert (deployment / "docker-compose.yml").read_text(encoding="utf-8") == "name: released\n"
+    assert (deployment / "docker-compose.override.yml").read_text() == "services: {}\n"
 
 
 @pytest.mark.parametrize(("architecture", "platform"), ARCHITECTURES)
@@ -50,6 +92,7 @@ def test_powershell_installer_selects_docker_host_platform(tmp_path, architectur
     if powershell is None:
         pytest.skip("PowerShell is not installed")
     deployment = _deployment(tmp_path)
+    _tar, bundle = _bundle(tmp_path)
     log = tmp_path / "docker.jsonl"
     harness = tmp_path / "installer-harness.ps1"
     harness.write_text(
@@ -60,76 +103,175 @@ function global:docker {
     if ($args[0] -eq 'info' -and $args.Count -gt 1) {
         if ($args[2] -eq '{{.Architecture}}') { Write-Output $env:DOCKER_ARCH }
         elseif ($args[2] -eq '{{.OSType}}') { Write-Output 'linux' }
+        elseif ($args[2] -eq '{{.MemTotal}}') { Write-Output $env:DOCKER_MEMORY }
+        elseif ($args[2] -eq '{{json .Runtimes}}') { Write-Output $env:DOCKER_RUNTIMES }
     }
+    if ($args[0] -eq 'image' -or $args[0] -eq 'inspect') { $global:LASTEXITCODE = 1 }
 }
-& $env:INSTALLER -InstallDir $env:DEPLOY_DIRECTORY -Version 9.8.7
+& $env:INSTALLER -InstallDir $env:DEPLOY_DIRECTORY -Version 9.8.7 -Yes -Profile desktop `
+    -Bundle $env:BUNDLE
 """,
         encoding="utf-8",
     )
     environment = {
         **os.environ,
         "DOCKER_ARCH": architecture,
+        "DOCKER_MEMORY": ENGINE["memory"],
+        "DOCKER_RUNTIMES": ENGINE["runtimes"],
         "DOCKER_LOG": str(log),
         "INSTALLER": str(ROOT / "install.ps1"),
         "DEPLOY_DIRECTORY": str(deployment),
+        "BUNDLE": str(bundle),
     }
     completed = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-File", str(harness)],
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     commands = [json.loads(line) for line in log.read_text(encoding="utf-8-sig").splitlines()]
-    _assert_native_setup(commands, platform, deployment)
+    _assert_upgrade(commands, platform, deployment)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer needs a POSIX PTY")
-@pytest.mark.parametrize(("architecture", "platform"), ARCHITECTURES)
-def test_shell_installer_selects_docker_host_platform(tmp_path, architecture, platform):
-    deployment = _deployment(tmp_path)
+def _fake_docker(tmp_path):
     bin_directory = tmp_path / "bin"
     bin_directory.mkdir()
-    log = tmp_path / "docker.jsonl"
     docker = bin_directory / "docker"
     docker.write_text(
         f"""#!{sys.executable}
 import json, os, sys
+arguments = sys.argv[1:]
 with open(os.environ['DOCKER_LOG'], 'a') as writer:
-    writer.write(json.dumps(sys.argv[1:]) + '\\n')
-if sys.argv[1:3] == ['info', '--format']:
-    print(os.environ['DOCKER_ARCH'] if sys.argv[3] == '{{{{.Architecture}}}}' else 'linux')
+    writer.write(json.dumps(arguments) + '\\n')
+if arguments[:2] == ['info', '--format']:
+    print({{
+        '{{{{.Architecture}}}}': os.environ['DOCKER_ARCH'],
+        '{{{{.OSType}}}}': 'linux',
+        '{{{{.MemTotal}}}}': os.environ['DOCKER_MEMORY'],
+        '{{{{json .Runtimes}}}}': os.environ['DOCKER_RUNTIMES'],
+    }}[arguments[2]])
+if arguments[0] == 'run' and 'desktop-configure' in arguments:
+    sys.stdin.read()
+    with open(os.path.join(os.environ['DEPLOY_DIRECTORY'], '.env'), 'a') as env:
+        env.write('LLM_MODEL=configured\\n')
+# Nothing is local yet, and no environment of the old host Manager exists.
+sys.exit(1 if arguments[:2] == ['image', 'inspect'] or arguments[0] == 'inspect' else 0)
 """,
         encoding="utf-8",
     )
     docker.chmod(0o755)
+    return bin_directory
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+@pytest.mark.parametrize(("architecture", "platform"), ARCHITECTURES)
+def test_shell_installer_selects_docker_host_platform(tmp_path, architecture, platform):
+    deployment = _deployment(tmp_path)
+    bundle, _zip = _bundle(tmp_path)
+    log = tmp_path / "docker.jsonl"
     environment = {
         **os.environ,
         "DOCKER_ARCH": architecture,
+        "DOCKER_MEMORY": ENGINE["memory"],
+        "DOCKER_RUNTIMES": ENGINE["runtimes"],
         "DOCKER_LOG": str(log),
-        "PATH": str(bin_directory) + os.pathsep + os.environ["PATH"],
+        "DEPLOY_DIRECTORY": str(deployment),
+        "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
     }
-    command = shlex.join(
+    command = [
+        "sh",
+        str(ROOT / "install.sh"),
+        "--dir",
+        str(deployment),
+        "--version",
+        VERSION,
+        "--yes",
+        "--profile",
+        "desktop",
+        "--bundle",
+        str(bundle),
+    ]
+    completed = subprocess.run(
+        command,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    _assert_upgrade(commands, platform, deployment)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+def test_shell_installer_first_install_configures_names_and_recommends_a_profile(tmp_path):
+    deployment = tmp_path / "new"
+    bundle, _zip = _bundle(tmp_path)
+    answers = tmp_path / "model.json"
+    answers.write_text('{"protocol": "responses", "base_url": "http://model", "model": "m"}')
+    log = tmp_path / "docker.jsonl"
+    environment = {
+        **os.environ,
+        "DOCKER_ARCH": "arm64",
+        # 3 GiB: the installer recommends headless, without asking under --yes.
+        "DOCKER_MEMORY": str(3 * 1024**3),
+        "DOCKER_RUNTIMES": '{"runc":{},"runsc":{"path":"runsc","runtimeArgs":["--overlay2=none"]}}',
+        "DOCKER_LOG": str(log),
+        "DEPLOY_DIRECTORY": str(deployment),
+        "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
+    }
+    completed = subprocess.run(
         [
             "sh",
             str(ROOT / "install.sh"),
             "--dir",
             str(deployment),
             "--version",
-            "9.8.7",
-        ]
-    )
-    completed = subprocess.run(
-        ["script", "-q", "-e", "-c", command, "/dev/null"],
+            VERSION,
+            "--yes",
+            "--answers",
+            str(answers),
+            "--character-name",
+            "雪",
+            "--bundle",
+            str(bundle),
+        ],
         env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    configure = next(command for command in commands if command[0] == "run")
+    assert configure[-3:] == ["desktop-configure", "--deployment-root", "/deploy"]
+    assert "-i" in configure and "-it" not in configure
+    lines = (deployment / ".env").read_text(encoding="utf-8").splitlines()
+    assert {
+        "LLM_MODEL=configured",
+        "YUKI_CHARACTER_NAME=雪",
+        "YUKI_SANDBOX_PROFILE=headless",
+        # gVisor with --overlay2=none is registered: chosen once and recorded.
+        "YUKI_SANDBOX_RUNTIME=runsc",
+    } <= set(lines)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+def test_shell_installer_without_terminal_or_yes_refuses_before_writing(tmp_path):
+    target = tmp_path / "new"
+    completed = subprocess.run(
+        ["sh", str(ROOT / "install.sh"), "--dir", str(target)],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=30,
     )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    _assert_native_setup(commands, platform, deployment)
+    assert completed.returncode != 0 and "--yes" in completed.stderr
+    assert not target.exists()
 
 
 @pytest.mark.parametrize("platform", ["linux/amd64", "linux/arm64"])

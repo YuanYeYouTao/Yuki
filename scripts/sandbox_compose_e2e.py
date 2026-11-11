@@ -184,14 +184,13 @@ def main() -> int:
     deployment.record("terminal", result=result)
 
     # F7: public egress works; the host (bridge gateway) and private ranges do not.
-    gateway = deployment.run(
-        "docker",
-        "network",
-        "inspect",
-        "yuki-sandbox-egress",
-        "--format",
-        "{{(index .IPAM.Config 0).Gateway}}",
-    ).strip()
+    # The environment's default gateway is the host's address on the egress bridge.
+    route = deployment.terminal(
+        "python3 -c \"import socket,struct; print([socket.inet_ntoa(struct.pack('<L', "
+        "int(f[2], 16))) for f in (l.split() for l in open('/proc/net/route')) "
+        "if f[1] == '00000000'][0])\""
+    )
+    gateway = route["output"].strip().splitlines()[-1]
     probes = {}
     for name, url in {
         "public": "https://example.com",

@@ -147,6 +147,11 @@ jobs:
           FROM ghcr.io/astral-sh/uv:0.11.31 AS uv
           FROM yuki-environment:headed-ci
           COPY --from=uv /uv /usr/local/bin/uv
+          # A deployment's Manager mounts these from its code volume; this offline
+          # harness has no Manager container, so the image carries them.
+          COPY src/yuki/sandbox/desktop_service.py src/yuki/sandbox/yuki_computer.py /opt/yuki-runtime/
+          COPY packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py /opt/yuki-runtime/yuki_agent_connector/
+          COPY --chmod=755 deploy/sandbox/yuki-computer.sh /usr/local/bin/yuki-computer
           ENV UV_PROJECT_ENVIRONMENT=/opt/yuki-tests UV_PYTHON_INSTALL_DIR=/opt/yuki-python
           WORKDIR /opt/yuki-source
           COPY pyproject.toml uv.lock README.md LICENSE ./

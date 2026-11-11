@@ -8,6 +8,7 @@ PROFILE=""
 YES=false
 ANSWERS=""
 BUNDLE=""
+CHARACTER=""
 REPOSITORY="YuanYeYouTao/Yuki"
 BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki"
 ENVIRONMENT_IMAGE="ghcr.io/yuanyeyoutao/yuki-environment"
@@ -15,13 +16,14 @@ ENVIRONMENT_IMAGE="ghcr.io/yuanyeyoutao/yuki-environment"
 usage() {
     cat <<'EOF'
 Usage: install.sh [--dir PATH] [--version X.Y.Z] [--profile lite|headless|desktop]
-                  [--yes [--answers FILE]] [--bundle FILE]
+                  [--character-name NAME] [--yes [--answers FILE]] [--bundle FILE]
 
 Run it again in the same directory to upgrade; .env and data are kept.
   --profile   sandbox profile: lite (terminal only), headless (adds a browser),
               desktop (adds a desktop you can watch and take over)
   --yes       no prompts; a first install then reads its model settings from
               --answers, a JSON file: {"protocol", "base_url", "api_key", "model"}
+  --character-name  the character's name in a new deployment (default Yuki)
   --bundle    use this yuki-X.Y.Z-deploy.tar.gz instead of downloading the release
 EOF
 }
@@ -33,12 +35,13 @@ fail() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --dir|--version|--profile|--answers|--bundle)
+        --dir|--version|--profile|--answers|--bundle|--character-name)
             [ "$#" -ge 2 ] || fail "$1 requires a value"
             case "$1" in
                 --dir) INSTALL_DIR=$2 ;;
                 --version) VERSION=$2 ;;
                 --profile) PROFILE=$2 ;;
+                --character-name) CHARACTER=$2 ;;
                 --answers) ANSWERS=$(cd "$(dirname "$2")" && pwd)/$(basename "$2") ;;
                 --bundle) BUNDLE=$(cd "$(dirname "$2")" && pwd)/$(basename "$2") ;;
             esac
@@ -136,6 +139,11 @@ image="$BOT_IMAGE:$VERSION"
 pull "$image"
 
 if [ ! -f .env ]; then
+    if [ -z "$CHARACTER" ] && [ "$YES" = false ]; then
+        printf "Character name [Yuki]: "
+        read -r CHARACTER
+    fi
+    CHARACTER=${CHARACTER:-Yuki}
     if [ "$YES" = true ]; then
         [ -n "$ANSWERS" ] && [ -f "$ANSWERS" ] || fail "a first install with --yes needs --answers FILE"
         docker run --rm -i --platform "$platform" --user "$(id -u):$(id -g)" --entrypoint yuki \
@@ -148,6 +156,7 @@ if [ ! -f .env ]; then
     fi
 fi
 set_env YUKI_VERSION "$VERSION"
+[ -z "$CHARACTER" ] || set_env YUKI_CHARACTER_NAME "$CHARACTER"
 
 if [ -z "$PROFILE" ] && [ -z "$(env_value YUKI_SANDBOX_PROFILE)" ]; then
     memory=$(( $(docker info --format '{{.MemTotal}}') / 1048576 ))

@@ -32,5 +32,12 @@ case ",${COMPOSE_PROFILES:-}," in
     ;;
 esac
 
-setpriv --reuid="$yuki_uid" --regid="$yuki_gid" --clear-groups yuki init-db
+# The installer records the character name of a new deployment; an existing character
+# keeps its own name (init-db never renames it).
+if [ -n "${YUKI_CHARACTER_NAME:-}" ]; then
+    setpriv --reuid="$yuki_uid" --regid="$yuki_gid" --clear-groups \
+        yuki init-db --character-name "$YUKI_CHARACTER_NAME"
+else
+    setpriv --reuid="$yuki_uid" --regid="$yuki_gid" --clear-groups yuki init-db
+fi
 exec setpriv --reuid="$yuki_uid" --regid="$yuki_gid" --clear-groups yuki-bot

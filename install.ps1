@@ -10,7 +10,8 @@ param(
     [string]$SandboxProfile = "",
     [switch]$Yes,
     [string]$Answers = "",
-    [string]$Bundle = ""
+    [string]$Bundle = "",
+    [string]$CharacterName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,7 +90,7 @@ try {
 Set-Location -LiteralPath $InstallDir
 # An environment created by the retired host Manager is moved once, explicitly.
 $Labels = & docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment 2>$null
-if ($LASTEXITCODE -eq 0 -and $Labels.Trim() -eq "persistent-v1/") {
+if ($LASTEXITCODE -eq 0 -and "$Labels".Trim() -eq "persistent-v1/") {
     Fail "This Docker host runs an environment of the old host Manager. The release files are now in $InstallDir; on the Docker host run deploy/sandbox/migrate-host-manager.sh --deployment-root <this deployment>, then run this installer again."
 }
 
@@ -122,6 +123,8 @@ function Pull-Image([string]$Image) {
 $Image = "${BotImage}:$Version"
 Pull-Image $Image
 if (-not (Test-Path -LiteralPath $EnvPath)) {
+    if (-not $CharacterName -and -not $Yes) { $CharacterName = Read-Host "Character name [Yuki]" }
+    if (-not $CharacterName) { $CharacterName = "Yuki" }
     if ($Yes) {
         if (-not $Answers -or -not (Test-Path -LiteralPath $Answers)) { Fail "A first install with -Yes needs -Answers FILE." }
         Get-Content -Raw -LiteralPath $Answers | & docker run --rm -i --platform $Platform --entrypoint yuki `
@@ -146,6 +149,7 @@ if (-not (Test-Path -LiteralPath $EnvPath)) {
     }
 }
 Set-EnvValue "YUKI_VERSION" $Version
+if ($CharacterName) { Set-EnvValue "YUKI_CHARACTER_NAME" $CharacterName }
 
 if (-not $SandboxProfile -and -not (Get-EnvValue "YUKI_SANDBOX_PROFILE")) {
     $Memory = [int64](& docker info --format '{{.MemTotal}}') / 1MB
