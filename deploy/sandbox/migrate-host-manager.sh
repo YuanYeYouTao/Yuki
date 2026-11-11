@@ -19,7 +19,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 test "$(id -u)" = 0 || { echo 'Run as root on the Docker host.' >&2; exit 1; }
-test -f "$deployment/docker-compose.yml" || { echo '--deployment-root must hold docker-compose.yml' >&2; exit 1; }
+test -d "$deployment" || { echo '--deployment-root must be the Compose deployment directory' >&2; exit 1; }
+scripts=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 settings=/etc/yuki-sandbox/deployment.env
 old_value() { [ -f "$settings" ] && sed -n "s/^$1=//p" "$settings" | tail -n 1 | tr -d '"' || true; }
 root=$(old_value YUKI_SANDBOX_ROOT)
@@ -72,7 +73,7 @@ checkpoint="yuki-environment:migrated-$(date -u +%Y%m%d%H%M%S)"
 docker commit yuki-environment "$checkpoint" >/dev/null
 echo "Saved the environment's rootFS as $checkpoint (private: it holds the old execd token)."
 
-sh "$deployment/deploy/sandbox/prepare.sh"
+sh "$scripts/prepare.sh"
 copy() {
     docker run --rm --network none --entrypoint sh -v "$1:/from:ro" -v "$2:/to" "$checkpoint" -ec \
         'test -z "$(find /to -mindepth 1 -maxdepth 1 -print -quit)" || { echo "volume $0 is not empty" >&2; exit 1; }; cp -a /from/. /to/' "$2"
@@ -120,5 +121,6 @@ for name in MEMORY_MIB SWAP_MIB CPUS PIDS TMP_MIB SHM_MIB PACKAGES; do
     if [ -n "$value" ]; then set_env "YUKI_SANDBOX_$name" "$value"; fi
 done
 echo "Copied HOME, runtime records, media cache and jobs.sqlite3 into Docker volumes."
-echo "Next: cd $deployment && docker compose up -d, then verify the terminal, files and services."
+echo "Next: run install.sh in $deployment again (it starts the Compose Manager), then verify"
+echo "the terminal, files and services."
 echo "After verifying, run this script again with --cleanup."

@@ -66,11 +66,6 @@ case "$(docker info --format '{{.Architecture}}')" in
     *) fail "Yuki supports linux/amd64 and linux/arm64" ;;
 esac
 
-# An environment created by the retired host Manager is moved once, explicitly.
-if [ "$(docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment 2>/dev/null || true)" = "persistent-v1/" ]; then
-    fail "this Docker host runs an environment of the old host Manager; migrate it first with deploy/sandbox/migrate-host-manager.sh (docs/operations/persistent-environment.zh-CN.md)"
-fi
-
 if [ -z "$INSTALL_DIR" ]; then
     if [ -f docker-compose.yml ] && [ -f .env.example ]; then INSTALL_DIR=$PWD; else INSTALL_DIR=$PWD/yuki; fi
 fi
@@ -112,6 +107,12 @@ tar -xzf "$temporary/$archive" -C "$temporary"
 [ -d "$temporary/yuki-$VERSION-deploy" ] || fail "release archive layout is invalid"
 cp -R "$temporary/yuki-$VERSION-deploy/." "$INSTALL_DIR/"
 cd "$INSTALL_DIR"
+
+# An environment created by the retired host Manager is moved once, explicitly.
+if [ "$(docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment 2>/dev/null || true)" = "persistent-v1/" ]; then
+    fail "this Docker host runs an environment of the old host Manager; the release files are now in $INSTALL_DIR; run: sudo sh $INSTALL_DIR/deploy/sandbox/migrate-host-manager.sh --deployment-root $INSTALL_DIR, then run this installer again"
+fi
+
 
 env_value() {
     [ -f .env ] && sed -n "s/^$1=//p" .env | tail -n 1 || true

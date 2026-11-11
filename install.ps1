@@ -38,12 +38,6 @@ $Platform = switch ((& docker info --format '{{.Architecture}}').Trim()) {
     default { Fail "Yuki supports linux/amd64 and linux/arm64." }
 }
 
-# An environment created by the retired host Manager is moved once, explicitly.
-$Labels = & docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment 2>$null
-if ($LASTEXITCODE -eq 0 -and $Labels.Trim() -eq "persistent-v1/") {
-    Fail "This Docker host runs an environment of the old host Manager; migrate it first with deploy/sandbox/migrate-host-manager.sh."
-}
-
 if (-not $InstallDir) {
     if ((Test-Path -LiteralPath "docker-compose.yml") -and (Test-Path -LiteralPath ".env.example")) {
         $InstallDir = (Get-Location).Path
@@ -93,6 +87,12 @@ try {
 }
 
 Set-Location -LiteralPath $InstallDir
+# An environment created by the retired host Manager is moved once, explicitly.
+$Labels = & docker inspect --format '{{index .Config.Labels "io.yuki.sandbox"}}/{{index .Config.Labels "io.yuki.sandbox.project"}}' yuki-environment 2>$null
+if ($LASTEXITCODE -eq 0 -and $Labels.Trim() -eq "persistent-v1/") {
+    Fail "This Docker host runs an environment of the old host Manager. The release files are now in $InstallDir; on the Docker host run deploy/sandbox/migrate-host-manager.sh --deployment-root <this deployment>, then run this installer again."
+}
+
 $EnvPath = Join-Path $InstallDir ".env"
 function Get-EnvValue([string]$Name) {
     if (-not (Test-Path -LiteralPath $EnvPath)) { return "" }
