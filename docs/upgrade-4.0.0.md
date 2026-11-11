@@ -159,7 +159,7 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki
 
 1. 确认没有排队或运行中的执行，停止宿主的 `yuki-sandbox` 服务，并让它和 `yuki-environment-storage` 不再开机启动（存储挂载保留到 `--cleanup`）。
 2. 停止 `yuki-environment`，把它的完整 rootFS `docker commit` 为 `yuki-environment:migrated-<时间>`。这个镜像就是新环境的起点，你装过的软件都在里面。
-3. 创建 Docker 卷，把 HOME、运行记录、媒体缓存和 `jobs.sqlite3` 复制进去，并让新 Manager 从上面的检查点镜像创建环境。
+3. 创建 Docker 卷，把 HOME、运行记录、媒体缓存和 `jobs.sqlite3` 复制进去，并让新 Manager 从上面的检查点镜像创建环境。原环境若挂了宿主的 `resolv.conf`（gVisor 用），复制为 HOME 里的 `.config/resolv.conf` 并写入 `YUKI_SANDBOX_RESOLV_CONF`。
 4. 把旧容器改名为 `yuki-environment-retired`，删除旧的 Squid 出口容器、内网 bridge 和相关防火墙规则。
 5. 把旧设置写进部署的 `.env`：原来的浏览器模式换算成档位（有头 → `desktop`，无头 → `headless`，否则 `lite`），原运行时写入 `YUKI_SANDBOX_RUNTIME`，内存、CPU 等资源和额外软件包写成 `YUKI_SANDBOX_*`。`.env` 里已有的值不覆盖。
 
@@ -171,7 +171,7 @@ sudo sh deploy/sandbox/migrate-host-manager.sh --deployment-root /path/to/yuki
 - 用 gVisor 但 Docker 里的 `runsc` 没有带 `--overlay2=none` 时，环境里安装的软件不在 Docker 层中，脚本会拒绝并提示先用 `runsc tar rootfs-upper` 导出，见 [Mac 迁移记录](https://github.com/YuanYeYouTao/Yuki/blob/v4.0.0/docs/operations/mac-arm64-migration-20261107.md)。
 - 检查点镜像里有旧的 execd 凭据，只作私有保管，不要推送到公开仓库，也不要删除——环境重建时要用它。
 
-没有宿主 Manager 的部署跳过这一步。旧的 `data/conversation-media-cache` 只是 24 小时临时缓存，4.0 改用 `yuki-media-cache` 卷，不需要迁移。
+没有宿主 Manager 的部署跳过这一步。4.0 的媒体缓存在 `yuki-media-cache` 卷；脚本会把旧的 `data/conversation-media-cache` 复制过去，确认后可删除旧目录。
 
 ## 8. 启动 4.0.0
 
