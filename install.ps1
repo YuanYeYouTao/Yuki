@@ -191,8 +191,12 @@ Write-Host -NoNewline "Waiting for Yuki and its sandbox"
 $Uid = Get-EnvValue "YUKI_RUNTIME_UID"; if (-not $Uid) { $Uid = "10001" }
 $Gid = Get-EnvValue "YUKI_RUNTIME_GID"; if (-not $Gid) { $Gid = "10001" }
 for ($Attempt = 0; ; $Attempt++) {
-    & docker compose exec -T --user "${Uid}:${Gid}" bot yuki setup environment-check *> $null
-    if ($LASTEXITCODE -eq 0) { break }
+    # Ready means both: the Bot answers (pairing uses its API) and it reaches the sandbox.
+    & docker compose exec -T bot python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3)" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & docker compose exec -T --user "${Uid}:${Gid}" bot yuki setup environment-check *> $null
+        if ($LASTEXITCODE -eq 0) { break }
+    }
     if ($Attempt -ge 120) {
         Write-Host ""
         & docker compose logs --tail 40 manager bot

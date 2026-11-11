@@ -210,7 +210,11 @@ printf 'Waiting for Yuki and its sandbox'
 uid=$(env_value YUKI_RUNTIME_UID)
 gid=$(env_value YUKI_RUNTIME_GID)
 attempt=0
-until docker compose exec -T --user "${uid:-10001}:${gid:-10001}" bot \
+# Ready means both: the Bot answers (pairing uses its API) and it reaches the sandbox.
+until docker compose exec -T bot python -c \
+    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3)" \
+    >/dev/null 2>&1 \
+    && docker compose exec -T --user "${uid:-10001}:${gid:-10001}" bot \
     yuki setup environment-check >/dev/null 2>&1; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge 120 ]; then

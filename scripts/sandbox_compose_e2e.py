@@ -174,7 +174,9 @@ def main() -> int:
     status = deployment.wait_ready()
     expect(status["profile"] == "lite" and status["browser_mode"] == "none", "not the lite profile")
     expect(status["runtime"] in {"runc", "runsc"}, "runtime not reported")
-    deployment.record("install_lite", stdout=installed.stdout, status=status)
+    deployment.record(
+        "install_lite", stdout=installed.stdout, stderr=installed.stderr, status=status
+    )
 
     # The owner's first Person, administrator grant and Yuki Desktop code, ready to use.
     code = installed.stdout.split("Binding code: ", 1)[-1].split()[0]

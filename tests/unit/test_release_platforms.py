@@ -71,7 +71,10 @@ def _assert_upgrade(commands, platform, deployment):
     assert ["volume", "inspect", "yuki-sandbox-home"] in commands
     up = next(command for command in commands if command[:2] == ["compose", "up"])
     assert "-d" in up and "--remove-orphans" in up
-    check = next(command for command in commands if command[:2] == ["compose", "exec"])
+    # Ready is the Bot's own API and its sandbox, before the owner is paired.
+    probe = next(command for command in commands if "/livez" in command[-1])
+    assert probe[:4] == ["compose", "exec", "-T", "bot"]
+    check = next(command for command in commands if command[-1] == "environment-check")
     assert check[-3:] == ["yuki", "setup", "environment-check"]
     assert check[check.index("--user") + 1] == "10001:10001"
     environment = (deployment / ".env").read_text(encoding="utf-8").splitlines()
