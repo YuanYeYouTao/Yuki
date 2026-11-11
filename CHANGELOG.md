@@ -1,5 +1,11 @@
 # 更新日志
 
+## 4.0.2
+
+4.0 的第一个正式发行，内容同 4.0.0。发布流程在各自架构的机器上分别验证 amd64 与 arm64（4.0.1 的 arm64 自检在模拟器中超时，未发布 Release）。见 [4.0.2 发布说明](docs/releases/v4.0.2.md)。
+
+The first published 4.0 release, with the same content as 4.0.0. The release now verifies amd64 and arm64 each on its own hardware (4.0.1's emulated arm64 check timed out and was never published). See the [4.0.2 notes](docs/releases/v4.0.2.md).
+
 ## 4.0.1
 
 4.0 的第一个正式发行，内容同 4.0.0；修正发布自检在全新部署里未生成 `character/SOUL.md` 的问题（`v4.0.0` 的发布流程因此中止，没有发布 Release）。见 [4.0.1 发布说明](docs/releases/v4.0.1.md)。

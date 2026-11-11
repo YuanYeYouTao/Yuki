@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "",
-    [string]$Version = "4.0.1",
+    [string]$Version = "4.0.2",
     # $PROFILE is a PowerShell automatic variable; -Profile still works through the alias.
     [Alias("Profile")]
     [ValidateSet("", "lite", "headless", "desktop")]

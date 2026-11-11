@@ -2,7 +2,7 @@
 # Install or upgrade a Yuki deployment with Docker Compose, including its sandbox.
 set -eu
 
-VERSION="4.0.1"
+VERSION="4.0.2"
 INSTALL_DIR=""
 PROFILE=""
 YES=false
