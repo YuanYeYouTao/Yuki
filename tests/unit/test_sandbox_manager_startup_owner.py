@@ -1,8 +1,12 @@
 """The real Manager entry owns its SQLite connection during startup failures."""
 
 import asyncio
+import os
+import shutil
+import signal
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -51,9 +55,6 @@ async def test_manager_startup_failure_closes_its_real_job_store(
         async def wait_closed(self):
             pass
 
-        async def serve_forever(self):
-            raise failure
-
     async def server(*args, **kwargs):
         if failure_stage == "server_start":
             raise failure
@@ -67,9 +68,11 @@ async def test_manager_startup_failure_closes_its_real_job_store(
             raise failure
         return chmod(path, *args, **kwargs)
 
-    def signal_handler(*args, **kwargs):
+    def signal_handler(signal_number, callback):
         if failure_stage == "signal_handler":
             raise failure
+        if failure_stage == "serving_cancel":
+            callback()  # SIGTERM arrives while serving.
 
     create_task = asyncio.create_task
 
@@ -163,3 +166,61 @@ def test_manager_failed_constructor_releases_only_its_job_connection(
     for connection in opened:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             connection.execute("SELECT 1")
+
+
+@pytest.fixture
+def short_root():
+    # Unix socket paths are short; macOS's /tmp is a link the Manager refuses.
+    root = Path(tempfile.mkdtemp(prefix="yuki-stop-", dir="/tmp")).resolve()
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix socket server needs a POSIX host")
+async def test_manager_stops_while_the_bot_keeps_a_connection_open(monkeypatch, short_root):
+    # The Bot's control watch never closes by itself; stopping must not wait for it.
+    root = short_root
+    socket_path = root / "manager.sock"
+
+    class Manager(persistent.PersistentManager):
+        async def recover(self):
+            pass
+
+        async def worker(self):
+            await asyncio.Event().wait()
+
+        async def serve(self, reader, writer):
+            await reader.read()
+
+    monkeypatch.setattr(persistent, "PersistentManager", Manager)
+    monkeypatch.setattr(entry.os, "umask", lambda mask: mask)
+    monkeypatch.setenv("YUKI_ENVIRONMENT_IMAGE", "unused-image")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sandbox-manager",
+            *("--root", str(root / "state"), "--workspace", str(root / "workspace")),
+            *("--socket", str(socket_path), "--code", str(root / "code")),
+            *("--media-cache", str(root / "media")),
+        ],
+    )
+    main = asyncio.create_task(entry.main())
+    writer = None
+    try:
+        async with asyncio.timeout(10):
+            while not socket_path.exists():
+                assert not main.done(), main.exception()
+                await asyncio.sleep(0.05)
+        _reader, writer = await asyncio.open_unix_connection(str(socket_path))
+        await asyncio.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGTERM)  # The Manager's own handler stops it.
+        async with asyncio.timeout(5):
+            await asyncio.gather(main, return_exceptions=True)
+        assert main.done()
+    finally:
+        if writer is not None:
+            writer.close()
+        main.cancel()
+        # Bounded: a regression must fail here, not hang the suite.
+        await asyncio.wait({main}, timeout=5)

@@ -123,16 +123,16 @@ async def main() -> None:
         try:
             try:
                 args.socket.chmod(0o660)
-                task = asyncio.current_task()
-                assert task is not None
-                worker.add_done_callback(
-                    lambda completed: task.cancel() if not completed.cancelled() else None
-                )
-                asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
-                await server.serve_forever()
+                stopped = asyncio.Event()
+                worker.add_done_callback(lambda _completed: stopped.set())
+                asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stopped.set)
+                await stopped.wait()
             finally:
+                # Only stop listening. Server.serve_forever() and wait_closed() also wait for
+                # every open connection (Python 3.12.1+), and the Bot's control watch never
+                # closes by itself, so a stop would hang. Handlers end with the loop; file
+                # work is awaited in close().
                 server.close()
-                await server.wait_closed()
         except asyncio.CancelledError:
             pass
         finally:
