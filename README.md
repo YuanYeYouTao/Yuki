@@ -25,6 +25,21 @@ Yuki 是一个开源、自托管的 AI Agent。她在 QQ、Telegram、飞书、L
 
 人物、记忆和任务都保存在你自己的部署里。换模型、换账号或换聊天平台，Yuki 还是同一个 Yuki。
 
+<p align="center"><img src="img/showcase/send.gif" alt="在 Yuki Desktop 里给 Yuki 发消息，她回复" width="735"></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="img/showcase/work-detail.webp" alt="对话旁打开工作详情"></td>
+    <td width="50%"><img src="img/showcase/works.webp" alt="进行中和已完成的工作"></td>
+  </tr>
+  <tr>
+    <td align="center">对话旁打开工作详情，一步步看她做了什么</td>
+    <td align="center">进行中和已完成的工作，定时任务和她监督的编码 Agent 也在这里</td>
+  </tr>
+</table>
+
+<p align="center">桌面端：<a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 18 秒演示视频</a></p>
+
 ## 能做什么
 
 | 能力 | 具体是什么 |

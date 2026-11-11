@@ -25,6 +25,21 @@ Yuki is an open-source, self-hosted AI agent. She takes part in conversations on
 
 People, memories and tasks are stored in your own deployment. Switch models, accounts or chat platforms and Yuki is still the same Yuki.
 
+<p align="center"><img src="img/showcase/send.gif" alt="Sending Yuki a message in Yuki Desktop, and her reply" width="735"></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="img/showcase/work-detail.webp" alt="Work details beside the conversation"></td>
+    <td width="50%"><img src="img/showcase/works.webp" alt="Work in progress and finished"></td>
+  </tr>
+  <tr>
+    <td align="center">Open a piece of work beside the conversation and follow each step</td>
+    <td align="center">Work in progress and finished, including scheduled work and coding agents she supervises</td>
+  </tr>
+</table>
+
+<p align="center">Desktop app: <a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 18-second tour</a></p>
+
 ## What she can do
 
 | Capability | In practice |
