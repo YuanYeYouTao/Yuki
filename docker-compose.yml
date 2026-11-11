@@ -38,6 +38,9 @@ services:
       ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-}
     expose:
       - "8080"
+    # This computer only: Yuki Desktop here, or Tailscale/HTTPS forwarding for other devices.
+    ports:
+      - "127.0.0.1:${YUKI_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
       - ./character:/app/character

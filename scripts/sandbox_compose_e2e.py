@@ -16,6 +16,7 @@ import argparse
 import json
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -173,7 +174,20 @@ def main() -> int:
     status = deployment.wait_ready()
     expect(status["profile"] == "lite" and status["browser_mode"] == "none", "not the lite profile")
     expect(status["runtime"] in {"runc", "runsc"}, "runtime not reported")
-    deployment.record("install_lite", stdout=installed.stdout, status=status)
+    deployment.record(
+        "install_lite", stdout=installed.stdout, stderr=installed.stderr, status=status
+    )
+
+    # The owner's first Person, administrator grant and Yuki Desktop code, ready to use.
+    code = installed.stdout.split("Binding code: ", 1)[-1].split()[0]
+    expect("Binding code: " in installed.stdout and len(code) >= 6, "no pairing code printed")
+    environment = (args.directory / ".env").read_text()
+    expect("YUKI_OWNER_PERSON_ID=" in environment, "the owner was not recorded")
+    with urllib.request.urlopen("http://127.0.0.1:8080/livez", timeout=10) as response:
+        expect(response.status == 200, "the Bot is not reachable on 127.0.0.1:8080")
+    again = deployment.run("sh", "deploy/pair.sh")
+    expect(len(again.strip()) >= 6, f"pair.sh gave no new code: {again}")
+    deployment.record("owner_pairing", code_length=len(code), reissued=bool(again.strip()))
 
     # F14/F15: the Bot's user talks to the Manager and the environment runs commands.
     result = deployment.terminal(

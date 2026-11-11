@@ -11,7 +11,8 @@ param(
     [switch]$Yes,
     [string]$Answers = "",
     [string]$Bundle = "",
-    [string]$CharacterName = ""
+    [string]$CharacterName = "",
+    [string]$OwnerName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -122,9 +123,12 @@ function Pull-Image([string]$Image) {
 
 $Image = "${BotImage}:$Version"
 Pull-Image $Image
-if (-not (Test-Path -LiteralPath $EnvPath)) {
+$First = -not (Test-Path -LiteralPath $EnvPath)
+if ($First) {
     if (-not $CharacterName -and -not $Yes) { $CharacterName = Read-Host "Character name [Yuki]" }
     if (-not $CharacterName) { $CharacterName = "Yuki" }
+    if (-not $OwnerName -and -not $Yes) { $OwnerName = Read-Host "Your name, as Yuki will know you [$env:USERNAME]" }
+    if (-not $OwnerName) { $OwnerName = if ($env:USERNAME) { $env:USERNAME } else { "me" } }
     if ($Yes) {
         if (-not $Answers -or -not (Test-Path -LiteralPath $Answers)) { Fail "A first install with -Yes needs -Answers FILE." }
         Get-Content -Raw -LiteralPath $Answers | & docker run --rm -i --platform $Platform --entrypoint yuki `
@@ -187,8 +191,12 @@ Write-Host -NoNewline "Waiting for Yuki and its sandbox"
 $Uid = Get-EnvValue "YUKI_RUNTIME_UID"; if (-not $Uid) { $Uid = "10001" }
 $Gid = Get-EnvValue "YUKI_RUNTIME_GID"; if (-not $Gid) { $Gid = "10001" }
 for ($Attempt = 0; ; $Attempt++) {
-    & docker compose exec -T --user "${Uid}:${Gid}" bot yuki setup environment-check *> $null
-    if ($LASTEXITCODE -eq 0) { break }
+    # Ready means both: the Bot answers (pairing uses its API) and it reaches the sandbox.
+    & docker compose exec -T bot python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3)" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & docker compose exec -T --user "${Uid}:${Gid}" bot yuki setup environment-check *> $null
+        if ($LASTEXITCODE -eq 0) { break }
+    }
     if ($Attempt -ge 120) {
         Write-Host ""
         & docker compose logs --tail 40 manager bot
@@ -199,4 +207,25 @@ for ($Attempt = 0; ; $Attempt++) {
 }
 Write-Host ""
 Write-Host "Yuki $Version is running in $InstallDir (sandbox profile: $SandboxProfile, runtime: $(Get-EnvValue 'YUKI_SANDBOX_RUNTIME'))." -ForegroundColor Green
+# A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
+# The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
+if ($First) {
+    $PairScript = @'
+python -c "import json, os, uuid; print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.uuid4()) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
+'@
+    $Paired = & docker compose exec -T -e "YUKI_OWNER_NAME=$OwnerName" bot sh -ec $PairScript
+    if ($LASTEXITCODE -eq 0 -and $Paired) {
+        $Person, $Code = "$Paired".Trim() -split ' ', 2
+        Set-EnvValue "YUKI_OWNER_PERSON_ID" $Person
+        $Port = Get-EnvValue "YUKI_PORT"; if (-not $Port) { $Port = "8080" }
+        Write-Host ""
+        Write-Host "Connect Yuki Desktop (https://github.com/Institute-of-Agent-Life/Yuki-Desktop):"
+        Write-Host "  1. Open Yuki Desktop and choose 連接已有 Yuki (Connect an existing Yuki)."
+        Write-Host "  2. Address: http://127.0.0.1:$Port on this computer. From another computer, reach"
+        Write-Host "     this port through Tailscale or HTTPS (docs/operations/tailscale-connection.zh-CN.md)."
+        Write-Host "  3. Binding code: $Code  (valid for 10 minutes; a new one: deploy/pair.sh on the Docker host)"
+    } else {
+        Write-Host "No pairing code was created; pair Yuki Desktop by hand with docs/operations/person-admin-control-plane-upgrade.md."
+    }
+}
 Write-Host "Release notes: https://github.com/$Repository/blob/v$Version/docs/releases/v$Version.md"

@@ -48,8 +48,11 @@ def test_source_free_release_archives_match_the_loose_assets(tmp_path):
             for name in archive.namelist()
         )
         assert f"{archive_root}/SOUL-Deployment.md" in archive.namelist()
-        for name in ("prepare.sh", "migrate-host-manager.sh"):
-            path = f"deploy/sandbox/{name}"
+        for path in (
+            "deploy/pair.sh",
+            "deploy/sandbox/prepare.sh",
+            "deploy/sandbox/migrate-host-manager.sh",
+        ):
             assert archive.read(f"{archive_root}/{path}") == (ROOT / path).read_bytes()
     with tarfile.open(tmp_path / f"{archive_root}.tar.gz", "r:gz") as archive:
         member = archive.extractfile(f"{archive_root}/docker-compose.yml")

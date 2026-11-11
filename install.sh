@@ -9,6 +9,8 @@ YES=false
 ANSWERS=""
 BUNDLE=""
 CHARACTER=""
+OWNER=""
+FIRST=false
 REPOSITORY="YuanYeYouTao/Yuki"
 BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki"
 ENVIRONMENT_IMAGE="ghcr.io/yuanyeyoutao/yuki-environment"
@@ -16,7 +18,8 @@ ENVIRONMENT_IMAGE="ghcr.io/yuanyeyoutao/yuki-environment"
 usage() {
     cat <<'EOF'
 Usage: install.sh [--dir PATH] [--version X.Y.Z] [--profile lite|headless|desktop]
-                  [--character-name NAME] [--yes [--answers FILE]] [--bundle FILE]
+                  [--character-name NAME] [--owner-name NAME]
+                  [--yes [--answers FILE]] [--bundle FILE]
 
 Run it again in the same directory to upgrade; .env and data are kept.
   --profile   sandbox profile: lite (terminal only), headless (adds a browser),
@@ -24,6 +27,8 @@ Run it again in the same directory to upgrade; .env and data are kept.
   --yes       no prompts; a first install then reads its model settings from
               --answers, a JSON file: {"protocol", "base_url", "api_key", "model"}
   --character-name  the character's name in a new deployment (default Yuki)
+  --owner-name      your name in a new deployment; you become its administrator
+                    and get a pairing code for Yuki Desktop (default: your login)
   --bundle    use this yuki-X.Y.Z-deploy.tar.gz instead of downloading the release
 EOF
 }
@@ -35,13 +40,14 @@ fail() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --dir|--version|--profile|--answers|--bundle|--character-name)
+        --dir|--version|--profile|--answers|--bundle|--character-name|--owner-name)
             [ "$#" -ge 2 ] || fail "$1 requires a value"
             case "$1" in
                 --dir) INSTALL_DIR=$2 ;;
                 --version) VERSION=$2 ;;
                 --profile) PROFILE=$2 ;;
                 --character-name) CHARACTER=$2 ;;
+                --owner-name) OWNER=$2 ;;
                 --answers) ANSWERS=$(cd "$(dirname "$2")" && pwd)/$(basename "$2") ;;
                 --bundle) BUNDLE=$(cd "$(dirname "$2")" && pwd)/$(basename "$2") ;;
             esac
@@ -139,11 +145,17 @@ image="$BOT_IMAGE:$VERSION"
 pull "$image"
 
 if [ ! -f .env ]; then
+    FIRST=true
     if [ -z "$CHARACTER" ] && [ "$YES" = false ]; then
         printf "Character name [Yuki]: "
         read -r CHARACTER
     fi
     CHARACTER=${CHARACTER:-Yuki}
+    if [ -z "$OWNER" ] && [ "$YES" = false ]; then
+        printf "Your name, as Yuki will know you [%s]: " "${USER:-me}"
+        read -r OWNER
+    fi
+    OWNER=${OWNER:-${USER:-me}}
     if [ "$YES" = true ]; then
         [ -n "$ANSWERS" ] && [ -f "$ANSWERS" ] || fail "a first install with --yes needs --answers FILE"
         docker run --rm -i --platform "$platform" --user "$(id -u):$(id -g)" --entrypoint yuki \
@@ -198,7 +210,11 @@ printf 'Waiting for Yuki and its sandbox'
 uid=$(env_value YUKI_RUNTIME_UID)
 gid=$(env_value YUKI_RUNTIME_GID)
 attempt=0
-until docker compose exec -T --user "${uid:-10001}:${gid:-10001}" bot \
+# Ready means both: the Bot answers (pairing uses its API) and it reaches the sandbox.
+until docker compose exec -T bot python -c \
+    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3)" \
+    >/dev/null 2>&1 \
+    && docker compose exec -T --user "${uid:-10001}:${gid:-10001}" bot \
     yuki setup environment-check >/dev/null 2>&1; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge 120 ]; then
@@ -211,5 +227,27 @@ until docker compose exec -T --user "${uid:-10001}:${gid:-10001}" bot \
 done
 printf '\nYuki %s is running in %s (sandbox profile: %s, runtime: %s).\n' \
     "$VERSION" "$INSTALL_DIR" "$PROFILE" "$(env_value YUKI_SANDBOX_RUNTIME)"
+
+# A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
+# The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
+if [ "$FIRST" = true ]; then
+    if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$OWNER" bot sh -ec '
+python -c "import json, os, uuid; print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.uuid4()) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
+  | yuki setup desktop-pair --deployment-root /app \
+  | python -c "import json, sys; result = json.load(sys.stdin); print(result[\"person_id\"], result.get(\"code\") or \"\")"'); then
+        set_env YUKI_OWNER_PERSON_ID "${paired%% *}"
+        printf '\nConnect Yuki Desktop (https://github.com/Institute-of-Agent-Life/Yuki-Desktop):\n'
+        printf '  1. Open Yuki Desktop and choose "連接已有 Yuki" (Connect an existing Yuki).\n'
+        port=$(env_value YUKI_PORT)
+        printf '  2. Address: http://127.0.0.1:%s on this computer. From another computer, reach\n' \
+            "${port:-8080}"
+        printf '     this port through Tailscale or HTTPS (docs/operations/tailscale-connection.zh-CN.md).\n'
+        printf '  3. Binding code: %s  (valid for 10 minutes; a new one: sh deploy/pair.sh)\n' \
+            "${paired#* }"
+    else
+        printf '\nNo pairing code was created; pair Yuki Desktop by hand with\n'
+        printf 'docs/operations/person-admin-control-plane-upgrade.md.\n'
+    fi
+fi
 printf 'Release notes: https://github.com/%s/blob/v%s/docs/releases/v%s.md\n' \
     "$REPOSITORY" "$VERSION" "$VERSION"
