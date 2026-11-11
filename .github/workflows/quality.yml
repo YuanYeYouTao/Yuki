@@ -9,8 +9,31 @@ permissions:
   contents: read
 
 jobs:
+  # Documentation and images alone skip the platform, image and isolation jobs.
+  # Lint and the test suites still run: some tests read the documents.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "$BASE" ] || git diff --name-only "$BASE" HEAD \
+            | awk '!/^(docs|img)\// && !/\.md$/ { code = 1 } END { exit !code }'; then
+            echo code=true >> "$GITHUB_OUTPUT"
+          else
+            echo code=false >> "$GITHUB_OUTPUT"
+          fi
+
   vec1:
     name: Vec1 native package (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -42,6 +65,8 @@ jobs:
 
   connector:
     name: Local Agent Connector (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -114,8 +139,11 @@ jobs:
       - name: Install media dependencies
         run: |
           sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          for attempt in 1 2 3 4 5; do
+            sudo apt-get -o Acquire::Retries=3 update && sudo apt-get install -y ffmpeg && break
+            [ "$attempt" -lt 5 ] || exit 1
+            sleep 30
+          done
       - run: ffmpeg -version && ffprobe -version
       - name: Test direct runtime and offline contracts
         run: >-
@@ -130,6 +158,8 @@ jobs:
 
   desktop-headed:
     name: Real headed desktop environment
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     env:
       DOCKER_BUILDKIT: "1"
@@ -198,6 +228,8 @@ jobs:
 
   sandbox-compose:
     name: Sandbox install with Compose (lite, then headless)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -236,6 +268,8 @@ jobs:
 
   native:
     name: Native CodeMode (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -256,8 +290,12 @@ jobs:
           if [ "$(dpkg --print-architecture)" = amd64 ]; then
             sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
           fi
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap apparmor-utils ffmpeg
+          for attempt in 1 2 3 4 5; do
+            sudo apt-get -o Acquire::Retries=3 update \
+              && sudo apt-get install -y bubblewrap apparmor-utils ffmpeg && break
+            [ "$attempt" -lt 5 ] || exit 1
+            sleep 30
+          done
       - name: Build the pinned native distribution
         run: |
           rustup toolchain install 1.96.0 --profile minimal
