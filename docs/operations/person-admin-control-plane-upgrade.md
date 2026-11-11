@@ -18,7 +18,7 @@ python scripts/prepare_person_authority.py --deployment-root /path/to/yuki --out
 
 Operator 仍使用现有独立 Bearer policy，格式见[示例](../../config/control-operators.example.toml)。已有部署保留自己的 policy 和 `token_env`；需要管理新能力时显式补对应 capability。角色名称不隐含授权。向导为新部署生成同一种 policy，将凭据保存到 `.env`，不打印凭据。管理不需要 QQ 账号。
 
-基础 Compose 的 Bot 仅 `expose: 8080`，没有向宿主发布该端口。直接在容器内调用 CLI；以下示例使用向导默认的 token 环境变量，自定义 policy 使用其声明的 `token_env`：
+新部署由安装器创建本人人物、授予管理员并给出桌面端配对码（之后可用 `sh deploy/pair.sh` 再取）。以下是手动处理时在容器内调用的 CLI；以下示例使用向导默认的 token 环境变量，自定义 policy 使用其声明的 `token_env`：
 
 ```sh
 docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_TOKEN" yuki admin health'

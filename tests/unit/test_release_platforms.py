@@ -82,6 +82,8 @@ def _assert_upgrade(commands, platform, deployment):
         "YUKI_SANDBOX_RUNTIME=runc",
     } <= set(environment)
     assert not any(line.startswith("YUKI_CHARACTER_NAME=") for line in environment)
+    # An existing deployment already has its owner: no new Person, grant or code.
+    assert not any("desktop-pair" in " ".join(command) for command in commands)
     assert (deployment / "docker-compose.yml").read_text(encoding="utf-8") == "name: released\n"
     assert (deployment / "docker-compose.override.yml").read_text() == "services: {}\n"
 
@@ -152,6 +154,9 @@ if arguments[:2] == ['info', '--format']:
         '{{{{.MemTotal}}}}': os.environ['DOCKER_MEMORY'],
         '{{{{json .Runtimes}}}}': os.environ['DOCKER_RUNTIMES'],
     }}[arguments[2]])
+if any('desktop-pair' in argument for argument in arguments):
+    owner = arguments[arguments.index('-e') + 1]
+    print('person-1 PAIR-' + owner.split('=', 1)[1])
 if arguments[0] == 'run' and 'desktop-configure' in arguments:
     sys.stdin.read()
     with open(os.path.join(os.environ['DEPLOY_DIRECTORY'], '.env'), 'a') as env:
@@ -236,6 +241,8 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
             str(answers),
             "--character-name",
             "雪",
+            "--owner-name",
+            "小林",
             "--bundle",
             str(bundle),
         ],
@@ -251,7 +258,14 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
     assert configure[-3:] == ["desktop-configure", "--deployment-root", "/deploy"]
     assert "-i" in configure and "-it" not in configure
     lines = (deployment / ".env").read_text(encoding="utf-8").splitlines()
+    # The owner becomes the first Person and administrator; Yuki Desktop gets a code.
+    pair = next(command for command in commands if "desktop-pair" in " ".join(command))
+    assert pair[:3] == ["compose", "exec", "-T"] and "YUKI_OWNER_NAME=小林" in pair
+    assert "superuser_request_id" in pair[-1]
+    assert "Binding code: PAIR-小林" in completed.stdout
+    assert "http://127.0.0.1:8080" in completed.stdout
     assert {
+        "YUKI_OWNER_PERSON_ID=person-1",
         "LLM_MODEL=configured",
         "YUKI_CHARACTER_NAME=雪",
         "YUKI_SANDBOX_PROFILE=headless",
