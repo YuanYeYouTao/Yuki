@@ -401,6 +401,16 @@ class PersistentManager:
             raise RuntimeError("environment_name_in_use")
         return cast(dict[str, Any], value)
 
+    def claim(self) -> None:
+        """Own the shared state volume before writing anything to it or to the code volume.
+
+        The volumes have fixed names, so a second Compose project on the same Docker engine
+        mounts the same state. It is refused here, before it can change settings or files.
+        """
+        if self.setting("project", self.project) != self.project:
+            raise RuntimeError("environment_name_in_use")
+        self.set_setting("project", self.project)
+
     def mount(
         self, volume: str, destination: str, *, subpath: str = "", readonly: bool = False
     ) -> str:

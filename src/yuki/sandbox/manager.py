@@ -105,9 +105,10 @@ async def main() -> None:
         browser_mode=browser_mode,
         packages=tuple(configured("packages").split()),
     )
-    for option in RESOURCES:
-        manager.set_setting("resource_" + option, configured(option, preset[option]))
     try:
+        manager.claim()
+        for option in RESOURCES:
+            manager.set_setting("resource_" + option, configured(option, preset[option]))
         await manager.recover()
         args.socket.parent.mkdir(parents=True, exist_ok=True)
         if args.socket.exists():

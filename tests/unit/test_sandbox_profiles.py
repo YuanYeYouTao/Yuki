@@ -109,6 +109,27 @@ async def test_only_this_projects_environment_is_adopted(tmp_path, labels, adopt
         await manager.close()
 
 
+async def test_a_second_project_never_writes_the_shared_state(tmp_path):
+    # F12: the volumes have fixed names; another project's Manager mounts the same state.
+    owner = manager_at(tmp_path, project="yuki")
+    owner.claim()
+    owner.set_setting("resource_memory_mib", "3072")
+    await owner.close()
+    other = manager_at(tmp_path, project="yuki-desktop-0123")
+    try:
+        with pytest.raises(RuntimeError, match="environment_name_in_use"):
+            other.claim()
+        assert other.setting("project") == "yuki"
+        assert other.setting("resource_memory_mib") == "3072"
+    finally:
+        await other.close()
+    again = manager_at(tmp_path, project="yuki")
+    try:
+        again.claim()
+    finally:
+        await again.close()
+
+
 @pytest.mark.parametrize(
     ("runtime", "runtimes", "error"),
     [
