@@ -75,20 +75,22 @@ docker commit yuki-environment "$checkpoint" >/dev/null
 echo "Saved the environment's rootFS as $checkpoint (private: it holds the old execd token)."
 
 sh "$scripts/prepare.sh"
+# The checkpoint's WORKDIR is a link into HOME, which these one-off containers lack.
 copy() {
-    docker run --rm --network none --entrypoint sh -v "$1:/from:ro" -v "$2:/to" "$checkpoint" -ec \
+    docker run --rm --network none -w / --entrypoint sh -v "$1:/from:ro" -v "$2:/to" "$checkpoint" -ec \
         'test -z "$(find /to -mindepth 1 -maxdepth 1 -print -quit)" || { echo "volume $0 is not empty" >&2; exit 1; }; cp -a /from/. /to/' "$2"
 }
 copy "$root/home" yuki-sandbox-home
 copy "$root/environment-jobs" yuki-sandbox-runtime
 if [ -d "$media" ]; then copy "$media" yuki-media-cache; fi
-# A host resolv.conf (gVisor cannot use Docker's DNS) now lives in HOME.
+# The host resolv.conf the environment used (gVisor cannot use Docker's DNS) moves into
+# HOME as it was; its own path keeps any other resolv.conf in HOME untouched.
 if [ -n "$resolver" ]; then
-    docker run --rm --network none --entrypoint sh -v "$resolver:/from:ro" \
+    docker run --rm --network none -w / --entrypoint sh -v "$resolver:/from:ro" \
         -v yuki-sandbox-home:/home "$checkpoint" -ec \
-        'mkdir -p /home/.config; [ -e /home/.config/resolv.conf ] || cp /from /home/.config/resolv.conf'
+        'mkdir -p /home/.config/yuki && cp /from /home/.config/yuki/resolv.conf'
 fi
-docker run --rm --network none --entrypoint python -v "$root:/old:ro" -v yuki-sandbox-state:/state \
+docker run --rm --network none -w / --entrypoint python -v "$root:/old:ro" -v yuki-sandbox-state:/state \
     "$checkpoint" -c '
 import sqlite3, sys
 source = sqlite3.connect("file:/old/jobs.sqlite3?mode=ro", uri=True)
@@ -123,7 +125,7 @@ case "$(old_value YUKI_SANDBOX_BROWSER_MODE)" in
     *) set_env YUKI_SANDBOX_PROFILE lite ;;
 esac
 set_env YUKI_SANDBOX_RUNTIME "$runtime"
-if [ -n "$resolver" ]; then set_env YUKI_SANDBOX_RESOLV_CONF .config/resolv.conf; fi
+if [ -n "$resolver" ]; then set_env YUKI_SANDBOX_RESOLV_CONF .config/yuki/resolv.conf; fi
 for name in MEMORY_MIB SWAP_MIB CPUS PIDS TMP_MIB SHM_MIB PACKAGES; do
     value=$(old_value "YUKI_SANDBOX_$name")
     if [ -n "$value" ]; then set_env "YUKI_SANDBOX_$name" "$value"; fi

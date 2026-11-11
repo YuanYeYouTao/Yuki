@@ -68,7 +68,8 @@ services:
   manager:
     image: ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}
     init: true
-    restart: on-failure
+    # Also after a host reboot; a Manager that refuses to start retries with Docker's backoff.
+    restart: unless-stopped
     entrypoint: ["python", "-m", "yuki.sandbox.manager"]
     user: "0:${YUKI_RUNTIME_GID:-10001}"
     network_mode: host

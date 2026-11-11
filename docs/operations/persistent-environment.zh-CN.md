@@ -53,7 +53,7 @@ HOME、运行记录、Manager 状态、代码文件与媒体缓存是 Docker 命
 
 环境接入 `yuki-sandbox-egress` bridge（`yuki-egress0`，关闭 IPv6），不存在时 Manager 创建。Manager 在 Docker 使用的 iptables 后端（含 DOCKER-USER 链的那个）中设置：环境不能主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制；只允许回应 Manager 自己的 execd 连接。Docker 改用 nftables 防火墙后端（没有 DOCKER-USER）时 Manager 报 `network_guard_unsupported`，不创建环境；Manager 不在宿主网络（如 rootless Docker）时报 `network_guard_missing`。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。`YUKI_SANDBOX_PROXY` 可为环境内程序设置 HTTP 代理，默认不设。
 
-Docker 自定义 bridge 的 `127.0.0.11` DNS 无法由 gVisor 访问。用 runsc 时把 HOME 内一个文件（如 `.config/resolv.conf`，环境内 `/home/yuki/.config/resolv.conf`）写好可达的 DNS，并设 `YUKI_SANDBOX_RESOLV_CONF=.config/resolv.conf`，Manager 创建环境时把它挂到 `/etc/resolv.conf`。runc 直接使用 Docker 的 DNS。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
+Docker 自定义 bridge 的 `127.0.0.11` DNS 无法由 gVisor 访问。用 runsc 时把 HOME 内一个文件（如 `.config/resolv.conf`，环境内 `/home/yuki/.config/resolv.conf`）写好可达的 DNS，并设 `YUKI_SANDBOX_RESOLV_CONF=.config/resolv.conf`，Manager 创建环境时把它挂到 `/etc/resolv.conf`。runc 直接使用 Docker 的 DNS。宿主走 fake-ip 代理（如 Clash/mihomo TUN）时，公共 DNS 会返回 `198.18.0.0/15` 的假地址，而这一段按非公网被防火墙丢弃；这时让环境使用能返回真实地址的解析器（例如环境内的本地 DNS 服务）。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
 
 所有 Main 入口、自动化和子 Agent 使用固定能力合同。工具目录不修改已提交声明，环境管理员能力不扩大人物、发送、委托或插件领域授权。可选 Code Mode 的 Monty 仍是无文件系统/网络的编排环境，不能当作持久终端别名。
 
@@ -92,7 +92,7 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 
 ### 状态与恢复
 
-execd token 与执行回执在 `yuki-sandbox-state` 的 `jobs.sqlite3`。状态卷丢失而环境仍在时，Manager 报 `manager_state_missing`，不生成新 token、不接管。Manager 恢复失败时退出并在日志写原因，由 `restart: on-failure` 重试；Bot 照常运行，终端类工具返回环境不可用。
+execd token 与执行回执在 `yuki-sandbox-state` 的 `jobs.sqlite3`。状态卷丢失而环境仍在时，Manager 报 `manager_state_missing`，不生成新 token、不接管。Manager 恢复失败时退出并在日志写原因，由 `restart: unless-stopped` 重试；Bot 照常运行，终端类工具返回环境不可用。
 
 ### 从宿主 Manager 迁移
 
