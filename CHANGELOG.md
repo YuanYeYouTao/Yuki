@@ -2,7 +2,7 @@
 
 ## 4.0.0
 
-从 `v3.9.0` 到 #607 的 **144 个已合并 PR**，按功能整理在 [4.0.0 发布说明](docs/releases/v4.0.0.md)（[English](docs/releases/v4.0.0.en.md)），逐项见 [PR 目录](docs/releases/v4.0.0-prs.md)。[下载 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) · [升级指南](docs/upgrade-4.0.0.md)。
+从 `v3.9.0` 到 #610 的 **146 个已合并 PR**，按功能整理在 [4.0.0 发布说明](docs/releases/v4.0.0.md)（[English](docs/releases/v4.0.0.en.md)），逐项见 [PR 目录](docs/releases/v4.0.0-prs.md)。[下载 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) · [升级指南](docs/upgrade-4.0.0.md)。
 
 - 一条命令安装和升级：`install.sh` / `install.ps1` 只需要 Docker 和 Compose。沙箱 Manager 进入 Compose，提供 `lite`、`headless`、`desktop` 三个档位；宿主机 systemd、loop 盘和 Squid 退出，旧部署用 `migrate-host-manager.sh` 迁移一次。
 - Yuki 自己的电脑新增 `computer` 和 `browser` 工具：截屏、点击、输入和浏览器操作，`desktop` 档可在 Yuki Desktop 里观看和接管。
@@ -14,7 +14,7 @@
 
 ### English
 
-**144 merged PRs** from `v3.9.0` through #607. See the [release notes](docs/releases/v4.0.0.en.md) and the [PR ledger](docs/releases/v4.0.0-prs.md); [download 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) and follow the [upgrade guide](docs/upgrade-4.0.0.en.md).
+**146 merged PRs** from `v3.9.0` through #610. See the [release notes](docs/releases/v4.0.0.en.md) and the [PR ledger](docs/releases/v4.0.0-prs.md); [download 4.0.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v4.0.0) and follow the [upgrade guide](docs/upgrade-4.0.0.en.md).
 
 - One-command install and upgrade: `install.sh` / `install.ps1` need only Docker and Compose. The sandbox Manager moves into Compose with `lite`, `headless` and `desktop` profiles; the host systemd units, loop disks and Squid are gone, and existing deployments migrate once with `migrate-host-manager.sh`.
 - Yuki's own computer gains `computer` and `browser` tools for screenshots, clicks, typing and browser actions; with the `desktop` profile you can watch and take over in Yuki Desktop.
