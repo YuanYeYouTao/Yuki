@@ -55,7 +55,26 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 
 ## 安装
 
-宿主机只需要 Docker 和 Docker Compose 插件，不用装别的。Docker 须运行 Linux 容器，架构为 amd64 或 arm64。
+先选一种方式：
+
+| 我想… | 怎么装 |
+| --- | --- |
+| 在自己电脑上用，最简单 | 装 Docker，再用 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 的「在本機部署 Yuki」 |
+| 放在服务器上 24 小时在线，接 QQ、飞书或 Telegram | 在服务器上运行安装器，再用它给出的绑定码连接 Yuki Desktop |
+
+不熟悉命令行，也可以[让 AI 帮你装](#让-ai-帮你安装)。
+
+### 方式一：在自己电脑上
+
+1. 安装 Docker：macOS 用 [Docker Desktop](https://docs.docker.com/desktop/)、[OrbStack](https://orbstack.dev/) 或 [Colima](https://github.com/abiosoft/colima)；Windows 用 Docker Desktop（WSL 2）；Linux 用 Docker Engine。
+2. 下载并打开 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop)，选「在本機部署 Yuki」。
+3. 选一个存放数据的目录，填 Yuki 的名字、你的名字和模型服务（可从「服務預設」里选），再选「Yuki 的電腦」的大小，点「開始部署」。
+
+部署完成后桌面端会自动连上，直接开始对话。
+
+### 方式二：在服务器上
+
+服务器只需要 Docker 和 Compose 插件（Linux 容器，amd64 或 arm64）。
 
 ```sh
 curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.sh
@@ -69,29 +88,45 @@ Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装器默认装到当前目录下的 `yuki/`（`--dir` 可指定）。它会下载并校验发布包，用配置向导引导你填写模型连接、搜索、是否启用 QQ 等设置，选择沙箱档位，创建数据卷，启动全部服务，并等到 Yuki 的环境可用后才结束。
+安装器会依次问你：Yuki 的名字、你的名字、模型连接（以及是否接 QQ 等）、Yuki 的电脑要多大。然后它启动全部服务，等环境就绪，最后显示：
 
-| 沙箱档位 | 内容 | 内存约 |
+```text
+Connect Yuki Desktop:
+  1. Open Yuki Desktop and choose "連接已有 Yuki".
+  2. Address: http://127.0.0.1:8080 on this computer. ...
+  3. Binding code: XXXXXXXX  (valid for 10 minutes; a new one: sh deploy/pair.sh)
+```
+
+在 Yuki Desktop 选「連接已有 Yuki」，填入地址和绑定码，你就成为这个 Yuki 的管理员。绑定码 10 分钟内有效，过期了在部署目录运行 `sh deploy/pair.sh` 再取一个。
+
+Yuki 只在服务器本机的 `127.0.0.1:8080` 上监听，不暴露到公网。从自己的电脑连接服务器，推荐用 [Tailscale](docs/operations/tailscale-connection.zh-CN.md)；有域名也可以配 [HTTPS](docs/operations/desktop-local-deployment.zh-CN.md)。
+
+### Yuki 的电脑选多大
+
+| 大小 | 内容 | 内存约 |
 | --- | --- | --- |
 | `lite` | 终端和文件 | 512 MiB |
 | `headless` | 再加一个无头浏览器 | 1 GiB |
 | `desktop` | 再加一个可观看、可接管的桌面 | 3 GiB |
 
-安装器按 Docker 可用内存给出推荐档位，你可以改选。如果 Docker 已注册 gVisor（`runsc`，需带 `--overlay2=none`），沙箱用 gVisor 隔离，否则用默认的 `runc`；首次安装时选定并写入 `.env`，之后不会自动改变。之后要换档，改 `.env` 里的 `YUKI_SANDBOX_PROFILE`，再执行 `docker compose up -d`；换到更大的档位会在原环境里补装软件，已有文件和安装都保留。
+安装器按机器内存给出推荐，你可以改选。之后要换，改部署目录 `.env` 里的 `YUKI_SANDBOX_PROFILE`，再执行 `docker compose up -d`；换大会在原环境里补装软件，已有文件都保留。Docker 已注册 gVisor（`runsc`，带 `--overlay2=none`）时用它隔离，否则用默认的 `runc`。
 
-无人值守安装（只配置主模型，不启用 QQ）：
+无人值守安装（适合脚本或 AI 代为执行）：
 
 ```sh
-sh install.sh --yes --profile lite --answers model.json
+sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.json
 ```
 
-`model.json` 的格式为 `{"protocol": "...", "base_url": "...", "api_key": "...", "model": "..."}`，`protocol` 取 `chat_completions`、`responses`、`anthropic_messages` 或 `gemini`。不加 `--yes` 时安装器需要在终端里交互运行。
+`model.json` 写模型连接：`{"protocol": "chat_completions", "base_url": "...", "api_key": "...", "model": "..."}`，`protocol` 取 `chat_completions`、`responses`、`anthropic_messages` 或 `gemini`。装完删除这个文件。
 
-装好之后：
+### 让 AI 帮你安装
 
-- **给角色起名**（首次一次）：`docker compose run --rm --entrypoint yuki bot init-db --character-name "Yuki"`。人格写在 `character/SOUL.md`，可以随时编辑。
-- **成为管理员并连接 Desktop**：配置向导结束时会打印创建人物、授予超级管理员和配对设备的命令，详见[人物授权](docs/operations/person-admin-control-plane-upgrade.md)。远程使用 Desktop 需要给服务配一个 HTTPS 地址，见[桌面部署与远程入口](docs/operations/desktop-local-deployment.zh-CN.md)或 [Tailscale 私有接入](docs/operations/tailscale-connection.zh-CN.md)。
-- **接入聊天平台**：QQ 使用 [SnowLuma](docs/deployment/snowluma.md)，在 Desktop 的电脑窗口扫码登录；Telegram 在 `.env` 填 `TELEGRAM_BOT_TOKEN`；飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)。只用 Telegram、飞书、Lark 或个人客户端时不需要 QQ 账号。
+把[安装提示词](docs/install-with-ai.md)整段复制给能操作终端的 AI 助手（如 Claude Code、Codex），它会检查环境、带你装 Docker、运行安装器并核对结果。密钥由你自己在终端里输入，不要贴进对话。
+
+### 装好之后
+
+- **人格**：编辑部署目录里的 `character/SOUL.md`。
+- **聊天平台**：QQ 使用 [SnowLuma](docs/deployment/snowluma.md)，在 Desktop 的电脑窗口扫码登录；Telegram 在 `.env` 填 `TELEGRAM_BOT_TOKEN`；飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)。
 - **连接你自己的电脑**：在 Yuki Desktop 的「設定 → 這台電腦」里连接，见[本机连接器](docs/operations/local-agent-connector.zh-CN.md)。
 
 ## 升级
@@ -104,6 +139,7 @@ sh install.sh --yes --profile lite --answers model.json
 | --- | --- |
 | [使用帮助](docs/help.md) | 聊天命令、模型配置和日常管理 |
 | [4.0.0 更新说明](docs/releases/v4.0.0.md) | 这一版的全部变化 |
+| [让 AI 帮你安装](docs/install-with-ai.md) | 复制给能操作终端的 AI 助手的安装提示词 |
 | [4.0 升级指南](docs/upgrade-4.0.0.md) | 从 3.9.0 或 4.0 开发版升级 |
 | [持久工作环境](docs/operations/persistent-environment.zh-CN.md) | 沙箱档位、资源、网络和迁移 |
 | [桌面电脑与有头环境](docs/operations/desktop-computer.zh-CN.md) | Yuki 自己电脑上的截屏、点击和浏览器 |

@@ -55,7 +55,26 @@ The evaluation began on October 20, 2026 at fixed revision `313b6b9b`, before th
 
 ## Install
 
-The host needs Docker with the Compose plugin and nothing else. Docker must run Linux containers on amd64 or arm64.
+Pick one:
+
+| I want to… | How |
+| --- | --- |
+| Use it on my own computer — the simplest way | Install Docker, then "在本機部署 Yuki" (Deploy Yuki locally) in [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) |
+| Run it on a server around the clock, with QQ, Feishu or Telegram | Run the installer on the server, then connect Yuki Desktop with the binding code it prints |
+
+Not comfortable with the command line? [Let an AI assistant install it](#let-an-ai-assistant-install-it).
+
+### On your own computer
+
+1. Install Docker: on macOS [Docker Desktop](https://docs.docker.com/desktop/), [OrbStack](https://orbstack.dev/) or [Colima](https://github.com/abiosoft/colima); on Windows Docker Desktop (WSL 2); on Linux Docker Engine.
+2. Download and open [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) and choose "在本機部署 Yuki".
+3. Choose a data directory, enter Yuki's name, your name and a model service (or pick one from the presets), choose the size of Yuki's computer, and start.
+
+When it finishes, Yuki Desktop connects by itself and you can start talking.
+
+### On a server
+
+The server needs Docker with the Compose plugin only (Linux containers, amd64 or arm64).
 
 ```sh
 curl -fsSLO https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/install.sh
@@ -69,30 +88,46 @@ Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.0/
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer uses `yuki/` under the current directory unless you pass `--dir`. It downloads and verifies the release bundle, runs a setup wizard for the model connection, search, whether to enable QQ and other settings, asks for a sandbox profile, creates the data volumes, starts everything, and finishes only once Yuki's environment is ready.
+The installer asks for Yuki's name, your name, the model connection (and whether to use QQ and so on) and the size of Yuki's computer. It starts everything, waits until the environment is ready, and ends with:
 
-| Sandbox profile | Contents | Memory, roughly |
-| --- | --- | --- |
-| `lite` | Terminal and files | 512 MiB |
-| `headless` | Adds a headless browser | 1 GiB |
-| `desktop` | Adds a desktop you can watch and take over | 3 GiB |
-
-The installer suggests a profile from the memory Docker reports; you can pick another. If Docker has gVisor registered (`runsc` with `--overlay2=none`), the sandbox runs under gVisor; otherwise it uses the default `runc`. That choice is made on the first install, written to `.env`, and never changed silently. To switch profiles later, edit `YUKI_SANDBOX_PROFILE` in `.env` and run `docker compose up -d`. Moving to a larger profile installs the extra software into the existing environment; files and earlier installs stay.
-
-Unattended install (main model only, no QQ):
-
-```sh
-sh install.sh --yes --profile lite --answers model.json
+```text
+Connect Yuki Desktop:
+  1. Open Yuki Desktop and choose "連接已有 Yuki".
+  2. Address: http://127.0.0.1:8080 on this computer. ...
+  3. Binding code: XXXXXXXX  (valid for 10 minutes; a new one: sh deploy/pair.sh)
 ```
 
-`model.json` looks like `{"protocol": "...", "base_url": "...", "api_key": "...", "model": "..."}`, where `protocol` is `chat_completions`, `responses`, `anthropic_messages` or `gemini`. Without `--yes`, the installer must run in an interactive terminal.
+In Yuki Desktop choose "連接已有 Yuki" (Connect an existing Yuki) and enter the address and code; you become this Yuki's administrator. The code is valid for 10 minutes; run `sh deploy/pair.sh` in the deployment directory for a new one.
 
-After installing:
+Yuki listens on the server's own `127.0.0.1:8080` only, never on the public internet. To reach a server from your computer, [Tailscale](docs/operations/tailscale-connection.zh-CN.md) is the easiest; with a domain you can also set up [HTTPS](docs/operations/desktop-local-deployment.zh-CN.md).
 
-- **Name the character** (once): `docker compose run --rm --entrypoint yuki bot init-db --character-name "Yuki"`. The persona lives in `character/SOUL.md` and can be edited at any time.
-- **Become the administrator and connect Desktop**: the setup wizard ends by printing the commands that create your person, grant superuser status and pair a device; see [Person authorization](docs/operations/person-admin-control-plane-upgrade.md) (Chinese). Using Desktop remotely needs an HTTPS address for the service; see [Desktop deployment and remote access](docs/operations/desktop-local-deployment.zh-CN.md) or [Tailscale private access](docs/operations/tailscale-connection.zh-CN.md) (Chinese).
-- **Connect chat platforms**: QQ goes through [SnowLuma](docs/deployment/snowluma.md); scan the login code in Desktop's computer window. For Telegram, set `TELEGRAM_BOT_TOKEN` in `.env`. Feishu and Lark are covered in the [setup guide](docs/operations/feishu.zh-CN.md) (Chinese). Telegram, Feishu, Lark or personal clients alone need no QQ account.
-- **Connect your own computer** from Yuki Desktop under Settings → This Computer; see the [local connector guide](docs/operations/local-agent-connector.zh-CN.md) (Chinese).
+### How big Yuki's computer is
+
+| Size | What it has | Memory, roughly |
+| --- | --- | --- |
+| `lite` | Terminal and files | 512 MiB |
+| `headless` | Plus a headless browser | 1 GiB |
+| `desktop` | Plus a desktop you can watch and take over | 3 GiB |
+
+The installer recommends a size from the machine's memory; you can choose another. To change it later, edit `YUKI_SANDBOX_PROFILE` in the deployment's `.env` and run `docker compose up -d`; a larger size installs what it needs into the existing environment and keeps all files. If Docker has gVisor (`runsc` with `--overlay2=none`) the environment uses it, otherwise the default `runc`.
+
+Unattended install (for scripts, or an AI assistant running it for you):
+
+```sh
+sh install.sh --yes --profile lite --owner-name "Your name" --answers model.json
+```
+
+`model.json` holds the model connection: `{"protocol": "chat_completions", "base_url": "...", "api_key": "...", "model": "..."}`, where `protocol` is `chat_completions`, `responses`, `anthropic_messages` or `gemini`. Delete the file afterwards.
+
+### Let an AI assistant install it
+
+Copy the [installation prompt](docs/install-with-ai.en.md) into an AI assistant that can use a terminal (such as Claude Code or Codex). It checks the machine, helps you install Docker, runs the installer and verifies the result. Type secrets into the terminal yourself; never paste them into the chat.
+
+### After installing
+
+- **Personality**: edit `character/SOUL.md` in the deployment directory.
+- **Chat platforms**: QQ uses [SnowLuma](docs/deployment/snowluma.md) — scan the login code in Yuki Desktop's computer window; for Telegram set `TELEGRAM_BOT_TOKEN` in `.env`; for Feishu and Lark see [the guide](docs/operations/feishu.zh-CN.md).
+- **Your own computer**: connect it in Yuki Desktop under "設定 → 這台電腦", see the [local connector](docs/operations/local-agent-connector.zh-CN.md).
 
 ## Upgrade
 
