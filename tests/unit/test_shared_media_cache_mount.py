@@ -103,7 +103,7 @@ async def test_cache_reads_copy_and_publication_reuse_safe_fd_without_writing_ca
 async def test_new_environment_mounts_same_cache_read_only_without_recreating_old_environment(
     tmp_path, monkeypatch
 ):
-    owner, cache = manager_at(tmp_path)
+    owner, _cache = manager_at(tmp_path)
     current = {
         "Id": "preserved-rootfs",
         "State": {"Running": True, "StartedAt": "original-start"},
@@ -111,7 +111,9 @@ async def test_new_environment_mounts_same_cache_read_only_without_recreating_ol
         "NetworkSettings": {"Networks": {"egress": {"IPAddress": "172.30.0.2"}}},
         "Mounts": [
             {
-                "Source": str(cache),
+                "Type": "volume",
+                "Name": "yuki-media-cache",
+                "Source": "/var/lib/docker/volumes/yuki-media-cache/_data",
                 "Destination": "/home/yuki/inputs/media-cache",
                 "RW": False,
             }
@@ -127,7 +129,10 @@ async def test_new_environment_mounts_same_cache_read_only_without_recreating_ol
         await owner.recover()
         command = owner.command.await_args.args
         assert command[:2] == ("docker", "create") and command[-1] == "private-complete-rootfs"
-        assert f"type=bind,src={cache},dst=/home/yuki/inputs/media-cache,readonly" in command
+        # The Bot's cache volume by name; Docker resolves it, not a Manager path.
+        assert (
+            "type=volume,src=yuki-media-cache,dst=/home/yuki/inputs/media-cache,readonly" in command
+        )
         assert owner.media_cache_shared and owner.ready
         assert owner.environment_status()["media_cache"] == {
             "path": "/inputs/media-cache",

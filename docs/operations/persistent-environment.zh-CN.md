@@ -2,13 +2,13 @@
 
 [English](persistent-environment.md)
 
-Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。工作文件在发送时冻结为不可变交付快照，入站附件从共享缓存直接复制到普通工作区。
+Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在 Docker 卷 `yuki-sandbox-home` 的 `workspace/`，环境内为 `/workspace`。工作文件在发送时冻结为不可变交付快照，入站附件从共享缓存直接复制到普通工作区。
 
 所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在 2 GiB HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用`workspace_inspect` 选读或 `send(path="/inputs/media-cache/...")` 发送；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
 
 ## 运行时与工具
 
-可信宿主 Manager 管理常驻 gVisor 容器 `yuki-environment`，标签为 `io.yuki.sandbox=persistent-v1`。execd 固定为 `441042c288a3eacbe93b36236a9baf6f6254ad4d`，镜像保留 Apache 许可证。终端和服务共用 execd PTY 与原 Supervisor，没有第二套安装执行器或 sudo 审批。
+Compose 服务 `manager` 管理常驻容器 `yuki-environment`，标签为 `io.yuki.sandbox=persistent-v1` 与所属 Compose 项目 `io.yuki.sandbox.project`。Manager 与 Bot 用同一镜像、同一版本，经挂载的 docker.sock 控制 Docker，在宿主网络上设置环境的防火墙；Bot 只经 `manager.sock` 访问它。execd 固定为 `441042c288a3eacbe93b36236a9baf6f6254ad4d`，镜像保留 Apache 许可证。终端和服务共用 execd PTY 与原 Supervisor，没有第二套安装执行器或 sudo 审批。
 
 环境内执行身份为 root，`HOME=/home/yuki`。Bash、Python、Node.js、Git、curl、jq、rg、压缩和编译工具已预装；apt、pip/npm、任意 shell 和环境内文件操作直接通过终端完成。pip user base、npm prefix 和缓存保留原家目录。环境内管理员能力不提供宿主 Docker 控制、Bot 数据库或凭据。
 
@@ -45,116 +45,70 @@ external_agent 已移出环境工具和 Manager 新任务路径。用户电脑�
 
 Manager 在派发前持久化原请求、执行意图和 execd 会话标识。断线后先检查原生退出记录，否则接回原会话；原 `started` 标记阻止再次执行。PTY 暂未运行、握手超时、旧安装缺 heartbeat 都不能按年龄推断失败。提交未知时查原请求，不盲目重提。Bot 持久化完成回执后才确认 outbox；丢确认或重复读取不重开命令、不重置预算。
 
-容器 ID 与启动时间共同组成环境代际。Bot/Manager 重启保留原容器和进程；实际环境重建后，旧普通任务记录真实中断，登记服务按策略恢复。容器 restart policy 为 `no`，由 Manager 在文件系统挂载后启动。升级 Manager 不会暗中删除或重建原环境。
+容器 ID 与启动时间共同组成环境代际。Bot/Manager 重启保留原容器和进程；实际环境重建后，旧普通任务记录真实中断，登记服务按策略恢复。容器 restart policy 为 `no`，由 Manager 完成自身检查后启动。升级 Manager 不会暗中删除或重建原环境。
 
-默认部署保留 2 GiB 家目录 ext4、独立 128 MiB 运行记录 ext4，以及 Docker 的 512 MiB 内存、额外 128 MiB swap、1 CPU、128 进程和有界 `/tmp`。这些是部署资源，不是任务接纳评分。没有主要执行 1 个、PTY 4 个、服务 2 个、低内存 256 MiB、安装增量 1 GiB、队列 4 或未确认完成 512 项门槛。容量、进程和 OOM 结果按真实 OS/Docker 事实返回。每任务保留两个 4 MiB 日志段；回收已完成日志和七天前已确认的运行文件，SQLite 执行与完成回执独立保留。
+资源按档位给初值（见下文），每项可在 `.env` 单独覆盖。这些是部署资源，不是任务接纳评分；容量、进程和 OOM 结果按真实 OS/Docker 事实返回。用 runc 时超出内存只结束超限的进程；用 runsc（gVisor）时整个环境退出，按真实代际中断处理。每任务保留两个 4 MiB 日志段；回收已完成日志和七天前已确认的运行文件，SQLite 执行与完成回执独立保留。
 
-新环境接入现有 `yuki-sandbox-egress` 公网 Docker bridge。宿主防火墙阻止环境主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制。execd 不发布宿主端口，只允许回应宿主已建立的控制连接。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。该 bridge 关闭 IPv6。默认不强制 HTTP 代理，仅运维显式 `--proxy` 配置代理。旧内网 Squid bridge 可为部署过渡保留，新环境不依靠它出公网。
+HOME、运行记录、Manager 状态、代码文件与媒体缓存是 Docker 命名卷，没有单独的容量上限，与 Docker 和 Bot 数据共用磁盘；`environment_status.storage` 报告这块共享磁盘的容量与剩余（`shared_disk: true`）。环境写满磁盘会让 Bot 写库失败，按真实错误报告。
 
-Docker 自定义 bridge 的 `127.0.0.11` loopback DNS 无法由 gVisor 访问，单加 `--dns` 也不能绕过。Manager 可指定 `--resolv-conf /var/lib/yuki-sandbox/home/.config/resolv.conf`，将该普通文件挂载到 `/etc/resolv.conf`。创建环境前填入部署现场可达的 DNS；程序没有内置解析器或自动兜底。文件可由环境 root 从 `/home/yuki/.config/resolv.conf` 修改，随原持久 HOME 保留。此选项仅作用于容器创建，不替换已存在环境。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
+环境接入 `yuki-sandbox-egress` bridge（`yuki-egress0`，关闭 IPv6），不存在时 Manager 创建。Manager 在 Docker 使用的 iptables 后端（含 DOCKER-USER 链的那个）中设置：环境不能主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制；只允许回应 Manager 自己的 execd 连接。Docker 改用 nftables 防火墙后端（没有 DOCKER-USER）时 Manager 报 `network_guard_unsupported`，不创建环境；Manager 不在宿主网络（如 rootless Docker）时报 `network_guard_missing`。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。`YUKI_SANDBOX_PROXY` 可为环境内程序设置 HTTP 代理，默认不设。
+
+Docker 自定义 bridge 的 `127.0.0.11` DNS 无法由 gVisor 访问。用 runsc 时把 HOME 内一个文件（如 `.config/resolv.conf`，环境内 `/home/yuki/.config/resolv.conf`）写好可达的 DNS，并设 `YUKI_SANDBOX_RESOLV_CONF=.config/resolv.conf`，Manager 创建环境时把它挂到 `/etc/resolv.conf`。runc 直接使用 Docker 的 DNS。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
 
 所有 Main 入口、自动化和子 Agent 使用固定能力合同。工具目录不修改已提交声明，环境管理员能力不扩大人物、发送、委托或插件领域授权。可选 Code Mode 的 Monty 仍是无文件系统/网络的编排环境，不能当作持久终端别名。
 
-## 安装、升级与回退
+## 安装、档位与升级
 
-### 媒体直拷与统一发送升级
+### 安装
 
-本次 Bot 与 Manager 须配套更新：模型只调用 `send`，Manager 保留私有发布并新增直接复制，旧 checkout 和导入迁移不再接受新调用。保留原 Manager 数据库、`environment_mutations`、HOME、图库、工作目录和已发布 artifact；已有任务、付费协议和真实回执不改名、不重放。工具合同切换形成合法新链，不修改已提交的工具声明或承诺复用旧前缀缓存。
-
-私有 artifact 根上的 `.artifact.lock` 是 Bot 与 Manager 共用的共享/独占文件锁。两边都切换到这把锁之后才能启用 pending 回收；旧发布者不持锁时，不要让新回收和它同时写。切换前按真实生命周期收拢两边的文件工作。锁文件不写 PID，正常运行不删除、不覆盖。Bot 的真实 UID 和 Manager 都要能打开它，不因此放宽整个 artifact 根的权限。
-
-源码的图库指引已更新；已有 `/workspace/stickers/AGENT.md` 是用户文件，升级时只将其中失效的模型工具名改为 `send`、Code 投影名改为 `yuki_send`，保留其余正文。不要用仓库整份文件覆盖用户指引，不批量改旧 TaskSpec 或通知的原参数。
-
-旧中转快照清退使用 [离线脚本](../../scripts/retire_media_snapshots.py)。它不停止服务，也不提供常驻 GC；在完整停写副本上审计，或在 Bot、Manager 与环境终端均停写的窗口执行。主业务库、Manager 数据库、artifact 根、普通工作目录和私有协议资料须来自同一部署：
+`install.sh`（Windows 为 `install.ps1`）一次完成：下载并校验发布包，首次配置角色与模型，选档位，确定运行时，创建数据卷（`deploy/sandbox/prepare.sh`），拉取镜像，`docker compose up -d`，再以 Bot 的用户运行 `yuki setup environment-check` 等环境就绪。宿主只需要 Docker 与 Compose；不再安装 systemd unit、venv、loop 盘或同步脚本。
 
 ```sh
-python scripts/retire_media_snapshots.py \
-  --workspace /copy/bot/workspace \
-  --home-workspace /copy/sandbox/home/workspace \
-  --database /copy/bot/data/yuki.db \
-  --manager-database /copy/sandbox/jobs.sqlite3 \
-  --protocol-root /copy/bot/data/work-protocol \
-  --tool-artifacts /copy/bot/data/tool_artifacts > media-snapshot-audit.json
+sh install.sh --dir ~/yuki                       # 交互
+sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交互
 ```
 
-这些是示例路径，Manager 数据库取实际配置，不能猜文件名；`protocol-root` 是业务数据库父目录下的 `work-protocol`，`tool-artifacts` 是 Bot 进程当前工作目录的 `data/tool_artifacts`，均不能指到普通 artifact 根。独立插件或额外持久引用用重复的 `--extra-database`、`--extra-reference-root` 传入实际材料。
+`model.json` 与 Desktop 的配置输入相同：`{"protocol", "base_url", "api_key", "model"}`。在同一目录再运行一次即升级：替换发布文件，保留 `.env`、数据与 `docker-compose.override.yml`（自定义改动放这里）。卷是 external，`docker compose down -v` 不会删除它们。一台 Docker 只运行一个 Yuki 沙箱：另一个 Compose 项目的 Manager 遇到不属于自己的环境时报 `environment_name_in_use`，不接管。
 
-默认只输出候选、真实引用、同字节普通文件与保留原因。显式 `--apply` 会重新扫描，再清退确证无引用、且普通文件仍有相同字节的 `sticker:`/`attachment:` 中转快照；图库原图、JSON 和原 `environment_mutations` 保留。Social 成功或未知、实际发布、Work/Client/插件与私有已付资料中的引用都会保留快照；材料缺失不宣布无引用。不承诺回收全部候选，分别记录候选与删除数量。这是显式升级操作，本轮开发未执行生产清退。
+### 档位
 
-### Manager 安装
+| 设置 | `lite` | `headless` | `desktop` |
+| --- | --- | --- | --- |
+| 环境镜像 | `yuki-environment:<版本>` | `yuki-environment:<版本>-desktop` | `yuki-environment:<版本>-desktop` |
+| 浏览器 | 无 | 无头 Chromium | Chromium + Xvnc 桌面 |
+| 内存 / 额外 swap | 512 / 128 MiB | 1024 / 256 MiB | 3072 / 512 MiB |
+| CPU / 进程数 | 1 / 256 | 1.5 / 1024 | 2 / 2048 |
+| /tmp / /dev/shm | 128 / 64 MiB | 256 / 128 MiB | 512 / 256 MiB |
 
-配置安装器不安装宿主 Manager。Linux Docker 宿主须有 Python 3.12、已验证的 runsc、环境镜像、bridge/防火墙和挂载好的家目录/运行记录文件系统。Docker Desktop 或 Bot healthy 不证明这些依赖可用。
+安装器按 Docker 报告的内存推荐（低于 2 GiB `lite`，2–4 GiB `headless`，更多 `desktop`），由用户选，不拦截；Desktop 本机部署默认 `desktop`。`computer`、`browser` 工具三档都声明：`lite` 返回 `browser_unavailable`，`headless` 下 `computer` 返回 `display_unavailable`。`environment_status` 报告档位、模式、运行时、安装结果与实际限额。
 
-部署包带有 `deploy/sandbox/` 的宿主部署入口。Manager 源码从显式选中的 Bot 容器导出，不另选一个 checkout：先启动本次 Bot，再在 Linux Docker 宿主、实际 Compose 部署目录执行。首次安装先建立原 Manager venv：
+换档：改 `.env` 的 `YUKI_SANDBOX_PROFILE`，再 `docker compose up -d`。换大时 Manager 在原 rootFS 上安装所需 Debian 包（结果写入 `programs`，失败保留原安装、下次启动重试）；换小只改模式与资源，已装软件和浏览器资料保留。正在运行的桌面服务以新运行按新模式重启。内存、swap、CPU、进程数用 `docker update` 即时生效，Docker 拒绝时原文写入 `limits_update_error`；/tmp 与 /dev/shm 只在明确重建时生效，未生效项列在 `recreate_required`。
 
-```sh
-sudo python3 -m venv /opt/yuki-sandbox/venv
-sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r deploy/sandbox/requirements-manager.txt
-sudo sh deploy/sandbox/install-manager.sh \
-  --deployment-root "$PWD" --bot-container "$(docker compose ps --quiet bot)"
-docker compose exec --user 10001:10001 bot yuki setup environment-check
-```
+运行时 `YUKI_SANDBOX_RUNTIME` 在首次安装时按 Docker 是否注册了带 `--overlay2=none` 的 runsc 写成 `runsc` 或 `runc`，之后保持，不会隐式从 gVisor 换成 runc。配置 runsc 但 Docker 没有时报 `gvisor_unavailable`；runsc 缺 `--overlay2=none` 时报 `gvisor_overlay_unsupported`（否则环境内安装不进 Docker 层，检查点会丢软件）。
 
-使用自定义 Compose 文件时，容器选择和最终检查都沿同一条实际 `-f` 链；也可直接给 `--bot-container` 传入已核实的容器名或 ID。该参数必填，不再从旧 `/opt/yuki-sandbox/src` 猜代码版本。
+### 代码文件
 
-在 Mac 的 Colima Linux VM 内安装时加 `--colima`。Colima 的数据盘在 `cloud-final.service` 中挂载，仅写 `RequiresMountsFor` 不能代替这一启动依赖。安装器给存储和 Manager 加入仓库提供的 `colima-boot.conf`，等待实际初始化完成，并把开机目标从 `multi-user.target` 改为 `cloud-init.target`，避免与 cloud-final 的顺序形成循环。已有 unit、资源配置和数据保持原样。首次挂载前先完成数据恢复；不要把非空 HOME 目录当作可覆盖的挂载点。
+环境内 Yuki 自己的程序（Supervisor、表情索引、桌面服务、浏览器驱动、`yuki-computer` 等，见 `persistent.ENVIRONMENT_FILES`）不在环境镜像里。Manager 每次启动把本版本的文件写入 `yuki-sandbox-code` 卷，环境把每个文件只读挂到原路径。原地改写保持 inode，运行中的环境与旧 rootFS 检查点都随 Bot 升级拿到当前代码，不需要重建。
 
-如果 Bot Compose 也由 systemd 启动，其 unit 应依赖并排在 Docker 和 `yuki-sandbox.service` 之后，设置 `WantedBy=cloud-init.target docker.service` 并重新 enable。Bot/QQ 的容器使用 `restart: on-failure`，让 systemd 决定开机顺序；`always`/`unless-stopped` 会让 Docker 在卷就绪前自行启动它们。带 SnowLuma profile 的 unit 需设置 `Environment=COMPOSE_PROFILES=snowluma`。宿主用 `colima start --profile NAME --activate=true --foreground` 交给登录服务管理，可在重启 profile 后恢复 Docker context；登录服务并不等于 Mac 登录前开机服务。
+### 状态与恢复
 
-Colima 还会在 cloud-final 中停止 Docker，再由宿主 CLI 启动。drop-in 因此也把两个 unit 启用到 `docker.service`：停止 Docker 会取消尚未完成的 Manager 启动，单靠已经到达的 `cloud-init.target` 不会再次发起启动。更新 drop-in 后需重新 enable 原 unit；Docker 重启不停止存储或卸载卷。
+execd token 与执行回执在 `yuki-sandbox-state` 的 `jobs.sqlite3`。状态卷丢失而环境仍在时，Manager 报 `manager_state_missing`，不生成新 token、不接管。Manager 恢复失败时退出并在日志写原因，由 `restart: on-failure` 重试；Bot 照常运行，终端类工具返回环境不可用。
 
-此选项只处理 Linux VM 的启动顺序，不安装 Colima、runsc、Code Mode 镜像或 DNS，也不执行迁移与正式切换。待切换副本应先保持相关 unit 禁用；启用后用一次真实 VM 重启核对数据盘、HOME/runtime、Manager 与 Bot，不能只看 `/livez`。
+### 从宿主 Manager 迁移
 
-安装器调用 `sync-manager.py`，将该 Bot 的完整已安装 `yuki` 包放到 `/opt/yuki-sandbox/releases/<Bot镜像提交>/src`，定向更新现有 `90-source-release.conf` 的 `PYTHONPATH`。已有 unit 参数、媒体缓存覆盖、原 venv、HOME、工作区和仍被环境挂载的旧源码保持原样。已存在的同提交源码只核对字节并复用，不覆盖正在被引用的不同内容。同步入口本身不重启服务或修改数据；安装器随后重启原 Manager，并在真实 UID 10001 下完成 artifact 写权限与 `environment_status` 的握手。残留 socket 文件不能再被当作成功。
+旧部署（systemd、loop 挂载的 ext4、宿主 venv）用 `deploy/sandbox/migrate-host-manager.sh` 显式迁移一次，安装器在检测到旧环境时拒绝并指向它。脚本在 Docker 宿主以 root 运行：确认没有活动执行，停止并禁用宿主 Manager，把原环境 rootFS `docker commit` 为私有检查点（runsc 缺 `--overlay2=none` 时先按 [Mac 迁移记录](mac-arm64-migration-20261107.md) 导出 upper 层），把 HOME、运行记录、媒体缓存和 `jobs.sqlite3` 复制进对应卷并指向该检查点，删除旧 Squid、内网 bridge 与相关防火墙规则，把原配置写入 `.env`。原 loop 镜像、数据库和容器（改名为 `yuki-environment-retired`）原样保留；`docker compose up -d` 并核对终端、文件、服务与网络后，再以 `--cleanup` 删除它们。
 
-部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。Bot `environment-check` 与宿主安装器复用同一个标准库检查实现，不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网或QQ表情送达已验收。
+检查点镜像可能含原 execd secret，作为私有备份保管，不公开推送。
 
-已有部署升级时，先备份原 `jobs.sqlite3`、共享 `manifest.sqlite3`、配置及相关文件，停止 Manager，再按原 Compose 链升级 Bot，最后运行上面的安装器与检查。不要让旧 Manager 在 Bot 已迁移的共享索引上继续运行。`yuki setup verify` 只核验 Bot 核心服务；Manager 升级以这一安装器的真实连接结果为准。3.9 升 4.0 时，原自定义 unit 中退役的 `-m qq_ai_bot.sandbox.manager` 须明确改为 `-m yuki.sandbox.manager`，保留其余实际参数；不提供旧模块别名。
+### 媒体快照清退
 
-媒体缓存另外沿真实部署配置。在原 `/etc/yuki-sandbox/deployment.env` 保留其他字段，显式加入：
-
-```ini
-YUKI_MANAGER_MEDIA_CACHE=/absolute/deployment/path/data/conversation-media-cache
-```
-
-此值必须对应 Bot `CONVERSATION_MEDIA_CACHE_DIRECTORY` 挂载的真实宿主目录，不能把整个 data、数据库或配置目录挂进去。也可由 Manager CLI `--media-cache` 显式指定；程序不猜仓库路径，不修改自定义 ExecStart。新环境创建时把该目录只读挂到 `/home/yuki/inputs/media-cache`，原 `/inputs` 链接提供相同视图。Manager status 的 `media_cache.configured/shared` 报告实际配置与只读挂载事实；旧环境缺少该视图仍可用其他工具，不会自动删除或重建。
-
-已有环境不能靠更新配置增加 Docker 挂载。此次启用共享媒体需要沿下文完整 rootFS checkpoint 流程明确替换一次：保留同一 HOME、runtime、原安装与服务，只增加缓存的只读视图。切换后用实际终端验证能读现有媒体、写缓存返回只读文件系统，复制到 `/workspace` 后可编辑；不要只凭 status 或新镜像声明验收。
-
-以后沿上述安装器从同一 Bot 交付 Manager，不再分别手工复制 `sandbox/` 和 `workspace/`。当前依赖在原 Manager venv 安装：
-
-```sh
-sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r deploy/sandbox/requirements-manager.txt
-```
-
-表情 helper 与格式读取依赖实际安装在原持久环境内，Main 与 Manager 调同一文件，Host 不直接连接用户可改的图库 cache。仅更新 Bot 镜像或给未来环境 Dockerfile 增 COPY 都不会升级现有 rootFS；部署须把当前 helper 复制到原容器 `/opt/yuki-runtime/`，验证原终端能运行并保留已有安装、文件、挂载和服务。已有checkpoint部署还须在Manager停止、确认无活动执行时，对装好helper的原容器制作私有完整rootFS快照，并离线沿现有 `set_setting` 更新 `checkpoint_image`；否则未来按旧checkpoint重建会丢helper。仅安装helper不要求重建环境；启用新的媒体只读挂载则须明确替换一次，home/runtime仍为原bind；清理同时保当前容器镜像和实际选中checkpoint。保留原 systemd 与仍有效覆盖，Supervisor 沿原只读源文件挂载；删除退役 ACP 配置，不再增加 peer 挂载或环境 SDK 安装。不能只更新 Bot 后声称环境已获得新代码。
-
-图库原图与 JSON 是唯一资料源，`search.sqlite3` 可删重建。Main 可直接执行：
-
-```sh
-python /opt/yuki-runtime/sticker_index.py --workspace /workspace rebuild --platform qq
-python /opt/yuki-runtime/sticker_index.py --workspace /workspace update stickers/qq/index/<asset-id>.json
-python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platform qq '捂嘴偷笑'
-```
-
-把示例资产 ID 换成真实文件名。去掉 rebuild 的 `--platform` 可整理现有各平台目录。普通文件操作不要求经过 helper；编辑后新标签的搜索生效点是 update/rebuild 完成，不用父目录 mtime 猜测。helper 不需要 Bot 数据库或管理凭据，不调用模型、发送消息或重写历史。首次索引未完成不能当无候选，JSON 和文件仍自由编辑。
-
-旧环境须单独安排一次明确更换：
-
-1. 记录原容器 ID/启动时间、网络/挂载、Manager 当前检查点与活跃运行。可先让工作完成；若主动停环境，按真实代际中断处理，不自动重跑普通任务或未知安装。
-2. 停 Manager 和原环境，在同一停写窗口一致备份 `jobs.sqlite3`、home/runtime、artifact/short_state 和 Bot 原回执库；保存原环境完整 rootFS 的私有 Docker commit 镜像。commit 不含 bind mount，家目录和运行记录必须另备份。
-3. 保留原 HOME、运行文件和旧镜像，归档已停原容器。离线将原 `environment_state.checkpoint_image` 指向此次完整 rootFS 快照，不改原 run/request/hash、completion、服务或预算。Manager 优先此值，单改 `--image` 不覆盖已有检查点。
-4. 更新 Manager/防火墙，由原 Manager 创建唯一活动环境：同一 HOME/runtime、同一 execd、`--user 0:0`、当前只读 Supervisor、公网 bridge。创建显式覆盖旧镜像用户/代理默认值，保原 HOME 路径与 apt/pip/npm 安装。不得启动第二活动环境共享家目录，不得用空基础镜像替代原 rootFS。
-5. 核实实际 UID/HOME、旧文件/安装、Supervisor 挂载、原回执、服务恢复和公网/私网边界；另记 Bot health、固定工具与自然流量。镜像本地构建并校验传输，不重启 Docker、QQ、代理或无关同机服务。
-
-rootFS 快照的镜像配置可能含原 execd secret，应作为私有运维备份保管，不公开推送或输出。回退保留最新消息、家目录、运行记录和回执库，不能用旧整库覆盖新事实。仅回退 Bot 时可保环境运行；实际环境身份/网络更换必须查容器和数据，不能以 healthy 替代。
+旧中转快照清退使用 [离线脚本](../../scripts/retire_media_snapshots.py)，在完整停写副本上审计；默认只输出候选，`--apply` 只清退确证无引用、且普通文件仍有相同字节的快照。
 
 ## 定向验收
 
-`tests/unit/test_terminal_environment.py` 覆盖原 Manager SQLite、旧 APT 不重放、无经验计数准入、原 rootFS 选择、网络规则 shell 脚本，以及隔离原生 Supervisor 的 PTY、输入、文件、后台和显式超时。工作区桥与 Work receipt 回归另覆盖发布、媒体和 owned/external run。这些不冒充实际 gVisor、管理员安装或公网测量。
+- `scripts/sandbox_compose_e2e.py`（CI `sandbox-compose`）：用真实安装器装 `lite`，经 Bot 的用户调用 Manager，验证终端、公网可达而宿主与私网不可达、`lite` 浏览器不可用、重启 Manager 保留环境与原执行、`down -v` 保留数据，再换到 `headless` 在原环境上安装浏览器并打开页面。产物 `test-results/sandbox-compose/steps.json`。
+- `tests/unit/test_sandbox_profiles.py`：状态卷丢失、项目归属、运行时检查、换档安装与失败、即时限额与需重建项。
+- `tests/unit/test_terminal_environment.py`：Manager SQLite、旧 APT 不重放、原 rootFS 选择、卷挂载、防火墙规则与后端选择，以及隔离原生 Supervisor 的 PTY、输入、文件、后台和显式超时。
+- 有头桌面见 `tests/integration/test_computer_browser_e2e.py`（CI `desktop-headed`）。
 
-`tests/unit/test_legacy_acp_receipts.py` 建立真实旧 SQLite/文件回执，验证原终态 outbox、精准取消且不关闭 peer、拒绝旧 open／prompt 新接纳。`tests/unit/test_external_agent_work.py` 核固定工具与 Code 投影、原效果恢复，以及监督不阻止 Work 完成。这些不代表生产上线、供应商执行或真实缓存命中。
-
-`deploy/sandbox/validate_runtime.py` 仅对显式隔离 socket 做真实终端/发布探针。部署还须记录管理员身份、原安装保留、execd 重连、包管理、服务、网络和资源行为。不发真实 QQ 测试消息，不从声明缩小推算 cache/费用。
-
-[2026-09-12 记录](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/operations/persistent-environment-validation-20260912.zh-CN.md)仅是旧部署/恢复点，不是本次 root、网络与工具合同已上线的证据。
+这些不冒充生产上线或供应商执行。

@@ -198,6 +198,8 @@ def run_smoke(
         platform=platform,
     )
     sentinels = prepare_deployment(deploy_directory)
+    # The Bot mounts the sandbox's external media-cache volume.
+    subprocess.run(["sh", str(deploy_directory / "deploy/sandbox/prepare.sh")], check=True)
     verify_image_identity(compose, version, platform, revision)
     try:
         compose.run("up", "-d", "--no-deps", "--pull", "never", "bot")

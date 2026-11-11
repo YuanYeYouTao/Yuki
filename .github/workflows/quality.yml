@@ -191,6 +191,44 @@ jobs:
             test-results/computer-browser/
           retention-days: 7
 
+  sandbox-compose:
+    name: Sandbox install with Compose (lite, then headless)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the release images under their release names
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          docker build --target direct --build-arg "YUKI_VERSION=$version" \
+            -t "ghcr.io/yuanyeyoutao/yuki:$version" .
+          docker build -f deploy/sandbox/Dockerfile.environment \
+            -t "ghcr.io/yuanyeyoutao/yuki-environment:$version" .
+          docker build -f deploy/sandbox/Dockerfile.environment-desktop \
+            --build-arg "BASE_IMAGE=ghcr.io/yuanyeyoutao/yuki-environment:$version" \
+            -t "ghcr.io/yuanyeyoutao/yuki-environment:$version-desktop" .
+      - name: Build the deployment bundle
+        run: python -m scripts.build_release_bundle --version "$VERSION" --output-dir dist
+      - name: Install with install.sh, then use the real Manager, environment and firewall
+        run: >-
+          python scripts/sandbox_compose_e2e.py --version "$VERSION"
+          --bundle "dist/yuki-$VERSION-deploy.tar.gz"
+          --directory "$RUNNER_TEMP/yuki-e2e/deployment"
+          --artifacts test-results/sandbox-compose
+      - name: Service logs
+        if: failure()
+        working-directory: ${{ runner.temp }}/yuki-e2e/deployment
+        run: docker compose logs --tail 200 manager bot
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sandbox-compose
+          path: test-results/sandbox-compose/
+          retention-days: 7
+
   native:
     name: Native CodeMode (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

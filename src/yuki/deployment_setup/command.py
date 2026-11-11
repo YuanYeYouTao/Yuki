@@ -149,12 +149,16 @@ def run_setup_command(args: argparse.Namespace) -> int:
             write_result(result)
             return 0
         if action == "environment-check":
-            from yuki.deployment_setup.environment_check import check_environment
+            from yuki.sandbox.deployment_check import check_environment
 
             with _working_directory(paths.root):
                 settings = Settings()
             result = asyncio.run(
-                check_environment(settings.sandbox_socket, settings.workspace_directory)
+                check_environment(
+                    settings.sandbox_socket,
+                    settings.workspace_directory,
+                    expected_uid=int(os.environ.get("YUKI_RUNTIME_UID") or 10001),
+                )
             )
             ui.line(json.dumps(result, ensure_ascii=False))
             return 0 if result["ok"] else 1
@@ -718,7 +722,7 @@ def _review_and_commit(
     ui.warning("路径文件工具和终端还需要 Linux 宿主的持久环境 Manager，默认 Compose 不安装它。")
     ui.info("按 docs/operations/persistent-environment.md 准备宿主依赖并连接当前部署目录。")
     ui.info(
-        "启动 Bot 后检查：docker compose exec --user 10001:10001 bot yuki setup environment-check"
+        "启动后检查沙箱：docker compose exec --user 10001:10001 bot yuki setup environment-check"
     )
     return 0
 

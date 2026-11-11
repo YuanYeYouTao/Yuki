@@ -35,20 +35,7 @@ _CONFIG_FILES = frozenset(
     }
 )
 _MANAGER_DEPLOY_FILES = frozenset(
-    {
-        f"deploy/sandbox/{name}"
-        for name in (
-            "sync-manager.py",
-            "install-manager.sh",
-            "colima-boot.conf",
-            "configure-manager.py",
-            "requirements-manager.txt",
-            "yuki-sandbox.service",
-            "yuki-environment-storage.service",
-            "network-guard.sh",
-            "environment-storage.sh",
-        )
-    }
+    {"deploy/sandbox/prepare.sh", "deploy/sandbox/migrate-host-manager.sh"}
 )
 _EMPTY_DIRECTORIES = (
     "data",

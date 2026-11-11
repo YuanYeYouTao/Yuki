@@ -17,7 +17,6 @@ from yuki.workspace.store import WorkspaceStore
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX environment runtime")
 SUPERVISOR_PATH = Path(__file__).resolve().parents[2] / "src/yuki/sandbox/environment_supervisor.py"
-NETWORK_GUARD_PATH = Path(__file__).resolve().parents[2] / "deploy/sandbox/network-guard.sh"
 
 
 def manager_at(tmp_path, *, resolv_conf=None):
@@ -229,7 +228,7 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
     if resolv_conf is not None:
         await asyncio.to_thread(resolv_conf.parent.mkdir, parents=True)
         await asyncio.to_thread(resolv_conf.write_text, "nameserver 198.51.100.53\n")
-    manager = manager_at(tmp_path, resolv_conf=resolv_conf)
+    manager = manager_at(tmp_path, resolv_conf=".config/resolv.conf" if custom_resolver else None)
     manager.set_setting("checkpoint_image", "saved-rootfs:original-installations")
     current = {
         "Id": "original-environment",
@@ -249,19 +248,29 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
         assert command[command.index("--user") + 1] == "0:0"
         assert command[command.index("--network") + 1] == "egress"
         assert command[-1] == "saved-rootfs:original-installations"
-        assert f"type=bind,src={manager.home},dst=/home/yuki" in command
-        assert f"type=bind,src={manager.runtime_root},dst=/var/lib/yuki-runtime" in command
+        # Docker volumes by name, never Manager-container paths.
+        assert "type=volume,src=yuki-sandbox-home,dst=/home/yuki" in command
+        assert "type=volume,src=yuki-sandbox-runtime,dst=/var/lib/yuki-runtime" in command
+        assert "io.yuki.sandbox.project=" in command
         resolver_mounts = [arg for arg in command if "dst=/etc/resolv.conf" in arg]
         assert resolver_mounts == (
-            [f"type=bind,src={resolv_conf},dst=/etc/resolv.conf"] if custom_resolver else []
+            [
+                "type=volume,src=yuki-sandbox-home,dst=/etc/resolv.conf,"
+                "volume-subpath=.config/resolv.conf"
+            ]
+            if custom_resolver
+            else []
         )
         if resolv_conf is not None:
             assert await asyncio.to_thread(resolv_conf.read_text) == "nameserver 198.51.100.53\n"
             await asyncio.to_thread(resolv_conf.write_text, "nameserver 203.0.113.53\n")
+        # The Manager's own release of each environment file, mounted read-only in place.
         assert (
-            f"type=bind,src={SUPERVISOR_PATH},dst=/opt/yuki-runtime/supervisor.py,readonly"
-            in command
+            "type=volume,src=yuki-sandbox-code,dst=/opt/yuki-runtime/supervisor.py,"
+            "volume-subpath=opt/yuki-runtime/supervisor.py,readonly" in command
         )
+        published = manager.code_root / "opt/yuki-runtime/supervisor.py"
+        assert published.read_bytes() == SUPERVISOR_PATH.read_bytes()
         assert "HOME=/home/yuki" in command and "USER=root" in command and "LOGNAME=root" in command
         for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert f"{name}=" in command
@@ -302,6 +311,7 @@ async def test_recovery_observes_legacy_package_intent_without_new_dispatch(
         (state / "started").touch()
     if native == "failed":
         (state / "status.json").write_text(json.dumps({"status": "failed", "exit_code": 7}))
+    manager.set_setting("execd_token", "original-token")
     manager.inspect_container = AsyncMock(
         return_value={
             "Id": "old-container",
@@ -334,46 +344,69 @@ async def test_recovery_observes_legacy_package_intent_without_new_dispatch(
         await manager.close()
 
 
-async def test_network_guard_allows_public_protocols_after_private_isolation(tmp_path):
-    upstream_hook = Path("/etc/yuki-sandbox/upstream-firewall.sh")
-    if await asyncio.to_thread(upstream_hook.exists):
-        pytest.skip("isolated harness must not invoke an operator firewall hook")
-    binary = tmp_path / "bin"
-    binary.mkdir()
-    capture = tmp_path / "iptables-arguments"
-    for name, body in {
-        "id": "printf '0\\n'",
-        "modprobe": "exit 0",
-        "sysctl": "printf '1\\n'",
-        "iptables": ('printf "%s\\n" "$*" >> "$CAPTURE"\ncase "$*" in *" -C "*) exit 1;; esac'),
-    }.items():
-        path = binary / name
-        path.write_text("#!/bin/sh\n" + body + "\n")
-        path.chmod(0o755)
-    process = await asyncio.create_subprocess_exec(
-        "/bin/sh",
-        str(NETWORK_GUARD_PATH),
-        env={**os.environ, "PATH": f"{binary}:/usr/bin:/bin", "CAPTURE": str(capture)},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    assert process.returncode == 0, (stdout, stderr)
-    commands = capture.read_text().splitlines()
-    public = [line for line in commands if " -A YUKI-EGRESS " in line]
-    assert public[-1] == "-w 10 -A YUKI-EGRESS -j RETURN"
-    assert all(" -d " in line and line.endswith(" -j DROP") for line in public[:-1])
-    assert any(" -d 10.0.0.0/8 " in line for line in public)
-    assert any(" -d 172.16.0.0/12 " in line for line in public)
-    assert any(" -d 192.168.0.0/16 " in line for line in public)
-    assert any(" -d 169.254.0.0/16 " in line for line in public)
-    assert not any(" --dport " in line or " -p " in line for line in public)
-    assert any("INPUT -i yuki-egress0 -j DROP" in line for line in commands)
-    assert any(
-        "INPUT -i yuki-egress0 -p tcp --sport 44772 -m conntrack --ctstate ESTABLISHED -j ACCEPT"
-        in line
-        for line in commands
-    )
+class Firewall:
+    """iptables as the Manager sees it: rules per chain, and the chains that exist."""
+
+    def __init__(self, backend):
+        self.backend = backend
+        self.chains = {"INPUT": [], "DOCKER-USER": []} if backend else {"INPUT": []}
+        self.calls = []
+
+    async def command(self, binary, wait, seconds, operation, chain, *rule):
+        self.calls.append((binary, operation, chain, *rule))
+        if binary != self.backend or (chain not in self.chains and operation != "-N"):
+            return 1, b""
+        rules = self.chains.setdefault(chain, [])
+        if operation == "-N":
+            return 0, b""
+        if operation == "-S":
+            return 0, b""
+        if operation == "-C":
+            return (0 if list(rule) in rules else 1), b""
+        if operation == "-D":
+            if list(rule) not in rules:
+                return 1, b""
+            rules.remove(list(rule))
+        elif operation == "-I":
+            rules.insert(int(rule[0]) - 1, list(rule[1:]))
+        elif operation == "-A":
+            rules.append(list(rule))
+        elif operation == "-F":
+            rules.clear()
+        return 0, b""
+
+
+@pytest.mark.parametrize("backend", ["iptables-nft", "iptables-legacy"])
+async def test_network_guard_allows_public_protocols_after_private_isolation(backend):
+    from yuki.sandbox import network_guard
+
+    firewall = Firewall(backend)
+    # An old, wrong order: the drop above the execd reply rule.
+    reply = ["-i", "yuki-egress0", "-p", "tcp", "--sport", "44772"]
+    reply += ["-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"]
+    firewall.chains["INPUT"] = [["-i", "yuki-egress0", "-j", "DROP"], reply]
+    assert await network_guard.apply(firewall.command) == backend
+    assert await network_guard.apply(firewall.command) == backend
+    # Rules land only in the backend Docker uses, once each, the reply above the drop.
+    assert {call[0] for call in firewall.calls if call[1] != "-S"} == {backend}
+    assert firewall.chains["INPUT"] == [reply, ["-i", "yuki-egress0", "-j", "DROP"]]
+    assert firewall.chains["DOCKER-USER"] == [["-i", "yuki-egress0", "-j", "YUKI-EGRESS"]]
+    public = firewall.chains["YUKI-EGRESS"]
+    assert public[-1] == ["-j", "RETURN"]
+    assert all(rule[0] == "-d" and rule[-2:] == ["-j", "DROP"] for rule in public[:-1])
+    destinations = {rule[1] for rule in public[:-1]}
+    assert {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"} <= destinations
+    assert not any("--dport" in rule or "-p" in rule for rule in public)
+
+
+async def test_network_guard_refuses_a_docker_without_the_user_chain():
+    from yuki.sandbox import network_guard
+
+    # Docker's nftables firewall backend: no DOCKER-USER in either iptables backend.
+    firewall = Firewall(None)
+    with pytest.raises(RuntimeError, match="network_guard_unsupported"):
+        await network_guard.apply(firewall.command)
+    assert all(call[1] == "-S" for call in firewall.calls)
 
 
 async def start_supervisor(tmp_path, command, *, tty=False, deadline=0):

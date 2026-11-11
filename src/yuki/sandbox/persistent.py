@@ -1,4 +1,4 @@
-"""Trusted lifecycle owner for one persistent gVisor environment.
+"""Trusted lifecycle owner for one persistent environment container.
 
 The Bot has a narrow JSON socket, never Docker access. Job launch intent and
 execd session identity are durable before launch. Reconnection observes existing
@@ -25,10 +25,12 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from yuki.sandbox import network_guard
 from yuki.sandbox.completions import CompletionOutbox
 from yuki.sandbox.computer_control import ComputerControl
 from yuki.sandbox.computer_runtime import ComputerRuntime
 from yuki.sandbox.computer_transport import ComputerTransport
+from yuki.sandbox.environment_programs import MODE_PACKAGES, wanted
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.legacy_acp import ACP_KINDS, LegacyACPResources
@@ -38,7 +40,31 @@ from yuki.workspace.files import FileWorkspace
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 LABEL = "io.yuki.sandbox=persistent-v1"
+PROJECT_LABEL = "io.yuki.sandbox.project"
 CONTAINER = "yuki-environment"
+# Docker volumes that outlive containers and Compose projects (created by the installer).
+VOLUMES = {
+    "home": "yuki-sandbox-home",
+    "runtime": "yuki-sandbox-runtime",
+    "code": "yuki-sandbox-code",
+    "media": "yuki-media-cache",
+}
+# Environment path -> repository path. The Bot image carries these files at the same
+# relative paths under YUKI_ENVIRONMENT_SOURCE; the Manager copies them into the code
+# volume, and the environment mounts each one read-only at its original path.
+ENVIRONMENT_FILES = {
+    "/opt/yuki-runtime/supervisor.py": "src/yuki/sandbox/environment_supervisor.py",
+    "/opt/yuki-runtime/environment_programs.py": "src/yuki/sandbox/environment_programs.py",
+    "/opt/yuki-runtime/sticker_index.py": "src/yuki/emoji/sticker_index.py",
+    "/opt/yuki-runtime/media.py": "src/yuki/emoji/media.py",
+    "/opt/yuki-runtime/desktop_service.py": "src/yuki/sandbox/desktop_service.py",
+    "/opt/yuki-runtime/yuki_computer.py": "src/yuki/sandbox/yuki_computer.py",
+    "/opt/yuki-runtime/yuki_agent_connector/cdp.py": (
+        "packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py"
+    ),
+    "/usr/local/bin/yuki-computer": "deploy/sandbox/yuki-computer.sh",
+}
+MIB = 1024 * 1024
 SEGMENT = 4 * 1024 * 1024
 LOG_BUDGET = 128 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
@@ -55,16 +81,30 @@ class PersistentManager:
         home: Path,
         *,
         runtime: str = "runsc",
-        resolv_conf: Path | None = None,
+        resolv_conf: str | None = None,
         testing: bool = False,
         name: str = "yuki-environment",
         media_cache: Path | None = None,
+        code: Path | None = None,
+        volumes: dict[str, str] = VOLUMES,
+        project: str = "",
+        profile: str = "",
+        browser_mode: str = "none",
+        packages: tuple[str, ...] = (),
     ) -> None:
         if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
             raise ValueError("invalid_environment_name")
+        if browser_mode not in MODE_PACKAGES:
+            raise ValueError("invalid_browser_mode")
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
-        self.resolv_conf = resolv_conf.resolve() if resolv_conf is not None else None
+        # A file inside HOME; gVisor cannot use Docker's 127.0.0.11 resolver.
+        self.resolv_conf = resolv_conf
+        self.volumes, self.project, self.profile = volumes, project, profile
+        self.browser_mode, self.packages = browser_mode, packages
+        self.code_root = (code or self.root / "code").resolve()
+        self.programs: dict[str, Any] = {}
+        self.limits_error = ""
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self._waiters: dict[str, set[asyncio.Event]] = {}
         self.ready = False
@@ -353,16 +393,160 @@ class PersistentManager:
         if code:
             return None
         value = json.loads(raw)[0]
-        if value.get("Config", {}).get("Labels", {}).get("io.yuki.sandbox") != "persistent-v1":
+        labels = value.get("Config", {}).get("Labels") or {}
+        # One sandbox per Docker engine: another deployment's environment is never adopted.
+        if labels.get("io.yuki.sandbox") != "persistent-v1" or (
+            labels.get(PROJECT_LABEL, "") != self.project
+        ):
             raise RuntimeError("environment_name_in_use")
         return cast(dict[str, Any], value)
 
+    def mount(
+        self, volume: str, destination: str, *, subpath: str = "", readonly: bool = False
+    ) -> str:
+        value = f"type=volume,src={self.volumes[volume]},dst={destination}"
+        if subpath:
+            value += f",volume-subpath={subpath}"
+        return value + (",readonly" if readonly else "")
+
+    def publish_environment_files(self) -> None:
+        source = Path(
+            os.environ.get("YUKI_ENVIRONMENT_SOURCE") or Path(__file__).resolve().parents[3]
+        )
+        for destination, relative in ENVIRONMENT_FILES.items():
+            target = self.code_root / destination.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data = (source / relative).read_bytes()
+            # Rewrite in place: a single-file mount follows the inode it was created with,
+            # so a running environment sees the new release without being recreated.
+            with open(target, "ab") as stream:
+                stream.seek(0)
+                stream.truncate()
+                stream.write(data)
+            target.chmod(0o755)
+
+    async def check_runtime(self) -> None:
+        code, raw = await self.command("docker", "info", "--format", "{{json .Runtimes}}")
+        runtimes = json.loads(raw) if not code else {}
+        if self.runtime not in runtimes:
+            raise RuntimeError(
+                "gvisor_unavailable" if self.runtime == "runsc" else "runtime_unavailable"
+            )
+        # Without it gVisor keeps rootFS writes in its own overlay, outside the Docker
+        # layer, and a committed checkpoint would lose installed software.
+        if self.runtime == "runsc" and "--overlay2=none" not in runtimes["runsc"].get(
+            "runtimeArgs", ()
+        ):
+            raise RuntimeError("gvisor_overlay_unsupported")
+
+    async def ensure_network(self) -> None:
+        code, _ = await self.command("docker", "network", "inspect", self.network)
+        if code:
+            code, _ = await self.command(
+                "docker",
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--opt",
+                f"com.docker.network.bridge.name={network_guard.BRIDGE}",
+                self.network,
+            )
+            if code:
+                raise RuntimeError("environment_network_missing")
+        # The Manager must share the host network namespace, or the rules below would
+        # filter only its own namespace.
+        if not await asyncio.to_thread(Path(f"/sys/class/net/{network_guard.BRIDGE}").exists):
+            raise RuntimeError("network_guard_missing")
+        await network_guard.apply(self.command)
+
+    async def read_manifest(self) -> list[dict[str, str]]:
+        code, raw = await self.command(
+            "docker", "exec", self.name, "cat", "/opt/yuki-runtime/manifest.json"
+        )
+        return list(json.loads(raw)["tools"]) if not code else []
+
+    async def apply_programs(self) -> None:
+        """Install what the configured mode needs; report capabilities from what is installed."""
+        tools = await self.read_manifest()
+        missing = [
+            package
+            for package in wanted(self.browser_mode, self.packages)
+            if package not in {tool["name"] for tool in tools}
+        ]
+        if missing:
+            code, output = await self.command(
+                "docker",
+                "exec",
+                "--user",
+                "0:0",
+                self.name,
+                "/usr/local/bin/python",
+                "/opt/yuki-runtime/environment_programs.py",
+                self.browser_mode,
+                *self.packages,
+                deadline_seconds=3600,
+            )
+            self.programs = {"missing": missing, "installed": not code}
+            if code:
+                self.programs["output"] = output.decode(errors="replace")[-4096:]
+            tools = await self.read_manifest()
+        installed = {tool["name"] for tool in tools}
+        mode = self.browser_mode
+        if mode == "headed" and not set(MODE_PACKAGES["headed"]) <= installed:
+            mode = "headless"
+        if mode == "headless" and not set(MODE_PACKAGES["headless"]) <= installed:
+            mode = "none"
+        self.desktop_manifest = {"tools": tools, "desktop": mode == "headed", "browser_mode": mode}
+        await asyncio.to_thread(
+            FileWorkspace(self.runtime_root).write, "computer/browser-mode", mode.encode()
+        )
+
+    async def apply_limits(self, current: dict[str, Any]) -> dict[str, Any]:
+        """Apply CPU, memory and process limits to the running container in place."""
+        limits = self.resource_limits()
+        config = current.get("HostConfig", {})
+        wanted_limits = {
+            "Memory": int(limits["memory_mib"]) * MIB,
+            "MemorySwap": (int(limits["memory_mib"]) + int(limits["swap_mib"])) * MIB,
+            "NanoCpus": round(float(limits["cpus"]) * 1e9),
+            "PidsLimit": int(limits["pids"]),
+            "CpuShares": int(limits["cpu_shares"]),
+        }
+        self.limits_error = ""
+        if any(config.get(key) != value for key, value in wanted_limits.items()):
+            code, output = await self.command(
+                "docker",
+                "update",
+                "--memory",
+                f"{limits['memory_mib']}m",
+                "--memory-swap",
+                f"{int(limits['memory_mib']) + int(limits['swap_mib'])}m",
+                "--cpus",
+                str(limits["cpus"]),
+                "--cpu-shares",
+                str(limits["cpu_shares"]),
+                "--pids-limit",
+                str(limits["pids"]),
+                self.name,
+            )
+            if code:
+                self.limits_error = output.decode(errors="replace")[-2048:]
+            current = await self.inspect_container() or current
+        return current
+
+    def recreate_required(self) -> list[str]:
+        """Limits Docker only sets at creation, where the container differs from configuration."""
+        limits, observed = self.resource_limits(), self.observed_container
+        differs = []
+        if observed.get("tmpfs") != (f"rw,nosuid,nodev,size={limits['tmp_mib']}m,mode=1777"):
+            differs.append("tmp_mib")
+        if "shm_mib" in limits and observed.get("shm_bytes") != int(limits["shm_mib"]) * MIB:
+            differs.append("shm_mib")
+        return differs
+
     async def recover(self) -> None:
         self.ready = False
-        if not self.testing and not await asyncio.to_thread(os.path.ismount, self.home):
-            raise RuntimeError("persistent_home_not_mounted")
-        if not self.testing and not await asyncio.to_thread(os.path.ismount, self.runtime_root):
-            raise RuntimeError("bounded_runtime_not_mounted")
         for relative in ("", "workspace", ".local", ".cache", "inputs", "work", "work/outputs"):
             directory = self.home / relative
             if directory.is_symlink():
@@ -371,24 +555,19 @@ class PersistentManager:
             if os.geteuid() == 0:
                 os.chown(directory, 10001, 10001)
         await asyncio.to_thread(self.store.cleanup)
+        await asyncio.to_thread(self.publish_environment_files)
         if not self.testing:
-            code, runtimes = await self.command("docker", "info", "--format", "{{json .Runtimes}}")
-            if code or self.runtime not in json.loads(runtimes):
-                raise RuntimeError("gvisor_unavailable")
-            code, _ = await self.command("docker", "network", "inspect", self.network)
-            if code:
-                raise RuntimeError("environment_network_missing")
-            for interface in ("yuki-sandbox0", "yuki-egress0"):
-                code, _ = await self.command(
-                    "iptables", "-C", "INPUT", "-i", interface, "-j", "DROP"
-                )
-                if code:
-                    raise RuntimeError("network_guard_missing")
+            await self.check_runtime()
+            await self.ensure_network()
+        current = await self.inspect_container()
         token = self.setting("execd_token")
         if not token:
+            if current is not None:
+                # The environment holds a token this Manager no longer has: never mint a
+                # new one over it, and never adopt it without its receipts.
+                raise RuntimeError("manager_state_missing")
             token = secrets.token_urlsafe(32)
             self.set_setting("execd_token", token)
-        current = await self.inspect_container()
         if current is None:
             image = self.setting("checkpoint_image", self.image)
             limits = self.resource_limits()
@@ -401,6 +580,8 @@ class PersistentManager:
                 self.name,
                 "--label",
                 LABEL,
+                "--label",
+                f"{PROJECT_LABEL}={self.project}",
                 "--runtime",
                 self.runtime,
                 "--network",
@@ -431,25 +612,32 @@ class PersistentManager:
                 "--tmpfs",
                 f"/tmp:rw,nosuid,nodev,size={limits['tmp_mib']}m,mode=1777",
                 "--mount",
-                f"type=bind,src={self.home},dst=/home/yuki",
+                self.mount("home", "/home/yuki"),
                 "--mount",
-                f"type=bind,src={self.runtime_root},dst=/var/lib/yuki-runtime",
-                "--mount",
-                f"type=bind,src={Path(__file__).with_name('environment_supervisor.py').resolve()},"
-                "dst=/opt/yuki-runtime/supervisor.py,readonly",
+                self.mount("runtime", "/var/lib/yuki-runtime"),
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
+            for destination in ENVIRONMENT_FILES:
+                args.extend(
+                    (
+                        "--mount",
+                        self.mount(
+                            "code", destination, subpath=destination.lstrip("/"), readonly=True
+                        ),
+                    )
+                )
             if "shm_mib" in limits:
                 args.extend(("--shm-size", f"{limits['shm_mib']}m"))
             if self.resolv_conf is not None:
-                args.extend(("--mount", f"type=bind,src={self.resolv_conf},dst=/etc/resolv.conf"))
+                args.extend(
+                    ("--mount", self.mount("home", "/etc/resolv.conf", subpath=self.resolv_conf))
+                )
             if self.media_cache is not None:
                 args.extend(
                     (
                         "--mount",
-                        f"type=bind,src={self.media_cache.root},"
-                        "dst=/home/yuki/inputs/media-cache,readonly",
+                        self.mount("media", "/home/yuki/inputs/media-cache", readonly=True),
                     )
                 )
             # Rootfs snapshots retain their old container configuration. Override
@@ -459,19 +647,19 @@ class PersistentManager:
             for variable in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 args.extend(("--env", f"{variable}={self.proxy}"))
             args.append(image)
-            code, _ = await self.command(*args)
+            # docker create pulls a missing image first; that can take minutes.
+            code, _ = await self.command(*args, deadline_seconds=1800)
             if code:
                 raise RuntimeError("environment_create_failed")
             current = await self.inspect_container()
         assert current is not None
         self.media_cache_shared = self.media_cache is not None and any(
             mount.get("Destination") == "/home/yuki/inputs/media-cache"
-            and mount.get("Source") == str(self.media_cache.root)
+            and mount.get("Name") == self.volumes["media"]
             and mount.get("RW") is False
             for mount in current.get("Mounts", ())
         )
-        # Docker must not auto-start this bind-mounted container before the home
-        # filesystem is mounted at boot. The ordered Manager owns recovery.
+        # The Manager starts the environment after its own checks, not Docker.
         if current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
             await self.command("docker", "update", "--restart=no", self.name)
         if not current["State"]["Running"]:
@@ -480,10 +668,13 @@ class PersistentManager:
                 raise RuntimeError("environment_start_failed")
             current = await self.inspect_container()
             assert current is not None
+        if not self.testing:
+            current = await self.apply_limits(current)
         config = current.get("HostConfig", {})
         self.observed_container = {
             "image": current.get("Image"),
             "image_reference": current.get("Config", {}).get("Image"),
+            "runtime": config.get("Runtime"),
             "memory_bytes": config.get("Memory"),
             "memory_and_swap_bytes": config.get("MemorySwap"),
             "nano_cpus": config.get("NanoCpus"),
@@ -493,10 +684,7 @@ class PersistentManager:
         }
         self.container_id = current["Id"] + ":" + current["State"]["StartedAt"]
         if not self.testing:
-            code, raw = await self.command(
-                "docker", "exec", self.name, "cat", "/opt/yuki-runtime/manifest.json"
-            )
-            self.desktop_manifest = json.loads(raw) if not code else {"desktop": False, "tools": []}
+            await self.apply_programs()
         address = current["NetworkSettings"]["Networks"][self.network]["IPAddress"]
         self.execd = Execd(address, token)
         for attempt in range(20):
@@ -532,6 +720,16 @@ class PersistentManager:
                 self.queue.put_nowait(row["id"])
             else:
                 await self.reconcile(row)
+        mode = self.desktop_manifest.get("browser_mode", "none")
+        if not self.testing and self.setting("desktop_mode", mode) != mode:
+            # A running desktop service keeps the mode it started with. Cancelling the
+            # run lets its restart policy start a new one in the new mode.
+            row = self.db.execute(
+                "SELECT run_id FROM environment_services WHERE name='yuki-desktop'"
+            ).fetchone()
+            if row and row["run_id"] and self.get(row["run_id"]).get("pending"):
+                await self.control(row["run_id"], "cancel")
+        self.set_setting("desktop_mode", mode)
         self.ready = True
 
     def active(self) -> list[Any]:
@@ -1116,8 +1314,11 @@ class PersistentManager:
         return {**result, "external_untrusted": True}
 
     def disk_status(self) -> dict[str, Any]:
+        # HOME is a Docker volume: these are the totals of the disk it shares with Docker
+        # and the Bot's data, not a quota of its own.
         usage = shutil.disk_usage(self.home)
         return {
+            "shared_disk": True,
             "capacity_bytes": usage.total,
             "used_bytes": usage.used,
             "available_bytes": usage.free,
@@ -1137,8 +1338,14 @@ class PersistentManager:
             },
             "storage": self.disk_status(),
             "runtime_storage_bytes": shutil.disk_usage(self.runtime_root).total,
+            "profile": self.profile or None,
+            "runtime": self.runtime,
+            "configured_browser_mode": self.browser_mode,
+            "programs": self.programs,
             "configured_image": self.image,
             "container_at_recovery": self.observed_container,
+            "limits_update_error": self.limits_error or None,
+            "recreate_required": self.recreate_required() if self.observed_container else [],
             "browser": self.desktop.browser_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),

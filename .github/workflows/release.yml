@@ -14,6 +14,7 @@ concurrency:
 
 env:
   BOT_IMAGE: ghcr.io/yuanyeyoutao/yuki
+  ENVIRONMENT_IMAGE: ghcr.io/yuanyeyoutao/yuki-environment
 
 jobs:
   wheels:
@@ -90,6 +91,21 @@ jobs:
               --build-arg "YUKI_VERSION=$VERSION" --build-arg "VCS_REF=$RELEASE_SHA" \
               --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
               --tag "$BOT_IMAGE:$VERSION" .
+          fi
+      - name: Publish or reuse the sandbox environment images
+        run: |
+          base="$ENVIRONMENT_IMAGE:$VERSION"
+          if ! docker buildx imagetools inspect "$base" >/dev/null 2>&1; then
+            docker buildx build --platform linux/amd64,linux/arm64 --push \
+              -f deploy/sandbox/Dockerfile.environment \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --tag "$base" .
+          fi
+          if ! docker buildx imagetools inspect "$base-desktop" >/dev/null 2>&1; then
+            docker buildx build --platform linux/amd64,linux/arm64 --push \
+              -f deploy/sandbox/Dockerfile.environment-desktop --build-arg "BASE_IMAGE=$base" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --tag "$base-desktop" .
           fi
       - name: Verify the published image and deployment package
         run: |

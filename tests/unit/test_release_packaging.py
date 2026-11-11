@@ -48,15 +48,15 @@ def test_source_free_release_archives_match_the_loose_assets(tmp_path):
             for name in archive.namelist()
         )
         assert f"{archive_root}/SOUL-Deployment.md" in archive.namelist()
-        for name in ("install-manager.sh", "sync-manager.py", "requirements-manager.txt"):
+        for name in ("prepare.sh", "migrate-host-manager.sh"):
             path = f"deploy/sandbox/{name}"
             assert archive.read(f"{archive_root}/{path}") == (ROOT / path).read_bytes()
     with tarfile.open(tmp_path / f"{archive_root}.tar.gz", "r:gz") as archive:
         member = archive.extractfile(f"{archive_root}/docker-compose.yml")
         assert member is not None and member.read() == compose
-        member = archive.extractfile(f"{archive_root}/deploy/sandbox/sync-manager.py")
+        member = archive.extractfile(f"{archive_root}/deploy/sandbox/prepare.sh")
         assert member is not None
-        assert member.read() == (ROOT / "deploy/sandbox/sync-manager.py").read_bytes()
+        assert member.read() == (ROOT / "deploy/sandbox/prepare.sh").read_bytes()
     assert {asset.name for asset in assets} >= {"SHA256SUMS", "install.sh", "install.ps1"}
 
 
