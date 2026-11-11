@@ -139,6 +139,7 @@ Run the same installer again in the installation directory. It replaces the rele
 | --- | --- |
 | [Help](docs/help.md) | Chat commands, model setup and daily administration |
 | [4.0.0 release notes](docs/releases/v4.0.0.en.md) | Everything that changed in this release |
+| [Install with an AI assistant](docs/install-with-ai.en.md) | A prompt to paste into an AI assistant that can use a terminal |
 | [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) | Upgrading from 3.9.0 or a 4.0 development deployment |
 | [Persistent environment](docs/operations/persistent-environment.md) | Sandbox profiles, resources, networking and migration |
 | [Desktop computer and headed environment](docs/operations/desktop-computer.zh-CN.md) | Screenshots, clicks and the browser on Yuki's own computer (Chinese) |
