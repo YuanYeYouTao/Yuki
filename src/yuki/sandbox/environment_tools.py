@@ -113,7 +113,7 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "resume 解除本人的叫停。x,y 是本次结果所附截图的像素坐标；给 window"
             "（screenshot 返回的 windows[].id）时只截该窗口、坐标相对该窗口。"
             "本人电脑上给 window 即在后台操作该窗口，不动本人的光标和前台应用；"
-            "type、key 可给 x,y 先聚焦该处输入框，否则落在该应用当前的输入焦点；"
+            "type、key 可给 x,y 先聚焦该处输入框，否则落在该窗口当前的输入焦点；"
             "后台投递不了的动作返回 device_not_supported，需要时省略 window 改在前台操作。"
             "每次都附动作后的新截图；submitted 只表示"
             "输入已投递，是否生效看截图。本人接管或叫停时输入返回 control_held；"

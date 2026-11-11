@@ -11,8 +11,8 @@ system or app hit test, which answers for whatever is on top) and pressed, focus
 its menu through accessibility first; where accessibility has nothing, mouse events are
 posted to the window's process "stamped" with its window (the undocumented fields and
 ``CGEventSetWindowLocation`` Cua uses), because plain ``CGEventPostToPid`` clicks and wheels
-are dropped. Keys go to the process with plain ``CGEventPostToPid`` and land on the app's
-focused element.
+are dropped. Keys go to the process with plain ``CGEventPostToPid`` after ``AXMain`` makes
+the window the app's key window, and land on that window's focused element.
 """
 
 from __future__ import annotations
@@ -663,6 +663,21 @@ class MacTarget(Keys):
             (node for node in self._ancestors(x, y) if attribute(node, "AXRole") in TEXT_ROLES),
             None,
         )
+
+    def key(self, modifiers: tuple[str, ...], key: str) -> None:
+        self._key_window()
+        super().key(modifiers, key)
+
+    def type(self, text: str) -> None:
+        self._key_window()
+        super().type(text)
+
+    def _key_window(self) -> None:
+        # Keys reach the app's key window, which can be another of its windows; with a
+        # separate note open, Notes took them there and cmd+n even activated the app
+        # (measured). AXMain moves the key window without activating the app.
+        if self.element is not None:
+            check(AX.AXUIElementSetAttributeValue(self.element, "AXMain", True), "AXMain")
 
     def focus(self, x: float, y: float) -> None:
         self._accessible()

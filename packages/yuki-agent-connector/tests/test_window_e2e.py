@@ -118,7 +118,7 @@ async def test_window_in_the_background(tmp_path: Path) -> None:
             await call("type", "type-1", window="4242", x=100, y=100, text="雪の日")
             assert [event["kind"] for event in events(state)[-2:]] == ["focus", "type"]
             assert events(state)[-1] == {"kind": "type", "window": "4242", "text": "雪の日"}
-            # Without x,y the keys go to the app's current focus: no focus step.
+            # Without x,y the keys go to the window's own focus: no focus step.
             await call("key", "key-1", window="4242", text="cmd+s")
             assert events(state)[-1] == {
                 "kind": "key",
