@@ -20,7 +20,8 @@ def builtin_provider_catalog(
     return GatewayProviderCatalog(
         (
             SnowLumaProvider(qq_transfer_root, qq_gateway_root),
-            AppProvider(),
+            # The desktop shows pictures; an ACP editor shows attachments as file links.
+            AppProvider(shared_stickers=True),
             AppProvider("acp"),
             TelegramProvider(),
             FeishuProvider(),

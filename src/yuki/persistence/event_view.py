@@ -19,6 +19,8 @@ def attachment_facts(data: Mapping[str, Any]) -> dict[str, Any]:
     facts = {key: value for key, value in data.items() if key in _ATTACHMENT_FACTS}
     if "size" not in data and "file_size" in data:
         facts["size"] = data["file_size"]
+    if data.get("is_sticker"):
+        facts["sticker"] = True
     return facts
 
 

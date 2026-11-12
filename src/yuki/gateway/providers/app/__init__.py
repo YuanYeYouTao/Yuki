@@ -18,9 +18,13 @@ class AppHandle:
 
 
 class AppProvider:
-    def __init__(self, platform: str = "app") -> None:
+    def __init__(self, platform: str = "app", *, shared_stickers: bool = False) -> None:
         self.platform = platform
         self.provider_id = platform
+        # A client that shows any platform's collected picture stickers draws on every catalog.
+        self.capabilities = frozenset(
+            {"send_private", "local_ledger", *(("shared_stickers",) if shared_stickers else ())}
+        )
 
     def media(self, handle: object) -> None:
         return None
@@ -41,5 +45,5 @@ class AppProvider:
             provider_id=self.provider_id,
             platform=self.platform,
             external_account_id=handle.self_id,
-            capabilities=frozenset({"send_private", "local_ledger"}),
+            capabilities=self.capabilities,
         )

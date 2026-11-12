@@ -84,13 +84,13 @@ async def test_cache_deleted_between_ready_and_query_rebuilds_from_actual_files(
     original_search = StickerIndex._search_ready
     removed = False
 
-    def remove_before_query(engine, platform, query, *, limit=20):
+    def remove_before_query(engine, platform, query, *, limit=20, pictures=False):
         nonlocal removed
         path = bridge.root / f"stickers/{platform}/search.sqlite3"
         if path.is_file() and not removed:
             removed = True
             path.unlink()
-        return original_search(engine, platform, query, limit=limit)
+        return original_search(engine, platform, query, limit=limit, pictures=pictures)
 
     monkeypatch.setattr(StickerIndex, "_search_ready", remove_before_query)
     assert (await value.select("selected", platform="qq")).id == asset.id

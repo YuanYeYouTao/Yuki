@@ -173,6 +173,8 @@ class EmojiDeliveryService:
                 "thread_id": route.thread_id,
                 "provider_id": route.connection.snapshot.provider,
                 "local_ledger": "local_ledger" in route.connection.snapshot.capabilities,
+                # The route shows any catalog's picture stickers (the desktop).
+                "shared_stickers": "shared_stickers" in route.connection.snapshot.capabilities,
             },
             "generation": control.lease.generation
             if control is not None
@@ -427,7 +429,9 @@ class EmojiDeliveryService:
             if intent.selected is None:
                 try:
                     asset = await self.library.select(
-                        **intent.intent, platform=intent.source["platform"]
+                        **intent.intent,
+                        platform=intent.source["platform"],
+                        shared=intent.source["route"].get("shared_stickers", False),
                     )
                 except (asyncio.CancelledError, SQLAlchemyError):
                     raise
