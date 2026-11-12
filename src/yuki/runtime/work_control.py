@@ -1210,7 +1210,13 @@ class WorkControl:
         return admitted
 
     async def _admit_in_session(
-        self, writer: AsyncSession, goal: str, source_json: str, *, identity: str | None = None
+        self,
+        writer: AsyncSession,
+        goal: str,
+        source_json: str,
+        *,
+        identity: str | None = None,
+        checkpoint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """First admission of this source: paid requests and explicit root limits."""
         from yuki.runtime.work_budget import charge, limit
@@ -1224,6 +1230,7 @@ class WorkControl:
             prepared_source_json=source_json,
             goal=goal,
             identity=identity,
+            checkpoint=checkpoint,
         )
         if self.requests_started and admitted["model_requests"] == 0:
             await charge(writer, admitted["id"], models=self.requests_started, tools=0)
@@ -1244,7 +1251,8 @@ class WorkControl:
 
         The Work, the requests already paid by this activation and the first
         ``phase=response`` journal commit in one writer. The goal references the
-        original trigger event instead of copying the user's text.
+        original trigger event instead of copying the user's text. The admission
+        records that the Host, not a ``manage_task`` start, opened this Work.
         """
         assert self.current is None and self.session is not None
         await self.validate()
@@ -1254,7 +1262,13 @@ class WorkControl:
         admitted: dict[str, Any] = {}
 
         async def admit(writer: AsyncSession) -> None:
-            row = await self._admit_in_session(writer, goal, source_json, identity=identity)
+            row = await self._admit_in_session(
+                writer,
+                goal,
+                source_json,
+                identity=identity,
+                checkpoint={"admission": "host_execution"},
+            )
             if row["id"] != identity:
                 raise WorkConflict("work_admission_source_conflict")
             admitted.update(row)

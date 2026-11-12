@@ -426,6 +426,9 @@ class ClientWorks:
                 "revision": row["revision"],
                 "goal": row["goal"][:240],
                 "trigger_event_id": source.get("trigger_event_id"),
+                # How the Work was admitted, when recorded: "host_execution" is the Host's own
+                # admission of a private request's tool execution.
+                "admission": json.loads(row["checkpoint_json"]).get("admission"),
                 "reason": row["reason"],
                 "step_count": step_counts.get(row["id"], (0, "0:0"))[0],
                 "steps_token": step_counts.get(row["id"], (0, "0:0"))[1],
