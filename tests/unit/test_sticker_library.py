@@ -374,7 +374,7 @@ def test_search_keeps_a_cache_repaired_by_another_writer(tmp_path):
             yield
 
     index.cache_writer = repaired
-    assert index.search("qq", "absent") == {"items": []}
+    assert index.search("qq", "absent") == {"items": [], "scores": []}
     assert cache.read_bytes() == good
 
 

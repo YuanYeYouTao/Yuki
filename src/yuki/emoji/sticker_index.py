@@ -542,9 +542,11 @@ class StickerIndex:
                 raise
             return False
 
-    def search(self, platform: str, query: str, *, limit: int = 20) -> dict[str, Any]:
+    def search(
+        self, platform: str, query: str, *, limit: int = 20, pictures: bool = False
+    ) -> dict[str, Any]:
         try:
-            return self._search_ready(platform, query, limit=limit)
+            return self._search_ready(platform, query, limit=limit, pictures=pictures)
         except sqlite3.DatabaseError as error:
             # Corrupted pages are rebuildable; SQL, lock and storage failures stay failures.
             if not self.corrupt(error):
@@ -558,7 +560,7 @@ class StickerIndex:
         if not kept:
             return {"needs_build": True}
         try:
-            return self._search_ready(platform, query, limit=limit)
+            return self._search_ready(platform, query, limit=limit, pictures=pictures)
         except sqlite3.DatabaseError as error:
             if not self.corrupt(error):
                 raise
@@ -566,16 +568,21 @@ class StickerIndex:
                 if self._rank_corrupt(platform, query, limit=limit):
                     self._unlink_cache(platform)
                     return {"needs_build": True}
-            return self._search_ready(platform, query, limit=limit)
+            return self._search_ready(platform, query, limit=limit, pictures=pictures)
 
-    def _search_ready(self, platform: str, query: str, *, limit: int) -> dict[str, Any]:
+    def _search_ready(
+        self, platform: str, query: str, *, limit: int, pictures: bool = False
+    ) -> dict[str, Any]:
         wanted = terms(query)
         if not wanted:
-            return {"items": []}
+            return {"items": [], "scores": []}
+        # Pictures only: every match is read in rank order, so a better-ranked animation file
+        # never hides the picture after it.
         sql = (
             "SELECT asset_id,COUNT(*) FROM terms WHERE term IN (SELECT value FROM json_each(?)) "
-            "GROUP BY asset_id ORDER BY COUNT(*) DESC,asset_id LIMIT ?"
+            "GROUP BY asset_id ORDER BY COUNT(*) DESC,asset_id" + ("" if pictures else " LIMIT ?")
         )
+        arguments = (json.dumps(sorted(wanted)),) + (() if pictures else (limit,))
         path = self.directory(platform) / "search.sqlite3"
         if not path.exists():
             return {"needs_build": True}
@@ -593,9 +600,9 @@ class StickerIndex:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 if not self.valid_schema(db) or version != CACHE_VERSION:
                     return {"needs_build": True}
-                rows = db.execute(sql, (json.dumps(sorted(wanted)), limit)).fetchall()
+                rows = db.execute(sql, arguments).fetchall()
             if not rows:
-                return {"items": []}
+                return {"items": [], "scores": []}
             results, scores = [], []
             for asset_id, score in rows:
                 value = None
@@ -608,32 +615,31 @@ class StickerIndex:
                     valid = actual["id"] == asset_id and bool(record_terms(value) & wanted)
                 except (OSError, ValueError, TypeError, KeyError):
                     valid = False
-                if valid:
+                if not valid:
+                    self._cache_batch(platform, (asset_id,), invalid=(asset_id, value))
+                elif not pictures or actual["mime_type"].startswith("image/"):
                     results.append(actual)
                     scores.append(score)
-                else:
-                    self._cache_batch(platform, (asset_id,), invalid=(asset_id, value))
-            if results:
+                    if len(results) == limit:
+                        break
+            # Every match was read for pictures, so finding none is the answer.
+            if results or pictures:
                 # How many query words each matched, so catalogs can be compared.
                 return {"items": results, "scores": scores}
 
     def search_shared(self, query: str, *, limit: int = 20) -> dict[str, Any]:
         """Pictures from every catalog, for a client that shows any platform's stickers."""
-        ranked = []
+        ranked: list[tuple[int, dict[str, Any]]] = []
         catalogs = (
             sorted(path.name for path in self.root.iterdir() if path.is_dir())
             if self.root.exists()
             else []
         )
         for platform in catalogs:
-            result = self.search(platform, query, limit=limit)
+            result = self.search(platform, query, limit=limit, pictures=True)
             if result.get("needs_build"):
                 return {"needs_build": True, "platform": platform}
-            ranked += [
-                (score, item)
-                for score, item in zip(result.get("scores", ()), result["items"], strict=True)
-                if item["mime_type"].startswith("image/")
-            ]
+            ranked += zip(result["scores"], result["items"], strict=True)
         # The most matched words win; a tie keeps catalog and asset order.
         ranked.sort(key=lambda pair: -pair[0])
         return {"items": [item for _, item in ranked[:limit]]}
