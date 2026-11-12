@@ -309,11 +309,14 @@ class WorkRepository:
         identity: str | None = None,
         handoff_from: str | None = None,
         initial_state: str = "running",
+        checkpoint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Admit in a writer transaction owned by the caller.
 
         Only an owner that must commit its own durable link together with the
         first admission uses this directly; the lease is asserted here.
+        ``checkpoint`` records facts of the admission itself, such as how it
+        was admitted; later checkpoint writes only set their own paths.
         """
         if not goal.strip() or not source_key:
             raise ValueError("invalid_work_goal")
@@ -397,7 +400,7 @@ class WorkRepository:
                 source_json=source_json,
                 goal=goal,
                 parent_work_id=parent_work_id,
-                checkpoint_json="{}",
+                checkpoint_json=json.dumps(checkpoint or {}, ensure_ascii=False),
                 state="queued" if handoff_from else initial_state,
                 created=now,
                 updated=now,

@@ -172,7 +172,10 @@ QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不�
 
 `GET /home` 列出本人发起的私聊／群 Work，`GET /works/{id}` 返回来源入口、结果投递
 位置、状态、revision、目标摘要、等待类型、该 Work 已确认发送的问题／结果、子 Work 数
-与原预算。群聊其他消息、工具参数、checkpoint 和 journal 不进入个人投影。
+与原预算。群聊其他消息、工具参数、checkpoint 和 journal 不进入个人投影。唯一例外是接纳方式
+`admission`：私聊请求首次调用 send 以外的工具时由程序自己接纳的 Work 为 `host_execution`，
+`manage_task` start、SELF、自动化与子 Work 等其余来源为 `null`；该事实在接纳时写入，改写目标不改变它，
+此前已接纳的 Work 没有记录、照旧为 `null`。客户端可据此决定是否在聊天主界面显示其卡片。
 
 `POST /works/{id}/inputs {request_id,text}` 接受与原发起者当前为同一 Person 的设备。App 的 `work_input`
 事件、原 mailbox 的 ready 正文与 `client.work_input` 原回执在同一短事务写入。

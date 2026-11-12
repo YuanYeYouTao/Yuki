@@ -137,6 +137,7 @@ class Work(PublicProjection):
     results: list[WorkResult]
     updated_at: float
     trigger_event_id: int | None = None
+    admission: str | None = None
     reason: str | None = None
     step_count: int | None = None
     steps_token: str | None = None
