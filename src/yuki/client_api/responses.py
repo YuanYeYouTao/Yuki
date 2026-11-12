@@ -163,6 +163,7 @@ class Attachment(PublicProjection):
     name: str | None = None
     mime_type: str | None = None
     size: int | None = None
+    sticker: bool = False
 
 
 class Transcript(PublicProjection):

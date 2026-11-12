@@ -215,9 +215,19 @@ class EmojiLibrary:
             result = await self._index("search", platform=platform, query=query, limit=limit)
         return tuple(EmojiAsset.model_validate(item) for item in result["items"])
 
-    async def select(self, goal: str, emotion: str = "", *, platform: str) -> EmojiAsset | None:
-        candidates = await self.search(" ".join((goal, emotion)), platform=platform, limit=1)
-        return candidates[0] if candidates else None
+    async def select(
+        self, goal: str, emotion: str = "", *, platform: str, shared: bool = False
+    ) -> EmojiAsset | None:
+        """Best match in the platform's catalog; a shared route reads every catalog's pictures."""
+        query = " ".join((goal, emotion))
+        if not shared:
+            candidates = await self.search(query, platform=platform, limit=1)
+            return candidates[0] if candidates else None
+        result = await self._index("search_shared", query=query, limit=1)
+        while result.get("needs_build"):
+            await self.rebuild(platform=result["platform"])
+            result = await self._index("search_shared", query=query, limit=1)
+        return EmojiAsset.model_validate(result["items"][0]) if result["items"] else None
 
     async def publish(self, asset: EmojiAsset, *, request_id: str) -> dict[str, Any]:
         identity = snapshot_identity(asset.platform, asset.sha256)

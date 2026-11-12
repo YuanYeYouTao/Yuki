@@ -919,3 +919,24 @@ async def test_real_eight_mib_original_without_vision_stays_streamed(
     assert peak < 4 * 1024 * 1024
     record_property("eight_mib_peak_bytes", peak)
     record_property("eight_mib_seconds", elapsed)
+
+
+async def test_shared_selection_reads_every_catalog_but_only_pictures(library):
+    """A client that shows any catalog's pictures (the desktop) draws on all of them."""
+    value, _bridge = library
+    animation = gzip.compress(json.dumps({"v": "5", "layers": [], "w": 64, "h": 64}).encode())
+    one = await seed_cached_sticker(value, picture("red"), platform="qq", tags=("开心",))
+    both = await seed_cached_sticker(
+        value, picture("blue"), platform="telegram", tags=("开心", "高兴")
+    )
+    await seed_cached_sticker(
+        value, animation, platform="telegram", tags=("开心", "高兴", "大笑"), is_sticker=True
+    )
+    # 1: an empty own catalog is not the end of it.
+    assert (await value.select("开心", platform="app", shared=True)) is not None
+    # 3: the picture matching the most words wins, wherever it was collected.
+    assert (await value.select("开心", "高兴", platform="app", shared=True)).id == both.id
+    # 2: an animation file is not a picture the desktop shows.
+    assert await value.select("大笑", platform="app", shared=True) is None
+    # 4: a native platform keeps to its own catalog.
+    assert (await value.select("开心", "高兴", platform="qq")).id == one.id

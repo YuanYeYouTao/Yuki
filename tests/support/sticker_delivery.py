@@ -77,12 +77,14 @@ class StickerLibrary:
         self.selected_platforms = []
         self.publish_calls = 0
 
-    async def select(self, goal, emotion="", *, platform):
+    async def select(self, goal, emotion="", *, platform, shared=False):
         self.select_calls += 1
         self.selected_platforms.append(platform)
         self.entered.set()
         await self.release.wait()
-        return self.asset if self.asset is not None and self.asset.platform == platform else None
+        if self.asset is None:
+            return None
+        return self.asset if shared or self.asset.platform == platform else None
 
     async def publish(self, asset, *, request_id):
         self.publish_calls += 1

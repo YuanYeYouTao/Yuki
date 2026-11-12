@@ -573,7 +573,7 @@ class StickerIndex:
         if not wanted:
             return {"items": []}
         sql = (
-            "SELECT asset_id FROM terms WHERE term IN (SELECT value FROM json_each(?)) "
+            "SELECT asset_id,COUNT(*) FROM terms WHERE term IN (SELECT value FROM json_each(?)) "
             "GROUP BY asset_id ORDER BY COUNT(*) DESC,asset_id LIMIT ?"
         )
         path = self.directory(platform) / "search.sqlite3"
@@ -596,8 +596,8 @@ class StickerIndex:
                 rows = db.execute(sql, (json.dumps(sorted(wanted)), limit)).fetchall()
             if not rows:
                 return {"items": []}
-            results = []
-            for (asset_id,) in rows:
+            results, scores = [], []
+            for asset_id, score in rows:
                 value = None
                 try:
                     value = self.read_json(self.metadata_path(platform, asset_id))
@@ -610,10 +610,33 @@ class StickerIndex:
                     valid = False
                 if valid:
                     results.append(actual)
+                    scores.append(score)
                 else:
                     self._cache_batch(platform, (asset_id,), invalid=(asset_id, value))
             if results:
-                return {"items": results}
+                # How many query words each matched, so catalogs can be compared.
+                return {"items": results, "scores": scores}
+
+    def search_shared(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+        """Pictures from every catalog, for a client that shows any platform's stickers."""
+        ranked = []
+        catalogs = (
+            sorted(path.name for path in self.root.iterdir() if path.is_dir())
+            if self.root.exists()
+            else []
+        )
+        for platform in catalogs:
+            result = self.search(platform, query, limit=limit)
+            if result.get("needs_build"):
+                return {"needs_build": True, "platform": platform}
+            ranked += [
+                (score, item)
+                for score, item in zip(result.get("scores", ()), result["items"], strict=True)
+                if item["mime_type"].startswith("image/")
+            ]
+        # The most matched words win; a tie keeps catalog and asset order.
+        ranked.sort(key=lambda pair: -pair[0])
+        return {"items": [item for _, item in ranked[:limit]]}
 
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         command = request["command"]
