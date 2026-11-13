@@ -34,8 +34,11 @@ def model_secrets_path(profile_path: Path) -> Path:
 
 
 def read_model_secrets(profile_path: Path) -> tuple[bytes | None, dict[str, str]]:
+    return read_secret_file(model_secrets_path(profile_path))
+
+
+def read_secret_file(path: Path) -> tuple[bytes | None, dict[str, str]]:
     """Require a private regular file; never include key material in errors."""
-    path = model_secrets_path(profile_path)
     try:
         before = path.lstat()
     except FileNotFoundError:

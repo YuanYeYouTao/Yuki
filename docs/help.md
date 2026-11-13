@@ -16,7 +16,10 @@ uv run yuki --help
 ```
 
 命令入口统一为 `yuki`，服务进程使用 `yuki-bot`。引导配置填写模型连接、平台和插件；
-密钥输入不回显。
+密钥输入不回显。Telegram、飞书/Lark 与 QQ 官方 Bot 的凭据只保存在
+`webui-config/platforms.toml` 与私有 `platforms.secrets.json`，在 Yuki Desktop「设置 → 平台」
+或 `yuki setup` 填写，保存即生效，不写 `.env`。旧部署升级时由
+`yuki setup platforms-migrate --deployment-root <目录>` 一次迁移 `.env` 中的旧值。
 
 日常运维：
 

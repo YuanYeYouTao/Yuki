@@ -184,6 +184,13 @@ $Environment = Get-EnvValue "YUKI_ENVIRONMENT_IMAGE"
 if (-not $Environment) { $Environment = "${EnvironmentImage}:$Version" }
 if ($SandboxProfile -ne "lite") { $Environment = "$Environment-desktop" }
 Pull-Image $Environment
+if (-not $First) {
+    # Telegram/Feishu credentials left in .env (or inlined by Compose) move once into
+    # webui-config before the new Bot starts; start.sh then hands it to the runtime UID.
+    & docker compose run --rm --no-deps -T --user 0:0 --entrypoint yuki `
+        --volume "${InstallDir}:/deploy" bot setup platforms-migrate --deployment-root /deploy | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "Platform credential migration failed." }
+}
 & docker compose up -d --pull missing --remove-orphans
 if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed." }
 

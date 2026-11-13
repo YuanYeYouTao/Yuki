@@ -62,12 +62,157 @@ def test_gateway_profile_changes_retain_extensions() -> None:
 
 
 def test_snowluma_selection_prepares_only_its_real_credentials(tmp_path: Path) -> None:
-    environment = {"COMPOSE_PROFILES": "snowluma"}
+    environment = {"COMPOSE_PROFILES": "snowluma", "SNOWLUMA_IMAGE": "own/snowluma:kept"}
     draft = _SetupDraft(environment, "chat_completions", False)
     ui = TerminalUI(no_color=True, input_fn=lambda _prompt: "", output=StringIO())
     _page_gateway(SetupPaths(tmp_path), ui, draft)
     assert "SUPERUSERS" not in environment
     assert environment["ONEBOT_ACCESS_TOKEN"] and environment["SNOWLUMA_VNC_PASSWORD"]
+    assert environment["SNOWLUMA_IMAGE"] == "own/snowluma:kept"
+    assert environment["SNOWLUMA_VNC_HOST"] == "snowluma"
+    _validate_gateway_configuration(environment)
+
+
+def _template_environment() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[2]
+    values = EnvironmentDocument((root / ".env.example").read_text(encoding="utf-8")).values()
+    # The shipped template may still name a bundled profile or image; a new install
+    # must neither inherit that choice nor accept an image the user did not give.
+    values.update(COMPOSE_PROFILES="snowluma", SNOWLUMA_IMAGE="motricseven7/snowluma:latest")
+    return values
+
+
+def test_new_install_leaves_qq_unselected_by_default(tmp_path: Path) -> None:
+    """Failure 3: an unchosen QQ must not keep the SnowLuma profile of the template."""
+    draft = _SetupDraft(_template_environment(), "chat_completions", False, initial=True)
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    ui = TerminalUI(no_color=True, input_fn=answer, output=StringIO())
+    _page_gateway(SetupPaths(tmp_path), ui, draft)
+    assert selected_gateway_providers(draft.environment) == ()
+    assert any("Telegram" in prompt for prompt in prompts)
+    assert "飞书" in ui._output.getvalue()
+    assert any("QQ 官方" in prompt for prompt in prompts)
+    assert "跳过" in ui._output.getvalue() and "设置 → 平台" in ui._output.getvalue()
+
+
+def test_new_install_selecting_snowluma_requires_the_users_own_image(tmp_path: Path) -> None:
+    """Failure 3: SnowLuma has no public image; setup must ask for the user's own."""
+    draft = _SetupDraft(_template_environment(), "chat_completions", False, initial=True)
+    answers = iter(("y", "", "registry.example/me/snowluma:1", "n", "", "n"))
+    ui = TerminalUI(no_color=True, input_fn=lambda _prompt: next(answers), output=StringIO())
+    _page_gateway(SetupPaths(tmp_path), ui, draft)
+    environment = draft.environment
+    assert selected_gateway_providers(environment) == ("snowluma",)
+    assert environment["SNOWLUMA_IMAGE"] == "registry.example/me/snowluma:1"
+    assert environment["SNOWLUMA_VNC_HOST"] == "snowluma"
+    assert len(environment["ONEBOT_ACCESS_TOKEN"]) >= 32
+    assert not environment["SNOWLUMA_VNC_PASSWORD"].startswith("replace-with-")
+    _validate_gateway_configuration(environment)
+
+
+def test_new_setup_writes_platform_credentials_to_the_platform_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Telegram/Lark/QQ official credentials go to webui-config, never to .env."""
+    import json
+    import stat
+
+    root = Path(__file__).resolve().parents[2]
+    paths = SetupPaths(tmp_path)
+    paths.env_example.write_bytes((root / ".env.example").read_bytes())
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/SOUL.md").write_bytes((root / "config/SOUL.md").read_bytes())
+    monkeypatch.chdir(tmp_path)
+    secrets = {
+        "Telegram": "123:telegram-setup-secret",
+        "Lark": "lark-setup-secret",
+        "QQ 官方": "qq-official-setup-secret",
+    }
+    answers = iter(
+        (
+            "chat_completions",
+            "openai_compatible",
+            "https://api.example.com/v1",
+            "test-model",
+            "n",  # auxiliary model
+            "n",  # embedding
+            "disabled",  # web
+            "n",  # vision
+            "n",  # plugins
+            "n",  # automation
+            "n",  # bundled SnowLuma
+            "y",  # Telegram
+            "lark",  # Feishu or Lark
+            "cli_lark_setup",
+            "y",  # QQ official Bot
+            "102000002",
+            "y",  # sandbox
+            "y",  # write configuration
+        )
+    )
+
+    def secret(prompt: str) -> str:
+        return next((value for key, value in secrets.items() if key in prompt), "test-api-key")
+
+    ui = TerminalUI(
+        no_color=True,
+        input_fn=lambda _prompt: next(answers),
+        secret_fn=secret,
+        output=StringIO(),
+    )
+    assert _configure(paths, ui) == 0
+
+    env_text = paths.env.read_text(encoding="utf-8")
+    assert all(value not in env_text for value in secrets.values())
+    assert "TELEGRAM_BOT_TOKEN" not in env_text and "FEISHU_APP_ID" not in env_text
+    document = tomllib.loads((tmp_path / "webui-config/platforms.toml").read_text("utf-8"))
+    assert document["telegram"] == {"enabled": True}
+    assert document["lark"] == {"enabled": True, "app_id": "cli_lark_setup"}
+    assert document["qq_official"] == {"enabled": True, "app_id": "102000002", "sandbox": True}
+    sidecar = tmp_path / "webui-config/platforms.secrets.json"
+    assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+    assert set(json.loads(sidecar.read_text("utf-8"))["keys"].values()) == set(secrets.values())
+    assert all(value not in ui._output.getvalue() for value in secrets.values())
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        (
+            "FEISHU_APP_ID=cli_lark\nFEISHU_APP_SECRET=lark-secret\n"
+            "FEISHU_DOMAIN=https://open.larksuite.com\n",
+            {"lark": {"enabled": True, "app_id": "cli_lark"}},
+        ),
+        ("FEISHU_APP_ID=cli_half\n", None),
+        ("TELEGRAM_BOT_TOKEN=\nFEISHU_APP_ID=\n", {}),
+    ],
+)
+def test_platform_migration_maps_the_old_domain_and_refuses_unpaired_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str, expected: dict | None
+) -> None:
+    import argparse
+
+    from yuki.deployment_setup.command import run_setup_command
+
+    for name in ("TELEGRAM_BOT_TOKEN", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DOMAIN"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / "webui-config").mkdir()
+    (tmp_path / ".env").write_text(env, encoding="utf-8")
+    args = argparse.Namespace(
+        deployment_root=tmp_path, no_color=True, setup_action="platforms-migrate"
+    )
+    document = tmp_path / "webui-config/platforms.toml"
+    if expected is None:
+        assert run_setup_command(args) == 1
+        assert not document.exists()
+        return
+    assert run_setup_command(args) == 0
+    assert (tomllib.loads(document.read_text("utf-8")) if document.exists() else {}) == expected
 
 
 @pytest.mark.parametrize("profiles", ["", "external"])
@@ -96,6 +241,9 @@ def test_new_setup_writes_selected_profiles_and_private_operator_credentials(
             "n",  # plugins
             "n",  # automation
             "",  # preserve no bundled gateway
+            "",  # no Telegram
+            "",  # no Feishu or Lark
+            "",  # no QQ official Bot
             "y",  # write configuration
         )
     )
@@ -224,14 +372,9 @@ def _search_setup(tmp_path: Path, profiles: str, **updates: str):
     return paths, SetupConfiguration(environment, profiles, None)
 
 
-@pytest.mark.parametrize("telegram", [False, True])
-def test_personal_or_telegram_configuration_does_not_require_qq_material(
-    tmp_path: Path, telegram: bool
-) -> None:
+def test_personal_configuration_does_not_require_qq_material(tmp_path: Path) -> None:
     profiles = build_model_profiles(main_protocol="gemini", flash_enabled=False)
     paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="disabled")
-    if telegram:
-        configuration.environment["TELEGRAM_BOT_TOKEN"] = "fixture:not-a-real-token"
     validate_configuration(paths, configuration)
     assert "ONEBOT_ACCESS_TOKEN" not in configuration.environment
     assert "SNOWLUMA_VNC_PASSWORD" not in configuration.environment
@@ -445,7 +588,10 @@ def test_native_setup_commits_provider_search_without_tavily(
             "n",
             "n",
             "n",
-            "n",
+            "n",  # bundled SnowLuma
+            "n",  # Telegram
+            "skip",  # Feishu or Lark
+            "n",  # QQ official Bot
             "y",
         )
     )
@@ -637,3 +783,38 @@ def test_validation_reads_only_the_selected_soul_and_allows_empty_text(tmp_path:
     paths.soul.unlink()
     with pytest.raises(FileNotFoundError):
         validate_configuration(paths, configuration)
+
+
+@pytest.mark.parametrize(
+    ("env", "host"),
+    [
+        ("COMPOSE_PROFILES=snowluma\nONEBOT_ACCESS_TOKEN=kept\n", "snowluma"),
+        ("COMPOSE_PROFILES=snowluma\nSNOWLUMA_VNC_HOST=qq.example\n", "qq.example"),
+        ("COMPOSE_PROFILES=\n", None),
+    ],
+)
+def test_platform_migration_keeps_qq_login_of_the_bundled_snowluma(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str, host: str | None
+) -> None:
+    """QQ login now follows SNOWLUMA_VNC_HOST; an upgrade must not make it disappear."""
+    import argparse
+    import os
+    import stat
+
+    from yuki.deployment_setup.command import run_setup_command
+
+    for name in ("TELEGRAM_BOT_TOKEN", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DOMAIN"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / "webui-config").mkdir()
+    env_path = tmp_path / ".env"
+    env_path.write_text(env, encoding="utf-8")
+    os.chmod(env_path, 0o600)
+    args = argparse.Namespace(
+        deployment_root=tmp_path, no_color=True, setup_action="platforms-migrate"
+    )
+    for _ in range(2):
+        assert run_setup_command(args) == 0
+        values = EnvironmentDocument.load(SetupPaths(tmp_path)).values()
+        assert values.get("SNOWLUMA_VNC_HOST") == host
+        assert values.get("ONEBOT_ACCESS_TOKEN") == ("kept" if "kept" in env else None)
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600

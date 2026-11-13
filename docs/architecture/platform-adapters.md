@@ -69,7 +69,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 ## Telegram 首期接入
 
-在部署使用的环境文件设置 `TELEGRAM_BOT_TOKEN`。源码使用 long polling，支持普通 Bot 私聊、群及 topic、文字和常见媒体、引用、命令与原执行来源。QQ-only 可不配置此项；App/TG-only 不需要虚填 QQ 管理员或 SnowLuma 凭据。
+Bot Token 只保存在平台凭据文档（见下节），由 Yuki Desktop「设置 → 平台」、`yuki setup` 或管理 API 写入。源码使用 long polling，支持普通 Bot 私聊、群及 topic、文字和常见媒体、引用、命令与原执行来源。QQ-only 可不配置此项；App/TG-only 不需要虚填 QQ 管理员或 SnowLuma 凭据。
 
 Telegram API 与平台文件下载共用同一原生 HTTP 客户端，沿标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 和 CA 环境配置；修改后重新创建 Bot 容器。无需 Telegram 专属代理开关，代理失败不自动改成直连，详见[代理配置](../operations/http-proxy.zh-CN.md)。
 
@@ -94,7 +94,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 
 ## 飞书与 Lark 接入
 
-企业自建应用机器人使用原生长连接接收事件，HTTP OpenAPI 执行收发和媒体操作，无需公网回调。`FEISHU_APP_ID` 与 `FEISHU_APP_SECRET` 同时配置后启动；都为空时不启动，只填写一项会报告配置错误。`FEISHU_DOMAIN` 明确选择飞书的 `https://open.feishu.cn` 或 Lark 的 `https://open.larksuite.com`，按对应平台保存账号与连接。部署步骤和权限见[飞书与 Lark](../operations/feishu.zh-CN.md)。
+企业自建应用机器人使用原生长连接接收事件，HTTP OpenAPI 执行收发和媒体操作，无需公网回调。App ID 与 App Secret 保存在平台凭据文档，须成对保存。平台键 `feishu` 使用 `https://open.feishu.cn`，`lark` 使用 `https://open.larksuite.com`，按对应平台保存账号与连接。部署步骤和权限见[飞书与 Lark](../operations/feishu.zh-CN.md)。
 
 入站正文、原生提及、引用、附件和话题投影到共同 `InboundMessage`，经同一 Processor 和 canonical 入账。平台确认等待入账或明确忽略，不等待模型回答。重投读取原事件，不重新启动 Main；当前只订阅 `im.message.receive_v1`，未接入官方消息编辑推送，不承诺自动更新已观察历史。人物关联沿原 AccountAssignment，应用范围的原生 ID 不直接充当跨平台 Person ID。
 
@@ -105,6 +105,24 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 群普通消息的可见性取决于应用权限：仅有群 @ 权限时只会接到 @ 消息；自然参与需 `im:message.group_msg` 及管理员批准，接入层不另加 `requireMention` 过滤。飞书/Lark 使用同一份固定平台工具合同；不提供原生输入状态时，Activity 返回无实现。
 
 各原生平台的命令读取共用 `parse_message_command`，允许在开头真实提及 Yuki 后书写 `/ai` 命令或配置前缀。只在后续确为命令/前缀时跳过这些 Bot 提及；普通文字、普通 `@名字` 和其他成员提及保持原语义。此投影不改入站消息、提及位置或账本正文，停用群的恢复命令也沿同一读取方式。
+
+## 平台凭据与热启停
+
+Telegram、飞书、Lark 与 QQ 官方 Bot 的凭据唯一来源是 `PLATFORMS_FILE`（默认
+`webui-config/platforms.toml`，Compose 中为 `/app/webui-config/platforms.toml`）及同目录 0600 的
+`platforms.secrets.json`。文档按平台键各一段，只含 `enabled` 与非密设置（飞书/Lark 的 `app_id`，
+QQ 官方 Bot 的 `app_id`、`sandbox`）；`bot_token`、`app_secret` 只在 secrets 文件，键名为
+`<平台>_<字段>` 大写。两个文件共用一个 bundle revision，写入复用模型配置的原子替换。
+`.env` 中旧的 `TELEGRAM_BOT_TOKEN`、`FEISHU_*` 不再读取，升级由 `yuki setup platforms-migrate`
+一次迁移（见[管理 API](admin-api.md#聊天平台凭据)）。QQ（SnowLuma/OneBot）仍由 `.env` 与 Compose 配置。
+
+`PlatformGateways` 是常驻的平台持有者，只注册一个 lifecycle 项，按平台键持有工厂
+`Callable[[PlatformConfig], PlatformGateway]`；网关提供 `preflight/start/close/health`。启动时按文档
+构造并启动已启用的平台。保存时先用新凭据构造新实例并 `preflight`（Telegram `getMe`，飞书/Lark 取
+tenant token 并读机器人身份），失败则关闭新实例、不写文件、不动旧实例；通过后写文件，关闭旧实例
+（断开 Registry）再启动新实例，原地替换 `gateway_health_sources` 的健康源。停用只关闭。同账号换
+凭据先断开旧连接，不产生 Registry 冲突，也不同时轮询。没有工厂的平台键（当前为 `qq_official`）
+只保存并返回 `saved_pending_restart`；新 Provider 只需在容器中为该键注册工厂。
 
 ## 从已有数据升级
 

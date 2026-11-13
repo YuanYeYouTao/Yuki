@@ -3,9 +3,9 @@
 import asyncio
 
 import pytest
-from pydantic import SecretStr
 from tests.integration.test_database_lifecycle_ownership import app_settings
 
+from yuki.admin.platform_files import load_platforms, write_platforms
 from yuki.container import ApplicationContainer
 
 
@@ -63,12 +63,16 @@ async def test_start_failure_closes_all_constructed_http_owners_even_before_thei
             clients.append(self)
 
     monkeypatch.setattr(httpx, "AsyncClient", ObservedClient)
-    settings = app_settings(database, tmp_path).model_copy(
-        update={
-            "feishu_app_id": "offline-start-failure",
-            "feishu_app_secret": SecretStr("offline-only"),
-        }
+    platforms = tmp_path / "platforms.toml"
+    empty = load_platforms(platforms)
+    saved = empty.changed(
+        "feishu",
+        enabled=True,
+        settings={"app_id": "offline-start-failure"},
+        secrets={"app_secret": "offline-only"},
     )
+    write_platforms(platforms, empty, saved)
+    settings = app_settings(database, tmp_path).model_copy(update={"platforms_file": platforms})
     app = await ApplicationContainer.create(settings)
     failure = RuntimeError("original manifest failure")
     if phase == "manifest":

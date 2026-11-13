@@ -27,6 +27,9 @@ from yuki.admin.queries import AdminQueries
 from yuki.admin_api.http import AdminApi, attach_admin_api
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
+from yuki.gateway.platforms import PlatformGateways
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.model_runtime.executor import TaskModelExecutor
@@ -133,6 +136,9 @@ capabilities = ["control.health.read", "control.execution.metadata.read"]
             config=RuntimeConfigService(settings=settings, database=database),
             groups=GroupSettingsRepository(database),
             router=fixture_ingress(database)._router,
+            platforms=PlatformGateways(settings.platforms_file, {}),
+            providers=builtin_provider_catalog(),
+            registry=GatewayConnectionRegistry(providers=builtin_provider_catalog()),
         ),
         identities,
         AdminQueries(database, manager, files, health),

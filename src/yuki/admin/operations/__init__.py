@@ -7,9 +7,13 @@ from yuki.admin.operations.config import ConfigOperations
 from yuki.admin.operations.groups import GroupOperations
 from yuki.admin.operations.identity import IdentityOperations
 from yuki.admin.operations.models import ModelOperations
+from yuki.admin.operations.platforms import PlatformOperations
 from yuki.admin.operations.plugins import PluginOperations
 from yuki.admin.operations.work import WorkOperations
 from yuki.client_api.identity import ClientIdentityService
+from yuki.gateway.platforms import PlatformGateways
+from yuki.gateway.provider import GatewayProviderCatalog
+from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.database import Database
 from yuki.persistence.people_repository import PeopleRepository
@@ -29,6 +33,9 @@ class AdminOperations:
         config: RuntimeConfigService,
         groups: GroupSettingsRepository,
         router: PresenceRouter,
+        platforms: PlatformGateways,
+        providers: GatewayProviderCatalog,
+        registry: GatewayConnectionRegistry,
     ) -> None:
         self.executor = CommandExecutor(database)
         self.config = ConfigOperations(self.executor, config)
@@ -36,4 +43,5 @@ class AdminOperations:
         self.identity = IdentityOperations(self.executor, identities, people, router=router)
         self.plugin = PluginOperations(self.executor, plugins)
         self.model = ModelOperations(self.executor, files)
+        self.platform = PlatformOperations(self.executor, platforms, providers, registry)
         self.work = WorkOperations(self.executor)

@@ -29,8 +29,8 @@ def test_desktop_setup_prepares_app_only_without_platform_credentials(
     environment = EnvironmentDocument.load(paths).values()
     assert environment["COMPOSE_PROFILES"] == ""
     assert environment["ONEBOT_ACCESS_TOKEN"] == ""
-    assert environment["TELEGRAM_BOT_TOKEN"] == ""
-    assert environment["FEISHU_APP_ID"] == ""
+    assert "TELEGRAM_BOT_TOKEN" not in environment
+    assert "FEISHU_APP_ID" not in environment and "FEISHU_APP_SECRET" not in environment
     assert environment["LLM_MODEL"] == "local-test-model"
     assert "isolated-local-test" not in paths.model_profiles.read_text("utf-8")
     assert len(environment["YUKI_CONTROL_OPERATOR_TOKEN"]) >= 32
