@@ -14,6 +14,7 @@ services:
       - ./social-transfer:/app/social-transfer
       - sandbox-run:/run/yuki-sandbox:ro
       - media-cache:/app/data/conversation-media-cache
+      - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
       - ./webui-config:/app/webui-config
       - ./plugins:/app/plugins:ro
