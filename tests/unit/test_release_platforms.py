@@ -206,6 +206,19 @@ import json, os, sys
 arguments = sys.argv[1:]
 with open(os.environ['DOCKER_LOG'], 'a') as writer:
     writer.write(json.dumps(arguments) + '\\n')
+if 'COMPOSE_FILES_LOG' in os.environ:
+    with open(os.environ['COMPOSE_FILES_LOG'], 'a') as writer:
+        writer.write(os.environ.get('COMPOSE_FILE', '') + '\\n')
+# A one-off ``yuki`` in the Bot image runs the real CLI on the mounted directories.
+if arguments[:2] == ['compose', 'run'] and 'yuki' in arguments:
+    import subprocess
+    options = arguments[2:arguments.index('bot')]
+    mounts = dict(
+        reversed(options[index + 1].rsplit(':', 1))
+        for index, option in enumerate(options) if option == '--volume'
+    )
+    command = [mounts.get(item, item) for item in arguments[arguments.index('bot') + 1:]]
+    sys.exit(subprocess.run([sys.executable, '-m', 'yuki.cli', *command]).returncode)
 if arguments[:2] == ['info', '--format']:
     print({{
         '{{{{.Architecture}}}}': os.environ['DOCKER_ARCH'],
@@ -462,3 +475,131 @@ def test_smoke_checks_the_selected_image_before_running_it(
         with pytest.raises(SmokeError):
             verify_image_identity(compose, "3.9.0", platform, "expected-commit")
     assert commands == [["docker", "image", "inspect", "--platform", platform, "image:3.9.0"]]
+
+
+def _run_snowluma(deployment, log, *arguments, **environment):
+    """deploy/snowluma.sh as Yuki Desktop runs it in the deployment, local or over SSH."""
+    fakes = log.parent / f"fake-{log.stem}"
+    fakes.mkdir()
+    return subprocess.run(
+        ["sh", str(deployment / "deploy/snowluma.sh"), *arguments],
+        cwd=deployment.parent,
+        env={
+            **os.environ,
+            **environment,
+            "DOCKER_LOG": str(log),
+            "PATH": str(_fake_docker(fakes)) + os.pathsep + os.environ["PATH"],
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _snowluma_deployment(tmp_path):
+    deployment = tmp_path / "deployment"
+    (deployment / "deploy").mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/snowluma.sh", deployment / "deploy/snowluma.sh")
+    shutil.copyfile(ROOT / ".env.example", deployment / ".env.example")
+    env = deployment / ".env"
+    env.write_text(
+        "USER_CONFIG=keep  # a comment the owner wrote\n"
+        "COMPOSE_PROFILES=custom\n"
+        "ONEBOT_ACCESS_TOKEN=replace-with-a-long-random-token\n",
+        encoding="utf-8",
+    )
+    env.chmod(0o600)
+    return deployment
+
+
+def _values(deployment):
+    from yuki.deployment_setup.service import EnvironmentDocument
+
+    text = (deployment / ".env").read_text(encoding="utf-8")
+    return EnvironmentDocument(text).values(), text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+@pytest.mark.parametrize("arguments", [(), ("",)])
+def test_snowluma_script_without_an_image_prints_usage_and_changes_nothing(tmp_path, arguments):
+    deployment = _snowluma_deployment(tmp_path)
+    before = (deployment / ".env").read_bytes()
+    log = tmp_path / "docker.jsonl"
+    completed = _run_snowluma(deployment, log, *arguments)
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert "sh deploy/snowluma.sh <" in completed.stderr
+    assert (deployment / ".env").read_bytes() == before
+    assert not log.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+def test_snowluma_script_enables_the_users_image_and_starts_it(tmp_path):
+    deployment = _snowluma_deployment(tmp_path)
+    log = tmp_path / "docker.jsonl"
+    owner = (deployment / ".env").stat()
+    completed = _run_snowluma(deployment, log, "registry.example/me/snowluma:1")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    values, text = _values(deployment)
+    assert values["COMPOSE_PROFILES"] == "snowluma,custom"
+    assert values["SNOWLUMA_IMAGE"] == "registry.example/me/snowluma:1"
+    assert values["SNOWLUMA_VNC_HOST"] == "snowluma"
+    assert len(values["ONEBOT_ACCESS_TOKEN"]) >= 32
+    assert not values["ONEBOT_ACCESS_TOKEN"].startswith("replace-with-")
+    assert len(values["SNOWLUMA_VNC_PASSWORD"]) >= 32
+    assert text.startswith("USER_CONFIG=keep  # a comment the owner wrote\n")
+    env = (deployment / ".env").stat()
+    assert (env.st_uid, env.st_gid, env.st_mode & 0o777) == (owner.st_uid, owner.st_gid, 0o600)
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    # As install.sh migrates an upgrade: root in a one-off Bot, the deployment at /deploy.
+    setup, up = commands
+    assert setup[:2] == ["compose", "run"] and "--no-deps" in setup and "--rm" in setup
+    assert setup[setup.index("--user") + 1] == "0:0"
+    assert setup[setup.index("--entrypoint") + 1] == "yuki"
+    assert setup[setup.index("--volume") + 1] == f"{deployment}:/deploy"
+    assert setup[setup.index("bot") + 1 :] == [
+        "setup",
+        "snowluma",
+        "--deployment-root",
+        "/deploy",
+        "--image",
+        "registry.example/me/snowluma:1",
+    ]
+    assert up == ["compose", "up", "-d", "bot", "snowluma"]
+    assert "QQ 登入" in completed.stdout and "Yuki Desktop" in completed.stdout
+    # Secrets stay in .env; the output never shows them.
+    for name in ("ONEBOT_ACCESS_TOKEN", "SNOWLUMA_VNC_PASSWORD"):
+        assert values[name] not in completed.stdout + completed.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+def test_snowluma_script_again_keeps_credentials_and_profiles(tmp_path):
+    deployment = _snowluma_deployment(tmp_path)
+    log = tmp_path / "docker.jsonl"
+    assert _run_snowluma(deployment, log, "registry.example/me/snowluma:1").returncode == 0
+    first, _text = _values(deployment)
+    again = _run_snowluma(deployment, tmp_path / "again.jsonl", "me/snowluma:2")
+    assert again.returncode == 0, again.stdout + again.stderr
+    second, text = _values(deployment)
+    assert second == {**first, "SNOWLUMA_IMAGE": "me/snowluma:2"}
+    for name in ("COMPOSE_PROFILES", "SNOWLUMA_IMAGE", "ONEBOT_ACCESS_TOKEN"):
+        assert sum(line.startswith(f"{name}=") for line in text.splitlines()) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+def test_snowluma_script_uses_the_callers_compose_files(tmp_path):
+    """Yuki Desktop's local deployment layers docker-compose.local.yml through COMPOSE_FILE."""
+    deployment = _snowluma_deployment(tmp_path)
+    files = tmp_path / "compose-files.log"
+    completed = _run_snowluma(
+        deployment,
+        tmp_path / "docker.jsonl",
+        "me/snowluma:1",
+        COMPOSE_FILE="docker-compose.yml:docker-compose.local.yml",
+        COMPOSE_FILES_LOG=str(files),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (
+        files.read_text(encoding="utf-8").splitlines()
+        == ["docker-compose.yml:docker-compose.local.yml"] * 2
+    )

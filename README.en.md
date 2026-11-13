@@ -141,7 +141,7 @@ Copy the [installation prompt](docs/install-with-ai.en.md) into an AI assistant 
 ### After installing
 
 - **Personality**: edit `character/SOUL.md` in the deployment directory.
-- **Chat platforms**: see the [Telegram guide](docs/operations/telegram.zh-CN.md) and the [Feishu and Lark guide](docs/operations/feishu.zh-CN.md); enter their credentials in Yuki Desktop under Settings → Platforms. QQ is not installed by default; to use it, bring your own [SnowLuma](docs/deployment/snowluma.md) image and scan the login code in Yuki Desktop's computer window.
+- **Chat platforms**: see the [Telegram guide](docs/operations/telegram.zh-CN.md) and the [Feishu and Lark guide](docs/operations/feishu.zh-CN.md); enter their credentials in Yuki Desktop under Settings → Platforms. QQ is not installed by default; to use it, bring your own [SnowLuma](docs/deployment/snowluma.md) image, run `sh deploy/snowluma.sh <image>` in the deployment directory, and scan the login code in Yuki Desktop's computer window.
 - **Your own computer**: connect it in Yuki Desktop under "設定 → 這台電腦", see the [local connector](docs/operations/local-agent-connector.zh-CN.md).
 
 ## Upgrade

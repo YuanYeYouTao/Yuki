@@ -115,6 +115,63 @@ def test_new_install_selecting_snowluma_requires_the_users_own_image(tmp_path: P
     _validate_gateway_configuration(environment)
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        "COMPOSE_PROFILES=custom\nONEBOT_ACCESS_TOKEN=replace-with-a-long-random-token\n",
+        "COMPOSE_PROFILES=snowluma,custom\nSNOWLUMA_IMAGE=old/snowluma\n"
+        "ONEBOT_ACCESS_TOKEN=kept-token\nSNOWLUMA_VNC_PASSWORD=kept-password\n"
+        "SNOWLUMA_VNC_HOST=qq.example\n",
+    ],
+)
+def test_setup_snowluma_command_writes_what_the_gateway_page_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str
+) -> None:
+    """deploy/snowluma.sh and the interactive gateway page enable SnowLuma alike."""
+    import secrets
+    import sys
+
+    from yuki.cli import main
+
+    generated = iter(f"generated-{index}-" + "x" * 32 for index in range(4))
+    monkeypatch.setattr(secrets, "token_urlsafe", lambda _size: next(generated))
+    image = "registry.example/me/snowluma:1"
+    draft = _SetupDraft(EnvironmentDocument(env).values(), "chat_completions", False)
+    answers = iter(("y", image, "n", "", "n"))
+    ui = TerminalUI(no_color=True, input_fn=lambda _prompt: next(answers), output=StringIO())
+    _page_gateway(SetupPaths(tmp_path), ui, draft)
+
+    (tmp_path / ".env").write_text(env, encoding="utf-8")
+    generated = iter(f"generated-{index}-" + "x" * 32 for index in range(4))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["yuki", "setup", "snowluma", "--deployment-root", str(tmp_path), "--image", image],
+    )
+    with pytest.raises(SystemExit) as exited:
+        main()
+    assert exited.value.code == 0
+    assert EnvironmentDocument.load(SetupPaths(tmp_path)).values() == draft.environment
+    assert selected_gateway_providers(draft.environment) == ("snowluma",)
+    if "kept-token" in env:
+        assert draft.environment["ONEBOT_ACCESS_TOKEN"] == "kept-token"
+        assert draft.environment["SNOWLUMA_VNC_PASSWORD"] == "kept-password"
+
+
+def test_setup_snowluma_command_requires_an_image(tmp_path: Path) -> None:
+    import argparse
+
+    from yuki.deployment_setup.command import run_setup_command
+
+    env = "COMPOSE_PROFILES=\n"
+    (tmp_path / ".env").write_text(env, encoding="utf-8")
+    args = argparse.Namespace(
+        deployment_root=tmp_path, no_color=True, setup_action="snowluma", image=""
+    )
+    assert run_setup_command(args) == 1
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == env
+
+
 def test_new_setup_writes_platform_credentials_to_the_platform_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

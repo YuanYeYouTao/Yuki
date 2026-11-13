@@ -252,14 +252,37 @@ def migrate_platform_credentials(paths: SetupPaths) -> dict[str, object]:
             "snowluma" in selected_gateway_providers(values)
             and not values.get("SNOWLUMA_VNC_HOST", "").strip()
         ):
-            content = document.merge({"SNOWLUMA_VNC_HOST": "snowluma"}).encode("utf-8")
-            owner = paths.env.stat()
-            _atomic_write(paths.env, content, private=True)
-            if os.name == "posix":
-                # The installer runs this as root; .env stays its deployment user's file.
-                os.chown(paths.env, owner.st_uid, owner.st_gid)
+            _rewrite_env(paths, document.merge({"SNOWLUMA_VNC_HOST": "snowluma"}))
             result["snowluma_vnc_host"] = "snowluma"
     return result
+
+
+def snowluma_environment(environment: Mapping[str, str], image: str) -> dict[str, str]:
+    """The .env values that run the bundled SnowLuma; existing credentials stay."""
+    values = {
+        "COMPOSE_PROFILES": compose_profiles_with_features(environment, gateways=("snowluma",)),
+        "SNOWLUMA_IMAGE": image,
+        "SNOWLUMA_VNC_HOST": "snowluma",
+    }
+    for name in ("ONEBOT_ACCESS_TOKEN", "SNOWLUMA_VNC_PASSWORD"):
+        values[name] = _configured_value(environment.get(name, "")) or secrets.token_urlsafe(32)
+    _validate_gateway_configuration({**environment, **values})
+    return values
+
+
+def enable_snowluma(paths: SetupPaths, image: str) -> None:
+    """``yuki setup snowluma``: what the gateway page writes, for deploy/snowluma.sh."""
+    document = EnvironmentDocument(paths.env.read_text(encoding="utf-8"))
+    _rewrite_env(paths, document.merge(snowluma_environment(document.values(), image)))
+
+
+def _rewrite_env(paths: SetupPaths, content: str) -> None:
+    owner = paths.env.stat()
+    _atomic_write(paths.env, content.encode("utf-8"), private=True)
+    if os.name == "posix":
+        # The installer and deploy scripts run setup as root; .env stays its
+        # deployment user's file.
+        os.chown(paths.env, owner.st_uid, owner.st_gid)
 
 
 def _migrate_platform_document(paths: SetupPaths) -> dict[str, object]:

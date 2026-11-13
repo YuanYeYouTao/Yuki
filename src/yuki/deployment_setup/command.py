@@ -7,7 +7,6 @@ import asyncio
 import copy
 import json
 import os
-import secrets
 import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -33,6 +32,7 @@ from yuki.deployment_setup.service import (
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
+    enable_snowluma,
     initialize_soul,
     load_plugin_setup_states,
     main_protocol,
@@ -43,6 +43,7 @@ from yuki.deployment_setup.service import (
     require_migrated_model_profiles,
     save_platforms,
     selected_gateway_providers,
+    snowluma_environment,
     validate_configuration,
     verify_health,
 )
@@ -114,6 +115,7 @@ def add_setup_parser(
             "desktop-pair",
             "provider-presets",
             "platforms-migrate",
+            "snowluma",
         ),
         default="configure",
     )
@@ -122,6 +124,7 @@ def add_setup_parser(
     setup.add_argument("--health-url", default="http://127.0.0.1:8080/healthz")
     setup.add_argument("--timeout", type=float, default=180.0)
     setup.add_argument("--json", action="store_true", help="以 JSON 匯出 Provider 預設")
+    setup.add_argument("--image", default="", help="snowluma：自备的 SnowLuma 镜像")
 
 
 def run_setup_command(args: argparse.Namespace) -> int:
@@ -139,6 +142,10 @@ def run_setup_command(args: argparse.Namespace) -> int:
         action = str(args.setup_action)
         if action == "platforms-migrate":
             ui.line(json.dumps(migrate_platform_credentials(paths), ensure_ascii=False))
+            return 0
+        if action == "snowluma":
+            enable_snowluma(paths, str(args.image))
+            ui.success("已在 .env 启用 SnowLuma；docker compose up -d bot snowluma 后生效")
             return 0
         if action in {"desktop-configure", "desktop-pair"}:
             from yuki.deployment_setup.desktop import (
@@ -600,29 +607,20 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
         "启用附带的 SnowLuma QQ Gateway（需自备镜像）？",
         default=not draft.initial and "snowluma" in current,
     )
-    gateways = ("snowluma",) if enabled else ()
-    environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
-        environment,
-        gateways=gateways,
-    )
-    if "snowluma" in gateways:
+    if enabled:
         ui.info("SnowLuma 上游已停止维护，Yuki 不提供镜像；请填写你自己能拉取的镜像。")
-        environment["SNOWLUMA_IMAGE"] = ui.ask(
+        image = ui.ask(
             "SnowLuma 镜像",
             default="" if draft.initial else _real_value(environment.get("SNOWLUMA_IMAGE", "")),
             required=True,
         )
-        environment["SNOWLUMA_VNC_HOST"] = "snowluma"
-        environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
-            environment.get("ONEBOT_ACCESS_TOKEN", "")
-        )
-        environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
-            environment.get("SNOWLUMA_VNC_PASSWORD", "")
-        )
+        environment.update(snowluma_environment(environment, image))
         ui.info("SnowLuma 启动后，在 Yuki Desktop 的电脑窗口选择「QQ 登入」扫码登录。")
         ui.info("同一 QQ 已连接其他 Provider 时，新连接会被 Yuki 拒绝。")
-    elif environment.get("SNOWLUMA_VNC_HOST") == "snowluma":
-        environment["SNOWLUMA_VNC_HOST"] = ""
+    else:
+        environment["COMPOSE_PROFILES"] = compose_profiles_with_features(environment, gateways=())
+        if environment.get("SNOWLUMA_VNC_HOST") == "snowluma":
+            environment["SNOWLUMA_VNC_HOST"] = ""
     _page_platform_credentials(paths, ui, draft)
 
 
@@ -1039,10 +1037,6 @@ def _require_base_configuration(environment: dict[str, str]) -> None:
     parsed = urlsplit(environment["LLM_BASE_URL"])
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise SetupValidationError("主模型 Base URL 必须是绝对 HTTP(S) 地址")
-
-
-def _token_or_existing(value: str) -> str:
-    return value if _real_value(value) else secrets.token_urlsafe(32)
 
 
 def _real_value(value: str) -> str:

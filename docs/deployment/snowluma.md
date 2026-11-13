@@ -5,38 +5,31 @@ Catalog、Registry 与 OneBot 合同继续保留，其他网关实现沿这些�
 Yuki 的 Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
 更换网关实现不复制业务 owner、重置会话或迁移记忆。
 
-## 自备镜像
+## 启用
 
 SnowLuma 上游已停止公开维护，原公开镜像已无法拉取。Yuki 不发布、不转存 SnowLuma 镜像，也不以
-第三方转存作为默认来源。`docker-compose.yml` 保留 `snowluma` 服务，但 `SNOWLUMA_IMAGE` 没有默认值：
-启用前在 `.env` 填写你自己可拉取的镜像，镜像的平台（amd64/arm64）与内容由你负责。未填写时，
-带 `snowluma` profile 的 `docker compose` 会直接报该服务没有镜像。
-
-```dotenv
-COMPOSE_PROFILES=snowluma
-SNOWLUMA_IMAGE=registry.example.com/you/snowluma:your-tag
-SNOWLUMA_VNC_HOST=snowluma
-```
-
-Desktop 的「QQ 登入」只在 Bot 环境显式配置了 `SNOWLUMA_VNC_HOST` 时出现。使用附带的 `snowluma`
-服务写 `snowluma`；SnowLuma 部署在别处时，写它的 VNC 地址与 `SNOWLUMA_VNC_PORT`（默认 5900），
-反向 WebSocket 连到 Bot 的 `/onebot/v11/snowluma/ws` 并使用同一个 `ONEBOT_ACCESS_TOKEN`。已有部署
-升级后若「QQ 登入」消失，在 `.env` 补上 `SNOWLUMA_VNC_HOST=snowluma` 后重建 Bot。
-
-## 选择与首次登录
-
-运行 `install.sh` 或 `install.ps1`，在 QQ Gateway 页面选择 SnowLuma 并填写自备镜像；默认不选择。
-未选择时不隐式启用其他 Provider。向导只负责配置，不停止、启动服务或自动切换连接。
-同一个 QQ 只能有一条活动连接，Adapter 与 Registry 会拒绝重复连接，新连接不会挤掉旧连接。
-
-首次部署确认配置后，沿实际 Compose 参数检查并启动服务，再完成登录：
+第三方转存作为默认来源。准备一个你自己能拉取的镜像（平台 amd64/arm64 与内容由你负责），在部署目录运行：
 
 ```bash
-docker compose config --quiet
-docker compose up -d
+sh deploy/snowluma.sh registry.example.com/you/snowluma:your-tag
 ```
 
-已有部署先核对下一节的旧配置处理；安装器保留现有 Compose、`.env`、插件与数据。
+它在 `.env` 中把 `snowluma` 加入 `COMPOSE_PROFILES`（保留其他扩展 profile），写入 `SNOWLUMA_IMAGE`
+与 `SNOWLUMA_VNC_HOST=snowluma`，首次启用时生成 `ONEBOT_ACCESS_TOKEN` 与 `SNOWLUMA_VNC_PASSWORD`，
+然后执行 `docker compose up -d bot snowluma`。重复运行只换镜像，已有 token 与密码不变；`.env` 保持
+原属主与 0600 权限。部署叠加了其他 Compose 文件时，用 `COMPOSE_FILE` 指定，例如本机部署：
+`COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml sh deploy/snowluma.sh <镜像>`。
+Yuki Desktop 在本机或经 SSH 启用 SnowLuma 时运行的就是这一条命令。
+
+写入由 Bot 镜像里的 `yuki setup snowluma --deployment-root <目录> --image <镜像>` 完成，与交互
+`yuki setup` 聊天平台页选择 SnowLuma 写入同样的值。同一个 QQ 只能有一条活动连接，Adapter 与 Registry
+会拒绝重复连接，新连接不会挤掉旧连接。
+
+Desktop 的「QQ 登入」只在 Bot 环境显式配置了 `SNOWLUMA_VNC_HOST` 时出现。SnowLuma 部署在别处时，
+不运行上面的脚本，在 `.env` 写它的 VNC 地址 `SNOWLUMA_VNC_HOST` 与 `SNOWLUMA_VNC_PORT`（默认 5900），
+反向 WebSocket 连到 Bot 的 `/onebot/v11/snowluma/ws` 并使用同一个 `ONEBOT_ACCESS_TOKEN`。
+
+## 首次登录
 
 SnowLuma 启动后：
 

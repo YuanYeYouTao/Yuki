@@ -50,6 +50,7 @@ def test_source_free_release_archives_match_the_loose_assets(tmp_path):
         assert f"{archive_root}/SOUL-Deployment.md" in archive.namelist()
         for path in (
             "deploy/pair.sh",
+            "deploy/snowluma.sh",
             "deploy/sandbox/prepare.sh",
             "deploy/sandbox/migrate-host-manager.sh",
         ):

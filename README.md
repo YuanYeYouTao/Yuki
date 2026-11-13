@@ -141,7 +141,7 @@ sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.j
 ### 装好之后
 
 - **人格**：编辑部署目录里的 `character/SOUL.md`。
-- **聊天平台**：Telegram 见[接入说明](docs/operations/telegram.zh-CN.md)，飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)，凭据在 Yuki Desktop「设置 → 平台」中填写。QQ 不默认安装；需要时自备 [SnowLuma](docs/deployment/snowluma.md) 镜像，在 Desktop 的电脑窗口扫码登录。
+- **聊天平台**：Telegram 见[接入说明](docs/operations/telegram.zh-CN.md)，飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)，凭据在 Yuki Desktop「设置 → 平台」中填写。QQ 不默认安装；需要时自备 [SnowLuma](docs/deployment/snowluma.md) 镜像，在部署目录运行 `sh deploy/snowluma.sh <镜像>`，再在 Desktop 的电脑窗口扫码登录。
 - **连接你自己的电脑**：在 Yuki Desktop 的「設定 → 這台電腦」里连接，见[本机连接器](docs/operations/local-agent-connector.zh-CN.md)。
 
 ## 升级
