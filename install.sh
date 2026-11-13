@@ -240,7 +240,8 @@ printf '\nYuki %s is running in %s (sandbox profile: %s, runtime: %s).\n' \
 
 # The owner this install named gets their Person, administrator, and a code for Yuki Desktop,
 # also when a first install stopped before here. One recorded request ID names every attempt,
-# so a rerun after a lost reply returns the same Person instead of creating another.
+# so a rerun after a lost reply returns the same Person instead of creating another; the
+# per-step IDs derived from it keep the UUID4 form the admin API accepts.
 # The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
 # The link names CLIENT_PUBLIC_URL; without one only the code is shown (deploy/pair.sh alike).
 if [ -n "$(env_value YUKI_OWNER_NAME)" ] && [ -z "$(env_value YUKI_OWNER_PERSON_ID)" ]; then
@@ -248,7 +249,7 @@ if [ -n "$(env_value YUKI_OWNER_NAME)" ] && [ -z "$(env_value YUKI_OWNER_PERSON_
         "$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
     if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$(env_value YUKI_OWNER_NAME)" \
         -e YUKI_OWNER_REQUEST_ID="$(env_value YUKI_OWNER_REQUEST_ID)" bot sh -ec '
-python -c "import json, os, uuid; request = uuid.UUID(os.environ[\"YUKI_OWNER_REQUEST_ID\"]); print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.uuid5(request, key)) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
+python -c "import json, os, uuid; request = uuid.UUID(os.environ[\"YUKI_OWNER_REQUEST_ID\"]); print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.UUID(bytes=uuid.uuid5(request, key).bytes, version=4)) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
   | yuki setup desktop-pair --deployment-root /app \
   | python -c "import json, sys; from yuki.config import Settings; from yuki.services.client_link import pairing_link; result = json.load(sys.stdin); server = Settings().client_public_url; print(result[\"person_id\"], result[\"code\"], pairing_link(server, result[\"code\"]) if server else \"\")"'); then
         read -r person code link <<EOF

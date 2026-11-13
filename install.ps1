@@ -223,7 +223,7 @@ Write-Host "Yuki $Version is running in $InstallDir (sandbox profile: $SandboxPr
 if ((Get-EnvValue "YUKI_OWNER_NAME") -and -not (Get-EnvValue "YUKI_OWNER_PERSON_ID")) {
     if (-not (Get-EnvValue "YUKI_OWNER_REQUEST_ID")) { Set-EnvValue "YUKI_OWNER_REQUEST_ID" ([guid]::NewGuid().ToString()) }
     $PairScript = @'
-python -c "import json, os, uuid; request = uuid.UUID(os.environ['YUKI_OWNER_REQUEST_ID']); print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.uuid5(request, key)) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
+python -c "import json, os, uuid; request = uuid.UUID(os.environ['YUKI_OWNER_REQUEST_ID']); print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.UUID(bytes=uuid.uuid5(request, key).bytes, version=4)) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
 '@
     $Paired = & docker compose exec -T -e "YUKI_OWNER_NAME=$(Get-EnvValue 'YUKI_OWNER_NAME')" `
         -e "YUKI_OWNER_REQUEST_ID=$(Get-EnvValue 'YUKI_OWNER_REQUEST_ID')" bot sh -ec $PairScript

@@ -182,6 +182,10 @@ with open(os.environ['DOCKER_LOG'], 'a') as writer:
 if arguments[:2] == ['setup', 'desktop-pair']:
     request = json.load(sys.stdin)
     assert request['display_name'] == os.environ['YUKI_OWNER_NAME']
+    # desktop-pair forwards these to the admin API, which accepts only UUID4 request IDs.
+    from pydantic import UUID4, TypeAdapter
+    for key in ('person_request_id', 'superuser_request_id', 'pair_request_id'):
+        TypeAdapter(UUID4).validate_python(request[key])
     print(json.dumps({{'person_id': 'person-1', 'code_id': 'c', 'code': {CODE!r}}}))
 elif arguments[:3] == ['admin', 'client', 'pair']:
     assert os.environ['YUKI_CONTROL_CREDENTIAL'] == os.environ['YUKI_CONTROL_OPERATOR_TOKEN']
