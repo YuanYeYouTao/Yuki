@@ -21,6 +21,7 @@ from yuki.conversation import projection_models as _projection_models  # noqa: F
 from yuki.execution_trace import db_models as _execution_trace_db_models  # noqa: F401
 from yuki.executor import db_models as _retired_executor_db_models  # noqa: F401
 from yuki.external_agents import db_models as _external_agent_db_models  # noqa: F401
+from yuki.gateway.providers import qq_official_db_models as _qq_official_db_models  # noqa: F401
 from yuki.identity import db_models as _identity_db_models  # noqa: F401
 from yuki.memory.dream import db_models as _memory_dream_db_models  # noqa: F401
 from yuki.memory.self_reflection import db_models as _self_reflection_db_models  # noqa: F401

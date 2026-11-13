@@ -79,7 +79,7 @@ async def test_old_outbox_upgrade_keeps_original_facts_and_active_lifecycle(
             "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
         ).fetchall()
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0155",)
-    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "0156")
     with sqlite3.connect(path) as db:
         version = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
         rows = db.execute("SELECT * FROM autonomy_initiative_runs ORDER BY id").fetchall()
