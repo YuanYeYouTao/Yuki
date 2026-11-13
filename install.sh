@@ -169,6 +169,8 @@ if [ ! -f .env ]; then
 fi
 set_env YUKI_VERSION "$VERSION"
 [ -z "$CHARACTER" ] || set_env YUKI_CHARACTER_NAME "$CHARACTER"
+# The owner this install creates, kept until it exists, so a rerun after a failure finishes it.
+[ "$FIRST" = false ] || set_env YUKI_OWNER_NAME "$OWNER"
 
 if [ -z "$PROFILE" ] && [ -z "$(env_value YUKI_SANDBOX_PROFILE)" ]; then
     memory=$(( $(docker info --format '{{.MemTotal}}') / 1048576 ))
@@ -236,12 +238,17 @@ done
 printf '\nYuki %s is running in %s (sandbox profile: %s, runtime: %s).\n' \
     "$VERSION" "$INSTALL_DIR" "$PROFILE" "$(env_value YUKI_SANDBOX_RUNTIME)"
 
-# A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
+# The owner this install named gets their Person, administrator, and a code for Yuki Desktop,
+# also when a first install stopped before here. One recorded request ID names every attempt,
+# so a rerun after a lost reply returns the same Person instead of creating another.
 # The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
 # The link names CLIENT_PUBLIC_URL; without one only the code is shown (deploy/pair.sh alike).
-if [ "$FIRST" = true ]; then
-    if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$OWNER" bot sh -ec '
-python -c "import json, os, uuid; print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.uuid4()) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
+if [ -n "$(env_value YUKI_OWNER_NAME)" ] && [ -z "$(env_value YUKI_OWNER_PERSON_ID)" ]; then
+    [ -n "$(env_value YUKI_OWNER_REQUEST_ID)" ] || set_env YUKI_OWNER_REQUEST_ID \
+        "$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
+    if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$(env_value YUKI_OWNER_NAME)" \
+        -e YUKI_OWNER_REQUEST_ID="$(env_value YUKI_OWNER_REQUEST_ID)" bot sh -ec '
+python -c "import json, os, uuid; request = uuid.UUID(os.environ[\"YUKI_OWNER_REQUEST_ID\"]); print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.uuid5(request, key)) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
   | yuki setup desktop-pair --deployment-root /app \
   | python -c "import json, sys; from yuki.config import Settings; from yuki.services.client_link import pairing_link; result = json.load(sys.stdin); server = Settings().client_public_url; print(result[\"person_id\"], result[\"code\"], pairing_link(server, result[\"code\"]) if server else \"\")"'); then
         read -r person code link <<EOF

@@ -154,6 +154,8 @@ if ($First) {
 }
 Set-EnvValue "YUKI_VERSION" $Version
 if ($CharacterName) { Set-EnvValue "YUKI_CHARACTER_NAME" $CharacterName }
+# The owner this install creates, kept until it exists, so a rerun after a failure finishes it.
+if ($First) { Set-EnvValue "YUKI_OWNER_NAME" $OwnerName }
 
 if (-not $SandboxProfile -and -not (Get-EnvValue "YUKI_SANDBOX_PROFILE")) {
     $Memory = [int64](& docker info --format '{{.MemTotal}}') / 1MB
@@ -214,13 +216,17 @@ for ($Attempt = 0; ; $Attempt++) {
 }
 Write-Host ""
 Write-Host "Yuki $Version is running in $InstallDir (sandbox profile: $SandboxProfile, runtime: $(Get-EnvValue 'YUKI_SANDBOX_RUNTIME'))." -ForegroundColor Green
-# A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
+# The owner this install named gets their Person, administrator, and a code for Yuki Desktop,
+# also when a first install stopped before here. One recorded request ID names every attempt,
+# so a rerun after a lost reply returns the same Person instead of creating another.
 # The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
-if ($First) {
+if ((Get-EnvValue "YUKI_OWNER_NAME") -and -not (Get-EnvValue "YUKI_OWNER_PERSON_ID")) {
+    if (-not (Get-EnvValue "YUKI_OWNER_REQUEST_ID")) { Set-EnvValue "YUKI_OWNER_REQUEST_ID" ([guid]::NewGuid().ToString()) }
     $PairScript = @'
-python -c "import json, os, uuid; print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.uuid4()) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
+python -c "import json, os, uuid; request = uuid.UUID(os.environ['YUKI_OWNER_REQUEST_ID']); print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.uuid5(request, key)) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
 '@
-    $Paired = & docker compose exec -T -e "YUKI_OWNER_NAME=$OwnerName" bot sh -ec $PairScript
+    $Paired = & docker compose exec -T -e "YUKI_OWNER_NAME=$(Get-EnvValue 'YUKI_OWNER_NAME')" `
+        -e "YUKI_OWNER_REQUEST_ID=$(Get-EnvValue 'YUKI_OWNER_REQUEST_ID')" bot sh -ec $PairScript
     if ($LASTEXITCODE -eq 0 -and $Paired) {
         $Person, $Code = "$Paired".Trim() -split ' ', 2
         Set-EnvValue "YUKI_OWNER_PERSON_ID" $Person

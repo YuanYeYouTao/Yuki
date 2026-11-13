@@ -247,6 +247,8 @@ if arguments[0] == 'run' and 'desktop-configure' in arguments:
     sys.stdin.read()
     with open(os.path.join(os.environ['DEPLOY_DIRECTORY'], '.env'), 'a') as env:
         env.write('LLM_MODEL=configured\\n' + os.environ.get('CONFIGURED_ENV', ''))
+if arguments[0] == 'pull' and os.environ.get('FAIL_PULL', '\\n') in arguments[-1]:
+    sys.exit(1)
 # Nothing is local yet, and no environment of the old host Manager exists.
 sys.exit(1 if arguments[:2] == ['image', 'inspect'] or arguments[0] == 'inspect' else 0)
 """,
@@ -312,6 +314,80 @@ def _assert_pairing_help(stdout, public_url):
 
 # A public address as written in .env (the trailing slash is not part of it), or none.
 PUBLIC_URLS = ("", "https://yuki.example.com/base/")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+def test_shell_installer_rerun_after_a_failed_first_install_creates_the_owner_once(tmp_path):
+    deployment = tmp_path / "new"
+    bundle, _zip = _bundle(tmp_path)
+    answers = tmp_path / "model.json"
+    answers.write_text('{"protocol": "responses", "base_url": "http://model", "model": "m"}')
+    log = tmp_path / "docker.jsonl"
+    environment = {
+        **os.environ,
+        "DOCKER_ARCH": "arm64",
+        "DOCKER_MEMORY": str(3 * 1024**3),
+        "DOCKER_RUNTIMES": '{"runc":{}}',
+        "DOCKER_LOG": str(log),
+        "DEPLOY_DIRECTORY": str(deployment),
+        "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
+    }
+    install = [
+        "sh",
+        str(ROOT / "install.sh"),
+        "--dir",
+        str(deployment),
+        "--version",
+        VERSION,
+        "--yes",
+        "--answers",
+        str(answers),
+        "--owner-name",
+        "小林",
+        "--bundle",
+        str(bundle),
+    ]
+
+    def run(**extra: str) -> list[list[str]]:
+        log.write_text("")
+        completed = subprocess.run(
+            install,
+            env=environment | extra,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        commands = [json.loads(line) for line in log.read_text("utf-8").splitlines()]
+        return [completed.returncode, commands]  # type: ignore[list-item]
+
+    # The sandbox image cannot be pulled after .env was written: no owner yet.
+    code, commands = run(FAIL_PULL="yuki-environment")
+    assert code != 0
+    assert (deployment / ".env").is_file()
+    assert not any("desktop-pair" in " ".join(command) for command in commands)
+    # Running the installer again, as Yuki Desktop retries, creates the owner then.
+    code, commands = run()
+    assert code == 0
+    pairs = [
+        command
+        for command in commands
+        if command[:2] == ["compose", "exec"] and "desktop-pair" in " ".join(command)
+    ]
+    assert len(pairs) == 1 and "YUKI_OWNER_NAME=小林" in pairs[0]
+    recorded = (deployment / ".env").read_text("utf-8")
+    assert "YUKI_OWNER_PERSON_ID=person-1" in recorded
+    # Every attempt names the owner by one recorded request, so a lost reply cannot add a Person.
+    request = next(
+        line.split("=", 1)[1]
+        for line in recorded.splitlines()
+        if line.startswith("YUKI_OWNER_REQUEST_ID=")
+    )
+    assert f"YUKI_OWNER_REQUEST_ID={request}" in pairs[0] and len(request) == 36
+    # Once recorded, an upgrade never creates another owner.
+    code, commands = run()
+    assert code == 0
+    assert not any("desktop-pair" in " ".join(command) for command in commands)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
