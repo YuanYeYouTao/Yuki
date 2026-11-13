@@ -5,6 +5,7 @@ from pathlib import Path
 from yuki.gateway.provider import GatewayProviderCatalog
 from yuki.gateway.providers.app import AppProvider
 from yuki.gateway.providers.feishu import FeishuProvider
+from yuki.gateway.providers.qq_official import QQOfficialProvider
 from yuki.gateway.providers.snowluma import (
     SNOWLUMA_PROVIDER_ID,
     SnowLumaProvider,
@@ -26,6 +27,7 @@ def builtin_provider_catalog(
             TelegramProvider(),
             FeishuProvider(),
             FeishuProvider(platform="lark"),
+            QQOfficialProvider(),
         )
     )
 

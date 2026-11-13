@@ -49,7 +49,7 @@ def no_proxy(monkeypatch):
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
 
 
-async def run_gateway(database, script, *, interval=30_000, until):
+async def run_gateway(database, script, *, interval=30_000, until, ready=False):
     """Serve one scripted handler per connection and stop when ``until`` is set."""
     frames: list[list[dict]] = []
     platform = FakeQQPlatform()
@@ -77,6 +77,8 @@ async def run_gateway(database, script, *, interval=30_000, until):
             await gateway.start()
             try:
                 await asyncio.wait_for(until.wait(), 5)
+                while ready and not registry.has_any_active(platform="qq_official"):  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
                 health = await gateway.health()
                 active = registry.has_any_active(platform="qq_official")
             finally:
@@ -105,7 +107,7 @@ async def test_intent_rejection_drops_optional_intents_then_connects(database, n
         ready.set()
         await connection.wait_closed()
 
-    result = await run_gateway(database, [reject, reject, accept], until=ready)
+    result = await run_gateway(database, [reject, reject, accept], until=ready, ready=True)
     intents = [frames[0]["d"]["intents"] for frames in result.frames]
     full = INTENT_GROUP_AND_C2C | INTENT_GROUP_MEMBERS | INTENT_INTERACTION
     assert intents == [full, INTENT_GROUP_AND_C2C | INTENT_INTERACTION, INTENT_GROUP_AND_C2C]
@@ -243,7 +245,7 @@ def test_private_sender_other_bots_quotes_and_media():
         "C2C_MESSAGE_CREATE",
         {
             "id": "C2C-1",
-            "content": "hi <faceType=1,faceId=\"14\",ext=\"eyJ0ZXh0Ijoi5b6u56yRIn0=\">",
+            "content": 'hi <faceType=1,faceId="14",ext="eyJ0ZXh0Ijoi5b6u56yRIn0=">',
             "author": {"id": "AUTHOR-1", "user_openid": "MEMBER-1"},
             "attachments": [
                 {
@@ -279,7 +281,9 @@ def test_private_sender_other_bots_quotes_and_media():
             msg_elements=[
                 {
                     "content": "原来的话",
-                    "attachments": [{"content_type": "file", "url": "https://x/f", "filename": "f.zip"}],
+                    "attachments": [
+                        {"content_type": "file", "url": "https://x/f", "filename": "f.zip"}
+                    ],
                 }
             ],
             message_scene={"ext": ["msg_idx=REFIDX_self", "ref_msg_idx=REFIDX_quoted"]},
