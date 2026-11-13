@@ -6,8 +6,10 @@ yuki_gid=${YUKI_RUNTIME_GID:-10001}
 
 mkdir -p /app/data
 mkdir -p /app/workspace /app/social-transfer
-mkdir -p /app/character
+mkdir -p /app/character /app/webui-config
 chown -R "$yuki_uid:$yuki_gid" /app/character
+# The admin API writes model settings here; the installer created them as its own user.
+chown -R "$yuki_uid:$yuki_gid" /app/webui-config
 chmod 750 /app/character
 chown "$yuki_uid:$yuki_gid" /app/workspace /app/social-transfer
 chmod 755 /app/social-transfer

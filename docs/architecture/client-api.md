@@ -89,7 +89,10 @@ reset 的 sha256/size 明确为 null。同一 UUID 按原个人入口命名空�
 
 第一台设备可由 operator 执行 `yuki admin person create`，再执行
 `yuki admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
-发送 `/ai link`。码有效期十分钟，仅存 SHA-256，一次兑换。过期码沿原维护循环清理。
+发送 `/ai link`。operator 签发的码（安装器、`deploy/pair.sh` 也走这里）有效期 24 小时，留给配置
+网络的时间；`/ai link` 与设备自助 `/link-codes` 签发的码有效期十分钟。码仅存 SHA-256，一次兑换。
+过期码沿原维护循环清理。配置了 `CLIENT_PUBLIC_URL` 时，安装器、`deploy/pair.sh` 与 `/ai link`
+另给出 `yuki://pair?server=…&code=…`，供 Yuki Desktop 打开或从粘贴文本识别。
 
 | 请求 | 授权与结果 |
 | --- | --- |
@@ -352,7 +355,7 @@ ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；
 
 ### 可选配对链接与真实参考服务
 
-显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link` 在原一次性 chat 码旁附 `yuki://pair?server=...&code=...`；未配置时保留原裸码输出，不猜服务器地址。链接只帮助填写已有信息，purpose 与 Person、原执行归属不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
+显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link`、安装器与 `deploy/pair.sh` 在原一次性 chat 码之外给出 `yuki://pair?server=...&code=...`（同一 `pairing_link` 构造）；未配置时只给裸码，不猜服务器地址，也不给出 `127.0.0.1` 链接。链接只帮助填写已有信息，purpose 与 Person、原执行归属不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
 
 个人 API 的 me、home、events、activity、Work、request、upload、pair 和 link-code 使用真实投影的响应模型；保留现有公开扩展字段，不因类型收敛静默删字段。新增可选输入与只读路由延续原请求与响应语义；revision 7 的破坏性变化仅为退出旧 LocalExecutor 活 API。
 

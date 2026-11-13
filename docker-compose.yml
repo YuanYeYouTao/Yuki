@@ -50,7 +50,7 @@ services:
       - media-cache:/app/data/conversation-media-cache
       - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
-      - ./webui-config:/app/webui-config:ro
+      - ./webui-config:/app/webui-config
       - ./plugins:/app/plugins:ro
     networks:
       - yuki-network
@@ -109,7 +109,8 @@ services:
 
   snowluma:
     profiles: ["snowluma"]
-    image: ${SNOWLUMA_IMAGE:-motricseven7/snowluma:latest}
+    # Your own image (SNOWLUMA_IMAGE); Yuki publishes none, see docs/deployment/snowluma.md.
+    image: ${SNOWLUMA_IMAGE:-}
     # The upstream setup starts a web viewer unconditionally. Desktop talks to x11vnc.
     command:
       - /bin/sh

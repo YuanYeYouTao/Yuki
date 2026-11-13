@@ -103,16 +103,16 @@ Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.2/
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装器会依次问你：Yuki 的名字、你的名字、模型连接（以及是否接 QQ 等）、Yuki 的电脑要多大。然后它启动全部服务，等环境就绪，最后显示：
+安装器会依次问你：Yuki 的名字、你的名字、模型连接（以及要接哪些聊天平台，QQ 默认不装）、Yuki 的电脑要多大。然后它启动全部服务，等环境就绪，最后显示：
 
 ```text
-Connect Yuki Desktop:
-  1. Open Yuki Desktop and choose "連接已有 Yuki".
-  2. Address: http://127.0.0.1:8080 on this computer. ...
-  3. Binding code: XXXXXXXX  (valid for 10 minutes; a new one: sh deploy/pair.sh)
+Connect Yuki Desktop (https://github.com/Institute-of-Agent-Life/Yuki-Desktop):
+  Pairing code: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  No public address (CLIENT_PUBLIC_URL) is set, ...
+  One-time, valid for 24 hours; a new one: sh deploy/pair.sh
 ```
 
-在 Yuki Desktop 选「連接已有 Yuki」，填入地址和绑定码，你就成为这个 Yuki 的管理员。绑定码 10 分钟内有效，过期了在部署目录运行 `sh deploy/pair.sh` 再取一个。
+服务器在 `.env` 配置了其他电脑可达的地址 `CLIENT_PUBLIC_URL` 时，这里给出完整的 `yuki://pair?server=…&code=…` 链接，在装有 Yuki Desktop 的电脑上打开或粘贴即可连上。没有公共地址时只给出配对码：在 Yuki Desktop 用「部署到我的服务器 / 通过 SSH 连接」连到这台服务器，并使用这个码。连上后你就是这个 Yuki 的管理员。配对码一次性、24 小时内有效，过期了在部署目录运行 `sh deploy/pair.sh` 再取一个。
 
 Yuki 只在服务器本机的 `127.0.0.1:8080` 上监听，不暴露到公网。从自己的电脑连接服务器，推荐用 [Tailscale](docs/operations/tailscale-connection.zh-CN.md)；有域名也可以配 [HTTPS](docs/operations/desktop-local-deployment.zh-CN.md)。
 
@@ -141,7 +141,7 @@ sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.j
 ### 装好之后
 
 - **人格**：编辑部署目录里的 `character/SOUL.md`。
-- **聊天平台**：QQ 使用 [SnowLuma](docs/deployment/snowluma.md)，在 Desktop 的电脑窗口扫码登录；Telegram 在 `.env` 填 `TELEGRAM_BOT_TOKEN`；飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)。
+- **聊天平台**：Telegram 见[接入说明](docs/operations/telegram.zh-CN.md)，飞书和 Lark 见[接入说明](docs/operations/feishu.zh-CN.md)，凭据在 Yuki Desktop「设置 → 平台」中填写。QQ 不默认安装；需要时自备 [SnowLuma](docs/deployment/snowluma.md) 镜像，在 Desktop 的电脑窗口扫码登录。
 - **连接你自己的电脑**：在 Yuki Desktop 的「設定 → 這台電腦」里连接，见[本机连接器](docs/operations/local-agent-connector.zh-CN.md)。
 
 ## 升级
@@ -159,8 +159,9 @@ sh install.sh --yes --profile lite --owner-name "你的名字" --answers model.j
 | [持久工作环境](docs/operations/persistent-environment.zh-CN.md) | 沙箱档位、资源、网络和迁移 |
 | [桌面电脑与有头环境](docs/operations/desktop-computer.zh-CN.md) | Yuki 自己电脑上的截屏、点击和浏览器 |
 | [本机连接器](docs/operations/local-agent-connector.zh-CN.md) | 连接你的电脑、完整访问、屏幕与浏览器、原生编码 Agent |
+| [Telegram 接入](docs/operations/telegram.zh-CN.md) | BotFather、群消息隐私模式与 webhook |
 | [飞书与 Lark 接入](docs/operations/feishu.zh-CN.md) | 自建应用、权限、长连接和媒体 |
-| [SnowLuma（QQ）](docs/deployment/snowluma.md) | QQ 网关部署与登录 |
+| [SnowLuma（QQ）](docs/deployment/snowluma.md) | 自备镜像、QQ 网关部署与登录 |
 | [Plugin API 9.0](docs/plugin-development/index.md) | 插件开发与 SDK |
 | [架构索引](docs/architecture/README.md) | 现行架构文档入口 |
 | [CHANGELOG](CHANGELOG.md) | 历史版本变化 |

@@ -19,7 +19,7 @@ Work in this order. Before each step tell me what you will run and why, then run
    - If it must run unattended, create a model.json only I can read (chmod 600), let me fill in the key, run
      `sh install.sh --dir <directory> --yes --profile <size> --owner-name "<my name>" --answers model.json`, and delete model.json right after.
    - For a model service on this computer (such as Ollama) use http://host.docker.internal:<port>/v1, not 127.0.0.1.
-4. The installer ends with an address and a binding code (valid for 10 minutes). Give them to me so I can choose "連接已有 Yuki" (Connect an existing Yuki) in Yuki Desktop. If it expires, run `sh deploy/pair.sh` in the installation directory for a new one.
+4. The installer ends with a pairing link (when the server sets `CLIENT_PUBLIC_URL`) or a pairing code (one-time, valid for 24 hours). Give it to me: I open or paste a link in Yuki Desktop; with only a code, I reach the server in Yuki Desktop with "部署到我的服务器 / 通过 SSH 连接" (Deploy to my server / Connect over SSH) and use it. If it expires, run `sh deploy/pair.sh` in the installation directory for a new one.
 5. Verify and report:
    - `docker compose ps` shows bot and manager running;
    - `docker compose exec --user 10001:10001 bot yuki setup environment-check` prints "ok": true;

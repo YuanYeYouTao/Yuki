@@ -19,6 +19,11 @@ from yuki.persistence.database import write_failure_committed
 from yuki.services.policies import message_command_text
 
 
+def pairing_link(server: str, code: str) -> str:
+    """What Yuki Desktop opens or reads from pasted text: this server and a one-time code."""
+    return "yuki://pair?" + urlencode({"server": server, "code": code})
+
+
 class ClientLinkCommands:
     def __init__(
         self,
@@ -121,9 +126,7 @@ class ClientLinkCommands:
             if not code:
                 reply = f"绑定码：{result['code']}（10 分钟内有效，使用一次后失效）。"
                 if self.public_url and result.get("code"):
-                    reply += "\n绑定链接：yuki://pair?" + urlencode(
-                        {"server": self.public_url, "code": result["code"]}
-                    )
+                    reply += "\n绑定链接：" + pairing_link(self.public_url, result["code"])
                 return reply
             if result["merged"]:
                 return "身份已合并，原入口、会话和执行记录继续保留。"
@@ -131,4 +134,4 @@ class ClientLinkCommands:
         except RegistryClosed:
             return "当前连接尚未完成身份认证，无法绑定。"
         except ClientError:
-            return "绑定码或当前身份不可用；码只可使用一次，10 分钟后过期。"
+            return "绑定码或当前身份不可用；码只可使用一次，过期后失效。"

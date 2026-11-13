@@ -78,7 +78,8 @@ Caddy 的 `reverse_proxy` 支持 WebSocket；证书由其正常 HTTPS 配置管�
 docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
 ```
 
-`CLIENT_PUBLIC_URL` 填该实例真实可访问的客户端 base URL，仅用于生成私聊配对链接。
+`CLIENT_PUBLIC_URL` 填该实例真实可访问的客户端 base URL，仅用于生成配对链接（安装器、
+`deploy/pair.sh` 与私聊 `/ai link`）。
 它不创建 DNS/TLS/代理，不改变 Provider 路由或授权；不填仍可使用原码加明确地址。
 部署有路径前缀时，代理和这个 base URL 必须对应同一前缀，不能只修改生成的链接。
 验收需在同一 HTTPS authority 上完成配对及 WSS hello/catalog；GET meta 成功不代表 Upgrade 已接通。

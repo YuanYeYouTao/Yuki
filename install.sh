@@ -230,20 +230,26 @@ printf '\nYuki %s is running in %s (sandbox profile: %s, runtime: %s).\n' \
 
 # A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
 # The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
+# The link names CLIENT_PUBLIC_URL; without one only the code is shown (deploy/pair.sh alike).
 if [ "$FIRST" = true ]; then
     if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$OWNER" bot sh -ec '
 python -c "import json, os, uuid; print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.uuid4()) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
   | yuki setup desktop-pair --deployment-root /app \
-  | python -c "import json, sys; result = json.load(sys.stdin); print(result[\"person_id\"], result.get(\"code\") or \"\")"'); then
-        set_env YUKI_OWNER_PERSON_ID "${paired%% *}"
+  | python -c "import json, sys; from yuki.config import Settings; from yuki.services.client_link import pairing_link; result = json.load(sys.stdin); server = Settings().client_public_url; print(result[\"person_id\"], result[\"code\"], pairing_link(server, result[\"code\"]) if server else \"\")"'); then
+        read -r person code link <<EOF
+$paired
+EOF
+        set_env YUKI_OWNER_PERSON_ID "$person"
         printf '\nConnect Yuki Desktop (https://github.com/Institute-of-Agent-Life/Yuki-Desktop):\n'
-        printf '  1. Open Yuki Desktop and choose "連接已有 Yuki" (Connect an existing Yuki).\n'
-        port=$(env_value YUKI_PORT)
-        printf '  2. Address: http://127.0.0.1:%s on this computer. From another computer, reach\n' \
-            "${port:-8080}"
-        printf '     this port through Tailscale or HTTPS (docs/operations/tailscale-connection.zh-CN.md).\n'
-        printf '  3. Binding code: %s  (valid for 10 minutes; a new one: sh deploy/pair.sh)\n' \
-            "${paired#* }"
+        if [ -n "$link" ]; then
+            printf '  Open this link, or paste it into Yuki Desktop:\n  %s\n' "$link"
+        else
+            printf '  Pairing code: %s\n' "$code"
+            printf '  No public address (CLIENT_PUBLIC_URL) is set, so there is no link another\n'
+            printf '  computer can open. In Yuki Desktop choose "部署到我的服务器 / 通过 SSH 连接"\n'
+            printf '  (Deploy to my server / Connect over SSH) and use this code.\n'
+        fi
+        printf '  One-time, valid for 24 hours; a new one: sh deploy/pair.sh\n'
     else
         printf '\nNo pairing code was created; pair Yuki Desktop by hand with\n'
         printf 'docs/operations/person-admin-control-plane-upgrade.md.\n'

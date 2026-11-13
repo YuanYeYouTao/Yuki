@@ -223,7 +223,7 @@ python -c "import json, os, uuid; print(json.dumps({'display_name': os.environ['
         Write-Host "  1. Open Yuki Desktop and choose 連接已有 Yuki (Connect an existing Yuki)."
         Write-Host "  2. Address: http://127.0.0.1:$Port on this computer. From another computer, reach"
         Write-Host "     this port through Tailscale or HTTPS (docs/operations/tailscale-connection.zh-CN.md)."
-        Write-Host "  3. Binding code: $Code  (valid for 10 minutes; a new one: deploy/pair.sh on the Docker host)"
+        Write-Host "  3. Binding code: $Code  (one-time, valid for 24 hours; a new one: deploy/pair.sh on the Docker host)"
     } else {
         Write-Host "No pairing code was created; pair Yuki Desktop by hand with docs/operations/person-admin-control-plane-upgrade.md."
     }

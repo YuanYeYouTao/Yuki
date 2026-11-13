@@ -5,12 +5,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from scripts.release_smoke import Compose, SmokeError, verify_image_identity
@@ -25,6 +27,8 @@ ARCHITECTURES = (
 
 
 VERSION = "9.8.7"
+# A code as the server issues it: token_urlsafe(24), 32 characters.
+CODE = "AbCdEfGhIjKlMnOpQrStUvWxYz012_-9"
 # The engine the fakes report: 8 GiB of memory and no gVisor.
 ENGINE = {"memory": str(8 * 1024**3), "runtimes": '{"runc":{"path":"runc"}}'}
 
@@ -140,9 +144,53 @@ function global:docker {
     _assert_upgrade(commands, platform, deployment)
 
 
+def _parse_pairing(text):
+    """Yuki Desktop's parsePairing (Yuki-Desktop src/shared/pairing.ts), as written there."""
+    match = re.search(r"yuki://pair\?[^\s<>\"'`\u3000-\uffff]+", text, re.IGNORECASE)
+    if match:
+        query = parse_qs(urlsplit(match[0]).query)
+        code = query.get("code", [""])[0]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32}", code):
+            return None
+        return {"code": code, "server": query.get("server", [None])[0]}
+    code = next((token for token in re.split(r"[^A-Za-z0-9_-]+", text) if len(token) == 32), None)
+    return {"code": code} if code else None
+
+
+def _container(tmp_path):
+    """The Bot container's commands for shell steps: the real Python, a fake ``yuki``."""
+    directory = tmp_path / "container"
+    directory.mkdir()
+    python = directory / "python"
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    yuki = directory / "yuki"
+    yuki.write_text(
+        f"""#!{sys.executable}
+import json, os, sys
+arguments = sys.argv[1:]
+with open(os.environ['DOCKER_LOG'], 'a') as writer:
+    writer.write(json.dumps(['container', 'yuki', *arguments]) + '\\n')
+if arguments[:2] == ['setup', 'desktop-pair']:
+    request = json.load(sys.stdin)
+    assert request['display_name'] == os.environ['YUKI_OWNER_NAME']
+    print(json.dumps({{'person_id': 'person-1', 'code_id': 'c', 'code': {CODE!r}}}))
+elif arguments[:3] == ['admin', 'client', 'pair']:
+    assert os.environ['YUKI_CONTROL_CREDENTIAL'] == os.environ['YUKI_CONTROL_OPERATOR_TOKEN']
+    print(json.dumps({{'code_id': 'c', 'purpose': 'chat', 'code': {CODE!r}}}, indent=2))
+else:
+    sys.exit(2)
+""",
+        encoding="utf-8",
+    )
+    yuki.chmod(0o755)
+    return directory
+
+
 def _fake_docker(tmp_path):
     bin_directory = tmp_path / "bin"
     bin_directory.mkdir()
+    container = _container(tmp_path)
     docker = bin_directory / "docker"
     docker.write_text(
         f"""#!{sys.executable}
@@ -157,13 +205,27 @@ if arguments[:2] == ['info', '--format']:
         '{{{{.MemTotal}}}}': os.environ['DOCKER_MEMORY'],
         '{{{{json .Runtimes}}}}': os.environ['DOCKER_RUNTIMES'],
     }}[arguments[2]])
-if any('desktop-pair' in argument for argument in arguments):
-    owner = arguments[arguments.index('-e') + 1]
-    print('person-1 PAIR-' + owner.split('=', 1)[1])
+# A shell step in the Bot runs here, with the deployment's .env as its environment.
+if arguments[:2] == ['compose', 'exec'] and 'bot' in arguments:
+    command = arguments[arguments.index('bot') + 1:]
+    if command[0] == 'sh':
+        import subprocess
+        environment = dict(os.environ)
+        with open('.env') as values:
+            environment.update(
+                line.rstrip('\\n').split('=', 1) for line in values if '=' in line
+            )
+        options = arguments[2:arguments.index('bot')]
+        environment.update(
+            options[index + 1].split('=', 1)
+            for index, option in enumerate(options) if option == '-e'
+        )
+        environment['PATH'] = {str(container)!r} + os.pathsep + environment['PATH']
+        sys.exit(subprocess.run(command, env=environment).returncode)
 if arguments[0] == 'run' and 'desktop-configure' in arguments:
     sys.stdin.read()
     with open(os.path.join(os.environ['DEPLOY_DIRECTORY'], '.env'), 'a') as env:
-        env.write('LLM_MODEL=configured\\n')
+        env.write('LLM_MODEL=configured\\n' + os.environ.get('CONFIGURED_ENV', ''))
 # Nothing is local yet, and no environment of the old host Manager exists.
 sys.exit(1 if arguments[:2] == ['image', 'inspect'] or arguments[0] == 'inspect' else 0)
 """,
@@ -214,8 +276,28 @@ def test_shell_installer_selects_docker_host_platform(tmp_path, architecture, pl
     _assert_upgrade(commands, platform, deployment)
 
 
+def _assert_pairing_help(stdout, public_url):
+    """What a person copies into Yuki Desktop: the full link only with a public address."""
+    shown = stdout[stdout.index("Connect Yuki Desktop") :]
+    assert _parse_pairing(shown) == (
+        {"code": CODE, "server": public_url.rstrip("/")} if public_url else {"code": CODE}
+    )
+    assert "24 hours" in shown
+    if not public_url:
+        # No link another computer cannot open; SSH from Yuki Desktop reaches the server.
+        assert "yuki://" not in shown and "127.0.0.1" not in shown
+        assert "通过 SSH 连接" in shown
+
+
+# A public address as written in .env (the trailing slash is not part of it), or none.
+PUBLIC_URLS = ("", "https://yuki.example.com/base/")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
-def test_shell_installer_first_install_configures_names_and_recommends_a_profile(tmp_path):
+@pytest.mark.parametrize("public_url", PUBLIC_URLS)
+def test_shell_installer_first_install_configures_names_and_recommends_a_profile(
+    tmp_path, public_url
+):
     deployment = tmp_path / "new"
     bundle, _zip = _bundle(tmp_path)
     answers = tmp_path / "model.json"
@@ -229,6 +311,7 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
         "DOCKER_RUNTIMES": '{"runc":{},"runsc":{"path":"runsc","runtimeArgs":["--overlay2=none"]}}',
         "DOCKER_LOG": str(log),
         "DEPLOY_DIRECTORY": str(deployment),
+        "CONFIGURED_ENV": f"CLIENT_PUBLIC_URL={public_url}\n",
         "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
     }
     completed = subprocess.run(
@@ -265,8 +348,7 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
     pair = next(command for command in commands if "desktop-pair" in " ".join(command))
     assert pair[:3] == ["compose", "exec", "-T"] and "YUKI_OWNER_NAME=小林" in pair
     assert "superuser_request_id" in pair[-1]
-    assert "Binding code: PAIR-小林" in completed.stdout
-    assert "http://127.0.0.1:8080" in completed.stdout
+    _assert_pairing_help(completed.stdout, public_url)
     assert {
         "YUKI_OWNER_PERSON_ID=person-1",
         "LLM_MODEL=configured",
@@ -275,6 +357,37 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
         # gVisor with --overlay2=none is registered: chosen once and recorded.
         "YUKI_SANDBOX_RUNTIME=runsc",
     } <= set(lines)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+@pytest.mark.parametrize("public_url", PUBLIC_URLS)
+def test_pair_script_prints_a_new_code_for_the_recorded_owner(tmp_path, public_url):
+    deployment = tmp_path / "deployment"
+    (deployment / "deploy").mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/pair.sh", deployment / "deploy/pair.sh")
+    (deployment / ".env").write_text(
+        "YUKI_OWNER_PERSON_ID=person-1\nYUKI_CONTROL_OPERATOR_TOKEN=operator\n"
+        f"CLIENT_PUBLIC_URL={public_url}\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "docker.jsonl"
+    completed = subprocess.run(
+        ["sh", str(deployment / "deploy/pair.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "DOCKER_LOG": str(log),
+            "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert ["container", "yuki", "admin", "client", "pair", "--person", "person-1"] in commands
+    _assert_pairing_help(completed.stdout, public_url)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")

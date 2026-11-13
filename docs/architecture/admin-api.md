@@ -5,9 +5,8 @@
 CLI 的 `ADMIN_API_URL` 默认 `http://127.0.0.1:8080`；它只决定客户端连接地址，
 HTTP 监听与部署端口继续沿原服务器配置。
 
-基础 Compose 将 `webui-config/` 只读挂载。需要在线保存模型连接时，在本地 Compose
-override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`）；保留该既有路径。
-未授予文件写权限时，API 不会自行改动部署挂载。
+Compose 将 `webui-config/` 可写挂到 `/app/webui-config`，`scripts/start.sh` 启动时把它
+交给 Bot 运行用户；管理 API 在这个既有路径保存模型连接与其 secrets。
 
 ## 身份与权限
 
@@ -82,7 +81,8 @@ sidecar 密钥及注入客户端；健康检查不创建模型调用，也不返
 转移为原绑定保留旧 Person 与会话，另建目标 Person 的绑定和会话；旧主动路由暂停。
 服务器生成的 `app/acp` 绑定不可手工挂接或转移。disabled 外部账号可合法转移；已转移的历史 Binding 不恢复旧时段。停用保持历史、Memory、Work 和回执归属。平台标识沿原通用字符串合同。
 配对码、撤销、转移与遗忘使用 `{request_id}`，转移另需 `to_person`，不需要 revision。
-配对码明文只返回一次；相同请求重放返回原码 ID 与到期时间，不能取回明文。
+配对码明文只返回一次；相同请求重放返回原码 ID 与到期时间，不能取回明文。operator 经
+`client-pair` 签发的码 24 小时内有效，一次兑换；安装器与 `deploy/pair.sh` 都走这里。
 
 ## 人物归并与名称
 

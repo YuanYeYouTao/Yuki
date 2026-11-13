@@ -1,15 +1,31 @@
-# SnowLuma Provider 部署
+# SnowLuma Provider 部署（自备镜像）
 
-Yuki 不再支持 NapCat，当前附带的 QQ/OneBot v11 Provider 为 SnowLuma。现有 GatewayProvider、
+Yuki 不再支持 NapCat，当前附带的 QQ/OneBot v11 Provider 为 SnowLuma。QQ 不默认安装。现有 GatewayProvider、
 Catalog、Registry 与 OneBot 合同继续保留，其他网关实现沿这些既有接口接入，无需新建抽象层。
 Yuki 的 Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
 更换网关实现不复制业务 owner、重置会话或迁移记忆。
 
-当前官方 `motricseven7/snowluma:latest` 同时提供 linux/amd64 与 linux/arm64，见[官方 Docker 说明](https://snowluma.github.io/en/docs/guide/deploy/docker)。默认 Compose 让 Docker 按主机选择 Bot 和 SnowLuma 镜像，不强制 x86 模拟。自定义 `SNOWLUMA_IMAGE` 的实际平台以该镜像为准。
+## 自备镜像
+
+SnowLuma 上游已停止公开维护，原公开镜像已无法拉取。Yuki 不发布、不转存 SnowLuma 镜像，也不以
+第三方转存作为默认来源。`docker-compose.yml` 保留 `snowluma` 服务，但 `SNOWLUMA_IMAGE` 没有默认值：
+启用前在 `.env` 填写你自己可拉取的镜像，镜像的平台（amd64/arm64）与内容由你负责。未填写时，
+带 `snowluma` profile 的 `docker compose` 会直接报该服务没有镜像。
+
+```dotenv
+COMPOSE_PROFILES=snowluma
+SNOWLUMA_IMAGE=registry.example.com/you/snowluma:your-tag
+SNOWLUMA_VNC_HOST=snowluma
+```
+
+Desktop 的「QQ 登入」只在 Bot 环境显式配置了 `SNOWLUMA_VNC_HOST` 时出现。使用附带的 `snowluma`
+服务写 `snowluma`；SnowLuma 部署在别处时，写它的 VNC 地址与 `SNOWLUMA_VNC_PORT`（默认 5900），
+反向 WebSocket 连到 Bot 的 `/onebot/v11/snowluma/ws` 并使用同一个 `ONEBOT_ACCESS_TOKEN`。已有部署
+升级后若「QQ 登入」消失，在 `.env` 补上 `SNOWLUMA_VNC_HOST=snowluma` 后重建 Bot。
 
 ## 选择与首次登录
 
-运行 `install.sh` 或 `install.ps1`，在 QQ Gateway 页面选择 SnowLuma；也可以不选择附带网关。
+运行 `install.sh` 或 `install.ps1`，在 QQ Gateway 页面选择 SnowLuma 并填写自备镜像；默认不选择。
 未选择时不隐式启用其他 Provider。向导只负责配置，不停止、启动服务或自动切换连接。
 同一个 QQ 只能有一条活动连接，Adapter 与 Registry 会拒绝重复连接，新连接不会挤掉旧连接。
 
@@ -41,9 +57,8 @@ ConnectionGeneration 和能力会由运行时 Registry 投影给控制面。
 ## QQ 画面与 WebUI
 
 QQ 与 Yuki 沙箱各有自己的画面。桌面窗口通过 Yuki 的认证连接查看 QQ 登录码，选择接管后可操作 QQ，
-关闭查看或切换屏幕会结束这次 QQ 输入授权。Bot 在内部网络连接 `snowluma:5900`，并用
-`SNOWLUMA_VNC_PASSWORD` 认证。独立部署可在 Bot 设置 `SNOWLUMA_VNC_HOST` 和
-`SNOWLUMA_VNC_PORT`。Yuki 的 Compose 模板在启动官方镜像时禁用独立的 noVNC 网页转发；
+关闭查看或切换屏幕会结束这次 QQ 输入授权。Bot 连接 `SNOWLUMA_VNC_HOST:SNOWLUMA_VNC_PORT`
+（附带服务为 `snowluma:5900`），并用 `SNOWLUMA_VNC_PASSWORD` 认证。Yuki 的 Compose 模板在启动镜像时禁用独立的 noVNC 网页转发；
 容器内也不再监听 6081。QQ 的虚拟显示与 x11vnc 继续运行，原生 VNC 不发布到宿主。
 5099 管理 WebUI 继续由 `SNOWLUMA_WEBUI_BIND_ADDRESS` 和 `SNOWLUMA_WEBUI_HOST_PORT` 控制。
 
@@ -90,8 +105,5 @@ SNOWLUMA_SHM_SIZE=2gb
 SnowLuma 的 Provider 私有 action 不属于 Yuki 跨 Provider 合同。不支持的 action 应由底层
 OneBot 调用明确失败，调用方不能把失败当成成功。
 
-实现约束以 SnowLuma 官方文档为依据：
-
-- [Docker 部署要求](https://snowluma.github.io/en/guide/deploy/docker.html)
-- [OneBot 配置结构](https://snowluma.github.io/guide/configuration.html)
-- [API 兼容目录](https://snowluma.github.io/api/index.html)
+实现只依赖通用 OneBot v11 动作、反向 WebSocket 路径和上文的 VNC 画面；上游文档已停止维护，
+自备镜像的配置结构以该镜像为准。
