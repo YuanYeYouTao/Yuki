@@ -38,7 +38,7 @@ People, memories and tasks are stored in your own deployment. Switch models, acc
   </tr>
 </table>
 
-<p align="center">Desktop app: <a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 18-second tour</a></p>
+<p align="center">Desktop app: <a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 17-second tour</a></p>
 
 ## What she can do
 

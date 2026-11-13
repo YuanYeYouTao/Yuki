@@ -38,7 +38,7 @@ Yuki 是一个开源、自托管的 AI Agent。她在 QQ、Telegram、飞书、L
   </tr>
 </table>
 
-<p align="center">桌面端：<a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 18 秒演示视频</a></p>
+<p align="center">桌面端：<a href="https://github.com/Institute-of-Agent-Life/Yuki-Desktop">Yuki Desktop</a> · <a href="img/showcase/yuki-desktop-tour.mp4">▶ 17 秒演示视频</a></p>
 
 ## 能做什么
 
