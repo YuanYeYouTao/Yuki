@@ -58,11 +58,13 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set`、`admin model semantic use` | `control.config.file.content.read\|mutate` |
 | `POST /models/test`；`POST /models/discover` | 保存前或已保存连接的显式探测 | `control.config.file.mutate` |
 | `GET /models/stats` | 按明确时间范围、原用途与真实供应商/模型读取调用统计 | `control.config.file.content.read` |
+| `GET /platforms`；`POST /platforms/apply` | Yuki Desktop「设置 → 平台」，见[聊天平台凭据](#聊天平台凭据) | `control.config.file.content.read\|mutate` |
 | `GET /character`；`PATCH /character` | `admin character show\|update` | `control.character.read\|mutate` |
 | `GET /character/soul`；`PUT` 同路径；`POST /character/soul/reload` | `admin character soul show\|set\|reload` | `control.character.read\|mutate` |
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
 
-健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
+健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。平台行另带
+网关 owner 记录的 `last_error_category`（没有 owner 时为 null）。
 角色名称与单 SOUL 沿同一领域服务发布，保原 UUID、profile revision、文件 CAS 和实际生效结果；
 不会编辑工具或授权规则，也不重写已付请求。个人客户端的共享资料／头像写入与 SOUL 原文读取、修改和重载使用 Person 当前超管资格；旧 character owner 授予入口已退出，历史授权行与回执保留且不自动升级。operator 的独立控制凭据及能力不因此改变。
 平台项来自已登记 Provider 的平台声明、实际 Presence 与原生网关 owner，公共 `/healthz`
@@ -156,6 +158,39 @@ token 的真实请求，关闭该次重试，不写模型调用账本或 Work �
 configuration/unsupported`，成功时为空。分类沿原 LLM 异常；仅上游明确报告
 `insufficient_quota` 时区分额度不足。每次发送前复核当前管理权限，撤销设备或人物资格不会因
 先前通过入站认证而继续发送。探测不增加业务调用数。
+
+### 聊天平台凭据
+
+Telegram、飞书、Lark 与 QQ 官方 Bot 的凭据唯一来源是 `PLATFORMS_FILE`（默认
+`webui-config/platforms.toml`）与同目录 0600 的 `platforms.secrets.json`，不再读取 `.env`。
+两文件共用一个 bundle revision，沿模型配置的原子替换、`control.config.file.*` 权限、外部命令
+回执与 `request_id` 幂等；命令回执与审计只存请求指纹，不存正文或密钥。
+
+`GET /platforms` 返回 `{revision, writable_directory, platforms}`。`platforms` 含 `telegram`、
+`feishu`、`lark`、`qq_official` 四项，各为 `{configured, enabled, settings, saved_secrets,
+apply_mode, health}`：`settings` 是非密设置（飞书/Lark `app_id`；QQ 官方 Bot `app_id`、`sandbox`），
+`saved_secrets` 只列已保存的字段名（`bot_token` 或 `app_secret`），从不返回明文；`apply_mode`
+为 `hot`（运行中可热切）或 `restart`（当前没有该平台的运行时）。`health` 为 `{enabled, running,
+healthy, connected, last_error_category, last_success_at, accounts:[{presence_id,
+external_account_id, display_name}]}`，账号取当前已连接的 Presence。另有 `qq`
+（SnowLuma/OneBot）只报 `{apply_mode:"restart", savable:false, login_available, health}`；
+其镜像、`COMPOSE_PROFILES` 与 `ONEBOT_ACCESS_TOKEN` 留在部署 `.env`，不经此接口保存。
+
+`POST /platforms/apply {request_id, expected_revision, platform, enabled, settings, secrets}`
+只改一个平台：`settings` 与 `secrets` 中给出的字段覆盖原值，未给出的保留，空 secret 删除已保存值。
+ID 与 Secret 须成对、启用须凭据完整，否则 `validation_error`；revision 过期为
+`version_conflict`。有运行时的平台先用新凭据预检（Telegram `getMe`，飞书/Lark 取 tenant token 并读
+机器人身份）；预检失败返回 409 `precondition_failed`，`problem.details` 带
+`error_category`（及平台给出的 `error_code`），文件与原连接都不变。通过后写文件，关闭旧实例再
+启动新实例，结果 `effective_state.status` 为 `applied`；停用即关闭。Telegram、飞书、Lark 与
+QQ 官方 Bot 均可热启停。
+
+旧部署写在 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_POLL_INTERVAL_SECONDS`、`FEISHU_APP_ID`、
+`FEISHU_APP_SECRET`、`FEISHU_DOMAIN` 已删除。`yuki setup platforms-migrate --deployment-root <目录>`
+把 `.env` 中的旧值（为空或缺失时取进程环境，即 Compose 内联的值）一次写入平台文档，
+`FEISHU_DOMAIN` 为 Lark 地址时写入 `lark`；平台文档已存在则只读返回、不覆盖。它也为已选
+`snowluma` profile 但缺少 `SNOWLUMA_VNC_HOST` 的 `.env` 补上 `snowluma`。`install.sh`／
+`install.ps1` 升级时在启动新 Bot 前以 root 经 `docker compose run` 执行它。
 
 ### 用量读取
 

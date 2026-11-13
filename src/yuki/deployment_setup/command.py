@@ -11,7 +11,7 @@ import secrets
 import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -20,9 +20,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import tomlkit
 
 from yuki import __version__
+from yuki.admin.config_files import ConfigFileError
+from yuki.admin.platform_files import empty_platform, load_platforms
 from yuki.config import Settings
 from yuki.deployment_setup.service import (
     EnvironmentDocument,
+    PlatformChange,
     SetupConfiguration,
     SetupPaths,
     SetupValidationError,
@@ -33,9 +36,12 @@ from yuki.deployment_setup.service import (
     initialize_soul,
     load_plugin_setup_states,
     main_protocol,
+    migrate_platform_credentials,
     model_profiles_use_flash,
     prepare_operator_configuration,
+    prepare_platforms,
     require_migrated_model_profiles,
+    save_platforms,
     selected_gateway_providers,
     validate_configuration,
     verify_health,
@@ -82,6 +88,7 @@ class _SetupDraft:
     flash_enabled: bool
     pending_plugins: tuple[str, ...] | None = None
     initial: bool = False
+    platforms: dict[str, PlatformChange] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +113,7 @@ def add_setup_parser(
             "desktop-configure",
             "desktop-pair",
             "provider-presets",
+            "platforms-migrate",
         ),
         default="configure",
     )
@@ -129,6 +137,9 @@ def run_setup_command(args: argparse.Namespace) -> int:
     try:
         load_http_environment(paths.env)
         action = str(args.setup_action)
+        if action == "platforms-migrate":
+            ui.line(json.dumps(migrate_platform_credentials(paths), ensure_ascii=False))
+            return 0
         if action in {"desktop-configure", "desktop-pair"}:
             from yuki.deployment_setup.desktop import (
                 DesktopConfiguration,
@@ -279,7 +290,7 @@ def _run_page_state_machine(
         "vision": "Vision",
         "plugin": "Plugin",
         "automation": "Automation",
-        "gateway": "QQ Gateway Provider",
+        "gateway": "聊天平台",
     }
     handlers = {
         "basic": _page_basic,
@@ -583,12 +594,11 @@ def _page_automation(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> N
 
 
 def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
-    del paths
     environment = draft.environment
     current = selected_gateway_providers(environment)
     enabled = ui.confirm(
-        "启用附带的 SnowLuma QQ Gateway？",
-        default="snowluma" in current,
+        "启用附带的 SnowLuma QQ Gateway（需自备镜像）？",
+        default=not draft.initial and "snowluma" in current,
     )
     gateways = ("snowluma",) if enabled else ()
     environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
@@ -596,14 +606,87 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
         gateways=gateways,
     )
     if "snowluma" in gateways:
+        ui.info("SnowLuma 上游已停止维护，Yuki 不提供镜像；请填写你自己能拉取的镜像。")
+        environment["SNOWLUMA_IMAGE"] = ui.ask(
+            "SnowLuma 镜像",
+            default="" if draft.initial else _real_value(environment.get("SNOWLUMA_IMAGE", "")),
+            required=True,
+        )
+        environment["SNOWLUMA_VNC_HOST"] = "snowluma"
         environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
             environment.get("ONEBOT_ACCESS_TOKEN", "")
         )
         environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
             environment.get("SNOWLUMA_VNC_PASSWORD", "")
         )
-        ui.info("SnowLuma 首次启动后，请在本机 WebUI 手动确认协议并扫码登录。")
+        ui.info("SnowLuma 启动后，在 Yuki Desktop 的电脑窗口选择「QQ 登入」扫码登录。")
         ui.info("同一 QQ 已连接其他 Provider 时，新连接会被 Yuki 拒绝。")
+    elif environment.get("SNOWLUMA_VNC_HOST") == "snowluma":
+        environment["SNOWLUMA_VNC_HOST"] = ""
+    _page_platform_credentials(paths, ui, draft)
+
+
+def _page_platform_credentials(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
+    try:
+        saved = load_platforms(paths.platforms)
+    except ConfigFileError as exc:
+        raise SetupValidationError("webui-config/platforms.toml 无法读取") from exc
+
+    def current(platform: str) -> Any:
+        return saved.platforms.get(platform) or empty_platform(platform)
+
+    def secret(label: str, config: Any, name: str) -> dict[str, str]:
+        value = ui.ask_secret(label, configured=name in config.secrets)
+        if not value and name not in config.secrets:
+            raise SetupValidationError(f"{label} 未填写")
+        return {name: value} if value else {}
+
+    ui.info("以下平台凭据保存在 webui-config/platforms.toml 与私有 secrets 文件，不写入 .env。")
+    ui.info("每项都可跳过，之后在 Yuki Desktop「设置 → 平台」填写。")
+    changes: dict[str, PlatformChange] = {}
+    telegram = current("telegram")
+    if ui.confirm("启用 Telegram Bot？", default=telegram.enabled):
+        changes["telegram"] = PlatformChange(
+            True, {}, secret("Telegram Bot Token（BotFather 提供）", telegram, "bot_token")
+        )
+    elif telegram.enabled:
+        changes["telegram"] = PlatformChange(False, {}, {})
+    selected = next((name for name in ("feishu", "lark") if current(name).enabled), "skip")
+    selected = ui.choose(
+        "飞书 / Lark 企业自建应用机器人：",
+        (
+            ("skip", "跳过"),
+            ("feishu", "飞书（open.feishu.cn）"),
+            ("lark", "Lark（open.larksuite.com）"),
+        ),
+        default=selected,
+    )
+    for platform, label in (("feishu", "飞书"), ("lark", "Lark")):
+        config = current(platform)
+        if platform == selected:
+            app_id = ui.ask(
+                f"{label} App ID", default=str(config.settings["app_id"]), required=True
+            )
+            changes[platform] = PlatformChange(
+                True, {"app_id": app_id}, secret(f"{label} App Secret", config, "app_secret")
+            )
+        elif config.enabled:
+            changes[platform] = PlatformChange(False, {}, {})
+    official = current("qq_official")
+    if ui.confirm("启用 QQ 官方 Bot？", default=official.enabled):
+        app_id = ui.ask(
+            "QQ 官方 Bot AppID", default=str(official.settings["app_id"]), required=True
+        )
+        secrets_ = secret("QQ 官方 Bot AppSecret", official, "app_secret")
+        sandbox = ui.confirm(
+            "QQ 官方 Bot 使用沙箱环境？", default=bool(official.settings["sandbox"])
+        )
+        changes["qq_official"] = PlatformChange(
+            True, {"app_id": app_id, "sandbox": sandbox}, secrets_
+        )
+    elif official.enabled:
+        changes["qq_official"] = PlatformChange(False, {}, {})
+    draft.platforms = changes
 
 
 def _review_and_commit(
@@ -644,6 +727,7 @@ def _review_and_commit(
             )
             profiles = tomlkit.dumps(normalized)
             write_model_profiles = True
+    platforms = prepare_platforms(paths, draft.platforms)
     operator_policy = prepare_operator_configuration(paths, draft.environment)
     operator_file = Path(draft.environment["CONTROL_OPERATORS_FILE"])
     if not operator_file.is_absolute():
@@ -680,6 +764,8 @@ def _review_and_commit(
         draft.flash_enabled,
         pending_plugins=draft.pending_plugins,
     )
+    enabled_platforms = [name for name, item in platforms[1].platforms.items() if item.enabled]
+    ui.line("其他聊天平台：" + (", ".join(sorted(enabled_platforms)) or "未启用"))
     if not ui.confirm("确认写入以上配置？", default=False):
         ui.disabled("用户取消，未写入任何配置")
         return 2
@@ -689,6 +775,7 @@ def _review_and_commit(
     backup = commit_configuration(paths, document, configuration)
     if backup is not None:
         ui.info(f"原配置已备份到 {backup.relative_to(paths.root)}")
+    save_platforms(paths, platforms)
     ui.success("配置写入完成")
     ui.info("新部署先显式初始化角色和数据库（将角色名称替换为自己的名称）：")
     ui.info('docker compose run --rm --entrypoint yuki bot init-db --character-name "角色名称"')
@@ -747,9 +834,9 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
         "automation": _feature_label(
             "Automation", _as_bool(draft.environment.get("AUTOMATION_ENABLED", "false"))
         ),
-        "gateway": "QQ Gateway（"
+        "gateway": "聊天平台（QQ："
         + (", ".join(selected_gateway_providers(draft.environment)) or "未选择附带网关")
-        + "）",
+        + "；Telegram、飞书/Lark、QQ 官方 Bot）",
     }
     return ui.choose_many(
         "配置区块：",

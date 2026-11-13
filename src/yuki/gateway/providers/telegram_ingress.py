@@ -335,6 +335,9 @@ class TelegramGateway:
         self._last_success_at: datetime | None = None
         self._last_error_category: str | None = None
 
+    async def preflight(self) -> None:
+        await self.client.get_me()
+
     async def start(self) -> None:
         self._poll = asyncio.create_task(self._run(), name="telegram-ingress")
 

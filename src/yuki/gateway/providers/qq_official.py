@@ -177,24 +177,6 @@ class QQOfficialClient:
             await self._client.aclose()
 
 
-async def verify_qq_official_credentials(
-    app_id: str,
-    app_secret: str,
-    *,
-    sandbox: bool = False,
-    client: httpx.AsyncClient | None = None,
-) -> None:
-    """Preflight new credentials: exchange a token and read the gateway with it.
-
-    Raises :class:`QQOfficialAPIError` (``error_code`` from the platform) when refused.
-    """
-    probe = QQOfficialClient(app_id, app_secret, sandbox=sandbox, client=client)
-    try:
-        await probe.gateway_url()
-    finally:
-        await probe.close()
-
-
 class QQOfficialConnection:
     """Registry handle: the live client plus the durable delivery records it needs."""
 

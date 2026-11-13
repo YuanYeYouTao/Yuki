@@ -294,6 +294,9 @@ def build_harness(
     from yuki.admin.permission_catalog import PermissionCatalogService
     from yuki.admin.queries import AdminQueries
     from yuki.application.modules.automation import AutomationModule
+    from yuki.gateway.platforms import PlatformGateways
+    from yuki.gateway.providers import builtin_provider_catalog
+    from yuki.gateway.registry import GatewayConnectionRegistry
     from yuki.memory.claim_processor import MemoryClaimProcessor
     from yuki.memory.event_extractor import MemoryEventExtractor
     from yuki.memory.mutation.service import MemoryMutationService
@@ -370,6 +373,9 @@ def build_harness(
         config=runtime_config,
         groups=groups,
         router=fixture_ingress(database)._router,
+        platforms=PlatformGateways(settings.platforms_file, {}),
+        providers=builtin_provider_catalog(),
+        registry=GatewayConnectionRegistry(providers=builtin_provider_catalog()),
     )
 
     async def health():

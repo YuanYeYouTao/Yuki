@@ -111,15 +111,6 @@ class Settings(BaseSettings):
     code_mode_max_worker_processes: int = Field(default=1, ge=1, le=32)
     code_mode_foreground_reserved_processes: int = Field(default=0, ge=0, le=31)
 
-    telegram_bot_token: SecretStr = SecretStr("")
-    telegram_poll_interval_seconds: float = Field(default=1.0, gt=0)
-
-    feishu_app_id: str = ""
-    feishu_app_secret: SecretStr = SecretStr("")
-    feishu_domain: Literal["https://open.feishu.cn", "https://open.larksuite.com"] = (
-        "https://open.feishu.cn"
-    )
-
     onebot_access_token: str = ""
     enabled_groups_csv: str = Field(default="", validation_alias="ENABLED_GROUPS")
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")
@@ -153,6 +144,8 @@ class Settings(BaseSettings):
     llm_flash_api_key: str = Field(default="", repr=False)
     llm_flash_model: str = ""
     model_profiles_file: Path = Path("webui-config/model_profiles.toml")
+    # Telegram, Feishu/Lark and QQ official Bot credentials; secrets in a sibling sidecar.
+    platforms_file: Path = Path("webui-config/platforms.toml")
     model_stats_recent_error_limit: int = 5
 
     database_url: str = "sqlite+aiosqlite:///./data/yuki.db"

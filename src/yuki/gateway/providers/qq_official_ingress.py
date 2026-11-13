@@ -337,6 +337,9 @@ class QQOfficialGateway:
     def presence_id(self) -> str:
         return self.connection.presence_id
 
+    async def preflight(self) -> None:
+        await self.client.gateway_url()
+
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="qq-official-gateway")
 

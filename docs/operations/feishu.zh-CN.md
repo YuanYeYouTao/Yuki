@@ -30,23 +30,24 @@ Yuki 通过企业自建应用机器人接入飞书或 Lark。入站使用长连�
 
 ## 配置与启动
 
-在 Bot 使用的环境文件中填写：
+应用凭据只保存在部署目录的 `webui-config/platforms.toml`（App ID）与同目录私有的
+`platforms.secrets.json`（App Secret，0600），不写入 `.env`。三种填写方式任选其一：
 
-```dotenv
-FEISHU_APP_ID=cli_your_app_id
-FEISHU_APP_SECRET=your_app_secret
-FEISHU_DOMAIN=https://open.feishu.cn
-```
+- Yuki Desktop：**设置 → 平台**，在飞书或 Lark 卡片填写 App ID 与 App Secret 后保存。
+- 安装向导：`yuki setup` 的「聊天平台」页选择飞书或 Lark，再填写两项。
+- 管理 API：`POST /admin/v1/platforms/apply`，平台为 `feishu` 或 `lark`，见[管理 API](../architecture/admin-api.md#聊天平台凭据)。
 
-Lark 使用同样的字段，将域名改为：
+平台键决定域名：`feishu` 使用 `https://open.feishu.cn`，`lark` 使用 `https://open.larksuite.com`；
+应用 ID 与 Secret 必须属于所选平台。两项须成对保存，只填一项会在保存时被拒。保存时先用新凭据
+取 tenant token 并读取机器人身份，通过后才替换正在运行的连接，无需重启 Bot；被拒时原连接不变，
+返回的 `problem.details.error_category` 说明原因。长连接被平台拒绝（如未开长连接权限）后连接停止，
+在平台侧修正后再保存一次即可重新连接。
 
-```dotenv
-FEISHU_DOMAIN=https://open.larksuite.com
-```
+旧版写在 `.env` 的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DOMAIN` 已不再读取。升级时
+`install.sh` 会运行 `yuki setup platforms-migrate`，把 `.env` 或容器环境中的旧值一次性写入平台文档；
+已有平台文档时不覆盖。之后可从 `.env` 删除这些旧行。
 
-应用 ID 与 Secret 必须属于所选平台。两项都为空时不启动飞书接入，只填写一项会在创建应用资源前报配置错误。配置在启动时读取，修改后重启 Bot。
-
-仅接入飞书/Lark、TG 或个人客户端时，将 `COMPOSE_PROFILES` 留空，不需要 QQ 账号或 SnowLuma。模型、数据库和工作环境仍按正常部署说明配置。使用容器时，环境文件由 Bot 服务读取；需要使用包含本次源码的构建，不要直接套用旧版发布镜像。
+仅接入飞书/Lark、TG 或个人客户端时，将 `COMPOSE_PROFILES` 留空，不需要 QQ 账号或 SnowLuma。模型、数据库和工作环境仍按正常部署说明配置。
 
 源码环境启动：
 
@@ -76,7 +77,7 @@ uv run yuki-bot
 
 ## 检查运行状态
 
-启动时先验证机器人身份，再注册 Presence 并建立长连接。用 operator 的管理健康查询查看 `feishu` 或 `lark` 平台连接状态，结合 Bot 日志检查长连接重连和错误类别。应用内的 `feishu_gateway` 生命周期健康项保留网关运行信息。HTTP 服务可用或模型正常，不单独证明机器人具备群可见性和发送权限。
+启动时先验证机器人身份，再注册 Presence 并建立长连接。用 operator 的管理健康查询查看 `feishu` 或 `lark` 平台连接状态，结合 Bot 日志检查长连接重连和错误类别。`GET /admin/v1/platforms` 另给出运行状态、最近错误类别与当前账号。HTTP 服务可用或模型正常，不单独证明机器人具备群可见性和发送权限。
 
 实际接入后，依次检查单聊、群 @、普通群消息、话题、提及与引用、图片文件和自身消息撤回。群普通消息没有进入时，先核对应用发布、可用范围、机器人是否在群和全量消息权限是否已经批准。不要用尚未收到的消息判断历史检索或 Agent 参与行为。
 

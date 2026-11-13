@@ -23,7 +23,6 @@ from yuki.gateway.providers.qq_official import (
     QQOfficialAPIError,
     QQOfficialClient,
     QQOfficialReplyLimit,
-    verify_qq_official_credentials,
 )
 
 
@@ -75,10 +74,10 @@ async def test_preflight_rejects_refused_credentials_without_leaking_secret():
     platform.reply("POST", "/app/getAppAccessToken", code=100016, message="invalid appid")
     async with platform.client() as http:
         with pytest.raises(QQOfficialAPIError) as refused:
-            await verify_qq_official_credentials("1020", "secret-value", client=http)
+            await QQOfficialClient("1020", "secret-value", client=http).gateway_url()
         assert "secret-value" not in repr(refused.value) + str(refused.value)
         assert refused.value.error_code == 100016
-        await verify_qq_official_credentials("1020", "secret-value", sandbox=True, client=http)
+        await QQOfficialClient("1020", "secret-value", sandbox=True, client=http).gateway_url()
     assert platform.requests[-1].host == "sandbox.api.sgroup.qq.com"
     assert platform.requests[-1].path == "/gateway"
 

@@ -204,6 +204,14 @@ environment_image=$(env_value YUKI_ENVIRONMENT_IMAGE)
 environment_image=${environment_image:-$ENVIRONMENT_IMAGE:$VERSION}
 [ "$PROFILE" = lite ] || environment_image="$environment_image-desktop"
 pull "$environment_image"
+if [ "$FIRST" = false ]; then
+    # Telegram/Feishu credentials left in .env (or inlined by Compose) move once into
+    # webui-config before the new Bot starts. Root writes it whoever owns it now;
+    # start.sh then hands webui-config to the runtime UID.
+    docker compose run --rm --no-deps -T --user 0:0 --entrypoint yuki \
+        --volume "$INSTALL_DIR:/deploy" bot \
+        setup platforms-migrate --deployment-root /deploy >/dev/null
+fi
 docker compose up -d --pull missing --remove-orphans
 
 printf 'Waiting for Yuki and its sandbox'
