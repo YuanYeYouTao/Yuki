@@ -348,11 +348,13 @@ class EnvironmentSnapshots:
                 self.manager.ready = False
                 try:
                     await self.manager.recover()
-                except Exception:
+                except Exception as exc:
                     # It converges on the same snapshot; the next try follows the
                     # worker's own recovery cadence.
                     self._restore_retry = time.monotonic() + 15
-                    LOGGER.warning("environment_restore_pending request_id=%s", restore[0])
+                    LOGGER.warning(
+                        "environment_restore_pending request_id=%s error=%s", restore[0], exc
+                    )
             return
         if pending := db.execute(
             "SELECT * FROM environment_snapshots WHERE state='creating' ORDER BY created"

@@ -48,7 +48,7 @@ with socket.socket(socket.AF_UNIX) as connection:
 COOKIE_PAGE = (
     "<!doctype html><title>cookie</title><script>"
     "const v=new URLSearchParams(location.search).get('v');"
-    "if(v){document.cookie='yuki='+v+'; max-age=86400; path=/'}"
+    "if(v){document.cookie='yuki_'+v+'=1; max-age=86400; path=/'}"
     "document.title='cookie:'+document.cookie</script>"
 )
 
@@ -320,21 +320,29 @@ def lite(deployment: Deployment) -> dict[str, Any]:
 
 
 def wait_cookie(stage: Computer, value: str) -> None:
-    """Chromium writes cookies lazily; wait until the profile on disk has this one."""
+    """Chromium writes cookies lazily; wait until the profile on disk has this one.
+
+    Values are stored encrypted, so each version is its own cookie name.
+    """
+    query = (
+        "import sqlite3; print([r[0] for r in "
+        "sqlite3.connect('/tmp/c.db').execute('SELECT name FROM cookies')])"
+    )
 
     def written() -> bool:
         output = stage.shell(
             "cp ~/.local/share/yuki-computer/chromium/Default/Cookies /tmp/c.db 2>/dev/null "
-            "&& python3 -c \"import sqlite3; print([r[0] for r in sqlite3.connect('/tmp/c.db')"
-            '.execute(\\"SELECT value FROM cookies WHERE name=\'yuki\'\\")])" || echo none'
+            f'&& python3 -c "{query}" || echo none'
         )
-        return f"'{value}'" in output
+        return f"'yuki_{value}'" in output
 
     stage.wait(written, 120, f"cookie {value} never reached the profile on disk")
 
 
 def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
     stage = Computer(deployment, "headless")
+    # No idle sleep while the profile is prepared; R10 below turns it on again.
+    stage.settings(YUKI_SANDBOX_DISPLAY_IDLE_MINUTES="0")
     for action in ("sleep", "wake"):
         result = stage.computer(action)
         expect(not result.get("error"), f"headless {action}: {result}")
@@ -344,15 +352,18 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
         + " > /workspace/site/index.html && (cd /workspace/site && "
         "nohup python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)"
     )
-    opened = stage.browser("open", url="http://127.0.0.1:8765/?v=v1")
+    # Names unique to this run: a profile from an earlier run cannot satisfy the check.
+    first, second = f"a{uuid4().hex[:8]}", f"b{uuid4().hex[:8]}"
+    opened = stage.browser("open", url=f"http://127.0.0.1:8765/?v={first}")
     expect(not opened.get("error"), f"open: {opened}")
     old_tab = opened["tab"]["id"]
-    wait_cookie(stage, "v1")
+    wait_cookie(stage, first)
     # S16: taken while Chromium runs, so the copy carries its SingletonLock.
     lock = stage.shell("readlink ~/.local/share/yuki-computer/chromium/SingletonLock || true")
     with_browser = stage.snapshot("browser running")
-    stage.browser("open", url="http://127.0.0.1:8765/?v=v2", tab=old_tab)
-    wait_cookie(stage, "v2")
+    changed = stage.browser("open", url=f"http://127.0.0.1:8765/?v={second}", tab=old_tab)
+    expect(not changed.get("error"), f"open {second}: {changed}")
+    wait_cookie(stage, second)
     stage.restore(with_browser["id"])
     stage.shell(
         "(cd /workspace/site && nohup python3 -m http.server 8765 --bind 127.0.0.1 "
@@ -362,7 +373,10 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
     expect(stale.get("error") == "tab_not_found" and "tabs" in stale, f"S15 old tab: {stale}")
     page = stage.browser("open", url="http://127.0.0.1:8765/")
     shown = json.dumps(page, ensure_ascii=False)
-    expect("cookie:yuki=v1" in shown, f"the restored profile's cookie: {shown[:2000]}")
+    expect(
+        f"yuki_{first}=1" in shown and f"yuki_{second}" not in shown,
+        f"the restored profile's cookies: {shown[:2000]}",
+    )
     stage.record(
         "chromium_profile_restored",
         lock=lock.strip(),
@@ -372,6 +386,7 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
     )
 
     # R10/R6: idle sleep stops the headless browser; the next browser call wakes it.
+    stage.settings(YUKI_SANDBOX_DISPLAY_IDLE_MINUTES="0.5")
     tab = page["tab"]["id"]
     stage.wait(lambda: deployment.status().get("browser") == "stopped", 150, "R10 no idle sleep")
     woken = stage.browser("snapshot", tab=tab)
@@ -382,11 +397,18 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
     # S22: back to the lite-era snapshot; the current profile installs what it needs.
     stage.restore(earlier["lite_snapshot"]["id"])
     status = deployment.wait_ready(1800)
+    first_try = status["programs"]
+    if status["browser_mode"] != "headless" and not first_try.get("installed"):
+        # The install ran before an environment DNS service (sandbox-dns) was back;
+        # a failed install keeps what is there and is retried on the next Manager start.
+        deployment.compose("restart", "manager")
+        status = deployment.wait_ready(1800)
     expect(status["browser_mode"] == "headless", f"S22 the profile follows .env: {status}")
     after = stage.browser("open", url="data:text/html,<h1>after-s22</h1>")
     expect(not after.get("error"), f"S22 browser after restoring lite: {after}")
     stage.record(
         "restore_lite_snapshot_in_headless",
+        first_try=first_try,
         programs=status["programs"],
         images=stage.images(),
         volume=stage.volume(),
@@ -395,6 +417,7 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
 
 def desktop(deployment: Deployment) -> None:
     stage = Computer(deployment, "desktop")
+    stage.settings(YUKI_SANDBOX_DISPLAY_IDLE_MINUTES="0")
     stage.shell(
         "mkdir -p ~/.config/openbox && printf '%s\\n' "
         "'date +%s.%N >> $HOME/session-autostart' "
@@ -403,7 +426,7 @@ def desktop(deployment: Deployment) -> None:
     stage.computer("sleep")
     woken = stage.computer("wake")
     expect(woken.get("display") == "running", f"desktop wake: {woken}")
-    stage.wait(lambda: "her desktop" in stage.shell("ps -eo args"), 60, "no autostart window")
+    stage.wait(lambda: stage.shell("pgrep -x xmessage || true").strip(), 60, "no autostart window")
     shots = deployment.artifacts / "desktop"
     shots.mkdir(exist_ok=True)
 
@@ -416,15 +439,25 @@ def desktop(deployment: Deployment) -> None:
     first = screenshot("session-autostart")
     taken = stage.snapshot("her desktop")
     stage.shell("rm ~/.config/openbox/autostart")
+    runs = int(stage.shell("cat ~/session-autostart | wc -l").strip())
     stage.restore(taken["id"])
     stage.computer("wake")
+    # The restored HOME has the autostart file again (and the count as it was then).
     stage.wait(
-        lambda: "her desktop" in stage.shell("ps -eo args"), 60, "restored autostart did not run"
+        lambda: (
+            stage.shell("pgrep -x xmessage || true").strip()
+            and int(stage.shell("cat ~/session-autostart | wc -l").strip()) > runs
+        ),
+        60,
+        "restored autostart did not run",
     )
+    expect("xmessage" in stage.shell("cat ~/.config/openbox/autostart"), "autostart not restored")
     restored = screenshot("restored-session-autostart")
     stage.record("session_restored_with_computer", snapshot=taken, shots=[first, restored])
 
     # R2/R1: an open display stream keeps the screen awake; it sleeps after it closes.
+    stage.settings(YUKI_SANDBOX_DISPLAY_IDLE_MINUTES="0.5")
+    stage.computer("wake")
     hold = subprocess.Popen(
         ["docker", "compose", "exec", "-T", "--user", "10001:10001", "bot", "python", "-c", HOLD],
         cwd=deployment.directory,
@@ -441,8 +474,8 @@ def desktop(deployment: Deployment) -> None:
     hold.stdin.close()
     hold.wait(30)
     stage.wait(lambda: deployment.status()["display"] == "stopped", 150, "R1 no idle sleep")
-    gone = stage.shell("ps -eo args | grep -c 'her desktop' || true").strip()
-    expect(gone == "0", f"R5 her X client outlived the display: {gone}")
+    gone = stage.shell("pgrep -x xmessage || true").strip()
+    expect(not gone, f"R5 her X client outlived the display: {gone}")
     stage.record(
         "stream_keeps_awake_then_idle_sleep",
         banner=banner.strip(),

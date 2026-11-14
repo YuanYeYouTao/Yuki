@@ -688,8 +688,13 @@ class PersistentManager:
                 args.extend(("--env", f"{variable}={self.proxy}"))
             args.append(image)
             # docker create pulls a missing image first; that can take minutes.
-            code, _ = await self.command(*args, deadline_seconds=1800)
+            code, output = await self.command(*args, deadline_seconds=1800)
             if code:
+                LOGGER.warning(
+                    "environment_create_failed image=%s detail=%s",
+                    image,
+                    output.decode(errors="replace")[-1024:],
+                )
                 raise RuntimeError("environment_create_failed")
             self.snapshots.created_from(image)
             current = await self.inspect_container()
@@ -704,8 +709,11 @@ class PersistentManager:
         if current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
             await self.command("docker", "update", "--restart=no", self.name)
         if not current["State"]["Running"]:
-            code, _ = await self.command("docker", "start", self.name)
+            code, output = await self.command("docker", "start", self.name)
             if code:
+                LOGGER.warning(
+                    "environment_start_failed detail=%s", output.decode(errors="replace")[-1024:]
+                )
                 raise RuntimeError("environment_start_failed")
             current = await self.inspect_container()
             assert current is not None
@@ -1669,8 +1677,8 @@ class PersistentManager:
                         )
                     try:
                         await self.recover()
-                    except Exception:
-                        LOGGER.warning("environment_recovery_pending")
+                    except Exception as exc:
+                        LOGGER.warning("environment_recovery_pending error=%s", exc)
             if self.ready:
                 if not self.testing:
                     await self.autostart()

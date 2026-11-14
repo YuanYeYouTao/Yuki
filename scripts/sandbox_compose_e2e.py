@@ -343,7 +343,7 @@ def main() -> int:
     deployment.record("lite_computer", snapshot=earlier["lite_snapshot"]["id"])
 
     # F8/F15: restarting the Manager keeps the environment and the original run.
-    generation = status["generation"]
+    generation = deployment.status()["generation"]
     deployment.compose("restart", "manager")
     restarted = deployment.wait_ready()
     expect(restarted["generation"] == generation, "a Manager restart replaced the environment")
