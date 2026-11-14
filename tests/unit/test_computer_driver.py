@@ -943,3 +943,63 @@ def test_screen_reports_missing_and_minimized_windows(desktop):
         assert window not in [entry["id"] for entry in listed]
     finally:
         subprocess.run(["xdotool", "windowactivate", "--sync", window], env=display, check=True)
+
+
+def test_closing_the_browser_keeps_the_screen_and_opens_the_browser_again(desktop, site):
+    """The person closes Chromium's window on the shared desktop.
+
+    Failure cases, written before the service changed:
+    - the service ends with the browser and takes Xvnc down, so every window the person
+      opened on the screen dies and the desktop comes back empty;
+    - the screen stays but no browser comes back, leaving the browser tool nothing to drive;
+    - a browser comes back but the driver still holds the closed CDP connection and never
+      answers another request.
+    """
+    root = desktop
+    display = {**os.environ, "DISPLAY": ":1"}
+    lease = str(uuid4())
+    control(root, "agent", lease)
+    # A window the person started on the desktop themselves, outside the service.
+    own = subprocess.Popen(["xmessage", "-name", "own-window", "kept"], env=display)
+
+    def windows(*query: str) -> list[str]:
+        found = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", *query],
+            env=display,
+            capture_output=True,
+            text=True,
+        )
+        return found.stdout.split()
+
+    def browser() -> str | None:
+        # Each Chromium launch answers with its own browser ID; X reuses window IDs.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open("http://127.0.0.1:9222/json/version", timeout=1) as response:
+                return str(json.load(response)["webSocketDebuggerUrl"])
+        except OSError:
+            return None
+
+    try:
+        deadline = time.monotonic() + 30
+        while not windows("--classname", "own-window"):
+            assert own.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        closed = browser()
+        assert closed and windows("--class", "chromium")
+        # As with its close button: each browser window is closed until none is left.
+        for window in windows("--class", "chromium"):
+            subprocess.run(["xdotool", "windowactivate", "--sync", window], env=display)
+            subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+w"], env=display)
+        deadline = time.monotonic() + 60
+        while browser() in (None, closed) or not windows("--class", "chromium"):
+            assert own.poll() is None, "the person's own window went with the browser"
+            assert time.monotonic() < deadline
+            time.sleep(0.1)
+        assert own.poll() is None and windows("--classname", "own-window")
+        url = site.page("/reopened", "<title>reopened</title><button>Again</button>")
+        result = exchange(root, "browser", {"action": "open", "url": url}, lease=lease)["result"]
+        assert result["tab"]["title"] == "reopened" and 'button "Again"' in result["snapshot"]
+    finally:
+        own.terminate()
+        own.wait(timeout=10)
