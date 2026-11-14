@@ -4,7 +4,7 @@ Yuki 的持久 Linux 环境、远程画面和本人电脑的文件执行器是�
 
 画面和浏览器由沙箱档位决定：`desktop` 档有 Xvnc 桌面与有头 Chromium，`headless` 档只有无头 Chromium，`lite` 档没有浏览器。档位、换档、资源与安装见[持久工作环境](persistent-environment.zh-CN.md#档位)；Manager 按"配置的模式 + 实际安装的软件"报告 `desktop` 与 `browser_mode`，并把生效的模式写入运行记录卷的 `computer/browser-mode` 供桌面服务读取。
 
-`-desktop` 镜像安装真实的 TigerVNC/Xvnc、Openbox、Chromium、socat、xdotool、ImageMagick 和中文／Emoji 字体（`environment_programs.py headed`），并记录实际软件包版本。`yuki_computer.py`、`desktop_service.py` 与连接器包中只依赖标准库的共享驱动 `yuki_agent_connector/cdp.py` 由 Manager 从代码卷只读挂入，随 Bot 版本更新。VNC 和浏览器 CDP 仅监听容器 loopback，不发布 5901 或 9222。
+`-desktop` 镜像安装真实的 TigerVNC/Xvnc、Openbox、Chromium、socat、xdotool、ImageMagick 和中文／Emoji 字体（`environment_programs.py headed`），并记录实际软件包版本。`yuki_computer.py`、`desktop_service.py` 与连接器包中只依赖标准库的共享驱动 `yuki_agent_connector/cdp.py` 由 Manager 从代码卷只读挂入，随 Bot 版本更新。VNC 和浏览器 CDP 仅监听容器 loopback，不发布 5901 或 9222。桌面服务托管 Xvnc、Openbox、Chromium 与驱动：本人关掉 Chromium 窗口时只重新打开 Chromium 和持有其 CDP 连接的驱动，画面和桌面上其他窗口不受影响；Xvnc 或 Openbox 退出才结束整个服务，由 Supervisor 重启。
 
 Manager 创建环境时以原环境名称设置稳定 hostname，使持久 HOME 中 Chromium 的会话和配置在容器重建后仍属于同一主机。浏览器配置和锁文件不作为安装缓存清理。
 
