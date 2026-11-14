@@ -116,7 +116,8 @@ class MainAgentContract:
                         # 34: original terminal/file tools explicitly select a personal computer.
                         # 35: one-shot tool surface (27 tools, single target, plain results).
                         # 36: computer and browser tools (29 tools; schema frozen with device).
-                        "version": 36,
+                        # 37: computer wake/sleep/snapshot/restore on Yuki's own computer.
+                        "version": 37,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

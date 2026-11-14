@@ -243,8 +243,9 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
     )
     try:
         await manager.recover()
-        command = manager.command.await_args.args
-        assert command[:2] == ("docker", "create")
+        (command,) = (
+            call.args for call in manager.command.await_args_list if call.args[1] == "create"
+        )
         assert command[command.index("--user") + 1] == "0:0"
         assert command[command.index("--network") + 1] == "egress"
         assert command[-1] == "saved-rootfs:original-installations"
@@ -256,7 +257,7 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
         assert resolver_mounts == (
             [
                 "type=volume,src=yuki-sandbox-home,dst=/etc/resolv.conf,"
-                "volume-subpath=.config/resolv.conf"
+                "volume-subpath=.config/resolv.conf,volume-nocopy"
             ]
             if custom_resolver
             else []
@@ -267,7 +268,7 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
         # The Manager's own release of each environment file, mounted read-only in place.
         assert (
             "type=volume,src=yuki-sandbox-code,dst=/opt/yuki-runtime/supervisor.py,"
-            "volume-subpath=opt/yuki-runtime/supervisor.py,readonly" in command
+            "volume-subpath=opt/yuki-runtime/supervisor.py,volume-nocopy,readonly" in command
         )
         published = manager.code_root / "opt/yuki-runtime/supervisor.py"
         assert published.read_bytes() == SUPERVISOR_PATH.read_bytes()

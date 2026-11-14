@@ -31,6 +31,7 @@ from yuki.sandbox.computer_control import ComputerControl
 from yuki.sandbox.computer_runtime import ComputerRuntime
 from yuki.sandbox.computer_transport import ComputerTransport
 from yuki.sandbox.environment_programs import MODE_PACKAGES, wanted
+from yuki.sandbox.environment_snapshots import EnvironmentSnapshots
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.legacy_acp import ACP_KINDS, LegacyACPResources
@@ -68,6 +69,15 @@ MIB = 1024 * 1024
 SEGMENT = 4 * 1024 * 1024
 LOG_BUDGET = 128 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
+# Environment-level autostart: /etc/rc.local belongs to her computer (rootFS, kept in
+# snapshots). It runs once per environment generation; its real exit code is the last
+# line of the log, and processes it starts with ``&`` stay with docker-init.
+AUTOSTART = (
+    "[ -e /etc/rc.local ] || exit 0\n"
+    "/bin/sh /etc/rc.local > /var/log/rc.local.log 2>&1\n"
+    'echo "exit $?" >> /var/log/rc.local.log\n'
+    "exit 0\n"
+)
 
 
 class PersistentManager:
@@ -91,6 +101,10 @@ class PersistentManager:
         profile: str = "",
         browser_mode: str = "none",
         packages: tuple[str, ...] = (),
+        snapshots: Path | None = None,
+        snapshot_keep: int = 3,
+        snapshot_interval_hours: float = 0,
+        display_idle_minutes: float = 0,
     ) -> None:
         if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
             raise ValueError("invalid_environment_name")
@@ -102,6 +116,8 @@ class PersistentManager:
         self.resolv_conf = resolv_conf
         self.volumes, self.project, self.profile = volumes, project, profile
         self.browser_mode, self.packages = browser_mode, packages
+        # Product settings from .env; none of them decides whether anything is accepted.
+        self.display_idle_minutes = display_idle_minutes
         self.code_root = (code or self.root / "code").resolve()
         self.programs: dict[str, Any] = {}
         self.limits_error = ""
@@ -160,6 +176,12 @@ class PersistentManager:
             self.computer = ComputerControl(self)
             self.desktop = ComputerRuntime(self)
             self.computer_transport = ComputerTransport(self)
+            self.snapshots = EnvironmentSnapshots(
+                self,
+                (snapshots or self.root / "snapshots").resolve(),
+                keep=snapshot_keep,
+                interval_hours=snapshot_interval_hours,
+            )
         except BaseException:
             self.db.close()
             raise
@@ -240,7 +262,14 @@ class PersistentManager:
             if not isinstance(request, dict):
                 raise ValueError("invalid_request")
             if request.get("method") == "display_stream":
-                await self.computer_transport.display_stream(reader, writer)
+                # An open stream is someone looking at the screen: no idle sleep meanwhile.
+                self.desktop.streams += 1
+                self.desktop.touch()
+                try:
+                    await self.computer_transport.display_stream(reader, writer)
+                finally:
+                    self.desktop.streams -= 1
+                    self.desktop.touch()
                 return
             if request.get("method") == "files_read":
                 await self.computer_transport.files_read(request["args"]["path"], writer)
@@ -391,7 +420,13 @@ class PersistentManager:
             "docker", "inspect", *(("--size",) if size else ()), self.name
         )
         if code:
-            return None
+            # Only the engine's own answer means there is no container; any other failure
+            # (the daemon briefly unavailable) is not a reason to create or restore one.
+            # (The CLI's wording changed case between versions: "Error: No such object"
+            # and "error: no such object".)
+            if b"no such object" in raw.lower() or b"no such container" in raw.lower():
+                return None
+            raise RuntimeError("docker_inspect_failed: " + raw.decode(errors="replace")[-512:])
         value = json.loads(raw)[0]
         labels = value.get("Config", {}).get("Labels") or {}
         # One sandbox per Docker engine: another deployment's environment is never adopted.
@@ -416,7 +451,10 @@ class PersistentManager:
     ) -> str:
         value = f"type=volume,src={self.volumes[volume]},dst={destination}"
         if subpath:
-            value += f",volume-subpath={subpath}"
+            # One file of a volume: never copy the image's file there. A snapshot image
+            # has content at these paths (such as /etc/resolv.conf), and an engine that
+            # tries the copy fails to create the container.
+            value += f",volume-subpath={subpath},volume-nocopy"
         return value + (",readonly" if readonly else "")
 
     def publish_environment_files(self) -> None:
@@ -562,14 +600,17 @@ class PersistentManager:
             if directory.is_symlink():
                 raise RuntimeError("unsafe_environment_directory")
             directory.mkdir(mode=0o755, parents=True, exist_ok=True)
-            if os.geteuid() == 0:
+            # chown moves ctime even without a change, and ctime tells whether her
+            # computer changed since the last snapshot.
+            info = directory.stat()
+            if os.geteuid() == 0 and (info.st_uid, info.st_gid) != (10001, 10001):
                 os.chown(directory, 10001, 10001)
         await asyncio.to_thread(self.store.cleanup)
         await asyncio.to_thread(self.publish_environment_files)
         if not self.testing:
             await self.check_runtime()
             await self.ensure_network()
-        current = await self.inspect_container()
+        current = await self.snapshots.before_recover(await self.inspect_container())
         token = self.setting("execd_token")
         if not token:
             if current is not None:
@@ -578,6 +619,7 @@ class PersistentManager:
                 raise RuntimeError("manager_state_missing")
             token = secrets.token_urlsafe(32)
             self.set_setting("execd_token", token)
+        created = current is None
         if current is None:
             image = self.setting("checkpoint_image", self.image)
             limits = self.resource_limits()
@@ -658,9 +700,15 @@ class PersistentManager:
                 args.extend(("--env", f"{variable}={self.proxy}"))
             args.append(image)
             # docker create pulls a missing image first; that can take minutes.
-            code, _ = await self.command(*args, deadline_seconds=1800)
+            code, output = await self.command(*args, deadline_seconds=1800)
             if code:
+                LOGGER.warning(
+                    "environment_create_failed image=%s detail=%s",
+                    image,
+                    output.decode(errors="replace")[-1024:],
+                )
                 raise RuntimeError("environment_create_failed")
+            self.snapshots.created_from(image)
             current = await self.inspect_container()
         assert current is not None
         self.media_cache_shared = self.media_cache is not None and any(
@@ -673,8 +721,11 @@ class PersistentManager:
         if current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
             await self.command("docker", "update", "--restart=no", self.name)
         if not current["State"]["Running"]:
-            code, _ = await self.command("docker", "start", self.name)
+            code, output = await self.command("docker", "start", self.name)
             if code:
+                LOGGER.warning(
+                    "environment_start_failed detail=%s", output.decode(errors="replace")[-1024:]
+                )
                 raise RuntimeError("environment_start_failed")
             current = await self.inspect_container()
             assert current is not None
@@ -741,6 +792,7 @@ class PersistentManager:
                 await self.control(row["run_id"], "cancel")
         self.set_setting("desktop_mode", mode)
         self.ready = True
+        await self.snapshots.after_recover(created=created)
 
     def active(self) -> list[Any]:
         return self.db.execute(
@@ -1358,10 +1410,20 @@ class PersistentManager:
             "recreate_required": self.recreate_required() if self.observed_container else [],
             "browser": self.desktop.browser_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
+            **self.snapshots.status(),
+            **self.desktop.idle_status(),
             "host_available_bytes": self.available_memory(),
             "limits": {
                 **self.resource_limits(),
             },
+            "active_runs": [
+                dict(row)
+                for row in self.db.execute(
+                    "SELECT jobs.id AS run_id,jobs.state AS status,kind,created FROM jobs "
+                    "JOIN environment_jobs USING(id) WHERE jobs.state IN ('queued','running') "
+                    "AND kind='terminal_exec' ORDER BY created"
+                )
+            ],
             "runs": [
                 dict(row)
                 for row in self.db.execute(
@@ -1437,6 +1499,12 @@ class PersistentManager:
             return {"name": name, "enabled": False, "stopping": bool(row["run_id"])}
         raise ValueError("invalid_service_action")
 
+    async def autostart(self) -> dict[str, Any]:
+        """Run /etc/rc.local once per environment generation: the key names the generation."""
+        return await self.submit(
+            "service", {"command": AUTOSTART, "cwd": "/"}, f"autostart:{self.container_id}"
+        )
+
     async def restore_services(self) -> None:
         for row in self.db.execute("SELECT * FROM environment_services WHERE enabled=1").fetchall():
             previous = self.get(row["run_id"]) if row["run_id"] else {}
@@ -1485,6 +1553,15 @@ class PersistentManager:
                 return await self.file_request(method, args, request.get("request_id", ""))
             if method == "environment_status":
                 return self.environment_status()
+            if method == "environment_snapshot":
+                # The person's Desktop command: accepted here, progress via computer_revision.
+                return self.snapshots.request_snapshot(
+                    request.get("request_id", ""), "person", args.get("actor"), args.get("note")
+                )
+            if method == "environment_restore":
+                return self.snapshots.request_restore(
+                    request.get("request_id", ""), args.get("snapshot_id"), args.get("actor")
+                )
             if method == "environment_service":
                 return await self.service(args)
             if method == "terminal_read":
@@ -1542,6 +1619,12 @@ class PersistentManager:
     async def worker(self) -> None:
         while True:
             try:
+                # Snapshots and restores run here, so no terminal run is dispatched meanwhile.
+                await self.snapshots.step()
+                await self.desktop.idle_sleep()
+            except Exception as exc:
+                LOGGER.warning("environment_lifecycle_pending category=%s", type(exc).__name__)
+            try:
                 identity = self.queue.get_nowait()
             except asyncio.QueueEmpty:
                 identity = None
@@ -1586,34 +1669,47 @@ class PersistentManager:
             except (OSError, ValueError):
                 LOGGER.warning("acp_receipt_reconcile_pending")
             if time.time() - self.last_layer_check > 15:
-                current = await self.inspect_container()
-                self.last_layer_check = time.time()
-                if (
-                    not current
-                    or not current["State"]["Running"]
-                    or current["Id"] + ":" + current["State"]["StartedAt"] != self.container_id
-                ):
-                    self.ready = False
-                    for row in self.active():
-                        self.finish(
-                            row["id"],
-                            "failed",
-                            {
-                                "error": "environment_stopped",
-                                "interrupted": True,
-                                "oom": bool(current and current["State"].get("OOMKilled")),
-                            },
-                        )
-                    try:
-                        await self.recover()
-                    except Exception:
-                        LOGGER.warning("environment_recovery_pending")
+                try:
+                    await self.check_environment()
+                except Exception as exc:
+                    self.last_layer_check = time.time()
+                    LOGGER.warning("environment_recovery_pending error=%s", exc)
             if self.ready:
+                if not self.testing:
+                    await self.autostart()
                 await self.restore_services()
             if time.time() - self.last_prune > 60:
                 self.prune_logs()
                 self.last_prune = time.time()
             await asyncio.sleep(0.5)
+
+    async def check_environment(self) -> None:
+        """The worker's look at the container: a new generation or a stop is recovered."""
+        current = await self.inspect_container()
+        self.last_layer_check = time.time()
+        if current and current["State"].get("Paused"):
+            # Snapshots pause only inside this worker, so none is in progress now: a pause
+            # left behind (a failed unpause, an ended Manager) is lifted.
+            LOGGER.warning("environment_paused_without_snapshot")
+            await self.command("docker", "unpause", self.name)
+            current = await self.inspect_container()
+        if (
+            not current
+            or not current["State"]["Running"]
+            or current["Id"] + ":" + current["State"]["StartedAt"] != self.container_id
+        ):
+            self.ready = False
+            for row in self.active():
+                self.finish(
+                    row["id"],
+                    "failed",
+                    {
+                        "error": "environment_stopped",
+                        "interrupted": True,
+                        "oom": bool(current and current["State"].get("OOMKilled")),
+                    },
+                )
+            await self.recover()
 
     def prune_logs(self) -> None:
         # Active jobs each retain <= 8 MiB. Reclaim only completed output, never receipts/files.

@@ -70,6 +70,7 @@ from yuki.persistence.repositories import (
 from yuki.runtime.errors import InvalidTurnContextError
 from yuki.runtime.origin import TurnOrigin
 from yuki.sandbox.environment_tools import (
+    LIFECYCLE_ACTIONS,
     READ_ACTIONS,
     SANDBOX_TOOLS,
     command_arguments,
@@ -1764,6 +1765,12 @@ class AgentToolService:
         from yuki.domain.messages import ChatImage
         from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
 
+        lifecycle = name == "computer" and arguments["action"] in LIFECYCLE_ACTIONS
+        if "device" in arguments and lifecycle:
+            return self._result(
+                error="device_not_supported",
+                detail="wake、sleep、snapshot、restore 只作用于 Yuki 自己的电脑，省略 device",
+            )
         if "device" in arguments:
             devices = self.sandbox_client.local_devices
             assert devices is not None
@@ -1817,7 +1824,7 @@ class AgentToolService:
         # (no image capability, archive failure, a picture the computer could not
         # take or send): media_read is reported separately.
         unread = result.pop("media_error", None) or result.pop("capture_error", None)
-        pictured = name == "computer" or arguments["action"] == "screenshot"
+        pictured = (name == "computer" and not lifecycle) or arguments["action"] == "screenshot"
         return self._result(
             data=PreparedMediaData(result, images),
             mutation_committed=arguments["action"] not in READ_ACTIONS[name] or None,

@@ -73,6 +73,7 @@ async def main() -> None:
     parser.add_argument("--workspace", type=Path, default=Path("/app/workspace"))
     parser.add_argument("--socket", type=Path, default=Path("/run/yuki-sandbox/manager.sock"))
     parser.add_argument("--code", type=Path, default=Path("/var/lib/yuki-sandbox-code"))
+    parser.add_argument("--snapshots", type=Path, default=Path("/var/lib/yuki-sandbox-snapshots"))
     parser.add_argument(
         "--media-cache", type=Path, default=Path("/app/data/conversation-media-cache")
     )
@@ -104,6 +105,10 @@ async def main() -> None:
         profile=profile,
         browser_mode=browser_mode,
         packages=tuple(configured("packages").split()),
+        snapshots=args.snapshots,
+        snapshot_keep=int(configured("snapshot_keep", "3")),
+        snapshot_interval_hours=float(configured("snapshot_interval_hours", "24")),
+        display_idle_minutes=float(configured("display_idle_minutes", "30")),
     )
     try:
         manager.claim()

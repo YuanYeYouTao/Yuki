@@ -84,7 +84,9 @@ class ComputerControl:
             "SELECT result FROM environment_mutations WHERE request_id=?", (key,)
         ).fetchone()
         self.deliver_results()
-        return json.loads(row[0]) if row else {"error": "unknown_request"}
+        if row is None:
+            return self.manager.snapshots.find(key) or {"error": "unknown_request"}
+        return cast(dict[str, Any], json.loads(row[0]))
 
     def set(self, key: str, args: dict[str, Any]) -> dict[str, Any]:
         identifier(key)

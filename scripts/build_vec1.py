@@ -32,14 +32,10 @@ def native_build_metadata() -> NativeBuildMetadata:
             f"macosx_{major}_{minor}_{architecture}",
             f"{major}.{minor}",
         )
-    return NativeBuildMetadata(
-        architecture, raw_platform.replace("-", "_").replace(".", "_")
-    )
+    return NativeBuildMetadata(architecture, raw_platform.replace("-", "_").replace(".", "_"))
 
 
-def build_vec1(
-    root: Path, output: Path, *, metadata: NativeBuildMetadata | None = None
-) -> Path:
+def build_vec1(root: Path, output: Path, *, metadata: NativeBuildMetadata | None = None) -> Path:
     metadata = metadata or native_build_metadata()
     root, output = root.resolve(), output.resolve()
     source = root / "vendor" / "sqlite-vec1"

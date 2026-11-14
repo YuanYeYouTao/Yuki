@@ -1,5 +1,7 @@
 # 架构文档入口
 
+2026-11-14 [Yuki 自己的电脑任务书](Yuki自己的电脑任务书-2026-11-14.md)：整机快照与回滚、环境级与画面级自启动、闲置休眠；后端实现与 E2E 在 PR #621，Yuki-Desktop 快照面板另一仓库实施。
+
 2026-11-09 统一 Computer Use 与 Browser Use（#588）见[任务书](Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md)：同一组 `computer`/`browser` 工具操作 Yuki 环境与本人 Windows/Mac，含连接器稳定性（阶段 0）；已经独立复审修订，为待实施计划；服务端连接日志与 1011 关闭码已由 #590 合并上线。
 
 2026-11-07 QQ 私聊传文件事故引出的四份任务书：[普通执行连续性与插话接续](Yuki-普通执行连续性与插话接续任务书-2026-11-07.md)（合并 #560）、[服务器文件传到本人电脑](Yuki-服务器文件传到本人电脑任务书-2026-11-07.md)、[Code Mode 评估与收敛](Yuki-CodeMode评估与收敛任务书-2026-11-07.md)、[文件膨胀、函数爆炸与工具面删减](Yuki-文件膨胀与函数爆炸删减任务书-2026-11-07.md)。均为调查与待实施计划；除 Code Mode 外三份已经独立复审修订（连续性与文件传输各两轮）。Code Mode 见 #573，本期不处理，生产已按作者同意关闭；产品代码未改。
@@ -14,7 +16,7 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 
 代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
 
-本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0157`、Plugin API 为 `9.0`、个人 Client API revision 为 `11`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0157`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 

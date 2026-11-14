@@ -1,4 +1,21 @@
-"""Linux display substitute; identity, API, Unix Manager and RFB filter stay real."""
+"""Linux display substitute; identity, API, Unix Manager and RFB filter stay real.
+
+Snapshots, restores and idle sleep run the Manager's own code against a modelled Docker
+engine (``tests.support.fake_docker``); the display is a flag the wake/sleep path flips.
+Test endpoints for Desktop e2e:
+
+- ``GET /__test/computer``: RFB events, control, ``display``, open ``display_streams``,
+  ``idle`` (minutes configured and since the last use), ``snapshots``/``restores`` as the
+  Manager recorded them, snapshot image tags, and ``marker`` (``workspace/marker.txt``).
+- ``POST /__test/computer/marker {"text"}``: write the marker in HOME (restore check).
+- ``POST /__test/computer/idle``: age the last use past the idle minutes; the next
+  Manager round sleeps the screen exactly as after real idleness.
+- ``POST /__test/computer/snapshot-delay {"seconds"}``: hold commits so ``creating``
+  can be seen.
+
+``YUKI_DESKTOP_IDLE_MINUTES`` (default 30) and ``YUKI_DESKTOP_SNAPSHOT_KEEP`` (default 3)
+set the Manager's own product settings.
+"""
 
 import asyncio
 import json
@@ -8,9 +25,14 @@ import struct
 import tempfile
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
+from tests.support.fake_docker import FakeDocker
 from tests.support.native_computer_manager import NativeManager
 
+from yuki.sandbox import persistent
 from yuki.sandbox.persistent import PersistentManager
 from yuki.workspace.store import WorkspaceStore
 
@@ -38,12 +60,53 @@ class DesktopComputerFixture:
                 "",
                 home,
                 testing=True,
+                snapshot_keep=int(os.environ.get("YUKI_DESKTOP_SNAPSHOT_KEEP", "3")),
+                display_idle_minutes=float(os.environ.get("YUKI_DESKTOP_IDLE_MINUTES", "30")),
             )
+        self.docker = FakeDocker()
+        self.display = "running"
+        self.lifecycle = None
+        if native_work:
+            self.manager.desktop.display_status = lambda: {"display": "running"}
+        else:
+            self.manager.command = self.docker.command
+            self.manager.container_id = (
+                self.docker.container["Id"] + ":" + self.docker.container["StartedAt"]
+            )
+            self.manager.set_setting("execd_token", "fixture")
+            self.manager.desktop._service_status = lambda: {
+                "display": self.display,
+                "browser": "running" if self.display == "running" else "stopped",
+            }
+
+            # The desktop service run the Manager would have; each wake is a new run.
+            self.manager.db.execute(
+                "INSERT INTO environment_services(name,spec,enabled,run_id) "
+                "VALUES ('yuki-desktop','{}',1,?)",
+                (str(uuid4()),),
+            )
+            self.manager.db.commit()
+
+            async def start(key):
+                if self.display != "running":
+                    with self.manager.db:
+                        self.manager.db.execute(
+                            "UPDATE environment_services SET run_id=? WHERE name='yuki-desktop'",
+                            (str(uuid4()),),
+                        )
+                self.display = "running"
+                return {}
+
+            async def stop():
+                self.display = "stopped"
+                return {}
+
+            self.manager.desktop._start = start
+            self.manager.desktop._stop = stop
         self.manager.ready = True
         self.manager.files.root.mkdir(parents=True, exist_ok=True)
         (self.manager.files.root / "current.txt").write_text("Current workspace bytes.")
         self.manager.available_memory = lambda: 0
-        self.manager.desktop.display_status = lambda: {"display": "running"}
         runtime = self.manager.desktop.handle
 
         async def handle(method, args, key):
@@ -72,6 +135,10 @@ class DesktopComputerFixture:
         self.server = await asyncio.start_unix_server(
             self.manager.serve, str(self.container.sandbox_client.socket)
         )
+        if not self.native_work:
+            # Restores run the Manager's real recover(); only execd is not there.
+            persistent.Execd = lambda *_: SimpleNamespace(request=AsyncMock(return_value={}))
+            self.lifecycle = asyncio.create_task(self.manager_rounds())
         if self.native_work:
             for row in self.manager.active():
                 if not row["dispatched"]:
@@ -80,7 +147,21 @@ class DesktopComputerFixture:
             await self.container.sandbox_completions.start()
         await self.container.client_api.computer.start()
 
+    async def manager_rounds(self):
+        """The lifecycle part of the Manager worker: snapshots, restores, idle sleep."""
+        while True:
+            try:
+                await self.manager.snapshots.step()
+                await self.manager.desktop.idle_sleep()
+                self.manager.desktop.observe_display()
+            except Exception as exc:  # the Manager worker logs and keeps going, too
+                print(f"fixture manager round: {type(exc).__name__}: {exc}", flush=True)
+            await asyncio.sleep(0.2)
+
     async def close(self):
+        if self.lifecycle:
+            self.lifecycle.cancel()
+            await asyncio.gather(self.lifecycle, return_exceptions=True)
         if self.native_work:
             await self.container.sandbox_completions.close()
         await self.container.client_api.computer.close()
@@ -204,12 +285,48 @@ class DesktopComputerFixture:
     def attach(self, app):
         @app.get("/__test/computer")
         async def facts():
+            marker = self.manager.files.root / "marker.txt"
             return {
                 "events": self.events,
                 "clipboard": self.clipboard,
                 "connections": self.connections,
+                "display_streams": self.manager.desktop.streams,
+                "display": self.manager.desktop.display_status()["display"],
+                "idle": self.manager.desktop.idle_status(),
                 "mutations": self.manager.db.execute(
                     "SELECT COUNT(*) FROM environment_mutations"
                 ).fetchone()[0],
+                "idle_receipts": [
+                    {"request_id": row[0], "result": json.loads(row[1])}
+                    for row in self.manager.db.execute(
+                        "SELECT request_id,result FROM environment_mutations "
+                        "WHERE request_id LIKE 'idle:%'"
+                    )
+                ],
                 "control": self.manager.computer.control(),
+                "snapshots": [
+                    dict(row)
+                    for row in self.manager.db.execute("SELECT * FROM environment_snapshots")
+                ],
+                "restores": [
+                    dict(row)
+                    for row in self.manager.db.execute("SELECT * FROM environment_restores")
+                ],
+                "snapshot_images": self.docker.snapshot_tags(),
+                "marker": marker.read_text() if marker.exists() else None,
             }
+
+        @app.post("/__test/computer/marker")
+        async def write_marker(body: dict):
+            (self.manager.files.root / "marker.txt").write_text(body["text"])
+            return {"marker": body["text"]}
+
+        @app.post("/__test/computer/idle")
+        async def age_last_use():
+            self.manager.desktop.last_activity -= self.manager.display_idle_minutes * 60 + 1
+            return self.manager.desktop.idle_status()
+
+        @app.post("/__test/computer/snapshot-delay")
+        async def snapshot_delay(body: dict):
+            self.docker.delay = float(body["seconds"])
+            return {"seconds": self.docker.delay}

@@ -153,6 +153,26 @@ class ComputerResources(BaseModel):
     cpus: float
 
 
+class ComputerSnapshot(BaseModel):
+    id: str
+    state: Literal["creating", "ready", "failed", "rotated"]
+    created_at: str
+    source: Literal["daily", "yuki", "person"]
+    note: str | None
+    by: dict[str, JsonValue] | None
+    size_bytes: int | None
+    error: str | None = None
+
+
+class ComputerRestore(BaseModel):
+    snapshot_id: str
+    state: Literal["accepted", "done", "failed"]
+    started_at: str
+    finished_at: str | None
+    by: dict[str, JsonValue] | None
+    error: str | None = None
+
+
 class ComputerView(BaseModel):
     snowluma_display: bool = False
     environment: Literal["running", "stopped", "unavailable"]
@@ -162,6 +182,11 @@ class ComputerView(BaseModel):
     tabs: list[ComputerTab]
     tabs_available: bool
     resources: ComputerResources | None
+    snapshots: list[ComputerSnapshot] | None = None
+    snapshot_keep: int | None = None
+    last_restore: ComputerRestore | None = None
+    idle_sleep_minutes: float | None = None
+    session: str | None = None
     revision: int
 
 
@@ -171,6 +196,8 @@ class ComputerResult(BaseModel):
     by: dict[str, JsonValue] | str | None = None
     note: str | None = None
     at: str | None = None
+    snapshot: ComputerSnapshot | None = None
+    restore: ComputerRestore | None = None
     replay: bool | None = None
 
 

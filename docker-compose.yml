@@ -96,12 +96,17 @@ services:
       YUKI_SANDBOX_SHM_MIB: ${YUKI_SANDBOX_SHM_MIB:-}
       YUKI_SANDBOX_PROXY: ${YUKI_SANDBOX_PROXY:-}
       YUKI_SANDBOX_RESOLV_CONF: ${YUKI_SANDBOX_RESOLV_CONF:-}
+      YUKI_SANDBOX_DISPLAY_IDLE_MINUTES: ${YUKI_SANDBOX_DISPLAY_IDLE_MINUTES:-}
+      YUKI_SANDBOX_SNAPSHOT_KEEP: ${YUKI_SANDBOX_SNAPSHOT_KEEP:-}
+      YUKI_SANDBOX_SNAPSHOT_INTERVAL_HOURS: ${YUKI_SANDBOX_SNAPSHOT_INTERVAL_HOURS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - sandbox-state:/var/lib/yuki-sandbox
       - sandbox-home:/var/lib/yuki-sandbox/home
       - sandbox-runtime:/var/lib/yuki-sandbox/environment-jobs
       - sandbox-code:/var/lib/yuki-sandbox-code
+      # Whole-computer snapshots: mounted only here, never into the environment or the Bot.
+      - sandbox-snapshots:/var/lib/yuki-sandbox-snapshots
       - sandbox-run:/run/yuki-sandbox
       - media-cache:/app/data/conversation-media-cache:ro
       - ./workspace:/app/workspace
@@ -175,6 +180,9 @@ volumes:
   sandbox-code:
     external: true
     name: yuki-sandbox-code
+  sandbox-snapshots:
+    external: true
+    name: yuki-sandbox-snapshots
   media-cache:
     external: true
     name: yuki-media-cache

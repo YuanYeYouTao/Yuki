@@ -27,10 +27,51 @@ def public_control(control: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def public_time(value: object) -> str | None:
+    return datetime.fromtimestamp(value, UTC).isoformat() if isinstance(value, float) else None
+
+
+def public_by(by: object) -> dict[str, Any] | None:
+    """Who asked: the person's device, or Yuki's Work; the daily schedule has no actor."""
+    if not isinstance(by, dict) or by.get("system"):
+        return None
+    if "person_id" in by:
+        return {key: by.get(key) for key in ("person_id", "device_id", "device_label")}
+    return {"work_id": by.get("work_id")}
+
+
+def public_snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record["id"],
+        "state": record["state"],
+        "created_at": public_time(record.get("point_at") or record.get("created_at")),
+        "source": record["source"],
+        "note": record.get("note"),
+        "by": public_by(record.get("by")),
+        "size_bytes": record.get("size_bytes"),
+        **({"error": record["error"]} if record.get("error") else {}),
+    }
+
+
+def public_restore(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "snapshot_id": record["snapshot_id"],
+        "state": record["state"],
+        "started_at": public_time(record.get("started_at")),
+        "finished_at": public_time(record.get("finished_at")),
+        "by": public_by(record.get("by")),
+        **({"error": record["error"]} if record.get("error") else {}),
+    }
+
+
 def public_result(result: dict[str, Any]) -> dict[str, Any]:
     result = dict(result)
     if isinstance(result.get("control"), dict):
         result["control"] = public_control(result["control"])
+    if isinstance(result.get("snapshot"), dict):
+        result["snapshot"] = public_snapshot(result["snapshot"])
+    if isinstance(result.get("restore"), dict):
+        result["restore"] = public_restore(result["restore"])
     return result
 
 
@@ -47,15 +88,16 @@ class ComputerCommands:
         *,
         before_effect: Callable[[], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
-        if action not in {"take", "return", "transfer", "wake", "sleep"}:
+        if action not in {"take", "return", "transfer", "wake", "sleep", "snapshot", "restore"}:
             raise ClientError("validation_error")
-        allowed = (
-            {"lease_id", "note"}
-            if action in {"take", "return", "transfer"}
-            else {"confirm_active_work_tabs"}
-            if action == "sleep"
-            else set()
-        )
+        allowed = {
+            "take": {"lease_id", "note"},
+            "return": {"lease_id", "note"},
+            "transfer": {"lease_id", "note"},
+            "sleep": {"confirm_active_work_tabs"},
+            "snapshot": {"note"},
+            "restore": {"snapshot_id", "confirm_active_work"},
+        }.get(action, set())
         if payload.keys() - allowed:
             raise ClientError("validation_error")
         if action in {"take", "return", "transfer"}:
@@ -66,7 +108,15 @@ class ComputerCommands:
                 raise ClientError("validation_error")
         elif action == "sleep":
             payload = {"confirm_active_work_tabs": payload.get("confirm_active_work_tabs", False)}
-        operation = "client.computer." + (action if action in {"wake", "sleep"} else "control")
+        elif action == "snapshot":
+            payload = {"note": payload.get("note")}
+        elif action == "restore":
+            payload = {
+                "snapshot_id": payload.get("snapshot_id"),
+                "confirm_active_work": payload.get("confirm_active_work", False),
+            }
+        lifecycle = action in {"wake", "sleep", "snapshot", "restore"}
+        operation = "client.computer." + (action if lifecycle else "control")
         body = {"action": action, **payload}
         bound = fingerprint(operation, principal.request_person_id, body)
         key = manager_key(principal.request_scope, request_id)
@@ -137,10 +187,19 @@ class ComputerCommands:
         # is reused after response loss, even when another device retries it.
         result = await self.sandbox.execute("control_request_get", {"key": key}, request_id=key)
         if result.get("error") == "unknown_request":
-            method = "display_" + action if action in {"wake", "sleep"} else "control_set"
+            method = {
+                "wake": "display_wake",
+                "sleep": "display_sleep",
+                "snapshot": "environment_snapshot",
+                "restore": "environment_restore",
+            }.get(action, "control_set")
             arguments = (
                 original["payload"]
                 if action in {"wake", "sleep"}
+                else {"actor": original["actor"], "note": original["payload"]["note"]}
+                if action == "snapshot"
+                else {"actor": original["actor"], "snapshot_id": original["payload"]["snapshot_id"]}
+                if action == "restore"
                 else {"action": action, "actor": original["actor"], **original["payload"]}
             )
             try:
@@ -163,11 +222,15 @@ class ComputerCommands:
         problem = (
             "request_conflict"
             if result.get("error") == "idempotency_conflict"
+            else "not_found"
+            if result.get("error") == "snapshot_not_found"
             else result.get("error")
             if result.get("error")
             in {
                 "control_held",
                 "precondition_failed",
+                "snapshot_in_progress",
+                "restore_in_progress",
                 "unauthenticated",
                 "forbidden",
                 "owner_required",  # Keep the original failure from retired operation receipts.

@@ -127,6 +127,7 @@ class CharacterRepository:
                     "work_steps",
                     "character_status",
                     "computer",
+                    "computer_snapshots",
                 ],
             }
 

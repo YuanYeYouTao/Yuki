@@ -731,7 +731,7 @@ def test_serve_answers_requests_through_runtime_files(chromium, site, tmp_path):
 
 # The headed screen (M6, B7, C8) --------------------------------------------------
 
-HEADED = ("Xvnc", "openbox", "xdotool", "import", "xwininfo", "xprop", "chromium")
+HEADED = ("Xvnc", "openbox-session", "xdotool", "import", "xwininfo", "xprop", "chromium")
 
 
 @pytest.fixture(scope="module")

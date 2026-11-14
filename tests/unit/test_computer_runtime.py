@@ -105,7 +105,7 @@ async def test_unavailable_headed_image_never_reports_a_started_display(tmp_path
 
 
 async def test_real_headed_service_renders_unicode_exposes_rfb_and_stops_children(tmp_path):
-    if not all(shutil.which(binary) for binary in ("Xvnc", "openbox", "chromium")):
+    if not all(shutil.which(binary) for binary in ("Xvnc", "openbox-session", "chromium")):
         pytest.skip("Requires the actual headed environment packages")
     root = tmp_path / "runtime"
     root.mkdir()

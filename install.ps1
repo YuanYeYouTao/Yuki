@@ -178,7 +178,7 @@ if (-not (Get-EnvValue "YUKI_SANDBOX_RUNTIME")) {
     Set-EnvValue "YUKI_SANDBOX_RUNTIME" ($(if ($Runtimes -match '"runsc".*--overlay2=none') { "runsc" } else { "runc" }))
 }
 
-foreach ($Volume in @("yuki-sandbox-state", "yuki-sandbox-home", "yuki-sandbox-runtime", "yuki-sandbox-code", "yuki-media-cache")) {
+foreach ($Volume in @("yuki-sandbox-state", "yuki-sandbox-home", "yuki-sandbox-runtime", "yuki-sandbox-code", "yuki-sandbox-snapshots", "yuki-media-cache")) {
     & docker volume inspect $Volume *> $null
     if ($LASTEXITCODE -ne 0) { & docker volume create $Volume | Out-Null }
 }
