@@ -293,12 +293,18 @@ def lite(deployment: Deployment) -> dict[str, Any]:
     )
     stage.record("rebuilt_from_latest", recreated_from=status["recreated_from"], images=images)
 
-    # S9: the daily check takes nothing without a change, and one after a change.
+    # S9: the daily check takes nothing without a change, and one after a change. The
+    # rebuild above really changed the computer (rc.local ran and logged), so start
+    # from a snapshot of this quiet state.
+    stage.snapshot("quiet")
     stage.settings(YUKI_SANDBOX_SNAPSHOT_INTERVAL_HOURS="0.004")
-    count = len(deployment.status()["snapshots"])
+    before = [item["id"] for item in deployment.status()["snapshots"]]
     time.sleep(40)
     unchanged = deployment.status()["snapshots"]
-    expect(len(unchanged) == count, f"S9 a daily snapshot without a change: {unchanged}")
+    expect(
+        [item["id"] for item in unchanged] == before,
+        f"S9 a daily snapshot without a change: {unchanged}",
+    )
     stage.shell("echo changed > /workspace/daily.txt")
     daily = stage.wait(
         lambda: [
