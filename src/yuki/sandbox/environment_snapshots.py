@@ -311,7 +311,9 @@ class EnvironmentSnapshots:
                 current = self.find(request_id)
                 assert current is not None
                 record = current.get("snapshot") or current["restore"]
-                if record["state"] not in {"creating", "accepted"}:
+                # A restore attempt that could not finish reports its error while the
+                # Manager keeps converging on the same snapshot.
+                if record["state"] not in {"creating", "accepted"} or record["error"]:
                     return current
                 await changed.wait()
         finally:
@@ -355,12 +357,19 @@ class EnvironmentSnapshots:
                     LOGGER.warning(
                         "environment_restore_pending request_id=%s error=%s", restore[0], exc
                     )
+                    with db:
+                        db.execute(
+                            "UPDATE environment_restores SET error=? WHERE request_id=? "
+                            "AND state='accepted'",
+                            (str(exc)[-2048:] or type(exc).__name__, restore[0]),
+                        )
+                    self._changed(restore[0])
             return
         if pending := db.execute(
             "SELECT * FROM environment_snapshots WHERE state='creating' ORDER BY created"
         ).fetchone():
             async with lock:
-                await self._create(pending)
+                await self._finish(pending)
             return
         await self._daily()
 
@@ -383,7 +392,7 @@ class EnvironmentSnapshots:
             accepted = self.request_snapshot(f"daily:{uuid4()}", "daily", {"system": "daily"}, None)
             if "snapshot" in accepted:
                 async with self.manager.desktop.lock:
-                    await self._create(self._snapshot(id=accepted["snapshot"]["id"]))
+                    await self._finish(self._snapshot(id=accepted["snapshot"]["id"]))
 
     async def changed_since(self, since: float) -> bool:
         if await asyncio.to_thread(home_changed, self.manager.home, since):
@@ -424,6 +433,21 @@ class EnvironmentSnapshots:
         )
         if code:
             raise SnapshotError("rsync: " + output.decode(errors="replace")[-1024:])
+
+    async def _finish(self, row: Any) -> None:
+        """Create one accepted snapshot; whatever happens, its waiters see the outcome."""
+        try:
+            await self._create(row)
+        except Exception as exc:
+            with self.manager.db:
+                self.manager.db.execute(
+                    "UPDATE environment_snapshots SET state='failed',error=? "
+                    "WHERE id=? AND state='creating'",
+                    (str(exc)[-2048:] or type(exc).__name__, row["id"]),
+                )
+            raise
+        finally:
+            self._changed(row["request_id"])
 
     async def _create(self, row: Any) -> None:
         identity, request_id = row["id"], row["request_id"]
@@ -613,8 +637,8 @@ class EnvironmentSnapshots:
         if restore is not None:
             with self.manager.db:
                 self.manager.db.execute(
-                    "UPDATE environment_restores SET state='done',finished=?,generation=? "
-                    "WHERE request_id=?",
+                    "UPDATE environment_restores SET state='done',finished=?,generation=?,"
+                    "error=NULL WHERE request_id=?",
                     (time.time(), self.manager.container_id, restore["request_id"]),
                 )
             self._changed(restore["request_id"])

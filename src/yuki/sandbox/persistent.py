@@ -445,7 +445,10 @@ class PersistentManager:
     ) -> str:
         value = f"type=volume,src={self.volumes[volume]},dst={destination}"
         if subpath:
-            value += f",volume-subpath={subpath}"
+            # One file of a volume: never copy the image's file there. A snapshot image
+            # has content at these paths (such as /etc/resolv.conf), and an engine that
+            # tries the copy fails to create the container.
+            value += f",volume-subpath={subpath},volume-nocopy"
         return value + (",readonly" if readonly else "")
 
     def publish_environment_files(self) -> None:

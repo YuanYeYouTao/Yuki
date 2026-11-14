@@ -257,7 +257,7 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
         assert resolver_mounts == (
             [
                 "type=volume,src=yuki-sandbox-home,dst=/etc/resolv.conf,"
-                "volume-subpath=.config/resolv.conf"
+                "volume-subpath=.config/resolv.conf,volume-nocopy"
             ]
             if custom_resolver
             else []
@@ -268,7 +268,7 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
         # The Manager's own release of each environment file, mounted read-only in place.
         assert (
             "type=volume,src=yuki-sandbox-code,dst=/opt/yuki-runtime/supervisor.py,"
-            "volume-subpath=opt/yuki-runtime/supervisor.py,readonly" in command
+            "volume-subpath=opt/yuki-runtime/supervisor.py,volume-nocopy,readonly" in command
         )
         published = manager.code_root / "opt/yuki-runtime/supervisor.py"
         assert published.read_bytes() == SUPERVISOR_PATH.read_bytes()
