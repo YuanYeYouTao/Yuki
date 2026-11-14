@@ -256,7 +256,16 @@ jobs:
           sudo cp -a gvisor-bin/. /usr/local/bin/gvisor-bin/
           sudo /usr/local/bin/runsc install -- --overlay2=none
           sudo systemctl restart docker
-          docker info --format '{{json .Runtimes.runsc}}'
+          docker version
+          docker info --format '{{.Driver}} {{json .Runtimes.runsc}}'
+          # runsc needs resolv.conf as a file subpath of the HOME volume, which is also
+          # mounted whole; check this engine creates such a container at all.
+          docker volume create probe-home >/dev/null
+          docker run --rm -v probe-home:/v alpine sh -c 'mkdir -p /v/.config && echo nameserver 8.8.8.8 > /v/.config/resolv.conf'
+          docker create --name probe --runtime runsc --mount type=volume,src=probe-home,dst=/home/yuki \
+            --mount type=volume,src=probe-home,dst=/etc/resolv.conf,volume-subpath=.config/resolv.conf \
+            alpine true && docker rm probe
+          docker volume rm probe-home
       - name: Build the release images under their release names
         run: |
           version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')

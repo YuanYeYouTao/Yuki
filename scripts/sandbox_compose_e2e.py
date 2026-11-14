@@ -85,9 +85,19 @@ class Deployment:
         self.steps: list[dict[str, Any]] = []
 
     def run(self, *args: str, check: bool = True, stdin: str | None = None) -> str:
-        result = subprocess.run(
-            args, cwd=self.directory, input=stdin, capture_output=True, text=True, check=False
-        )
+        try:
+            result = subprocess.run(
+                args,
+                cwd=self.directory,
+                input=stdin,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=1800,
+            )
+        except subprocess.TimeoutExpired as exc:
+            print(self.compose("logs", "--tail", "120", "manager", check=False))
+            raise Failure(f"{' '.join(args)} did not answer: {exc}") from exc
         if check and result.returncode:
             raise Failure(f"{' '.join(args)} failed: {result.stdout}{result.stderr}")
         return result.stdout

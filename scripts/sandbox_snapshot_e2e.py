@@ -401,6 +401,11 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
     if status["browser_mode"] != "headless" and not first_try.get("installed"):
         # The install ran before an environment DNS service (sandbox-dns) was back;
         # a failed install keeps what is there and is retried on the next Manager start.
+        stage.wait(
+            lambda: "deb.debian.org" in stage.shell("getent hosts deb.debian.org || true"),
+            120,
+            "the environment's resolver did not come back",
+        )
         deployment.compose("restart", "manager")
         status = deployment.wait_ready(1800)
     expect(status["browser_mode"] == "headless", f"S22 the profile follows .env: {status}")
