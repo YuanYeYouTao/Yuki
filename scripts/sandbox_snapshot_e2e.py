@@ -261,9 +261,10 @@ def lite(deployment: Deployment) -> dict[str, Any]:
         f"S7 the image the container runs on was removed: {images}",
     )
     volume = stage.volume()
+    ids = {item["id"] for item in ready}
     expect(
-        not {entry for entry in volume["entries"]} - {item["id"] for item in ready},
-        f"S6 rotated HOME copies remain: {volume}",
+        set(volume["entries"]) == ids | {f"{item}.complete" for item in ids},
+        f"S6 rotated HOME copies remain, or a kept one is not complete: {volume}",
     )
     stage.record("rotation", taken=taken, rotated=rotated, images=images, volume=volume)
 
