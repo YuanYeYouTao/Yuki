@@ -422,7 +422,9 @@ class PersistentManager:
         if code:
             # Only the engine's own answer means there is no container; any other failure
             # (the daemon briefly unavailable) is not a reason to create or restore one.
-            if b"No such object" in raw or b"No such container" in raw:
+            # (The CLI's wording changed case between versions: "Error: No such object"
+            # and "error: no such object".)
+            if b"no such object" in raw.lower() or b"no such container" in raw.lower():
                 return None
             raise RuntimeError("docker_inspect_failed: " + raw.decode(errors="replace")[-512:])
         value = json.loads(raw)[0]

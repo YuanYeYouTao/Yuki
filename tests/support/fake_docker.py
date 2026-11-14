@@ -188,7 +188,9 @@ class FakeDocker:
         container = self.container
         if args[1] == "inspect":
             found = self.inspect() if args[-1] == self.name else None
-            return (0, json.dumps([found]).encode()) if found else (1, b"No such object")
+            # Docker 29's CLI wording; older versions write "Error: No such object".
+            missing = f"[]\nerror: no such object: {args[-1]}".encode()
+            return (0, json.dumps([found]).encode()) if found else (1, missing)
         if args[1] == "exec":
             if container is None or not container["Running"] or container["Paused"]:
                 return 1, b"container is not running or is paused"
