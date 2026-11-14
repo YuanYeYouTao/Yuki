@@ -243,8 +243,9 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
     )
     try:
         await manager.recover()
-        command = manager.command.await_args.args
-        assert command[:2] == ("docker", "create")
+        (command,) = (
+            call.args for call in manager.command.await_args_list if call.args[1] == "create"
+        )
         assert command[command.index("--user") + 1] == "0:0"
         assert command[command.index("--network") + 1] == "egress"
         assert command[-1] == "saved-rootfs:original-installations"

@@ -18,7 +18,13 @@ from sqlalchemy import select, text
 from starlette.websockets import WebSocketState
 
 from yuki.client_api import snowluma_display
-from yuki.client_api.computer_commands import ComputerCommands, public_control, release_key
+from yuki.client_api.computer_commands import (
+    ComputerCommands,
+    public_control,
+    public_restore,
+    public_snapshot,
+    release_key,
+)
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
@@ -162,6 +168,15 @@ class ClientComputer:
             "resources": {key: status["limits"][key] for key in ("memory_mib", "cpus")}
             if status.get("limits")
             else None,
+            "snapshots": [public_snapshot(item) for item in status["snapshots"]]
+            if "snapshots" in status
+            else None,
+            "snapshot_keep": status.get("snapshot_keep"),
+            "last_restore": public_restore(status["last_restore"])
+            if status.get("last_restore")
+            else None,
+            "idle_sleep_minutes": status.get("idle_sleep_minutes"),
+            "session": status.get("session"),
             "revision": self.revision,
         }
 
@@ -191,14 +206,35 @@ class ClientComputer:
                     },
                 )
 
-        return await self.commands.execute(
-            principal,
-            request_id,
-            action,
-            payload,
-            before_effect=confirm_sleep
+        async def confirm_restore() -> None:
+            # Restoring ends every run in the environment: name what would be interrupted.
+            current = await self.get(principal)
+            status = await self.rpc("environment_status")
+            active = [
+                tab
+                for tab in current["tabs"]
+                if tab["ownership"] == "work"
+                and tab["work_state"] not in {"completed", "failed", "cancelled"}
+            ]
+            runs = [
+                {"run_id": run["run_id"], "status": run["status"]}
+                for run in status.get("active_runs", [])
+            ]
+            if active or runs or (current["control"] or {}).get("holder") == "agent":
+                raise ClientError(
+                    "precondition_failed",
+                    details={"tabs": active, "runs": runs, "control": current["control"]},
+                )
+
+        before_effect = (
+            confirm_sleep
             if action == "sleep" and not payload.get("confirm_active_work_tabs")
-            else None,
+            else confirm_restore
+            if action == "restore" and not payload.get("confirm_active_work")
+            else None
+        )
+        return await self.commands.execute(
+            principal, request_id, action, payload, before_effect=before_effect
         )
 
     async def ticket(

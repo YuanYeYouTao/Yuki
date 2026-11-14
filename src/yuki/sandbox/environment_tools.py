@@ -20,6 +20,8 @@ READ_ACTIONS = {
     "computer": frozenset({"screenshot", "resume"}),
     "browser": frozenset({"snapshot", "screenshot"}),
 }
+# ``computer`` actions on Yuki's own computer as a whole; they never reach a driver.
+LIFECYCLE_ACTIONS = frozenset({"wake", "sleep", "snapshot", "restore"})
 
 
 def tool(
@@ -99,8 +101,8 @@ def environment_tools() -> tuple[ChatTool, ...]:
         ),
         tool(
             "get_environment",
-            "查看 Yuki 自己环境的容量、后台服务和浏览器模式；给 device 则查看该本人电脑的"
-            "系统、Shell 与授权。",
+            "查看 Yuki 自己环境的容量、后台服务、浏览器模式、画面与会话状态、闲置休眠设置、"
+            "整机快照列表与最近一次还原；给 device 则查看该本人电脑的系统、Shell 与授权。",
             {**device},
             read=True,
         ),
@@ -110,7 +112,13 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "device 指本人电脑。screenshot 截屏；click、double_click、right_click、move "
             "作用于 x,y；drag 从 x,y 拖到 x2,y2；type 输入 text；key 按组合键 text"
             "（如 ctrl+l、Return）；scroll 在 x,y 滚动 dx,dy 格（dy 正数向下）；"
-            "resume 解除本人的叫停。x,y 是本次结果所附截图的像素坐标；给 window"
+            "resume 解除本人的叫停。"
+            "只对 Yuki 自己的电脑：wake 唤醒画面和浏览器，sleep 让画面层休眠"
+            "（终端和后台进程照常运行）；snapshot 给整台电脑拍快照（rootFS 与 HOME，"
+            "text 为备注，不含记忆和聊天，只保留最近几份、新的会挤掉最旧的），"
+            "restore 把整台电脑还原到 snapshot（快照 ID）：快照之后的改动全部丢失、"
+            "正在运行的命令被中断，需要时先拍一份；结果未知时先看 get_environment 再决定。"
+            "x,y 是本次结果所附截图的像素坐标；给 window"
             "（screenshot 返回的 windows[].id）时只截该窗口、坐标相对该窗口。"
             "本人电脑上给 window 即在后台操作该窗口，不动本人的光标和前台应用；"
             "type、key 可给 x,y 先聚焦该处输入框，否则落在该窗口当前的输入焦点；"
@@ -136,6 +144,10 @@ def environment_tools() -> tuple[ChatTool, ...]:
                         "key",
                         "scroll",
                         "resume",
+                        "wake",
+                        "sleep",
+                        "snapshot",
+                        "restore",
                     ],
                 },
                 "x": {"type": "integer"},
@@ -147,6 +159,10 @@ def environment_tools() -> tuple[ChatTool, ...]:
                 "text": text,
                 "window": {"type": "string", "description": "screenshot 返回的 windows[].id"},
                 "display": text,
+                "snapshot": {
+                    "type": "string",
+                    "description": "restore 的快照 ID（见 get_environment 的 snapshots）",
+                },
                 **device,
             },
             ("action",),

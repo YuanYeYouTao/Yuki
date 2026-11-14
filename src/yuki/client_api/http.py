@@ -147,6 +147,15 @@ class ComputerSleepBody(ComputerRequest):
     confirm_active_work_tabs: bool = Field(default=False, strict=True)
 
 
+class ComputerSnapshotBody(ComputerRequest):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ComputerRestoreBody(ComputerRequest):
+    snapshot_id: UUID4
+    confirm_active_work: bool = Field(default=False, strict=True)
+
+
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     app.extra.setdefault("x-yuki-api-revision", CLIENT_API_REVISION)
     router = APIRouter(prefix="/client/v1")
@@ -666,6 +675,36 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
                 str(body.request_id),
                 "sleep",
                 {"confirm_active_work_tabs": body.confirm_active_work_tabs},
+            )
+        }
+
+    @router.post(
+        "/computer/snapshots",
+        response_model=Envelope[ComputerResult],
+        response_model_exclude_unset=True,
+    )
+    async def snapshot_computer(body: ComputerSnapshotBody, actor: Actor) -> Any:
+        return {
+            "data": await computer().command(
+                actor, str(body.request_id), "snapshot", {"note": body.note}
+            )
+        }
+
+    @router.post(
+        "/computer/restore",
+        response_model=Envelope[ComputerResult],
+        response_model_exclude_unset=True,
+    )
+    async def restore_computer(body: ComputerRestoreBody, actor: Actor) -> Any:
+        return {
+            "data": await computer().command(
+                actor,
+                str(body.request_id),
+                "restore",
+                {
+                    "snapshot_id": str(body.snapshot_id),
+                    "confirm_active_work": body.confirm_active_work,
+                },
             )
         }
 

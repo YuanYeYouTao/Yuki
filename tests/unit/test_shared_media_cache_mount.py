@@ -127,8 +127,10 @@ async def test_new_environment_mounts_same_cache_read_only_without_recreating_ol
     )
     try:
         await owner.recover()
-        command = owner.command.await_args.args
-        assert command[:2] == ("docker", "create") and command[-1] == "private-complete-rootfs"
+        (command,) = (
+            call.args for call in owner.command.await_args_list if call.args[1] == "create"
+        )
+        assert command[-1] == "private-complete-rootfs"
         # The Bot's cache volume by name; Docker resolves it, not a Manager path.
         assert (
             "type=volume,src=yuki-media-cache,dst=/home/yuki/inputs/media-cache,readonly" in command

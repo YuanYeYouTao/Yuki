@@ -31,6 +31,7 @@ from yuki.sandbox.computer_control import ComputerControl
 from yuki.sandbox.computer_runtime import ComputerRuntime
 from yuki.sandbox.computer_transport import ComputerTransport
 from yuki.sandbox.environment_programs import MODE_PACKAGES, wanted
+from yuki.sandbox.environment_snapshots import EnvironmentSnapshots
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.legacy_acp import ACP_KINDS, LegacyACPResources
@@ -68,6 +69,15 @@ MIB = 1024 * 1024
 SEGMENT = 4 * 1024 * 1024
 LOG_BUDGET = 128 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
+# Environment-level autostart: /etc/rc.local belongs to her computer (rootFS, kept in
+# snapshots). It runs once per environment generation; its real exit code is the last
+# line of the log, and processes it starts with ``&`` stay with docker-init.
+AUTOSTART = (
+    "[ -e /etc/rc.local ] || exit 0\n"
+    "/bin/sh /etc/rc.local > /var/log/rc.local.log 2>&1\n"
+    'echo "exit $?" >> /var/log/rc.local.log\n'
+    "exit 0\n"
+)
 
 
 class PersistentManager:
@@ -91,6 +101,10 @@ class PersistentManager:
         profile: str = "",
         browser_mode: str = "none",
         packages: tuple[str, ...] = (),
+        snapshots: Path | None = None,
+        snapshot_keep: int = 3,
+        snapshot_interval_hours: float = 0,
+        display_idle_minutes: float = 0,
     ) -> None:
         if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
             raise ValueError("invalid_environment_name")
@@ -102,6 +116,8 @@ class PersistentManager:
         self.resolv_conf = resolv_conf
         self.volumes, self.project, self.profile = volumes, project, profile
         self.browser_mode, self.packages = browser_mode, packages
+        # Product settings from .env; none of them decides whether anything is accepted.
+        self.display_idle_minutes = display_idle_minutes
         self.code_root = (code or self.root / "code").resolve()
         self.programs: dict[str, Any] = {}
         self.limits_error = ""
@@ -160,6 +176,12 @@ class PersistentManager:
             self.computer = ComputerControl(self)
             self.desktop = ComputerRuntime(self)
             self.computer_transport = ComputerTransport(self)
+            self.snapshots = EnvironmentSnapshots(
+                self,
+                (snapshots or self.root / "snapshots").resolve(),
+                keep=snapshot_keep,
+                interval_hours=snapshot_interval_hours,
+            )
         except BaseException:
             self.db.close()
             raise
@@ -240,7 +262,14 @@ class PersistentManager:
             if not isinstance(request, dict):
                 raise ValueError("invalid_request")
             if request.get("method") == "display_stream":
-                await self.computer_transport.display_stream(reader, writer)
+                # An open stream is someone looking at the screen: no idle sleep meanwhile.
+                self.desktop.streams += 1
+                self.desktop.touch()
+                try:
+                    await self.computer_transport.display_stream(reader, writer)
+                finally:
+                    self.desktop.streams -= 1
+                    self.desktop.touch()
                 return
             if request.get("method") == "files_read":
                 await self.computer_transport.files_read(request["args"]["path"], writer)
@@ -569,7 +598,7 @@ class PersistentManager:
         if not self.testing:
             await self.check_runtime()
             await self.ensure_network()
-        current = await self.inspect_container()
+        current = await self.snapshots.before_recover(await self.inspect_container())
         token = self.setting("execd_token")
         if not token:
             if current is not None:
@@ -578,6 +607,7 @@ class PersistentManager:
                 raise RuntimeError("manager_state_missing")
             token = secrets.token_urlsafe(32)
             self.set_setting("execd_token", token)
+        created = current is None
         if current is None:
             image = self.setting("checkpoint_image", self.image)
             limits = self.resource_limits()
@@ -661,6 +691,7 @@ class PersistentManager:
             code, _ = await self.command(*args, deadline_seconds=1800)
             if code:
                 raise RuntimeError("environment_create_failed")
+            self.snapshots.created_from(image)
             current = await self.inspect_container()
         assert current is not None
         self.media_cache_shared = self.media_cache is not None and any(
@@ -741,6 +772,7 @@ class PersistentManager:
                 await self.control(row["run_id"], "cancel")
         self.set_setting("desktop_mode", mode)
         self.ready = True
+        await self.snapshots.after_recover(created=created)
 
     def active(self) -> list[Any]:
         return self.db.execute(
@@ -1358,10 +1390,20 @@ class PersistentManager:
             "recreate_required": self.recreate_required() if self.observed_container else [],
             "browser": self.desktop.browser_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
+            **self.snapshots.status(),
+            **self.desktop.idle_status(),
             "host_available_bytes": self.available_memory(),
             "limits": {
                 **self.resource_limits(),
             },
+            "active_runs": [
+                dict(row)
+                for row in self.db.execute(
+                    "SELECT jobs.id AS run_id,jobs.state AS status,kind,created FROM jobs "
+                    "JOIN environment_jobs USING(id) WHERE jobs.state IN ('queued','running') "
+                    "AND kind='terminal_exec' ORDER BY created"
+                )
+            ],
             "runs": [
                 dict(row)
                 for row in self.db.execute(
@@ -1485,6 +1527,15 @@ class PersistentManager:
                 return await self.file_request(method, args, request.get("request_id", ""))
             if method == "environment_status":
                 return self.environment_status()
+            if method == "environment_snapshot":
+                # The person's Desktop command: accepted here, progress via computer_revision.
+                return self.snapshots.request_snapshot(
+                    request.get("request_id", ""), "person", args.get("actor"), args.get("note")
+                )
+            if method == "environment_restore":
+                return self.snapshots.request_restore(
+                    request.get("request_id", ""), args.get("snapshot_id"), args.get("actor")
+                )
             if method == "environment_service":
                 return await self.service(args)
             if method == "terminal_read":
@@ -1541,6 +1592,12 @@ class PersistentManager:
 
     async def worker(self) -> None:
         while True:
+            try:
+                # Snapshots and restores run here, so no terminal run is dispatched meanwhile.
+                await self.snapshots.step()
+                await self.desktop.idle_sleep()
+            except Exception as exc:
+                LOGGER.warning("environment_lifecycle_pending category=%s", type(exc).__name__)
             try:
                 identity = self.queue.get_nowait()
             except asyncio.QueueEmpty:
@@ -1609,6 +1666,10 @@ class PersistentManager:
                     except Exception:
                         LOGGER.warning("environment_recovery_pending")
             if self.ready:
+                # Once per environment generation: the key names the generation.
+                await self.submit(
+                    "service", {"command": AUTOSTART, "cwd": "/"}, f"autostart:{self.container_id}"
+                )
                 await self.restore_services()
             if time.time() - self.last_prune > 60:
                 self.prune_logs()
