@@ -155,7 +155,7 @@ class ComputerResources(BaseModel):
 
 class ComputerSnapshot(BaseModel):
     id: str
-    state: Literal["creating", "ready", "failed"]
+    state: Literal["creating", "ready", "failed", "rotated"]
     created_at: str
     source: Literal["daily", "yuki", "person"]
     note: str | None

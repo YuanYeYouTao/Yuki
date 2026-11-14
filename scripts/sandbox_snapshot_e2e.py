@@ -267,6 +267,25 @@ def lite(deployment: Deployment) -> dict[str, Any]:
     )
     stage.record("rotation", taken=taken, rotated=rotated, images=images, volume=volume)
 
+    # S25: a HOME copy without its completion marker is refused before anything stops.
+    broken = taken[0]
+    deployment.run(
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        "yuki-sandbox-snapshots:/s",
+        "--entrypoint",
+        "rm",
+        f"ghcr.io/yuanyeyoutao/yuki:{deployment.version}",
+        f"/s/{broken['id']}.complete",
+    )
+    generation = deployment.status()["generation"]
+    refused = stage.computer("restore", snapshot=broken["id"])
+    expect(refused.get("error") == "snapshot_incomplete", f"S25 incomplete copy: {refused}")
+    expect(deployment.status()["generation"] == generation, "S25 the computer was touched")
+    stage.record("incomplete_copy_refused", refused=refused)
+
     # S13: the container is lost; HOME stays current, the rootFS is the latest snapshot.
     latest = taken[-1]
     stage.shell("echo after-latest > /etc/after-latest && echo home-current > /workspace/kept.txt")

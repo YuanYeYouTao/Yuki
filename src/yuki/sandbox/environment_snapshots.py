@@ -128,6 +128,30 @@ class SnapshotError(RuntimeError):
     pass
 
 
+def _mark(path: Path) -> None:
+    """The completion marker, durable before the snapshot can be recorded ready."""
+    descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _remove(root: Path, snapshot_id: str) -> None:
+    """Remove one HOME copy: the marker first, so a half-removed copy is never complete."""
+    (root / f"{snapshot_id}.complete").unlink(missing_ok=True)
+    copy, removing = root / snapshot_id, root / f"{snapshot_id}.removing"
+    if copy.exists():
+        copy.rename(removing)
+    shutil.rmtree(removing, ignore_errors=True)
+    shutil.rmtree(root / f"{snapshot_id}.partial", ignore_errors=True)
+
+
 class EnvironmentSnapshots:
     def __init__(
         self, manager: PersistentManager, root: Path, *, keep: int, interval_hours: float
@@ -141,7 +165,8 @@ class EnvironmentSnapshots:
             "CREATE TABLE IF NOT EXISTS environment_snapshots (id TEXT PRIMARY KEY,"
             "request_id TEXT UNIQUE NOT NULL, source TEXT NOT NULL, actor TEXT NOT NULL,"
             "note TEXT, state TEXT NOT NULL, image TEXT, point_at REAL, container_id TEXT,"
-            "sizes TEXT, pause_seconds REAL, rotated TEXT, error TEXT, created REAL NOT NULL);"
+            "sizes TEXT, pause_seconds REAL, rotated TEXT, error TEXT, created REAL NOT NULL,"
+            "removed REAL);"
             "CREATE TABLE IF NOT EXISTS environment_restores (request_id TEXT PRIMARY KEY,"
             "snapshot_id TEXT NOT NULL, actor TEXT NOT NULL, state TEXT NOT NULL,"
             "started REAL NOT NULL, finished REAL, home_restored REAL, generation TEXT,"
@@ -203,6 +228,19 @@ class EnvironmentSnapshots:
         if row := self._restore(request_id):
             return {"restore": self.restore_view(row)}
         return None
+
+    def complete(self, snapshot_id: str) -> bool:
+        """Its HOME copy is whole: the marker is written only after the copy is renamed into
+        place, and removed before anything of the copy is deleted."""
+        return (self.root / snapshot_id).is_dir() and (
+            self.root / f"{snapshot_id}.complete"
+        ).is_file()
+
+    def excludes(self) -> list[str]:
+        """Never copied or rolled back: the read-only media mount, Chromium caches and the
+        operator's resolver file (YUKI_SANDBOX_RESOLV_CONF) inside HOME."""
+        resolver = self.manager.resolv_conf
+        return [*EXCLUDES, *((f"/{resolver.strip('/')}",) if resolver else ())]
 
     def ready(self) -> list[Any]:
         return self.manager.db.execute(
@@ -290,6 +328,8 @@ class EnvironmentSnapshots:
         target = self._snapshot(id=snapshot_id) if isinstance(snapshot_id, str) else None
         if target is None or target["state"] != "ready":
             return {"error": "snapshot_not_found"}
+        if not self.complete(target["id"]):
+            return {"error": "snapshot_incomplete"}
         with self.manager.db:
             self.manager.db.execute(
                 "INSERT INTO environment_restores (request_id,snapshot_id,actor,state,started)"
@@ -370,6 +410,8 @@ class EnvironmentSnapshots:
         ).fetchone():
             async with lock:
                 await self._finish(pending)
+            # Removing rotated copies and measuring the volume need no lock.
+            await self._cleanup()
             return
         await self._daily()
 
@@ -387,12 +429,17 @@ class EnvironmentSnapshots:
         if self.manager.computer.control()["holder"] == "human":
             return
         changed = newest is None or await self.changed_since(newest)
+        if self.manager.desktop.lock.locked() or not self.manager.ready:
+            # An action started during the scan; check again next round rather than make
+            # it wait for a pause.
+            return
         self.manager.set_setting("snapshot_daily_checked_at", str(now))
         if changed:
             accepted = self.request_snapshot(f"daily:{uuid4()}", "daily", {"system": "daily"}, None)
             if "snapshot" in accepted:
                 async with self.manager.desktop.lock:
                     await self._finish(self._snapshot(id=accepted["snapshot"]["id"]))
+                await self._cleanup()
 
     async def changed_since(self, since: float) -> bool:
         if await asyncio.to_thread(home_changed, self.manager.home, since):
@@ -419,7 +466,7 @@ class EnvironmentSnapshots:
         return output
 
     async def _rsync(self, source: Path, target: Path, *extra: str) -> None:
-        excludes = [f"--exclude={pattern}" for pattern in EXCLUDES]
+        excludes = [f"--exclude={pattern}" for pattern in self.excludes()]
         code, output = await self.manager.command(
             "rsync",
             "-aHAX",
@@ -453,12 +500,17 @@ class EnvironmentSnapshots:
         identity, request_id = row["id"], row["request_id"]
         image = f"{IMAGE}:{identity}"
         partial, final = self.root / f"{identity}.partial", self.root / identity
-        ready = self.ready()
-        previous = ready[0]["id"] if ready else None
+        complete = self.root / f"{identity}.complete"
+        previous = next((other["id"] for other in self.ready() if self.complete(other["id"])), None)
+        link = (f"--link-dest=../{previous}/",) if previous else ()
         generation = self.manager.container_id
         committed = paused = False
         started = 0.0
         try:
+            await asyncio.to_thread(self.root.mkdir, parents=True, exist_ok=True)
+            # Copy most of HOME while the computer still runs; inside the pause only the
+            # difference is copied again.
+            await self._rsync(self.manager.home, partial, *link)
             await self._docker("exec", self.manager.name, "sync", deadline=600)
             await self._docker("pause", self.manager.name)
             paused, started = True, time.monotonic()
@@ -475,14 +527,13 @@ class EnvironmentSnapshots:
                     image,
                 )
                 committed = True
-                await asyncio.to_thread(self.root.mkdir, parents=True, exist_ok=True)
-                link = (f"--link-dest=../{previous}/",) if previous else ()
                 await self._rsync(self.manager.home, partial, *link)
-                await asyncio.to_thread(partial.rename, final)
             finally:
-                paused = False
                 pause_seconds = time.monotonic() - started
                 await self._docker("unpause", self.manager.name)
+                paused = False
+            await asyncio.to_thread(partial.rename, final)
+            await asyncio.to_thread(_mark, complete)
             current = await self.manager.inspect_container(size=True)
             if (
                 current is None
@@ -497,7 +548,10 @@ class EnvironmentSnapshots:
             }
         except Exception as exc:
             if paused:
+                # Tried once more; a container left paused is lifted by the worker's
+                # environment check, which runs only while no snapshot is in progress.
                 await self.manager.command("docker", "unpause", self.manager.name)
+            await asyncio.to_thread(complete.unlink, missing_ok=True)
             await asyncio.to_thread(shutil.rmtree, partial, ignore_errors=True)
             await asyncio.to_thread(shutil.rmtree, final, ignore_errors=True)
             if committed:
@@ -509,40 +563,55 @@ class EnvironmentSnapshots:
                 )
             self._changed(request_id)
             return
-        with self.manager.db:
-            self.manager.db.execute(
+        db = self.manager.db
+        with db:
+            db.execute(
                 "UPDATE environment_snapshots SET state='ready',image=?,point_at=?,"
                 "container_id=?,sizes=?,pause_seconds=? WHERE id=?",
                 (image, point_at, generation, json.dumps(sizes), pause_seconds, identity),
             )
-            self.manager.db.execute(
+            db.execute(
                 "INSERT OR REPLACE INTO environment_state VALUES ('checkpoint_image',?)", (image,)
             )
-        rotated = await self._rotate()
-        with self.manager.db:
-            self.manager.db.execute(
+            # Rotation is decided in the same transaction: from now on no restore can be
+            # accepted for these, and their copies are removed only after this commit.
+            # The snapshot a rebuild uses (checkpoint_image, this one) is never rotated.
+            rotated = [
+                other["id"]
+                for other in self.ready()[max(self.keep, 1) :]
+                if other["image"] != image
+            ]
+            db.executemany(
+                "UPDATE environment_snapshots SET state='rotated' WHERE id=?",
+                [(other,) for other in rotated],
+            )
+            db.execute(
                 "UPDATE environment_snapshots SET rotated=? WHERE id=?",
                 (json.dumps(rotated), identity),
             )
+        self._changed(request_id)
+
+    async def _cleanup(self) -> None:
+        """Remove what rotation and interrupted work left; then measure the volume."""
+        for row in self.manager.db.execute(
+            "SELECT id,image FROM environment_snapshots WHERE state IN ('rotated','failed') "
+            "AND removed IS NULL"
+        ).fetchall():
+            await asyncio.to_thread(_remove, self.root, row["id"])
+            if row["image"]:
+                code, output = await self.manager.command("docker", "image", "rm", row["image"])
+                if code and b"No such image" not in output:
+                    # Refused while the running container is based on it; tried again
+                    # after the next container replaced it.
+                    continue
+            with self.manager.db:
+                self.manager.db.execute(
+                    "UPDATE environment_snapshots SET removed=? WHERE id=?",
+                    (time.time(), row["id"]),
+                )
         self.manager.set_setting(
             "snapshot_storage_bytes", str(await asyncio.to_thread(volume_bytes, self.root))
         )
-        self._changed(request_id)
-
-    async def _rotate(self) -> list[str]:
-        """Only after a new snapshot is ready: drop the oldest beyond the kept count."""
-        rotated = []
-        for row in self.ready()[self.keep :]:
-            await asyncio.to_thread(shutil.rmtree, self.root / row["id"], ignore_errors=True)
-            # Refused while the running container is based on it; recover() removes
-            # the tag once no container uses it.
-            await self.manager.command("docker", "image", "rm", row["image"])
-            with self.manager.db:
-                self.manager.db.execute(
-                    "UPDATE environment_snapshots SET state='rotated' WHERE id=?", (row["id"],)
-                )
-            rotated.append(row["id"])
-        return rotated
 
     # ---- recovery ------------------------------------------------------------------
 
@@ -565,24 +634,36 @@ class EnvironmentSnapshots:
                     ("interrupted", row["id"]),
                 )
             self._changed(row["request_id"])
-        for partial in await asyncio.to_thread(lambda: list(self.root.glob("*.partial"))):
-            await asyncio.to_thread(shutil.rmtree, partial, ignore_errors=True)
+        for leftover in await asyncio.to_thread(
+            lambda: [*self.root.glob("*.partial"), *self.root.glob("*.removing")]
+        ):
+            await asyncio.to_thread(shutil.rmtree, leftover, ignore_errors=True)
+        for row in self.manager.db.execute(
+            "SELECT id FROM environment_snapshots WHERE state IN ('rotated','failed') "
+            "AND removed IS NULL"
+        ).fetchall():
+            # A rotation or failure the ended Manager had not finished removing.
+            await asyncio.to_thread(_remove, self.root, row["id"])
         restore = self.manager.db.execute(
             "SELECT * FROM environment_restores WHERE state='accepted'"
         ).fetchone()
         if restore is None or restore["home_restored"]:
             return current
         snapshot = self._snapshot(id=restore["snapshot_id"])
-        code, _ = await self.manager.command("docker", "image", "inspect", snapshot["image"])
-        if code:
-            # Never fall back to another image, and leave the current computer as it is.
-            with self.manager.db:
-                self.manager.db.execute(
-                    "UPDATE environment_restores SET state='failed',finished=?,error=? "
-                    "WHERE request_id=?",
-                    (time.time(), "snapshot_image_missing", restore["request_id"]),
-                )
-            self._changed(restore["request_id"])
+        # Everything the restore needs is checked before the computer is touched; a
+        # missing piece fails it and leaves the current computer as it is.
+        problem = (
+            "snapshot_not_found"
+            if snapshot["state"] != "ready"
+            else "snapshot_incomplete"
+            if not self.complete(snapshot["id"])
+            else None
+        )
+        if problem is None:
+            code, _ = await self.manager.command("docker", "image", "inspect", snapshot["image"])
+            problem = "snapshot_image_missing" if code else None
+        if problem:
+            self._fail_restore(restore["request_id"], problem)
             return current
         for job in self.manager.active():
             if job["dispatched"]:
@@ -599,18 +680,31 @@ class EnvironmentSnapshots:
             await self._docker("stop", "--time", "10", self.manager.name, deadline=120)
             await self._docker("rm", self.manager.name, deadline=120)
             current = None
-        # The environment is gone: HOME is only ever restored while nothing runs in it.
-        await self._rsync(self.root / snapshot["id"], self.manager.home)
+        # From here the computer is this snapshot's rootFS, whatever happens to HOME.
+        self.manager.set_setting("checkpoint_image", snapshot["image"])
+        try:
+            # The environment is gone: HOME is only ever restored while nothing runs in it.
+            await self._rsync(self.root / snapshot["id"], self.manager.home)
+        except SnapshotError as exc:
+            # Ends here: the environment is created again on the snapshot's rootFS and
+            # can be restored once more; nothing waits on this restore any longer.
+            self._fail_restore(restore["request_id"], f"restore_home_partly_written: {exc}")
+            return None
         with self.manager.db:
-            self.manager.db.execute(
-                "INSERT OR REPLACE INTO environment_state VALUES ('checkpoint_image',?)",
-                (snapshot["image"],),
-            )
             self.manager.db.execute(
                 "UPDATE environment_restores SET home_restored=? WHERE request_id=?",
                 (time.time(), restore["request_id"]),
             )
         return current
+
+    def _fail_restore(self, request_id: str, error: str) -> None:
+        with self.manager.db:
+            self.manager.db.execute(
+                "UPDATE environment_restores SET state='failed',finished=?,error=? "
+                "WHERE request_id=?",
+                (time.time(), error[-2048:], request_id),
+            )
+        self._changed(request_id)
 
     def created_from(self, image: str) -> None:
         """Record which snapshot a newly created container came from."""
@@ -634,7 +728,8 @@ class EnvironmentSnapshots:
             "SELECT * FROM environment_restores WHERE state='accepted' AND home_restored "
             "IS NOT NULL"
         ).fetchone()
-        if restore is not None:
+        # Done means the environment really was created again from the snapshot.
+        if restore is not None and created:
             with self.manager.db:
                 self.manager.db.execute(
                     "UPDATE environment_restores SET state='done',finished=?,generation=?,"

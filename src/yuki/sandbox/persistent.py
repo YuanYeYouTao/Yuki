@@ -420,7 +420,11 @@ class PersistentManager:
             "docker", "inspect", *(("--size",) if size else ()), self.name
         )
         if code:
-            return None
+            # Only the engine's own answer means there is no container; any other failure
+            # (the daemon briefly unavailable) is not a reason to create or restore one.
+            if b"No such object" in raw or b"No such container" in raw:
+                return None
+            raise RuntimeError("docker_inspect_failed: " + raw.decode(errors="replace")[-512:])
         value = json.loads(raw)[0]
         labels = value.get("Config", {}).get("Labels") or {}
         # One sandbox per Docker engine: another deployment's environment is never adopted.
@@ -1663,28 +1667,11 @@ class PersistentManager:
             except (OSError, ValueError):
                 LOGGER.warning("acp_receipt_reconcile_pending")
             if time.time() - self.last_layer_check > 15:
-                current = await self.inspect_container()
-                self.last_layer_check = time.time()
-                if (
-                    not current
-                    or not current["State"]["Running"]
-                    or current["Id"] + ":" + current["State"]["StartedAt"] != self.container_id
-                ):
-                    self.ready = False
-                    for row in self.active():
-                        self.finish(
-                            row["id"],
-                            "failed",
-                            {
-                                "error": "environment_stopped",
-                                "interrupted": True,
-                                "oom": bool(current and current["State"].get("OOMKilled")),
-                            },
-                        )
-                    try:
-                        await self.recover()
-                    except Exception as exc:
-                        LOGGER.warning("environment_recovery_pending error=%s", exc)
+                try:
+                    await self.check_environment()
+                except Exception as exc:
+                    self.last_layer_check = time.time()
+                    LOGGER.warning("environment_recovery_pending error=%s", exc)
             if self.ready:
                 if not self.testing:
                     await self.autostart()
@@ -1693,6 +1680,34 @@ class PersistentManager:
                 self.prune_logs()
                 self.last_prune = time.time()
             await asyncio.sleep(0.5)
+
+    async def check_environment(self) -> None:
+        """The worker's look at the container: a new generation or a stop is recovered."""
+        current = await self.inspect_container()
+        self.last_layer_check = time.time()
+        if current and current["State"].get("Paused"):
+            # Snapshots pause only inside this worker, so none is in progress now: a pause
+            # left behind (a failed unpause, an ended Manager) is lifted.
+            LOGGER.warning("environment_paused_without_snapshot")
+            await self.command("docker", "unpause", self.name)
+            current = await self.inspect_container()
+        if (
+            not current
+            or not current["State"]["Running"]
+            or current["Id"] + ":" + current["State"]["StartedAt"] != self.container_id
+        ):
+            self.ready = False
+            for row in self.active():
+                self.finish(
+                    row["id"],
+                    "failed",
+                    {
+                        "error": "environment_stopped",
+                        "interrupted": True,
+                        "oom": bool(current and current["State"].get("OOMKilled")),
+                    },
+                )
+            await self.recover()
 
     def prune_logs(self) -> None:
         # Active jobs each retain <= 8 MiB. Reclaim only completed output, never receipts/files.

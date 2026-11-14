@@ -155,5 +155,26 @@ async def test_snapshot_restore_and_idle_sleep_over_client_api(backend):
     )
     assert woken.status_code == 200 and woken.json()["data"]["display"] == "running"
     record["idle_receipt"] = receipt
+
+    # S32: once rotated out (three are kept), the original request still answers with
+    # its own receipt; a Manager answer of state "rotated" is a valid view too.
+    for _ in range(2):
+        await client.post(
+            "client/v1/computer/snapshots", headers=headers, json={"request_id": str(uuid4())}
+        )
+        await until(
+            client, lambda facts: all(row["state"] != "creating" for row in facts["snapshots"])
+        )
+    rotated = await client.post(
+        "client/v1/computer/snapshots",
+        headers=headers,
+        json={"request_id": first_id, "note": "desk"},
+    )
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["data"]["snapshot"]["id"] == snapshot["id"]
+    facts = (await client.get("__test/computer")).json()
+    (first,) = [row for row in facts["snapshots"] if row["id"] == snapshot["id"]]
+    assert first["state"] == "rotated"
+    record["rotated_retry"] = rotated.json()["data"]
     ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
     ARTIFACT.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")

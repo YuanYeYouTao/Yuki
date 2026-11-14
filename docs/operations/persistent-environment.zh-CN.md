@@ -49,12 +49,12 @@ external_agent 已移出环境工具和 Manager 新任务路径。用户电脑�
 
 快照的单位是整台电脑：容器 rootFS（`docker commit`，含 apt 装的软件、`/etc`、`/root`）与 HOME 卷（`workspace/`、Chromium 资料与登录、收藏的表情、`.config` 等）在同一次 `docker pause` 内保存，作为一个时间点。HOME 排除 `inputs/media-cache/`（另一卷）和 Chromium 的 `Cache`、`Code Cache`、`GPUCache`。不包含 Bot 的记忆、会话、主库与已交付 artifact，也不包含 Manager 状态、运行记录与代码卷；还原不回滚这些，也不回滚网站侧已经发生的事。
 
-- rootFS 存为镜像 `yuki-environment-snapshot:<id>`（标签 `io.yuki.snapshot`、`io.yuki.sandbox.project`）；HOME 用 `rsync -aHAX --numeric-ids --delete --link-dest` 复制到外部卷 `yuki-sandbox-snapshots` 的 `<id>/`，未变化的文件与上一份硬链接。快照卷**只挂给 Manager**，环境与 Bot 都没有它，环境内进程不能创建、删除或还原快照。
+- rootFS 存为镜像 `yuki-environment-snapshot:<id>`（标签 `io.yuki.snapshot`、`io.yuki.sandbox.project`）；HOME 用 `rsync -aHAX --numeric-ids --delete --link-dest` 复制到外部卷 `yuki-sandbox-snapshots` 的 `<id>/`，未变化的文件与上一份硬链接。HOME 先在环境运行时复制一遍，暂停内只再同步差异，所以暂停主要是 `docker commit` 的时间。副本改名就位后写完成标记 `<id>.complete`，没有标记的副本不会被还原。运维的 `YUKI_SANDBOX_RESOLV_CONF` 文件不进快照、还原也不回滚它；运维登记服务（如 `sandbox-dns`）放在 HOME 里的其他文件会随 HOME 一起回滚。快照卷**只挂给 Manager**，环境与 Bot 都没有它，环境内进程不能创建、删除或还原快照。
 - 记录在 Manager `jobs.sqlite3` 的 `environment_snapshots`（`request_id` 唯一）与 `environment_restores`。同一请求键（工具调用键或桌面端请求）返回原记录或当前进度；一次只进行一份快照或一次还原，另一份请求得到 `snapshot_in_progress`／`restore_in_progress` 与原请求 ID。
 - 三种来源：Yuki 的 `computer(action="snapshot"|"restore")`、本人桌面端（Client API `POST /computer/snapshots`、`/computer/restore`）、Manager 每日检查。快照与还原在 Manager worker 中串行执行，期间截图与输入动作排队，新的终端执行照常入队、快照结束后派发。暂停期间已运行的命令冻结后继续，显式 `timeout_seconds` 按墙钟可能提前到期。
-- 新快照就绪后才删最旧的一份（HOME 目录与镜像标签），保留 `YUKI_SANDBOX_SNAPSHOT_KEEP` 份；创建失败（如磁盘写满）删除自己的部分产物，不动任何旧快照。正在运行的容器所基于的镜像 Docker 拒绝删除，标签留到下一次重建后由恢复清理。
+- 新快照就绪后才轮换最旧的一份，保留 `YUKI_SANDBOX_SNAPSHOT_KEEP` 份（至少 1 份；`checkpoint_image` 指向的那份永不轮换）：先在与新快照就绪同一事务里记为 `rotated`（此后不再受理还原），再删完成标记、副本与镜像标签；Manager 中途结束时由恢复清理残留；创建失败（如磁盘写满）删除自己的部分产物，不动任何旧快照。正在运行的容器所基于的镜像 Docker 拒绝删除，标签留到下一次重建后由恢复清理。
 - 每日：距最新一份快照满 `YUKI_SANDBOX_SNAPSHOT_INTERVAL_HOURS`（且距上次检查也满）时检查 HOME（Manager 一侧）与 rootFS（环境内跳过所有挂载点）有没有 ctime 晚于上一份快照的条目；有变化才拍，没有只记检查时间、不占名额。本人持有控制权时推迟到交还后。没有任何快照时视为有变化，所以升级后 Manager 就绪即拍第一份。
-- 还原：写入 `environment_restores` 即接纳；停止并删除原容器，`rsync --delete` 把该快照的 HOME 写回（媒体缓存与 Chromium 缓存不动），以该快照镜像经原 `recover()` 创建新环境，`apply_programs()` 按当前档位补齐软件包（不按快照档位改配置）。旧代际已启动的执行结束为 `failed`、`interrupted`、`environment_restored`（附 `snapshot_id`），完成回执照常送到原 Work，不重放；未派发的执行在新环境里启动。Manager 中途结束时 `recover()` 继续收敛同一快照，HOME 写回完成前绝不启动环境。快照镜像被手动删除时还原报 `snapshot_image_missing`，原环境不动。
+- 还原：写入 `environment_restores` 即接纳；停容器之前先确认快照仍为 `ready`、HOME 副本完整、镜像存在，任一不满足就记 `failed`（`snapshot_not_found`／`snapshot_incomplete`／`snapshot_image_missing`），原电脑不动。随后停止并删除原容器，`rsync --delete` 把该快照的 HOME 写回（媒体缓存与 Chromium 缓存不动），以该快照镜像经原 `recover()` 创建新环境，`apply_programs()` 按当前档位补齐软件包（不按快照档位改配置）。旧代际已启动的执行结束为 `failed`、`interrupted`、`environment_restored`（附 `snapshot_id`），完成回执照常送到原 Work，不重放；未派发的执行在新环境里启动。Manager 中途结束时 `recover()` 继续收敛同一快照，HOME 写回完成前绝不启动环境；写回本身失败（如磁盘写满）时还原记 `failed`（`restore_home_partly_written`），环境以该快照镜像重建，可以再还原一次。只有容器确实重建后还原才记 `done`；`docker inspect` 的瞬时错误不被当成容器不存在。
 - `checkpoint_image` 始终指向最新快照：容器丢失而 HOME 还在时，只从最新快照重建 rootFS，HOME 保持当前，`environment_status.recreated_from` 报告来源快照与时间点。
 - Manager 在暂停中结束：`recover()` 先 `unpause`，未完成的快照记 `failed`（`interrupted`），删除 `.partial` 目录与已打的标签。runsc 下暂停期间整环境 OOM 时，这份快照记 `failed`，旧快照不动。
 
@@ -66,7 +66,7 @@ external_agent 已移出环境工具和 Manager 新任务路径。用户电脑�
 
 ### 节律：闲置休眠
 
-画面层（`desktop` 的 Xvnc、她的会话、Chromium 与驱动；`headless` 的无头 Chromium 与驱动）闲置 `YUKI_SANDBOX_DISPLAY_IDLE_MINUTES` 分钟（默认 30，`0` 不自动休眠）后由 Manager 停止，回执键 `idle:<桌面服务 run_id>`，附休眠时开着的标签页及其 Work。"在用"是：对自己环境的任一 `computer`／`browser` 调用、任何一路画面流（含桌面端紧凑预览；桌面端窗口隐藏或最小化时断开画面流）、本人持有控制权、每次唤醒。终端命令不算，休眠不影响终端、后台进程与 `rc.local` 起的守护进程；用 `DISPLAY=:1` 起的图形程序随显示器退出。计时只在 Manager 内存，Manager 重启从启动时刻计。下次 `computer`／`browser` 自动唤醒，Chromium 以 `--restore-last-session` 恢复标签页（tab id 改变，旧 id 得 `tab_not_found` 附当前清单）。Yuki 也可自己 `computer(action="sleep"|"wake")`；本人持有控制权时 `sleep` 返回 `control_held`。`lite` 没有画面层，`sleep`／`wake` 返回 `browser_unavailable`。
+画面层（`desktop` 的 Xvnc、她的会话、Chromium 与驱动；`headless` 的无头 Chromium 与驱动）闲置 `YUKI_SANDBOX_DISPLAY_IDLE_MINUTES` 分钟（默认 30，`0` 不自动休眠）后由 Manager 停止，回执键 `idle:<桌面服务 run_id>`，附休眠时开着的标签页及其 Work。"在用"是：对自己环境的任一 `computer`／`browser` 调用、任何一路画面流（含桌面端紧凑预览；桌面端窗口隐藏或最小化时断开画面流）、本人持有控制权、每次唤醒。终端命令不算，休眠不影响终端、后台进程与 `rc.local` 起的守护进程；用 `DISPLAY=:1` 起的图形程序随显示器退出。计时只在 Manager 内存，Manager 重启从启动时刻计。下次 `computer`／`browser` 自动唤醒，Chromium 以 `--restore-last-session` 恢复标签页（tab id 改变，旧 id 得 `tab_not_found` 附当前清单）。在终端里用脚本直接驱动浏览器（经 CDP 或 `yuki-computer`）不算在用，长脚本可能被闲置休眠打断；需要时把闲置分钟调大或设为 0。Yuki 也可自己 `computer(action="sleep"|"wake")`；本人持有控制权时 `sleep` 返回 `control_held`。`lite` 没有画面层，`sleep`／`wake` 返回 `browser_unavailable`。
 
 ## 恢复、资源与网络
 
