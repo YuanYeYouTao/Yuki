@@ -27,6 +27,7 @@ import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 from tests.support.fake_docker import FakeDocker
 from tests.support.native_computer_manager import NativeManager
@@ -78,7 +79,21 @@ class DesktopComputerFixture:
                 "browser": "running" if self.display == "running" else "stopped",
             }
 
+            # The desktop service run the Manager would have; each wake is a new run.
+            self.manager.db.execute(
+                "INSERT INTO environment_services(name,spec,enabled,run_id) "
+                "VALUES ('yuki-desktop','{}',1,?)",
+                (str(uuid4()),),
+            )
+            self.manager.db.commit()
+
             async def start(key):
+                if self.display != "running":
+                    with self.manager.db:
+                        self.manager.db.execute(
+                            "UPDATE environment_services SET run_id=? WHERE name='yuki-desktop'",
+                            (str(uuid4()),),
+                        )
                 self.display = "running"
                 return {}
 
@@ -135,9 +150,12 @@ class DesktopComputerFixture:
     async def manager_rounds(self):
         """The lifecycle part of the Manager worker: snapshots, restores, idle sleep."""
         while True:
-            await self.manager.snapshots.step()
-            await self.manager.desktop.idle_sleep()
-            self.manager.desktop.observe_display()
+            try:
+                await self.manager.snapshots.step()
+                await self.manager.desktop.idle_sleep()
+                self.manager.desktop.observe_display()
+            except Exception as exc:  # the Manager worker logs and keeps going, too
+                print(f"fixture manager round: {type(exc).__name__}: {exc}", flush=True)
             await asyncio.sleep(0.2)
 
     async def close(self):

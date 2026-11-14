@@ -21,7 +21,7 @@ class DesktopHeadedComputerFixture:
 
     def __init__(self, root, container):
         if os.name != "posix" or not all(
-            shutil.which(name) for name in ("Xvnc", "openbox", "chromium")
+            shutil.which(name) for name in ("Xvnc", "openbox-session", "chromium")
         ):
             raise RuntimeError("The headed fixture requires actual Linux desktop components")
         self.container = container

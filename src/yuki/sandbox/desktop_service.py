@@ -50,8 +50,43 @@ async def end(waiting: list[asyncio.Task[int | bool]], children: list[Process]) 
             await child.wait()
 
 
+def write_status(root: Path, value: dict[str, str]) -> None:
+    descriptor, temporary = tempfile.mkstemp(dir=root, prefix=".desktop-status-")
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(value, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, root / "desktop-status.json")
+
+
+async def open_session(environment: dict[str, str]) -> tuple[Process, str]:
+    """Her desktop session: ~/.xsession when it exists, otherwise Openbox's own session.
+
+    openbox-session runs /etc/xdg/openbox/autostart and ~/.config/openbox/autostart.
+    Output goes to ~/.xsession-errors, as X sessions do.
+    """
+    home = Path.home()
+    custom = home / ".xsession"
+    command = ["/bin/sh", str(custom)] if custom.exists() else ["openbox-session"]
+    errors = await asyncio.to_thread(open, home / ".xsession-errors", "wb")
+    try:
+        session = await asyncio.create_subprocess_exec(
+            *command,
+            env={**environment, "HOME": str(home)},
+            cwd=home,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=errors,
+            stderr=errors,
+        )
+    finally:
+        errors.close()
+    return session, "running" if command[0] == "/bin/sh" else "default"
+
+
 async def main() -> int:
     children: list[Process] = []
+    session: Process | None = None
+    session_state = ""
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, stopped.set)
@@ -98,7 +133,9 @@ async def main() -> int:
                 return 0
             if children[0].returncode is not None:
                 return 1
-            children.append(await asyncio.create_subprocess_exec("openbox", env=environment))
+            # The window manager and desktop are hers; Chromium starts after them so that
+            # its window is managed.
+            session, session_state = await open_session(environment)
         browser = [
             "chromium",
             "--user-data-dir=" + str(profile),
@@ -142,25 +179,34 @@ async def main() -> int:
 
         if not await open_browser():
             return 0 if stopped.is_set() else 1
-        descriptor, temporary = tempfile.mkstemp(dir=root, prefix=".desktop-status-")
-        with os.fdopen(descriptor, "w") as stream:
-            json.dump(
-                {
-                    "run_id": os.environ["YUKI_JOB_ID"],
-                    "display": "running" if mode == "headed" else "unavailable",
-                    "browser": "running",
-                },
-                stream,
-            )
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, root / "desktop-status.json")
+        status = {
+            "run_id": os.environ["YUKI_JOB_ID"],
+            "display": "running" if mode == "headed" else "unavailable",
+            "browser": "running",
+            **({"session": session_state} if session is not None else {}),
+        }
+        await asyncio.to_thread(write_status, root, status)
+        session_wait = asyncio.create_task(session.wait()) if session is not None else None
         while True:
             waiting = [asyncio.create_task(child.wait()) for child in children]
             waiting.append(asyncio.create_task(stopped.wait()))
-            await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(
+                [*waiting, *([session_wait] if session_wait else [])],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if session_wait is not None and session_wait.done():
+                # Her session ended (logout, another window manager, an error): the
+                # display and Yuki's browser stay; it is not restarted.
+                status["session"] = f"exited:{session_wait.result()}"
+                await asyncio.to_thread(write_status, root, status)
+                session_wait = None
             if stopped.is_set() or any(child.returncode is not None for child in children[:screen]):
                 return 0 if stopped.is_set() else 1
+            if all(child.returncode is None for child in children):
+                for task in waiting:
+                    task.cancel()
+                await asyncio.gather(*waiting, return_exceptions=True)
+                continue
             # The person closed the browser: the screen and the windows on it stay, and
             # the browser opens again with its driver.
             await end(waiting, children[screen:])
@@ -168,7 +214,7 @@ async def main() -> int:
             if not await open_browser():
                 return 0 if stopped.is_set() else 1
     finally:
-        await end(waiting, children)
+        await end(waiting, [*children, *([session] if session is not None else [])])
 
 
 if __name__ == "__main__":

@@ -135,6 +135,8 @@ class EnvironmentSnapshots:
         self.manager, self.root = manager, root
         self.keep, self.interval_hours = keep, interval_hours
         self._finished: dict[str, set[asyncio.Event]] = {}
+        # When a restore that could not finish is tried again: scheduling, held in memory.
+        self._restore_retry = 0.0
         manager.db.executescript(
             "CREATE TABLE IF NOT EXISTS environment_snapshots (id TEXT PRIMARY KEY,"
             "request_id TEXT UNIQUE NOT NULL, source TEXT NOT NULL, actor TEXT NOT NULL,"
@@ -340,11 +342,16 @@ class EnvironmentSnapshots:
         if restore := db.execute(
             "SELECT * FROM environment_restores WHERE state='accepted'"
         ).fetchone():
+            if time.monotonic() < self._restore_retry:
+                return
             async with lock:
                 self.manager.ready = False
                 try:
                     await self.manager.recover()
                 except Exception:
+                    # It converges on the same snapshot; the next try follows the
+                    # worker's own recovery cadence.
+                    self._restore_retry = time.monotonic() + 15
                     LOGGER.warning("environment_restore_pending request_id=%s", restore[0])
             return
         if pending := db.execute(

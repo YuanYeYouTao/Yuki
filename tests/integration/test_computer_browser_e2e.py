@@ -48,7 +48,9 @@ LOOP = 30
 TAKE_AT = 13  # the loop step (a click) at which the human takes the screen
 
 pytestmark = pytest.mark.skipif(
-    not all(shutil.which(name) for name in ("Xvnc", "openbox", "chromium", "xdotool", "import")),
+    not all(
+        shutil.which(name) for name in ("Xvnc", "openbox-session", "chromium", "xdotool", "import")
+    ),
     reason="Requires the actual headed environment packages",
 )
 

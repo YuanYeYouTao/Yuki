@@ -438,3 +438,32 @@ async def test_old_connector_without_the_resource_is_a_clear_failure(
         environment = await call(tools, owner, "old-env", "get_environment", device=device)
         assert "computer" not in environment.data
     write("old-connector", results)
+
+
+async def test_own_computer_actions_are_refused_for_a_device(
+    bridge, database, tmp_path, monkeypatch
+):
+    # R14 (Yuki自己的电脑任务书 §11): wake/sleep/snapshot/restore act on Yuki's own
+    # computer only; with device they are refused before anything reaches the Connector.
+    received = []
+    original = connector_module.Connector._device_command
+
+    async def recorded(self, command):
+        received.append(command)
+        return await original(self, command)
+
+    monkeypatch.setattr(connector_module.Connector, "_device_command", recorded)
+    async with actual_connector(bridge, tmp_path, monkeypatch):
+        tools = tools_for(database, bridge)
+        owner = runtime_for(bridge.env.person)
+        device = bridge.device["device_id"]
+        results = {}
+        for action in ("wake", "sleep", "snapshot", "restore"):
+            result = await call(
+                tools, owner, f"own-{action}", "computer", action=action, device=device
+            )
+            results[action] = view(result)
+            assert result.error_code == "device_not_supported", result
+            assert not result.uncertain
+        assert received == []
+    write("own-computer-actions", results)

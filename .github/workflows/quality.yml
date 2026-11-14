@@ -215,6 +215,7 @@ jobs:
             tests/unit/test_computer_actions.py \
             tests/integration/test_computer_browser_e2e.py \
             tests/integration/test_tool_media_long_loop_e2e.py \
+            tests/integration/test_desktop_session_e2e.py \
             -q --strict-markers -o cache_dir=/tmp/yuki-pytest-cache \
             --basetemp=/tmp/yuki-pytest --junitxml=/results/desktop-headed.xml
       - uses: actions/upload-artifact@v4
@@ -224,18 +225,38 @@ jobs:
           path: |
             test-results/desktop-headed.xml
             test-results/computer-browser/
+            test-results/desktop-session/
           retention-days: 7
 
   sandbox-compose:
-    name: Sandbox install with Compose (lite, then headless)
+    name: Sandbox install with Compose (lite, headless, desktop; ${{ matrix.runtime }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [runc, runsc]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Register gVisor with --overlay2=none (the installer then chooses runsc)
+        if: matrix.runtime == 'runsc'
+        run: |
+          # Releases ship runsc with its sidecars, which it expects beside itself.
+          url=https://storage.googleapis.com/gvisor/releases/release/latest/$(uname -m)
+          mkdir -p "$RUNNER_TEMP/gvisor" && cd "$RUNNER_TEMP/gvisor"
+          curl -fsSLO "$url/gvisor.tar.bz2" -fsSLO "$url/gvisor.tar.bz2.sha512"
+          sha512sum -c gvisor.tar.bz2.sha512
+          tar xjf gvisor.tar.bz2
+          sudo install -m 755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+          sudo mkdir -p /usr/local/bin/gvisor-bin
+          sudo cp -a gvisor-bin/. /usr/local/bin/gvisor-bin/
+          sudo /usr/local/bin/runsc install -- --overlay2=none
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes.runsc}}'
       - name: Build the release images under their release names
         run: |
           version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
@@ -254,7 +275,7 @@ jobs:
           python scripts/sandbox_compose_e2e.py --version "$VERSION"
           --bundle "dist/yuki-$VERSION-deploy.tar.gz"
           --directory "$RUNNER_TEMP/yuki-e2e/deployment"
-          --artifacts test-results/sandbox-compose
+          --artifacts test-results/sandbox-compose --desktop
       - name: Service logs
         if: failure()
         working-directory: ${{ runner.temp }}/yuki-e2e/deployment
@@ -262,7 +283,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sandbox-compose
+          name: sandbox-compose-${{ matrix.runtime }}
           path: test-results/sandbox-compose/
           retention-days: 7
 

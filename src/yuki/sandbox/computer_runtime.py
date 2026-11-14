@@ -407,6 +407,8 @@ class ComputerRuntime:
         return {"display": status["display"], "browser": status.get("browser", "unavailable")}
 
     def _tabs(self) -> list[Any]:
+        if self.browser_status() != "running":
+            return []
         try:
             return list(self._read_json(DRIVER + "/tabs.json").get("tabs", []))
         except (OSError, ValueError, WorkspaceError):
@@ -418,6 +420,14 @@ class ComputerRuntime:
         stopped = await self._stop()
         if stopped.get("error") and stopped["error"] != "service_not_found":
             return {"error": stopped["error"]}
+        # The run ends once its processes have; report what actually stopped. The idle
+        # sleep runs inside the worker, so observe the run's own receipt here.
+        deadline = time.monotonic() + WAKE_SECONDS
+        while self.browser_status() in {"running", "starting"} and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            for job in self.manager.active():
+                if job["kind"] == "service" and job["dispatched"]:
+                    await self.manager.reconcile(job)
         status = self._service_status()
         return {
             "display": status["display"],

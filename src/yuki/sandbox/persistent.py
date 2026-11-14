@@ -1479,6 +1479,12 @@ class PersistentManager:
             return {"name": name, "enabled": False, "stopping": bool(row["run_id"])}
         raise ValueError("invalid_service_action")
 
+    async def autostart(self) -> dict[str, Any]:
+        """Run /etc/rc.local once per environment generation: the key names the generation."""
+        return await self.submit(
+            "service", {"command": AUTOSTART, "cwd": "/"}, f"autostart:{self.container_id}"
+        )
+
     async def restore_services(self) -> None:
         for row in self.db.execute("SELECT * FROM environment_services WHERE enabled=1").fetchall():
             previous = self.get(row["run_id"]) if row["run_id"] else {}
@@ -1666,10 +1672,8 @@ class PersistentManager:
                     except Exception:
                         LOGGER.warning("environment_recovery_pending")
             if self.ready:
-                # Once per environment generation: the key names the generation.
-                await self.submit(
-                    "service", {"command": AUTOSTART, "cwd": "/"}, f"autostart:{self.container_id}"
-                )
+                if not self.testing:
+                    await self.autostart()
                 await self.restore_services()
             if time.time() - self.last_prune > 60:
                 self.prune_logs()
