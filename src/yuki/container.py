@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -17,6 +18,7 @@ from yuki.admin.config_files import ConfigFileService
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot, VisionRuntimeConfig
 from yuki.admin.permission_catalog import PermissionCatalogService
+from yuki.admin.platform_files import PlatformConfig
 from yuki.application.lifecycle import LifecycleRegistry
 from yuki.application.modules import (
     AdminModule,
@@ -50,6 +52,8 @@ from yuki.conversation.uploads import ConversationUploads
 from yuki.domain.messages import InboundMessage
 from yuki.emoji.library import EmojiLibrary
 from yuki.external_agents.service import ExternalAgentService
+from yuki.gateway.health import GatewayHealthSource
+from yuki.gateway.platforms import PlatformGateways
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.app.ingress import AppGateway
 from yuki.gateway.registry import GatewayConnectionRegistry, configure_process_registry
@@ -142,8 +146,6 @@ class ApplicationContainer:
         vision_provider: VisionProvider | None = None,
         workspace_store: WorkspaceStore | None = None,
     ) -> None:
-        if bool(settings.feishu_app_id) != bool(settings.feishu_app_secret.get_secret_value()):
-            raise ValueError("FEISHU_APP_ID and FEISHU_APP_SECRET must be configured together")
         self.settings = settings
         store = workspace_store or WorkspaceStore(settings.workspace_directory)
         self.started_at = time.monotonic()
@@ -499,6 +501,11 @@ class ApplicationContainer:
                 / "avatars"
             ),
         )
+        self.gateway_health_sources: dict[str, GatewayHealthSource] = {}
+        self.platform_gateways = PlatformGateways(
+            settings.platforms_file, self.gateway_health_sources
+        )
+        self._register_platform_gateways()
         self.admin_api = build_admin_api(self)
 
         client_links = ClientLinkCommands(
@@ -612,50 +619,6 @@ class ApplicationContainer:
             self.runtime.bindings,
             concurrency=self.concurrency,
         )
-        self.telegram_gateway = None
-        if settings.telegram_bot_token.get_secret_value():
-            from yuki.gateway.providers.telegram import TelegramClient
-            from yuki.gateway.providers.telegram_ingress import TelegramGateway
-
-            self.telegram_gateway = TelegramGateway(
-                self.database,
-                self.gateway_registry,
-                self.presence_router,
-                self.processor,
-                self.scoped_events,
-                TelegramClient(settings.telegram_bot_token.get_secret_value()),
-                poll_interval=settings.telegram_poll_interval_seconds,
-            )
-        self.feishu_gateway = None
-        if settings.feishu_app_id:
-            from yuki.gateway.providers.feishu import FeishuClient
-            from yuki.gateway.providers.feishu_ingress import FeishuGateway
-
-            self.feishu_gateway = FeishuGateway(
-                database=self.database,
-                registry=self.gateway_registry,
-                router=self.presence_router,
-                processor=self.processor,
-                writer=self.scoped_events,
-                client=FeishuClient(
-                    settings.feishu_app_id,
-                    settings.feishu_app_secret.get_secret_value(),
-                    domain=settings.feishu_domain,
-                ),
-            )
-        self.gateway_health_sources = {
-            platform: gateway.health
-            for platform, gateway in (
-                ("telegram", self.telegram_gateway),
-                (
-                    self.feishu_gateway.client.platform
-                    if self.feishu_gateway is not None
-                    else "feishu",
-                    self.feishu_gateway,
-                ),
-            )
-            if gateway is not None
-        }
         self.client_computer = ClientComputer(self.client_identity, self.sandbox_client)
         client_works = ClientWorks(
             self.client_identity, client_gateways, computer=self.client_computer
@@ -964,20 +927,11 @@ class ApplicationContainer:
             close=self.plugin_background_turns.close,
             health=self.plugin_background_turns.health,
         )
-        if self.telegram_gateway is not None:
-            self.lifecycle.register(
-                "telegram_gateway",
-                start=self.telegram_gateway.start,
-                close=self.telegram_gateway.close,
-                health=self.telegram_gateway.health,
-            )
-        if self.feishu_gateway is not None:
-            self.lifecycle.register(
-                "feishu_gateway",
-                start=self.feishu_gateway.start,
-                close=self.feishu_gateway.close,
-                health=self.feishu_gateway.health,
-            )
+        self.lifecycle.register(
+            "platform_gateways",
+            start=self.platform_gateways.start,
+            close=self.platform_gateways.close,
+        )
         self.lifecycle.register("application_event", start=self._publish_started)
         self.lifecycle.register(
             "maintenance",
@@ -986,6 +940,62 @@ class ApplicationContainer:
         )
         self.conversation_module.register_workers(self.conversation, self.lifecycle)
         self.automation_module.register_lifecycle(self.automation_bundle, self.lifecycle)
+
+    def _register_platform_gateways(self) -> None:
+        """Each platform key builds its gateway from the saved credentials alone."""
+        from yuki.gateway.providers.feishu import FeishuClient
+        from yuki.gateway.providers.feishu_ingress import FeishuGateway
+        from yuki.gateway.providers.qq_official import QQOfficialClient
+        from yuki.gateway.providers.qq_official_ingress import QQOfficialGateway
+        from yuki.gateway.providers.telegram import TelegramClient
+        from yuki.gateway.providers.telegram_ingress import TelegramGateway
+
+        def telegram(config: PlatformConfig) -> TelegramGateway:
+            return TelegramGateway(
+                self.database,
+                self.gateway_registry,
+                self.presence_router,
+                self.processor,
+                self.scoped_events,
+                TelegramClient(config.secrets["bot_token"]),
+            )
+
+        def feishu(domain: str) -> Callable[[PlatformConfig], FeishuGateway]:
+            def build(config: PlatformConfig) -> FeishuGateway:
+                return FeishuGateway(
+                    database=self.database,
+                    registry=self.gateway_registry,
+                    router=self.presence_router,
+                    processor=self.processor,
+                    writer=self.scoped_events,
+                    client=FeishuClient(
+                        str(config.settings["app_id"]),
+                        config.secrets["app_secret"],
+                        domain=domain,
+                    ),
+                )
+
+            return build
+
+        self.platform_gateways.register("telegram", telegram)
+        self.platform_gateways.register("feishu", feishu("https://open.feishu.cn"))
+        self.platform_gateways.register("lark", feishu("https://open.larksuite.com"))
+
+        def qq_official(config: PlatformConfig) -> QQOfficialGateway:
+            return QQOfficialGateway(
+                self.database,
+                self.gateway_registry,
+                self.presence_router,
+                self.processor,
+                self.scoped_events,
+                QQOfficialClient(
+                    str(config.settings["app_id"]),
+                    config.secrets["app_secret"],
+                    sandbox=bool(config.settings.get("sandbox", False)),
+                ),
+            )
+
+        self.platform_gateways.register("qq_official", qq_official)
 
     async def _freeze_main_manifest(self) -> None:
         # Finish plugin registration before queued background turns can freeze a partial catalog.

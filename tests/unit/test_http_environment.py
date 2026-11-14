@@ -126,7 +126,7 @@ def test_compose_preserves_proxy_alias_selection_without_starting_containers(
     }
     environment.pop("COMPOSE_ENV_FILES", None)
     environment.pop("COMPOSE_DISABLE_ENV_FILE", None)
-    entries = ["YUKI_VERSION=test-proxy-config"]
+    entries = ["YUKI_VERSION=test-proxy-config", "SNOWLUMA_IMAGE=snowluma:test"]
     if source == "file":
         entries.append(f"{name}=file-value")
         expected = "file-value"

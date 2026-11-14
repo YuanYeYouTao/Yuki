@@ -5,12 +5,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from scripts.release_smoke import Compose, SmokeError, verify_image_identity
@@ -25,6 +27,8 @@ ARCHITECTURES = (
 
 
 VERSION = "9.8.7"
+# A code as the server issues it: token_urlsafe(24), 32 characters.
+CODE = "AbCdEfGhIjKlMnOpQrStUvWxYz012_-9"
 # The engine the fakes report: 8 GiB of memory and no gVisor.
 ENGINE = {"memory": str(8 * 1024**3), "runtimes": '{"runc":{"path":"runc"}}'}
 
@@ -71,6 +75,14 @@ def _assert_upgrade(commands, platform, deployment):
     assert ["volume", "inspect", "yuki-sandbox-home"] in commands
     up = next(command for command in commands if command[:2] == ["compose", "up"])
     assert "-d" in up and "--remove-orphans" in up
+    # Retired .env platform credentials reach webui-config before the new Bot starts.
+    # It runs as root: start.sh hands webui-config to the runtime UID, whatever wrote it.
+    migrate = next(command for command in commands if "platforms-migrate" in command)
+    assert migrate[:2] == ["compose", "run"] and "--no-deps" in migrate
+    assert migrate[migrate.index("--user") + 1] == "0:0"
+    assert migrate[-3:] == ["platforms-migrate", "--deployment-root", "/deploy"]
+    assert f"{deployment}:/deploy" in migrate
+    assert commands.index(migrate) < commands.index(up)
     # Ready is the Bot's own API and its sandbox, before the owner is paired.
     probe = next(command for command in commands if "/livez" in command[-1])
     assert probe[:4] == ["compose", "exec", "-T", "bot"]
@@ -140,9 +152,57 @@ function global:docker {
     _assert_upgrade(commands, platform, deployment)
 
 
+def _parse_pairing(text):
+    """Yuki Desktop's parsePairing (Yuki-Desktop src/shared/pairing.ts), as written there."""
+    match = re.search(r"yuki://pair\?[^\s<>\"'`\u3000-\uffff]+", text, re.IGNORECASE)
+    if match:
+        query = parse_qs(urlsplit(match[0]).query)
+        code = query.get("code", [""])[0]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32}", code):
+            return None
+        return {"code": code, "server": query.get("server", [None])[0]}
+    code = next((token for token in re.split(r"[^A-Za-z0-9_-]+", text) if len(token) == 32), None)
+    return {"code": code} if code else None
+
+
+def _container(tmp_path):
+    """The Bot container's commands for shell steps: the real Python, a fake ``yuki``."""
+    directory = tmp_path / "container"
+    directory.mkdir()
+    python = directory / "python"
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    yuki = directory / "yuki"
+    yuki.write_text(
+        f"""#!{sys.executable}
+import json, os, sys
+arguments = sys.argv[1:]
+with open(os.environ['DOCKER_LOG'], 'a') as writer:
+    writer.write(json.dumps(['container', 'yuki', *arguments]) + '\\n')
+if arguments[:2] == ['setup', 'desktop-pair']:
+    request = json.load(sys.stdin)
+    assert request['display_name'] == os.environ['YUKI_OWNER_NAME']
+    # desktop-pair forwards these to the admin API, which accepts only UUID4 request IDs.
+    from pydantic import UUID4, TypeAdapter
+    for key in ('person_request_id', 'superuser_request_id', 'pair_request_id'):
+        TypeAdapter(UUID4).validate_python(request[key])
+    print(json.dumps({{'person_id': 'person-1', 'code_id': 'c', 'code': {CODE!r}}}))
+elif arguments[:3] == ['admin', 'client', 'pair']:
+    assert os.environ['YUKI_CONTROL_CREDENTIAL'] == os.environ['YUKI_CONTROL_OPERATOR_TOKEN']
+    print(json.dumps({{'code_id': 'c', 'purpose': 'chat', 'code': {CODE!r}}}, indent=2))
+else:
+    sys.exit(2)
+""",
+        encoding="utf-8",
+    )
+    yuki.chmod(0o755)
+    return directory
+
+
 def _fake_docker(tmp_path):
     bin_directory = tmp_path / "bin"
     bin_directory.mkdir()
+    container = _container(tmp_path)
     docker = bin_directory / "docker"
     docker.write_text(
         f"""#!{sys.executable}
@@ -150,6 +210,19 @@ import json, os, sys
 arguments = sys.argv[1:]
 with open(os.environ['DOCKER_LOG'], 'a') as writer:
     writer.write(json.dumps(arguments) + '\\n')
+if 'COMPOSE_FILES_LOG' in os.environ:
+    with open(os.environ['COMPOSE_FILES_LOG'], 'a') as writer:
+        writer.write(os.environ.get('COMPOSE_FILE', '') + '\\n')
+# A one-off ``yuki`` in the Bot image runs the real CLI on the mounted directories.
+if arguments[:2] == ['compose', 'run'] and 'yuki' in arguments:
+    import subprocess
+    options = arguments[2:arguments.index('bot')]
+    mounts = dict(
+        reversed(options[index + 1].rsplit(':', 1))
+        for index, option in enumerate(options) if option == '--volume'
+    )
+    command = [mounts.get(item, item) for item in arguments[arguments.index('bot') + 1:]]
+    sys.exit(subprocess.run([sys.executable, '-m', 'yuki.cli', *command]).returncode)
 if arguments[:2] == ['info', '--format']:
     print({{
         '{{{{.Architecture}}}}': os.environ['DOCKER_ARCH'],
@@ -157,13 +230,29 @@ if arguments[:2] == ['info', '--format']:
         '{{{{.MemTotal}}}}': os.environ['DOCKER_MEMORY'],
         '{{{{json .Runtimes}}}}': os.environ['DOCKER_RUNTIMES'],
     }}[arguments[2]])
-if any('desktop-pair' in argument for argument in arguments):
-    owner = arguments[arguments.index('-e') + 1]
-    print('person-1 PAIR-' + owner.split('=', 1)[1])
+# A shell step in the Bot runs here, with the deployment's .env as its environment.
+if arguments[:2] == ['compose', 'exec'] and 'bot' in arguments:
+    command = arguments[arguments.index('bot') + 1:]
+    if command[0] == 'sh':
+        import subprocess
+        environment = dict(os.environ)
+        with open('.env') as values:
+            environment.update(
+                line.rstrip('\\n').split('=', 1) for line in values if '=' in line
+            )
+        options = arguments[2:arguments.index('bot')]
+        environment.update(
+            options[index + 1].split('=', 1)
+            for index, option in enumerate(options) if option == '-e'
+        )
+        environment['PATH'] = {str(container)!r} + os.pathsep + environment['PATH']
+        sys.exit(subprocess.run(command, env=environment).returncode)
 if arguments[0] == 'run' and 'desktop-configure' in arguments:
     sys.stdin.read()
     with open(os.path.join(os.environ['DEPLOY_DIRECTORY'], '.env'), 'a') as env:
-        env.write('LLM_MODEL=configured\\n')
+        env.write('LLM_MODEL=configured\\n' + os.environ.get('CONFIGURED_ENV', ''))
+if arguments[0] == 'pull' and os.environ.get('FAIL_PULL', '\\n') in arguments[-1]:
+    sys.exit(1)
 # Nothing is local yet, and no environment of the old host Manager exists.
 sys.exit(1 if arguments[:2] == ['image', 'inspect'] or arguments[0] == 'inspect' else 0)
 """,
@@ -214,8 +303,102 @@ def test_shell_installer_selects_docker_host_platform(tmp_path, architecture, pl
     _assert_upgrade(commands, platform, deployment)
 
 
+def _assert_pairing_help(stdout, public_url):
+    """What a person copies into Yuki Desktop: the full link only with a public address."""
+    shown = stdout[stdout.index("Connect Yuki Desktop") :]
+    assert _parse_pairing(shown) == (
+        {"code": CODE, "server": public_url.rstrip("/")} if public_url else {"code": CODE}
+    )
+    assert "24 hours" in shown
+    if not public_url:
+        # No link another computer cannot open; SSH from Yuki Desktop reaches the server.
+        assert "yuki://" not in shown and "127.0.0.1" not in shown
+        assert "通过 SSH 连接" in shown
+
+
+# A public address as written in .env (the trailing slash is not part of it), or none.
+PUBLIC_URLS = ("", "https://yuki.example.com/base/")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
-def test_shell_installer_first_install_configures_names_and_recommends_a_profile(tmp_path):
+def test_shell_installer_rerun_after_a_failed_first_install_creates_the_owner_once(tmp_path):
+    deployment = tmp_path / "new"
+    bundle, _zip = _bundle(tmp_path)
+    answers = tmp_path / "model.json"
+    answers.write_text('{"protocol": "responses", "base_url": "http://model", "model": "m"}')
+    log = tmp_path / "docker.jsonl"
+    environment = {
+        **os.environ,
+        "DOCKER_ARCH": "arm64",
+        "DOCKER_MEMORY": str(3 * 1024**3),
+        "DOCKER_RUNTIMES": '{"runc":{}}',
+        "DOCKER_LOG": str(log),
+        "DEPLOY_DIRECTORY": str(deployment),
+        "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
+    }
+    install = [
+        "sh",
+        str(ROOT / "install.sh"),
+        "--dir",
+        str(deployment),
+        "--version",
+        VERSION,
+        "--yes",
+        "--answers",
+        str(answers),
+        "--owner-name",
+        "小林",
+        "--bundle",
+        str(bundle),
+    ]
+
+    def run(**extra: str) -> list[list[str]]:
+        log.write_text("")
+        completed = subprocess.run(
+            install,
+            env=environment | extra,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        commands = [json.loads(line) for line in log.read_text("utf-8").splitlines()]
+        return [completed.returncode, commands]  # type: ignore[list-item]
+
+    # The sandbox image cannot be pulled after .env was written: no owner yet.
+    code, commands = run(FAIL_PULL="yuki-environment")
+    assert code != 0
+    assert (deployment / ".env").is_file()
+    assert not any("desktop-pair" in " ".join(command) for command in commands)
+    # Running the installer again, as Yuki Desktop retries, creates the owner then.
+    code, commands = run()
+    assert code == 0
+    pairs = [
+        command
+        for command in commands
+        if command[:2] == ["compose", "exec"] and "desktop-pair" in " ".join(command)
+    ]
+    assert len(pairs) == 1 and "YUKI_OWNER_NAME=小林" in pairs[0]
+    recorded = (deployment / ".env").read_text("utf-8")
+    assert "YUKI_OWNER_PERSON_ID=person-1" in recorded
+    # Every attempt names the owner by one recorded request, so a lost reply cannot add a Person.
+    request = next(
+        line.split("=", 1)[1]
+        for line in recorded.splitlines()
+        if line.startswith("YUKI_OWNER_REQUEST_ID=")
+    )
+    assert f"YUKI_OWNER_REQUEST_ID={request}" in pairs[0] and len(request) == 36
+    # Once recorded, an upgrade never creates another owner.
+    code, commands = run()
+    assert code == 0
+    assert not any("desktop-pair" in " ".join(command) for command in commands)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+@pytest.mark.parametrize("public_url", PUBLIC_URLS)
+def test_shell_installer_first_install_configures_names_and_recommends_a_profile(
+    tmp_path, public_url
+):
     deployment = tmp_path / "new"
     bundle, _zip = _bundle(tmp_path)
     answers = tmp_path / "model.json"
@@ -229,6 +412,7 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
         "DOCKER_RUNTIMES": '{"runc":{},"runsc":{"path":"runsc","runtimeArgs":["--overlay2=none"]}}',
         "DOCKER_LOG": str(log),
         "DEPLOY_DIRECTORY": str(deployment),
+        "CONFIGURED_ENV": f"CLIENT_PUBLIC_URL={public_url}\n",
         "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
     }
     completed = subprocess.run(
@@ -265,8 +449,7 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
     pair = next(command for command in commands if "desktop-pair" in " ".join(command))
     assert pair[:3] == ["compose", "exec", "-T"] and "YUKI_OWNER_NAME=小林" in pair
     assert "superuser_request_id" in pair[-1]
-    assert "Binding code: PAIR-小林" in completed.stdout
-    assert "http://127.0.0.1:8080" in completed.stdout
+    _assert_pairing_help(completed.stdout, public_url)
     assert {
         "YUKI_OWNER_PERSON_ID=person-1",
         "LLM_MODEL=configured",
@@ -275,6 +458,37 @@ def test_shell_installer_first_install_configures_names_and_recommends_a_profile
         # gVisor with --overlay2=none is registered: chosen once and recorded.
         "YUKI_SANDBOX_RUNTIME=runsc",
     } <= set(lines)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
+@pytest.mark.parametrize("public_url", PUBLIC_URLS)
+def test_pair_script_prints_a_new_code_for_the_recorded_owner(tmp_path, public_url):
+    deployment = tmp_path / "deployment"
+    (deployment / "deploy").mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/pair.sh", deployment / "deploy/pair.sh")
+    (deployment / ".env").write_text(
+        "YUKI_OWNER_PERSON_ID=person-1\nYUKI_CONTROL_OPERATOR_TOKEN=operator\n"
+        f"CLIENT_PUBLIC_URL={public_url}\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "docker.jsonl"
+    completed = subprocess.run(
+        ["sh", str(deployment / "deploy/pair.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "DOCKER_LOG": str(log),
+            "PATH": str(_fake_docker(tmp_path)) + os.pathsep + os.environ["PATH"],
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert ["container", "yuki", "admin", "client", "pair", "--person", "person-1"] in commands
+    _assert_pairing_help(completed.stdout, public_url)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer")
@@ -341,3 +555,131 @@ def test_smoke_checks_the_selected_image_before_running_it(
         with pytest.raises(SmokeError):
             verify_image_identity(compose, "3.9.0", platform, "expected-commit")
     assert commands == [["docker", "image", "inspect", "--platform", platform, "image:3.9.0"]]
+
+
+def _run_snowluma(deployment, log, *arguments, **environment):
+    """deploy/snowluma.sh as Yuki Desktop runs it in the deployment, local or over SSH."""
+    fakes = log.parent / f"fake-{log.stem}"
+    fakes.mkdir()
+    return subprocess.run(
+        ["sh", str(deployment / "deploy/snowluma.sh"), *arguments],
+        cwd=deployment.parent,
+        env={
+            **os.environ,
+            **environment,
+            "DOCKER_LOG": str(log),
+            "PATH": str(_fake_docker(fakes)) + os.pathsep + os.environ["PATH"],
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _snowluma_deployment(tmp_path):
+    deployment = tmp_path / "deployment"
+    (deployment / "deploy").mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/snowluma.sh", deployment / "deploy/snowluma.sh")
+    shutil.copyfile(ROOT / ".env.example", deployment / ".env.example")
+    env = deployment / ".env"
+    env.write_text(
+        "USER_CONFIG=keep  # a comment the owner wrote\n"
+        "COMPOSE_PROFILES=custom\n"
+        "ONEBOT_ACCESS_TOKEN=replace-with-a-long-random-token\n",
+        encoding="utf-8",
+    )
+    env.chmod(0o600)
+    return deployment
+
+
+def _values(deployment):
+    from yuki.deployment_setup.service import EnvironmentDocument
+
+    text = (deployment / ".env").read_text(encoding="utf-8")
+    return EnvironmentDocument(text).values(), text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+@pytest.mark.parametrize("arguments", [(), ("",)])
+def test_snowluma_script_without_an_image_prints_usage_and_changes_nothing(tmp_path, arguments):
+    deployment = _snowluma_deployment(tmp_path)
+    before = (deployment / ".env").read_bytes()
+    log = tmp_path / "docker.jsonl"
+    completed = _run_snowluma(deployment, log, *arguments)
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert "sh deploy/snowluma.sh <" in completed.stderr
+    assert (deployment / ".env").read_bytes() == before
+    assert not log.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+def test_snowluma_script_enables_the_users_image_and_starts_it(tmp_path):
+    deployment = _snowluma_deployment(tmp_path)
+    log = tmp_path / "docker.jsonl"
+    owner = (deployment / ".env").stat()
+    completed = _run_snowluma(deployment, log, "registry.example/me/snowluma:1")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    values, text = _values(deployment)
+    assert values["COMPOSE_PROFILES"] == "snowluma,custom"
+    assert values["SNOWLUMA_IMAGE"] == "registry.example/me/snowluma:1"
+    assert values["SNOWLUMA_VNC_HOST"] == "snowluma"
+    assert len(values["ONEBOT_ACCESS_TOKEN"]) >= 32
+    assert not values["ONEBOT_ACCESS_TOKEN"].startswith("replace-with-")
+    assert len(values["SNOWLUMA_VNC_PASSWORD"]) >= 32
+    assert text.startswith("USER_CONFIG=keep  # a comment the owner wrote\n")
+    env = (deployment / ".env").stat()
+    assert (env.st_uid, env.st_gid, env.st_mode & 0o777) == (owner.st_uid, owner.st_gid, 0o600)
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    # As install.sh migrates an upgrade: root in a one-off Bot, the deployment at /deploy.
+    setup, up = commands
+    assert setup[:2] == ["compose", "run"] and "--no-deps" in setup and "--rm" in setup
+    assert setup[setup.index("--user") + 1] == "0:0"
+    assert setup[setup.index("--entrypoint") + 1] == "yuki"
+    assert setup[setup.index("--volume") + 1] == f"{deployment}:/deploy"
+    assert setup[setup.index("bot") + 1 :] == [
+        "setup",
+        "snowluma",
+        "--deployment-root",
+        "/deploy",
+        "--image",
+        "registry.example/me/snowluma:1",
+    ]
+    assert up == ["compose", "up", "-d", "bot", "snowluma"]
+    assert "QQ 登入" in completed.stdout and "Yuki Desktop" in completed.stdout
+    # Secrets stay in .env; the output never shows them.
+    for name in ("ONEBOT_ACCESS_TOKEN", "SNOWLUMA_VNC_PASSWORD"):
+        assert values[name] not in completed.stdout + completed.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+def test_snowluma_script_again_keeps_credentials_and_profiles(tmp_path):
+    deployment = _snowluma_deployment(tmp_path)
+    log = tmp_path / "docker.jsonl"
+    assert _run_snowluma(deployment, log, "registry.example/me/snowluma:1").returncode == 0
+    first, _text = _values(deployment)
+    again = _run_snowluma(deployment, tmp_path / "again.jsonl", "me/snowluma:2")
+    assert again.returncode == 0, again.stdout + again.stderr
+    second, text = _values(deployment)
+    assert second == {**first, "SNOWLUMA_IMAGE": "me/snowluma:2"}
+    for name in ("COMPOSE_PROFILES", "SNOWLUMA_IMAGE", "ONEBOT_ACCESS_TOKEN"):
+        assert sum(line.startswith(f"{name}=") for line in text.splitlines()) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")
+def test_snowluma_script_uses_the_callers_compose_files(tmp_path):
+    """Yuki Desktop's local deployment layers docker-compose.local.yml through COMPOSE_FILE."""
+    deployment = _snowluma_deployment(tmp_path)
+    files = tmp_path / "compose-files.log"
+    completed = _run_snowluma(
+        deployment,
+        tmp_path / "docker.jsonl",
+        "me/snowluma:1",
+        COMPOSE_FILE="docker-compose.yml:docker-compose.local.yml",
+        COMPOSE_FILES_LOG=str(files),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (
+        files.read_text(encoding="utf-8").splitlines()
+        == ["docker-compose.yml:docker-compose.local.yml"] * 2
+    )

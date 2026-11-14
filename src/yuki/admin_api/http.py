@@ -26,6 +26,7 @@ from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
 from yuki.admin_api.model_models import ModelBundle, ModelControlResult, ModelDocument
+from yuki.admin_api.platform_models import PlatformsView
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
@@ -108,6 +109,14 @@ class ConfigBody(CommandBody):
 class ModelsBody(CommandBody):
     document: ModelDocument
     api_keys: dict[str, SecretStr] = Field(default_factory=dict)
+
+
+class PlatformApplyBody(CommandBody):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    platform: Literal["telegram", "feishu", "lark", "qq_official"]
+    enabled: bool
+    settings: dict[str, str | bool] = Field(default_factory=dict)
+    secrets: dict[str, SecretStr] = Field(default_factory=dict)
 
 
 class SecretBody(CommandBody):
@@ -617,6 +626,25 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             )
         }
 
+    @router.get("/platforms", response_model=Envelope[PlatformsView])
+    async def platforms(actor: Actor) -> Any:
+        return {"data": await resolve().commands.platform.read(actor)}
+
+    @router.post("/platforms/apply", response_model=Envelope[ModelControlResult])
+    async def apply_platform(body: PlatformApplyBody, actor: Actor) -> Any:
+        spec = {
+            "platform": body.platform,
+            "enabled": body.enabled,
+            "settings": body.settings,
+            "secrets": {key: value.get_secret_value() for key, value in body.secrets.items()},
+        }
+        material = {"resource_id": "platforms", "action": "save", "spec": spec}
+        return {
+            "data": result_view(
+                await resolve().commands.platform.apply(actor, body.command(material), spec)
+            )
+        }
+
     @router.post("/works/{identity}/{action}")
     async def work_action(
         identity: UUID4, action: Literal["cancel", "resume"], body: CommandBody, actor: Actor
@@ -644,7 +672,10 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             ProblemCode.VALIDATION_ERROR: 422,
             ProblemCode.OPERATION_UNAVAILABLE: 503,
         }.get(code, 409)
-        return JSONResponse({"problem": {"code": code.value}}, status_code=status)
+        problem: dict[str, Any] = {"code": code.value}
+        if exc.problem.details:
+            problem["details"] = thaw_json_value(exc.problem.details)
+        return JSONResponse({"problem": problem}, status_code=status)
 
     async def plugin_error(_request: Any, exc: Any) -> JSONResponse:
         unknown = unknown_write_response(exc)

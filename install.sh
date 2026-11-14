@@ -169,6 +169,8 @@ if [ ! -f .env ]; then
 fi
 set_env YUKI_VERSION "$VERSION"
 [ -z "$CHARACTER" ] || set_env YUKI_CHARACTER_NAME "$CHARACTER"
+# The owner this install creates, kept until it exists, so a rerun after a failure finishes it.
+[ "$FIRST" = false ] || set_env YUKI_OWNER_NAME "$OWNER"
 
 if [ -z "$PROFILE" ] && [ -z "$(env_value YUKI_SANDBOX_PROFILE)" ]; then
     memory=$(( $(docker info --format '{{.MemTotal}}') / 1048576 ))
@@ -204,6 +206,14 @@ environment_image=$(env_value YUKI_ENVIRONMENT_IMAGE)
 environment_image=${environment_image:-$ENVIRONMENT_IMAGE:$VERSION}
 [ "$PROFILE" = lite ] || environment_image="$environment_image-desktop"
 pull "$environment_image"
+if [ "$FIRST" = false ]; then
+    # Telegram/Feishu credentials left in .env (or inlined by Compose) move once into
+    # webui-config before the new Bot starts. Root writes it whoever owns it now;
+    # start.sh then hands webui-config to the runtime UID.
+    docker compose run --rm --no-deps -T --user 0:0 --entrypoint yuki \
+        --volume "$INSTALL_DIR:/deploy" bot \
+        setup platforms-migrate --deployment-root /deploy >/dev/null
+fi
 docker compose up -d --pull missing --remove-orphans
 
 printf 'Waiting for Yuki and its sandbox'
@@ -228,22 +238,34 @@ done
 printf '\nYuki %s is running in %s (sandbox profile: %s, runtime: %s).\n' \
     "$VERSION" "$INSTALL_DIR" "$PROFILE" "$(env_value YUKI_SANDBOX_RUNTIME)"
 
-# A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
+# The owner this install named gets their Person, administrator, and a code for Yuki Desktop,
+# also when a first install stopped before here. One recorded request ID names every attempt,
+# so a rerun after a lost reply returns the same Person instead of creating another; the
+# per-step IDs derived from it keep the UUID4 form the admin API accepts.
 # The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
-if [ "$FIRST" = true ]; then
-    if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$OWNER" bot sh -ec '
-python -c "import json, os, uuid; print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.uuid4()) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
+# The link names CLIENT_PUBLIC_URL; without one only the code is shown (deploy/pair.sh alike).
+if [ -n "$(env_value YUKI_OWNER_NAME)" ] && [ -z "$(env_value YUKI_OWNER_PERSON_ID)" ]; then
+    [ -n "$(env_value YUKI_OWNER_REQUEST_ID)" ] || set_env YUKI_OWNER_REQUEST_ID \
+        "$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
+    if paired=$(docker compose exec -T -e YUKI_OWNER_NAME="$(env_value YUKI_OWNER_NAME)" \
+        -e YUKI_OWNER_REQUEST_ID="$(env_value YUKI_OWNER_REQUEST_ID)" bot sh -ec '
+python -c "import json, os, uuid; request = uuid.UUID(os.environ[\"YUKI_OWNER_REQUEST_ID\"]); print(json.dumps({\"display_name\": os.environ[\"YUKI_OWNER_NAME\"], **{key: str(uuid.UUID(bytes=uuid.uuid5(request, key).bytes, version=4)) for key in (\"person_request_id\", \"superuser_request_id\", \"pair_request_id\")}}))" \
   | yuki setup desktop-pair --deployment-root /app \
-  | python -c "import json, sys; result = json.load(sys.stdin); print(result[\"person_id\"], result.get(\"code\") or \"\")"'); then
-        set_env YUKI_OWNER_PERSON_ID "${paired%% *}"
+  | python -c "import json, sys; from yuki.config import Settings; from yuki.services.client_link import pairing_link; result = json.load(sys.stdin); server = Settings().client_public_url; print(result[\"person_id\"], result[\"code\"], pairing_link(server, result[\"code\"]) if server else \"\")"'); then
+        read -r person code link <<EOF
+$paired
+EOF
+        set_env YUKI_OWNER_PERSON_ID "$person"
         printf '\nConnect Yuki Desktop (https://github.com/Institute-of-Agent-Life/Yuki-Desktop):\n'
-        printf '  1. Open Yuki Desktop and choose "連接已有 Yuki" (Connect an existing Yuki).\n'
-        port=$(env_value YUKI_PORT)
-        printf '  2. Address: http://127.0.0.1:%s on this computer. From another computer, reach\n' \
-            "${port:-8080}"
-        printf '     this port through Tailscale or HTTPS (docs/operations/tailscale-connection.zh-CN.md).\n'
-        printf '  3. Binding code: %s  (valid for 10 minutes; a new one: sh deploy/pair.sh)\n' \
-            "${paired#* }"
+        if [ -n "$link" ]; then
+            printf '  Open this link, or paste it into Yuki Desktop:\n  %s\n' "$link"
+        else
+            printf '  Pairing code: %s\n' "$code"
+            printf '  No public address (CLIENT_PUBLIC_URL) is set, so there is no link another\n'
+            printf '  computer can open. In Yuki Desktop choose "部署到我的服务器 / 通过 SSH 连接"\n'
+            printf '  (Deploy to my server / Connect over SSH) and use this code.\n'
+        fi
+        printf '  One-time, valid for 24 hours; a new one: sh deploy/pair.sh\n'
     else
         printf '\nNo pairing code was created; pair Yuki Desktop by hand with\n'
         printf 'docs/operations/person-admin-control-plane-upgrade.md.\n'

@@ -45,8 +45,10 @@ Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_
 
 ## 角色资料与单 SOUL
 
-`GET /meta` 公开当前角色名称、API revision `9` 和实际能力声明，不推断未实现的客户端功能。
-revision 9 替换共享管理端点的用量响应；Desktop 最低修订与 Backend 协调升级，
+`GET /meta` 公开当前角色名称、API revision `11` 和实际能力声明，不推断未实现的客户端功能。
+revision 11 在共享管理端点新增 `GET /admin/v1/platforms` 与 `POST /admin/v1/platforms/apply`
+（见[管理 API](admin-api.md#聊天平台凭据)），Desktop 按实际 revision 决定是否显示平台页。
+revision 10 提供 SnowLuma QQ 登入画面。revision 9 替换共享管理端点的用量响应；Desktop 最低修订与 Backend 协调升级，
 旧版无参数用量请求返回正常 422 校验错误，不提供旧响应兼容层，详见[管理 API](admin-api.md#用量读取)。
 有效设备读取 `GET /character`；当前 Person 超管使用 `PATCH /character` 按原 UUID 和 profile revision 修改名称等资料。
 revision 8 的 `GET /me.is_superuser` 来自共同 identity 的原设备、原 Person 与当前根 Person 资格，换账号不丢资格、账号转移不携带资格。删除活 `viewer.is_owner` 和 SSE `character.is_owner`；SOUL 管理变更提示仅向当前超管发送。新拒绝返回 `403 forbidden`。`character_owner_grants`、旧迁移及已保存回执只保留原历史；不查询它们授权，也不自动升级。历史回执中的旧 `owner_required` 仍按原事实返回。
@@ -89,7 +91,10 @@ reset 的 sha256/size 明确为 null。同一 UUID 按原个人入口命名空�
 
 第一台设备可由 operator 执行 `yuki admin person create`，再执行
 `yuki admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
-发送 `/ai link`。码有效期十分钟，仅存 SHA-256，一次兑换。过期码沿原维护循环清理。
+发送 `/ai link`。operator 签发的码（安装器、`deploy/pair.sh` 也走这里）有效期 24 小时，留给配置
+网络的时间；`/ai link` 与设备自助 `/link-codes` 签发的码有效期十分钟。码仅存 SHA-256，一次兑换。
+过期码沿原维护循环清理。配置了 `CLIENT_PUBLIC_URL` 时，安装器、`deploy/pair.sh` 与 `/ai link`
+另给出 `yuki://pair?server=…&code=…`，供 Yuki Desktop 打开或从粘贴文本识别。
 
 | 请求 | 授权与结果 |
 | --- | --- |
@@ -225,7 +230,7 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 上传与原聊天媒体共用 24 小时原件缓存，不设单文件、会话或全局经验容量配额；真实磁盘与平台传输失败照实返回。维护清理会在删除前核实际回执引用。
 `GET /conversations/{conversation_id}/events/{event_id}/attachments/{attachment_index}` 在原个人事件可见范围内下载原件，返回强 ETag；读取后重新核当前本人／入口／原事件授权及字节摘要。缺失或已经清理的过期原件返回 not_found，不通过重新下载来重置期限。事件 attachment_index 是媒体序号，segment_index 是原消息段序号；ASR 的 segment_index 只与后者关联。表情附件带 `sticker: true`（普通图片不带），客户端据此以表情而非图片附件显示。普通事件投影不为可用性提示扫描或 hash 原文件；客户端实际下载以该 GET 回执为准。
 
-临时附件下载可返回 `X-Yuki-Expires-At`，值为原件实际回收时间的UTC ISO字符串。它供客户端到点重新查证来源；已接纳原件仍存在且获准读取时可继续打开，不将该时间变成新的授权截止线。稳定artifact没有这个临时TTL。桌面播放器沿已校验的精确缓存版本作本地Range读取，seek不重复下载或hash整件文件；新的打开继续核原来源资格。Client API revision 为 9；此媒体读取合同不变。
+临时附件下载可返回 `X-Yuki-Expires-At`，值为原件实际回收时间的UTC ISO字符串。它供客户端到点重新查证来源；已接纳原件仍存在且获准读取时可继续打开，不将该时间变成新的授权截止线。稳定artifact没有这个临时TTL。桌面播放器沿已校验的精确缓存版本作本地Range读取，seek不重复下载或hash整件文件；新的打开继续核原来源资格。Client API revision 为 11；此媒体读取合同不变。
 
 已接纳消息的原件通过只读目录映射在共享沙箱 `/inputs/media-cache`，各会话的 Agent 均可按需读取或复制收藏。Main 首次输入仅有附件索引和资料，图片、视频、贴纸及普通文件均不自动展开；语音沿原 ASR 配置独立处理。
 账本仅保存 media_id 和元数据，沙箱路径仅在当前运行资料提供；媒体字节及 Base64 不进入公开事件。设备上传、绑定与下载 API 的身份仍沿原合同，不因共享 Agent 环境改为匿名上传或公开下载。
@@ -352,7 +357,7 @@ ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；
 
 ### 可选配对链接与真实参考服务
 
-显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link` 在原一次性 chat 码旁附 `yuki://pair?server=...&code=...`；未配置时保留原裸码输出，不猜服务器地址。链接只帮助填写已有信息，purpose 与 Person、原执行归属不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
+显式配置 `CLIENT_PUBLIC_URL` 后，私聊 `/ai link`、安装器与 `deploy/pair.sh` 在原一次性 chat 码之外给出 `yuki://pair?server=...&code=...`（同一 `pairing_link` 构造）；未配置时只给裸码，不猜服务器地址，也不给出 `127.0.0.1` 链接。链接只帮助填写已有信息，purpose 与 Person、原执行归属不变。公开地址可包含反向代理前缀；生产 HTTPS/WSS 沿同一入口，不因 Desktop 新开电脑入站端口。
 
 个人 API 的 me、home、events、activity、Work、request、upload、pair 和 link-code 使用真实投影的响应模型；保留现有公开扩展字段，不因类型收敛静默删字段。新增可选输入与只读路由延续原请求与响应语义；revision 7 的破坏性变化仅为退出旧 LocalExecutor 活 API。
 

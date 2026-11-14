@@ -48,6 +48,9 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
             {
                 "name": platform,
                 **facts.summary(),
+                "last_error_category": facts.owner.get("last_error_category")
+                if facts.owner is not None
+                else None,
                 "checked_at": checked_at,
             }
         )
@@ -136,6 +139,9 @@ def build_admin_api(app: ApplicationContainer) -> AdminApi:
             config=app.runtime_config,
             groups=app.groups,
             router=app.presence_router,
+            platforms=app.platform_gateways,
+            providers=app.gateway_providers,
+            registry=app.gateway_registry,
         ),
         app.client_identity,
         AdminQueries(app.database, app.plugin_manager, files, lambda: runtime_health(app)),

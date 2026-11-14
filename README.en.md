@@ -103,16 +103,16 @@ Invoke-WebRequest https://github.com/YuanYeYouTao/Yuki/releases/download/v4.0.2/
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer asks for Yuki's name, your name, the model connection (and whether to use QQ and so on) and the size of Yuki's computer. It starts everything, waits until the environment is ready, and ends with:
+The installer asks for Yuki's name, your name, the model connection (and which chat platforms to use; QQ is not installed by default) and the size of Yuki's computer. It starts everything, waits until the environment is ready, and ends with:
 
 ```text
-Connect Yuki Desktop:
-  1. Open Yuki Desktop and choose "連接已有 Yuki".
-  2. Address: http://127.0.0.1:8080 on this computer. ...
-  3. Binding code: XXXXXXXX  (valid for 10 minutes; a new one: sh deploy/pair.sh)
+Connect Yuki Desktop (https://github.com/Institute-of-Agent-Life/Yuki-Desktop):
+  Pairing code: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  No public address (CLIENT_PUBLIC_URL) is set, ...
+  One-time, valid for 24 hours; a new one: sh deploy/pair.sh
 ```
 
-In Yuki Desktop choose "連接已有 Yuki" (Connect an existing Yuki) and enter the address and code; you become this Yuki's administrator. The code is valid for 10 minutes; run `sh deploy/pair.sh` in the deployment directory for a new one.
+When the server's `.env` sets `CLIENT_PUBLIC_URL` to an address other computers can reach, this shows a full `yuki://pair?server=…&code=…` link: open or paste it on the computer with Yuki Desktop. Without a public address only the pairing code is shown: in Yuki Desktop, reach this server with "部署到我的服务器 / 通过 SSH 连接" (Deploy to my server / Connect over SSH) and use the code. Once connected you are this Yuki's administrator. The code is one-time and valid for 24 hours; run `sh deploy/pair.sh` in the deployment directory for a new one.
 
 Yuki listens on the server's own `127.0.0.1:8080` only, never on the public internet. To reach a server from your computer, [Tailscale](docs/operations/tailscale-connection.zh-CN.md) is the easiest; with a domain you can also set up [HTTPS](docs/operations/desktop-local-deployment.zh-CN.md).
 
@@ -141,7 +141,7 @@ Copy the [installation prompt](docs/install-with-ai.en.md) into an AI assistant 
 ### After installing
 
 - **Personality**: edit `character/SOUL.md` in the deployment directory.
-- **Chat platforms**: QQ uses [SnowLuma](docs/deployment/snowluma.md) — scan the login code in Yuki Desktop's computer window; for Telegram set `TELEGRAM_BOT_TOKEN` in `.env`; for Feishu and Lark see [the guide](docs/operations/feishu.zh-CN.md).
+- **Chat platforms**: see the [Telegram guide](docs/operations/telegram.zh-CN.md) and the [Feishu and Lark guide](docs/operations/feishu.zh-CN.md); enter their credentials in Yuki Desktop under Settings → Platforms. QQ is not installed by default; to use it, bring your own [SnowLuma](docs/deployment/snowluma.md) image, run `sh deploy/snowluma.sh <image>` in the deployment directory, and scan the login code in Yuki Desktop's computer window.
 - **Your own computer**: connect it in Yuki Desktop under "設定 → 這台電腦", see the [local connector](docs/operations/local-agent-connector.zh-CN.md).
 
 ## Upgrade
@@ -159,8 +159,9 @@ Run the same installer again in the installation directory. It replaces the rele
 | [Persistent environment](docs/operations/persistent-environment.md) | Sandbox profiles, resources, networking and migration |
 | [Desktop computer and headed environment](docs/operations/desktop-computer.zh-CN.md) | Screenshots, clicks and the browser on Yuki's own computer (Chinese) |
 | [Local connector](docs/operations/local-agent-connector.zh-CN.md) | Connecting your computer, full access, screen and browser, native coding agents (Chinese) |
+| [Telegram setup](docs/operations/telegram.zh-CN.md) | BotFather, group privacy mode and webhooks (Chinese) |
 | [Feishu and Lark setup](docs/operations/feishu.zh-CN.md) | Custom apps, permissions, long connections and media (Chinese) |
-| [SnowLuma (QQ)](docs/deployment/snowluma.md) | QQ gateway deployment and login |
+| [SnowLuma (QQ)](docs/deployment/snowluma.md) | Your own image, QQ gateway deployment and login |
 | [Plugin API 9.0](docs/plugin-development/index.md) | Plugin development and SDK |
 | [Architecture index](docs/architecture/README.md) | Entry point to the current architecture documents |
 | [CHANGELOG](CHANGELOG.md) | Earlier versions |

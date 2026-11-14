@@ -154,6 +154,8 @@ if ($First) {
 }
 Set-EnvValue "YUKI_VERSION" $Version
 if ($CharacterName) { Set-EnvValue "YUKI_CHARACTER_NAME" $CharacterName }
+# The owner this install creates, kept until it exists, so a rerun after a failure finishes it.
+if ($First) { Set-EnvValue "YUKI_OWNER_NAME" $OwnerName }
 
 if (-not $SandboxProfile -and -not (Get-EnvValue "YUKI_SANDBOX_PROFILE")) {
     $Memory = [int64](& docker info --format '{{.MemTotal}}') / 1MB
@@ -184,6 +186,13 @@ $Environment = Get-EnvValue "YUKI_ENVIRONMENT_IMAGE"
 if (-not $Environment) { $Environment = "${EnvironmentImage}:$Version" }
 if ($SandboxProfile -ne "lite") { $Environment = "$Environment-desktop" }
 Pull-Image $Environment
+if (-not $First) {
+    # Telegram/Feishu credentials left in .env (or inlined by Compose) move once into
+    # webui-config before the new Bot starts; start.sh then hands it to the runtime UID.
+    & docker compose run --rm --no-deps -T --user 0:0 --entrypoint yuki `
+        --volume "${InstallDir}:/deploy" bot setup platforms-migrate --deployment-root /deploy | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "Platform credential migration failed." }
+}
 & docker compose up -d --pull missing --remove-orphans
 if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed." }
 
@@ -207,13 +216,17 @@ for ($Attempt = 0; ; $Attempt++) {
 }
 Write-Host ""
 Write-Host "Yuki $Version is running in $InstallDir (sandbox profile: $SandboxProfile, runtime: $(Get-EnvValue 'YUKI_SANDBOX_RUNTIME'))." -ForegroundColor Green
-# A new deployment's owner: their Person, administrator, and a code for Yuki Desktop.
+# The owner this install named gets their Person, administrator, and a code for Yuki Desktop,
+# also when a first install stopped before here. One recorded request ID names every attempt,
+# so a rerun after a lost reply returns the same Person instead of creating another.
 # The same steps Yuki Desktop takes for a local deployment (yuki setup desktop-pair).
-if ($First) {
+if ((Get-EnvValue "YUKI_OWNER_NAME") -and -not (Get-EnvValue "YUKI_OWNER_PERSON_ID")) {
+    if (-not (Get-EnvValue "YUKI_OWNER_REQUEST_ID")) { Set-EnvValue "YUKI_OWNER_REQUEST_ID" ([guid]::NewGuid().ToString()) }
     $PairScript = @'
-python -c "import json, os, uuid; print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.uuid4()) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
+python -c "import json, os, uuid; request = uuid.UUID(os.environ['YUKI_OWNER_REQUEST_ID']); print(json.dumps({'display_name': os.environ['YUKI_OWNER_NAME'], **{key: str(uuid.UUID(bytes=uuid.uuid5(request, key).bytes, version=4)) for key in ('person_request_id', 'superuser_request_id', 'pair_request_id')}}))" | yuki setup desktop-pair --deployment-root /app | python -c "import json, sys; result = json.load(sys.stdin); print(result['person_id'], result.get('code') or '')"
 '@
-    $Paired = & docker compose exec -T -e "YUKI_OWNER_NAME=$OwnerName" bot sh -ec $PairScript
+    $Paired = & docker compose exec -T -e "YUKI_OWNER_NAME=$(Get-EnvValue 'YUKI_OWNER_NAME')" `
+        -e "YUKI_OWNER_REQUEST_ID=$(Get-EnvValue 'YUKI_OWNER_REQUEST_ID')" bot sh -ec $PairScript
     if ($LASTEXITCODE -eq 0 -and $Paired) {
         $Person, $Code = "$Paired".Trim() -split ' ', 2
         Set-EnvValue "YUKI_OWNER_PERSON_ID" $Person
@@ -223,7 +236,7 @@ python -c "import json, os, uuid; print(json.dumps({'display_name': os.environ['
         Write-Host "  1. Open Yuki Desktop and choose 連接已有 Yuki (Connect an existing Yuki)."
         Write-Host "  2. Address: http://127.0.0.1:$Port on this computer. From another computer, reach"
         Write-Host "     this port through Tailscale or HTTPS (docs/operations/tailscale-connection.zh-CN.md)."
-        Write-Host "  3. Binding code: $Code  (valid for 10 minutes; a new one: deploy/pair.sh on the Docker host)"
+        Write-Host "  3. Binding code: $Code  (one-time, valid for 24 hours; a new one: deploy/pair.sh on the Docker host)"
     } else {
         Write-Host "No pairing code was created; pair Yuki Desktop by hand with docs/operations/person-admin-control-plane-upgrade.md."
     }

@@ -313,6 +313,10 @@ class FeishuGateway:
             presence_id = presence.id
         self.presence_id = presence_id
 
+    async def preflight(self) -> None:
+        # A tenant token and the bot identity prove the app ID and secret.
+        await self.client.get_me()
+
     async def start(self) -> None:
         await self._websocket.start()
 

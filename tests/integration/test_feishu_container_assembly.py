@@ -1,4 +1,4 @@
-"""The configured native gateway belongs to the existing application lifecycle."""
+"""The saved Feishu/Lark credentials start a gateway owned by the application lifecycle."""
 
 import asyncio
 from unittest.mock import AsyncMock
@@ -8,6 +8,7 @@ from tests.conftest import make_settings
 from tests.support.model_profiles import write_fake_profiles
 from tests.unit.test_sticker_library import LocalDirectoryBridge
 
+from yuki.admin.platform_files import load_platforms, write_platforms
 from yuki.container import ApplicationContainer
 
 
@@ -17,7 +18,22 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
 ):
     from yuki.gateway.providers.feishu_ingress import FeishuGateway
 
-    start = AsyncMock()
+    platform = {"https://open.larksuite.com": "lark"}.get(domain or "", "feishu")
+    platforms = tmp_path / "platforms.toml"
+    if domain is not None:
+        empty = load_platforms(platforms)
+        saved = empty.changed(
+            platform,
+            enabled=True,
+            settings={"app_id": "cli_offline"},
+            secrets={"app_secret": "offline-only-secret"},
+        )
+        write_platforms(platforms, empty, saved)
+    started = []
+
+    async def start(gateway):
+        started.append(gateway)
+
     health = AsyncMock(return_value={"enabled": True, "running": True, "healthy": True})
     monkeypatch.setattr(FeishuGateway, "start", start)
     monkeypatch.setattr(FeishuGateway, "health", health)
@@ -26,10 +42,7 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
     app = ApplicationContainer(
         make_settings(
             database.url,
-            feishu_app_id="cli_offline" if domain else "",
-            feishu_app_secret="offline-only-secret" if domain else "",
-            feishu_domain=domain or "https://open.feishu.cn",
-            telegram_bot_token="",
+            platforms_file=platforms,
             model_profiles_file=write_fake_profiles(tmp_path / "models.toml"),
             plugin_system_enabled=False,
             plugin_directory=tmp_path / "plugins",
@@ -63,26 +76,21 @@ async def test_optional_feishu_gateway_is_started_and_closed_by_container(
     try:
         await app.start()
         if domain is None:
-            assert app.feishu_gateway is None
-            start.assert_not_awaited()
+            assert not started
+            assert platform not in app.gateway_health_sources
         else:
-            assert app.feishu_gateway is not None
-            assert app.feishu_gateway.client.domain == domain
-            assert app.feishu_gateway.client.platform == (
-                "lark" if domain == "https://open.larksuite.com" else "feishu"
-            )
-            platform = app.feishu_gateway.client.platform
+            [gateway] = started
+            assert gateway.client.domain == domain
+            assert gateway.client.platform == platform
             assert await app.gateway_health_sources[platform]() == {
                 "enabled": True,
                 "running": True,
                 "healthy": True,
             }
-            start.assert_awaited_once()
-            assert (await app.lifecycle.health())["feishu_gateway"]["running"]
     finally:
         await asyncio.wait_for(app.close(), 5)
-        if app.feishu_gateway is not None:
-            await app.feishu_gateway.client.close()
+        for gateway in started:
+            await gateway.client.close()
     if domain is None:
         close.assert_not_awaited()
     else:

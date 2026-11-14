@@ -28,6 +28,13 @@ from pydantic import AliasChoices, AliasPath, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from yuki import __version__
+from yuki.admin.config_files import ConfigFileError
+from yuki.admin.platform_files import (
+    PlatformBundle,
+    load_platforms,
+    platform_secrets_path,
+    write_platforms,
+)
 from yuki.admin_api.client import admin_client, plugin_mutation, read
 from yuki.config import Settings
 from yuki.model_runtime import ModelCapability, ModelTask
@@ -85,6 +92,10 @@ class SetupPaths:
     @property
     def model_profiles(self) -> Path:
         return self.root / "webui-config/model_profiles.toml"
+
+    @property
+    def platforms(self) -> Path:
+        return self.root / "webui-config/platforms.toml"
 
     @property
     def legacy_model_profiles(self) -> Path:
@@ -190,6 +201,112 @@ def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str
             ]
         }
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformChange:
+    enabled: bool
+    settings: dict[str, str | bool]
+    secrets: dict[str, str]
+
+
+def prepare_platforms(
+    paths: SetupPaths, changes: Mapping[str, PlatformChange]
+) -> tuple[PlatformBundle, PlatformBundle]:
+    """Validate answers against the saved document, as the admin API save does."""
+    try:
+        original = updated = load_platforms(paths.platforms)
+        for platform, change in changes.items():
+            updated = updated.changed(
+                platform, enabled=change.enabled, settings=change.settings, secrets=change.secrets
+            )
+    except ConfigFileError as exc:
+        raise SetupValidationError("平台凭据无效或平台文档无法读取") from exc
+    return original, updated
+
+
+def save_platforms(paths: SetupPaths, prepared: tuple[PlatformBundle, PlatformBundle]) -> None:
+    original, updated = prepared
+    if updated is not original:
+        paths.platforms.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            write_platforms(paths.platforms, original, updated)
+        except ConfigFileError as exc:
+            raise SetupValidationError(
+                f"无法写入 webui-config 平台文档（{exc.category}）；"
+                "请以该目录属主运行，或在 Yuki Desktop「设置 → 平台」保存"
+            ) from exc
+
+
+_LEGACY_PLATFORM_ENV = ("TELEGRAM_BOT_TOKEN", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DOMAIN")
+
+
+def migrate_platform_credentials(paths: SetupPaths) -> dict[str, object]:
+    """Upgrade steps for platform access; each is a no-op once done."""
+    result = _migrate_platform_document(paths)
+    if paths.env.is_file():
+        document = EnvironmentDocument.load(paths)
+        values = document.values()
+        # "QQ 登入" follows SNOWLUMA_VNC_HOST; the bundled SnowLuma keeps it on upgrade.
+        if (
+            "snowluma" in selected_gateway_providers(values)
+            and not values.get("SNOWLUMA_VNC_HOST", "").strip()
+        ):
+            _rewrite_env(paths, document.merge({"SNOWLUMA_VNC_HOST": "snowluma"}))
+            result["snowluma_vnc_host"] = "snowluma"
+    return result
+
+
+def snowluma_environment(environment: Mapping[str, str], image: str) -> dict[str, str]:
+    """The .env values that run the bundled SnowLuma; existing credentials stay."""
+    values = {
+        "COMPOSE_PROFILES": compose_profiles_with_features(environment, gateways=("snowluma",)),
+        "SNOWLUMA_IMAGE": image,
+        "SNOWLUMA_VNC_HOST": "snowluma",
+    }
+    for name in ("ONEBOT_ACCESS_TOKEN", "SNOWLUMA_VNC_PASSWORD"):
+        values[name] = _configured_value(environment.get(name, "")) or secrets.token_urlsafe(32)
+    _validate_gateway_configuration({**environment, **values})
+    return values
+
+
+def enable_snowluma(paths: SetupPaths, image: str) -> None:
+    """``yuki setup snowluma``: what the gateway page writes, for deploy/snowluma.sh."""
+    document = EnvironmentDocument(paths.env.read_text(encoding="utf-8"))
+    _rewrite_env(paths, document.merge(snowluma_environment(document.values(), image)))
+
+
+def _rewrite_env(paths: SetupPaths, content: str) -> None:
+    owner = paths.env.stat()
+    _atomic_write(paths.env, content.encode("utf-8"), private=True)
+    if os.name == "posix":
+        # The installer and deploy scripts run setup as root; .env stays its
+        # deployment user's file.
+        os.chown(paths.env, owner.st_uid, owner.st_gid)
+
+
+def _migrate_platform_document(paths: SetupPaths) -> dict[str, object]:
+    """Copy retired .env/process credentials once; an existing document is never replaced."""
+    if paths.platforms.exists() or platform_secrets_path(paths.platforms).exists():
+        return {"migrated": [], "preserved": True}
+    environment = EnvironmentDocument.load(paths).values() if paths.env.is_file() else {}
+    # Compose may have inlined the values into this container instead of .env.
+    old = {
+        name: environment.get(name, "").strip() or os.environ.get(name, "").strip()
+        for name in _LEGACY_PLATFORM_ENV
+    }
+    changes: dict[str, PlatformChange] = {}
+    if old["TELEGRAM_BOT_TOKEN"]:
+        changes["telegram"] = PlatformChange(True, {}, {"bot_token": old["TELEGRAM_BOT_TOKEN"]})
+    if old["FEISHU_APP_ID"] or old["FEISHU_APP_SECRET"]:
+        if not (old["FEISHU_APP_ID"] and old["FEISHU_APP_SECRET"]):
+            raise SetupValidationError("FEISHU_APP_ID 与 FEISHU_APP_SECRET 必须同时存在才能迁移")
+        platform = "lark" if old["FEISHU_DOMAIN"] == "https://open.larksuite.com" else "feishu"
+        changes[platform] = PlatformChange(
+            True, {"app_id": old["FEISHU_APP_ID"]}, {"app_secret": old["FEISHU_APP_SECRET"]}
+        )
+    save_platforms(paths, prepare_platforms(paths, changes))
+    return {"migrated": sorted(changes), "preserved": False}
 
 
 def require_migrated_model_profiles(paths: SetupPaths) -> None:

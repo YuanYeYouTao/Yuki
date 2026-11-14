@@ -35,7 +35,12 @@ _CONFIG_FILES = frozenset(
     }
 )
 _MANAGER_DEPLOY_FILES = frozenset(
-    {"deploy/pair.sh", "deploy/sandbox/prepare.sh", "deploy/sandbox/migrate-host-manager.sh"}
+    {
+        "deploy/pair.sh",
+        "deploy/snowluma.sh",
+        "deploy/sandbox/prepare.sh",
+        "deploy/sandbox/migrate-host-manager.sh",
+    }
 )
 _EMPTY_DIRECTORIES = (
     "data",

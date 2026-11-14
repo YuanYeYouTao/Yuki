@@ -1661,7 +1661,7 @@ class SocialService:
             dispatched = True
             operations = self.router.operations(route)
             destination = TransportTarget(
-                destination_kind, route.external_target_id, route.thread_id
+                destination_kind, route.external_target_id, route.thread_id, route.source_event_id
             )
             with model_detail("social_transport"):
                 if action == "send":

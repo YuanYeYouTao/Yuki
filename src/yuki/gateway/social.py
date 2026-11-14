@@ -14,6 +14,9 @@ class TransportTarget:
     kind: str
     external_id: str
     thread_id: str | None = None
+    # Internal inbound event this delivery answers, for platforms that attach a
+    # reply to the original platform message (QQ official passive replies).
+    source_event_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

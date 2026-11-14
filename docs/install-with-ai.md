@@ -19,7 +19,7 @@
    - 如果必须无人值守，就创建一个只有我能读的 model.json（chmod 600），由我填写密钥，运行
      `sh install.sh --dir <目录> --yes --profile <档位> --owner-name "<我的名字>" --answers model.json`，装完立即删除 model.json。
    - 本机模型服务（如 Ollama）的地址写 http://host.docker.internal:端口/v1，不要写 127.0.0.1。
-4. 安装器结束时会显示地址和绑定码（10 分钟有效）。把它们告诉我，让我在 Yuki Desktop 里选「連接已有 Yuki」填入。过期了在安装目录运行 `sh deploy/pair.sh` 再取一个。
+4. 安装器结束时会显示配对链接（服务器配置了 `CLIENT_PUBLIC_URL` 时）或配对码（一次性，24 小时有效）。把它告诉我：链接在 Yuki Desktop 里打开或粘贴即可；只有配对码时，我在 Yuki Desktop 用「部署到我的服务器 / 通过 SSH 连接」连到服务器并使用它。过期了在安装目录运行 `sh deploy/pair.sh` 再取一个。
 5. 核对，并把结果告诉我：
    - `docker compose ps` 里 bot 和 manager 都在运行；
    - `docker compose exec --user 10001:10001 bot yuki setup environment-check` 输出 "ok": true；

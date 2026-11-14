@@ -87,7 +87,6 @@ async def serve(
             runtime_work_enabled=True,
             automation_enabled=desktop and os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
             self_memory_enabled=desktop and os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
-            telegram_bot_token="",
             asr_enabled=desktop and real_model_source is None,
             web_mode="disabled" if real_model_source is not None else "native",
         ),

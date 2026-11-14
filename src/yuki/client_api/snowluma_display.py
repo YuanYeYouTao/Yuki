@@ -10,20 +10,20 @@ from cryptography.hazmat.primitives.ciphers import Cipher, modes
 from fastapi import WebSocket
 
 from yuki.client_api.rfb import RfbProtocolError
-from yuki.deployment_setup.service import selected_gateway_providers
 
 VERSION = b"RFB 003.008\n"
 
 
 def configured() -> bool:
-    return "snowluma" in selected_gateway_providers(os.environ)
+    """The bundled service or one deployed elsewhere: only its configured address counts."""
+    return bool(os.environ.get("SNOWLUMA_VNC_HOST"))
 
 
 @asynccontextmanager
 async def screen(
     socket: WebSocket,
 ) -> AsyncIterator[tuple[None, asyncio.StreamReader, asyncio.StreamWriter]]:
-    host = os.environ.get("SNOWLUMA_VNC_HOST", "snowluma")
+    host = os.environ["SNOWLUMA_VNC_HOST"]
     port = int(os.environ.get("SNOWLUMA_VNC_PORT", "5900"))
     async with asyncio.timeout(10):
         reader, writer = await asyncio.open_connection(host, port)

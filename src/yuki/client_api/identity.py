@@ -309,6 +309,7 @@ class ClientIdentityService:
         trigger_message_id: str = "",
         principal: ClientPrincipal | None = None,
         purpose: CredentialPurpose = "chat",
+        lifetime: timedelta = timedelta(minutes=10),
     ) -> dict[str, Any]:
         try:
             await require_person(session, person_id)
@@ -333,7 +334,7 @@ class ClientIdentityService:
             issuer_source=source,
             source_binding_id=source_binding_id,
             created_at=now,
-            expires_at=now + timedelta(minutes=10),
+            expires_at=now + lifetime,
         )
         session.add(code)
         result = {
@@ -396,6 +397,8 @@ class ClientIdentityService:
                 source="control",
                 request_id=request_id,
                 purpose=purpose,
+                # Installer and deploy/pair.sh codes often wait while the network is set up.
+                lifetime=timedelta(hours=24),
             )
 
     async def _code(self, session: AsyncSession, raw: str, now: datetime) -> ClientLinkCodeModel:

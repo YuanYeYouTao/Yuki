@@ -179,8 +179,8 @@ def main() -> int:
     )
 
     # The owner's first Person, administrator grant and Yuki Desktop code, ready to use.
-    code = installed.stdout.split("Binding code: ", 1)[-1].split()[0]
-    expect("Binding code: " in installed.stdout and len(code) >= 6, "no pairing code printed")
+    code = installed.stdout.split("Pairing code: ", 1)[-1].split()[0]
+    expect("Pairing code: " in installed.stdout and len(code) >= 6, "no pairing code printed")
     environment = (args.directory / ".env").read_text()
     expect("YUKI_OWNER_PERSON_ID=" in environment, "the owner was not recorded")
     with urllib.request.urlopen("http://127.0.0.1:8080/livez", timeout=10) as response:

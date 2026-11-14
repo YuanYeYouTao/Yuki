@@ -1,6 +1,7 @@
 """Personal devices use Person authority; operator credentials remain separate."""
 
 import asyncio
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -17,6 +18,7 @@ from tests.unit.test_admin_api import (
 )
 
 from yuki.admin_api.http import attach_admin_api
+from yuki.client_api import identity as identity_module
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.http import ClientApi, attach_client_api
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -292,3 +294,44 @@ async def test_lost_pair_commit_ack_is_unknown_and_code_is_still_one_time(
             )
             == 1
         )
+
+
+def later(scoped, delay):
+    """The identity service's clock, moved forward; codes are issued and redeemed on it."""
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + delay
+
+    scoped.setattr(identity_module, "datetime", Later)
+
+
+async def test_operator_code_lasts_a_day_and_is_redeemed_once(personal, monkeypatch):
+    _, code = await person_and_code(personal)
+    with monkeypatch.context() as scoped:
+        later(scoped, timedelta(minutes=11))
+        await pair(personal, code, "after setting up the network")
+        again = await personal.post("/client/v1/pair", json={"code": code, "device_label": "2"})
+        assert again.status_code == 401
+    _, expired = await person_and_code(personal)
+    with monkeypatch.context() as scoped:
+        later(scoped, timedelta(hours=24, minutes=1))
+        late = await personal.post("/client/v1/pair", json={"code": expired, "device_label": "x"})
+        assert late.status_code == 401
+
+
+async def test_device_link_code_still_lasts_ten_minutes(personal, monkeypatch):
+    _, code = await person_and_code(personal)
+    first = await pair(personal, code)
+    issued = await personal.post("/client/v1/link-codes", headers=bearer(first["token"]))
+    fresh = await personal.post("/client/v1/link-codes", headers=bearer(first["token"]))
+    with monkeypatch.context() as scoped:
+        later(scoped, timedelta(minutes=9))
+        await pair(personal, fresh.json()["data"]["code"], "within ten minutes")
+    with monkeypatch.context() as scoped:
+        later(scoped, timedelta(minutes=11))
+        late = await personal.post(
+            "/client/v1/pair", json={"code": issued.json()["data"]["code"], "device_label": "x"}
+        )
+        assert late.status_code == 401

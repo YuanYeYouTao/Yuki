@@ -25,6 +25,7 @@ services:
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/yuki.db
       MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
+      PLATFORMS_FILE: /app/webui-config/platforms.toml
       SOUL_FILE: /app/character/SOUL.md
       WORKSPACE_DIRECTORY: /app/workspace
       CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
@@ -50,7 +51,7 @@ services:
       - media-cache:/app/data/conversation-media-cache
       - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
-      - ./webui-config:/app/webui-config:ro
+      - ./webui-config:/app/webui-config
       - ./plugins:/app/plugins:ro
     networks:
       - yuki-network
@@ -109,7 +110,8 @@ services:
 
   snowluma:
     profiles: ["snowluma"]
-    image: ${SNOWLUMA_IMAGE:-motricseven7/snowluma:latest}
+    # Your own image (SNOWLUMA_IMAGE); Yuki publishes none, see docs/deployment/snowluma.md.
+    image: ${SNOWLUMA_IMAGE:-}
     # The upstream setup starts a web viewer unconditionally. Desktop talks to x11vnc.
     command:
       - /bin/sh

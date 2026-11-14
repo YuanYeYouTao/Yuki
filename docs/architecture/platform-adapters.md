@@ -6,7 +6,7 @@
 
 ## 同一个领域运行时
 
-QQ、Telegram、飞书、Lark 和个人客户端共用身份、事件账本、Main、Work、Memory、自动化与插件 Host。后续平台继续实现同一 `GatewayProvider`，加入已有 `GatewayProviderCatalog`；不复制领域服务，不在公共服务里增加平台名称分支。
+QQ（OneBot 与 QQ 官方 Bot）、Telegram、飞书、Lark 和个人客户端共用身份、事件账本、Main、Work、Memory、自动化与插件 Host。后续平台继续实现同一 `GatewayProvider`，加入已有 `GatewayProviderCatalog`；不复制领域服务，不在公共服务里增加平台名称分支。
 
 Provider 提供真实连接资料、入站投影和 `PlatformSocialOperations`。发送计划 `plan_send` 是无 I/O 的协议布局，每一项对应 Social 原操作下的一个实际派发与持久回执。`send` 每次只执行一项；原生长度限制、mentions、引用、文件上传及响应解析由适配器完成。公共 Social 管授权、原来源、预算、claim、事件和回执。媒体接口 `PlatformMediaGateway` 同样只在边界解析平台文件，并返回真实字节及媒体类型。
 
@@ -69,7 +69,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 ## Telegram 首期接入
 
-在部署使用的环境文件设置 `TELEGRAM_BOT_TOKEN`。源码使用 long polling，支持普通 Bot 私聊、群及 topic、文字和常见媒体、引用、命令与原执行来源。QQ-only 可不配置此项；App/TG-only 不需要虚填 QQ 管理员或 SnowLuma 凭据。
+Bot Token 只保存在平台凭据文档（见下节），由 Yuki Desktop「设置 → 平台」、`yuki setup` 或管理 API 写入。源码使用 long polling，支持普通 Bot 私聊、群及 topic、文字和常见媒体、引用、命令与原执行来源。QQ-only 可不配置此项；App/TG-only 不需要虚填 QQ 管理员或 SnowLuma 凭据。
 
 Telegram API 与平台文件下载共用同一原生 HTTP 客户端，沿标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 和 CA 环境配置；修改后重新创建 Bot 容器。无需 Telegram 专属代理开关，代理失败不自动改成直连，详见[代理配置](../operations/http-proxy.zh-CN.md)。
 
@@ -94,7 +94,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 
 ## 飞书与 Lark 接入
 
-企业自建应用机器人使用原生长连接接收事件，HTTP OpenAPI 执行收发和媒体操作，无需公网回调。`FEISHU_APP_ID` 与 `FEISHU_APP_SECRET` 同时配置后启动；都为空时不启动，只填写一项会报告配置错误。`FEISHU_DOMAIN` 明确选择飞书的 `https://open.feishu.cn` 或 Lark 的 `https://open.larksuite.com`，按对应平台保存账号与连接。部署步骤和权限见[飞书与 Lark](../operations/feishu.zh-CN.md)。
+企业自建应用机器人使用原生长连接接收事件，HTTP OpenAPI 执行收发和媒体操作，无需公网回调。App ID 与 App Secret 保存在平台凭据文档，须成对保存。平台键 `feishu` 使用 `https://open.feishu.cn`，`lark` 使用 `https://open.larksuite.com`，按对应平台保存账号与连接。部署步骤和权限见[飞书与 Lark](../operations/feishu.zh-CN.md)。
 
 入站正文、原生提及、引用、附件和话题投影到共同 `InboundMessage`，经同一 Processor 和 canonical 入账。平台确认等待入账或明确忽略，不等待模型回答。重投读取原事件，不重新启动 Main；当前只订阅 `im.message.receive_v1`，未接入官方消息编辑推送，不承诺自动更新已观察历史。人物关联沿原 AccountAssignment，应用范围的原生 ID 不直接充当跨平台 Person ID。
 
@@ -105,6 +105,42 @@ TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整�
 群普通消息的可见性取决于应用权限：仅有群 @ 权限时只会接到 @ 消息；自然参与需 `im:message.group_msg` 及管理员批准，接入层不另加 `requireMention` 过滤。飞书/Lark 使用同一份固定平台工具合同；不提供原生输入状态时，Activity 返回无实现。
 
 各原生平台的命令读取共用 `parse_message_command`，允许在开头真实提及 Yuki 后书写 `/ai` 命令或配置前缀。只在后续确为命令/前缀时跳过这些 Bot 提及；普通文字、普通 `@名字` 和其他成员提及保持原语义。此投影不改入站消息、提及位置或账本正文，停用群的恢复命令也沿同一读取方式。
+
+## 平台凭据与热启停
+
+Telegram、飞书、Lark 与 QQ 官方 Bot 的凭据唯一来源是 `PLATFORMS_FILE`（默认
+`webui-config/platforms.toml`，Compose 中为 `/app/webui-config/platforms.toml`）及同目录 0600 的
+`platforms.secrets.json`。文档按平台键各一段，只含 `enabled` 与非密设置（飞书/Lark 的 `app_id`，
+QQ 官方 Bot 的 `app_id`、`sandbox`）；`bot_token`、`app_secret` 只在 secrets 文件，键名为
+`<平台>_<字段>` 大写。两个文件共用一个 bundle revision，写入复用模型配置的原子替换。
+`.env` 中旧的 `TELEGRAM_BOT_TOKEN`、`FEISHU_*` 不再读取，升级由 `yuki setup platforms-migrate`
+一次迁移（见[管理 API](admin-api.md#聊天平台凭据)）。QQ（SnowLuma/OneBot）仍由 `.env` 与 Compose 配置。
+
+`PlatformGateways` 是常驻的平台持有者，只注册一个 lifecycle 项，按平台键持有工厂
+`Callable[[PlatformConfig], PlatformGateway]`；网关提供 `preflight/start/close/health`。启动时按文档
+构造并启动已启用的平台。保存时先用新凭据构造新实例并 `preflight`（Telegram `getMe`，飞书/Lark 取
+tenant token 并读机器人身份），失败则关闭新实例、不写文件、不动旧实例；通过后写文件，关闭旧实例
+（断开 Registry）再启动新实例，原地替换 `gateway_health_sources` 的健康源。停用只关闭。同账号换
+凭据先断开旧连接，不产生 Registry 冲突，也不同时轮询。Telegram、飞书、Lark 与 QQ 官方 Bot 均已注册工厂
+（QQ 官方 Bot 的 `preflight` 以新凭据换 token 并读取 `/gateway`）；新 Provider 只需在容器中为其平台键注册工厂。
+
+## QQ 官方 Bot 接入
+
+平台键 `qq_official`，与 OneBot 的 `qq` 是两个独立 Provider。实现按 Gateway Provider 合同重写，平台事实参考 [SuInk/Diana](https://github.com/SuInk/Diana)（HEAD `0ba8eda`，已获其作者许可参考）的 `model/assistant/qq_official*.go`；接入步骤见[QQ 官方 Bot 接入](../operations/qq-official-bot.zh-CN.md)。本次没有真实开放平台收发验收，离线协议回归不代替真实账号验证。
+
+连接与鉴权：`QQOfficialClient(app_id, app_secret, sandbox=...)` 以 `POST https://bots.qq.com/app/getAppAccessToken` 换 token，按 `expires_in` 缓存；HTTP 401 或网关关闭码 4004 只作废被拒的那个 token，被拒的写请求不自动重放。只用 WebSocket 网关（`GET /gateway`），不需要公网回调。API 为 `https://api.bot.qq.com`，沙箱只换成 `https://sandbox.api.sgroup.qq.com`。IDENTIFY 的 intents 为群与单聊（`1<<25`）、群成员（`1<<24`）与 INTERACTION（`1<<26`），不订阅频道；网关以 4013/4014 拒绝时依次去掉群成员、INTERACTION 后重连，消息 intent 不去掉。有 session 时 RESUME 并带最后 sequence，OP 9 清 session 后重新 IDENTIFY，OP 7 按原 session 重连；两个心跳间隔内收不到任何帧即判定半开并重连，重连退避从 1 秒倍增到 30 秒。凭据由平台配置在构造时传入，代码不读环境变量；`verify_qq_official_credentials` 用新凭据换 token 并读取网关作为保存前预检。
+
+身份：`group_openid` 是 Space 的外部 ID；同一 Bot 内 `member_openid` 与 `user_openid` 相同，作为同一个 Account。平台不给 QQ 号，openid 与 OneBot 账号不互相推断或合并，人物关联沿 `/ai link` 显式完成。Bot 自己的 Presence 外部 ID 取网关 READY 的 `user.id`。群里收到平台推送的事件即证明 Bot 在群内，成员探针只据此回答 Bot 自身；平台不提供群名，Space 名称保持未知。
+
+入站：处理 `C2C_MESSAGE_CREATE`、`GROUP_AT_MESSAGE_CREATE` 与群主开启「获取群内全部消息」后的 `GROUP_MESSAGE_CREATE`。`GROUP_AT_MESSAGE_CREATE` 本身就是点名；全量消息逐条按 `mentions[].is_you` 判定，正文里的 `<@id>` 标记投影为原生提及，表情标签按其 `ext` 名称显示。全量模式下 Yuki 自己发言的回推按已登记出站平台消息 ID 识别并直接忽略（该消息已作为出站事件入账），不按正文猜测；`author.bot` 为真的其他 Bot 消息按共用 Bot 消息规则不触发回复。引用消息（`message_type=103`）的被引用正文与附件取自事件内 `msg_elements`，`message_scene.ext` 的 `ref_msg_idx` 经持久对照换回平台消息 ID 后由共同入口关联原事件；对照不到时只保留引用内容。附件带平台下载地址，由共用媒体路径读取。WebSocket 事件没有逐条确认，入账失败只记日志。
+
+出站被动回复：Social 把本次回复的内部来源事件 ID 随 `TransportTarget.source_event_id` 交给适配器，适配器只在该事件由同一 Presence 收到时取其平台消息 ID 作为 `msg_id`；同一 `msg_id` 的 `msg_seq` 取该 `msg_id` 已有出站投递记录的最大值加一，重启不从 1 重来。不预判窗口与次数，以平台错误码为事实：40034128 记为 `QQOfficialReplyLimit`、40034105/40034102 记为 `QQOfficialProactiveRefused`，都是确定失败回执且不重试；40054005 换下一个 `msg_seq` 只重发一次。没有来源事件的投递（定时任务、SELF 主动消息、无来源的 Work 结果）：群挂在同群最新一条入站消息的 `msg_id` 上，没有入站消息时记 `QQOfficialNoDeliveryPath`，从不发送不带 `msg_id` 的群消息；单聊先带 `is_wakeup`，平台回 40034122/40034123 时按普通主动消息再发一次，仍被拒如实失败。超出窗口的旧来源事件同样以平台拒绝为准，不改投私聊或其他平台。
+
+布局与媒体：无提及的文字以 `msg_type 0` 发送；群内提及只能写在 Markdown（`msg_type 2`）的 `<qqbot-at-user id="member_openid" />` 中，单聊提及保持正文文字；`@全体成员` 不可用。引用回复把目标平台消息 ID 换成持久对照里的 `REFIDX_` 填入 `message_reference`，对照不到时不带引用照常发送。图片（`file_type 1`）与其他文件（`file_type 4`）分片上传换 `file_info` 后以 `msg_type 7` 发送；文字与媒体拆成两项分别回执，上传失败即确定未发送。撤回调用原平台消息的 DELETE。
+
+持久对照：迁移 `0157` 新增 `qq_official_messages`，按 Presence 与平台消息 ID 保存入站 `msg_idx`、出站 `ext_info.ref_idx`、出站所用的 `msg_id`/`msg_seq` 与入站时间。它只服务于平台引用、被动回复序号、自发回推识别和无窗口投递的入站锚点，不承载身份或业务归属。
+
+不在本次：私聊 `stream_messages` 流式（Yuki 现有投递在模型完成后整条发送，没有流式交付）、Markdown 模板、按钮、`INTERACTION_CREATE`（若启用按钮须先 `PUT /interactions/{id}` 应答）、语音与视频的原生发送类型、正在输入、合并转发读取与频道。这些能力不声明，按真实不可用处理。
 
 ## 从已有数据升级
 

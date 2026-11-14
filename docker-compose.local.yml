@@ -14,8 +14,9 @@ services:
       - ./social-transfer:/app/social-transfer
       - sandbox-run:/run/yuki-sandbox:ro
       - media-cache:/app/data/conversation-media-cache
+      - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
-      - ./webui-config:/app/webui-config:ro
+      - ./webui-config:/app/webui-config
       - ./plugins:/app/plugins:ro
   manager:
     image: ${YUKI_LOCAL_IMAGE:-ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}}
