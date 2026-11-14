@@ -594,7 +594,10 @@ class PersistentManager:
             if directory.is_symlink():
                 raise RuntimeError("unsafe_environment_directory")
             directory.mkdir(mode=0o755, parents=True, exist_ok=True)
-            if os.geteuid() == 0:
+            # chown moves ctime even without a change, and ctime tells whether her
+            # computer changed since the last snapshot.
+            info = directory.stat()
+            if os.geteuid() == 0 and (info.st_uid, info.st_gid) != (10001, 10001):
                 os.chown(directory, 10001, 10001)
         await asyncio.to_thread(self.store.cleanup)
         await asyncio.to_thread(self.publish_environment_files)

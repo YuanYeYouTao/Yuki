@@ -378,3 +378,4 @@ def test_home_change_follows_ctime_and_skips_the_media_cache(tmp_path):
     assert home_changed(home, marker) is None
     (home / "note.txt").write_text("hers")
     assert home_changed(home, marker) in {"/", "note.txt"}
+
