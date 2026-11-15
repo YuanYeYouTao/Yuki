@@ -15,10 +15,11 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .screen import EVENT_TAG, Display, Refused, Window, to_virtual_desk
+from .screen import EVENT_TAG, Display, Refused, Stale, Window, to_virtual_desk
 
 assert sys.platform == "win32"
 
@@ -136,6 +137,25 @@ class SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
 
+class CURSORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hCursor", HANDLE),
+        ("ptScreenPos", wintypes.POINT),
+    ]
+
+
+class ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wintypes.BOOL),
+        ("xHotspot", wintypes.DWORD),
+        ("yHotspot", wintypes.DWORD),
+        ("hbmMask", wintypes.HBITMAP),
+        ("hbmColor", wintypes.HBITMAP),
+    ]
+
+
 def guid(text: str) -> GUID:
     return GUID.from_buffer_copy(uuid.UUID(text).bytes_le)
 
@@ -220,6 +240,19 @@ user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+user32.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
+user32.GetIconInfo.argtypes = [HANDLE, ctypes.POINTER(ICONINFO)]
+user32.DrawIconEx.argtypes = [
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    HANDLE,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+    HANDLE,
+    wintypes.UINT,
+]
 dwmapi.DwmGetWindowAttribute.argtypes = [
     wintypes.HWND,
     wintypes.DWORD,
@@ -271,7 +304,23 @@ MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
 MOUSEEVENTF_ABSOLUTE = 0x8000
-BUTTON_FLAGS = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010)}
+BUTTON_FLAGS = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010), "middle": (0x0020, 0x0040)}
+CURSOR_SHOWING, DI_NORMAL, SM_CXCURSOR, SM_CYCURSOR = 0x1, 0x3, 13, 14
+# UI Automation: the element no longer exists (UIA_E_ELEMENTNOTAVAILABLE).
+ELEMENT_NOT_AVAILABLE = -2147220991
+CONTROL_TYPES = dict(
+    enumerate(
+        (
+            "button calendar check_box combo_box edit hyperlink image list_item list menu "
+            "menu_bar menu_item progress_bar radio_button scroll_bar slider spinner status_bar "
+            "tab tab_item text tool_bar tool_tip tree tree_item custom group thumb data_grid "
+            "data_item document split_button window pane header header_item table title_bar "
+            "separator semantic_zoom app_bar"
+        ).split(),
+        start=50000,
+    )
+)
+CONTAINER_TYPES = frozenset({"pane", "group", "custom"})
 KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x0001, 0x0002, 0x0004
 WHEEL_DELTA = 120
 SRCCOPY, CAPTUREBLT, HALFTONE = 0x00CC0020, 0x40000000, 4
@@ -391,14 +440,55 @@ class WindowsScreen:
         left, top, width, height = (user32.GetSystemMetrics(index) for index in (76, 77, 78, 79))
         return left, top, width, height
 
-    def capture(self, display: Display, width: int, height: int, path: Path) -> None:
+    def capture(
+        self,
+        display: Display,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        _jpeg(self.grab(display, width, height, region), width, height, path)
+
+    def grab(
+        self,
+        display: Display,
+        width: int,
+        height: int,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> Any:
+        """Top-down 32-bit pixels of ``display`` (or ``region`` of it), the pointer drawn in."""
+        left, top, extent_x, extent_y = region or (0, 0, display.width, display.height)
+        source = (
+            round(display.x + left),
+            round(display.y + top),
+            round(extent_x),
+            round(extent_y),
+        )
         screen = user32.GetDC(None)
         try:
-            source = (int(display.x), int(display.y), int(display.width), int(display.height))
-            pixels = _stretch(screen, source, width, height, SRCCOPY | CAPTUREBLT)
+            # GDI copies no cursor; it is drawn over the scaled picture, at its scale.
+            return _stretch(
+                screen, source, width, height, SRCCOPY | CAPTUREBLT, cursor=(source, width)
+            )
         finally:
             user32.ReleaseDC(None, screen)
-        _jpeg(pixels, width, height, path)
+
+    def pointer(self) -> tuple[float, float] | None:
+        point = wintypes.POINT()
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            return None
+        return float(point.x), float(point.y)
+
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        import comtypes
+
+        module, client = automation()
+        try:
+            element = client.ElementFromPoint(module.tagPOINT(round(x), round(y)))
+            return describe(element) if element else None
+        except comtypes.COMError:
+            return None
 
     def windows(self) -> list[dict[str, str]]:
         handles: list[int] = []
@@ -497,7 +587,15 @@ class WindowsScreen:
         array = (INPUT * len(inputs))(*inputs)
         sent = user32.SendInput(len(inputs), array, ctypes.sizeof(INPUT))
         if sent != len(inputs):
-            raise ctypes.WinError(ctypes.get_last_error())
+            error = ctypes.WinError(ctypes.get_last_error())
+            # Only part of the batch went in (UIPI, a desktop switch): whatever it pressed
+            # is released, so no key or button stays down (A17).
+            releases = _releases(inputs[:sent])
+            if releases:
+                user32.SendInput(
+                    len(releases), (INPUT * len(releases))(*releases), ctypes.sizeof(INPUT)
+                )
+            raise error
 
     def _mouse(self, flags: int, point: tuple[float, float] | None = None, data: int = 0) -> INPUT:
         x = y = 0
@@ -507,34 +605,68 @@ class WindowsScreen:
         value = _INPUTS(mi=MOUSEINPUT(x, y, data & 0xFFFFFFFF, flags, 0, EVENT_TAG))
         return INPUT(INPUT_MOUSE, value)
 
-    def move(self, x: float, y: float) -> None:
-        self._send([self._mouse(0, (x, y))])
-
-    def click(self, x: float, y: float, button: str, count: int) -> None:
-        down, up = BUTTON_FLAGS[button]
-        self._send(
-            [self._mouse(0, (x, y))]
-            + [self._mouse(flag) for _ in range(count) for flag in (down, up)]
+    def _held(self, modifiers: tuple[str, ...], inputs: list[INPUT]) -> list[INPUT]:
+        """``inputs`` wrapped in ``modifiers``: pressed and released within the same batch, so
+        the owner's own keys never pick them up (A18)."""
+        codes = [VIRTUAL_KEYS[name] for name in modifiers]
+        return (
+            [self._keyboard(code, 0) for code in codes]
+            + inputs
+            + [self._keyboard(code, KEYEVENTF_KEYUP) for code in reversed(codes)]
         )
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
-        down, up = BUTTON_FLAGS["left"]
-        self._send([self._mouse(0, (x, y)), self._mouse(down)])
-        steps = 12
-        for step in range(1, steps + 1):
-            # Applications track a drag from intermediate positions, not only its end.
-            time.sleep(0.01)
-            self._send([self._mouse(0, (x + (x2 - x) * step / steps, y + (y2 - y) * step / steps))])
-        self._send([self._mouse(up)])
+    def move(self, x: float, y: float) -> str:
+        self._send([self._mouse(0, (x, y))])
+        return "global_input"
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str:
+        down, up = BUTTON_FLAGS[button]
+        # One batch: the clicks of a triple click arrive within the double-click time.
+        self._send(
+            self._held(
+                modifiers,
+                [self._mouse(0, (x, y))]
+                + [self._mouse(flag) for _ in range(count) for flag in (down, up)],
+            )
+        )
+        return "global_input"
+
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str:
+        down, up = BUTTON_FLAGS["left"]
+        codes = [VIRTUAL_KEYS[name] for name in modifiers]
+        # Modifiers go down with the button and up with it: held only while dragging (A18).
+        self._send(
+            [self._keyboard(code, 0) for code in codes]
+            + [self._mouse(0, (x, y)), self._mouse(down)]
+        )
+        try:
+            steps = 12
+            for step in range(1, steps + 1):
+                # Applications track a drag from intermediate positions, not only its end.
+                time.sleep(0.01)
+                self._send(
+                    [self._mouse(0, (x + (x2 - x) * step / steps, y + (y2 - y) * step / steps))]
+                )
+        finally:
+            self._send(
+                [self._mouse(up)]
+                + [self._keyboard(code, KEYEVENTF_KEYUP) for code in reversed(codes)]
+            )
+        return "global_input"
+
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
         inputs = [self._mouse(0, (x, y))]
         if dy:
             # Positive wheel data scrolls forward (up); dy is positive downward.
             inputs.append(self._mouse(MOUSEEVENTF_WHEEL, data=-dy * WHEEL_DELTA))
         if dx:
             inputs.append(self._mouse(MOUSEEVENTF_HWHEEL, data=dx * WHEEL_DELTA))
-        self._send(inputs)
+        self._send(self._held(modifiers, inputs))
+        return "global_input"
 
     @staticmethod
     def _keyboard(code: int, flags: int, scan: int = 0) -> INPUT:
@@ -542,16 +674,14 @@ class WindowsScreen:
             flags |= KEYEVENTF_EXTENDEDKEY
         return INPUT(INPUT_KEYBOARD, _INPUTS(ki=KEYBDINPUT(code, scan, flags, 0, EVENT_TAG)))
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None:
-        held = [VIRTUAL_KEYS[name] for name in modifiers]
+    def key(self, modifiers: tuple[str, ...], key: str) -> str:
         code = VIRTUAL_KEYS[key]
         self._send(
-            [self._keyboard(item, 0) for item in held]
-            + [self._keyboard(code, 0), self._keyboard(code, KEYEVENTF_KEYUP)]
-            + [self._keyboard(item, KEYEVENTF_KEYUP) for item in reversed(held)]
+            self._held(modifiers, [self._keyboard(code, 0), self._keyboard(code, KEYEVENTF_KEYUP)])
         )
+        return "global_input"
 
-    def type(self, text: str) -> None:
+    def type(self, text: str) -> str:
         inputs = []
         for character in text.replace("\r\n", "\n"):
             if character in "\n\t":
@@ -567,6 +697,47 @@ class WindowsScreen:
                 ]
         if inputs:
             self._send(inputs)
+        return "global_input"
+
+
+def _releases(inputs: list[INPUT]) -> list[INPUT]:
+    """Key-up and button-up events for what ``inputs`` pressed and did not release."""
+    keys: dict[int, None] = {}
+    buttons: dict[int, int] = {}
+    for item in inputs:
+        if item.type == INPUT_KEYBOARD:
+            flags = item.value.ki.dwFlags
+            if flags & KEYEVENTF_UNICODE:
+                continue
+            if flags & KEYEVENTF_KEYUP:
+                keys.pop(item.value.ki.wVk, None)
+            else:
+                keys[item.value.ki.wVk] = None
+        else:
+            flags = item.value.mi.dwFlags
+            for down, up in BUTTON_FLAGS.values():
+                if flags & down:
+                    buttons[down] = up
+                if flags & up:
+                    buttons.pop(down, None)
+    return [
+        INPUT(INPUT_MOUSE, _INPUTS(mi=MOUSEINPUT(0, 0, 0, up, 0, EVENT_TAG)))
+        for up in buttons.values()
+    ] + [
+        INPUT(
+            INPUT_KEYBOARD,
+            _INPUTS(
+                ki=KEYBDINPUT(
+                    code,
+                    0,
+                    KEYEVENTF_KEYUP | (KEYEVENTF_EXTENDEDKEY if code in EXTENDED else 0),
+                    0,
+                    EVENT_TAG,
+                )
+            ),
+        )
+        for code in reversed(keys)
+    ]
 
 
 def _integrity(process: Any) -> int:
@@ -633,8 +804,42 @@ def _cloaked(window: int) -> bool:
     return bool(cloaked.value)
 
 
+def _draw_cursor(memory: Any, rectangle: tuple[int, int, int, int], width: int) -> None:
+    """The real pointer over a picture of ``rectangle`` (physical pixels) scaled to ``width``.
+
+    Per-monitor-v2: the cursor position and the rectangle are both physical pixels. Any
+    failure leaves the picture without the pointer; the screenshot itself still answers.
+    """
+    info = CURSORINFO(ctypes.sizeof(CURSORINFO))
+    if not user32.GetCursorInfo(ctypes.byref(info)) or not info.flags & CURSOR_SHOWING:
+        return
+    icon = ICONINFO()
+    if not user32.GetIconInfo(info.hCursor, ctypes.byref(icon)):
+        return
+    for handle in (icon.hbmMask, icon.hbmColor):
+        if handle:
+            gdi32.DeleteObject(handle)
+    scale = width / rectangle[2]
+    user32.DrawIconEx(
+        memory,
+        round((info.ptScreenPos.x - icon.xHotspot - rectangle[0]) * scale),
+        round((info.ptScreenPos.y - icon.yHotspot - rectangle[1]) * scale),
+        info.hCursor,
+        max(1, round(user32.GetSystemMetrics(SM_CXCURSOR) * scale)),
+        max(1, round(user32.GetSystemMetrics(SM_CYCURSOR) * scale)),
+        0,
+        None,
+        DI_NORMAL,
+    )
+
+
 def _stretch(
-    source: Any, rectangle: tuple[int, int, int, int], width: int, height: int, operation: int
+    source: Any,
+    rectangle: tuple[int, int, int, int],
+    width: int,
+    height: int,
+    operation: int,
+    cursor: tuple[tuple[int, int, int, int], int] | None = None,
 ) -> Any:
     """Scale ``rectangle`` of the device context ``source`` to ``width``x``height`` pixels."""
     memory = gdi32.CreateCompatibleDC(source)
@@ -644,6 +849,8 @@ def _stretch(
         gdi32.SetStretchBltMode(memory, HALFTONE)
         gdi32.SetBrushOrgEx(memory, 0, 0, None)
         copied = gdi32.StretchBlt(memory, 0, 0, width, height, source, *rectangle, operation)
+        if copied and cursor is not None:
+            _draw_cursor(memory, *cursor)
         gdi32.SelectObject(memory, previous)
         if not copied:
             raise ctypes.WinError(ctypes.get_last_error())
@@ -698,6 +905,66 @@ def _pattern(element: Any, identifier: int, interface: Any) -> Any | None:
     return found.QueryInterface(interface) if found else None
 
 
+def describe(element: Any) -> dict[str, str]:
+    return {
+        "role": CONTROL_TYPES.get(int(element.CurrentControlType), "custom").replace("_", " "),
+        "name": str(element.CurrentName or ""),
+    }
+
+
+def _press(module: Any, element: Any) -> bool:
+    """Invoke, toggle or select ``element``: what a plain left click on it would do."""
+    for identifier, interface, act in (
+        (module.UIA_InvokePatternId, module.IUIAutomationInvokePattern, "Invoke"),
+        (module.UIA_TogglePatternId, module.IUIAutomationTogglePattern, "Toggle"),
+        (
+            module.UIA_SelectionItemPatternId,
+            module.IUIAutomationSelectionItemPattern,
+            "Select",
+        ),
+    ):
+        pattern = _pattern(element, identifier, interface)
+        if pattern is not None:
+            getattr(pattern, act)()
+            return True
+    return False
+
+
+@dataclass
+class WindowsNode:
+    """One UI Automation element of a window, as listed by ``elements``."""
+
+    element: Any
+    depth: int
+    role: str
+    name: str
+    container: bool
+    visible: bool
+
+    def _live(self, read: Callable[[Any, Any], Any]) -> Any:
+        import comtypes
+
+        module, _ = automation()
+        try:
+            return read(module, self.element)
+        except comtypes.COMError as error:
+            if error.hresult == ELEMENT_NOT_AVAILABLE:
+                raise Stale(self.name) from error
+            raise OSError(f"UI Automation: {error}") from error
+
+    def bounds(self) -> tuple[float, float, float, float] | None:
+        rect = self._live(lambda module, element: element.CurrentBoundingRectangle)
+        if rect.right <= rect.left or rect.bottom <= rect.top:
+            return None
+        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+
+    def press(self) -> bool:
+        return bool(self._live(_press))
+
+    def focus(self) -> None:
+        self._live(lambda module, element: element.SetFocus())
+
+
 class WindowsTarget:
     """One top-level window, driven only through UI Automation patterns in its own subtree.
 
@@ -707,6 +974,7 @@ class WindowsTarget:
     no pattern to carry it is refused.
     """
 
+    # No modifiers, click counts, other buttons, keys, moves or drags: no pattern carries them.
     actions = frozenset({"click", "scroll", "type"})
 
     def __init__(self, window: Window, handle: int, process_id: int) -> None:
@@ -725,7 +993,13 @@ class WindowsTarget:
         # UIPI blocks UI Automation into a higher integrity level as it blocks SendInput.
         return _elevated(self.process_id)
 
-    def capture(self, width: int, height: int, path: Path) -> None:
+    def capture(
+        self,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
         outer = wintypes.RECT()
         if not user32.GetWindowRect(self.handle, ctypes.byref(outer)):
             raise ctypes.WinError(ctypes.get_last_error())
@@ -738,11 +1012,12 @@ class WindowsTarget:
             # The window draws itself, covered or not, GPU-composed content included.
             if not user32.PrintWindow(self.handle, memory, PW_RENDERFULLCONTENT):
                 raise ctypes.WinError(ctypes.get_last_error())
+            left, top, extent_x, extent_y = region or (0, 0, self.window.width, self.window.height)
             visible = (
-                round(self.window.x) - outer.left,
-                round(self.window.y) - outer.top,
-                round(self.window.width),
-                round(self.window.height),
+                round(self.window.x + left) - outer.left,
+                round(self.window.y + top) - outer.top,
+                round(extent_x),
+                round(extent_y),
             )
             pixels = _stretch(memory, visible, width, height, SRCCOPY)
             gdi32.SelectObject(memory, previous)
@@ -778,7 +1053,62 @@ class WindowsTarget:
             yield module, node
             node = walker.GetParentElement(node)
 
-    def _deliver(self, run: Callable[[], bool], what: str) -> None:
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        node = next(self._ancestors(x, y), None)
+        return describe(node[1]) if node is not None else None
+
+    def elements(self) -> list[WindowsNode]:
+        """The control view of this window's own subtree, read through one cached request."""
+        module, client = automation()
+        cache = client.CreateCacheRequest()
+        for identifier in (
+            module.UIA_NamePropertyId,
+            module.UIA_ControlTypePropertyId,
+            module.UIA_IsOffscreenPropertyId,
+        ):
+            cache.AddProperty(identifier)
+        cache.TreeScope = module.TreeScope_Element | module.TreeScope_Descendants
+        cache.TreeFilter = client.ControlViewCondition
+        root = client.ElementFromHandle(self.handle).BuildUpdatedCache(cache)
+        found: list[WindowsNode] = []
+        stack = [(root, 0)]
+        while stack:
+            element, depth = stack.pop()
+            role = CONTROL_TYPES.get(int(element.CachedControlType), "custom")
+            found.append(
+                WindowsNode(
+                    element,
+                    depth,
+                    role.replace("_", " "),
+                    str(element.CachedName or ""),
+                    role in CONTAINER_TYPES,
+                    not element.CachedIsOffscreen,
+                )
+            )
+            children = element.GetCachedChildren()
+            if children:
+                stack.extend(
+                    (children.GetElement(index), depth + 1)
+                    for index in reversed(range(children.Length))
+                )
+        return found
+
+    def focus_element(self, node: Any) -> None:
+        # As for x,y: no keyboard focus moves; the node's value is what ``type`` writes.
+        value = node._live(
+            lambda module, element: _pattern(
+                element, module.UIA_ValuePatternId, module.IUIAutomationValuePattern
+            )
+        )
+        if value is None or value.CurrentIsReadOnly:
+            raise Refused(
+                "device_not_supported",
+                "这个节点不是可写的输入框（UI Automation 没有 Value），后台输入没有执行。",
+                cause="no_focused_field",
+            )
+        self.field = value
+
+    def _deliver(self, run: Callable[[], bool], what: str) -> str:
         import comtypes
 
         try:
@@ -790,9 +1120,13 @@ class WindowsTarget:
                 "device_not_supported",
                 f"窗口里这一处没有可在后台{what}的控件（UI Automation），输入没有执行；"
                 "需要时省略 window，在前台操作整个屏幕。",
+                cause="no_control_at_point",
             )
+        return "accessibility"
 
-    def click(self, x: float, y: float, button: str, count: int) -> None:
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str:
         def expand_or_collapse(pattern: Any, collapsed: int) -> None:
             if pattern.CurrentExpandCollapseState == collapsed:
                 pattern.Expand()
@@ -832,9 +1166,9 @@ class WindowsTarget:
                         return True
             return False
 
-        self._deliver(run, "点击")
+        return self._deliver(run, "点击")
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
         def run() -> bool:
             for module, node in self._ancestors(x, y):
                 pattern = _pattern(
@@ -852,9 +1186,9 @@ class WindowsTarget:
                 return True
             return False
 
-        self._deliver(run, "滚动")
+        return self._deliver(run, "滚动")
 
-    def focus(self, x: float, y: float) -> None:
+    def focus(self, x: float, y: float) -> str:
         # No keyboard focus moves (UI Automation would raise the window for it): the field
         # at x,y is remembered and ``type`` writes its value.
         def run() -> bool:
@@ -867,28 +1201,38 @@ class WindowsTarget:
                     return True
             return False
 
-        self._deliver(run, "输入")
+        return self._deliver(run, "输入")
 
-    def type(self, text: str) -> None:
+    def type(self, text: str) -> str:
         field = self.field
         if field is None:
             raise Refused(
                 "device_not_supported",
-                "Windows 上按窗口输入要给 x,y 指向输入框（文字接在原内容之后）；输入没有执行。",
+                "Windows 上按窗口输入要给 x,y 或 element 指向输入框（文字接在原内容之后）；"
+                "输入没有执行。",
+                cause="no_focused_field",
             )
 
         def run() -> bool:
             field.SetValue(field.CurrentValue + text)
             return True
 
-        self._deliver(run, "输入")
+        return self._deliver(run, "输入")
 
     # Delivered only by moving the real cursor or posting window messages: never here.
-    def move(self, x: float, y: float) -> None:
-        raise Refused("device_not_supported", "Windows 上不能在后台移动指针。")
+    def move(self, x: float, y: float) -> str:
+        raise Refused(
+            "device_not_supported", "Windows 上不能在后台移动指针。", cause="no_background_route"
+        )
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
-        raise Refused("device_not_supported", "Windows 上不能在后台拖拽。")
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str:
+        raise Refused(
+            "device_not_supported", "Windows 上不能在后台拖拽。", cause="no_background_route"
+        )
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None:
-        raise Refused("device_not_supported", "Windows 上不能在后台按键。")
+    def key(self, modifiers: tuple[str, ...], key: str) -> str:
+        raise Refused(
+            "device_not_supported", "Windows 上不能在后台按键。", cause="no_background_route"
+        )

@@ -227,6 +227,44 @@ def configure_resolver(deployment: Deployment, mode: str, runtime: str) -> dict[
     raise Failure("the environment was not recreated with a working resolver")
 
 
+def computer_use(deployment: Deployment, status: dict[str, Any]) -> None:
+    """Computer Use in the installed desktop (task book Computer-Use-2026-11-15 §12).
+
+    The Bot's own computer limit (1568 / 1.15 MP) produces 1356x848 from the 1440x900
+    display; at-spi2-core and xclip are installed by the profile, the accessibility bus is
+    published on the display, and its processes' memory is recorded for runc and runsc.
+    """
+    limits = {"max_dimension": 1568, "max_pixels": 1_150_000}
+    shot = deployment.manager("computer_action", {"action": "screenshot", **limits})
+    expect((shot.get("width"), shot.get("height")) == (1356, 848), f"computer size: {shot}")
+    expect("cursor" in shot and "scale=1000" in shot.get("coordinates", ""), f"echo: {shot}")
+    zoom = deployment.manager(
+        "computer_action", {"action": "zoom", "region": [0, 0, 678, 424], **limits}
+    )
+    expect(zoom.get("frame") == {"width": 1356, "height": 848}, f"zoom: {zoom}")
+    facts = deployment.terminal(
+        "dpkg-query -W -f='${Package} ${Version}\\n' at-spi2-core xclip; "
+        "DISPLAY=:1 xprop -root AT_SPI_BUS | cut -c1-40; "
+        "ps -eo rss=,comm= | awk '/at-spi|dbus-daemon/ {print}'"
+    )
+    output = str(facts["output"])
+    expect("at-spi2-core" in output and "xclip" in output, f"packages: {output}")
+    expect("AT_SPI_BUS(STRING)" in output, f"accessibility bus: {output}")
+    rss = [line.split() for line in output.splitlines() if line.strip()[:1].isdigit()]
+    record = {
+        "runtime": status.get("runtime"),
+        "screenshot": {key: shot.get(key) for key in ("width", "height", "cursor")},
+        "zoom": {key: zoom.get(key) for key in ("region", "frame", "width", "height")},
+        "packages": [line for line in output.splitlines() if line.startswith(("at-spi", "xclip"))],
+        "accessibility_memory_kib": {name: int(size) for size, name in rss},
+        "programs": status.get("programs"),
+    }
+    (deployment.artifacts / "computer-use.json").write_text(
+        json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    deployment.record("computer_use", **record)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -418,6 +456,7 @@ def main() -> int:
         expect(status["desktop"] and status["profile"] == "desktop", f"desktop: {status}")
         sandbox_snapshot_e2e.desktop(deployment)
         deployment.record("desktop_computer", limits=status["limits"])
+        computer_use(deployment, status)
     print(f"All steps passed; record in {args.artifacts / 'steps.json'}")
     return 0
 

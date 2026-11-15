@@ -135,6 +135,7 @@ async def _macos_host_session(
     def front() -> int | None:
         return front_pid()
 
+    identity = ""
     try:
         until(lambda: [e for e in host_events(log) if e["ev"] == "window"][1:])
         a, b = (
@@ -214,6 +215,31 @@ async def _macos_host_session(
         assert any(e["ev"] == "mouseDown" and e["clicks"] == 2 for e in pad)
         record["moved"] = "mouseMoved" in kinds
 
+        # A4/A5/A7 (task book §11): stamped events carry click state 3, the other button and
+        # modifier flags; a click with modifiers skips accessibility (route window_events).
+        await call("triple_click", window=str(a), **content(160, 50))
+        await call("middle_click", window=str(a), **content(170, 50))
+        held = await call("click", window=str(a), text="shift+cmd", **content(180, 50))
+        assert held["route"] == ["window_events"], held
+        await asyncio.sleep(0.5)
+        pad = [e for e in host_events(log) if e.get("x") is not None]
+        assert any(e["ev"] == "mouseDown" and e["clicks"] == 3 for e in pad), pad
+        assert any(e["ev"] == "otherMouseDown" and e["button"] == 2 for e in pad), pad
+        assert any(e["ev"] == "mouseDown" and e["shift"] and e["cmd"] for e in pad), pad
+        # R2: the button through accessibility; hit names it.
+        pressed_again = await call("click", window=str(a), **content(90, 286))
+        assert pressed_again["route"] == ["accessibility"], pressed_again
+        assert pressed_again["hit"]["role"] == "button", pressed_again
+        # E1/E2: the window's nodes; click(element) presses the button.
+        listed = await call("elements", window=str(a))
+        record["elements"] = listed
+        line = next(row for row in listed["elements"].splitlines() if '"Press me"' in row)
+        identity = line.split("[")[1].split("]")[0]
+        actions = len([e for e in host_events(log) if e["ev"] == "buttonAction"])
+        by_node = await call("click", window=str(a), element=identity)
+        assert by_node["route"] == ["accessibility"] and by_node["element"] == identity
+        until(lambda: len([e for e in host_events(log) if e["ev"] == "buttonAction"]) > actions)
+
         # W9: nothing moved the owner's pointer, changed the frontmost app or activated A.
         after = {"pointer": pointer(), "front": front()}
         record["after"] = after
@@ -232,6 +258,9 @@ async def _macos_host_session(
     await asyncio.sleep(0.5)
     gone = await call("screenshot", window=str(a))
     assert gone["error"] == "window_not_found"
+    # E3/E5 for a real AX element: its process is gone, so the id is stale.
+    stale = await call("click", window=str(a), element=identity)
+    assert stale["error"] in {"element_stale", "window_not_found"}, stale
     assert (await call("screenshot", window="not-a-window"))["error"] == "window_not_found"
 
 
@@ -242,6 +271,83 @@ def _walk(root: Any, attribute: Any) -> list[Any]:
         found.append(node)
         stack.extend(attribute(node, "AXChildren") or [])
     return found
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows foreground backend")
+async def test_windows_foreground_modifiers_clicks_and_pointer(tmp_path: Path) -> None:
+    """A1, A4, A5, P2 with real SendInput and GDI, only on the CI runner's own desktop."""
+    if not os.environ.get("CI"):
+        pytest.skip("moves the real pointer and clicks: CI runners only")
+    import ctypes
+    from ctypes import wintypes
+
+    from yuki_agent_connector.screen import to_image
+
+    user32 = ctypes.WinDLL("user32")
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    backend = native_backend()
+    assert backend is not None
+    lines: list[dict[str, Any]] = []
+    desk = Desk(tmp_path / "data", backend, lines.append, lambda: None)
+    record: dict[str, Any] = {"platform": sys.platform, "lines": lines}
+    call = Calls(desk, record)
+    log = tmp_path / "host.jsonl"
+    host = start_host("win_window_host.py", str(log))
+    try:
+        ready = until(lambda: next((e for e in host_events(log) if e["ev"] == "ready"), None))
+        display = next(item for item in backend.displays() if item.primary)
+        rect = wintypes.RECT()
+        user32.GetWindowRect(ready["pad"], ctypes.byref(rect))
+        middle = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+        point = [round(value) for value in to_image(display, **LIMITS, x=middle[0], y=middle[1])]
+
+        def pad(kind: str) -> list[dict[str, Any]]:
+            return [e for e in host_events(log) if e["ev"] == "pad" and e["kind"] == kind]
+
+        # A1: modifiers held only for this click.
+        clicked = await call("click", x=point[0], y=point[1], text="ctrl+shift")
+        assert clicked["route"] == ["global_input"] and clicked["point"] == point, clicked
+        first = until(lambda: pad("left_down"))[-1]
+        assert first["shift"] and first["ctrl"] and not first["alt"], first
+        assert ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000 == 0  # released
+        # A4: a triple click arrives as press, double press, press.
+        await asyncio.sleep(0.6)
+        await call("triple_click", x=point[0], y=point[1])
+        until(lambda: len(pad("left_down")) >= 3 and pad("left_double"))
+        # A5: the middle button.
+        await call("middle_click", x=point[0], y=point[1])
+        assert until(lambda: pad("middle_down"))
+        # P2: the shot reports the pointer where SendInput left it and draws it there.
+        shot = await call("screenshot")
+        # One virtual-desk unit is a fraction of a pixel: allow its rounding both ways.
+        assert all(abs(a - b) <= 1 for a, b in zip(shot["cursor"], point, strict=True)), (
+            shot.get("cursor"),
+            point,
+        )
+        width, height = shot["width"], shot["height"]
+        drawn = bytes(backend.grab(display, width, height))  # type: ignore[attr-defined]
+        await call("move", x=max(0, point[0] - 200), y=max(0, point[1] - 150))
+        await asyncio.sleep(0.3)
+        away = bytes(backend.grab(display, width, height))  # type: ignore[attr-defined]
+
+        def patch(data: bytes) -> bytes:
+            rows = range(point[1], min(height, point[1] + 12))
+            return b"".join(
+                data[(row * width + point[0]) * 4 : (row * width + point[0] + 8) * 4]
+                for row in rows
+            )
+
+        record["cursor_patch_changed"] = patch(drawn) != patch(away)
+        assert patch(drawn) != patch(away), "the pointer is not drawn at the reported point"
+        record["host_events"] = host_events(log)
+    finally:
+        host.kill()
+        host.wait()
+        await desk.close()
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        (ARTIFACTS / f"foreground-native-{sys.platform}.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the Windows window backend")
@@ -345,18 +451,61 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
         until(lambda: [e for e in host_events(log) if e["ev"] == "clicked"])
         observe("invoke")
 
-        # W12: no background route → refused by name, nothing delivered.
+        # W12/D8: no background route → refused by name, nothing delivered.
         unaimed = await call("type", window=str(main), text="zz")
         assert unaimed["error"] == "device_not_supported" and unaimed["status"] == "failed"
-        for action in ("key", "double_click", "right_click", "move", "drag"):
-            refused = await call(action, window=str(main), text="Return", x=1, y=1, x2=2, y2=2)
+        assert unaimed["cause"] == "no_focused_field"
+        # D6/A6: no pattern carries keys, moves, drags, other buttons, counts or modifiers.
+        for action, extra in (
+            ("key", {"text": "Return"}),
+            ("double_click", {"x": 1, "y": 1}),
+            ("triple_click", {"x": 1, "y": 1}),
+            ("right_click", {"x": 1, "y": 1}),
+            ("middle_click", {"x": 1, "y": 1}),
+            ("click", {"x": 1, "y": 1, "text": "ctrl"}),
+            ("move", {"x": 1, "y": 1}),
+            ("drag", {"x": 1, "y": 1, "x2": 2, "y2": 2}),
+        ):
+            refused = await call(action, window=str(main), **extra)
             assert refused["error"] == "device_not_supported", (action, refused)
+            assert refused["cause"] == "no_background_route", (action, refused)
+        # D7: the pad is a custom window without any UI Automation pattern.
+        bare = await call("click", window=str(main), **center(ready["pad"], window))
+        assert bare["cause"] == "no_control_at_point" and bare["status"] == "failed", bare
         assert text(ready["edit"]) == "abcde"
+
+        # E1: the window's own UI Automation nodes, with ids and window-image bounds.
+        listed = await call("elements", window=str(main))
+        lines = listed["elements"].splitlines()
+        record["elements"] = lines
+        press = next(line for line in lines if 'button "Press me"' in line)
+        identity = press.split("[")[1].split("]")[0]
+        assert identity.startswith(f"{main}.")
+        assert any(line.lstrip().startswith("- edit ") for line in lines), lines
+        # E2: click(element) invokes the button: route accessibility, the node echoed.
+        clicks = len([e for e in host_events(log) if e["ev"] == "clicked"])
+        invoked = await call("click", window=str(main), element=identity)
+        assert invoked["route"] == ["accessibility"] and invoked["element"] == identity
+        assert invoked["hit"]["role"] == "button"
+        until(lambda: len([e for e in host_events(log) if e["ev"] == "clicked"]) > clicks)
+        observe("element")
+        # E16: without window the id's window is used (UI Automation), never global input.
+        clicks = len([e for e in host_events(log) if e["ev"] == "clicked"])
+        implied = await call("click", element=identity)
+        assert implied["window"] == str(main) and implied["route"] == ["accessibility"], implied
+        until(lambda: len([e for e in host_events(log) if e["ev"] == "clicked"]) > clicks)
+        observe("implied-element")
+        # E3: the button is destroyed; its id is stale and the fresh list is attached.
+        log.with_suffix(".cmd").write_text("destroy")
+        until(lambda: [e for e in host_events(log) if e.get("words") == ["destroy"]])
+        stale = await call("click", window=str(main), element=identity)
+        assert stale["error"] == "element_stale", stale
+        assert 'button "Press me"' not in stale["elements"]
         record["host_events"] = host_events(log)
 
         # W4: minimized → window_unavailable.
         log.with_suffix(".cmd").write_text("mini")
-        until(lambda: [e for e in host_events(log) if e["ev"] == "cmd"])
+        until(lambda: [e for e in host_events(log) if e.get("words") == ["mini"]])
         assert (await call("screenshot", window=str(main)))["error"] == "window_unavailable"
     finally:
         host.kill()

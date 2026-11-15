@@ -105,7 +105,7 @@ async def test_window_in_the_background(tmp_path: Path) -> None:
             assert round(first["x"]) == 700 and round(first["y"]) == 420
             assert desktop_lines(process)[-2:] == [
                 {**BACKGROUND, "action": "click", "phase": "start"},
-                {**BACKGROUND, "action": "click", "phase": "end"},
+                {**BACKGROUND, "action": "click", "phase": "end", "route": ["window_events"]},
             ]
 
             # M6: the owner moved the window after the picture; the click follows it now.

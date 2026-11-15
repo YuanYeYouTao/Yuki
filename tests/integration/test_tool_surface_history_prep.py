@@ -233,13 +233,13 @@ RPC_CALLS = [
         "computer",
         {"action": "screenshot"},
         "computer_action",
-        {"action": "screenshot", "owner": None, "max_dimension": 4096, "max_pixels": 16777216},
+        {"action": "screenshot", "owner": None, "max_dimension": 1568, "max_pixels": 1150000},
     ),
     (
         "browser",
         {"action": "snapshot"},
         "browser_action",
-        {"action": "snapshot", "owner": None, "max_dimension": 4096, "max_pixels": 16777216},
+        {"action": "snapshot", "owner": None, "max_dimension": 1568, "max_pixels": 1150000},
     ),
 ]
 

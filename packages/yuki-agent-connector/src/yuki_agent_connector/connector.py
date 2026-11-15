@@ -40,6 +40,9 @@ READ_ACTIONS = {
     "screenshot",
     "snapshot",
     "resume",
+    # computer reads (task book §6.3, §6.7): a retry reads again, nothing is journaled.
+    "zoom",
+    "elements",
 }
 ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond", "queue", "watch"}
 

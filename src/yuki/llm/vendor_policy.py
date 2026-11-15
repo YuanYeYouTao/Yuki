@@ -23,6 +23,10 @@ class ChatWireOptions(BaseModel):
     thinking_budget_tokens: int = Field(default=4096, ge=1024)
     include_reasoning: bool | None = None
     reasoning_format: Literal["parsed", "hidden"] | None = None
+    # Hints for ``source="tool"`` images (computer screenshots), deployment settings only:
+    # Chat Completions ``image_url.detail`` and Gemini part-level ``mediaResolution``.
+    tool_image_detail: Literal["low", "high", "auto", "original"] | None = None
+    tool_image_media_resolution: Literal["low", "medium", "high", "ultra_high"] | None = None
 
 
 # Vendor presets specify wire dialect, not claims about any particular model.
@@ -51,7 +55,12 @@ RESPONSES_VENDORS = frozenset({"openai", "openai_compatible", "deepseek"})
 def wire_options(vendor: str, overrides: ChatWireOptions | None = None) -> ChatWireOptions:
     defaults: dict[str, object] = {}
     if vendor in {"openai", "azure_openai"}:
-        defaults = {"token_field": "max_completion_tokens", "replay_reasoning": False}
+        defaults = {
+            "token_field": "max_completion_tokens",
+            "replay_reasoning": False,
+            # The model sees the screenshot the source produced, never a server rescale.
+            "tool_image_detail": "original",
+        }
     elif vendor == "deepseek":
         defaults = {
             "reasoning": "thinking",

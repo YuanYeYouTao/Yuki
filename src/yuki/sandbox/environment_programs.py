@@ -27,6 +27,10 @@ MODE_PACKAGES: dict[str, tuple[str, ...]] = {
         "xdotool",
         "x11-utils",
         "imagemagick",
+        # AT-SPI bus and registry for ``elements``; libatspi itself comes with GTK.
+        "at-spi2-core",
+        # Yuki's own clipboard for ``paste`` (Computer Use task book §6.12).
+        "xclip",
     ),
 }
 MANIFEST = Path("/opt/yuki-runtime/manifest.json")

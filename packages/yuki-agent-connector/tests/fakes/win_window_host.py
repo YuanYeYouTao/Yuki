@@ -1,9 +1,11 @@
 """A Windows test window with standard controls, covered by a topmost window it also owns.
 
 Usage: python win_window_host.py <log>
-"Yuki test host" holds a button, a single-line edit and a multi-line edit with 300 lines;
+"Yuki test host" holds a button, a single-line edit, a multi-line edit with 300 lines and a
+pad below them that records every mouse press (button, client point, held MK_* keys);
 "Yuki test cover" is a topmost window over its upper half. Neither is activated. Button
-clicks, activation and commands go to <log> as JSON lines; <log>.cmd takes "mini".
+clicks, pad presses, activation and commands go to <log> as JSON lines; <log>.cmd takes
+"mini" or "destroy" (the button).
 """
 
 import ctypes
@@ -70,6 +72,14 @@ WS_OVERLAPPEDWINDOW, WS_CHILD, WS_VISIBLE, WS_BORDER, WS_VSCROLL = (
 WS_POPUP, WS_EX_TOPMOST, WS_EX_NOACTIVATE = 0x80000000, 0x00000008, 0x08000000
 ES_MULTILINE, ES_AUTOVSCROLL, ES_AUTOHSCROLL = 0x0004, 0x0040, 0x0080
 WM_DESTROY, WM_ACTIVATE, WM_COMMAND = 0x0002, 0x0006, 0x0111
+PAD_MESSAGES = {
+    0x0201: "left_down",
+    0x0203: "left_double",
+    0x0204: "right_down",
+    0x0207: "middle_down",
+    0x020A: "wheel",
+}
+CS_DBLCLKS, MK_SHIFT, MK_CONTROL = 0x0008, 0x0004, 0x0008
 SW_SHOWNOACTIVATE, SW_SHOWMINNOACTIVE = 4, 7
 
 
@@ -85,8 +95,23 @@ def procedure(window, message, wparam, lparam):
         log(ev="clicked")
     elif message == WM_ACTIVATE:
         log(ev="activate", state=wparam & 0xFFFF)
-    elif message == WM_DESTROY:
+    elif message == WM_DESTROY and window == main:
         user32.PostQuitMessage(0)
+    return user32.DefWindowProcW(window, message, wparam, lparam)
+
+
+@WNDPROC
+def pad_procedure(window, message, wparam, lparam):
+    if message in PAD_MESSAGES:
+        log(
+            ev="pad",
+            kind=PAD_MESSAGES[message],
+            x=ctypes.c_short(lparam & 0xFFFF).value,
+            y=ctypes.c_short((lparam >> 16) & 0xFFFF).value,
+            shift=bool(wparam & MK_SHIFT),
+            ctrl=bool(wparam & MK_CONTROL),
+            alt=bool(user32.GetKeyState(0x12) & 0x8000),
+        )
     return user32.DefWindowProcW(window, message, wparam, lparam)
 
 
@@ -99,6 +124,8 @@ def poll(window, message, identity, tick):
     command.unlink()
     if words[0] == "mini":
         user32.ShowWindow(main, SW_SHOWMINNOACTIVE)
+    elif words[0] == "destroy":
+        user32.DestroyWindow(button)
     log(ev="cmd", words=words)
 
 
@@ -110,6 +137,15 @@ window_class.hInstance = instance
 window_class.hbrBackground = wintypes.HBRUSH(6)  # COLOR_WINDOW + 1
 window_class.lpszClassName = "YukiTestHost"
 user32.RegisterClassW(ctypes.byref(window_class))
+pad_class = WNDCLASSW()
+pad_class.style = CS_DBLCLKS
+pad_class.lpfnWndProc = pad_procedure
+pad_class.hInstance = instance
+pad_class.hbrBackground = wintypes.HBRUSH(2)  # COLOR_ACTIVECAPTION + 1
+pad_class.lpszClassName = "YukiTestPad"
+user32.RegisterClassW(ctypes.byref(pad_class))
+user32.GetKeyState.restype = ctypes.c_short
+user32.DestroyWindow.argtypes = [wintypes.HWND]
 
 
 def child(kind, text, style, x, y, width, height, identity):
@@ -135,6 +171,7 @@ lines = child(
     280,
     3,
 )
+pad = child("YukiTestPad", "", 0, 10, 345, 480, 30, 4)
 user32.ShowWindow(main, SW_SHOWNOACTIVATE)
 # A topmost window over the host's upper half: screen capture would show it, PrintWindow not.
 cover = user32.CreateWindowExW(
@@ -143,7 +180,16 @@ cover = user32.CreateWindowExW(
 )
 user32.ShowWindow(cover, SW_SHOWNOACTIVATE)
 user32.SetTimer(None, 0, 200, poll)
-log(ev="ready", pid=os.getpid(), main=main, button=button, edit=edit, lines=lines, cover=cover)
+log(
+    ev="ready",
+    pid=os.getpid(),
+    main=main,
+    button=button,
+    edit=edit,
+    lines=lines,
+    pad=pad,
+    cover=cover,
+)
 message = wintypes.MSG()
 while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
     user32.TranslateMessage(ctypes.byref(message))

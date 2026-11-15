@@ -17,11 +17,38 @@ SANDBOX_TOOLS = frozenset(
 # Actions that only observe. They write no pending receipt and take no input lease;
 # a retry simply reads again. Every other action is an input with a durable receipt.
 READ_ACTIONS = {
-    "computer": frozenset({"screenshot", "resume"}),
+    "computer": frozenset({"screenshot", "resume", "zoom", "elements"}),
     "browser": frozenset({"snapshot", "screenshot"}),
 }
 # ``computer`` actions on Yuki's own computer as a whole; they never reach a driver.
 LIFECYCLE_ACTIONS = frozenset({"wake", "sleep", "snapshot", "restore"})
+# ``computer`` actions that exist only on Yuki's own computer; with ``device`` the Bot
+# refuses them (``own_computer_only``) before anything reaches a Connector.
+OWN_COMPUTER_ACTIONS = LIFECYCLE_ACTIONS | {"paste"}
+_CLICKS = frozenset({"click", "double_click", "triple_click", "right_click", "middle_click"})
+
+
+def computer_features(args: dict[str, Any]) -> frozenset[str]:
+    """Connector features (``device_capabilities.computer.features``) a call relies on.
+
+    An older Connector reads arguments it does not know with ``get`` and would silently
+    ignore them, so such a call is refused before it is sent (task book §6.10).
+    """
+    action = args.get("action")
+    needed = set()
+    if args.get("scale") is not None:
+        needed.add("scale")
+    if action == "zoom":
+        needed.add("zoom")
+    if action == "elements" or args.get("element") is not None:
+        needed.add("elements")
+    if action in _CLICKS | {"drag", "scroll"} and args.get("text") is not None:
+        needed.add("modifiers")
+    if action in {"triple_click", "middle_click"}:
+        needed.add(str(action))
+    if args.get("repeat") is not None:
+        needed.add("key_repeat")
+    return frozenset(needed)
 
 
 def tool(
@@ -109,22 +136,42 @@ def environment_tools() -> tuple[ChatTool, ...]:
         tool(
             "computer",
             "看和操作电脑屏幕。省略 device 时操作 Yuki 自己 Linux 环境的桌面；"
-            "device 指本人电脑。screenshot 截屏；click、double_click、right_click、move "
-            "作用于 x,y；drag 从 x,y 拖到 x2,y2；type 输入 text；key 按组合键 text"
-            "（如 ctrl+l、Return）；scroll 在 x,y 滚动 dx,dy 格（dy 正数向下）；"
-            "resume 解除本人的叫停。"
-            "只对 Yuki 自己的电脑：wake 唤醒画面和浏览器，sleep 让画面层休眠"
-            "（终端和后台进程照常运行）；snapshot 给整台电脑拍快照（rootFS 与 HOME，"
-            "text 为备注，不含记忆和聊天，只保留最近几份、新的会挤掉最旧的），"
-            "restore 把整台电脑还原到 snapshot（快照 ID）：快照之后的改动全部丢失、"
-            "正在运行的命令被中断，需要时先拍一份；结果未知时先看 get_environment 再决定。"
-            "x,y 是本次结果所附截图的像素坐标；给 window"
-            "（screenshot 返回的 windows[].id）时只截该窗口、坐标相对该窗口。"
+            "device 指本人电脑。"
+            "坐标：x,y（以及 x2,y2、region）是本次结果所附截图的像素，左上为原点，"
+            "范围看结果的 width、height；若你习惯 0–1000 归一化坐标，必须传 scale=1000"
+            "（两个轴都按 0–1000），不要在一次调用里混用两种约定；超出范围返回 "
+            "coordinate_out_of_range 且没有任何输入，按错误里的坐标系改正再试。"
+            "给 window（screenshot 返回的 windows[].id）时只截该窗口、坐标相对该窗口图。"
+            "动作：screenshot 截屏；zoom 返回 region=[x0,y0,x1,y1] 的高清局部图"
+            "（region 和之后的坐标都仍按整张截图计）；elements 列出 window 的无障碍节点"
+            "（[节点 id] 与该窗口图上的边界，text 为过滤词），之后点击、移动、拖拽起点、滚动、"
+            "type、key 可传 element=节点 id 代替 x,y"
+            "（节点 id 带着窗口，省略 window 时按该窗口执行），"
+            "element_stale 时按附带的新列表重选；"
+            "click、double_click、triple_click（选中整行）、right_click、middle_click、move "
+            "作用于 x,y；drag 从 x,y 拖到 x2,y2；scroll 在 x,y 滚动 dx,dy 格（dy 正数向下）；"
+            "点击类、drag、scroll 的 text 是这一次按住的修饰键（shift、ctrl、alt、cmd，"
+            "用 + 连接，如 ctrl+shift）；type 输入 text；key 按组合键 text"
+            "（如 ctrl+l、Return），repeat 为连按次数（1–100）；resume 解除本人的叫停。"
+            "只对 Yuki 自己的电脑：paste 把 text 经她自己的剪贴板粘贴到当前输入焦点"
+            "（长文本比 type 快，会改写她自己的剪贴板）；wake 唤醒画面和浏览器，"
+            "sleep 让画面层休眠（终端和后台进程照常运行）；snapshot 给整台电脑拍快照"
+            "（rootFS 与 HOME，text 为备注，不含记忆和聊天，只保留最近几份、"
+            "新的会挤掉最旧的），restore 把整台电脑还原到 snapshot（快照 ID）："
+            "快照之后的改动全部丢失、正在运行的命令被中断，需要时先拍一份；"
+            "结果未知时先看 get_environment 再决定。"
+            "回执：point（以及 point2）是实际使用的本图像素，scale 是你声明的坐标系，"
+            "route 是投递途径（accessibility 无障碍动作、window_events 后台窗口事件、"
+            "global_input 全局键鼠、clipboard 剪贴板），hit 是投递前落点上的控件，"
+            "cursor 是全屏截图里指针的位置（指针也画在图里）；submitted 只表示已投递，"
+            "是否生效以动作后的新截图为准。"
             "本人电脑上给 window 即在后台操作该窗口，不动本人的光标和前台应用；"
-            "type、key 可给 x,y 先聚焦该处输入框，否则落在该窗口当前的输入焦点；"
-            "后台投递不了的动作返回 device_not_supported，需要时省略 window 改在前台操作。"
-            "每次都附动作后的新截图；submitted 只表示"
-            "输入已投递，是否生效看截图。本人接管或叫停时输入返回 control_held；"
+            "type、key 给 x,y 或 element 时先让该处输入框成为焦点（前台为在该处点击），"
+            "否则落在当前的输入焦点；"
+            "投递不了时返回 device_not_supported 并在 cause 写明原因"
+            "（如 no_background_route 需要时省略 window 改在前台操作，"
+            "connector_outdated 请本人在桌面端「設定 › 這台電腦」点「更新連接器，保留原資料」）。"
+            "本人接管或叫停时输入返回 control_held（截图、zoom、elements 照常可用）；"
             "本人电脑上本人刚用过电脑（给 window 时只算本人正在用该窗口所属的应用）时"
             "输入不执行、返回 owner_active，重新截图后再试。"
             "本人电脑的界面（打开或切换应用、点击、按键、输入、截屏）只用本工具，"
@@ -135,12 +182,17 @@ def environment_tools() -> tuple[ChatTool, ...]:
                     "type": "string",
                     "enum": [
                         "screenshot",
+                        "zoom",
+                        "elements",
                         "click",
                         "double_click",
+                        "triple_click",
                         "right_click",
+                        "middle_click",
                         "move",
                         "drag",
                         "type",
+                        "paste",
                         "key",
                         "scroll",
                         "resume",
@@ -157,6 +209,20 @@ def environment_tools() -> tuple[ChatTool, ...]:
                 "dx": {"type": "integer"},
                 "dy": {"type": "integer"},
                 "text": text,
+                "repeat": {"type": "integer", "minimum": 1, "maximum": 100},
+                "scale": {
+                    "type": "integer",
+                    "enum": [1000],
+                    "description": "坐标用 0–1000 归一化时传 1000；省略时是截图像素",
+                },
+                "region": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "zoom 的 [x0,y0,x1,y1]，整张截图的坐标",
+                },
+                "element": {"type": "string", "description": "elements 返回的节点 id"},
                 "window": {"type": "string", "description": "screenshot 返回的 windows[].id"},
                 "display": text,
                 "snapshot": {

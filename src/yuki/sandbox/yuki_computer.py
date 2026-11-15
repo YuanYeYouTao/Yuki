@@ -12,10 +12,14 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.util
+import importlib
 import json
 import os
 import re
+import secrets
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -216,12 +220,17 @@ class Keymap:
 
 
 class Screen:
-    """The sandbox X display: screenshots with ImageMagick, input with xdotool."""
+    """The sandbox X display: screenshots with ImageMagick, input with xdotool, nodes from
+    AT-SPI (task book docs/architecture/Computer-Use任务书-2026-11-15.md)."""
 
     def __init__(self, display: str) -> None:
         self.display = display
         self.environment = {**os.environ, "DISPLAY": display, "LC_ALL": "C.UTF-8"}
         self.keymap: Keymap | None = None
+        self.xfixes: Pointer | None = None
+        self.atspi: Any = None
+        # The latest ``elements`` list of each window: its tag and nodes, in memory only.
+        self.nodes: dict[str, tuple[str, list[Any]]] = {}
 
     def run(self, deadline: float, *command: str) -> bytes:
         return subprocess.run(
@@ -296,91 +305,185 @@ class Screen:
         max_dimension: int,
         max_pixels: int,
         deadline: float,
-    ) -> tuple[dict[str, Any], cdp.Image]:
-        from yuki_agent_connector import cdp
+    ) -> tuple[dict[str, Any], cdp.Image | None]:
+        from yuki_agent_connector import actions, cdp
 
-        action, window = args["action"], args.get("window")
+        action = args["action"]
+        if action not in actions.READS | actions.INPUTS | {"paste"}:
+            raise cdp.Failure({"error": "invalid_arguments", "message": f"未知的動作：{action}"})
+        try:
+            parsed = actions.validate(action, args)
+        except ValueError as error:
+            raise cdp.Failure({"error": "invalid_arguments", "message": str(error)}) from None
+        # An element names its window: without ``window`` the call is that window's (E16).
+        window = args.get("window") or (parsed.element[0] if parsed.element else None)
         result: dict[str, Any] = {}
         inputs = 0
+        routes: list[str] = []
 
-        def xdotool(*command: str) -> None:
+        def xdotool(*command: str, checked: bool = True) -> None:
+            nonlocal inputs
+            if checked:
+                before_input()
+                inputs += 1
+                self.run(deadline, "xdotool", *command)
+            else:
+                # A release (mouseup, keyup) gets its own short limit: it still goes out when
+                # the action used up its time, so nothing stays held down (A16).
+                self.run(time.monotonic() + RELEASE_SECONDS, "xdotool", *command)
+
+        def accessible(act: Callable[[], bool]) -> bool:
+            """An AT-SPI effect: the lease is checked first, it counts once it acted."""
             nonlocal inputs
             before_input()
-            inputs += 1
-            self.run(deadline, "xdotool", *command)
+            done = act()
+            if done:
+                inputs += 1
+            return done
 
         try:
-            if action not in ("screenshot", "resume"):
-                left, top, width, height = self.geometry(deadline, window)
-                scale = cdp.image_scale(width, height, max_dimension, max_pixels)
+            left, top, native_width, native_height = self.geometry(deadline, window)
+            scale = cdp.image_scale(native_width, native_height, max_dimension, max_pixels)
+            width, height = round(native_width * scale), round(native_height * scale)
 
-                def at(x_name: str, y_name: str) -> list[str]:
-                    # Coordinates are in the image this geometry and scale produce.
-                    if args.get(x_name) is None or args.get(y_name) is None:
-                        return []
-                    # No --sync: it never returns when the pointer is already there,
-                    # and the X server applies the move before the following click.
-                    return [
-                        "mousemove",
-                        str(left + round(args[x_name] / scale)),
-                        str(top + round(args[y_name] / scale)),
-                    ]
+            def to_root(point: tuple[int, int]) -> tuple[int, int]:
+                return left + round(point[0] / scale), top + round(point[1] / scale)
 
-                if action == "click":
-                    xdotool(*at("x", "y"), "click", "1")
-                elif action == "double_click":
-                    xdotool(*at("x", "y"), "click", "--repeat", "2", "1")
-                elif action == "right_click":
-                    xdotool(*at("x", "y"), "click", "3")
-                elif action == "move":
-                    xdotool(*at("x", "y"))
-                elif action == "drag":
-                    xdotool(*at("x", "y"), "mousedown", "1")
-                    xdotool(*at("x2", "y2"))
-                    xdotool("mouseup", "1")
-                elif action == "type":
-                    if self.keymap is None:
-                        self.keymap = Keymap(self.display)
-                    for run in self.keymap.runs(args.get("text") or ""):
-                        xdotool("type", "--clearmodifiers", "--", run)
-                elif action == "key":
-                    xdotool("key", "--clearmodifiers", "--", args.get("text") or "")
-                elif action == "scroll":
-                    # X buttons 4/5 scroll up/down and 6/7 left/right, one notch each.
-                    steps = [*at("x", "y")]
-                    for amount, negative, positive in (
-                        (args.get("dy") or 0, "4", "5"),
-                        (args.get("dx") or 0, "6", "7"),
-                    ):
-                        if amount:
-                            steps += [
-                                "click",
-                                "--repeat",
-                                str(abs(amount)),
-                                positive if amount > 0 else negative,
-                            ]
-                    xdotool(*steps)
-                else:
-                    raise cdp.Failure(
-                        {"error": "invalid_arguments", "message": f"未知的動作：{action}"}
+            def to_image(x: float, y: float) -> tuple[float, float]:
+                return (x - left) * scale, (y - top) * scale
+
+            def listing(identity: str, scale_mode: int | None, text: Any) -> str:
+                """A window's nodes, bounds in that window's own image."""
+                x, y, native_w, native_h = self.geometry(deadline, identity)
+                factor = cdp.image_scale(native_w, native_h, max_dimension, max_pixels)
+                return self.elements(
+                    deadline,
+                    identity,
+                    (x, y, native_w, native_h),
+                    lambda gx, gy: ((gx - x) * factor, (gy - y) * factor),
+                    round(native_w * factor),
+                    round(native_h * factor),
+                    scale_mode,
+                    text,
+                )
+
+            if action == "elements":
+                return {
+                    "window": window,
+                    "elements": listing(str(window), parsed.scale, args.get("text")),
+                    "control": visible(control(root)),
+                }, None
+            crop: tuple[int, int, int, int] | None = None
+            if action == "zoom":
+                assert parsed.region is not None
+                try:
+                    x0, y0, x1, y1 = actions.resolve_region(
+                        parsed.region, width, height, parsed.scale
                     )
+                except actions.OutOfRange as out:
+                    raise cdp.Failure(out.result) from None
+                except ValueError as error:
+                    raise cdp.Failure(
+                        {"error": "invalid_arguments", "message": str(error)}
+                    ) from None
+                crop = (
+                    round(x0 / scale),
+                    round(y0 / scale),
+                    max(1, round((x1 - x0) / scale)),
+                    max(1, round((y1 - y0) / scale)),
+                )
+                result = {
+                    "region": [x0, y0, x1, y1],
+                    "frame": {"width": width, "height": height},
+                    "coordinates": "zoom 圖只用於查看；後續座標仍用整張截圖"
+                    f"（寬 {width}、高 {height}）",
+                }
+            elif action in actions.INPUTS or action == "paste":
+                echo: dict[str, Any] = {}
+                aim = aim2 = None
+                try:
+                    if args.get("x") is not None:
+                        point = actions.resolve_point(
+                            args["x"], args["y"], width, height, parsed.scale
+                        )
+                        echo["point"], aim = list(point), to_root(point)
+                    if action == "drag":
+                        point2 = actions.resolve_point(
+                            args["x2"], args["y2"], width, height, parsed.scale
+                        )
+                        echo["point2"], aim2 = list(point2), to_root(point2)
+                except actions.OutOfRange as out:
+                    raise cdp.Failure(out.result) from None
+                node = None
+                if parsed.element is not None:
+                    node, centre = self.element(
+                        parsed.element, args, to_image, width, height, listing
+                    )
+                    aim = (round(centre[0]), round(centre[1]))
+                    echo["element"] = str(args["element"])
+                    echo["point"] = [round(value) for value in to_image(*centre)]
+                if action != "paste":
+                    echo["scale"] = parsed.scale
+                result = echo
+                gone = sys.modules["yuki_accessibility"].Gone if node is not None else ()
+                try:
+                    if node is not None and action in ("type", "key"):
+                        if not accessible(node.focus):
+                            raise cdp.Failure(
+                                {
+                                    "error": "device_not_supported",
+                                    "cause": "no_focused_field",
+                                    "message": "這個節點不能取得輸入焦點（AT-SPI），沒有輸入；"
+                                    "換一個輸入框節點，或按截圖座標點擊後再輸入。",
+                                }
+                            )
+                        routes.append("accessibility")
+                    pressed = (
+                        node is not None
+                        and action == "click"
+                        and not parsed.modifiers
+                        and accessible(node.press)
+                    )
+                    if pressed:
+                        routes.append("accessibility")
+                    elif node is not None:
+                        # Her own computer: the node's window comes to the front first, so
+                        # the pointer or the keys reach it and nothing covering it (E17).
+                        xdotool("windowactivate", "--sync", str(window))
+                    if aim is not None and (action in actions.POINTED or node is not None):
+                        # The real hit test at the point, before the input (R12).
+                        hit = self.hit(*aim)
+                        if hit is not None:
+                            result["hit"] = hit
+                    if not pressed:
+                        self.deliver(parsed, args, aim, aim2, node, xdotool, before_input, routes)
+                except gone:
+                    raise cdp.Failure(
+                        {
+                            "error": "element_stale",
+                            "message": f"節點 {args['element']} 在操作時已失效；"
+                            "請按下面的新列表重新選擇。",
+                            "window": str(window),
+                            "elements": listing(str(window), None, None),
+                        }
+                    ) from None
+                finally:
+                    result["route"] = list(dict.fromkeys(routes))
                 result["submitted"] = True
             # The image always shows the state after the action, at current geometry.
-            _, _, width, height = self.geometry(deadline, window)
-            scale = cdp.image_scale(width, height, max_dimension, max_pixels)
-            size = (round(width * scale), round(height * scale))
-            image = self.run(
-                deadline,
-                "import",
-                "-display",
-                self.display,
-                "-window",
-                window or "root",
-                *(("-resize", f"{size[0]}x{size[1]}!") if scale < 1 else ()),
-                "-quality",
-                "80",
-                "jpeg:-",
-            )
+            _, _, native_width, native_height = self.geometry(deadline, window)
+            scale = cdp.image_scale(native_width, native_height, max_dimension, max_pixels)
+            size = (round(native_width * scale), round(native_height * scale))
+            source = (crop[2], crop[3]) if crop is not None else (native_width, native_height)
+            if crop is not None:
+                zoom = cdp.image_scale(*source, max_dimension, max_pixels)
+                size = (round(source[0] * zoom), round(source[1] * zoom))
+            pointer = self.cursor() if window is None and crop is None else None
+            image = self.capture(deadline, window, crop, size, source, pointer)
+            if pointer is not None:
+                x, y = (round((pointer[0] - left) * scale), round((pointer[1] - top) * scale))
+                if 0 <= x < size[0] and 0 <= y < size[1]:
+                    result["cursor"] = [x, y]
             if action in ("screenshot", "resume"):
                 result["windows"] = self.windows(deadline)
         except subprocess.TimeoutExpired:
@@ -388,25 +491,36 @@ class Screen:
                 {
                     "error": "timeout",
                     "message": "桌面操作在等待時間內沒有完成。",
-                    **({"status": "unknown"} if inputs else {}),
+                    "status": "unknown" if inputs else "failed",
+                    **({"route": result["route"]} if "route" in result else {}),
+                    **{key: result[key] for key in ("point", "point2") if key in result},
                 }
             ) from None
         except subprocess.CalledProcessError as error:
             raise cdp.Failure(
                 {
                     "error": "input_failed",
-                    "message": f"桌面指令失敗：{error.stderr.decode(errors='replace').strip()}",
-                    **({"status": "unknown"} if inputs else {}),
+                    "message": "桌面指令失敗："
+                    + (error.stderr or b"").decode(errors="replace").strip(),
+                    # Nothing was input when the failing command came first (V10).
+                    "status": "unknown" if inputs else "failed",
+                    **{key: result[key] for key in ("point", "point2", "route") if key in result},
                 }
             ) from None
         except cdp.Failure as failure:
-            if inputs:
-                failure.result["status"] = "unknown"
+            # Facts that refused before any input are failed, never unknown (E19).
+            failure.result["status"] = (
+                "unknown" if inputs else failure.result.get("status", "failed")
+            )
+            for key in ("point", "point2", "route"):
+                if key in result:
+                    failure.result.setdefault(key, result[key])
             raise
         return (
             {
                 "width": size[0],
                 "height": size[1],
+                "coordinates": actions.COORDINATES,
                 "display": self.display,
                 **({"window": window} if window else {}),
                 "control": visible(control(root)),
@@ -414,6 +528,435 @@ class Screen:
             },
             cdp.Image(image, "image/jpeg", size[0], size[1]),
         )
+
+    def deliver(
+        self,
+        parsed: Any,
+        args: dict[str, Any],
+        aim: tuple[int, int] | None,
+        aim2: tuple[int, int] | None,
+        node: Any,
+        xdotool: Callable[..., None],
+        before_input: Callable[[], None],
+        routes: list[str],
+    ) -> None:
+        """Post one input with xdotool, recording each route taken."""
+        from yuki_agent_connector import actions
+
+        action = parsed.action
+        move = ["mousemove", str(aim[0]), str(aim[1])] if aim is not None else []
+        if node is None and aim is not None and action in ("type", "key"):
+            # The field at x,y becomes the focus by a click there, then the keys (A19).
+            xdotool(*move, "click", "1")
+        held = [MODIFIER_KEYS[name] for name in parsed.modifiers]
+        if action in actions.CLICKS:
+            button = {"left": "1", "middle": "2", "right": "3"}[parsed.button]
+            repeat = ["--repeat", str(parsed.count)] if parsed.count > 1 else []
+            # No --sync: it never returns when the pointer is already there, and the X
+            # server applies the move before the following click.
+            self.holding(xdotool, held, [*move, "click", *repeat, button])
+        elif action == "move":
+            xdotool(*move)
+        elif action == "drag":
+            assert aim is not None and aim2 is not None
+
+            def drag() -> None:
+                xdotool(*move, "mousedown", "1")
+                try:
+                    # Applications track a drag from intermediate positions (A12).
+                    for step in range(1, DRAG_STEPS + 1):
+                        x = aim[0] + (aim2[0] - aim[0]) * step / DRAG_STEPS
+                        y = aim[1] + (aim2[1] - aim[1]) * step / DRAG_STEPS
+                        xdotool("mousemove", str(round(x)), str(round(y)), "sleep", "0.01")
+                finally:
+                    xdotool("mouseup", "1", checked=False)
+
+            self.holding(xdotool, held, drag)
+        elif action == "scroll":
+            # X buttons 4/5 scroll up/down and 6/7 left/right, one notch each.
+            steps = [*move]
+            for amount, negative, positive in ((parsed.dy, "4", "5"), (parsed.dx, "6", "7")):
+                if amount:
+                    steps += [
+                        "click",
+                        "--repeat",
+                        str(abs(amount)),
+                        positive if amount > 0 else negative,
+                    ]
+            self.holding(xdotool, held, steps)
+        elif action == "key":
+            assert parsed.keys is not None
+            combo = "+".join(
+                [MODIFIER_KEYS[name] for name in parsed.keys[0]] + [keysym_name(parsed.keys[1])]
+            )
+            # Each repeat checks the lease first: a takeover ends the rest (A9).
+            for _ in range(parsed.repeat):
+                xdotool("key", "--clearmodifiers", "--", combo)
+        elif action == "type":
+            if self.keymap is None:
+                self.keymap = Keymap(self.display)
+            for run in self.keymap.runs(args.get("text") or ""):
+                xdotool("type", "--clearmodifiers", "--", run)
+        elif action == "paste":
+            self.paste(xdotool, before_input, args["text"], routes)
+            return
+        routes.append("global_input")
+
+    def holding(
+        self, xdotool: Callable[..., None], held: list[str], run: list[str] | Callable[[], None]
+    ) -> None:
+        """Hold ``held`` modifiers only while ``run`` posts; released even when it fails."""
+        if held:
+            xdotool("keydown", *held)
+        try:
+            if callable(run):
+                run()
+            else:
+                xdotool(*run)
+        finally:
+            if held:
+                xdotool("keyup", *reversed(held), checked=False)
+
+    def paste(
+        self,
+        xdotool: Callable[..., None],
+        before_input: Callable[[], None],
+        text: str,
+        routes: list[str],
+    ) -> None:
+        """Her own clipboard: both selections hold ``text``, then shift+Insert (task book §6.12)."""
+        from yuki_agent_connector import cdp
+
+        if shutil.which("xclip", path=self.environment.get("PATH")) is None:
+            raise cdp.Failure(
+                {
+                    "error": "device_not_supported",
+                    "cause": "no_clipboard",
+                    "message": "這台電腦還沒有剪貼簿工具（xclip），不能 paste；"
+                    "改用 type，或等 Manager 下次啟動時補裝。",
+                }
+            )
+        # The lease is checked before her selections change; they are not input, so an
+        # xclip failure is a plain failure with nothing typed (V10).
+        before_input()
+        for selection in ("clipboard", "primary"):
+            # xclip stays behind to serve the selection; it must not hold our pipes.
+            subprocess.run(
+                ["xclip", "-selection", selection, "-in"],
+                input=text.encode(),
+                env=self.environment,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        routes.append("clipboard")
+        xdotool("key", "--clearmodifiers", "shift+Insert")
+        routes.append("global_input")
+
+    def cursor(self) -> tuple[int, int, int, int, bytes] | None:
+        """Pointer ``(x, y, hot_x, hot_y, PAM image)`` from XFixes; None when unreadable."""
+        try:
+            if self.xfixes is None:
+                self.xfixes = Pointer(self.display)
+            return self.xfixes.read()
+        except OSError:
+            return None
+
+    def capture(
+        self,
+        deadline: float,
+        window: str | None,
+        crop: tuple[int, int, int, int] | None,
+        size: tuple[int, int],
+        source: tuple[int, int],
+        pointer: tuple[int, int, int, int, bytes] | None,
+    ) -> bytes:
+        steps: list[str] = []
+        if crop is not None:
+            steps += ["-crop", f"{crop[2]}x{crop[3]}+{crop[0]}+{crop[1]}", "+repage"]
+        with tempfile.TemporaryDirectory(prefix="yuki-cursor-") as temporary:
+            if pointer is not None:
+                # The real cursor image at its hotspot, composited before scaling (P1).
+                cursor = Path(temporary) / "cursor.pam"
+                cursor.write_bytes(pointer[4])
+                steps += [
+                    str(cursor),
+                    "-geometry",
+                    f"+{pointer[0] - pointer[2]}+{pointer[1] - pointer[3]}",
+                    "-composite",
+                ]
+            if size != source:
+                steps += ["-resize", f"{size[0]}x{size[1]}!"]
+            native = self.run(
+                deadline, "import", "-display", self.display, "-window", window or "root", "png:-"
+            )
+            return subprocess.run(
+                ["convert", "png:-", *steps, "-quality", "80", "jpeg:-"],
+                input=native,
+                env=self.environment,
+                check=True,
+                capture_output=True,
+                timeout=max(0.0, deadline - time.monotonic()),
+            ).stdout
+
+    # Accessibility (AT-SPI) -----------------------------------------------------------
+
+    def accessibility(self) -> Any:
+        from yuki_agent_connector import cdp
+
+        if self.atspi is None:
+            try:
+                module = importlib.import_module("yuki_accessibility")
+                self.atspi = module.Accessibility()
+            except Exception as error:  # the library, the bus or the import
+                raise cdp.Failure(no_accessibility(str(error))) from None
+        return self.atspi
+
+    def pid(self, deadline: float, window: str) -> int:
+        from yuki_agent_connector import cdp
+
+        output = self.run(deadline, "xprop", "-id", window, "_NET_WM_PID").decode()
+        found = re.search(r"= (\d+)", output)
+        if found is None:
+            raise cdp.Failure(no_accessibility("the window names no process"))
+        return int(found.group(1))
+
+    def elements(
+        self,
+        deadline: float,
+        window: str,
+        rect: tuple[int, int, int, int],
+        to_image: Callable[[float, float], tuple[float, float]],
+        width: int,
+        height: int,
+        scale: int | None,
+        text: Any,
+    ) -> str:
+        from yuki_agent_connector import actions, cdp
+
+        atspi = self.accessibility()
+        module = sys.modules["yuki_accessibility"]
+        try:
+            nodes = atspi.nodes(self.pid(deadline, window), rect)
+        except module.Unavailable as error:
+            raise cdp.Failure(no_accessibility(str(error))) from None
+        entries = []
+        for node in nodes:
+            try:
+                bounds = node.bounds()
+            except module.Gone:
+                bounds = None
+            entries.append(
+                actions.Entry(
+                    node.depth,
+                    node.role,
+                    node.name,
+                    node.visible,
+                    node.container,
+                    actions.image_box(bounds, to_image, width, height),
+                )
+            )
+        tag = secrets.token_hex(2)
+        lines, kept = actions.render_elements(
+            entries, window, tag, str(text) if text else None, scale, width, height
+        )
+        keep = {id(nodes[index]) for index in kept}
+        for node in nodes:
+            if id(node) not in keep:
+                node.release()
+        for node in self.nodes.pop(window, ("", []))[1]:
+            node.release()
+        self.nodes[window] = (tag, [nodes[index] for index in kept])
+        return lines
+
+    def element(
+        self,
+        element: tuple[str, str, int],
+        args: dict[str, Any],
+        to_image: Callable[[float, float], tuple[float, float]],
+        width: int,
+        height: int,
+        listing: Callable[[str, int | None, Any], str],
+    ) -> tuple[Any, tuple[float, float]]:
+        """The listed node and its centre in root pixels now, or a failure before any input."""
+        from yuki_agent_connector import cdp
+
+        window, tag, number = element
+        listed = self.nodes.get(window)
+        node = None
+        if listed is not None and listed[0] == tag and 0 < number <= len(listed[1]):
+            node = listed[1][number - 1]
+        try:
+            bounds = node.bounds() if node is not None else None
+        except sys.modules["yuki_accessibility"].Gone:
+            node = None
+        if node is None:
+            fresh = listing(window, None, None)
+            raise cdp.Failure(
+                {
+                    "error": "element_stale",
+                    "message": f"節點 {args['element']} 已失效（視窗重新列出過節點、節點已銷毀"
+                    "或驅動重啟過）；沒有執行。請按下面的新列表重新選擇。",
+                    "window": window,
+                    "elements": fresh,
+                }
+            )
+        if bounds is not None and bounds[2] > 0 and bounds[3] > 0:
+            centre = (bounds[0] + bounds[2] / 2, bounds[1] + bounds[3] / 2)
+            x, y = to_image(*centre)
+            if 0 <= x < width and 0 <= y < height:
+                return node, centre
+        box = None
+        if bounds is not None:
+            x0, y0 = to_image(bounds[0], bounds[1])
+            x1, y1 = to_image(bounds[0] + bounds[2], bounds[1] + bounds[3])
+            box = [round(x0), round(y0), round(x1), round(y1)]
+        raise cdp.Failure(
+            {
+                "error": "element_not_visible",
+                "message": "這個節點現在不在畫面內（已移出、被收起或尺寸為零），沒有執行，"
+                "也不會改按座標點擊；先 screenshot 或 elements 重新看。",
+                "bounds": box,
+            }
+        )
+
+    def hit(self, x: int, y: int) -> dict[str, str] | None:
+        """The node under a root point before any input; None when unknown (never a failure).
+
+        It has its own short limit, apart from the action's: describing the point never uses
+        up the time the input needs (R10).
+        """
+        deadline = time.monotonic() + HIT_SECONDS
+        try:
+            atspi = self.accessibility()
+            window = self.window_at(deadline, x, y)
+            if window is None:
+                return None
+            identity, rect = window
+            return cast(
+                dict[str, str], atspi.at(self.pid(deadline, identity), rect, x, y, deadline)
+            )
+        except Exception:  # no AT-SPI, no process, a hung app: the input still runs (R6, R7)
+            return None
+
+    def window_at(
+        self, deadline: float, x: int, y: int
+    ) -> tuple[str, tuple[int, int, int, int]] | None:
+        """The topmost managed window containing the root point."""
+        listed = self.run(deadline, "xprop", "-root", "_NET_CLIENT_LIST_STACKING").decode()
+        for identity in reversed(re.findall(r"0x[0-9a-f]+", listed.partition("#")[2])):
+            try:
+                rect = self.geometry(deadline, identity)
+            except Exception:
+                continue
+            if rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]:
+                return identity, rect
+        return None
+
+
+MODIFIER_KEYS = {"ctrl": "ctrl", "shift": "shift", "alt": "alt", "cmd": "super"}
+KEYSYMS = {
+    "return": "Return",
+    "tab": "Tab",
+    "escape": "Escape",
+    "backspace": "BackSpace",
+    "delete": "Delete",
+    "space": "space",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "home": "Home",
+    "end": "End",
+    "pageup": "Prior",
+    "pagedown": "Next",
+    "insert": "Insert",
+    "`": "grave",
+    "-": "minus",
+    "=": "equal",
+    "[": "bracketleft",
+    "]": "bracketright",
+    "\\": "backslash",
+    ";": "semicolon",
+    "'": "apostrophe",
+    ",": "comma",
+    ".": "period",
+    "/": "slash",
+    **MODIFIER_KEYS,
+}
+DRAG_STEPS = 12
+# A release has its own limit; a hit test has its own limit (A16, R10).
+RELEASE_SECONDS = 2.0
+HIT_SECONDS = 1.0
+
+
+def keysym_name(key: str) -> str:
+    """A key of the shared grammar (``actions.parse_keys``) as the xdotool keysym name."""
+    if key in KEYSYMS:
+        return KEYSYMS[key]
+    return key.upper() if key.startswith("f") and key[1:].isdigit() else key
+
+
+def no_accessibility(detail: str) -> dict[str, Any]:
+    return {
+        "error": "device_not_supported",
+        "cause": "no_accessibility",
+        "message": "這個視窗沒有可讀的無障礙資訊（AT-SPI 不可用或應用沒有註冊），"
+        f"不能列出或按節點操作；請按截圖座標操作。（{detail}）",
+    }
+
+
+class Pointer:
+    """The X cursor through XFixes: its position, hotspot and ARGB image (P0 item 4)."""
+
+    class Image(ctypes.Structure):
+        _fields_ = [
+            ("x", ctypes.c_short),
+            ("y", ctypes.c_short),
+            ("width", ctypes.c_ushort),
+            ("height", ctypes.c_ushort),
+            ("xhot", ctypes.c_ushort),
+            ("yhot", ctypes.c_ushort),
+            ("cursor_serial", ctypes.c_ulong),
+            ("pixels", ctypes.POINTER(ctypes.c_ulong)),
+            ("atom", ctypes.c_ulong),
+            ("name", ctypes.c_char_p),
+        ]
+
+    def __init__(self, display: str) -> None:
+        x11 = ctypes.CDLL(ctypes.util.find_library("X11"))
+        name = ctypes.util.find_library("Xfixes")
+        if name is None:
+            raise OSError("libXfixes is missing")
+        xfixes = ctypes.CDLL(name)
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XFree.argtypes = [ctypes.c_void_p]
+        xfixes.XFixesGetCursorImage.restype = ctypes.POINTER(Pointer.Image)
+        xfixes.XFixesGetCursorImage.argtypes = [ctypes.c_void_p]
+        self.x11, self.xfixes = x11, xfixes
+        self.connection = x11.XOpenDisplay(display.encode())
+        if not self.connection:
+            raise OSError(f"cannot open X display {display}")
+
+    def read(self) -> tuple[int, int, int, int, bytes]:
+        image = self.xfixes.XFixesGetCursorImage(self.connection)
+        if not image:
+            raise OSError("XFixesGetCursorImage returned nothing")
+        try:
+            cursor = image.contents
+            pixels = bytearray()
+            for index in range(cursor.width * cursor.height):
+                argb = cursor.pixels[index] & 0xFFFFFFFF
+                pixels += bytes(((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24))
+            header = (
+                f"P7\nWIDTH {cursor.width}\nHEIGHT {cursor.height}\nDEPTH 4\nMAXVAL 255\n"
+                "TUPLTYPE RGB_ALPHA\nENDHDR\n"
+            ).encode()
+            return cursor.x, cursor.y, cursor.xhot, cursor.yhot, header + bytes(pixels)
+        finally:
+            self.x11.XFree(image)
 
 
 def _property(output: str, name: str) -> str:
@@ -423,7 +966,10 @@ def _property(output: str, name: str) -> str:
     return ""
 
 
-READS = {"computer": ("screenshot", "resume"), "browser": ("snapshot", "screenshot")}
+READS = {
+    "computer": ("screenshot", "resume", "zoom", "elements"),
+    "browser": ("snapshot", "screenshot"),
+}
 
 
 def handle(

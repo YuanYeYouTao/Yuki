@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import platform
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -77,11 +78,50 @@ class Area(Protocol):
 
 
 class Refused(Exception):
-    """The operating system cannot do this for the window; nothing was delivered by this call."""
+    """The operating system cannot do this for the window; nothing was delivered by this call.
 
-    def __init__(self, error: str, message: str) -> None:
+    ``cause`` is the fact behind a ``device_not_supported`` (task book §6.9; ``reason`` is
+    already the receipt protocol's dispatch fact, which the journal and the server strip).
+    """
+
+    def __init__(self, error: str, message: str, cause: str | None = None) -> None:
         super().__init__(message)
-        self.error, self.message = error, message
+        self.error, self.message, self.cause = error, message, cause
+
+    def result(self) -> dict[str, Any]:
+        return {
+            "status": "failed",
+            "error": self.error,
+            "message": self.message,
+            **({"cause": self.cause} if self.cause else {}),
+        }
+
+
+class Stale(Exception):
+    """The accessibility node no longer exists (destroyed, its window closed)."""
+
+
+class Node(Protocol):
+    """One accessibility node of one window, as listed by ``elements`` (task book §6.7).
+
+    ``depth`` is its depth in the platform tree; ``container`` marks a role that only
+    groups other nodes, dropped from the listing when it has no name.
+    """
+
+    depth: int
+    role: str
+    name: str
+    visible: bool
+    container: bool
+
+    def bounds(self) -> tuple[float, float, float, float] | None:
+        """``(x, y, width, height)`` in global input coordinates, read now; ``Stale`` if gone."""
+
+    def press(self) -> bool:
+        """Its default accessibility action (press, invoke, toggle); False when it has none."""
+
+    def focus(self) -> None:
+        """Make it the keyboard focus (foreground); ``Refused`` when it cannot take focus."""
 
 
 def frame(display: Area, max_dimension: int, max_pixels: int) -> tuple[int, int]:
@@ -101,91 +141,46 @@ def to_global(
     )
 
 
+def to_image(
+    display: Area, max_dimension: int, max_pixels: int, x: float, y: float
+) -> tuple[float, float]:
+    """A global input point as a pixel of the image of ``display`` (the inverse of to_global)."""
+    scale = image_scale(display.pixel_width, display.pixel_height, max_dimension, max_pixels)
+    return (
+        (x - display.x) * display.pixel_width / display.width * scale,
+        (y - display.y) * display.pixel_height / display.height * scale,
+    )
+
+
 def to_virtual_desk(virtual: tuple[int, int, int, int], x: float, y: float) -> tuple[int, int]:
     """Windows ``MOUSEEVENTF_ABSOLUTE|VIRTUALDESK``: 0..65535 across the whole virtual desktop."""
     left, top, width, height = virtual
     return round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1))
 
 
-MODIFIERS = {
-    "ctrl": "ctrl",
-    "control": "ctrl",
-    "shift": "shift",
-    "alt": "alt",
-    "option": "alt",
-    "opt": "alt",
-    "cmd": "cmd",
-    "command": "cmd",
-    "super": "cmd",
-    "meta": "cmd",
-    "win": "cmd",
-}
-_NAMED = {
-    "return": "return",
-    "enter": "return",
-    "kp_enter": "return",
-    "tab": "tab",
-    "escape": "escape",
-    "esc": "escape",
-    "backspace": "backspace",
-    "delete": "delete",
-    "del": "delete",
-    "space": "space",
-    "up": "up",
-    "down": "down",
-    "left": "left",
-    "right": "right",
-    "home": "home",
-    "end": "end",
-    "pageup": "pageup",
-    "page_up": "pageup",
-    "prior": "pageup",
-    "pagedown": "pagedown",
-    "page_down": "pagedown",
-    "next": "pagedown",
-    "insert": "insert",
-    **{f"f{number}": f"f{number}" for number in range(1, 21)},
-}
-PUNCTUATION = set("`-=[]\\;',./")
-KEYS = (
-    set(_NAMED.values())
-    | set(MODIFIERS.values())
-    | set("abcdefghijklmnopqrstuvwxyz0123456789")
-    | PUNCTUATION
-)
-
-
-def parse_keys(combo: str) -> tuple[tuple[str, ...], str]:
-    """``ctrl+shift+t`` → (("ctrl", "shift"), "t"); xdotool-style names, case-insensitive."""
-    names = [part.strip().lower() for part in combo.split("+")]
-    if any(not name for name in names):
-        raise ValueError(f"Unknown key combination: {combo!r}")
-    *held, last = names
-    modifiers = []
-    for name in held:
-        if name not in MODIFIERS:
-            raise ValueError(f"Unknown key combination: {combo!r}")
-        modifiers.append(MODIFIERS[name])
-    key = MODIFIERS.get(last) or _NAMED.get(last) or last
-    if key not in KEYS:
-        raise ValueError(f"Unknown key combination: {combo!r}")
-    return tuple(modifiers), key
-
-
 class Surface(Protocol):
-    """Where input goes: the whole screen (global input) or one window (background)."""
+    """Where input goes: the whole screen (global input) or one window (background).
 
-    def move(self, x: float, y: float) -> None: ...
+    Every method answers the route it took (``global_input``, ``window_events`` or
+    ``accessibility``); ``modifiers`` are held only while that one action runs and are
+    released even when posting fails.
+    """
 
-    def click(self, x: float, y: float, button: str, count: int) -> None: ...
+    def move(self, x: float, y: float) -> str: ...
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None: ...
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str: ...
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None: ...
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str: ...
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None: ...
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str: ...
 
-    def type(self, text: str) -> None: ...
+    def key(self, modifiers: tuple[str, ...], key: str) -> str: ...
+
+    def type(self, text: str) -> str: ...
 
 
 class Target(Surface, Protocol):
@@ -197,7 +192,8 @@ class Target(Surface, Protocol):
 
     @property
     def actions(self) -> frozenset[str]:
-        """Inputs this platform can deliver to a window in the background at all."""
+        """Inputs this platform can deliver to a window in the background at all, plus
+        ``modifiers`` when it can hold modifier keys there; empty outside the owner's Space."""
 
     def collides(self) -> bool:
         """Whether the owner is using the window's app: it is the frontmost app, or the
@@ -206,11 +202,27 @@ class Target(Surface, Protocol):
     def elevated(self) -> bool:
         """Whether the window's process is above Yuki's integrity level (Windows UIPI)."""
 
-    def capture(self, width: int, height: int, path: Path) -> None:
-        """Write a JPEG of exactly ``width``x``height`` showing this window alone, now."""
+    def capture(
+        self,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        """Write a JPEG of exactly ``width``x``height`` showing this window alone, now;
+        ``region`` is ``(x, y, width, height)`` relative to the window, in input units."""
 
-    def focus(self, x: float, y: float) -> None:
+    def focus(self, x: float, y: float) -> str:
         """Make the input field at the global point the target of ``key``/``type``."""
+
+    def focus_element(self, node: Node) -> None:
+        """Make ``node`` the target of ``key``/``type`` without raising the window."""
+
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        """``{role, name}`` of this window's own node at the global point, before any input."""
+
+    def elements(self) -> Sequence[Node]:
+        """This window's accessibility nodes in tree order; ``Refused`` when there are none."""
 
 
 class Backend(Surface, Protocol):
@@ -224,8 +236,22 @@ class Backend(Surface, Protocol):
     def unavailable(self) -> dict[str, Any] | None:
         """A failure result when the screen cannot be seen or used now (lock, secure desktop)."""
 
-    def capture(self, display: Display, width: int, height: int, path: Path) -> None:
-        """Write a JPEG of exactly ``width``x``height`` showing ``display`` now."""
+    def capture(
+        self,
+        display: Display,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        """Write a JPEG of exactly ``width``x``height`` showing ``display`` now, the real
+        pointer drawn in; ``region`` is ``(x, y, width, height)`` relative to the display."""
+
+    def pointer(self) -> tuple[float, float] | None:
+        """The pointer in global input coordinates, or None when it cannot be read."""
+
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        """``{role, name}`` of the topmost node at the global point (system hit test)."""
 
     def last_input(self) -> tuple[float, float]:
         """Bounds of the moment of the most recent input from any source, Yuki's included.

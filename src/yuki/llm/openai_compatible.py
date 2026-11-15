@@ -70,7 +70,17 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
             item["content"] = [
                 {"type": "text", "text": message.content or ""},
                 *(
-                    {"type": "image_url", "image_url": {"url": image.data_url}}
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image.data_url,
+                            **(
+                                {"detail": self.options.tool_image_detail}
+                                if image.source == "tool" and self.options.tool_image_detail
+                                else {}
+                            ),
+                        },
+                    }
                     for image in message.images
                 ),
             ]

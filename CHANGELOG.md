@@ -1,5 +1,10 @@
 # 更新日志
 
+## 未发布
+
+- Computer Use（[任务书](docs/architecture/Computer-Use任务书-2026-11-15.md)，工具合同 38，本机连接器 **0.7.0**）：`computer` 截图改用自己的上限 `COMPUTER_SCREENSHOT_*`（默认 1568／115 万像素，与聊天图片分开），模型看到的就是来源产出的那张图；坐标可声明 `scale=1000`，越界直接报 `coordinate_out_of_range`；每步回显 `point`、`route`、`hit`，全屏截图画出指针并回显 `cursor`；新增 `zoom`、`elements`／`element`、按住修饰键的点击／拖拽／滚动、`triple_click`、`middle_click`、`key` 连按，Yuki 自己的电脑上新增 `paste`；`device_not_supported` 附事实原因 `cause`，旧连接器用到新参数时以 `connector_outdated` 拒绝而不是静默忽略。OpenAI 预设的工具截图带 `detail:"original"`。
+- Computer Use (task book above, tool contract 38, local connector **0.7.0**): `computer` screenshots use their own limit `COMPUTER_SCREENSHOT_*` (1568 px / 1.15 MP by default, apart from chat images), so the model sees exactly the image its coordinates refer to; coordinates may declare `scale=1000` and out-of-range values fail as `coordinate_out_of_range`; every step echoes `point`, `route` and `hit`, full-screen shots draw the pointer and report `cursor`; new `zoom`, `elements`/`element`, clicks/drags/scrolls with held modifiers, `triple_click`, `middle_click`, `key` repeat, and `paste` on Yuki's own computer; `device_not_supported` carries a `cause`, and an older connector given new parameters is refused as `connector_outdated` instead of silently ignoring them. OpenAI presets send tool screenshots with `detail:"original"`.
+
 ## 4.0.2
 
 4.0 的第一个正式发行，内容同 4.0.0。发布流程在各自架构的机器上分别验证 amd64 与 arm64（4.0.1 的 arm64 自检在模拟器中超时，未发布 Release）。见 [4.0.2 发布说明](docs/releases/v4.0.2.md)。

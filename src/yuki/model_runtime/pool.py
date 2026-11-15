@@ -64,6 +64,7 @@ def create_model_provider(
             timeout_seconds=profile.timeout_seconds,
             max_retries=profile.max_retries,
             client=client,
+            options=profile.wire_options,
             headers=profile.headers,
             provider_name=profile.provider.casefold(),
         )
@@ -80,6 +81,7 @@ def create_model_provider(
             timeout_seconds=profile.timeout_seconds,
             max_retries=profile.max_retries,
             client=client,
+            options=profile.wire_options,
             headers=profile.headers,
             provider_name=profile.provider.casefold(),
         )

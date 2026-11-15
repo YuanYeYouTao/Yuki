@@ -67,10 +67,12 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 ENV YUKI_ENVIRONMENT_SOURCE=/app/environment-source
 COPY src/yuki/sandbox/environment_supervisor.py src/yuki/sandbox/environment_programs.py \
      src/yuki/sandbox/desktop_service.py src/yuki/sandbox/yuki_computer.py \
+     src/yuki/sandbox/yuki_accessibility.py \
      /app/environment-source/src/yuki/sandbox/
 COPY src/yuki/emoji/sticker_index.py src/yuki/emoji/media.py \
      /app/environment-source/src/yuki/emoji/
 COPY packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py \
+     packages/yuki-agent-connector/src/yuki_agent_connector/actions.py \
      /app/environment-source/packages/yuki-agent-connector/src/yuki_agent_connector/
 COPY deploy/sandbox/yuki-computer.sh /app/environment-source/deploy/sandbox/
 RUN chmod +x /app/scripts/start.sh \

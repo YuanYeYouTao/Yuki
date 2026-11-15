@@ -13,6 +13,8 @@ from asyncio.subprocess import Process
 from pathlib import Path
 
 CDP_ADDRESS = "http://127.0.0.1:9222"
+# at-spi2-core; absent until the Manager installs the headed profile's packages.
+ATSPI_LAUNCHER = "/usr/libexec/at-spi-bus-launcher"
 
 
 def browser_ready() -> bool:
@@ -133,6 +135,31 @@ async def main() -> int:
                 return 0
             if children[0].returncode is not None:
                 return 1
+            # Her session's D-Bus: applications register with AT-SPI over it, and the
+            # driver reads their nodes for ``elements`` (Computer Use task book §6.7).
+            bus = await asyncio.create_subprocess_exec(
+                "dbus-daemon",
+                "--session",
+                "--nofork",
+                "--print-address=1",
+                env=environment,
+                stdout=asyncio.subprocess.PIPE,
+            )
+            children.append(bus)
+            assert bus.stdout is not None
+            address = (await bus.stdout.readline()).decode().strip()
+            if not address:
+                return 1
+            environment["DBUS_SESSION_BUS_ADDRESS"] = address
+            if await asyncio.to_thread(os.path.exists, ATSPI_LAUNCHER):
+                # Started now rather than on first use: it publishes the accessibility bus
+                # on the display (root property AT_SPI_BUS), so apps she starts from a
+                # terminal without this session's address still register (P0 item 3).
+                children.append(
+                    await asyncio.create_subprocess_exec(
+                        ATSPI_LAUNCHER, "--launch-immediately", env=environment
+                    )
+                )
             # The window manager and desktop are hers; Chromium starts after them so that
             # its window is managed.
             session, session_state = await open_session(environment)
@@ -174,7 +201,7 @@ async def main() -> int:
                 await asyncio.sleep(0.1)
             else:
                 return False
-            children.append(await asyncio.create_subprocess_exec(*driver))
+            children.append(await asyncio.create_subprocess_exec(*driver, env=environment))
             return True
 
         if not await open_browser():

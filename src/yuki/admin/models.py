@@ -223,6 +223,14 @@ class AgentRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ComputerRuntimeConfig:
+    """The size ``computer`` screenshots are produced at, on both execution paths."""
+
+    screenshot_max_dimension: int = 1568
+    screenshot_max_pixels: int = 1_150_000
+
+
+@dataclass(frozen=True, slots=True)
 class WorkStorageRuntimeConfig:
     """Deployment-wide physical storage admission, independent of model windows."""
 
@@ -282,6 +290,7 @@ class RuntimeConfigSnapshot:
     conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     work_storage: WorkStorageRuntimeConfig = WorkStorageRuntimeConfig()
+    computer: ComputerRuntimeConfig = ComputerRuntimeConfig()
 
     def conversation_policy(self) -> ConversationRuntimeConfig:
         """Return the autonomous-conversation policy for this snapshot."""

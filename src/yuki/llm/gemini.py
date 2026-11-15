@@ -140,9 +140,15 @@ class GeminiProvider(JSONHTTPProvider):
         if message.images:
             if message.role != "user":
                 raise LLMInvalidRequestError("images must be attached to a user message")
+            resolution = self.options.tool_image_media_resolution
             for image in message.images:
                 prefix, data = image.data_url.split(",", 1)
-                parts.append({"inlineData": {"mimeType": prefix[5:].split(";")[0], "data": data}})
+                part: dict[str, Any] = {
+                    "inlineData": {"mimeType": prefix[5:].split(";")[0], "data": data}
+                }
+                if image.source == "tool" and resolution:
+                    part["mediaResolution"] = {"level": f"MEDIA_RESOLUTION_{resolution.upper()}"}
+                parts.append(part)
         for call in message.tool_calls:
             try:
                 arguments = json.loads(call.function.arguments)

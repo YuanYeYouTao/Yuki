@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.6.2`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.7.0`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -57,7 +57,7 @@ journal 按原 `device_id` 归属。新版本沿原初始化路径识别属于�
 安装本次构建的独立 wheel；正式包是否已发布应查发行回执，不把源码版本当成公开发行：
 
 ```sh
-python -m pip install /path/to/yuki_agent_connector-0.6.2-py3-none-any.whl
+python -m pip install /path/to/yuki_agent_connector-0.7.0-py3-none-any.whl
 yuki-agent-connector --version
 ```
 
@@ -200,7 +200,7 @@ stdout 新增三种行，不改变状态行的形状：
 ```
 
 - `control`：启动时写一次（`holder:"none"`、`reason:"start"`），之后每次变化写一行。`reason` 为 `desktop`（stdin）或 `resume`（模型调用 `computer(action=resume, device)`）；本人在电脑上的输入只让 Yuki 让出，不改 holder、不写行。`since` 是 UTC ISO-8601。
-- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、`owner_active`、权限、锁屏、参数错误等）不写。0.6.0 起 `computer` 的行带 `mode`：`background` 为按窗口后台投递（不动本人光标与前台），`foreground` 为整屏全局输入；没有 `mode` 的旧行按前台理解。Desktop 据此显示“Yuki 正在操作（背景／前台）”。
+- `activity`：`computer`／`browser` 每个真正执行的非读动作前后各一行，失败或异常也有 `end`；读动作（截图、快照、`resume`）和执行前就被拒绝的动作（`control_held`、`owner_active`、权限、锁屏、参数错误等）不写。0.6.0 起 `computer` 的行带 `mode`：`background` 为按窗口后台投递（不动本人光标与前台），`foreground` 为整屏全局输入；没有 `mode` 的旧行按前台理解。0.7.0 起 `end` 行另带 `route`（这次实际走过的投递途径：`global_input`、`window_events`、`accessibility`，按发生顺序去重）。Desktop 据此显示“Yuki 正在操作（背景／前台）”。
 - `permissions`：启动时写一次，此后预检结果变化时写（每次 `computer` 动作与每 5 秒各读一次预检）。macOS 为 `CGPreflightScreenCaptureAccess`／`CGPreflightPostEventAccess` 的结果，Windows 两项恒为 `true`；不支持屏幕的平台（Linux、macOS 14 以下）不写。变化时同时把新的 `device_capabilities.computer` 发给服务端。
 
 ## 屏幕与 Yuki 专用浏览器
@@ -220,7 +220,17 @@ stdout 新增三种行，不改变状态行的形状：
 | `owner_active` | Yuki 上一次截图或输入之后出现了非 Yuki 输入（给 `window` 时还要求该窗口所属 App 是本人的前台 App 或在本人指针下）：等本人停手 1.5 秒（最多 10 秒）后拒绝，输入没有执行；重新截图后重试 |
 | `window_not_found`／`window_unavailable` | 给出的窗口不存在或已关闭／已最小化或不可见（以系统状态为准，不靠截图像素）；Yuki 不还原窗口 |
 | `control_held` | 本人在 Desktop 按了「停止」（叫停中） |
-| `device_not_supported` | Linux、macOS 14 以下、旧连接器（`invalid_resource`）；0.5.0 连接器给出 `window`；按窗口时该动作或该处没有后台途径 |
+| `device_not_supported` | 0.7.0 起附事实原因 `cause`：`platform`（Linux、macOS 14 以下）、`off_space`（窗口不在本人当前桌面空间）、`no_background_route`（平台没有这种后台途径）、`no_control_at_point`（Windows 落点没有 UIA 控件）、`no_focused_field`（Windows 后台输入没有可写输入框）、`no_accessibility`（该窗口读不到无障碍信息）；服务端另给 `connector_outdated`（旧连接器缺少本次用到的能力，命令不发出）与 `own_computer_only`（`paste`、`wake` 等只属于 Yuki 自己的电脑）。`reason` 已是回执协议的派发事实，所以用 `cause` |
+| `coordinate_out_of_range` | 0.7.0 起：坐标超出本次截图的像素范围（或 `scale=1000` 时超出 0–1000），附 `coordinates`、`width`、`height`；在任何输入之前拒绝，回执为 `failed` |
+| `element_stale`／`element_not_visible` | 0.7.0 起：节点 id 已失效（同一窗口重新列出、节点销毁、连接器重启），附该窗口的新列表；节点当前不在画面内，附 `bounds`；都不执行，也不改按坐标点击 |
+
+**Computer Use（0.7.0，[任务书](../architecture/Computer-Use任务书-2026-11-15.md)）**：`device_capabilities.computer.features` 列出本机真实可用的新能力 `scale`、`zoom`、`elements`、`modifiers`、`triple_click`、`middle_click`、`key_repeat`、`route`、`cursor`。服务端把调用实际用到的新动作或参数与它对照，缺少就以 `device_not_supported`／`connector_outdated` 拒绝且不发出，0.6.x 不会静默忽略 `scale`、修饰键或 `element`；只用旧参数的调用照常发给旧连接器（截图尺寸改由服务端的 `COMPUTER_SCREENSHOT_*` 决定，旧连接器立即生效）。
+- 坐标与回显：`x,y,x2,y2,region` 是本次所附图像的像素，传 `scale=1000` 时两个轴按 0–1000；越界以 `coordinate_out_of_range` 失败。输入结果回显 `point`（`point2`）、`scale`、`route` 与 `hit`（投递前落点控件 `{role,name}`：前台用系统级命中测试，macOS `AXUIElementCopyElementAtPosition`、Windows UIA `ElementFromPoint`；后台用该窗口自己的子树；在独立线程里最多等 0.5 s，超时或取不到就省略，不影响投递，也不占用输入的时间；带 `element` 时同样是实际落点的命中测试）；全屏截图回显 `cursor`（macOS 截图本来带指针，Windows 用 `DrawIconEx` 把指针画到缩放后的图上；按窗口截图不画）。
+- 动作：点击类、`drag`、`scroll` 的 `text` 是这一次按住的修饰键（macOS 写进事件 flags；Windows 与点击、按键、滚动在同一批 `SendInput` 里按下和抬起，drag 时与鼠标按下同批、与抬起同批并在 `finally` 释放；`SendInput` 只插入一部分时补发已按下的键和鼠标键的抬起）；前台 `type`／`key` 给 `x,y` 时先在该处点击使其成为焦点；`triple_click`（macOS clickState 1→3，Windows 一批三次点击）、`middle_click`（macOS other-mouse，Windows 中键）、`key` 的 `repeat`（1–100，每次都检查 Desktop「停止」，中途叫停按已发送报 `unknown`）。按键与修饰键语法在共享模块 `actions.py`，未知键、未知修饰键在输入前 `invalid_arguments`。
+- `zoom`、`elements` 是读动作：不写 journal，同键重试重新读取。
+- `zoom`：`region` 按整张截图坐标，macOS 用 ScreenCaptureKit `sourceRect`（显示器与单窗口过滤器都按点、左上原点），Windows 对子区域 StretchBlt，窗口 `PrintWindow` 后裁剪；只缩不放。读动作，叫停期间照常可用。
+- `elements`／`element`：`elements(window)` 列出该窗口的无障碍节点（macOS AX 子树，Windows UIA 控件视图），每行 `- role "name" [<window>.<tag>e<n>] (x0,y0,x1,y1)`，边界按该窗口图像（或 `scale=1000`），只列可见、非零尺寸的节点，无名纯容器去掉自己保留子节点；节点 id 按窗口只认最近一次列表，存在连接器进程内存中。点击、移动、拖拽起点、滚动、`type`、`key` 可传 `element`（与 `x,y` 互斥）。id 带着窗口：省略 `window` 时按该窗口执行，结果附该窗口图，走该窗口的后台途径，绝不落到本人当前的前台应用。执行时重读当前边界，单击左键且没有修饰键时先走无障碍动作（AXPress，UIA Invoke／Toggle／SelectionItem），否则按中心点经该窗口的后台途径投递（Windows 没有途径时 `no_background_route`）；按下或聚焦时节点才失效的报 `element_stale`；`type`／`key` 先聚焦该节点（Windows 后台为记住该节点的 Value，文字接在原值之后）。窗口不在本人当前桌面空间时 `elements` 也是 `off_space`。
+- Windows 后台没有修饰键、三击、中键、按键、移动、拖拽的途径（`no_background_route`）；macOS 后台带修饰键、三击或中键时跳过无障碍动作，用带窗口标记的事件（`route: window_events`）。
 
 **让出**：Yuki 的每个合成事件都带标记（macOS `kCGEventSourceUserData`、Windows `dwExtraInfo`）。每次全局输入前比较两件事实：最近一次输入时刻（macOS 对按键按下、鼠标键按下、拖拽与滚轮分别读 `CGEventSourceSecondsSinceLastEventType(CombinedSessionState)` 取最近一次，含屏幕共享与远程控制，只移动指针不算；Windows `GetLastInputInfo`，含远程桌面与指针移动），与 Yuki 上一次截图或 `computer` 输入（或 `resume`、Desktop「繼續」）结束的时刻；前者更晚即为本人在用电脑。这时 Yuki 不投递任何事件，等本人连续 1.5 秒没有输入（最多 10 秒），然后以 `owner_active` 拒绝这次输入——画面可能已变，模型重新截图后按新图重试；截图推进基准，所以重试照常执行。截图与快照从不等待；`browser` 不碰光标，不让出。按窗口的后台输入不碰光标，只在真正冲突时让出：该窗口所属 App 是本人的前台 App（`lsappinfo front`／`GetForegroundWindow`），或本人指针下的窗口属于它，并且基准之后有本人输入；投给其他 App 的后台输入不等待。后台事件不推进系统的输入计时，不会让 Yuki 自己的下一次输入让出。
 

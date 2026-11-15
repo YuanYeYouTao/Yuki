@@ -103,6 +103,7 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 | --- | --- | --- | --- |
 | 环境镜像 | `yuki-environment:<版本>` | `yuki-environment:<版本>-desktop` | `yuki-environment:<版本>-desktop` |
 | 浏览器 | 无 | 无头 Chromium | Chromium + Xvnc 桌面 |
+| 桌面附带软件 | — | — | Openbox、xdotool、ImageMagick、at-spi2-core（`elements` 的无障碍总线）、xclip（`paste`），见 `environment_programs.py` |
 | 内存 / 额外 swap | 512 / 128 MiB | 1024 / 256 MiB | 3072 / 512 MiB |
 | CPU / 进程数 | 1 / 256 | 1.5 / 1024 | 2 / 2048 |
 | /tmp / /dev/shm | 128 / 64 MiB | 256 / 128 MiB | 512 / 256 MiB |
@@ -138,6 +139,6 @@ execd token 与执行回执在 `yuki-sandbox-state` 的 `jobs.sqlite3`。状态�
 - `tests/unit/test_environment_snapshots.py`、`tests/unit/test_computer_lifecycle.py`：任务书 §11 的快照、还原、恢复与生命周期决定（Docker 由模拟引擎应答）。
 - `tests/unit/test_sandbox_profiles.py`：状态卷丢失、项目归属、运行时检查、换档安装与失败、即时限额与需重建项。
 - `tests/unit/test_terminal_environment.py`：Manager SQLite、旧 APT 不重放、原 rootFS 选择、卷挂载、防火墙规则与后端选择，以及隔离原生 Supervisor 的 PTY、输入、文件、后台和显式超时。
-- 有头桌面见 `tests/integration/test_computer_browser_e2e.py`（CI `desktop-headed`）。
+- 有头桌面见 `tests/integration/test_computer_browser_e2e.py` 与 `tests/integration/test_computer_use_e2e.py`（CI `desktop-headed`）；`sandbox-compose` 的 `desktop` 阶段另经 Manager 核对 `COMPUTER_SCREENSHOT_*` 出图尺寸和 at-spi2-core、xclip 已补装（`computer-use.json`）。
 
 这些不冒充生产上线或供应商执行。

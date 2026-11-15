@@ -258,6 +258,10 @@ class Settings(BaseSettings):
     tooling_result_item_limit: int | None = None
     tooling_result_artifact_enabled: bool = True
     tooling_result_artifact_retention_seconds: int = 86400
+    # computer screenshots, apart from chat images (vision_max_*): the source produces this
+    # size, so no Provider rescales what the model's coordinates refer to.
+    computer_screenshot_max_dimension: int = 1568
+    computer_screenshot_max_pixels: int = 1_150_000
 
     conversation_auto_reply_enabled: bool = True
     conversation_proactive_wakeup_enabled: bool = True

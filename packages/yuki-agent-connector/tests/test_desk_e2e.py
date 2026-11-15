@@ -24,6 +24,7 @@ from desk_support import ARTIFACTS, Cloud, ConnectorProcess
 from websockets.asyncio.server import serve
 
 from yuki_agent_connector.config import Config
+from yuki_agent_connector.desk import FEATURES
 from yuki_agent_connector.screen import Display, frame, to_global
 
 RETINA = {
@@ -129,6 +130,7 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
                     Display(**LEFT).fact(),
                 ],
                 "windows": True,
+                "features": sorted(FEATURES),
             }
 
             # A screenshot is a read: no journal row, no activity line; the image is a
@@ -152,7 +154,7 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
             # K3: activity lines around the input.
             assert desktop_lines(process)[-2:] == [
                 {**FOREGROUND, "action": "click", "phase": "start"},
-                {**FOREGROUND, "action": "click", "phase": "end"},
+                {**FOREGROUND, "action": "click", "phase": "end", "route": ["global_input"]},
             ]
             # A secondary display left of and above the main one has negative points.
             await call("computer", "move", "move-left", x=0, y=0, display="2")
