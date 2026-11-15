@@ -8,6 +8,8 @@ Yuki 的持久 Linux 环境、远程画面和本人电脑的文件执行器是�
 
 Manager 创建环境时以原环境名称设置稳定 hostname，使持久 HOME 中 Chromium 的会话和配置在容器重建后仍属于同一主机。浏览器配置和锁文件不作为安装缓存清理。
 
+从 Chromium 常驻的旧版升级时，先休眠画面，再更新 Bot 与 Manager，最后按需唤醒。代码卷更新不会让已运行的 Python 驱动重新加载；这次画面重启使新生命周期和状态格式生效，持久环境与 HOME 不需重建。
+
 本地构建未发布版本的环境镜像：`docker compose -f deploy/sandbox/compose.build.yaml build`，再在部署 `.env` 设 `YUKI_ENVIRONMENT_IMAGE=yuki-environment:local`。
 
 ## 使用与核验
