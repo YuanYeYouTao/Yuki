@@ -1,5 +1,7 @@
 # 架构文档入口
 
+2026-11-15 [Computer Use 任务书](Computer-Use任务书-2026-11-15.md)：computer 专用截图上限（P0）、可选 scale=1000 与落点回显、zoom、修饰键／三击／中键／按键重复、画出指针、route／hit、按窗口的无障碍元素、device_not_supported 事实原因与连接器 0.7.0 能力事实；后端与桌面端各一个 PR，草案待批准。
+
 2026-11-14 [Yuki 自己的电脑任务书](Yuki自己的电脑任务书-2026-11-14.md)：整机快照与回滚、环境级与画面级自启动、闲置休眠；后端实现与 E2E 在 PR #621，Yuki-Desktop 快照面板另一仓库实施。
 
 2026-11-09 统一 Computer Use 与 Browser Use（#588）见[任务书](Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md)：同一组 `computer`/`browser` 工具操作 Yuki 环境与本人 Windows/Mac，含连接器稳定性（阶段 0）；已经独立复审修订，为待实施计划；服务端连接日志与 1011 关闭码已由 #590 合并上线。
