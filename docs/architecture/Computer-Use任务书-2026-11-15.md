@@ -2,7 +2,7 @@
 
 日期：2026-11-15。源码基线：Yuki `main` `1ea35334`（连接器 `0.6.2`，工具合同版本 37，Client API revision 12）；Yuki-Desktop `main` `87c55da`。执行前以 origin/main 为准。
 
-状态：任务书草案，待用户批准。产品代码尚未修改。实现在同一分支 `feat/computer-use` 的后端 PR 内进行；桌面端另开一个 PR（Yuki-Desktop 仓库）。合并与上线另行记录。
+状态：用户已批准（第 17 节已定 1–12）。实现在 `feat/computer-use` 进行中。实现在同一分支 `feat/computer-use` 的后端 PR 内进行；桌面端另开一个 PR（Yuki-Desktop 仓库）。合并与上线另行记录。
 
 实施前阅读[共同开发约束](development-contract.md)、[Tool Kernel](tool-kernel.md)、[个人 API](client-api.md)、[统一 Computer Use 与 Browser Use 任务书](Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md)（本稿的基线，§5.2「按当下几何换算、不保存最近一次截图」与 §5.5「与本人共用桌面」继续有效）、[桌面电脑与有头环境](../operations/desktop-computer.zh-CN.md)、[本机连接器](../operations/local-agent-connector.zh-CN.md)、[3b 后台窗口 spike](../operations/computer-3b-spike-20261110.md)。
 
@@ -18,7 +18,7 @@
 1. **P0 截图尺寸**：`computer` 截图使用自己的上限，与聊天图片的 `vision_*` 分开，默认长边 1568、约 1.15MP。改完后，模型看到的就是这张图本身，任何 Provider 都不会再在服务端缩它，"坐标是所附截图的像素"这句合同在所有模型上重新成立。两条执行路径都生效，旧连接器也立即生效。
 2. **坐标约定与回显**：增加可选 `scale`（只允许 1000）。超出所声明坐标系的坐标直接报错。每个输入动作回显 `point` 和 `scale`；截图结果回显宽、高和坐标系说明。
 3. **看清细节**：`zoom(region)` 返回高清局部图，坐标仍按整张截图计；截图画出鼠标指针。
-4. **动作补齐**：click 类动作支持修饰键，新增 `triple_click`、`middle_click`；`key` 支持 `repeat`；两条路径统一按键语法；Linux 拖拽补插值移动。
+4. **动作补齐**：click 类动作支持修饰键，新增 `triple_click`、`middle_click`；`key` 支持 `repeat`；两条路径统一按键语法；Linux 拖拽补插值移动。Yuki 自己的电脑上新增 `paste`（经她自己的剪贴板输入长文本，6.12）。
 5. **动作结果的事实**：`route`（走的是哪条投递途径）、`hit`（落点控件的 role 和 name）。只做回显，不设门槛。
 6. **坐标之外的定位**：读动作 `elements` 按窗口列出无障碍节点（AX／UIA／AT-SPI），点击、输入等动作可以传 `element`。
 7. **`device_not_supported` 增加事实原因 `reason`**；连接器经 `device_capabilities` 公布新能力，服务器按事实拒绝旧连接器不支持的参数，避免它们被静默忽略。
@@ -95,7 +95,7 @@
 - 两条路径的来源（环境驱动、连接器）照旧按下发的值直接产出最终尺寸。连接器 0.6.x 本来就逐次读取 `max_dimension`／`max_pixels`，**升级 Bot 后旧连接器立即生效**，不需要发新版。
 - 结果：2560×1440 → 1430×804；Retina 3456×2234 → 1334×862；Yuki 自己电脑的 1440×900 → 1356×848。标准档 Claude 的视觉 token 都在 1568 以内（1488–1519），不会再被服务端缩放。
 - 代价：高分档 Claude 和 gpt-5.x `original` 原本能看到 2560×1440，现在少了细节，由 `zoom` 补回（6.3）。
-- 方言层不加 `detail`、`mediaResolution`、`transformations`（见第 17 节待确认 2）。
+- 方言层（第 17 节已定 6）：工具截图（`ChatImage.source == "tool"`）在 OpenAI（`openai`、`azure_openai` 预设）的 Chat Completions `image_url` 与 Responses `input_image` 上带 `detail:"original"`，模型看到的就是来源产出的那张图；这是 vendor 的方言选项 `tool_image_detail`，其他 OpenAI 兼容预设默认不发，可在 Profile 显式打开。Anthropic 不加 `oversized_image`、`transformations`。Gemini 增加方言选项 `tool_image_media_resolution`（默认不发，即服务端默认 1120 token），只作用于工具截图的 part 级 `mediaResolution`；真机验收里对 gemini-3.8-flash 做默认与 `ultra_high` 的 A/B，再按数据决定默认值。它是 Profile 的部署设置，不按内容、模型名或任务路由。
 - 已知残留：tile 类旧模型（gpt-4o／4.1／5.1 的 high）会把短边超过 768 的图再缩一次（16:9 下约 4.5%）。不为此再加第三种上限，在 P0 记录。
 
 ### 6.2 坐标约定与回显
@@ -134,7 +134,7 @@
 | 统一按键语法 | **做** | `parse_keys` 移到只依赖标准库的新模块 `yuki_agent_connector/keys.py`，与 `cdp.py` 一样挂入环境。Linux 先经它解析，再映射成 xdotool keysym。接受现有写法（`Return`、`ctrl+l`、`KP_Enter` 等 xdotool 常见名并入别名表），未知键两边都返回 `invalid_arguments` |
 | Linux 拖拽插值 | **做** | mousedown 后分 12 步 mousemove（每步约 10ms）再 mouseup，与 macOS 一致 |
 | `hold_key`、`key_down/up`、`mouse_down/up` | **不做** | 按住状态会跨调用存在：连接中断、驱动重启或本人叫停发生在按下与抬起之间时，本人的键盘或鼠标会一直处于按住状态，这是对本人电脑的真实伤害。按住期间也会一直占着设备锁。常见需求已经由修饰键、drag 和 `repeat` 覆盖 |
-| 粘贴式长文本输入 | **不做** | 会覆盖本人剪贴板，是动作之外的副作用。macOS 和 Windows 的 unicode 分段输入、Linux 的 keymap 修复已经能输入 CJK 和长文本 |
+| 粘贴式长文本输入 | **只在 Yuki 自己的电脑上做**（6.12） | 本人电脑上不做：会覆盖本人剪贴板，是动作之外的副作用；macOS 和 Windows 的 unicode 分段输入已经能输入 CJK 和长文本。Yuki 自己的电脑上剪贴板属于她自己，按 6.12 以单独的 `paste` 动作提供 |
 | `cursor_position` | **不单独做** | 全屏截图结果回显 `cursor`（6.2），指针也画进图里（6.5），不需要额外一次往返 |
 | `wait` | **不做** | 已有全局 `wait(seconds)` 工具；等待之后再 `screenshot` |
 | `type` 的 `press_enter`／`clear_before_typing`（Gemini 风格） | **不做** | `key Return`、`key ctrl+a` 已能表达，不重复参数 |
@@ -183,6 +183,23 @@
 - Linux（Yuki 自己的电脑）：有头档增加 `at-spi2-core`、`python3-pyatspi`（或 gi），会话启动 AT-SPI 总线。读取逻辑放在一个由系统 python3 运行的独立环境内程序（`yuki_computer.py` 保持只依赖标准库）。X 窗口与 AT-SPI 应用的对应关系、2 GiB／runsc 下的内存开销在 P0 实测；不可用时 `elements` 返回 `device_not_supported`／`no_accessibility`，其他动作不受影响。
 - 网页仍优先用 `browser` 的节点；`elements` 面向原生应用。
 
+### 6.12 粘贴（只在 Yuki 自己的电脑上）
+
+**接口**：新动作 `computer(action="paste", text)`，只作用于 Yuki 自己的电脑。
+
+- 执行：驱动用 `xclip` 把 `text` 同时放进她自己 X 显示的 CLIPBOARD 与 PRIMARY 两个选区，然后按 `shift+Insert`。X11 上 `shift+Insert` 在 GTK、Qt、Chromium（读 CLIPBOARD）和 xterm 类终端（读 PRIMARY）里都是粘贴，两个选区内容相同，所以不需要再给按键参数。落在当前输入焦点，与不带坐标的 `type` 相同；不接受 `x,y`。
+- 回显：`route:["clipboard","global_input"]`（先写选区，再发按键），没有 `point`；附动作后截图。
+- 是输入动作：写回执、取租约；`control_held` 时在写选区之前拒绝；写入选区后按键失败按已投递报 `unknown`。
+- 给出 `device` 时 Bot 直接返回 `device_not_supported`／`own_computer_only`，命令不发给连接器，本人电脑的剪贴板不会被碰到。
+- 不碰本人的剪贴板：她的选区只存在于环境内的 Xvnc；桌面端（Yuki-Desktop）只向 Xvnc 发送本人主动粘贴的文字（ClientCutText），不订阅 Xvnc 发出的剪贴板事件，所以 Yuki 的粘贴内容不会进入本人电脑的剪贴板。粘贴之后她自己的剪贴板保留这段文字，这是她自己电脑上的正常状态。
+- 环境里还没有 `xclip`（Manager 尚未补装）时，在任何输入之前返回 `device_not_supported`／`no_clipboard`。
+
+**为什么是单独的动作而不是 `type` 的选项**：
+
+1. 副作用不同：`paste` 会改写剪贴板，`type` 永远不会。把它做成 `type` 的开关，同一个动作的副作用就取决于一个参数，`type` 在本人电脑上"不碰剪贴板"的保证也要额外加条件说明。
+2. 归属判断与现有的自己电脑专用动作一致：`wake`、`sleep`、`snapshot`、`restore` 都是按动作名在 Bot 侧以 `own_computer_only` 拒绝设备调用，`paste` 沿用同一处判断，不需要新增参数校验。
+3. 途径事实清楚：回显的 `route` 写明 `clipboard`，模型和验收脚本都能看出这一步改了剪贴板。
+
 ### 6.8 批量动作（决定：不做）
 
 评估"一次调用带多个子动作、每个子动作有回执、第一个失败就停、批末附截图"后，本稿**不做**：
@@ -206,6 +223,7 @@
 | `no_control_at_point` | 落点没有能承载该输入的无障碍控件（Windows UIA） | 连接器 |
 | `no_focused_field` | 后台 type 前没有已聚焦的输入框（Windows） | 连接器 |
 | `no_accessibility` | 无障碍接口不可用（Yuki 自己电脑的 AT-SPI） | 环境驱动 |
+| `no_clipboard` | 自己的电脑上还没有剪贴板工具（`xclip`），不能 `paste` | 环境驱动 |
 
 每种都在 `message` 里写明可行的下一步（例如"省略 window 改在前台操作"或"请本人在桌面端点「更新并保留资料」"）。
 
@@ -235,15 +253,16 @@
 computer(action, x?, y?, x2?, y2?, dx?, dy?, text?, repeat?, scale?, region?, element?,
          window?, display?, snapshot?, device?)
   action: screenshot | zoom | elements | click | double_click | triple_click | right_click |
-          middle_click | move | drag | type | key | scroll | resume |
+          middle_click | move | drag | type | paste | key | scroll | resume |
           wake | sleep | snapshot | restore
+  只对 Yuki 自己的电脑：paste（6.12）、wake、sleep、snapshot、restore
   新增参数：
     scale   整数，只允许 1000；省略时坐标为本次截图像素
     region  [x0,y0,x1,y1]，zoom 使用，整张截图坐标
     repeat  1–100，key 使用
     element elements 返回的节点 id，与 x,y 互斥
     text    在 click 类、scroll、drag 上表示按住的修饰键（如 "shift"、"ctrl+shift"）；
-            type 为输入文字，key 为按键组合，snapshot 为备注（原义不变）
+            type、paste 为输入文字，key 为按键组合，snapshot 为备注（原义不变）
   成功（带图）：{width, height, coordinates, display?|window?, control, cursor?,
                point?, point2?, scale?, route?, hit?, element?, submitted?} + 动作后截图
   zoom：{region, frame:{width,height}, width, height, coordinates} + 局部图
@@ -275,7 +294,7 @@ computer(action, x?, y?, x2?, y2?, dx?, dy?, text?, repeat?, scale?, region?, el
 - 桌面端 PR（Yuki-Desktop 仓库）：
   1. `prepare-connector.mjs` 指向含连接器 0.7.0 的后端提交，重新打包；`connector-resources`、签名与 `packages` 发布测试照常。
   2. 「這台電腦」页显示随附版本与运行中版本；版本较旧时提示「更新并保留资料」（沿现有更新流程，保留 device、instance、配对与 journal）。
-  3. 可选：在会话的工具卡截图上用回显的 `point` 画一个标记（见第 17 节待确认 3）。
+  3. 在会话的工具卡截图上用回显的 `point` 画一个标记（第 17 节已定 7）；后端只负责在结果里给出 `point`。
   4. 文案遵循该仓库现有 i18n（繁体为主，简体同步）。
 
 ## 10. 对生产的影响
@@ -358,6 +377,20 @@ zoom：
 | A13 | drag 或 scroll 带修饰键 | 修饰键在整个动作期间按住 |
 | A14 | 同时给 element 和 x,y | `invalid_arguments` |
 | A15 | 长段中文 type（L、M、W） | 照常输入（现有 keymap 修复、unicode 分段） |
+
+粘贴（只在 Yuki 自己的电脑上，6.12）：
+
+| 编号 | 情况 | 期望结果 |
+| --- | --- | --- |
+| V1 | L 上 `paste` 多行中英混排长文（数千字）到 Chromium 输入框 | 文字原样到达；回显 `route:["clipboard","global_input"]`，没有 point；附截图 |
+| V2 | L 上 `paste` 到 xterm 类终端（读 PRIMARY） | 文字原样到达 |
+| V3 | 给 `device` 的 `paste` | `device_not_supported`／`own_computer_only`，命令不发给连接器，本人剪贴板不变 |
+| V4 | `paste` 的 `text` 为空或缺失，或带了 `x,y` | `invalid_arguments`，没有输入、选区不变 |
+| V5 | `control_held` 时 `paste` | `control_held`，选区不变，没有按键 |
+| V6 | 写入选区后按键失败或超时 | `unknown`，不重放 |
+| V7 | 环境里没有 `xclip` | `device_not_supported`／`no_clipboard`，没有输入 |
+| V8 | 同键重试 | 返回原回执，不再写选区、不再按键 |
+| V9 | 本人经桌面端连着画面时 Yuki `paste` | 本人电脑剪贴板不变（桌面端不订阅 Xvnc 剪贴板事件） |
 
 指针：
 
@@ -448,7 +481,7 @@ elements：
 **CI `desktop-headed`**（有头镜像内真实 Xvnc、Chromium、驱动，测试模式 Manager，脚本化模型驱动完整应用）：新增 `tests/integration/test_computer_use_e2e.py`。
 
 - 本地测试页 `pointer-lab.html` 在 Yuki 的 Chromium 窗口中记录全部指针和键盘事件（button、detail、修饰键、拖拽路径点、按键次数），同时写入页面和文件。
-- 依次覆盖：截图 1356×848（C2），scale=1000 点击目标（C8），越界错误（C7、C9、X1），修饰键、三击、中键（A1、A3–A5），key repeat（A8），统一按键（A10、A11），拖拽插值（A12、A13），zoom（Z1–Z3），指针像素检查（P1、P6），elements／element（E1–E7、E12，取决于 P0；目标为一个 GTK 测试窗口），route／hit（R1、R6–R9），叫停期间的读动作（Z4、E13）。
+- 依次覆盖：截图 1356×848（C2），粘贴（V1、V2、V4–V8），scale=1000 点击目标（C8），越界错误（C7、C9、X1），修饰键、三击、中键（A1、A3–A5），key repeat（A8），统一按键（A10、A11），拖拽插值（A12、A13），zoom（Z1–Z3），指针像素检查（P1、P6），elements／element（E1–E7、E12，取决于 P0；目标为一个 GTK 测试窗口），route／hit（R1、R6–R9），叫停期间的读动作（Z4、E13）。
 - 产物：`test-results/computer-use/steps.json`（每步请求、回执、回显）、每步截图（另存一份把 point 画上的标注图）、`pointer-lab-events.json`。
 
 **CI `sandbox-compose`**（真实 install.sh、Manager、环境，`desktop` 阶段）：经 Manager `computer_action` 核对截图尺寸使用 `COMPUTER_SCREENSHOT_*`（C2、C14、C15），并核对 AT-SPI 包已补装。产物 `test-results/sandbox-compose/computer-use.json`。
@@ -467,14 +500,17 @@ elements：
 - 设备：用户的 Mac mini（2560×1440，连接器已连接；先在桌面端更新到 0.7.0）。
 - 任务 T1"关掉一个窗口、不碰另一个"：打开两个 Finder 窗口，分别进入 `Yuki-保留` 与 `Yuki-关闭` 两个文件夹（Finder 关闭窗口没有保存对话框）。指令："关掉显示 Yuki-关闭 的 Finder 窗口，另一个不要动。"
 - 任务 T2"写到指定输入框"：在 TextEdit 的两个已保存文档中，只往标题为 `Yuki-目标` 的那个末尾写一行指定文字。
-- 矩阵：模型 `claude-sonnet-4-6`（标准档）与 `gemini-3.8-flash` × 前台（省略 window）与后台（给 window）× 每格 10 次。另在升级前（main）对两个模型的前台 T1 各跑 5 次作为基线。
+- 矩阵：模型 `claude-sonnet-4-6`（标准档）与 `gemini-3.8-flash` × 前台（省略 window）与后台（给 window）× 每格 10 次。另在升级前（main）对两个模型的前台 T1 各跑 5 次作为基线（第 17 节已定 9）。
+- Gemini 图像分辨率 A/B（第 17 节已定 6）：gemini-3.8-flash 的前台 T1、T2 各再跑一组 10 次，Profile 设 `tool_image_media_resolution: ultra_high`，与默认组对比成功率、步数、真实图像 usage 与谎报率，按数据决定是否改默认值。
 - 结果核对按事实：结束后由脚本经连接器读取窗口列表或文件内容（T1：`Yuki-关闭` 窗口不在、`Yuki-保留` 仍在、Finder 未退出；T2：只有目标文件多了那一行），与模型自己的结论对照。
 - 记录：每步回执、截图和标注落点的图；每次运行的成功与否、步数、token（真实 usage）、模型声称成功但事实失败的次数（谎报率）。
 - 产物：`test-results/computer-use-acceptance/<日期>/mac-mini/<model>/<fg|bg>/run-XX/` 与 `summary.json`；记录写入 `docs/operations/computer-use-acceptance-<日期>.md`。成功率只做记录，不作为合并门槛。
 
 **Yuki 自己电脑的验收**：生产 Colima 的 `desktop` 档（需授权；或同版本本地有头环境），打开两个终端窗口（标题 `Yuki-保留`、`Yuki-关闭`），用同样的指令与模型矩阵（只有全局输入，即前台）各跑 10 次，按 `xprop` 读到的窗口列表核对，产物同上路径下的 `own-computer/`。
 
-**只能真机验证的项**：macOS 的一切屏幕操作（TCC）、macOS 后台投递与 Space、真实模型落点与谎报率；Windows 屏幕项在 runner 不可交互时也转为真机（Windows 真机验收用哪台机器见第 17 节待确认 4）。
+**只能真机验证的项**：macOS 的一切屏幕操作（TCC）、macOS 后台投递与 Space、真实模型落点与谎报率。
+
+**Windows**：本轮不做真机验收（第 17 节已定 8），Windows 只由 CI `connector` 的 windows-2025 runner 覆盖（真实 GDI、SendInput、UIA，打在测试自己的窗口上）；用户之后自行在 Windows 真机上按同样的 T1、T2 验收并另行记录。
 
 ## 13. P0 实测（先于实现）
 
@@ -517,7 +553,7 @@ elements：
 - **强制确认、按应用授权**：违反"不扩大限制"。发送、删除前截图核对只作为提示。
 - **按模型 Profile 换算坐标**、按坐标数值猜约定：违反固定合同和"不按内容路由"。
 - **各家私有 computer-use 协议**（Anthropic computer toolset、OpenAI `computer`、Gemini Computer Use 工具）：沿用 11-09 的决定 2。
-- **批量动作**（6.8）；**`hold_key`、`key_down/up`、`mouse_down/up`、粘贴输入**（6.4）。
+- **批量动作**（6.8）；**`hold_key`、`key_down/up`、`mouse_down/up`**（6.4）；**本人电脑上的粘贴输入**（6.4，自己的电脑见 6.12）。
 - **效果推断**（Cua 的 `effect`／`evidence`）：是否生效以截图为准。
 - **把调用绑定到截图**（`capture_id`）：与"按当下几何、不保存最近截图"的现行设计冲突，第 17 节说明。
 - **独立的 grounding 模型**（Agent S、e2b 的规划与定位分离）：会多一次付费调用，需要显式用途配置，另议。
@@ -531,18 +567,18 @@ elements：
 2. 截图上限默认长边 1568、约 1.15MP，与 `vision_*` 分开。
 3. `scale` 只允许 1000，默认是本次截图像素；越界直接报错。
 4. 不做强制确认、按应用授权、按 Profile 换算、按数值猜约定。
+5. **Yuki 自己电脑的分辨率保留 1440×900**，截图按新上限缩成 1356×848，不改 Xvnc，不动她已布置好的桌面。
+6. **方言层的图像提示**：工具截图（`source="tool"`）加 OpenAI `detail:"original"`；不加 Anthropic `oversized_image:"error"`；Gemini `mediaResolution: ultra_high` 不预先定论，在真机验收里按默认与 ultra_high 做 A/B，按数据再定。需要开关时只做部署设置（Profile 的方言选项），不按内容路由（6.1）。
+7. **桌面端在工具卡截图上按回显的 `point` 画标记**：做，属于桌面端 PR；后端只需在结果里给出 `point`（第 9 节）。
+8. **Windows 本轮不做真机验收**，只靠 CI（windows-2025 runner）；用户之后自行在 Windows 上验收（第 12 节）。
+9. **真机验收规模**：每格 10 次，升级前基线各 5 次；成功率只记录，永远不作为合并门槛。
+10. **AT-SPI 在 P0 不可行时**接受 Yuki 自己的电脑上 `elements` 返回 `device_not_supported`／`no_accessibility`（P0 实测可行，见第 13 节）。
+11. **本人叫停期间截图、zoom、elements 照常可用**（只停输入），与现在一致，不另议。
+12. **粘贴式长文本输入只在 Yuki 自己的电脑上开放**，不碰本人的剪贴板；本人电脑上继续不做（6.4、6.12）。
 
-本稿决定（理由见正文）：批量不做（6.8）；`hold_key`、mouse down/up、粘贴不做，`cursor_position` 改为截图回显（6.4）；element id 按窗口只认最近一次列表（6.7）；`device_not_supported` 的错误码不变，增加 `reason`（6.9）；不绑定截图：一张截图之后几何可能变化，按当下几何换算并校验范围、再回显落点，已经覆盖"坐标对应哪张图"的问题，不需要再引入每张截图的标识和过期规则。
+本稿决定（理由见正文）：批量不做（6.8）；`hold_key`、mouse down/up 不做，粘贴只在自己的电脑上以单独的 `paste` 动作提供（6.12），`cursor_position` 改为截图回显（6.4）；element id 按窗口只认最近一次列表（6.7）；`device_not_supported` 的错误码不变，增加 `reason`（6.9）；不绑定截图：一张截图之后几何可能变化，按当下几何换算并校验范围、再回显落点，已经覆盖"坐标对应哪张图"的问题，不需要再引入每张截图的标识和过期规则。
 
-待确认（需要用户拍板）：
-
-1. **Yuki 自己电脑的分辨率**：保留 1440×900（按新上限缩成 1356×848，约缩小 6%），还是把 Xvnc 改成原生不需要缩放的 1344×840？改分辨率会影响她已经布置好的桌面布局。
-2. **方言层的图像提示**：是否给工具截图加 OpenAI `detail:"original"`、Gemini `mediaResolution: ultra_high`（官方建议 computer use 用，token 从 1120 加倍到 2240）、Anthropic `oversized_image:"error"`（把服务端缩图变成显式错误；部分 Anthropic 兼容代理可能拒绝这个字段）。本稿默认都不加。
-3. **桌面端在工具卡截图上画出 point 标记**：做不做。
-4. **Windows 真机验收**：用哪台 Windows 机器；还是只靠 runner（取决于 P0 第 5 项）。
-5. **真机验收的规模**：每格 10 次、升级前基线各 5 次是否合适；成功率只记录、不作为门槛，是否认可。
-6. **AT-SPI 在 P0 不可行时**：接受 Yuki 自己的电脑暂不支持 `elements`（返回 `no_accessibility`，原生窗口只能按坐标操作）吗？
-7. **本人叫停期间是否仍允许截图、zoom 和 elements**：现在允许（只停输入）；Operator 的接管模式期间不截图。本稿不改，是否需要另议。
+待确认：无。
 
 ## 18. 来源
 
