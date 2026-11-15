@@ -142,6 +142,9 @@ class PersistentManager:
         self.observed_container: dict[str, Any] = {}
         # Environment files the current container has no mount for (it predates them).
         self.environment_files_missing: list[str] = []
+        # The generation whose packages were installed; installing runs once per generation.
+        self.programs_generation: str | None = None
+        self.programs_task: asyncio.Task[None] | None = None
         self.container_id = ""
         self.connections: dict[str, Any] = {}
         self.pumps: dict[str, asyncio.Task[None]] = {}
@@ -520,6 +523,42 @@ class PersistentManager:
         )
         return list(json.loads(raw)["tools"]) if not code else []
 
+    def programs_due(self) -> bool:
+        """Whether this generation's install may run: once, after its services started.
+
+        Her own services (such as the DNS server her resolv.conf names) are started by the
+        worker after ``recover()``; apt run before that cannot resolve anything (U10).
+        """
+        if self.programs_generation == self.container_id:
+            return False
+        for row in self.db.execute(
+            "SELECT run_id FROM environment_services WHERE enabled=1"
+        ).fetchall():
+            if row["run_id"] is None:
+                return False
+            job = self.db.execute("SELECT state FROM jobs WHERE id=?", (row["run_id"],)).fetchone()
+            if job is None or job["state"] == "queued":
+                return False
+        return True
+
+    async def install_programs(self) -> None:
+        """Install what this generation's mode wants; a changed mode restarts the desktop."""
+        self.programs_generation = self.container_id
+        await self.apply_programs()
+        await self.follow_desktop_mode()
+
+    async def follow_desktop_mode(self) -> None:
+        mode = self.desktop_manifest.get("browser_mode", "none")
+        if not self.testing and self.setting("desktop_mode", mode) != mode:
+            # A running desktop service keeps the mode it started with. Cancelling the
+            # run lets its restart policy start a new one in the new mode.
+            row = self.db.execute(
+                "SELECT run_id FROM environment_services WHERE name='yuki-desktop'"
+            ).fetchone()
+            if row and row["run_id"] and self.get(row["run_id"]).get("pending"):
+                await self.control(row["run_id"], "cancel")
+        self.set_setting("desktop_mode", mode)
+
     async def apply_programs(self) -> None:
         """Install what the configured mode needs; report capabilities from what is installed."""
         tools = await self.read_manifest()
@@ -544,7 +583,11 @@ class PersistentManager:
             self.programs = {"missing": missing, "installed": not code}
             if code:
                 self.programs["output"] = output.decode(errors="replace")[-4096:]
-            tools = await self.read_manifest()
+        await self.observe_programs()
+
+    async def observe_programs(self) -> None:
+        """The mode this environment has now, from what is installed; nothing is installed."""
+        tools = await self.read_manifest()
         installed = {tool["name"] for tool in tools}
         mode = self.browser_mode
         if mode == "headed" and not set(DISPLAY_PACKAGES) <= installed:
@@ -764,7 +807,8 @@ class PersistentManager:
             await self.recover()
             return
         if not self.testing:
-            await self.apply_programs()
+            # Only what is installed now: installing waits for her services (U10).
+            await self.observe_programs()
         address = current["NetworkSettings"]["Networks"][self.network]["IPAddress"]
         self.execd = Execd(address, token)
         for attempt in range(20):
@@ -800,16 +844,7 @@ class PersistentManager:
                 self.queue.put_nowait(row["id"])
             else:
                 await self.reconcile(row)
-        mode = self.desktop_manifest.get("browser_mode", "none")
-        if not self.testing and self.setting("desktop_mode", mode) != mode:
-            # A running desktop service keeps the mode it started with. Cancelling the
-            # run lets its restart policy start a new one in the new mode.
-            row = self.db.execute(
-                "SELECT run_id FROM environment_services WHERE name='yuki-desktop'"
-            ).fetchone()
-            if row and row["run_id"] and self.get(row["run_id"]).get("pending"):
-                await self.control(row["run_id"], "cancel")
-        self.set_setting("desktop_mode", mode)
+        await self.follow_desktop_mode()
         self.ready = True
         await self.snapshots.after_recover(created=created)
 
@@ -1697,6 +1732,15 @@ class PersistentManager:
                 if not self.testing:
                     await self.autostart()
                 await self.restore_services()
+                if not self.testing and self.programs_task is None and self.programs_due():
+                    # In the background: the Manager stays ready, terminals keep running.
+                    self.programs_task = asyncio.create_task(self.install_programs())
+                if self.programs_task is not None and self.programs_task.done():
+                    if not self.programs_task.cancelled() and self.programs_task.exception():
+                        LOGGER.warning(
+                            "environment_programs_failed error=%s", self.programs_task.exception()
+                        )
+                    self.programs_task = None
             if time.time() - self.last_prune > 60:
                 self.prune_logs()
                 self.last_prune = time.time()
@@ -1760,6 +1804,9 @@ class PersistentManager:
     async def close(self) -> None:
         self.ready = False
         cancelled = False
+        if self.programs_task is not None:
+            self.programs_task.cancel()
+            await asyncio.gather(self.programs_task, return_exceptions=True)
         try:
             for connection in tuple(self.connections.values()):
                 await connection.close()

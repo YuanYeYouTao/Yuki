@@ -242,6 +242,13 @@ def computer_use(deployment: Deployment, status: dict[str, Any]) -> None:
         "computer_action", {"action": "zoom", "region": [0, 0, 678, 424], **limits}
     )
     expect(zoom.get("frame") == {"width": 1356, "height": 848}, f"zoom: {zoom}")
+    # The profile's packages are installed after the environment's services started, in the
+    # background of a ready Manager (Computer Use task book §11 U10).
+    deadline = time.monotonic() + 1800
+    probe = "dpkg-query -W -f='${Status}' xclip 2>/dev/null | grep -q 'ok installed' && echo ready"
+    while "ready" not in str(deployment.terminal(probe)["output"]):
+        expect(time.monotonic() < deadline, f"packages not installed: {deployment.status()}")
+        time.sleep(10)
     facts = deployment.terminal(
         "dpkg-query -W -f='${Package} ${Version}\\n' at-spi2-core xclip; "
         "DISPLAY=:1 xprop -root AT_SPI_BUS | cut -c1-40; "

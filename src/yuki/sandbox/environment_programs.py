@@ -50,14 +50,19 @@ def wanted(mode: str, extra: tuple[str, ...] | list[str] = ()) -> list[str]:
     return list(dict.fromkeys([*MODE_PACKAGES[mode], *FEATURE_PACKAGES[mode], *extra]))
 
 
+def apt(*arguments: str) -> list[str]:
+    """apt-get that waits for the dpkg lock: her own apt may run while the Manager installs."""
+    return ["apt-get", "-o", "DPkg::Lock::Timeout=600", *arguments]
+
+
 def main(argv: list[str]) -> int:
     mode, *extra = argv
     packages = wanted(mode, extra)
     if packages:
         environment = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
-        subprocess.run(["apt-get", "update", "-qq"], check=True, env=environment)
+        subprocess.run(apt("update", "-qq"), check=True, env=environment)
         subprocess.run(
-            ["apt-get", "install", "-y", "-qq", "--no-install-recommends", "--", *packages],
+            apt("install", "-y", "-qq", "--no-install-recommends", "--", *packages),
             check=True,
             env=environment,
         )
