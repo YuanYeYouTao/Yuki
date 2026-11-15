@@ -2,7 +2,7 @@
 
 日期：2026-11-15。源码基线：Yuki `main` `1ea35334`（连接器 `0.6.2`，工具合同版本 37，Client API revision 12）；Yuki-Desktop `main` `87c55da`。执行前以 origin/main 为准。
 
-状态：用户已批准（第 17 节已定 1–12）。实现在 `feat/computer-use` 进行中。实现在同一分支 `feat/computer-use` 的后端 PR 内进行；桌面端另开一个 PR（Yuki-Desktop 仓库）。合并与上线另行记录。
+状态：用户已批准（第 17 节已定 1–12）。后端 P0–P5 已在 `feat/computer-use`（PR #622）本地实现并通过本地与 CI 验证（P0 结果与修订见 13.1）；桌面端 PR（P6）与真机验收（P7，需用户授权付费模型与操作真机）未做。合并与上线另行记录。实现在同一分支 `feat/computer-use` 的后端 PR 内进行；桌面端另开一个 PR（Yuki-Desktop 仓库）。合并与上线另行记录。
 
 实施前阅读[共同开发约束](development-contract.md)、[Tool Kernel](tool-kernel.md)、[个人 API](client-api.md)、[统一 Computer Use 与 Browser Use 任务书](Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md)（本稿的基线，§5.2「按当下几何换算、不保存最近一次截图」与 §5.5「与本人共用桌面」继续有效）、[桌面电脑与有头环境](../operations/desktop-computer.zh-CN.md)、[本机连接器](../operations/local-agent-connector.zh-CN.md)、[3b 后台窗口 spike](../operations/computer-3b-spike-20261110.md)。
 

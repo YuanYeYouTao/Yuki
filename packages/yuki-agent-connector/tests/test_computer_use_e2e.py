@@ -436,7 +436,10 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
             refused = await call(action, f"{action}-space", window="4242", **extra)
             assert refused["error"] == "device_not_supported"
             assert refused["cause"] == "off_space" and "桌面空间" in refused["message"]
-        assert "image" in await call("screenshot", "shot-space", window="4242")
+        # P4: a window picture has no pointer field even when the pointer is over it.
+        script(state, pointer=[400, 300])
+        spaced = await call("screenshot", "shot-space", window="4242")
+        assert "image" in spaced and "cursor" not in spaced
         # A6/D6: a platform without a background route for these inputs (Windows).
         script(state, windows=[{**EDITOR, "actions": ["click", "scroll", "type"]}])
         for action, extra in (
