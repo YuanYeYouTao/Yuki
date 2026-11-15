@@ -587,7 +587,15 @@ class WindowsScreen:
         array = (INPUT * len(inputs))(*inputs)
         sent = user32.SendInput(len(inputs), array, ctypes.sizeof(INPUT))
         if sent != len(inputs):
-            raise ctypes.WinError(ctypes.get_last_error())
+            error = ctypes.WinError(ctypes.get_last_error())
+            # Only part of the batch went in (UIPI, a desktop switch): whatever it pressed
+            # is released, so no key or button stays down (A17).
+            releases = _releases(inputs[:sent])
+            if releases:
+                user32.SendInput(
+                    len(releases), (INPUT * len(releases))(*releases), ctypes.sizeof(INPUT)
+                )
+            raise error
 
     def _mouse(self, flags: int, point: tuple[float, float] | None = None, data: int = 0) -> INPUT:
         x = y = 0
@@ -597,17 +605,15 @@ class WindowsScreen:
         value = _INPUTS(mi=MOUSEINPUT(x, y, data & 0xFFFFFFFF, flags, 0, EVENT_TAG))
         return INPUT(INPUT_MOUSE, value)
 
-    def _holding(self, modifiers: tuple[str, ...], run: Callable[[], None]) -> str:
-        """Press ``modifiers``, run, and release them even when posting failed (A2)."""
-        held = [VIRTUAL_KEYS[name] for name in modifiers]
-        if held:
-            self._send([self._keyboard(code, 0) for code in held])
-        try:
-            run()
-        finally:
-            if held:
-                self._send([self._keyboard(code, KEYEVENTF_KEYUP) for code in reversed(held)])
-        return "global_input"
+    def _held(self, modifiers: tuple[str, ...], inputs: list[INPUT]) -> list[INPUT]:
+        """``inputs`` wrapped in ``modifiers``: pressed and released within the same batch, so
+        the owner's own keys never pick them up (A18)."""
+        codes = [VIRTUAL_KEYS[name] for name in modifiers]
+        return (
+            [self._keyboard(code, 0) for code in codes]
+            + inputs
+            + [self._keyboard(code, KEYEVENTF_KEYUP) for code in reversed(codes)]
+        )
 
     def move(self, x: float, y: float) -> str:
         self._send([self._mouse(0, (x, y))])
@@ -618,33 +624,39 @@ class WindowsScreen:
     ) -> str:
         down, up = BUTTON_FLAGS[button]
         # One batch: the clicks of a triple click arrive within the double-click time.
-        return self._holding(
-            modifiers,
-            lambda: self._send(
+        self._send(
+            self._held(
+                modifiers,
                 [self._mouse(0, (x, y))]
-                + [self._mouse(flag) for _ in range(count) for flag in (down, up)]
-            ),
+                + [self._mouse(flag) for _ in range(count) for flag in (down, up)],
+            )
         )
+        return "global_input"
 
     def drag(
         self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
     ) -> str:
         down, up = BUTTON_FLAGS["left"]
-
-        def run() -> None:
-            self._send([self._mouse(0, (x, y)), self._mouse(down)])
-            try:
-                steps = 12
-                for step in range(1, steps + 1):
-                    # Applications track a drag from intermediate positions, not only its end.
-                    time.sleep(0.01)
-                    self._send(
-                        [self._mouse(0, (x + (x2 - x) * step / steps, y + (y2 - y) * step / steps))]
-                    )
-            finally:
-                self._send([self._mouse(up)])
-
-        return self._holding(modifiers, run)
+        codes = [VIRTUAL_KEYS[name] for name in modifiers]
+        # Modifiers go down with the button and up with it: held only while dragging (A18).
+        self._send(
+            [self._keyboard(code, 0) for code in codes]
+            + [self._mouse(0, (x, y)), self._mouse(down)]
+        )
+        try:
+            steps = 12
+            for step in range(1, steps + 1):
+                # Applications track a drag from intermediate positions, not only its end.
+                time.sleep(0.01)
+                self._send(
+                    [self._mouse(0, (x + (x2 - x) * step / steps, y + (y2 - y) * step / steps))]
+                )
+        finally:
+            self._send(
+                [self._mouse(up)]
+                + [self._keyboard(code, KEYEVENTF_KEYUP) for code in reversed(codes)]
+            )
+        return "global_input"
 
     def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
         inputs = [self._mouse(0, (x, y))]
@@ -653,7 +665,8 @@ class WindowsScreen:
             inputs.append(self._mouse(MOUSEEVENTF_WHEEL, data=-dy * WHEEL_DELTA))
         if dx:
             inputs.append(self._mouse(MOUSEEVENTF_HWHEEL, data=dx * WHEEL_DELTA))
-        return self._holding(modifiers, lambda: self._send(inputs))
+        self._send(self._held(modifiers, inputs))
+        return "global_input"
 
     @staticmethod
     def _keyboard(code: int, flags: int, scan: int = 0) -> INPUT:
@@ -663,10 +676,10 @@ class WindowsScreen:
 
     def key(self, modifiers: tuple[str, ...], key: str) -> str:
         code = VIRTUAL_KEYS[key]
-        return self._holding(
-            modifiers,
-            lambda: self._send([self._keyboard(code, 0), self._keyboard(code, KEYEVENTF_KEYUP)]),
+        self._send(
+            self._held(modifiers, [self._keyboard(code, 0), self._keyboard(code, KEYEVENTF_KEYUP)])
         )
+        return "global_input"
 
     def type(self, text: str) -> str:
         inputs = []
@@ -685,6 +698,46 @@ class WindowsScreen:
         if inputs:
             self._send(inputs)
         return "global_input"
+
+
+def _releases(inputs: list[INPUT]) -> list[INPUT]:
+    """Key-up and button-up events for what ``inputs`` pressed and did not release."""
+    keys: dict[int, None] = {}
+    buttons: dict[int, int] = {}
+    for item in inputs:
+        if item.type == INPUT_KEYBOARD:
+            flags = item.value.ki.dwFlags
+            if flags & KEYEVENTF_UNICODE:
+                continue
+            if flags & KEYEVENTF_KEYUP:
+                keys.pop(item.value.ki.wVk, None)
+            else:
+                keys[item.value.ki.wVk] = None
+        else:
+            flags = item.value.mi.dwFlags
+            for down, up in BUTTON_FLAGS.values():
+                if flags & down:
+                    buttons[down] = up
+                if flags & up:
+                    buttons.pop(down, None)
+    return [
+        INPUT(INPUT_MOUSE, _INPUTS(mi=MOUSEINPUT(0, 0, 0, up, 0, EVENT_TAG)))
+        for up in buttons.values()
+    ] + [
+        INPUT(
+            INPUT_KEYBOARD,
+            _INPUTS(
+                ki=KEYBDINPUT(
+                    code,
+                    0,
+                    KEYEVENTF_KEYUP | (KEYEVENTF_EXTENDEDKEY if code in EXTENDED else 0),
+                    0,
+                    EVENT_TAG,
+                )
+            ),
+        )
+        for code in reversed(keys)
+    ]
 
 
 def _integrity(process: Any) -> int:

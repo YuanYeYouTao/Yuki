@@ -68,6 +68,8 @@ FEATURES = frozenset(
 )
 # Typed text is posted in runs so that a Desktop stop arriving meanwhile ends it.
 TYPE_RUN = 32
+# A hit test only describes the point; it never holds up the input (R10).
+HIT_SECONDS = 0.5
 # Reads the platform's permission preflight so Desktop and the server see a grant soon.
 PERMISSION_SECONDS = 5.0
 # Yielding to the owner: their input has paused for this long, or Yuki gives up waiting.
@@ -114,6 +116,26 @@ class Control:
             "本人明确让你继续时再调用 computer(action=resume)。",
             "control": self.visible(),
         }
+
+
+def bounded(call: Callable[[], Any], seconds: float) -> Any:
+    """``call()`` in its own thread, or None when it fails or has not answered in time.
+
+    The platform's accessibility call may block on an app that does not answer; the thread
+    is left to finish on its own and its answer is dropped.
+    """
+    answer: list[Any] = []
+
+    def run() -> None:
+        try:
+            answer.append(call())
+        except Exception:  # a hit test that fails only leaves the field out (R7)
+            pass
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    return answer[0] if answer else None
 
 
 def failure(error: str, message: str, **facts: Any) -> dict[str, Any]:
@@ -256,7 +278,10 @@ class Desk:
         target: Target | None = None
         display: Display | None = None
         area: Area
-        if args.get("window") is not None:
+        # An element names its window: without ``window`` the call is that window's, with
+        # its picture and its own routes, never the owner's foreground (E16).
+        window = args.get("window") or (parsed.element[0] if parsed.element else None)
+        if window is not None:
             if not input_granted:
                 # A window's state (minimized) and every background route need Accessibility.
                 return failure(
@@ -265,7 +290,7 @@ class Desk:
                     "辅助功能”中允许 Yuki，或省略 window 截整个屏幕。",
                 )
             try:
-                target = self.screen.window(str(args["window"]))
+                target = self.screen.window(str(window))
             except Refused as refused:
                 return refused.result()
             area = target.window
@@ -360,22 +385,27 @@ class Desk:
                 echo["element"] = str(args["element"])
                 echo["point"] = [round(value) for value in to_image(area, *limits, *aim)]
             echo["scale"] = parsed.scale
-            if (
-                target.elevated()
-                if target is not None
-                else self.screen.elevated(aim if action in POINTED else None)
-            ):
+            if target.elevated() if target is not None else self.screen.elevated(aim):
                 return failure(
                     "target_elevated",
                     "目标窗口以管理员权限运行，系统不允许普通程序向它输入；输入没有执行。",
                 )
-            if node is not None:
-                echo["hit"] = {"role": node.role, "name": node.name}
-            elif aim is not None and action in POINTED:
-                hit = target.hit(*aim) if target is not None else self.screen.hit(*aim)
+            if aim is not None and (action in POINTED or node is not None):
+                # The real hit test at the point, before any input, with its own short limit:
+                # whatever is on top there, never the node's own description (R10, R12).
+                surface = target if target is not None else self.screen
+                at = aim
+                hit = bounded(lambda: surface.hit(*at), HIT_SECONDS)
                 if hit is not None:
                     echo["hit"] = hit
             submitted = self._input(parsed, args, aim, aim2, target, node)
+            if submitted.get("error") == "element_stale" and parsed.element is not None:
+                # The node went away after its bounds were read (E18).
+                return {
+                    **echo,
+                    **self._stale(parsed.element, limits, parsed.scale),
+                    "status": submitted["status"],
+                }
             if "error" in submitted:
                 return {**submitted, **echo}
             result = {"submitted": True, **echo, **submitted}
@@ -592,10 +622,13 @@ class Desk:
                 else:
                     node.focus()
                 routes.append("accessibility")
-            elif window is not None and aim is not None and action in {"key", "type"}:
-                # Keys go to the app's focus: first make the field at x,y that focus.
+            elif aim is not None and action in {"key", "type"}:
+                # Keys go to the focus: first make the field at x,y that focus (A19).
                 posted += 1
-                routes.append(window.focus(*aim))
+                if window is not None:
+                    routes.append(window.focus(*aim))
+                else:
+                    routes.append(self.screen.click(*aim, "left", 1, ()))
             if action in actions.CLICKS:
                 assert aim is not None
                 posted += 1
@@ -652,6 +685,14 @@ class Desk:
             return {
                 **refused.result(),
                 "status": "unknown" if posted else "failed",
+                "route": list(dict.fromkeys(routes)),
+            }
+        except Stale:
+            # The node was gone when it was pressed or focused: that call delivered nothing.
+            posted -= 1
+            return {
+                "status": "unknown" if posted else "failed",
+                "error": "element_stale",
                 "route": list(dict.fromkeys(routes)),
             }
         except OSError as error:

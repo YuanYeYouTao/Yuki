@@ -13,8 +13,6 @@ class OpenAIResponsesProvider(DeepSeekResponsesProvider):
 
     provider_name = "openai"
     supports_tool_choice = True
-    # Tool screenshots are seen at the size the source produced (task book §6.1).
-    tool_image_detail: str | None = "original"
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         payload = super()._build_payload(request)
@@ -36,4 +34,3 @@ class OpenAICompatibleResponsesProvider(OpenAIResponsesProvider):
     """Keep compatible endpoints in their configured provider continuation domain."""
 
     provider_name = "openai_compatible"
-    tool_image_detail = None

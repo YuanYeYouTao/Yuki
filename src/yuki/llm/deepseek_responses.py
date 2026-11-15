@@ -31,6 +31,7 @@ from yuki.llm.base import (
     LLMUnavailableError,
 )
 from yuki.llm.json_http import JSONHTTPProvider
+from yuki.llm.vendor_policy import ChatWireOptions, wire_options
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +45,15 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
 
     provider_name = "deepseek"
     supports_tool_choice = False
-    # ``input_image.detail`` for tool screenshots; only the OpenAI preset sends it.
-    tool_image_detail: str | None = None
 
     protocol = "responses"
     # Preserve the Responses ReadError contract; native calls never retry.
     transport_errors = (httpx.ConnectError, httpx.TimeoutException)
+
+    def __init__(self, *, options: ChatWireOptions | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # The Profile's wire options; ``tool_image_detail`` marks tool screenshots.
+        self.options = wire_options(self.provider_name, options)
 
     def _path(self, request: ChatRequest) -> str:
         return "/responses"
@@ -170,8 +174,9 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                                     "type": "input_image",
                                     "image_url": image.data_url,
                                     **(
-                                        {"detail": self.tool_image_detail}
-                                        if image.source == "tool" and self.tool_image_detail
+                                        {"detail": self.options.tool_image_detail}
+                                        if image.source == "tool"
+                                        and self.options.tool_image_detail
                                         else {}
                                     ),
                                 }

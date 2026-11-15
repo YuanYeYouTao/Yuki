@@ -193,9 +193,6 @@ WINDOW_ACTIONS = frozenset(
 CONTAINER_ROLES = frozenset(
     {"AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXLayoutItem", "AXUnknown"}
 )
-# The system-wide hit test asks whatever app is under the point; a hung app must not stall
-# the input it only describes (P0 item 7: 0.2–0.5 ms warm, 25–33 ms cold).
-HIT_SECONDS = 0.25
 # Chromium builds its web accessibility tree after the switch is set (spike R12).
 ACCESSIBILITY_SECONDS = 4.0
 ACCESSIBLE: set[int] = set()
@@ -343,11 +340,22 @@ class MacNode:
     def press(self) -> bool:
         if "AXPress" not in action_names(self.element):
             return False
-        check(AX.AXUIElementPerformAction(self.element, "AXPress"), "AXPress")
+        live(AX.AXUIElementPerformAction(self.element, "AXPress"), "AXPress", self.name)
         return True
 
     def focus(self) -> None:
-        check(AX.AXUIElementSetAttributeValue(self.element, "AXFocused", True), "AXFocused")
+        live(
+            AX.AXUIElementSetAttributeValue(self.element, "AXFocused", True),
+            "AXFocused",
+            self.name,
+        )
+
+
+def live(error: int, what: str, name: str) -> None:
+    """``check`` for a listed node: a destroyed element is stale, not an input failure."""
+    if error == AX.kAXErrorInvalidUIElement:
+        raise Stale(name)
+    check(error, what)
 
 
 def nodes(root: Any) -> list[MacNode]:
@@ -421,8 +429,9 @@ class MacScreen(Keys):
         # A private state source: Yuki's events neither read nor change the owner's
         # modifier state, and each carries EVENT_TAG for anyone observing events.
         self.source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+        # Hit tests run under the desk's own time limit (desk.bounded): the system-wide
+        # messaging timeout would change every accessibility call, AXPress included.
         self.system = AX.AXUIElementCreateSystemWide()
-        AX.AXUIElementSetMessagingTimeout(self.system, HIT_SECONDS)
 
     def permissions(self) -> tuple[bool, bool]:
         return bool(Quartz.CGPreflightScreenCaptureAccess()), bool(
@@ -901,8 +910,11 @@ class MacTarget(Keys):
         self._prime(x, y)
         for clicks in range(1, count + 1):
             self._stamped(down, x, y, code, clicks, flags)
-            time.sleep(PRESS_SECONDS)
-            self._stamped(up, x, y, code, clicks, flags)
+            try:
+                time.sleep(PRESS_SECONDS)
+            finally:
+                # A press is always released (A17).
+                self._stamped(up, x, y, code, clicks, flags)
 
     # Stamped events where accessibility has nothing
 

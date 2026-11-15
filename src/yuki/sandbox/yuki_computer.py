@@ -308,13 +308,15 @@ class Screen:
     ) -> tuple[dict[str, Any], cdp.Image | None]:
         from yuki_agent_connector import actions, cdp
 
-        action, window = args["action"], args.get("window")
+        action = args["action"]
         if action not in actions.READS | actions.INPUTS | {"paste"}:
             raise cdp.Failure({"error": "invalid_arguments", "message": f"未知的動作：{action}"})
         try:
             parsed = actions.validate(action, args)
         except ValueError as error:
             raise cdp.Failure({"error": "invalid_arguments", "message": str(error)}) from None
+        # An element names its window: without ``window`` the call is that window's (E16).
+        window = args.get("window") or (parsed.element[0] if parsed.element else None)
         result: dict[str, Any] = {}
         inputs = 0
         routes: list[str] = []
@@ -324,7 +326,20 @@ class Screen:
             if checked:
                 before_input()
                 inputs += 1
-            self.run(deadline, "xdotool", *command)
+                self.run(deadline, "xdotool", *command)
+            else:
+                # A release (mouseup, keyup) gets its own short limit: it still goes out when
+                # the action used up its time, so nothing stays held down (A16).
+                self.run(time.monotonic() + RELEASE_SECONDS, "xdotool", *command)
+
+        def accessible(act: Callable[[], bool]) -> bool:
+            """An AT-SPI effect: the lease is checked first, it counts once it acted."""
+            nonlocal inputs
+            before_input()
+            done = act()
+            if done:
+                inputs += 1
+            return done
 
         try:
             left, top, native_width, native_height = self.geometry(deadline, window)
@@ -409,15 +424,49 @@ class Screen:
                     echo["point"] = [round(value) for value in to_image(*centre)]
                 if action != "paste":
                     echo["scale"] = parsed.scale
-                if node is not None:
-                    echo["hit"] = {"role": node.role, "name": node.name}
-                elif aim is not None and action in actions.POINTED:
-                    hit = self.hit(deadline, *aim)
-                    if hit is not None:
-                        echo["hit"] = hit
                 result = echo
+                gone = sys.modules["yuki_accessibility"].Gone if node is not None else ()
                 try:
-                    self.deliver(parsed, args, aim, aim2, node, xdotool, routes)
+                    if node is not None and action in ("type", "key"):
+                        if not accessible(node.focus):
+                            raise cdp.Failure(
+                                {
+                                    "error": "device_not_supported",
+                                    "cause": "no_focused_field",
+                                    "message": "這個節點不能取得輸入焦點（AT-SPI），沒有輸入；"
+                                    "換一個輸入框節點，或按截圖座標點擊後再輸入。",
+                                }
+                            )
+                        routes.append("accessibility")
+                    pressed = (
+                        node is not None
+                        and action == "click"
+                        and not parsed.modifiers
+                        and accessible(node.press)
+                    )
+                    if pressed:
+                        routes.append("accessibility")
+                    elif node is not None:
+                        # Her own computer: the node's window comes to the front first, so
+                        # the pointer or the keys reach it and nothing covering it (E17).
+                        xdotool("windowactivate", "--sync", str(window))
+                    if aim is not None and (action in actions.POINTED or node is not None):
+                        # The real hit test at the point, before the input (R12).
+                        hit = self.hit(*aim)
+                        if hit is not None:
+                            result["hit"] = hit
+                    if not pressed:
+                        self.deliver(parsed, args, aim, aim2, node, xdotool, before_input, routes)
+                except gone:
+                    raise cdp.Failure(
+                        {
+                            "error": "element_stale",
+                            "message": f"節點 {args['element']} 在操作時已失效；"
+                            "請按下面的新列表重新選擇。",
+                            "window": str(window),
+                            "elements": listing(str(window), None, None),
+                        }
+                    ) from None
                 finally:
                     result["route"] = list(dict.fromkeys(routes))
                 result["submitted"] = True
@@ -484,27 +533,19 @@ class Screen:
         aim2: tuple[int, int] | None,
         node: Any,
         xdotool: Callable[..., None],
+        before_input: Callable[[], None],
         routes: list[str],
     ) -> None:
-        """Post one input with xdotool (or AT-SPI for a node), recording each route taken."""
-        from yuki_agent_connector import actions, cdp
+        """Post one input with xdotool, recording each route taken."""
+        from yuki_agent_connector import actions
 
         action = parsed.action
         move = ["mousemove", str(aim[0]), str(aim[1])] if aim is not None else []
-        if node is not None and action in ("type", "key"):
-            xdotool("sleep", "0")  # the lease check and the count, before the focus
-            if not node.focus():
-                raise cdp.Failure(
-                    {"error": "element_not_focusable", "message": "這個節點不能取得輸入焦點。"}
-                )
-            routes.append("accessibility")
+        if node is None and aim is not None and action in ("type", "key"):
+            # The field at x,y becomes the focus by a click there, then the keys (A19).
+            xdotool(*move, "click", "1")
         held = [MODIFIER_KEYS[name] for name in parsed.modifiers]
         if action in actions.CLICKS:
-            if node is not None and action == "click" and not held:
-                xdotool("sleep", "0")
-                if node.press():
-                    routes.append("accessibility")
-                    return
             button = {"left": "1", "middle": "2", "right": "3"}[parsed.button]
             repeat = ["--repeat", str(parsed.count)] if parsed.count > 1 else []
             # No --sync: it never returns when the pointer is already there, and the X
@@ -553,7 +594,7 @@ class Screen:
             for run in self.keymap.runs(args.get("text") or ""):
                 xdotool("type", "--clearmodifiers", "--", run)
         elif action == "paste":
-            self.paste(xdotool, args["text"], routes)
+            self.paste(xdotool, before_input, args["text"], routes)
             return
         routes.append("global_input")
 
@@ -572,7 +613,13 @@ class Screen:
             if held:
                 xdotool("keyup", *reversed(held), checked=False)
 
-    def paste(self, xdotool: Callable[..., None], text: str, routes: list[str]) -> None:
+    def paste(
+        self,
+        xdotool: Callable[..., None],
+        before_input: Callable[[], None],
+        text: str,
+        routes: list[str],
+    ) -> None:
         """Her own clipboard: both selections hold ``text``, then shift+Insert (task book §6.12)."""
         from yuki_agent_connector import cdp
 
@@ -585,8 +632,9 @@ class Screen:
                     "改用 type，或等 Manager 下次啟動時補裝。",
                 }
             )
-        # The lease is checked and the input counted before her selections change.
-        xdotool("sleep", "0")
+        # The lease is checked before her selections change; they are not input, so an
+        # xclip failure is a plain failure with nothing typed (V10).
+        before_input()
         for selection in ("clipboard", "primary"):
             # xclip stays behind to serve the selection; it must not hold our pipes.
             subprocess.run(
@@ -769,15 +817,22 @@ class Screen:
             }
         )
 
-    def hit(self, deadline: float, x: int, y: int) -> dict[str, str] | None:
-        """The node under a root point before any input; None when unknown (never a failure)."""
+    def hit(self, x: int, y: int) -> dict[str, str] | None:
+        """The node under a root point before any input; None when unknown (never a failure).
+
+        It has its own short limit, apart from the action's: describing the point never uses
+        up the time the input needs (R10).
+        """
+        deadline = time.monotonic() + HIT_SECONDS
         try:
             atspi = self.accessibility()
             window = self.window_at(deadline, x, y)
             if window is None:
                 return None
             identity, rect = window
-            return cast(dict[str, str], atspi.at(self.pid(deadline, identity), rect, x, y))
+            return cast(
+                dict[str, str], atspi.at(self.pid(deadline, identity), rect, x, y, deadline)
+            )
         except Exception:  # no AT-SPI, no process, a hung app: the input still runs (R6, R7)
             return None
 
@@ -827,6 +882,9 @@ KEYSYMS = {
     **MODIFIER_KEYS,
 }
 DRAG_STEPS = 12
+# A release has its own limit; a hit test has its own limit (A16, R10).
+RELEASE_SECONDS = 2.0
+HIT_SECONDS = 1.0
 
 
 def keysym_name(key: str) -> str:

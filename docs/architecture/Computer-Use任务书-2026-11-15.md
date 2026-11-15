@@ -91,7 +91,7 @@
 
 ### 6.1 截图尺寸（P0）
 
-- 新增两项配置 `COMPUTER_SCREENSHOT_MAX_DIMENSION=1568`、`COMPUTER_SCREENSHOT_MAX_PIXELS=1150000`，热配置键 `computer.screenshot_max_dimension`／`computer.screenshot_max_pixels`，接入方式与 `VISION_MAX_DIMENSION` 相同。`_screen_action` 下发时改用这两项；`vision_*` 只管聊天图片。
+- 新增两项配置 `COMPUTER_SCREENSHOT_MAX_DIMENSION=1568`、`COMPUTER_SCREENSHOT_MAX_PIXELS=1150000`，热配置键 `computer.screenshot_max_dimension`／`computer.screenshot_max_pixels`（下一张截图起生效）。`_screen_action` 下发时改用这两项；它同时服务 `computer` 与 `browser`，所以 `browser` 的截图也按这个上限出图；`vision_*` 只管聊天图片。
 - 两条路径的来源（环境驱动、连接器）照旧按下发的值直接产出最终尺寸。连接器 0.6.x 本来就逐次读取 `max_dimension`／`max_pixels`，**升级 Bot 后旧连接器立即生效**，不需要发新版。
 - 结果：2560×1440 → 1430×804；Retina 3456×2234 → 1334×862；Yuki 自己电脑的 1440×900 → 1356×848。标准档 Claude 的视觉 token 都在 1568 以内（1488–1519），不会再被服务端缩放。
 - 代价：高分档 Claude 和 gpt-5.x `original` 原本能看到 2560×1440，现在少了细节，由 `zoom` 补回（6.3）。
@@ -154,7 +154,7 @@
 | `route` | `accessibility`（AXPress／AXShowMenu／AXFocused、UIA 模式、AT-SPI 动作）、`window_events`（macOS 带窗口标记的事件）、`global_input`（CGEventPost、SendInput、xdotool） | 每个实际投递分支自己写入；多步动作（先聚焦再输入）给出列表 |
 | `hit` | `{role, name}`：投递**之前**落点上的控件 | 前台：macOS 用系统级 `AXUIElementCopyElementAtPosition`，Windows 用 UIA `ElementFromPoint`，Linux 用 AT-SPI `getAccessibleAtPoint`。后台：用目标窗口自己的子树（macOS 现有 `_ancestors`，Windows 用 UIA 子树） |
 
-- `hit` 的查询受平台的消息超时约束（macOS `AXUIElementSetMessagingTimeout` 0.25 s，P0 第 7 项）。超时或取不到时省略字段，照常投递。
+- `hit` 有自己的时限，不占用输入的时间：连接器在独立线程里最多等 0.5 s（macOS 系统级或窗口子树、Windows UIA），Yuki 自己的电脑用独立的 1 s 期限；超时或取不到时省略字段，照常投递（R10）。不用 macOS 的系统级消息超时：它对系统级元素设置时是全局的，会改变 AXPress 等所有调用。带 `element` 时同样在实际落点做命中测试，不直接填节点自己的 role／name（R12）。
 - 不增加 `effect`／`evidence` 推断（Cua 的 `confirmed`／`suspected_noop`）。是否生效仍以截图为准，避免另造一套"效果判定"。
 
 ### 6.7 elements 与 element 参数
@@ -165,15 +165,15 @@
 - 输出与 `browser` 快照同风格，每行一个节点：`- button "关闭" [w0x1a2b.e17] (12,8,40,30)`。bounds 是 `[x0,y0,x1,y1]`，单位与 6.2 相同（本窗口图像素，或 `scale=1000`）。只列可见、尺寸非零的节点；无名的纯容器保留子节点、去掉自己；`text` 只返回匹配节点及其祖先路径。与 browser 一样只做无损过滤，不设字符上限，超出按现有结果预算交给 `read_result`。
 - 是读动作：不写回执，本人叫停期间可用；Chromium／Electron 的 AX 开启等待沿用现有 `ACCESSIBILITY_SECONDS`。
 
-**`element` 参数**：`click` 类、`move`、`scroll`、`type`、`key` 可以传 `element`，与 `x,y` 互斥（同时给出返回 `invalid_arguments`）。执行时：
+**`element` 参数**：`click` 类、`move`、`drag`（作为起点，终点仍是 `x2,y2`）、`scroll`、`type`、`key` 可以传 `element`，与 `x,y` 互斥（同时给出返回 `invalid_arguments`）。id 里带着窗口：省略 `window` 时按该窗口执行，与给出该 `window` 完全相同（结果附该窗口图，走该窗口的后台途径或该窗口的事实拒绝），绝不落到本人当前的前台应用（E16）。执行时：
 
 1. 解析 id → 在驱动或连接器内存的注册表里找到节点；重新读取它**当前**的 bounds 和所属窗口。
-2. 单击左键、没有修饰键时优先走无障碍动作（AXPress、UIA Invoke／Toggle／SelectionItem、AT-SPI `doAction`）；其余情况以当前 bounds 的中心为 `point`，按原有的前台或后台指针途径投递。`type`、`key` 先聚焦该节点（AXFocused、UIA ValuePattern 或 Focus、AT-SPI `grabFocus`）。
+2. 单击左键、没有修饰键时优先走无障碍动作（AXPress、UIA Invoke／Toggle／SelectionItem、AT-SPI `doAction`）；其余情况以当前 bounds 的中心为 `point`，按该窗口的途径投递（macOS 带窗口标记的事件，Windows 没有途径时 `no_background_route`；Yuki 自己的电脑先把该窗口提到前面再全局输入，E17）。`type`、`key` 先聚焦该节点（AXFocused、UIA ValuePattern、AT-SPI `grabFocus`；Yuki 自己的电脑上不能取得焦点时 `device_not_supported`／`no_focused_field`，E19）。按下或聚焦时节点才失效的，报 `element_stale`（E18）。
 3. 回显 `element`、`point`、`route`、`hit`。
 
 **id 的生命周期**（各平台统一）：
 
-- 格式 `<window>.e<n>`，由一次 `elements` 调用分配，保存在当前驱动或连接器进程的内存中，按窗口只保留**最近一次**列表。
+- 格式 `<window>.<tag>e<n>`（`tag` 是每次列出时新生成的 4 位十六进制，`n` 从 1 起），由一次 `elements` 调用分配，保存在当前驱动或连接器进程的内存中，按窗口只保留**最近一次**列表。
 - 以下情况失效：同一窗口再次 `elements`、节点已销毁（macOS 返回 `kAXErrorInvalidUIElement`，UIA 返回 `ElementNotAvailable`，AT-SPI 对象已失效）、窗口已关闭、驱动或连接器进程重启。
 - 失效时返回事实错误：`element_stale`，附该窗口新的列表，不执行，与 browser 的 `node_stale` 相同；id 里的窗口与当前给出的 `window` 不一致时返回 `invalid_arguments`；节点当前不可见或 bounds 不在窗口内时返回 `element_not_visible`，附 bounds，不退回按坐标点击。
 
@@ -229,7 +229,7 @@
 
 ### 6.10 能力事实与旧连接器
 
-- 连接器 0.7.0 在 `device_capabilities` 的屏幕事实中增加 `features`：`["scale","zoom","elements","modifiers","triple_click","middle_click","key_repeat","route","cursor"]`，只列本机真实可用的项（例如 AT-SPI 不在连接器上；macOS 低于 14 没有屏幕能力）。
+- 连接器 0.7.0 在 `device_capabilities` 的屏幕事实中增加 `features`：`["scale","zoom","elements","modifiers","triple_click","middle_click","key_repeat","route","cursor"]`。它列的是本版本连接器在这一平台上实现的能力：只有能操作屏幕的平台（macOS 14+、Windows）才有屏幕事实和 `features`，Linux 与 macOS 13 没有屏幕事实，调用时报 `platform`。某个窗口当下做不到的（例如该应用读不到无障碍信息、窗口不在当前桌面空间、Windows 后台没有途径），不在 `features` 里预先排除，而是在调用时以 `cause` 报告。
 - Bot 在发往设备之前，把本次调用**实际用到的**新动作或新参数与当前连接的 `features` 对照，缺少就返回 `device_not_supported`／`connector_outdated`，不把命令发给连接器。这样旧连接器就不会静默忽略 `scale`、修饰键或 `element`。只用旧参数的调用照常发给旧连接器。
 - 自己的电脑：驱动随 Bot 版本挂入，与 Bot 同版本，不需要对照；AT-SPI 的可用性由驱动在执行时以 `no_accessibility` 报告。
 - 连接器协议仍是 `4`，不升级：新增的只是新动作和新参数，按能力事实开放（与 11-09 任务书"新增资源用能力事实即可，不升协议"一致）。

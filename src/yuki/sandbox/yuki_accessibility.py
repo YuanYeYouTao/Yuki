@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +22,9 @@ P = ctypes.c_void_p
 SCREEN = 0
 STATE_DEFUNCT, STATE_SHOWING = 6, 25
 # Each D-Bus call waits at most this long: a hung app must not stall the driver.
-CALL_MILLISECONDS = 1000
+CALL_MILLISECONDS = 500
+# The point lookup descends at most this many levels (a toolkit may answer itself).
+AT_DEPTH = 64
 CONTAINER_ROLES = frozenset(
     {"filler", "panel", "scroll pane", "viewport", "layered pane", "split pane", "unknown"}
 )
@@ -261,21 +264,23 @@ class Accessibility:
             pointer, depth = stack.pop()
             try:
                 role = library.text("atspi_accessible_get_role_name", pointer)
-                found.append(
-                    AtspiNode(
-                        library,
-                        pointer,
-                        depth,
-                        role,
-                        library.text("atspi_accessible_get_name", pointer),
-                        library.state(pointer, STATE_SHOWING),
-                        role in CONTAINER_ROLES,
-                    )
-                )
+                name = library.text("atspi_accessible_get_name", pointer)
                 count = library.call("atspi_accessible_get_child_count", pointer)
             except Gone:
+                # Gone while listed: released here once, never kept in the list (R11).
                 library.gobject.g_object_unref(pointer)
                 continue
+            found.append(
+                AtspiNode(
+                    library,
+                    pointer,
+                    depth,
+                    role,
+                    name,
+                    library.state(pointer, STATE_SHOWING),
+                    role in CONTAINER_ROLES,
+                )
+            )
             children = []
             for index in range(count):
                 try:
@@ -287,12 +292,17 @@ class Accessibility:
             stack.extend(reversed(children))
         return found
 
-    def at(self, pid: int, rect: tuple[int, int, int, int], x: int, y: int) -> dict[str, str]:
-        """``{role, name}`` of the deepest node of the window under the root point."""
+    def at(
+        self, pid: int, rect: tuple[int, int, int, int], x: int, y: int, deadline: float
+    ) -> dict[str, str]:
+        """``{role, name}`` of the deepest node of the window under the root point, looked up
+        within ``deadline`` and at most ``AT_DEPTH`` levels down (R11)."""
         library = self.library
         node = self._frame(pid, rect)
         try:
-            while True:
+            for _ in range(AT_DEPTH):
+                if time.monotonic() > deadline:
+                    break
                 component = library.atspi.atspi_accessible_get_component_iface(node)
                 if not component:
                     break
