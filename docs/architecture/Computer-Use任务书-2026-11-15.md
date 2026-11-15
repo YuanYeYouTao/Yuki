@@ -491,6 +491,11 @@ elements：
 | U7 | 旧 rootFS 没有 `dbus-daemon`（at-spi2-core 只依赖 libdbus） | 有头档要装的软件包包含 `dbus`，由 `apply_programs()` 补装 |
 | U8 | 补装 dbus、at-spi2-core、xclip 失败（如环境暂时解析不了软件源；临时 VM 实测出现过） | 画面照常是 `headed`：这三个是功能软件包，不决定档位（档位仍只看画面本身需要的软件包）；`programs` 报告失败原因，下次 Manager 启动再装；在此之前 `elements` 报 `no_accessibility`、`paste` 报 `no_clipboard` |
 | U9 | 环境里没有 `dbus-daemon` | 桌面服务照常打开画面，只是不启动会话 D-Bus 与 AT-SPI 总线（与总线启动器缺失时一样按事实跳过）；`elements` 报 `no_accessibility` |
+| U10 | 重建（或还原、或 Manager 启动）后立刻补装，而她自己的 DNS 服务（环境服务，resolv.conf 指向它）还没被服务恢复拉起（生产实测：apt 报 `Temporary failure resolving`） | 补装不在 `recover()` 里做：`recover()` 只按已装的软件包得出档位，Manager 随即就绪；worker 在本代际的环境服务都已启动之后才补装一次。不加重试 |
+| U11 | 有已启用的环境服务刚提交、还没启动 | 不补装，等它启动；处于退避中、上一轮已结束的服务不阻塞 |
+| U12 | 补装进行中 | Manager 已就绪，终端、画面照常可用；补装在后台进行，不占住 worker；apt 等 dpkg 锁而不是遇锁即失败 |
+| U13 | 补装后档位变了（例如还原到缺包快照后由 `none` 装成 `headless`） | 与启动时同一条规则：取消正在运行的桌面服务，让它按新档位重启 |
+| U14 | 补装失败 | `programs` 记 `installed:false` 与原因；本代际不再补装，下一个代际（重建、还原、Manager 重启）再装 |
 
 模型与提示词：
 
