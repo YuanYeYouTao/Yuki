@@ -116,7 +116,9 @@ async def test_new_environment_mounts_same_cache_read_only_without_recreating_ol
                 "Source": "/var/lib/docker/volumes/yuki-media-cache/_data",
                 "Destination": "/home/yuki/inputs/media-cache",
                 "RW": False,
-            }
+            },
+            # Created by this release: every environment file is mounted.
+            *({"Destination": path} for path in persistent.ENVIRONMENT_FILES),
         ],
     }
     owner.set_setting("checkpoint_image", "private-complete-rootfs")
@@ -142,7 +144,7 @@ async def test_new_environment_mounts_same_cache_read_only_without_recreating_ol
             "shared": True,
         }
         # A changed configuration does not interrupt unrelated tools or replace an old container.
-        current["Mounts"] = []
+        current["Mounts"] = [{"Destination": path} for path in persistent.ENVIRONMENT_FILES]
         owner.inspect_container = AsyncMock(return_value=current)
         owner.command.reset_mock()
         await owner.recover()

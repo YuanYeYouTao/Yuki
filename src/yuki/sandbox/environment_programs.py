@@ -27,6 +27,8 @@ MODE_PACKAGES: dict[str, tuple[str, ...]] = {
         "xdotool",
         "x11-utils",
         "imagemagick",
+        # The session D-Bus the desktop service starts; at-spi2-core needs only libdbus.
+        "dbus",
         # AT-SPI bus and registry for ``elements``; libatspi itself comes with GTK.
         "at-spi2-core",
         # Yuki's own clipboard for ``paste`` (Computer Use task book §6.12).
