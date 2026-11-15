@@ -488,7 +488,9 @@ elements：
 | U4 | 挂载与当前定义一致 | 什么都不做：不拍快照、不重建 |
 | U5 | 本人正持有控制权（接管中） | 暂缓，不暂停她的画面，`recreate_required` 含 `environment_files`；交还后 worker 的下一轮收敛 |
 | U6 | Yuki 有动作正在执行（桌面锁被占） | 等这个动作结束后的下一轮再收敛，不打断它 |
-| U7 | 旧 rootFS 没有 `dbus-daemon`（at-spi2-core 只依赖 libdbus） | 有头档软件包包含 `dbus`，由 `apply_programs()` 补装 |
+| U7 | 旧 rootFS 没有 `dbus-daemon`（at-spi2-core 只依赖 libdbus） | 有头档要装的软件包包含 `dbus`，由 `apply_programs()` 补装 |
+| U8 | 补装 dbus、at-spi2-core、xclip 失败（如环境暂时解析不了软件源；临时 VM 实测出现过） | 画面照常是 `headed`：这三个是功能软件包，不决定档位（档位仍只看画面本身需要的软件包）；`programs` 报告失败原因，下次 Manager 启动再装；在此之前 `elements` 报 `no_accessibility`、`paste` 报 `no_clipboard` |
+| U9 | 环境里没有 `dbus-daemon` | 桌面服务照常打开画面，只是不启动会话 D-Bus 与 AT-SPI 总线（与总线启动器缺失时一样按事实跳过）；`elements` 报 `no_accessibility` |
 
 模型与提示词：
 

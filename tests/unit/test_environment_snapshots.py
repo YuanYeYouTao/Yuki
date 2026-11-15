@@ -765,6 +765,6 @@ async def test_u6_an_action_in_progress_is_not_interrupted(tmp_path):
 
 
 def test_u7_the_headed_profile_installs_dbus():
-    from yuki.sandbox.environment_programs import MODE_PACKAGES
+    from yuki.sandbox.environment_programs import wanted
 
-    assert "dbus" in MODE_PACKAGES["headed"]
+    assert "dbus" in wanted("headed")

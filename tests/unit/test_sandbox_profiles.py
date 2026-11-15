@@ -258,3 +258,23 @@ async def test_creation_only_limits_are_reported_not_applied(tmp_path, monkeypat
         assert status["storage"]["shared_disk"] is True
     finally:
         await manager.close()
+
+
+
+async def test_u8_feature_packages_that_fail_to_install_keep_the_desktop(tmp_path):
+    """Computer Use task book §11 U8, written before the code: dbus, at-spi2-core and xclip
+    serve elements and paste; a failed install of them must not take the desktop away."""
+    from yuki.sandbox.environment_programs import FEATURE_PACKAGES
+
+    essentials = [{"name": name, "version": "1"} for name in MODE_PACKAGES["headed"]]
+    engine = Engine(manifest=essentials, install_code=100)
+    manager = manager_at(tmp_path, browser_mode="headed")
+    manager.command = engine.command
+    try:
+        await manager.apply_programs()
+        assert manager.programs["installed"] is False
+        assert manager.programs["missing"] == list(FEATURE_PACKAGES["headed"])
+        assert manager.desktop_manifest["browser_mode"] == "headed"
+        assert manager.desktop_manifest["desktop"] is True
+    finally:
+        await manager.close()
