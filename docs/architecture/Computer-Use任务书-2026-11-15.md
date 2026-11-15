@@ -377,6 +377,10 @@ zoom：
 | A13 | drag 或 scroll 带修饰键 | 修饰键在整个动作期间按住 |
 | A14 | 同时给 element 和 x,y | `invalid_arguments` |
 | A15 | 长段中文 type（L、M、W） | 照常输入（现有 keymap 修复、unicode 分段） |
+| A16 | L 的 drag 或带修饰键的动作在等待期限到时才结束 | `mouseup`／`keyup` 用独立的短时限照常发出，左键和修饰键不会一直按着 |
+| A17 | M 按下之后抬起前出错；W `SendInput` 只插入了一部分 | M 在 finally 里补发抬起；W 对已插入但未抬起的键和鼠标键补发抬起，再报错 |
+| A18 | W 前台带修饰键的 click／key／scroll；带修饰键的 drag | 修饰键与动作在同一批 `SendInput` 内按下和抬起；drag 的修饰键与鼠标按下同批、与抬起同批，finally 释放，按住时间只有拖拽本身 |
+| A19 | 前台（省略 window）`type`／`key` 带 x,y（L、M、W） | 先在该处点击使其成为输入焦点（route 含 `global_input`），再输入；回显的 point 是实际点击处 |
 
 粘贴（只在 Yuki 自己的电脑上，6.12）：
 
@@ -391,6 +395,7 @@ zoom：
 | V7 | 环境里没有 `xclip` | `device_not_supported`／`no_clipboard`，没有输入 |
 | V8 | 同键重试 | 返回原回执，不再写选区、不再按键 |
 | V9 | 本人经桌面端连着画面时 Yuki `paste` | 本人电脑剪贴板不变（桌面端不订阅 Xvnc 剪贴板事件） |
+| V10 | `xclip` 写入选区失败 | `failed`（没有按键），不是 `unknown` |
 
 指针：
 
@@ -416,6 +421,9 @@ route／hit：
 | R7 | hit 查询超时（应用无响应） | 省略 hit，输入照常，不判为失败 |
 | R8 | 输入失败或 unknown | 已算出的 point 照常回显 |
 | R9 | 同一调用键重试 | 返回原回执，包括原 point、route、hit |
+| R10 | hit 查询很慢或挂住（M 窗口 AX 子树、W UIA、L AT-SPI 或窗口查询） | hit 有自己的短时限（M／W 在独立线程里最多等 0.5 s，L 用独立的 1 s 期限），超时省略 hit；输入照常，且不占用输入自己的等待期限 |
+| R11 | L AT-SPI 的按点下钻遇到返回自身或很深的树；节点在列出时失效 | 下钻有深度上限并受期限约束；失效节点只释放一次 |
+| R12 | 带 element 的 hit | 投递前在实际落点做真实命中测试（不是直接填节点自己的 role／name），被遮挡时报告实际在上面的控件 |
 
 elements：
 
@@ -436,6 +444,10 @@ elements：
 | E13 | 本人叫停期间 elements | 照常返回（读动作） |
 | E14 | type(element) | 先聚焦再输入；W 的 ValuePattern 沿现有"接在原内容之后"的语义 |
 | E15 | 旧连接器 elements 或 element | `connector_outdated` |
+| E16 | 给 element、省略 window 的输入（M、W、L） | 按 id 里的窗口执行，与给出该 window 相同：结果附该窗口图，M／W 走该窗口的后台途径或该窗口的事实拒绝，绝不落到本人当前的前台应用 |
+| E17 | element 的右键、双击、三击、中键或带修饰键的点击 | M 用带窗口标记的事件投给该窗口；W 为 `no_background_route`；L 先把该窗口提到前面再点击，不会点到盖在上面的窗口 |
+| E18 | 读完 bounds 之后、按下或聚焦时节点失效 | `element_stale`，`failed`，附新列表 |
+| E19 | L 的节点不能取得输入焦点（type／key） | `device_not_supported`／`no_focused_field`，`failed`，没有按键 |
 
 设备、能力与兼容：
 
@@ -464,6 +476,7 @@ elements：
 | X5 | 新输入动作遇到 control_held | 照现有规则拒绝 |
 | X6 | 不支持图像的模型 | `media_read:false`；point、route、hit 照常返回 |
 | X7 | Code Mode | 与 direct 同一份清单和执行器 |
+| X8 | 连接器上的 zoom、elements | 是读动作：不写 journal；断开时不报 `action_unknown`；同键重试重新读取（新的截图、新的节点列表）；节点列表不留在 journal 里 |
 
 模型与提示词：
 
