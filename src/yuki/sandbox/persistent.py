@@ -30,7 +30,7 @@ from yuki.sandbox.completions import CompletionOutbox
 from yuki.sandbox.computer_control import ComputerControl
 from yuki.sandbox.computer_runtime import ComputerRuntime
 from yuki.sandbox.computer_transport import ComputerTransport
-from yuki.sandbox.environment_programs import MODE_PACKAGES, wanted
+from yuki.sandbox.environment_programs import DISPLAY_PACKAGES, MODE_PACKAGES, wanted
 from yuki.sandbox.environment_snapshots import EnvironmentSnapshots
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
@@ -537,8 +537,8 @@ class PersistentManager:
                 self.name,
                 "/usr/local/bin/python",
                 "/opt/yuki-runtime/environment_programs.py",
-                self.browser_mode,
-                *self.packages,
+                "none",
+                *missing,
                 deadline_seconds=3600,
             )
             self.programs = {"missing": missing, "installed": not code}
@@ -547,7 +547,7 @@ class PersistentManager:
             tools = await self.read_manifest()
         installed = {tool["name"] for tool in tools}
         mode = self.browser_mode
-        if mode == "headed" and not set(MODE_PACKAGES["headed"]) <= installed:
+        if mode == "headed" and not set(DISPLAY_PACKAGES) <= installed:
             mode = "headless"
         if mode == "headless" and not set(MODE_PACKAGES["headless"]) <= installed:
             mode = "none"
@@ -756,8 +756,7 @@ class PersistentManager:
         self.environment_files_missing = [
             destination
             for destination in ENVIRONMENT_FILES
-            if destination
-            not in {mount.get("Destination") for mount in current.get("Mounts", ())}
+            if destination not in {mount.get("Destination") for mount in current.get("Mounts", ())}
         ]
         if self.environment_files_missing and await self.snapshots.rebuild_for_files(
             self.environment_files_missing

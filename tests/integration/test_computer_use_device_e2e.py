@@ -213,7 +213,8 @@ async def test_contract_38_manifest(database, tmp_path, code_enabled):
     assert {"scale", "region", "element", "repeat"} <= set(computer["properties"])
     actions = computer["properties"]["action"]["enum"]
     assert {"zoom", "elements", "triple_click", "middle_click", "paste"} <= set(actions)
-    assert computer["properties"]["scale"]["enum"] == [1000]
+    assert computer["properties"]["scale"]["type"] == "integer"
+    assert "enum" not in computer["properties"]["scale"]
     assert contract.revision
     path = ARTIFACTS / "manifest.json"
     existing = json.loads(path.read_text()) if path.exists() else {}

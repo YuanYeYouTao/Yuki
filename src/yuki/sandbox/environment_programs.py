@@ -16,18 +16,18 @@ import sys
 from pathlib import Path
 
 HEADLESS = ("chromium", "fonts-noto-cjk", "fonts-noto-color-emoji")
+DISPLAY_PACKAGES = (
+    "tigervnc-standalone-server",
+    "openbox",
+    "socat",
+    "xdotool",
+    "x11-utils",
+    "imagemagick",
+)
 MODE_PACKAGES: dict[str, tuple[str, ...]] = {
     "none": (),
     "headless": HEADLESS,
-    "headed": (
-        *HEADLESS,
-        "tigervnc-standalone-server",
-        "openbox",
-        "socat",
-        "xdotool",
-        "x11-utils",
-        "imagemagick",
-    ),
+    "headed": (*HEADLESS, *DISPLAY_PACKAGES),
 }
 # Installed with a mode but not part of what makes it: without them the screen works and
 # the features they serve report their own facts (``no_accessibility``, ``no_clipboard``).

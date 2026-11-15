@@ -9,24 +9,12 @@ import shutil
 import signal
 import sys
 import tempfile
-import urllib.request
 from asyncio.subprocess import Process
 from pathlib import Path
 
 CDP_ADDRESS = "http://127.0.0.1:9222"
 # at-spi2-core; absent until the Manager installs the headed profile's packages.
 ATSPI_LAUNCHER = "/usr/libexec/at-spi-bus-launcher"
-
-
-def browser_ready() -> bool:
-    # Chromium's loopback debugger must never go through an outbound proxy.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(CDP_ADDRESS + "/json/version", timeout=0.2) as response:
-            version = json.load(response)
-        return isinstance(version, dict) and bool(version.get("webSocketDebuggerUrl"))
-    except (OSError, ValueError):
-        return False
 
 
 def browser_mode() -> str:
@@ -95,8 +83,6 @@ async def main() -> int:
     loop.add_signal_handler(signal.SIGTERM, stopped.set)
     loop.add_signal_handler(signal.SIGINT, stopped.set)
     waiting: list[asyncio.Task[int | bool]] = []
-    profile = Path.home() / ".local/share/yuki-computer/chromium"
-    profile.mkdir(parents=True, exist_ok=True)
     environment = {**os.environ, "DISPLAY": ":1"}
     try:
         mode = await asyncio.to_thread(browser_mode)
@@ -163,24 +149,10 @@ async def main() -> int:
                             ATSPI_LAUNCHER, "--launch-immediately", env=environment
                         )
                     )
-            # The window manager and desktop are hers; Chromium starts after them so that
-            # its window is managed.
             session, session_state = await open_session(environment)
-        browser = [
-            "chromium",
-            "--user-data-dir=" + str(profile),
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=9222",
-            "--restore-last-session",
-            "--no-first-run",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ]
-        if mode == "headless":
-            browser.extend(["--headless", "about:blank"])
         root = Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
         await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
-        # The long-lived driver owns the one CDP connection and the screen input;
+        # The long-lived driver owns screen input and an optional CDP connection;
         # downloads go to the workspace, never to the small runtime volume.
         workspace = Path(os.environ.get("YUKI_DESKTOP_WORKSPACE", "/workspace"))
         driver = [
@@ -193,26 +165,11 @@ async def main() -> int:
             str(workspace / "downloads"),
             *(("--display", ":1") if mode == "headed" else ()),
         ]
-        screen = len(children)
-
-        async def open_browser() -> bool:
-            # Chromium and the driver holding its connection start, and end, together.
-            children.append(await asyncio.create_subprocess_exec(*browser, env=environment))
-            while not stopped.is_set() and all(child.returncode is None for child in children):
-                if await asyncio.to_thread(browser_ready):
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                return False
-            children.append(await asyncio.create_subprocess_exec(*driver, env=environment))
-            return True
-
-        if not await open_browser():
-            return 0 if stopped.is_set() else 1
+        children.append(await asyncio.create_subprocess_exec(*driver, env=environment))
         status = {
             "run_id": os.environ["YUKI_JOB_ID"],
             "display": "running" if mode == "headed" else "unavailable",
-            "browser": "running",
+            "driver": "running",
             **({"session": session_state} if session is not None else {}),
         }
         await asyncio.to_thread(write_status, root, status)
@@ -226,23 +183,15 @@ async def main() -> int:
             )
             if session_wait is not None and session_wait.done():
                 # Her session ended (logout, another window manager, an error): the
-                # display and Yuki's browser stay; it is not restarted.
+                # display and driver stay; her session is not restarted.
                 status["session"] = f"exited:{session_wait.result()}"
                 await asyncio.to_thread(write_status, root, status)
                 session_wait = None
-            if stopped.is_set() or any(child.returncode is not None for child in children[:screen]):
+            if stopped.is_set() or any(child.returncode is not None for child in children):
                 return 0 if stopped.is_set() else 1
-            if all(child.returncode is None for child in children):
-                for task in waiting:
-                    task.cancel()
-                await asyncio.gather(*waiting, return_exceptions=True)
-                continue
-            # The person closed the browser: the screen and the windows on it stay, and
-            # the browser opens again with its driver.
-            await end(waiting, children[screen:])
-            del children[screen:]
-            if not await open_browser():
-                return 0 if stopped.is_set() else 1
+            for task in waiting:
+                task.cancel()
+            await asyncio.gather(*waiting, return_exceptions=True)
     finally:
         await end(waiting, [*children, *([session] if session is not None else [])])
 

@@ -10,6 +10,7 @@ next start and the Manager reports the original call as unknown.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import ctypes.util
 import importlib
@@ -18,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -972,8 +975,114 @@ READS = {
 }
 
 
+class BrowserHost:
+    """The driver's optional CDP connection and the browser it launches on open."""
+
+    def __init__(self, endpoint: str, downloads: str, display: str | None) -> None:
+        self.endpoint, self.downloads, self.display = endpoint, downloads, display
+        self.browser: cdp.Browser | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+
+    @staticmethod
+    def executable() -> str | None:
+        return next(
+            (
+                path
+                for name in (
+                    "chromium",
+                    "google-chrome",
+                    "google-chrome-stable",
+                    "chromium-browser",
+                )
+                if (path := shutil.which(name))
+            ),
+            None,
+        )
+
+    def get(self, args: dict[str, Any], before_input: Callable[[], None]) -> cdp.Browser:
+        from yuki_agent_connector import cdp
+
+        self.pump(0)
+        if self.browser is not None:
+            return self.browser
+        try:
+            self.browser = cdp.Browser(self.endpoint, downloads=self.downloads, timeout=10)
+            return self.browser
+        except OSError:
+            pass
+        if args["action"] != "open" or args.get("tab"):
+            raise cdp.Failure(
+                {
+                    "error": "browser_closed",
+                    "message": "浏览器未运行；用 browser 的 open 动作打开。",
+                }
+            )
+        executable = self.executable()
+        if executable is None:
+            raise cdp.Failure(
+                {
+                    "error": "browser_unavailable",
+                    "message": "没有安装 Chrome/Chromium；可通过终端安装。",
+                }
+            )
+        before_input()
+        profile = Path.home() / ".local/share/yuki-computer/chromium"
+        self.process = subprocess.Popen(
+            [
+                executable,
+                f"--user-data-dir={profile}",
+                "--remote-debugging-address=127.0.0.1",
+                f"--remote-debugging-port={urlsplit(self.endpoint).port}",
+                "--restore-last-session",
+                "--no-first-run",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                *(["--headless"] if self.display is None else []),
+                "about:blank",
+            ]
+        )
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                self.browser = cdp.Browser(self.endpoint, downloads=self.downloads, timeout=10)
+                return self.browser
+            except OSError as error:
+                if self.process.poll() is not None or time.monotonic() >= deadline:
+                    raise cdp.Failure(
+                        {"error": "browser_start_failed", "message": str(error)}
+                    ) from error
+                time.sleep(0.1)
+
+    def pump(self, timeout: float = 0.05) -> None:
+        if self.browser is not None:
+            try:
+                self.browser.pump(timeout)
+            except (OSError, ValueError):
+                self.disconnect()
+        else:
+            time.sleep(timeout)
+        if self.process is not None:
+            self.process.poll()  # Reap a browser the person has closed.
+
+    def disconnect(self) -> None:
+        if self.browser is not None:
+            with contextlib.suppress(OSError):
+                self.browser.close()
+            self.browser = None
+
+    def close(self) -> None:
+        self.disconnect()
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+
+
 def handle(
-    request: dict[str, Any], root: Path, browser: cdp.Browser, screen: Screen | None
+    request: dict[str, Any], root: Path, browser: BrowserHost, screen: Screen | None
 ) -> tuple[dict[str, Any], cdp.Image | None]:
     from yuki_agent_connector import cdp
 
@@ -985,7 +1094,7 @@ def handle(
     )
     try:
         if request["tool"] == "browser":
-            return browser.execute(
+            return browser.get(args, before_input).execute(
                 args,
                 owner=request["owner"],
                 before_input=before_input,
@@ -1028,54 +1137,78 @@ def unchecked() -> None:
 
 
 def serve(root: Path, endpoint: str, downloads: str, display: str | None) -> None:
-    from yuki_agent_connector import cdp
-
     driver = root / "driver"
     requests, taken, results = driver / "requests", driver / "taken", driver / "results"
     for directory in (requests, taken, results):
         directory.mkdir(parents=True, exist_ok=True)
     for leftover in taken.glob("*.json"):
         leftover.unlink()
-    # Bounds the one-time loopback handshake; desktop_service has already seen
-    # the debugger answer, so this is not a readiness gate.
-    browser = cdp.Browser(endpoint, downloads=downloads, timeout=10)
+    browser = BrowserHost(endpoint, downloads, display)
     screen = Screen(display) if display else None
-    written: list[dict[str, Any]] | None = None
-    while True:
-        tabs = [
-            {"target_id": tab["id"], "title": tab["title"], "url": tab["url"]}
-            | ({"work_id": tab["work_id"]} if "work_id" in tab else {})
-            for tab in browser.tabs()
-        ]
-        if tabs != written:
-            atomic_json(driver / "tabs.json", {"tabs": tabs})
-            written = tabs
-        pending = sorted(requests.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
-        if not pending:
-            # Idle: wait for browser events instead of sleeping blind.
-            browser.pump(0.05)
-            continue
-        claimed = taken / pending[0].name
-        try:
-            os.rename(pending[0], claimed)
-        except FileNotFoundError:
-            # The Manager withdrew the request before it was claimed.
-            continue
-        request = json.loads(claimed.read_text())
-        identity = str(UUID(request["id"]))
-        result, image = handle(request, root, browser, screen)
-        response: dict[str, Any] = {"result": result}
-        if image is not None:
-            path = results / (identity + ".jpg")
-            path.write_bytes(image.data)
-            response["image"] = {
-                "file": path.name,
-                "media_type": image.media_type,
-                "width": image.width,
-                "height": image.height,
-            }
-        atomic_json(results / (identity + ".json"), response)
-        claimed.unlink()
+    written: dict[str, Any] | None = None
+
+    def publish() -> None:
+        nonlocal written
+        tabs = (
+            [
+                {"target_id": tab["id"], "title": tab["title"], "url": tab["url"]}
+                | ({"work_id": tab["work_id"]} if "work_id" in tab else {})
+                for tab in browser.browser.tabs()
+            ]
+            if browser.browser is not None
+            else []
+        )
+        value = {
+            "run_id": os.environ.get("YUKI_JOB_ID"),
+            "browser": "running"
+            if browser.browser is not None
+            else ("stopped" if browser.executable() else "unavailable"),
+            "tabs": tabs,
+        }
+        if value != written:
+            atomic_json(driver / "tabs.json", value)
+            written = value
+
+    stopped = False
+
+    def stop(signum: int, frame: Any) -> None:
+        nonlocal stopped
+        stopped = True
+
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        while not stopped:
+            publish()
+            pending = sorted(requests.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
+            if not pending:
+                browser.pump()
+                continue
+            claimed = taken / pending[0].name
+            try:
+                os.rename(pending[0], claimed)
+            except FileNotFoundError:
+                # The Manager withdrew the request before it was claimed.
+                continue
+            request = json.loads(claimed.read_text())
+            identity = str(UUID(request["id"]))
+            result, image = handle(request, root, browser, screen)
+            publish()
+            response: dict[str, Any] = {"result": result}
+            if image is not None:
+                path = results / (identity + ".jpg")
+                path.write_bytes(image.data)
+                response["image"] = {
+                    "file": path.name,
+                    "media_type": image.media_type,
+                    "width": image.width,
+                    "height": image.height,
+                }
+            atomic_json(results / (identity + ".json"), response)
+            claimed.unlink()
+    finally:
+        browser.close()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def main() -> int:

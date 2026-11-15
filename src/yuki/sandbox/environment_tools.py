@@ -212,7 +212,6 @@ def environment_tools() -> tuple[ChatTool, ...]:
                 "repeat": {"type": "integer", "minimum": 1, "maximum": 100},
                 "scale": {
                     "type": "integer",
-                    "enum": [1000],
                     "description": "坐标用 0–1000 归一化时传 1000；省略时是截图像素",
                 },
                 "region": {
@@ -236,7 +235,8 @@ def environment_tools() -> tuple[ChatTool, ...]:
         tool(
             "browser",
             "使用 Yuki 专用浏览器，按页面节点操作、不动鼠标。open 打开 url"
-            "（给 tab 在该标签页跳转，否则新开）；snapshot 读页面结构，text 为过滤词；"
+            "（给 tab 在该标签页跳转，否则新开；浏览器未运行时由不带 tab 的 open 启动）；"
+            "关闭浏览器后保持关闭。snapshot 读页面结构，text 为过滤词；"
             "click、hover 节点；type 以 text 替换输入框内容（文件输入框写文件路径）；"
             "press 按键 text（如 Enter、ctrl+a）；select 按 text 选定选项；scroll 滚到 "
             "node 或 text=down|up|像素；screenshot 截取页面；close 关闭标签页；"

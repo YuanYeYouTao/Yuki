@@ -43,15 +43,15 @@ def manager_at(tmp_path, **options):
 
 def screen(manager, state="running"):
     """The desktop service run as the Manager observes it."""
-    value = {"display": state, "browser": state}
+    value = {"display": state, "driver": state, "browser": "stopped"}
     manager.desktop._service_status = lambda: dict(value)
 
     async def start(key):
-        value.update(display="running", browser="running")
+        value.update(display="running", driver="running", browser="stopped")
         return {}
 
     async def stop():
-        value.update(display="stopped", browser="stopped")
+        value.update(display="stopped", driver="stopped", browser="stopped")
         return {}
 
     manager.desktop._start, manager.desktop._stop = start, stop
@@ -92,10 +92,10 @@ async def test_r12_wake_and_sleep_receipts_follow_the_original_key(tmp_path):
     state = screen(manager, "stopped")
     try:
         woken = await manager.desktop.action("computer_action", {"action": "wake"}, "w")
-        assert woken == {"display": "running", "browser": "running"}
+        assert woken == {"display": "running", "browser": "stopped"}
         slept = await manager.desktop.action("computer_action", {"action": "sleep"}, "s")
         assert slept["display"] == "stopped" and slept["tabs"] == []
-        state.update(display="running", browser="running")
+        state.update(display="running", driver="running", browser="stopped")
         # The same key answers the original receipt; it never stops the screen again.
         assert await manager.desktop.action("computer_action", {"action": "sleep"}, "s") == slept
         assert state["display"] == "running"
@@ -133,7 +133,7 @@ async def test_r7_r8_r9_idle_sleep_is_a_short_signal_never_interleaving_an_actio
         ).fetchone()
         assert key == "idle:run-1"
         # R9: 0 never sleeps.
-        state.update(display="running", browser="running")
+        state.update(display="running", driver="running", browser="stopped")
         manager.display_idle_minutes = 0
         manager.desktop.last_activity -= 3600
         await manager.desktop.idle_sleep()
