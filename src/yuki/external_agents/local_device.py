@@ -121,7 +121,7 @@ class LocalDeviceService:
                     "message": "这台电脑的连接器版本过旧，不支持本次用到的 "
                     + "、".join(sorted(missing))
                     + "，动作没有执行；请本人在 Yuki 桌面端「設定 › 這台電腦」点"
-                    "「更新并保留资料」，或改用旧版支持的动作和参数。",
+                    "「更新連接器，保留原資料」，或改用旧版支持的动作和参数。",
                 }
         command = {
             "type": "command",

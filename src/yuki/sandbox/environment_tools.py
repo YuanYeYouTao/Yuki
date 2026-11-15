@@ -170,7 +170,7 @@ def environment_tools() -> tuple[ChatTool, ...]:
             "否则落在当前的输入焦点；"
             "投递不了时返回 device_not_supported 并在 cause 写明原因"
             "（如 no_background_route 需要时省略 window 改在前台操作，"
-            "connector_outdated 请本人更新桌面端）。"
+            "connector_outdated 请本人在桌面端「設定 › 這台電腦」点「更新連接器，保留原資料」）。"
             "本人接管或叫停时输入返回 control_held（截图、zoom、elements 照常可用）；"
             "本人电脑上本人刚用过电脑（给 window 时只算本人正在用该窗口所属的应用）时"
             "输入不执行、返回 owner_active，重新截图后再试。"

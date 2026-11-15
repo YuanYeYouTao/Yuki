@@ -225,7 +225,7 @@
 | `no_accessibility` | 无障碍接口不可用（Yuki 自己电脑的 AT-SPI） | 环境驱动 |
 | `no_clipboard` | 自己的电脑上还没有剪贴板工具（`xclip`），不能 `paste` | 环境驱动 |
 
-每种都在 `message` 里写明可行的下一步（例如"省略 window 改在前台操作"或"请本人在桌面端点「更新并保留资料」"）。
+每种都在 `message` 里写明可行的下一步（例如"省略 window 改在前台操作"或"请本人在桌面端「設定 › 這台電腦」点「更新連接器，保留原資料」"（桌面端实际文案，简体为「更新连接器，保留原数据」））。
 
 ### 6.10 能力事实与旧连接器
 
@@ -293,8 +293,8 @@ computer(action, x?, y?, x2?, y2?, dx?, dy?, text?, repeat?, scale?, region?, el
 - 连接器 stdout 的 `activity` 状态行增加 `route`（`background`／`foreground` 已有 `mode`），桌面端据此显示"Yuki 正在操作（后台／前台）"，不需要改协议。
 - 桌面端 PR（Yuki-Desktop 仓库）：
   1. `prepare-connector.mjs` 指向含连接器 0.7.0 的后端提交，重新打包；`connector-resources`、签名与 `packages` 发布测试照常。
-  2. 「這台電腦」页显示随附版本与运行中版本；版本较旧时提示「更新并保留资料」（沿现有更新流程，保留 device、instance、配对与 journal）。
-  3. 在会话的工具卡截图上用回显的 `point` 画一个标记（第 17 节已定 7）；后端只负责在结果里给出 `point`。
+  2. 「這台電腦」页显示随附版本与运行中版本；版本较旧时提示点「更新連接器，保留原資料」（简体「更新连接器，保留原数据」；沿现有更新流程，保留 device、instance、配对与 journal）。
+  3. ~~在会话的工具卡截图上用回显的 `point` 画一个标记~~：**本轮不做**。桌面端目前没有任何地方显示 `computer` 结果的截图，Client API 也不提供这类数据，没有可画标记的地方；留到以后另议（第 17 节已定 7）。后端结果里照常保留 `point`。
   4. 文案遵循该仓库现有 i18n（繁体为主，简体同步）。
 
 ## 10. 对生产的影响
@@ -302,7 +302,7 @@ computer(action, x?, y?, x2?, y2?, dx?, dy?, text?, repeat?, scale?, region?, el
 **升级路径**
 
 1. 先部署 Bot（含 Manager 与环境内程序）。截图上限立即对两条路径生效，包括旧连接器；Yuki 自己电脑的新动作立即可用（驱动随 Bot 版本挂入）。有头档新增 AT-SPI 软件包时，由 Manager 启动时现有的 `apply_programs()` 按档位补装（需要网络；失败按现有规则保留原安装并在下次启动重试）。
-2. 再发桌面端新版。本人在「設定 → 這台電腦」点「更新并保留资料」，连接器换成 0.7.0；原设备、实例、配对、journal 保留；之后 `features` 生效，新参数可用。
+2. 再发桌面端新版。本人在「設定 → 這台電腦」点「更新連接器，保留原資料」，连接器换成 0.7.0；原设备、实例、配对、journal 保留；之后 `features` 生效，新参数可用。
 3. 回退：回退 Bot 即回到旧上限和旧合同；0.7.0 连接器面对旧 Bot 时，只会收到旧参数，行为与 0.6.2 相同。
 
 **旧连接器兼容**
@@ -602,7 +602,7 @@ elements：
 4. 不做强制确认、按应用授权、按 Profile 换算、按数值猜约定。
 5. **Yuki 自己电脑的分辨率保留 1440×900**，截图按新上限缩成 1356×848，不改 Xvnc，不动她已布置好的桌面。
 6. **方言层的图像提示**：工具截图（`source="tool"`）加 OpenAI `detail:"original"`；不加 Anthropic `oversized_image:"error"`；Gemini `mediaResolution: ultra_high` 不预先定论，在真机验收里按默认与 ultra_high 做 A/B，按数据再定。需要开关时只做部署设置（Profile 的方言选项），不按内容路由（6.1）。
-7. **桌面端在工具卡截图上按回显的 `point` 画标记**：做，属于桌面端 PR；后端只需在结果里给出 `point`（第 9 节）。
+7. **桌面端在工具卡截图上按回显的 `point` 画标记**：用户原定做；核实后本轮不做——桌面端目前不显示 `computer` 结果的截图，Client API 也不提供这类数据，留到以后另议。后端结果里照常保留 `point`（第 9 节）。
 8. **Windows 本轮不做真机验收**，只靠 CI（windows-2025 runner）；用户之后自行在 Windows 上验收（第 12 节）。
 9. **真机验收规模**：每格 10 次，升级前基线各 5 次；成功率只记录，永远不作为合并门槛。
 10. **AT-SPI 在 P0 不可行时**接受 Yuki 自己的电脑上 `elements` 返回 `device_not_supported`／`no_accessibility`（P0 实测可行，见第 13 节）。
