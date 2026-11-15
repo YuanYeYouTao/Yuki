@@ -161,6 +161,8 @@ class EnvironmentSnapshots:
         self._finished: dict[str, set[asyncio.Event]] = {}
         # When a restore that could not finish is tried again: scheduling, held in memory.
         self._restore_retry = 0.0
+        # A snapshot for missing environment files failed: tried again at the next start.
+        self._files_failed = False
         manager.db.executescript(
             "CREATE TABLE IF NOT EXISTS environment_snapshots (id TEXT PRIMARY KEY,"
             "request_id TEXT UNIQUE NOT NULL, source TEXT NOT NULL, actor TEXT NOT NULL,"
@@ -404,6 +406,18 @@ class EnvironmentSnapshots:
                             (str(exc)[-2048:] or type(exc).__name__, restore[0]),
                         )
                     self._changed(restore[0])
+            return
+        if (
+            self.manager.environment_files_missing
+            and not self._files_failed
+            and self.manager.computer.control()["holder"] != "human"
+            and not self.busy()
+        ):
+            # Deferred at start (the person held the computer): converge now, the way a
+            # restore does, under the same lock (Computer Use U5, U6).
+            async with lock:
+                self.manager.ready = False
+                await self.manager.recover()
             return
         if pending := db.execute(
             "SELECT * FROM environment_snapshots WHERE state='creating' ORDER BY created"
@@ -696,6 +710,54 @@ class EnvironmentSnapshots:
                 (time.time(), restore["request_id"]),
             )
         return current
+
+    async def rebuild_for_files(self, missing: list[str]) -> bool:
+        """Snapshot the computer, then remove its container so ``recover`` rebuilds it.
+
+        For a container that lacks mounts of environment files this release defines. The
+        rootFS comes back from this snapshot (checkpoint_image), HOME stays as it is, and
+        dispatched runs end as a restore ends them. True when the container was removed.
+        A failed snapshot keeps the old container until the next Manager start; the person
+        holding the computer, or another snapshot or restore, defers it to the worker.
+        """
+        if self._files_failed or self.busy():
+            return False
+        if self.manager.computer.control()["holder"] == "human":
+            return False
+        identity = str(uuid4())
+        with self.manager.db:
+            self.manager.db.execute(
+                "INSERT INTO environment_snapshots (id,request_id,source,actor,note,state,created)"
+                " VALUES (?,?,'daily',?,?,'creating',?)",
+                (
+                    identity,
+                    f"environment-files:{identity}",
+                    json.dumps({"system": "environment_files"}),
+                    "环境文件变化，升级后自动重建：" + "、".join(missing),
+                    time.time(),
+                ),
+            )
+        await self._finish(self._snapshot(id=identity))
+        if self._snapshot(id=identity)["state"] != "ready":
+            self._files_failed = True
+            LOGGER.warning("environment_files_snapshot_failed missing=%s", missing)
+            return False
+        snapshot_id = identity
+        for job in self.manager.active():
+            if job["dispatched"]:
+                self.manager.finish(
+                    job["id"],
+                    "failed",
+                    {
+                        "error": "environment_restored",
+                        "interrupted": True,
+                        "snapshot_id": snapshot_id,
+                    },
+                )
+        # checkpoint_image is this snapshot now: recover creates the container from it.
+        await self._docker("stop", "--time", "10", self.manager.name, deadline=120)
+        await self._docker("rm", self.manager.name, deadline=120)
+        return True
 
     def _fail_restore(self, request_id: str, error: str) -> None:
         with self.manager.db:

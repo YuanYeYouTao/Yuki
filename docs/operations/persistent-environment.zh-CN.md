@@ -103,7 +103,7 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 | --- | --- | --- | --- |
 | 环境镜像 | `yuki-environment:<版本>` | `yuki-environment:<版本>-desktop` | `yuki-environment:<版本>-desktop` |
 | 浏览器 | 无 | 无头 Chromium | Chromium + Xvnc 桌面 |
-| 桌面附带软件 | — | — | Openbox、xdotool、ImageMagick、at-spi2-core（`elements` 的无障碍总线）、xclip（`paste`），见 `environment_programs.py` |
+| 桌面附带软件 | — | — | Openbox、xdotool、ImageMagick、dbus（会话 D-Bus）、at-spi2-core（`elements` 的无障碍总线）、xclip（`paste`），见 `environment_programs.py`；后三者是功能软件包，装不上时画面照常是 `desktop`，对应功能按事实报 `no_accessibility`／`no_clipboard` |
 | 内存 / 额外 swap | 512 / 128 MiB | 1024 / 256 MiB | 3072 / 512 MiB |
 | CPU / 进程数 | 1 / 256 | 1.5 / 1024 | 2 / 2048 |
 | /tmp / /dev/shm | 128 / 64 MiB | 256 / 128 MiB | 512 / 256 MiB |
@@ -116,7 +116,7 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 
 ### 代码文件
 
-环境内 Yuki 自己的程序（Supervisor、表情索引、桌面服务、浏览器驱动、`yuki-computer` 等，见 `persistent.ENVIRONMENT_FILES`）不在环境镜像里。Manager 每次启动把本版本的文件写入 `yuki-sandbox-code` 卷，环境把每个文件只读挂到原路径。原地改写保持 inode，运行中的环境与旧 rootFS 检查点都随 Bot 升级拿到当前代码，不需要重建。
+环境内 Yuki 自己的程序（Supervisor、表情索引、桌面服务、浏览器驱动、`yuki-computer` 等，见 `persistent.ENVIRONMENT_FILES`）不在环境镜像里。Manager 每次启动把本版本的文件写入 `yuki-sandbox-code` 卷，环境把每个文件只读挂到原路径。原地改写保持 inode，运行中的环境与旧 rootFS 检查点都随 Bot 升级拿到当前代码，不需要重建。每个文件单独挂载，而 Docker 只在创建容器时设置挂载：**升级到改变了环境文件列表的版本时，Manager 启动会发现现有容器缺少新文件的挂载，自动拍一份快照（actor `{"system":"environment_files"}`，备注列出缺的路径），再以这份快照镜像按当前定义重建一次容器**。rootFS 来自刚拍的快照，HOME 原样不动；正在运行的命令会被中断，按还原的语义记 `environment_restored`（附 `snapshot_id`），不重放。快照失败时不重建，旧容器照常运行，`environment_status.recreate_required` 报告 `environment_files`，下次 Manager 启动再试；重建失败时沿用从 `checkpoint_image` 重建的恢复。本人正持有控制权或 Yuki 有动作在执行时暂缓，交还或动作结束后的下一轮收敛。
 
 ### 状态与恢复
 

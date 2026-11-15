@@ -319,6 +319,7 @@ async def test_recovery_observes_legacy_package_intent_without_new_dispatch(
             "State": {"Running": True, "StartedAt": "old-start"},
             "HostConfig": {"RestartPolicy": {"Name": "no"}},
             "NetworkSettings": {"Networks": {"egress": {"IPAddress": "172.30.0.2"}}},
+            "Mounts": [{"Destination": path} for path in persistent.ENVIRONMENT_FILES],
         }
     )
     manager.command = AsyncMock()

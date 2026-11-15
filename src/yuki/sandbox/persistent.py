@@ -140,6 +140,8 @@ class PersistentManager:
         self.runtime_root.chmod(0o755)
         self.execd: Execd | None = None
         self.observed_container: dict[str, Any] = {}
+        # Environment files the current container has no mount for (it predates them).
+        self.environment_files_missing: list[str] = []
         self.container_id = ""
         self.connections: dict[str, Any] = {}
         self.pumps: dict[str, asyncio.Task[None]] = {}
@@ -588,9 +590,9 @@ class PersistentManager:
         return current
 
     def recreate_required(self) -> list[str]:
-        """Limits Docker only sets at creation, where the container differs from configuration."""
+        """What Docker only sets at creation, where the container differs from this release."""
         limits, observed = self.resource_limits(), self.observed_container
-        differs = []
+        differs = ["environment_files"] if self.environment_files_missing else []
         if observed.get("tmpfs") != (f"rw,nosuid,nodev,size={limits['tmp_mib']}m,mode=1777"):
             differs.append("tmp_mib")
         if "shm_mib" in limits and observed.get("shm_bytes") != int(limits["shm_mib"]) * MIB:
@@ -748,6 +750,20 @@ class PersistentManager:
             "shm_bytes": config.get("ShmSize"),
         }
         self.container_id = current["Id"] + ":" + current["State"]["StartedAt"]
+        # Docker sets mounts only when a container is created: one created by an older
+        # release lacks the environment files added since. It converges the one way a
+        # container is ever rebuilt, a snapshot and a rebuild from it (Computer Use U1).
+        self.environment_files_missing = [
+            destination
+            for destination in ENVIRONMENT_FILES
+            if destination
+            not in {mount.get("Destination") for mount in current.get("Mounts", ())}
+        ]
+        if self.environment_files_missing and await self.snapshots.rebuild_for_files(
+            self.environment_files_missing
+        ):
+            await self.recover()
+            return
         if not self.testing:
             await self.apply_programs()
         address = current["NetworkSettings"]["Networks"][self.network]["IPAddress"]

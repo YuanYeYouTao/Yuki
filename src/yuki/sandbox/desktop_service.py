@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import sys
 import tempfile
@@ -136,30 +137,32 @@ async def main() -> int:
             if children[0].returncode is not None:
                 return 1
             # Her session's D-Bus: applications register with AT-SPI over it, and the
-            # driver reads their nodes for ``elements`` (Computer Use task book §6.7).
-            bus = await asyncio.create_subprocess_exec(
-                "dbus-daemon",
-                "--session",
-                "--nofork",
-                "--print-address=1",
-                env=environment,
-                stdout=asyncio.subprocess.PIPE,
-            )
-            children.append(bus)
-            assert bus.stdout is not None
-            address = (await bus.stdout.readline()).decode().strip()
-            if not address:
-                return 1
-            environment["DBUS_SESSION_BUS_ADDRESS"] = address
-            if await asyncio.to_thread(os.path.exists, ATSPI_LAUNCHER):
-                # Started now rather than on first use: it publishes the accessibility bus
-                # on the display (root property AT_SPI_BUS), so apps she starts from a
-                # terminal without this session's address still register (P0 item 3).
-                children.append(
-                    await asyncio.create_subprocess_exec(
-                        ATSPI_LAUNCHER, "--launch-immediately", env=environment
-                    )
+            # driver reads their nodes for ``elements`` (Computer Use task book §6.7). Both
+            # are feature programs: without them the screen still opens (U9).
+            if await asyncio.to_thread(shutil.which, "dbus-daemon"):
+                bus = await asyncio.create_subprocess_exec(
+                    "dbus-daemon",
+                    "--session",
+                    "--nofork",
+                    "--print-address=1",
+                    env=environment,
+                    stdout=asyncio.subprocess.PIPE,
                 )
+                children.append(bus)
+                assert bus.stdout is not None
+                address = (await bus.stdout.readline()).decode().strip()
+                if not address:
+                    return 1
+                environment["DBUS_SESSION_BUS_ADDRESS"] = address
+                if await asyncio.to_thread(os.path.exists, ATSPI_LAUNCHER):
+                    # Started now rather than on first use: it publishes the accessibility
+                    # bus on the display (root property AT_SPI_BUS), so apps she starts from
+                    # a terminal without this session's address still register (P0 item 3).
+                    children.append(
+                        await asyncio.create_subprocess_exec(
+                            ATSPI_LAUNCHER, "--launch-immediately", env=environment
+                        )
+                    )
             # The window manager and desktop are hers; Chromium starts after them so that
             # its window is managed.
             session, session_state = await open_session(environment)

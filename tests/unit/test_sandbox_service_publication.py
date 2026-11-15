@@ -57,6 +57,7 @@ async def test_service_publication_rolls_back_before_commit_and_recovers_origina
                 "State": {"Running": True, "StartedAt": "original-start"},
                 "HostConfig": {"RestartPolicy": {"Name": "no"}},
                 "NetworkSettings": {"Networks": {"egress": {"IPAddress": "172.30.0.2"}}},
+                "Mounts": [{"Destination": path} for path in persistent.ENVIRONMENT_FILES],
             }
         )
         manager.command = AsyncMock(return_value=(0, b""))
