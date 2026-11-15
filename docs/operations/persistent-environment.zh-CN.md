@@ -103,7 +103,7 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 | --- | --- | --- | --- |
 | 环境镜像 | `yuki-environment:<版本>` | `yuki-environment:<版本>-desktop` | `yuki-environment:<版本>-desktop` |
 | 浏览器 | 无 | 无头 Chromium | Chromium + Xvnc 桌面 |
-| 桌面附带软件 | — | — | Openbox、xdotool、ImageMagick、dbus（会话 D-Bus）、at-spi2-core（`elements` 的无障碍总线）、xclip（`paste`），见 `environment_programs.py` |
+| 桌面附带软件 | — | — | Openbox、xdotool、ImageMagick、dbus（会话 D-Bus）、at-spi2-core（`elements` 的无障碍总线）、xclip（`paste`），见 `environment_programs.py`；后三者是功能软件包，装不上时画面照常是 `desktop`，对应功能按事实报 `no_accessibility`／`no_clipboard` |
 | 内存 / 额外 swap | 512 / 128 MiB | 1024 / 256 MiB | 3072 / 512 MiB |
 | CPU / 进程数 | 1 / 256 | 1.5 / 1024 | 2 / 2048 |
 | /tmp / /dev/shm | 128 / 64 MiB | 256 / 128 MiB | 512 / 256 MiB |

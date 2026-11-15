@@ -27,6 +27,14 @@ MODE_PACKAGES: dict[str, tuple[str, ...]] = {
         "xdotool",
         "x11-utils",
         "imagemagick",
+    ),
+}
+# Installed with a mode but not part of what makes it: without them the screen works and
+# the features they serve report their own facts (``no_accessibility``, ``no_clipboard``).
+FEATURE_PACKAGES: dict[str, tuple[str, ...]] = {
+    "none": (),
+    "headless": (),
+    "headed": (
         # The session D-Bus the desktop service starts; at-spi2-core needs only libdbus.
         "dbus",
         # AT-SPI bus and registry for ``elements``; libatspi itself comes with GTK.
@@ -39,7 +47,7 @@ MANIFEST = Path("/opt/yuki-runtime/manifest.json")
 
 
 def wanted(mode: str, extra: tuple[str, ...] | list[str] = ()) -> list[str]:
-    return list(dict.fromkeys([*MODE_PACKAGES[mode], *extra]))
+    return list(dict.fromkeys([*MODE_PACKAGES[mode], *FEATURE_PACKAGES[mode], *extra]))
 
 
 def main(argv: list[str]) -> int:
