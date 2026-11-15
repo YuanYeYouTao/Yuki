@@ -73,7 +73,11 @@ class Driver(threading.Thread):
 @pytest.fixture
 def manager(tmp_path):
     value = manager_at(tmp_path)
-    value.desktop.browser_status = lambda: "running"
+    value.desktop._service_status = lambda: {
+        "display": "running",
+        "driver": "running",
+        "browser": "running",
+    }
     value.computer.deliver_results()
     yield value
     value.db.close()

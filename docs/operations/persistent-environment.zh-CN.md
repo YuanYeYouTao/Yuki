@@ -66,7 +66,7 @@ external_agent 已移出环境工具和 Manager 新任务路径。用户电脑�
 
 ### 节律：闲置休眠
 
-画面层（`desktop` 的 Xvnc、她的会话、Chromium 与驱动；`headless` 的无头 Chromium 与驱动）闲置 `YUKI_SANDBOX_DISPLAY_IDLE_MINUTES` 分钟（默认 30，`0` 不自动休眠）后由 Manager 停止，回执键 `idle:<桌面服务 run_id>`，附休眠时开着的标签页及其 Work。"在用"是：对自己环境的任一 `computer`／`browser` 调用、任何一路画面流（含桌面端紧凑预览；桌面端窗口隐藏或最小化时断开画面流）、本人持有控制权、每次唤醒。终端命令不算，休眠不影响终端、后台进程与 `rc.local` 起的守护进程；用 `DISPLAY=:1` 起的图形程序随显示器退出。计时只在 Manager 内存，Manager 重启从启动时刻计。下次 `computer`／`browser` 自动唤醒，Chromium 以 `--restore-last-session` 恢复标签页（tab id 改变，旧 id 得 `tab_not_found` 附当前清单）。在终端里用脚本直接驱动浏览器（经 CDP 或 `yuki-computer`）不算在用，长脚本可能被闲置休眠打断；需要时把闲置分钟调大或设为 0。Yuki 也可自己 `computer(action="sleep"|"wake")`；本人持有控制权时 `sleep` 返回 `control_held`。`lite` 没有画面层，`sleep`／`wake` 返回 `browser_unavailable`。
+画面层（`desktop` 的 Xvnc、她的会话、Chromium 与驱动；`headless` 的无头 Chromium 与驱动）闲置 `YUKI_SANDBOX_DISPLAY_IDLE_MINUTES` 分钟（默认 30，`0` 不自动休眠）后由 Manager 停止，回执键 `idle:<桌面服务 run_id>`，附休眠时开着的标签页及其 Work。"在用"是：对自己环境的任一 `computer`／`browser` 调用、任何一路画面流（含桌面端紧凑预览；桌面端窗口隐藏或最小化时断开画面流）、本人持有控制权、每次唤醒。终端命令不算，休眠不影响终端、后台进程与 `rc.local` 起的守护进程；用 `DISPLAY=:1` 起的图形程序随显示器退出。计时只在 Manager 内存，Manager 重启从启动时刻计。下次 `computer`／`browser` 自动唤醒桌面和驱动，只有新的 `browser.open` 启动 Chromium，以 `--restore-last-session` 恢复标签页。关闭浏览器不影响桌面和闲置计时，也不触发自动重启；浏览器关闭时旧 tab 请求返回 `browser_closed`，显式重开后旧 id 得 `tab_not_found` 附当前清单。在终端里用脚本直接驱动浏览器（经 CDP 或 `yuki-computer`）不算在用，长脚本可能被闲置休眠打断；需要时把闲置分钟调大或设为 0。Yuki 也可自己 `computer(action="sleep"|"wake")`；本人持有控制权时 `sleep` 返回 `control_held`。`lite` 没有画面层，`sleep`／`wake` 返回 `browser_unavailable`。
 
 ## 恢复、资源与网络
 
@@ -113,6 +113,8 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 换档：改 `.env` 的 `YUKI_SANDBOX_PROFILE`，再 `docker compose up -d`。换大时 Manager 在原 rootFS 上安装所需 Debian 包（结果写入 `programs`，失败保留原安装、下次启动重试）；换小只改模式与资源，已装软件和浏览器资料保留。正在运行的桌面服务以新运行按新模式重启。内存、swap、CPU、进程数用 `docker update` 即时生效，Docker 拒绝时原文写入 `limits_update_error`；/tmp 与 /dev/shm 只在明确重建时生效，未生效项列在 `recreate_required`。
 
 运行时 `YUKI_SANDBOX_RUNTIME` 在首次安装时按 Docker 是否注册了带 `--overlay2=none` 的 runsc 写成 `runsc` 或 `runc`，之后保持，不会隐式从 gVisor 换成 runc。配置 runsc 但 Docker 没有时报 `gvisor_unavailable`；runsc 缺 `--overlay2=none` 时报 `gvisor_overlay_unsupported`（否则环境内安装不进 Docker 层，检查点会丢软件）。
+
+Manager 只补装安装记录中尚未提供的软件包，不会因为补装另一个组件而重新安装整套默认软件。已自行卸载的 Chromium 保持卸载；桌面能力不以 Chromium 为前提，浏览器操作按实际可执行文件报告可用性。
 
 ### 代码文件
 

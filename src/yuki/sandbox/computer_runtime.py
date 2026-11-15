@@ -47,7 +47,7 @@ class ComputerRuntime:
 
     def idle_status(self) -> dict[str, Any]:
         status = self._service_status()
-        running = status.get("browser") == "running"
+        running = status.get("driver") == "running"
         return {
             "display": status["display"],
             "session": self.session() if running else None,
@@ -79,12 +79,16 @@ class ComputerRuntime:
             and not self.manager.desktop_manifest.get("desktop")
             and not headless
         ):
-            return {"display": "unavailable"}
+            return {"display": "unavailable", "driver": "unavailable", "browser": "unavailable"}
         row = self.manager.db.execute(
             "SELECT enabled,run_id FROM environment_services WHERE name=?", (SERVICE,)
         ).fetchone()
         if row is None or not row["run_id"]:
-            return {"display": "unavailable" if headless else "stopped", "browser": "stopped"}
+            return {
+                "display": "unavailable" if headless else "stopped",
+                "driver": "stopped",
+                "browser": "stopped",
+            }
         run = self.manager.get(row["run_id"])
         if run.get("status") in TERMINAL:
             return {
@@ -92,20 +96,24 @@ class ComputerRuntime:
                 if headless or (row["enabled"] and run["status"] == "failed")
                 else "stopped",
                 "browser": "unavailable" if run["status"] == "failed" else "stopped",
+                "driver": "unavailable" if run["status"] == "failed" else "stopped",
             }
         try:
-            with FileWorkspace(self.manager.runtime_root).open_file(
-                "computer/desktop-status.json"
-            ) as descriptor:
-                with open(descriptor, closefd=False) as stream:
-                    status = json.load(stream)
-            if status.get("run_id") == row["run_id"] and (
-                status.get("browser") == "running" or status.get("display") == "running"
-            ):
-                return {"display": "unavailable" if headless else "running", "browser": "running"}
+            status = self._read_json("computer/desktop-status.json")
+            driver = self._read_json(DRIVER + "/tabs.json")
+            if status.get("run_id") == driver.get("run_id") == row["run_id"]:
+                return {
+                    "display": status["display"],
+                    "driver": status["driver"],
+                    "browser": driver["browser"],
+                }
         except (OSError, ValueError, WorkspaceError):
             pass
-        return {"display": "unavailable" if headless else "starting", "browser": "starting"}
+        return {
+            "display": "unavailable" if headless else "starting",
+            "driver": "starting",
+            "browser": "starting",
+        }
 
     async def handle(self, method: str, args: dict[str, Any], key: str) -> dict[str, Any]:
         if method == "display_status":
@@ -394,12 +402,12 @@ class ComputerRuntime:
 
     async def _wake(self, key: str) -> dict[str, Any]:
         self.touch()
-        if self.browser_status() != "running":
+        if self._service_status()["driver"] != "running":
             started = await self._start(str(uuid5(_DRIVER_KEYS, "wake:" + key)))
             if started.get("error"):
                 return {"error": started["error"]}
             deadline = time.monotonic() + WAKE_SECONDS
-            while self.browser_status() not in {"running", "unavailable"}:
+            while self._service_status()["driver"] not in {"running", "unavailable"}:
                 if time.monotonic() > deadline:
                     break
                 await asyncio.sleep(0.1)
@@ -423,7 +431,10 @@ class ComputerRuntime:
         # The run ends once its processes have; report what actually stopped. The idle
         # sleep runs inside the worker, so observe the run's own receipt here.
         deadline = time.monotonic() + WAKE_SECONDS
-        while self.browser_status() in {"running", "starting"} and time.monotonic() < deadline:
+        while (
+            self._service_status()["driver"] in {"running", "starting"}
+            and time.monotonic() < deadline
+        ):
             await asyncio.sleep(0.1)
             for job in self.manager.active():
                 if job["kind"] == "service" and job["dispatched"]:
@@ -443,7 +454,7 @@ class ComputerRuntime:
         if self.streams or self.manager.computer.control()["holder"] == "human":
             self.touch()
             return
-        if self.browser_status() != "running":
+        if self._service_status()["driver"] != "running":
             return
         if time.monotonic() - self.last_activity < minutes * 60:
             return
@@ -479,17 +490,17 @@ class ComputerRuntime:
             return {"error": "display_unavailable", "message": "这个环境没有桌面画面。"}
         if not (desktop or headless):
             return {"error": "browser_unavailable", "message": "这个环境没有安装浏览器。"}
-        if self.browser_status() != "running":
+        if self._service_status()["driver"] != "running":
             woken = await self.handle("display_wake", {}, str(uuid5(_DRIVER_KEYS, "wake:" + key)))
             started = time.monotonic()
-            while not woken.get("error") and self.browser_status() not in {
+            while not woken.get("error") and self._service_status()["driver"] not in {
                 "running",
                 "unavailable",
             }:
                 if time.monotonic() - started > WAKE_SECONDS:
                     break
                 await asyncio.sleep(0.1)
-            if self.browser_status() != "running":
+            if self._service_status()["driver"] != "running":
                 return {
                     "error": "display_unavailable" if tool == "computer" else "browser_unavailable",
                     "message": "桌面服务没有启动。",

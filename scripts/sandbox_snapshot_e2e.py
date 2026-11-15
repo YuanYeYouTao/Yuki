@@ -396,7 +396,7 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
         ">/dev/null 2>&1 &)"
     )
     stale = stage.browser("snapshot", tab=old_tab)
-    expect(stale.get("error") == "tab_not_found" and "tabs" in stale, f"S15 old tab: {stale}")
+    expect(stale.get("error") == "browser_closed", f"S15 old tab: {stale}")
     page = stage.browser("open", url="http://127.0.0.1:8765/")
     shown = json.dumps(page, ensure_ascii=False)
     expect(
@@ -411,13 +411,15 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
         stale_tab=stale,
     )
 
-    # R10/R6: idle sleep stops the headless browser; the next browser call wakes it.
+    # R10/R6: idle sleep stops the headless browser; only a new open starts it.
     stage.settings(YUKI_SANDBOX_DISPLAY_IDLE_MINUTES="0.5")
     tab = page["tab"]["id"]
     stage.wait(lambda: deployment.status().get("browser") == "stopped", 150, "R10 no idle sleep")
     woken = stage.browser("snapshot", tab=tab)
-    expect(woken.get("error") == "tab_not_found", f"R6 old tab after sleep: {woken}")
-    expect(deployment.status()["browser"] == "running", "R6 the browser did not wake")
+    expect(woken.get("error") == "browser_closed", f"R6 old tab after sleep: {woken}")
+    expect(deployment.status()["browser"] == "stopped", "R6 snapshot reopened the browser")
+    opened = stage.browser("open", url="http://127.0.0.1:8765/")
+    expect(not opened.get("error"), f"R6 explicit open: {opened}")
     stage.record("idle_sleep_and_wake", stale_after_sleep=woken)
 
     # S22: back to the lite-era snapshot; the current profile installs what it needs.
@@ -514,3 +516,18 @@ def desktop(deployment: Deployment) -> None:
         volume=stage.volume(),
         status=deployment.status(),
     )
+
+    # Chromium is ordinary installed software: removing it and restarting Manager
+    # must neither reinstall it nor prevent the desktop from waking and taking input.
+    stage.settings(YUKI_SANDBOX_DISPLAY_IDLE_MINUTES="0")
+    stage.shell("apt-get remove -y chromium")
+    deployment.compose("restart", "manager")
+    deployment.wait_ready(1800)
+    woken = stage.computer("wake")
+    expect(woken["display"] == "running", f"desktop without Chromium: {woken}")
+    expect(not stage.shell("command -v chromium || true").strip(), "Chromium reinstalled")
+    opened = stage.browser("open", url="about:blank")
+    expect(opened.get("error") == "browser_unavailable", f"removed Chromium: {opened}")
+    moved = stage.computer("move", x=20, y=20, max_dimension=1280, max_pixels=1_000_000)
+    expect(moved.get("submitted"), f"desktop input without Chromium: {moved}")
+    stage.record("desktop_without_chromium", open=opened, shot=screenshot("no-chromium"))

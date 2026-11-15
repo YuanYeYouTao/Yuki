@@ -76,6 +76,7 @@ class DesktopComputerFixture:
             self.manager.set_setting("execd_token", "fixture")
             self.manager.desktop._service_status = lambda: {
                 "display": self.display,
+                "driver": self.display,
                 "browser": "running" if self.display == "running" else "stopped",
             }
 

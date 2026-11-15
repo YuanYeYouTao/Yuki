@@ -150,7 +150,7 @@ class Session:
 
     async def record(self, name: str, *, screenshot: bool = True, **facts) -> None:
         entry = {"step": name, "status": self.status(), "processes": processes(), **facts}
-        if screenshot and self.manager.desktop.browser_status() == "running":
+        if screenshot and self.status()["display"] == "running":
             shot = await self.computer("screenshot")
             image = shot.pop("image")
             path = ARTIFACT / f"{len(self.steps):02d}-{name}.png"
@@ -185,7 +185,8 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
     try:
         # A6: no ~/.xsession: openbox-session runs her autostart file.
         woken = await session.computer("wake", "wake-1")
-        assert woken["display"] == "running" and woken["browser"] == "running", woken
+        assert woken["display"] == "running" and woken["browser"] == "stopped", woken
+        assert "chromium" not in processes()
         await session.until(lambda: (home / "autostart-ran").exists(), message="no autostart")
         await session.until(lambda: "xmessage" in processes(), message="no autostart window")
         assert session.status()["session"] == "default"
@@ -219,13 +220,14 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
         assert again["display"] == "stopped" and again["tabs"] == []
         await session.record("r12_sleep_receipts_r4_r5", screenshot=False, sleep=slept)
 
-        # A8: ~/.xsession fails at once; the display and Yuki's browser stay.
+        # A8: ~/.xsession fails at once; the display stays without a browser.
         (home / ".xsession").write_text("echo custom-session-output\nexit 3\n")
         await session.computer("wake")
         await session.until(lambda: session.status()["session"] == "exited:3")
         assert "custom-session-output" in (home / ".xsession-errors").read_text()
-        assert {"Xvnc", "chromium"} <= set(processes()) and "openbox" not in processes()
-        assert manager.desktop.browser_status() == "running"
+        assert "Xvnc" in processes() and "openbox" not in processes()
+        assert "chromium" not in processes()
+        assert manager.desktop.browser_status() == "stopped"
         await session.record("a8_failed_xsession_keeps_display")
 
         # A9: her own session replaces Openbox; killing her window manager ends only it.
@@ -240,29 +242,68 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
         await session.until(lambda: (session.status()["session"] or "").startswith("exited:"))
         await asyncio.sleep(3)
         assert "openbox" not in processes() and processes()["Xvnc"] == xvnc
-        assert manager.desktop.browser_status() == "running"
+        assert manager.desktop.browser_status() == "stopped"
         await session.record("a9_her_window_manager_is_hers")
 
-        # A12: closing Chromium reopens only Chromium and its driver.
+        # Closing or killing Chromium must leave it closed. Desktop input, reads,
+        # and status queries must not reopen it; only a fresh browser.open may.
         (home / ".xsession").unlink()
         await session.computer("sleep")
         await session.until(lambda: not processes())
         await session.computer("wake")
         await session.until(lambda: "xmessage" in processes())
+        opened = await manager.desktop.action(
+            "browser_action",
+            {"action": "open", "url": "data:text/html,<h1>close me</h1>"},
+            "open-2",
+        )
+        assert not opened.get("error"), opened
+        before = processes()
+        # Closing all browser windows normally is distinct from killing the process.
+        closed = await session.terminal(
+            "DISPLAY=:1 xdotool search --sync --onlyvisible --class chromium "
+            "windowactivate --sync && DISPLAY=:1 xdotool key --clearmodifiers ctrl+shift+w"
+        )
+        assert closed["status"] == "succeeded", closed.get("output", closed)
+        await session.until(lambda: manager.desktop.browser_status() == "stopped")
+        for action in ("snapshot", "screenshot"):
+            result = await manager.desktop.action(
+                "browser_action", {"action": action}, str(uuid4())
+            )
+            assert result["error"] == "browser_closed", result
+        moved = await session.computer("move", x=20, y=20, max_dimension=1280, max_pixels=1_000_000)
+        assert moved.get("submitted"), moved
+        await asyncio.sleep(2)
+        assert "chromium" not in processes()
+        assert processes()["Xvnc"] == before["Xvnc"]
+        assert processes()["xmessage"] == before["xmessage"]
+        await session.record("browser_closed_desktop_still_works")
+        # A stored receipt must not re-execute open after the browser was closed.
+        assert (
+            await manager.desktop.action(
+                "browser_action",
+                {"action": "open", "url": "data:text/html,<h1>close me</h1>"},
+                "open-2",
+            )
+            == opened
+        )
+        assert "chromium" not in processes()
+        reopened = await manager.desktop.action(
+            "browser_action", {"action": "open", "url": "data:text/html,<h1>again</h1>"}, "open-3"
+        )
+        assert "again" in reopened["snapshot"], reopened
         before = processes()
         for pid in before["chromium"]:
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        await session.until(
-            lambda: set(processes().get("chromium", [])) - set(before["chromium"]),
-            message="Chromium did not reopen",
-        )
-        await session.until(lambda: manager.desktop.browser_status() == "running")
+        await session.until(lambda: manager.desktop.browser_status() == "stopped")
+        await asyncio.sleep(2)
         after = processes()
+        assert "chromium" not in after
         assert after["Xvnc"] == before["Xvnc"] and after["xmessage"] == before["xmessage"]
-        await session.record("a12_closed_browser_reopens_alone")
+        await session.record("killed_browser_stays_closed")
 
         # A10: Xvnc ends: the whole service ends and restarts; her session runs again.
         runs = (home / "autostart-ran").read_text().count("\n")
@@ -272,14 +313,15 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
             seconds=90,
             message="the session did not run again",
         )
-        await session.until(lambda: manager.desktop.browser_status() == "running")
+        await session.until(lambda: session.status()["display"] == "running")
+        assert "chromium" not in processes()
         await session.record("a10_display_restart_runs_session_again")
 
         # R9: 0 never sleeps.
         assert manager.display_idle_minutes == 0
         manager.desktop.last_activity -= 3600
         await asyncio.sleep(2)
-        assert manager.desktop.browser_status() == "running"
+        assert session.status()["display"] == "running"
 
         # R2: an open display stream keeps it awake; closing it restarts the count.
         manager.display_idle_minutes = 0.05  # 3 seconds, a product setting
@@ -291,7 +333,7 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
         assert (await reader.readexactly(12)).startswith(b"RFB")
         assert session.status()["display_streams"] == 1
         await asyncio.sleep(6)
-        assert manager.desktop.browser_status() == "running"
+        assert session.status()["display"] == "running"
         await session.record("r2_stream_keeps_awake", stream_open=True)
         writer.close()
         await session.until(lambda: session.status()["display_streams"] == 0)
@@ -310,7 +352,7 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
             },
         )
         await asyncio.sleep(5)
-        assert manager.desktop.browser_status() == "running"
+        assert session.status()["display"] == "running"
         await session.record("r3_human_control_keeps_awake")
         # S11 for sleep: Yuki does not sleep the screen the person holds.
         held = await session.computer("sleep")
@@ -328,7 +370,7 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
             "SELECT run_id FROM environment_services WHERE name='yuki-desktop'"
         ).fetchone()[0]
         await session.until(
-            lambda: manager.desktop.browser_status() != "running",
+            lambda: session.status()["display"] != "running",
             seconds=30,
             message=lambda: json.dumps(
                 {
@@ -356,6 +398,7 @@ async def test_desktop_session_idle_sleep_and_yuki_wake_sleep(tmp_path):
         # The next use wakes it again (R6's automatic wake through _ready()).
         shot = await session.computer("screenshot")
         assert shot.get("image"), shot
+        assert "chromium" not in processes()
         await session.record("woken_by_next_use")
     finally:
         await session.close()
@@ -372,7 +415,12 @@ async def test_headless_never_runs_her_xsession(tmp_path):
     await session.start()
     try:
         woken = await session.computer("wake")
-        assert woken["browser"] == "running" and woken["display"] == "unavailable", woken
+        assert woken["browser"] == "stopped" and woken["display"] == "unavailable", woken
+        assert "chromium" not in processes()
+        opened = await session.manager.desktop.action(
+            "browser_action", {"action": "open", "url": "data:text/html,<h1>headless</h1>"}, "open"
+        )
+        assert "headless" in opened["snapshot"], opened
         assert not (session.home / "xsession-ran").exists()
         assert session.status()["session"] is None
         slept = await session.computer("sleep")

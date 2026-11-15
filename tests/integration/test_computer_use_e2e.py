@@ -220,7 +220,7 @@ async def test_own_computer_computer_use(tmp_path: Path) -> None:
     call = Steps(session)
     try:
         woken = await session.computer("wake", "wake-1")
-        assert woken["display"] == "running" and woken["browser"] == "running", woken
+        assert woken["display"] == "running" and woken["browser"] == "stopped", woken
         opened = await manager.desktop.action(
             "browser_action", {"action": "open", "url": lab.url, **LIMITS}, "open-lab"
         )

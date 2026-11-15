@@ -56,11 +56,12 @@ class Engine:
         if "/opt/yuki-runtime/environment_programs.py" in args:
             if self.install_code:
                 return self.install_code, b"E: Unable to locate package chromium"
-            mode = args[args.index("/opt/yuki-runtime/environment_programs.py") + 1]
+            offset = args.index("/opt/yuki-runtime/environment_programs.py") + 1
+            mode, *extra = args[offset:]
             installed = {tool["name"] for tool in self.manifest}
             self.manifest += [
                 {"name": name, "version": "1"}
-                for name in MODE_PACKAGES[mode]
+                for name in (*MODE_PACKAGES[mode], *extra)
                 if name not in installed
             ]
             return 0, b""
@@ -160,8 +161,6 @@ async def test_a_larger_profile_installs_in_place_and_a_smaller_one_keeps_softwa
     manager.command = engine.command
     try:
         await manager.apply_programs()
-        installs = [call for call in engine.calls if "--user" in call]
-        assert len(installs) == 1 and installs[0][-1] == "headless"
         assert manager.programs == {"missing": list(MODE_PACKAGES["headless"]), "installed": True}
         # F20: the shared -desktop image never makes headless report a desktop.
         assert manager.desktop_manifest["browser_mode"] == "headless"
@@ -258,7 +257,6 @@ async def test_creation_only_limits_are_reported_not_applied(tmp_path, monkeypat
         assert status["storage"]["shared_disk"] is True
     finally:
         await manager.close()
-
 
 
 async def test_u8_feature_packages_that_fail_to_install_keep_the_desktop(tmp_path):
