@@ -772,13 +772,12 @@ class Screen:
     def hit(self, deadline: float, x: int, y: int) -> dict[str, str] | None:
         """The node under a root point before any input; None when unknown (never a failure)."""
         try:
+            atspi = self.accessibility()
             window = self.window_at(deadline, x, y)
             if window is None:
                 return None
             identity, rect = window
-            return cast(
-                dict[str, str], self.accessibility().at(self.pid(deadline, identity), rect, x, y)
-            )
+            return cast(dict[str, str], atspi.at(self.pid(deadline, identity), rect, x, y))
         except Exception:  # no AT-SPI, no process, a hung app: the input still runs (R6, R7)
             return None
 
