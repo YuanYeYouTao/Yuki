@@ -595,3 +595,173 @@ async def test_s33_restore_keeps_the_operators_resolver_file(tmp_path):
         assert resolver.read_text() == "nameserver 192.0.2.2\n"
     finally:
         await manager.close()
+
+
+# Environment files added by a release (Computer Use task book §11 U1–U7) -------------
+
+ADDED = {
+    "/opt/yuki-runtime/yuki_agent_connector/actions.py",
+    "/opt/yuki-runtime/yuki_accessibility.py",
+}
+
+
+async def older_environment(tmp_path, *, holder=None):
+    """A Manager restarted after an upgrade, over a container an older release created."""
+    manager, docker = await started(tmp_path)
+    docker.container["mounts"] = [path for path in docker.container["mounts"] if path not in ADDED]
+    docker.write_rootfs("/usr/bin/installed-by-her", "binary")
+    (manager.home / "notes.txt").write_text("hers")
+    running = str(uuid4())
+    with manager.db:
+        manager.db.execute(
+            "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+            (running, f"call-{running}", "digest", "{}", "running", "{}", time.time()),
+        )
+        manager.db.execute(
+            "INSERT INTO environment_jobs VALUES (?,?,?,?,?)",
+            (running, "terminal_exec", "session", manager.container_id, 1),
+        )
+    if holder == "human":
+        taken = manager.computer.set(
+            str(uuid4()),
+            {
+                "action": "take",
+                "actor": {
+                    "person_id": str(uuid4()),
+                    "device_id": str(uuid4()),
+                    "device_label": "desk",
+                },
+            },
+        )
+        assert taken["control"]["holder"] == "human", taken
+    await manager.close()
+    return manager_at(tmp_path, docker), docker, running
+
+
+def snapshots_of(manager):
+    return manager.db.execute("SELECT * FROM environment_snapshots ORDER BY created").fetchall()
+
+
+async def test_u1_missing_environment_file_mounts_snapshot_then_rebuild_once(tmp_path):
+    manager, docker, running = await older_environment(tmp_path)
+    old = docker.container["Id"]
+    try:
+        await manager.recover()
+        (taken,) = snapshots_of(manager)
+        assert taken["state"] == "ready"
+        assert json.loads(taken["actor"]) == {"system": "environment_files"}
+        assert all(path in taken["note"] for path in ADDED)
+        # Rebuilt from that snapshot with every current mount; HOME untouched.
+        assert docker.container["Id"] != old and docker.container["image"] == taken["image"]
+        assert set(docker.container["mounts"]) >= set(persistent.ENVIRONMENT_FILES)
+        assert docker.container["rootfs"]["/usr/bin/installed-by-her"] == "binary"
+        assert (manager.home / "notes.txt").read_text() == "hers"
+        assert manager.environment_status()["recreated_from"]["snapshot_id"] == taken["id"]
+        assert "environment_files" not in manager.environment_status()["recreate_required"]
+        result = manager.get(running)
+        assert result["status"] == "failed" and result["error"] == "environment_restored"
+        assert result["snapshot_id"] == taken["id"] and result["interrupted"] is True
+        # Converged: the next start does nothing more (U4).
+        await manager.recover()
+        assert len(snapshots_of(manager)) == 1
+    finally:
+        await manager.close()
+
+
+async def test_u2_a_failed_snapshot_keeps_the_old_container(tmp_path):
+    manager, docker, running = await older_environment(tmp_path)
+    old = docker.container["Id"]
+    docker.fail[("docker", "commit")] = (1, b"no space left on device")
+    try:
+        await manager.recover()
+        assert manager.ready and docker.container["Id"] == old
+        (failed,) = snapshots_of(manager)
+        assert failed["state"] == "failed" and "no space left" in failed["error"]
+        assert "environment_files" in manager.environment_status()["recreate_required"]
+        assert manager.get(running)["status"] == "running"
+        # Not tried again and again in this process.
+        await manager.snapshots.step()
+        assert len(snapshots_of(manager)) == 1 and docker.container["Id"] == old
+    finally:
+        await manager.close()
+
+
+async def test_u3_a_failed_rebuild_is_recovered_from_that_snapshot(tmp_path):
+    manager, docker, _ = await older_environment(tmp_path)
+    docker.fail[("docker", "create")] = (1, b"create failed")
+    try:
+        with pytest.raises(RuntimeError, match="environment_create_failed"):
+            await manager.recover()
+        assert docker.container is None
+        (taken,) = snapshots_of(manager)
+        del docker.fail[("docker", "create")]
+        # The worker's recovery: no container, so it is created from checkpoint_image.
+        await manager.recover()
+        assert docker.container["image"] == taken["image"]
+        assert set(docker.container["mounts"]) >= set(persistent.ENVIRONMENT_FILES)
+        assert len(snapshots_of(manager)) == 1
+    finally:
+        await manager.close()
+
+
+async def test_u4_matching_mounts_do_nothing(tmp_path):
+    manager, docker = await started(tmp_path)
+    old = docker.container["Id"]
+    await manager.close()
+    again = manager_at(tmp_path, docker)
+    try:
+        await again.recover()
+        assert docker.container["Id"] == old and snapshots_of(again) == []
+    finally:
+        await again.close()
+
+
+async def test_u5_the_person_holding_the_computer_defers_until_returned(tmp_path):
+    manager, docker, _ = await older_environment(tmp_path, holder="human")
+    old = docker.container["Id"]
+    try:
+        await manager.recover()
+        assert docker.container["Id"] == old and snapshots_of(manager) == []
+        assert "environment_files" in manager.environment_status()["recreate_required"]
+        control = manager.computer.control()
+        manager.computer.set(
+            str(uuid4()),
+            {
+                "action": "return",
+                "lease_id": control["lease_id"],
+                "actor": control | {"system": False},
+            },
+        )
+        await manager.snapshots.step()
+        assert docker.container["Id"] != old and len(snapshots_of(manager)) == 1
+    finally:
+        await manager.close()
+
+
+async def test_u6_an_action_in_progress_is_not_interrupted(tmp_path):
+    manager, docker, _ = await older_environment(tmp_path, holder="human")
+    old = docker.container["Id"]
+    try:
+        await manager.recover()
+        control = manager.computer.control()
+        manager.computer.set(
+            str(uuid4()),
+            {
+                "action": "return",
+                "lease_id": control["lease_id"],
+                "actor": control | {"system": False},
+            },
+        )
+        async with manager.desktop.lock:
+            await manager.snapshots.step()
+            assert docker.container["Id"] == old and snapshots_of(manager) == []
+        await manager.snapshots.step()
+        assert docker.container["Id"] != old
+    finally:
+        await manager.close()
+
+
+def test_u7_the_headed_profile_installs_dbus():
+    from yuki.sandbox.environment_programs import MODE_PACKAGES
+
+    assert "dbus" in MODE_PACKAGES["headed"]

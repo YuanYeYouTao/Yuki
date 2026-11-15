@@ -92,6 +92,10 @@ class FakeDocker:
     def __init__(
         self, *, name: str = "yuki-environment", project: str = "", running: bool = True
     ) -> None:
+        from yuki.sandbox.persistent import ENVIRONMENT_FILES
+
+        # Mount destinations of a container created now, as the Manager defines them.
+        self.mounts = list(ENVIRONMENT_FILES)
         self.name, self.project = name, project
         self.images: dict[str, dict] = {"base": {"labels": {}, "rootfs": {}}}
         self.container: dict | None = None
@@ -106,7 +110,7 @@ class FakeDocker:
 
     # ---- the modelled environment ----------------------------------------------------
 
-    def create(self, image: str) -> None:
+    def create(self, image: str, mounts: list[str] | None = None) -> None:
         self.container = {
             "Id": uuid4().hex,
             "image": image,
@@ -116,6 +120,8 @@ class FakeDocker:
             "OOMKilled": False,
             "rootfs": dict(self.images[image]["rootfs"]),
             "changed": time.time(),
+            # Docker sets mounts only when a container is created.
+            "mounts": list(self.mounts if mounts is None else mounts),
         }
 
     def start(self) -> None:
@@ -161,7 +167,7 @@ class FakeDocker:
             },
             "HostConfig": {"RestartPolicy": {"Name": "no"}},
             "NetworkSettings": {"Networks": {"egress": {"IPAddress": "127.0.0.1"}}},
-            "Mounts": [],
+            "Mounts": [{"Destination": path} for path in self.container["mounts"]],
         }
 
     # ---- the CLI -------------------------------------------------------------------
@@ -245,7 +251,14 @@ class FakeDocker:
         if args[1] == "create":
             if args[-1] not in self.images:
                 return 1, b"Unable to find image"
-            self.create(args[-1])
+            mounts = [
+                part.removeprefix("dst=")
+                for flag, value in itertools.pairwise(args)
+                if flag == "--mount"
+                for part in value.split(",")
+                if part.startswith("dst=")
+            ]
+            self.create(args[-1], mounts)
             return 0, b""
         if args[1] == "start":
             assert container is not None
