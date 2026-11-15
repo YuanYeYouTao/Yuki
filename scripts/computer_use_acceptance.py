@@ -29,6 +29,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = Path.home() / ".cache" / "yuki-cu-acceptance"
@@ -121,6 +122,33 @@ def environment(command: str) -> str:
     )
 
 
+def manager(method: str, arguments: dict[str, Any]) -> Any:
+    """One Manager RPC through the Bot's own socket, as the Bot calls it."""
+    from scripts.sandbox_compose_e2e import CALL
+
+    request = json.dumps({"method": method, "args": arguments, "request_id": str(uuid4())})
+    output = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--project-directory",
+            str(DEPLOYMENT),
+            "exec",
+            "-T",
+            "bot",
+            "python",
+            "-c",
+            CALL,
+        ],
+        input=request,
+        capture_output=True,
+        text=True,
+        env=DOCKER,
+        check=True,
+    ).stdout
+    return json.loads(output)
+
+
 def osascript(script: str) -> str:
     return run("osascript", "-e", script, check=False).strip()
 
@@ -185,16 +213,43 @@ def facts_mac_t2(scene: dict[str, str]) -> dict[str, Any]:
 
 
 def scene_own_t1() -> None:
-    environment("pkill -x xmessage")
+    # Her display may be asleep; the scene needs it awake before the windows open.
+    manager("display_wake", {})
+    for _ in range(60):
+        if environment("pgrep -x Xvnc").strip():
+            break
+        time.sleep(1)
+    time.sleep(3)
+    # GTK windows (they carry _NET_WM_NAME, so the window list shows their titles).
+    subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            "-u",
+            "yuki",
+            "yuki-environment",
+            "sh",
+            "-c",
+            "cat > /tmp/yuki-acceptance-window.py",
+        ],
+        input=(ROOT / "tests/support/gtk_window.py").read_bytes(),
+        env=DOCKER,
+        check=True,
+    )
+    environment("pkill -f yuki-acceptance-window.py")
     for name in ("Yuki-保留", "Yuki-关闭"):
-        environment(f"nohup xmessage -title {name} -name {name} '{name}' >/dev/null 2>&1 &")
-    time.sleep(2)
+        environment(
+            f"setsid -f python3 /tmp/yuki-acceptance-window.py {name} /tmp/{name}.log "
+            ">/dev/null 2>&1"
+        )
+    time.sleep(3)
 
 
 def facts_own_t1() -> dict[str, Any]:
     listed = environment(
         "for w in $(xprop -root _NET_CLIENT_LIST | grep -o '0x[0-9a-f]*'); do "
-        "xprop -id $w _NET_WM_NAME WM_NAME | head -1; done"
+        "xprop -id $w _NET_WM_NAME; done"
     )
     names = re.findall(r'"([^"]*)"', listed)
     return {
