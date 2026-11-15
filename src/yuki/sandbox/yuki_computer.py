@@ -491,7 +491,7 @@ class Screen:
                 {
                     "error": "timeout",
                     "message": "桌面操作在等待時間內沒有完成。",
-                    **({"status": "unknown"} if inputs else {}),
+                    "status": "unknown" if inputs else "failed",
                     **({"route": result["route"]} if "route" in result else {}),
                     **{key: result[key] for key in ("point", "point2") if key in result},
                 }
@@ -500,14 +500,18 @@ class Screen:
             raise cdp.Failure(
                 {
                     "error": "input_failed",
-                    "message": f"桌面指令失敗：{error.stderr.decode(errors='replace').strip()}",
-                    **({"status": "unknown"} if inputs else {}),
+                    "message": "桌面指令失敗："
+                    + (error.stderr or b"").decode(errors="replace").strip(),
+                    # Nothing was input when the failing command came first (V10).
+                    "status": "unknown" if inputs else "failed",
                     **{key: result[key] for key in ("point", "point2", "route") if key in result},
                 }
             ) from None
         except cdp.Failure as failure:
-            if inputs:
-                failure.result["status"] = "unknown"
+            # Facts that refused before any input are failed, never unknown (E19).
+            failure.result["status"] = (
+                "unknown" if inputs else failure.result.get("status", "failed")
+            )
             for key in ("point", "point2", "route"):
                 if key in result:
                     failure.result.setdefault(key, result[key])
