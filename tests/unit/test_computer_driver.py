@@ -904,7 +904,8 @@ def test_screen_types_unicode_and_keys_and_stops_without_the_lease(desktop, site
     assert re.search(r'textbox "pad" focused \[e\d+\]', snapshot)
     control(root, "human")
     held = screen(root, {"action": "type", "text": "never"}, lease=lease)["result"]
-    assert held["error"] == "control_held" and "status" not in held
+    # Refused before any input: failed, never unknown.
+    assert held["error"] == "control_held" and held["status"] == "failed"
     snapshot = exchange(root, "browser", {"action": "snapshot"})["result"]["snapshot"]
     assert "never" not in snapshot
     # Reads keep working while a human holds control; resume reads like screenshot.
